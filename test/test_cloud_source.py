@@ -16,13 +16,17 @@ class TestRepoRoot:
         assert (root / "install.sh").exists()
         assert (root / "setup.cfg").exists()
 
-    def test_repo_root_fails_closed_when_no_marker(self, monkeypatch, tmp_path):
+    def test_repo_root_fails_closed_when_no_marker(self, monkeypatch):
         # Installed as a wheel (no install.sh + setup.cfg above the module):
         # must raise, NOT fall back to an ancestor dir that could tar up
         # unrelated packages and ship them to S3.
-        fake_module = tmp_path / "site-packages" / "kiro_crew" / "cloud" / "source.py"
-        fake_module.parent.mkdir(parents=True)
-        fake_module.write_text("# stub\n")
+        #
+        # The module path is FABRICATED, never created: the walk climbs every
+        # ancestor, and a real path a test can create lives under the temp root,
+        # which itself may sit inside this checkout (a developer's
+        # `TMPDIR=./tmp`) -- where install.sh + setup.cfg ARE above it. The
+        # walk is lexical on the resolved path, so existence is not required.
+        fake_module = Path("/kc-wheel-install-no-markers/site-packages/kiro_crew/cloud/source.py")
         monkeypatch.setattr(source, "__file__", str(fake_module))
         with pytest.raises(aws.AWSError, match="source root"):
             source.repo_root()
@@ -537,6 +541,184 @@ class TestEnsureInstanceBoundary:
         monkeypatch.setattr(aws, "run_aws", _boom)
         with pytest.raises(aws.AWSError, match="account id"):
             source.ensure_instance_boundary("dev", "us-east-1")
+
+
+class TestEnsureCrewBoundary:
+    """T3's creator, and the evidence it does not reimplement the instance one."""
+
+    def test_creates_when_absent_from_the_content_fixed_document(self, monkeypatch):
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        created = {}
+
+        def fake_run(args, *a, **k):
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", "NoSuchEntity")
+            if args[:2] == ["iam", "create-policy"]:
+                created["args"] = list(args)
+                return (0, "{}", "")
+            raise AssertionError(f"unexpected {args[:2]}")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        assert source.ensure_crew_boundary("dev", "us-east-1") == iam.crew_boundary_arn(_ACCT12)
+        argv = created["args"]
+        assert iam.CREW_BOUNDARY_NAME in argv
+        doc_idx = argv.index("--policy-document") + 1
+        assert argv[doc_idx] == iam.crew_boundary_policy_json()
+        # The EC2 lane's name must not appear on this path: two boundaries exist
+        # precisely so neither is created under the other's identity.
+        assert iam.BOUNDARY_NAME not in argv
+        for verb in ("create-policy-version", "delete-policy", "set-default-policy-version"):
+            assert verb not in argv
+
+    def test_reuses_an_existing_boundary_only_after_verifying_content(self, monkeypatch):
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        calls = []
+
+        def fake_run(args, *a, **k):
+            calls.append(list(args[:2]))
+            if args[:2] == ["iam", "get-policy"]:
+                return (0, "{}", "")
+            raise AssertionError(f"must not run {args[:2]} when the boundary exists")
+
+        monkeypatch.setattr(
+            aws,
+            "checked_json",
+            lambda args, *a, **k: _boundary_verify_json(args, iam.crew_boundary_policy_document()),
+        )
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        assert source.ensure_crew_boundary("dev", "us-east-1") == iam.crew_boundary_arn(_ACCT12)
+        assert ["iam", "create-policy"] not in calls
+
+    def test_a_permissive_boundary_seeded_at_the_name_fails_closed(self, monkeypatch):
+        """The control that makes create-once trustworthy, pinned for THIS lane.
+
+        Inheriting the sequence is not the same as being covered by it, so this
+        asserts the crew lane's own refusal: drop its verify call and this reddens.
+        """
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        monkeypatch.setattr(aws, "run_aws", lambda args, *a, **k: (0, "{}", ""))
+        permissive = {
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+        }
+        monkeypatch.setattr(
+            aws, "checked_json", lambda args, *a, **k: _boundary_verify_json(args, permissive)
+        )
+        with pytest.raises(aws.AWSError, match="does NOT match"):
+            source.ensure_crew_boundary("dev", "us-east-1")
+
+    def test_the_ec2_ceiling_is_not_accepted_as_this_ones_content(self, monkeypatch):
+        """A ceiling above the floor caps nothing, so it is refused here too.
+
+        The EC2 document is a real, kirocrew-authored, non-permissive policy, which
+        is what makes it the interesting mismatch: a lane that checked "some
+        kirocrew boundary is present" rather than "this exact content" would accept
+        it and cap a four-action role with a twenty-action ceiling.
+        """
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        monkeypatch.setattr(aws, "run_aws", lambda args, *a, **k: (0, "{}", ""))
+        monkeypatch.setattr(
+            aws,
+            "checked_json",
+            lambda args, *a, **k: _boundary_verify_json(
+                args, iam.boundary_policy_document(_ACCT12)
+            ),
+        )
+        with pytest.raises(aws.AWSError, match="does NOT match"):
+            source.ensure_crew_boundary("dev", "us-east-1")
+
+    def test_a_lost_create_race_is_verified_before_it_counts_as_success(self, monkeypatch):
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+
+        def fake_run(args, *a, **k):
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", "NoSuchEntity")
+            return (255, "", "EntityAlreadyExists: policy already exists")
+
+        monkeypatch.setattr(
+            aws,
+            "checked_json",
+            lambda args, *a, **k: _boundary_verify_json(args, iam.crew_boundary_policy_document()),
+        )
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        assert source.ensure_crew_boundary("dev", "us-east-1") == iam.crew_boundary_arn(_ACCT12)
+
+    def test_a_lost_race_against_a_permissive_policy_still_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+
+        def fake_run(args, *a, **k):
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", "NoSuchEntity")
+            return (255, "", "EntityAlreadyExists: policy already exists")
+
+        permissive = {
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+        }
+        monkeypatch.setattr(
+            aws, "checked_json", lambda args, *a, **k: _boundary_verify_json(args, permissive)
+        )
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        with pytest.raises(aws.AWSError, match="does NOT match"):
+            source.ensure_crew_boundary("dev", "us-east-1")
+
+    def test_it_refuses_before_touching_iam_without_an_account_id(self, monkeypatch):
+        monkeypatch.setattr(source, "_account_id", lambda *a: "")
+
+        def _boom(*a, **k):  # pragma: no cover - must not reach AWS
+            raise AssertionError("must not touch IAM without a resolved account id")
+
+        monkeypatch.setattr(aws, "run_aws", _boom)
+        with pytest.raises(aws.AWSError, match="account id"):
+            source.ensure_crew_boundary("dev", "us-east-1")
+
+    def test_both_lanes_verify_through_the_same_function(self, monkeypatch):
+        """The extraction, asserted behaviourally rather than by reading the source.
+
+        A copied core would satisfy every other test in this class while leaving two
+        places for the fail-closed comparison to drift apart. Patching the ONE
+        function and seeing both lanes route through it is what rules that out, and
+        checking the documents differ is what stops a shared core from being shared
+        by handing both lanes the same expected content.
+        """
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        monkeypatch.setattr(aws, "run_aws", lambda args, *a, **k: (0, "{}", ""))
+        seen = []
+        monkeypatch.setattr(
+            source,
+            "_verify_boundary_content",
+            lambda arn, name, expected, profile, region: seen.append((arn, name, expected)),
+        )
+
+        source.ensure_instance_boundary("dev", "us-east-1")
+        source.ensure_crew_boundary("dev", "us-east-1")
+        source.ensure_crew_exec_boundary("dev", "us-east-1")
+
+        assert [name for _, name, _ in seen] == [
+            iam.BOUNDARY_NAME,
+            iam.CREW_BOUNDARY_NAME,
+            iam.CREW_EXEC_BOUNDARY_NAME,
+        ]
+        assert [arn for arn, _, _ in seen] == [
+            iam.boundary_arn(_ACCT12),
+            iam.crew_boundary_arn(_ACCT12),
+            iam.crew_exec_boundary_arn(_ACCT12),
+        ]
+        assert seen[0][2] == iam.boundary_policy_document(_ACCT12)
+        assert seen[1][2] == iam.crew_boundary_policy_document()
+        assert seen[2][2] == iam.crew_exec_boundary_policy_document()
+        documents = [str(sorted(d.items())) for _, _, d in seen]
+        assert len(set(documents)) == 3, "two lanes were handed the same ceiling"
 
 
 _ACCT = "123456789012"

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,15 +58,22 @@ pytestmark = pytest.mark.skipif(
     reason="requires the workflow plus a POSIX bash, jq and GNU date",
 )
 
-# `gh` stub. Three shapes are served, keyed on the subcommand:
+# `gh` stub. Four shapes are served, keyed on the subcommand:
 #   api graphql             -> the fixture repository state, translated (see below)
 #   api .../comments        -> the fixture issue comments, and the read is RECORDED
+#   api .../status          -> the fixture commit statuses WITH descriptions, through
+#                              real jq so the workflow's own filter is exercised; the
+#                              read is RECORDED, and a marker file makes it fail
 #   workflow run            -> RECORD the dispatch instead of firing it
 #
 # The comment read is recorded because mode 5 is now GATED on the PR's own
 # `updatedAt`, and "this read did not happen" is the whole assertion of one test:
 # a dispatch count cannot distinguish a read that found nothing from a read that
 # was correctly skipped.
+#
+# The status read is recorded for the mirror reason on mode 1: it is made only for
+# a pending the evidence test would otherwise skip, so "no read happened" is how a
+# test proves a pending with later check evidence never pays for it.
 GH_STUB = r"""#!/usr/bin/env bash
 set -euo pipefail
 if [ "$1 ${2:-}" = "workflow run" ]; then
@@ -81,6 +89,21 @@ if [ "$1" = "api" ]; then
     *"/comments")
       printf '%s\n' "$*" >> "$FIXTURES/comments_read.txt"
       cat "$FIXTURES/comments.json"; exit 0 ;;
+    *"/status")
+      printf '%s\n' "$*" >> "$FIXTURES/status_read.txt"
+      if [ -f "$FIXTURES/status_read_fails" ]; then exit 1; fi
+      filter=""
+      want=0
+      for arg in "$@"; do
+        if [ "$want" = 1 ]; then filter="$arg"; want=0; continue; fi
+        if [ "$arg" = "--jq" ]; then want=1; fi
+      done
+      if [ -n "$filter" ]; then
+        jq -r "$filter" < "$FIXTURES/status_payload.json"
+      else
+        cat "$FIXTURES/status_payload.json"
+      fi
+      exit 0 ;;
   esac
 fi
 echo "gh stub: unhandled: $*" >&2
@@ -316,6 +339,8 @@ class Runner:
         extra_statuses: list[dict] | None = None,
         disposition_at: str | None = None,
         other_comments: list[dict] | None = None,
+        description: str = "11 readiness check(s) still pending; waiting on CI (not started)",
+        status_read_fails: bool = False,
     ) -> list[str]:
         """Run the sweep over ONE pull request; return the dispatches recorded.
 
@@ -329,6 +354,12 @@ class Runner:
         2020 is not a state the API can produce, and a test built on one would
         pass for the wrong reason. Pass it explicitly to model a PR touched by
         something else -- a label, a review -- after the verdict.
+
+        `description` is the readiness status's own description, which only the
+        REST endpoint carries. It defaults to an ordinary lane-pending sentence,
+        so a test opts INTO the read-failure shape rather than out of
+        it. `status_read_fails=True` makes that read fail, to pin which way mode 1
+        degrades when it cannot classify a pending.
         """
         comment_times = [
             at
@@ -400,10 +431,30 @@ class Runner:
         )
         comments += other_comments or []
         (self.fixtures / "comments.json").write_text(json.dumps([comments]))
+        # The REST `/commits/<sha>/status` payload mode 1 reads to tell a
+        # read-failure pending from a lane-pending. The GraphQL scan
+        # carries no description, so this endpoint is the only place one exists.
+        (self.fixtures / "status_payload.json").write_text(
+            json.dumps(
+                {
+                    "statuses": [
+                        {"context": context, "state": state or "", "description": description}
+                    ]
+                    + (extra_statuses or [])
+                }
+            )
+        )
+        fails = self.fixtures / "status_read_fails"
+        if status_read_fails:
+            fails.write_text("")
+        else:
+            fails.unlink(missing_ok=True)
         applied = self.fixtures / "dispatched.txt"
         applied.unlink(missing_ok=True)
         self.comments_read = self.fixtures / "comments_read.txt"
         self.comments_read.unlink(missing_ok=True)
+        self.status_read = self.fixtures / "status_read.txt"
+        self.status_read.unlink(missing_ok=True)
 
         proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
             ["bash", "-c", self.script],
@@ -431,10 +482,57 @@ def runner(tmp_path: Path, script: str) -> Runner:
 
 
 def test_stale_pending_is_refired(runner: Runner) -> None:
-    dispatched = runner.sweep(state="pending", status_at="2020-01-01T00:00:00Z")
+    """The dropped-event freeze: a lane finished after the pending was published.
+
+    The fixture carries the check evidence that makes it that shape: the verdict
+    is old and a lane completed later, so the recompute reads something the frozen
+    verdict never saw.
+    """
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2020-01-01T00:00:00Z",
+        check_completed_at="2020-01-01T00:30:00Z",
+    )
     assert len(dispatched) == 1
     assert "pr=2064" in dispatched[0]
     assert "sha=4328fd0f941f09ff10f245fbdb4accf7c246febe" in dispatched[0]
+
+
+def test_stale_pending_with_no_later_check_evidence_is_left_alone(runner: Runner) -> None:
+    """A pending newer than every check on its head cannot change, so it is not nudged.
+
+    A readiness lane added to the monitored list after a head was pushed has zero
+    runs on that immutable head and can never acquire one, so the aggregator
+    counts it "(not started)" and republishes the same pending for as long as the
+    pull request stays open. Age alone made the sweep re-fire that recompute every
+    cycle, and each recompute re-derived the identical verdict, so the nudge
+    burned Actions minutes on 22 pull requests and changed nothing.
+
+    The test is the one modes 2, 4 and 5 already use, read in the pending
+    direction: the verdict here is NEWER than the newest completed check, so no
+    evidence has landed since it was computed and a recompute has nothing new to
+    read. Self-terminating rather than permanent -- the moment any lane completes
+    after the verdict the condition below flips and the nudge resumes.
+    """
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at="2026-08-07T19:16:13Z",
+            check_completed_at="2026-08-07T19:01:24Z",
+        )
+        == []
+    )
+
+
+def test_a_pending_with_no_checks_at_all_is_left_alone(runner: Runner) -> None:
+    """Zero completed checks is not evidence of a freeze.
+
+    A head whose lanes are all still queueing carries no completed check-run, and
+    its pending is honest: the completion events are still owed and each one
+    recomputes. Nudging here cannot help, because the recompute reads the same
+    empty evidence the verdict already read.
+    """
+    assert runner.sweep(state="pending", status_at="2020-01-01T00:00:00Z") == []
 
 
 def test_fresh_pending_is_left_alone(runner: Runner) -> None:
@@ -443,6 +541,298 @@ def test_fresh_pending_is_left_alone(runner: Runner) -> None:
 
     recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert runner.sweep(state="pending", status_at=recent) == []
+
+
+# ── The evaluate-to-publish window ──────────────────────────────────────────
+
+PUBLISH_LAG_SECONDS = 300
+
+
+def test_a_check_completed_inside_the_publish_lag_is_evidence(runner: Runner) -> None:
+    """A lane the verdict could not have seen still counts, though it pre-dates it.
+
+    The aggregator reads lane state, then finishes its other reads and writes its
+    summary before publishing, so its view is older than its publish stamp. A
+    lane completing in that gap is invisible to the verdict; if its own
+    completion event is then dropped, comparing against the stamp alone calls the
+    check old and nothing ever recomputes. The verdict here is published two
+    minutes after the check, inside the bound.
+    """
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2026-08-07T19:16:13Z",
+        check_completed_at="2026-08-07T19:14:13Z",
+    )
+    assert len(dispatched) == 1
+    assert "pr=2064" in dispatched[0]
+
+
+def test_a_check_one_second_inside_the_publish_lag_is_evidence(runner: Runner) -> None:
+    """The near edge, to pin the bound's value and not merely its existence."""
+    assert (
+        len(
+            runner.sweep(
+                state="pending",
+                status_at="2026-08-07T19:16:13Z",
+                check_completed_at="2026-08-07T19:11:14Z",
+            )
+        )
+        == 1
+    )
+
+
+def test_a_check_at_the_publish_lag_floor_is_not_evidence(runner: Runner) -> None:
+    """The far edge. The window is BOUNDED, which is what makes mode 1 terminate.
+
+    A check exactly publish_lag_seconds before the verdict is old evidence: the
+    aggregator's gap cannot have been that wide, so the verdict did read it.
+    Without this edge the floor would drift toward "any check at all", which is
+    the age-only retry the evidence test replaces.
+    """
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at="2026-08-07T19:16:13Z",
+            check_completed_at="2026-08-07T19:11:13Z",
+        )
+        == []
+    )
+
+
+def test_a_republished_verdict_carries_the_same_check_below_the_floor(
+    runner: Runner,
+) -> None:
+    """Self-termination, as the sweep actually reaches it.
+
+    A rescue dispatches the aggregator, which republishes. The next sweep sees
+    the SAME newest check against a publication that is now at least
+    stale_seconds newer -- because nothing is re-examined before then -- and
+    stale_seconds is larger than the lag, so the check is below the floor and the
+    nudge does not repeat. This models the second pass: the check that earned the
+    first rescue, one stale window later.
+    """
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at="2026-08-07T19:31:14Z",
+            check_completed_at="2026-08-07T19:14:13Z",
+        )
+        == []
+    )
+
+
+def test_the_publish_lag_stays_below_the_staleness_window() -> None:
+    """The ordering the termination argument rests on, asserted against the file.
+
+    If the lag ever grew past stale_seconds, a rescue's own republish would keep
+    the check inside the new window and mode 1 would nudge the same head every
+    sweep -- the loop this whole change removes, reintroduced by a constant.
+    """
+    sweep = WORKFLOW.read_text(encoding="utf-8")
+    assert "publish_lag_seconds=%d" % PUBLISH_LAG_SECONDS in sweep
+    assert "$(( updated_epoch - publish_lag_seconds ))" in sweep
+    stale = re.search(r'STALE_MINUTES:\s*"(\d+)"', sweep)
+    assert stale, "STALE_MINUTES is unreadable, so the termination bound cannot be checked"
+    assert PUBLISH_LAG_SECONDS < int(stale.group(1)) * 60
+
+
+# ── The read-failure pending: age is its only signal ────────────────────────
+
+READ_FAILURE_TOKEN = "[read-failed]"
+
+TRANSPORT_DESCRIPTION = (
+    READ_FAILURE_TOKEN + " Readiness could not be evaluated"
+    " (transient GitHub API failure); it will be re-evaluated"
+)
+
+# The SECOND read-failure site's description. It shares the token and nothing
+# else: the prose is the publisher's ordinary pending sentence, because this
+# pending is one entry in the waiting list rather than a whole-verdict bail-out.
+DISPOSITION_DESCRIPTION = (
+    READ_FAILURE_TOKEN + " 1 readiness check(s) still pending;"
+    " waiting on disposition records could not be read"
+)
+
+# Every phrase the publisher uses for a pending it publishes because a READ
+# failed. Each such site must stamp the token; a site that does not is a pending
+# the sweep will strand at the evidence test forever.
+READ_FAILURE_VOCABULARY = re.compile(
+    r"could not be (?:read|evaluated|established)|unreadable", re.IGNORECASE
+)
+
+
+def test_a_stale_transport_read_failure_pending_is_refired_without_later_evidence(
+    runner: Runner,
+) -> None:
+    """The pending shape that keeps its age-based retry.
+
+    pr-readiness.yml publishes this verdict when a read-only call keeps failing
+    after its bounded retries, at the END of the job -- so it can post-date every
+    check on the head and hold no later check evidence by construction. The
+    evidence test can therefore never fire it, while a recompute resolves it
+    outright, because the next run's reads succeed. Without the carve-out the
+    required status stays pending with nothing able to clear it but a push.
+
+    The fixture is deliberately the SAME shape the lane-pending test asserts is
+    left alone -- verdict at 19:16:13Z, newest completed check at 19:01:24Z -- so
+    the description is the only thing that differs and the only thing that can
+    explain the opposite outcome.
+    """
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2026-08-07T19:16:13Z",
+        check_completed_at="2026-08-07T19:01:24Z",
+        description=TRANSPORT_DESCRIPTION,
+    )
+    assert len(dispatched) == 1
+    assert "pr=2064" in dispatched[0]
+    assert "sha=4328fd0f941f09ff10f245fbdb4accf7c246febe" in dispatched[0]
+
+
+def test_a_read_failure_pending_is_refired_whatever_its_prose_says(
+    runner: Runner,
+) -> None:
+    """The discriminator is the token, so a differently-worded site is rescued too.
+
+    The publisher writes a read-failure pending from more than one site, and only
+    one of them phrases it as "Readiness could not be evaluated": an unreadable
+    disposition record set is one entry in the waiting list, so it arrives under
+    the ordinary "N readiness check(s) still pending" sentence. Matching that
+    prose recognises the first site and strands the second at exactly the freeze
+    this carve-out exists to prevent. Same fixture as the transport case, with
+    only the prose changed.
+    """
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2026-08-07T19:16:13Z",
+        check_completed_at="2026-08-07T19:01:24Z",
+        description=DISPOSITION_DESCRIPTION,
+    )
+    assert len(dispatched) == 1
+    assert "pr=2064" in dispatched[0]
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        READ_FAILURE_TOKEN + " Readiness could not be evalu",
+        READ_FAILURE_TOKEN + " 12 readiness check(s) still p",
+        READ_FAILURE_TOKEN,
+    ],
+    ids=["transport", "disposition", "token-only"],
+)
+def test_the_token_survives_the_description_length_cap(runner: Runner, description: str) -> None:
+    """A truncated description still classifies, because the token leads it.
+
+    A commit status description is capped at 140 characters and the tail is what
+    gets cut, so the publisher puts the token first and the sweep matches the
+    front. These fixtures keep only what a cap would leave behind.
+    """
+    assert (
+        len(
+            runner.sweep(
+                state="pending",
+                status_at="2026-08-07T19:16:13Z",
+                check_completed_at="2026-08-07T19:01:24Z",
+                description=description,
+            )
+        )
+        == 1
+    )
+
+
+def test_the_publisher_and_the_sweep_agree_on_the_read_failure_token() -> None:
+    """Pin the literal, so editing either file cannot silently strand the retry.
+
+    The sweep classifies on a token another workflow writes. Nothing in either
+    file's own tests would notice the two drifting apart, and the cost of drift
+    is the exact freeze this carve-out exists to prevent.
+    """
+    publisher = (REPO_ROOT / ".github" / "workflows" / "pr-readiness.yml").read_text(
+        encoding="utf-8"
+    )
+    sweep = WORKFLOW.read_text(encoding="utf-8")
+    declaration = 'READ_FAILURE_TOKEN="%s"' % READ_FAILURE_TOKEN
+    assert declaration in sweep
+    assert declaration in publisher
+    assert '"$READ_FAILURE_TOKEN"*) return 0 ;;' in sweep
+
+
+def test_every_read_failure_pending_the_publisher_writes_is_stamped() -> None:
+    """A new read-failure site cannot ship unstamped.
+
+    This is the failure mode a prose match hides: someone adds a third pending
+    for a read that failed, words it their own way, and the sweep -- which can
+    only see the token -- leaves it frozen. Nothing at runtime complains, because
+    the verdict is a legitimate pending; it simply never clears.
+
+    So the publisher is read as text. Every `pending+=` whose subject is a failed
+    read must set the flag that stamps the token, and the whole-verdict bail-out
+    must carry the token itself, first, ahead of its prose.
+    """
+    publisher = (REPO_ROOT / ".github" / "workflows" / "pr-readiness.yml").read_text(
+        encoding="utf-8"
+    )
+    lines = publisher.splitlines()
+
+    sites = [
+        (number, line)
+        for number, line in enumerate(lines)
+        if "pending+=(" in line and READ_FAILURE_VOCABULARY.search(line)
+    ]
+    assert sites, "no read-failure pending site found; the vocabulary has drifted"
+    for number, line in sites:
+        window = "\n".join(lines[number : number + 3])
+        unstamped = "line %d publishes a read-failure pending unstamped: %s" % (
+            number + 1,
+            line.strip(),
+        )
+        assert "read_failure=true" in window, unstamped
+
+    assert 'echo "description=$READ_FAILURE_TOKEN Readiness could not be evaluated' in publisher
+    assert 'prefix="$READ_FAILURE_TOKEN "' in publisher
+
+
+def test_an_ordinary_lane_pending_still_pays_no_status_read(runner: Runner) -> None:
+    """The classifying read is made only where it can change the outcome.
+
+    A pending with later check evidence is re-fired by the evidence test itself,
+    so it never reaches the read. Asserting the recorder stays absent is the only
+    way to prove that: a dispatch count cannot tell a read that happened from one
+    that was skipped.
+    """
+    assert (
+        len(
+            runner.sweep(
+                state="pending",
+                status_at="2020-01-01T00:00:00Z",
+                check_completed_at="2020-01-01T00:30:00Z",
+            )
+        )
+        == 1
+    )
+    assert not runner.status_read.exists()
+
+
+def test_an_unreadable_description_leaves_the_pending_alone(runner: Runner) -> None:
+    """The classifier fails CLOSED toward the evidence test.
+
+    When the read breaks, the sweep cannot tell a read-failure pending from a
+    lane-pending. Treating an unknown as a read failure would re-fire every
+    ordinary lane-pending whenever the endpoint was unwell, which is the loop the
+    evidence test removes; treating it as ordinary costs one sweep interval of
+    delay on a rescue that the next sweep makes.
+    """
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at="2026-08-07T19:16:13Z",
+            check_completed_at="2026-08-07T19:01:24Z",
+            description=TRANSPORT_DESCRIPTION,
+            status_read_fails=True,
+        )
+        == []
+    )
 
 
 # ── The re-run freeze (the case this change adds) ────────────────────────────
@@ -704,6 +1094,25 @@ def test_every_open_pull_request_is_scanned_across_pages(tmp_path: Path, script:
             json.dumps([[{"context": "PR Readiness", "state": "pending", "updated_at": at}]])
         )
     (fixtures / "prs.json").write_text(json.dumps(prs))
+    # Mode 1 needs a check that completed AFTER the verdict, so the stale PRs are
+    # rescuable at all. This fixture is global to every PR the stub serves, and
+    # that is harmless here: it post-dates the five stale verdicts and pre-dates
+    # the fresh ones, which the age gate excludes before evidence is read.
+    (fixtures / "check_runs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "check_runs": [
+                        {
+                            "status": "completed",
+                            "conclusion": "success",
+                            "completed_at": "2020-06-01T00:00:00Z",
+                        }
+                    ]
+                }
+            ]
+        )
+    )
 
     proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
         ["bash", "-c", script],
@@ -844,6 +1253,23 @@ def test_dispatch_is_oldest_stale_first(tmp_path: Path, script: str) -> None:
         (fixtures / f"status_{sha}.json").write_text(
             json.dumps([[{"context": "PR Readiness", "state": "pending", "updated_at": at}]])
         )
+    # One check completed after all three verdicts, so each is a mode 1 rescue and
+    # the test varies only the staleness order.
+    (fixtures / "check_runs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "check_runs": [
+                        {
+                            "status": "completed",
+                            "conclusion": "success",
+                            "completed_at": "2020-01-01T00:01:00Z",
+                        }
+                    ]
+                }
+            ]
+        )
+    )
 
     proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
         ["bash", "-c", script],

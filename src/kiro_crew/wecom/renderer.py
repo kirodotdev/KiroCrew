@@ -28,10 +28,17 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.messaging.renderer import Renderer, format_overflow, split_options_trailer
+from kiro_crew.messaging.display_safety import safe_split_offset
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    _default_redactor,
+    count_redaction_tags,
+    format_overflow,
+    redaction_notice,
+    split_options_trailer,
+)
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS, new_stream_id
 
 if TYPE_CHECKING:
@@ -133,6 +140,10 @@ class WeComRenderer(Renderer):
         # Tail chunks held until close() knows whether the head landed, so a
         # recovered head cannot arrive after the text it precedes.
         self._pending_overflow: list[str] = []
+        # Redaction placeholders in the assembled answer, tallied at on_done and
+        # delivered as one notice from close(), where every delivery path ends.
+        self._notice_creds = 0
+        self._notice_urls = 0
         self._stream_id = new_stream_id()
         self._buf: list[str] = []
         self._last_send = 0.0
@@ -255,6 +266,12 @@ class WeComRenderer(Renderer):
         # remainder, so a roll that leaves nothing to say costs no message.
         self._roll_if_sealed()
         remainder = answer[self._carried :]
+        # Tallied here, delivered from ``close()``: this channel's answer can
+        # finish landing as late as the deferred-overflow release, and close()
+        # is the one point every delivery path funnels through (drive_turn
+        # calls it from its finally). Table rendering does not rewrite a
+        # redaction placeholder, so the pre-render text is the right subject.
+        self._notice_creds, self._notice_urls = count_redaction_tags(answer)
         if not answer:
             # Routed through _send_final_chunk like any other seal, so a refusal is
             # recovered rather than merely recorded. This is the branch that carries
@@ -275,6 +292,16 @@ class WeComRenderer(Renderer):
         # delivery would disagree about what the user was told. Splitting is
         # fence-safe because WeCom renders markdown: a blind cut can sever a code
         # fence and leave the rest of the answer rendered as prose.
+        #
+        # Redact the WHOLE remainder BEFORE splitting it. ``on_done`` is terminal --
+        # ``_carried`` was read once above and no later frame indexes the answer --
+        # so redacting here leaves the offset coordinate space untouched, unlike the
+        # streaming path. Doing it before the split closes the one gap
+        # ``split_markdown_safe`` can open: a logical line longer than the cap is
+        # hard-cut mid-line, which could sever a credential across two chunks that
+        # are then each scrubbed alone. Redacted first, the credential is one marker
+        # before any cut can reach it.
+        remainder = self.redact_for_target(remainder)
         chunks = await asyncio.to_thread(
             split_markdown_safe, remainder, WECOM_SAFE_REPLY_CHARS
         ) or [remainder]
@@ -410,6 +437,31 @@ class WeComRenderer(Renderer):
         # tail it precedes is released.
         head_ok = await self._recover_unconfirmed_seal()
         await self._release_pending_overflow(head_ok=head_ok)
+        # Post-answer redaction notice, after every delivery path has settled
+        # (the tally is taken in on_done, where the assembled answer exists).
+        # A CONFIRMED push when a conversation id exists, else the one-shot
+        # response_url. Best-effort by the shared contract: the answer is out,
+        # so a failed notice send is logged, never raised. Consumed on the
+        # first call so a second close() cannot post the notice twice.
+        creds, urls = self._notice_creds, self._notice_urls
+        self._notice_creds = self._notice_urls = 0
+        if creds or urls:
+            try:
+                notice = redaction_notice(creds, urls)
+                delivered = False
+                if self._chat_id:
+                    delivered = await self._client.send_proactive(self._chat_id, notice)
+                if not delivered:
+                    delivered = await self._client.send_reply(self._response_url, notice)
+                if not delivered:
+                    logger.warning(
+                        "WeCom: could not deliver the redaction notice (answer already sent)"
+                    )
+            except Exception:
+                logger.warning(
+                    "WeCom: could not deliver the redaction notice (answer already sent)",
+                    exc_info=True,
+                )
 
     async def _recover_unconfirmed_seal(self) -> bool:
         """Ask once more whether the sealing frame was accepted, and recover if not.
@@ -511,15 +563,29 @@ class WeComRenderer(Renderer):
         unconverted table, and ``safe_raw_table_fallback`` is the display-safe way
         to say so. Its ``None`` means "no safe raw candidate", which is why the
         unconverted ``body`` is the last resort rather than the converted overflow.
+
+        The slice is scrubbed render-aware at this one return before it ships.
+        WeCom renders the slice as markdown, and the channel-neutral stream pass
+        upstream is a literal byte scan, so a credential split by emphasis
+        (``AKIA**REST``) or a link survives it and is reassembled on screen -- the
+        same hazard the ``<think>`` block is guarded against, on the same renderer.
+        Redacting here is offset-safe: the slice was already cut in raw
+        coordinates, and ``_push`` records progress from that raw slice, so the
+        substitution cannot shift ``_carried`` / ``_sent_abs``.
+
+        This closes a credential that lies WITHIN one slice. A credential the cap
+        severs ACROSS two slices is not closed here: each half is scrubbed alone,
+        neither matches, and the reader's client rejoins them. That is unchanged
+        from the pre-existing behaviour -- the cap has always cut in raw
+        coordinates while the reader sees the canonical form -- and closing it
+        needs the cut itself chosen in canonical space, which is its own change.
         """
         converted = self.render_tables_for_target(body, final=final)
         cap = self.capabilities.max_message_chars
-        if cap <= 0 or len(converted) <= cap:
-            return converted
-        safe_raw = self.safe_raw_table_fallback(body, final=final)
-        if safe_raw is not None and len(safe_raw) <= cap:
-            return safe_raw
-        return body
+        if cap > 0 and len(converted) > cap:
+            safe_raw = self.safe_raw_table_fallback(body, final=final)
+            converted = safe_raw if safe_raw is not None and len(safe_raw) <= cap else body
+        return self.redact_for_target(converted)
 
     def _roll_if_sealed(self) -> None:
         """Move to a fresh bubble when WeCom has sealed the current one.
@@ -604,9 +670,14 @@ class WeComRenderer(Renderer):
             # at the send boundary closes that, and also covers a credential that
             # was never split. Same placement, and the same reason, as Slack's
             # ``_maybe_post_thinking``.
+            #
+            # The scrub is render-aware (``redact_for_target``), not the literal
+            # byte pair: WeCom renders this ``<think>`` block as markdown, so a key
+            # split by emphasis (``AKIA**REST**``) or a link would pass a literal
+            # scan and be reassembled on screen — the same hazard the answer body
+            # is guarded against, on the same renderer.
             reasoning = "".join(self._reasoning)
-            reasoning, _ = redact_exfiltration_urls(reasoning)
-            reasoning, _ = redact_credentials(reasoning)
+            reasoning = self.redact_for_target(reasoning)
             reasoning = f"<think>{reasoning}</think>"
             self._stream_ok = await self._client.send_stream(
                 self._req_id, self._stream_id, reasoning, finish=False
@@ -615,13 +686,19 @@ class WeComRenderer(Renderer):
             return
         footer = f"🔧 正在运行：{self._tool}…" if self._tool else ""
         cap = self.capabilities.max_message_chars
-        if cap > 0 and footer:
-            # The footer is transient decoration; the answer is the payload, so
-            # the budget is spent on the answer and the footer only rides along
-            # when it fits beside it.
-            body = body[: max(0, cap - len(footer) - 2)]
-        elif cap > 0:
-            body = body[:cap]
+        if cap > 0:
+            # The footer is transient decoration; the answer is the payload, so the
+            # budget is spent on the answer and the footer only rides along when it
+            # fits beside it.
+            room = max(0, cap - len(footer) - 2) if footer else cap
+            # Cut where the READER cannot rejoin the halves, rather than at whatever raw
+            # character the budget happens to land on. The cap is applied to RAW text
+            # while the reader sees the CANONICAL rendering of each piece, so a key the
+            # model split with markup is severed by a blind cut: each piece is scrubbed
+            # on its own and matches nothing, and the reader's client renders the markup
+            # away and rejoins the halves on screen. Nothing after this offset has been
+            # delivered, so the next frame of this bubble carries the remainder.
+            body = body[: safe_split_offset(body, room, _default_redactor)]
         # Progress is recorded from the RAW slice, before any table conversion: the
         # offsets index ``text()``, and a converted string has a different length.
         sent_abs = self._carried + len(body)

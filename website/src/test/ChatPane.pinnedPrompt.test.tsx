@@ -223,6 +223,23 @@ describe('ChatPane pinned prompt (chat-core P5-d)', () => {
     expect(card.compareDocumentPosition(geom.scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('starts an estimate-steered jump when the pinned row is unmounted', () => {
+    const { container } = renderPane()
+    flushFrames()
+    const geom = layOut(container)
+    geom.scroller.scrollTop = 1800
+    act(() => { geom.scroller.dispatchEvent(new Event('scroll')) })
+    geom.scroller.scrollTop = 200
+    act(() => { geom.scroller.dispatchEvent(new Event('wheel')) })
+    act(() => { geom.scroller.dispatchEvent(new Event('scroll')) })
+    flushFrames()
+    geom.rows[2].remove()
+
+    act(() => { screen.getByTitle('Jump to this turn').click() })
+
+    expect(frames.length).toBeGreaterThan(0)
+  })
+
   it('clicking the banner glides the scroller back to the pinned prompt', () => {
     const { container } = renderPane()
     // This test reads scrollTop, so the virtualizer's own positioning has to

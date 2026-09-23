@@ -330,6 +330,7 @@ class TestAutoApproveRespectsHookDeny:
         # ctx.hooks.on_tool_call returns TOOL_DENY (deny-list / sensitive-path block).
         ctx = MagicMock()
         ctx.conversation_log.get_metadata_status.return_value = ({}, True)
+        ctx.memory_mode_for_session = AsyncMock(return_value="persistent")
         ctx.build_message = MagicMock(return_value=("prompt", {}))
         ctx.hooks.on_tool_call = MagicMock(return_value=MagicMock(action=TOOL_DENY))
 
@@ -361,6 +362,7 @@ class TestAutoApproveRespectsHookDeny:
 
         ctx = MagicMock()
         ctx.conversation_log.get_metadata_status.return_value = ({}, True)
+        ctx.memory_mode_for_session = AsyncMock(return_value="persistent")
         ctx.build_message = MagicMock(return_value=("prompt", {}))
         ctx.hooks.on_tool_call = MagicMock(return_value=MagicMock(action=TOOL_AUTO_APPROVE))
 
@@ -454,8 +456,11 @@ class TestAutoApproveProvenanceGating:
     """
 
     async def _auto_approve_passed(self, tmp_path: Path, source: str, auto_approve: bool, request_app: str = ""):
+        from kiro_crew.execution_context import execution_for_store
+
         runner = MagicMock()
         runner._work_dir = tmp_path
+        runner._capture_execution.return_value = execution_for_store("")
         runner.start_background = MagicMock(return_value="tid")
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
@@ -569,8 +574,11 @@ class TestInlineSpecCleanup:
     never the handler's to delete."""
 
     async def _start(self, tmp_path: Path, body: dict, raising: bool):
+        from kiro_crew.execution_context import execution_for_store
+
         runner = MagicMock()
         runner._work_dir = str(tmp_path)
+        runner._capture_execution.return_value = execution_for_store("")
         if raising:
             runner.start_background = AsyncMock(side_effect=RuntimeError("boom: rejected"))
         else:

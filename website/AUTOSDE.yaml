@@ -60,7 +60,7 @@ custom-rules:
     rule: |
       Use CSS custom property design tokens instead of hardcoded Tailwind color classes. Hardcoded colors break dark/light theme switching.
 
-      Use the semantic tokens defined in `index.css` and mapped in `tailwind.config.js`:
+      Use the semantic tokens defined in `index.css` and mapped in `src/tailwind-theme.css`:
       - `bg-[var(--bg)]`, `bg-[var(--card)]` instead of `bg-gray-900`
       - `text-[var(--text)]`, `text-[var(--muted)]` instead of `text-gray-400`
       - `border-[var(--border)]` instead of `border-gray-700`
@@ -225,6 +225,77 @@ custom-rules:
           <span className="truncate">{basename(s.project)}</span>
         </span>
       )}
+      ```
+
+  - id: connection-card-caveat-tip
+    blocking: true
+    file-patterns:
+      - "src/pages/connections/**/*.tsx"
+    rule: |
+      On a Connections card, anything the user should know BEFORE pressing an
+      action -- a provider-side prerequisite, what a button will open or change,
+      a one-time setup the provider needs -- renders as the amber warning
+      triangle (`PrerequisiteTip`) placed immediately before that action, in the
+      same row. Never as an always-visible band, callout, or paragraph inside
+      the card.
+
+      Why: the gallery is a grid of identical cards, and a band is paid by every
+      card that reaches the state, forever, for prose a user reads once. It
+      also makes rows ragged (the card grows by the band's height while its
+      neighbours do not) and buries the one control the state exists for under
+      three lines of explanation. The triangle costs one 24px slot, previews on
+      hover or focus, pins on click, and keeps the action row the same shape in
+      every state. It is the pattern the maintainer chose after trying bands and
+      reverting them; a reviewer suggestion to "make the warning visible" is
+      answered by this rule, not by a band.
+
+      A caveat, which goes in the tip:
+      - "Requires an Atlassian account with a Jira or Confluence site …"
+      - "<provider> needs a one-time setup. Configure OAuth app opens …"
+      - Anything phrased as what will happen, or what must be true, when the
+        user acts.
+
+      NOT a caveat, which may stay inline:
+      - A verdict about the card's CURRENT state that the user must act on
+        (`not-verified`, `needs-attention`): the card is reporting a fact, not
+        annotating a button.
+      - A form the state needs (the remote return-address relay while waiting
+        for approval): controls, not prose.
+      - The state badge in the header and the one-line value prop.
+
+      One tip per action row. If two caveats apply to one action, merge the copy
+      into one bubble; never render two triangles or a triangle plus a band.
+      Reuse `PrerequisiteTip` with the existing `prerequisites_for_provider`
+      label and `before_you_connect` heading -- do not fork a second tooltip
+      component or a second heading key for a new state.
+
+      Bad:
+      ```tsx
+      <div className="space-y-3">
+        <div className="flex items-start gap-2 rounded-md border border-border bg-bg-hover p-2.5 text-[12px]">
+          <Lock className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />
+          <span>{t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}</span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          {docsLink}
+          <Link to={settingsHref}>{t('pages.connectionsPage.configure_oauth_app')}</Link>
+        </div>
+      </div>
+      ```
+
+      Good:
+      ```tsx
+      <div className="flex items-center justify-between gap-3">
+        {docsLink}
+        <div className="flex items-center gap-2">
+          <PrerequisiteTip
+            label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
+            heading={t('pages.connectionsPage.before_you_connect')}
+            text={t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
+          />
+          <Link to={settingsHref}>{t('pages.connectionsPage.configure_oauth_app')}</Link>
+        </div>
+      </div>
       ```
 
   - id: max-two-buttons-per-row
@@ -503,8 +574,8 @@ custom-rules:
       Exception: do not flag emoji usage in
       SecretaryPage.tsx (inline emoji reaction picker),
       folderEmoji.ts + FolderConfigModal.tsx (folder icon picker — FOLDER_EMOJIS
-      grid + custom-emoji input), ChatSidebar.tsx (FolderGlyph renders the
-      folder's icon as data),
+      grid + custom-emoji input), FolderGlyph.tsx (renders the folder's icon as
+      data; extracted from ChatSidebar.tsx),
       scene components (src/pages/scenes/), useTheme.ts, or themeEditor.tsx
       (theme display names). These are intentional decorative/data uses.
 

@@ -1,10 +1,10 @@
 ---
 title: Amend TENETS.md — add "Everything is an app" as tenet 8
-status: draft
+status: implemented
 author: zezhexu
 created: 2026-08-18
-last-audited: 2026-08-18
-audited-at: e6b06685e
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -13,8 +13,8 @@ superseded-by: []
 ---
 # RFC: Amend TENETS.md — add "Everything is an app" as tenet 8
 
-- Status: draft — nothing merged. [`../../TENETS.md`](../../TENETS.md) carries seven
-  tenets on main.
+- Status: implemented — [`../../TENETS.md`](../../TENETS.md) carries
+  **Everything is an app** as tenet 8.
 - Author: zezhexu
 - Created: 2026-08-18
 - Related: [`rfc-everything-is-an-app.md`](rfc-everything-is-an-app.md), which

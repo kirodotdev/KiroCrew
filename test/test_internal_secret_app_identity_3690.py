@@ -23,6 +23,7 @@ below:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -82,7 +83,11 @@ def _request(
     if session_key is not None:
         headers["X-Session-Key"] = session_key
     req.headers = headers
-    store: dict = {}
+    # The peer attestation the unix-socket middleware publishes for a caller whose
+    # ancestry resolves to the key it declares. Session-scoped routes read a
+    # declared X-Session-Key only behind it, so a double without it is refused for
+    # a transport reason and never reaches the app-identity question under test.
+    store: dict = {"peer_verified": True}
     req.__setitem__.side_effect = store.__setitem__
     req.__getitem__.side_effect = store.__getitem__
     req.__contains__.side_effect = store.__contains__
@@ -479,6 +484,69 @@ class TestAStatelessCronKeyResolvesToItsJob:
     def test_a_bare_prefix_with_no_id_resolves_to_nothing(self) -> None:
         assert derive_caller_app({}, "cron:", [_Job("", "app:x")]) == ""
         assert derive_caller_app({}, "subagent:", None, {"": _Sub("x")}) == ""
+
+
+class TestContinuationCallerIdentity:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("app", ["", "file-explorer"])
+    async def test_active_continuation_resolves_the_canonical_caller(self, app: str) -> None:
+        run = SimpleNamespace(
+            id="followup", conversation_key="subagent:original", done=False, queued=False, app=app
+        )
+        store = await _grant("subagent:original", {}, subagents={"followup": run})
+        if app:
+            assert store["app"] == app
+            assert store["is_dashboard_user"] is False
+        else:
+            assert "app" not in store
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("invalid", ["done", "queued", "other_key", "ambiguous"])
+    async def test_only_one_executing_continuation_can_establish_the_caller(
+        self, invalid: str
+    ) -> None:
+        run = SimpleNamespace(
+            id="followup",
+            conversation_key="subagent:original",
+            done=False,
+            queued=False,
+            app="file-explorer",
+        )
+        registry = {"followup": run}
+        if invalid in {"done", "queued"}:
+            setattr(run, invalid, True)
+        elif invalid == "other_key":
+            run.conversation_key = "subagent:original-other"
+        else:
+            registry["duplicate"] = SimpleNamespace(**vars(run))
+        mw = token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+        req, _ = _request("subagent:original", {}, subagents=registry)
+        resp = await mw(req, _ok)
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "caller_record_missing"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_continuation_registry_fails_closed(self) -> None:
+        registry = MagicMock()
+        registry.get.return_value = None
+        registry.values.side_effect = RuntimeError("registry unavailable")
+        mw = token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+        req, _ = _request("subagent:original", {}, subagents=registry)
+        resp = await mw(req, _ok)
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "caller_record_missing"
+
+    @pytest.mark.asyncio
+    async def test_original_app_record_keeps_its_authority(self) -> None:
+        run = SimpleNamespace(
+            id="followup", conversation_key="subagent:original", done=False, queued=False, app=""
+        )
+        store = await _grant(
+            "subagent:original",
+            {},
+            subagents={"original": _Sub("file-explorer"), "followup": run},
+        )
+        assert store["app"] == "file-explorer"
 
 
 class TestADelegatedCallerWhoseRecordIsGoneIsRefused:

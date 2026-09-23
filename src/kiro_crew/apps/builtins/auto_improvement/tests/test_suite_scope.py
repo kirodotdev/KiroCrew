@@ -129,10 +129,16 @@ class TestUnresolvableScopeRefuses:
             "GIT_COMMITTER_EMAIL": "t@t",
         }
         root.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, env=env)
+        # ``cwd=root`` on every spawn: a test's git must never inherit pytest's working
+        # directory (the checkout) as the child's cwd.
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(root)], check=True, env=env, cwd=str(root)
+        )
         (root / "f.txt").write_text("x\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, env=env)
-        subprocess.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=env)
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, env=env, cwd=str(root))
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=env, cwd=str(root)
+        )
         return root
 
     def test_an_unresolvable_scope_base_refuses_to_build_the_profile(self, tmp_path) -> None:

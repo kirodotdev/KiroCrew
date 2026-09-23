@@ -129,6 +129,12 @@ def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
         # for a fault, when the earlier messages were deliberately summarized.
         "context_compacted",
         "summarized_mid_turn_continuing",
+        # The content-filter fallback continuation card. Its own pair because
+        # neither sibling copy is true of it: nothing faulted (the model's
+        # filter declined the turn) and nobody pressed Continue (the gateway
+        # switched models and continued on its own).
+        "content_filter_declined",
+        "fallback_model_continuing",
     ],
 )
 def test_new_card_labels_are_in_the_english_catalog(key: str) -> None:

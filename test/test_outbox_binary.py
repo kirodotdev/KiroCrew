@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from tmpdir_helpers import short_tmp_base
 
 from kiro_crew.dashboard.handlers import api_outbox_download, api_outbox_notify
 
@@ -32,17 +31,25 @@ def mock_sel():
 
 @pytest.fixture
 def outbox(tmp_path):
-    # Use /tmp as a stable base — macOS tmp_path contains high-entropy directory
-    # IDs that trigger the bare-secret heuristic in redact_credentials(), causing
-    # api_outbox_notify to reject the path with 400 before any test logic runs.
+    # Not ``tmp_path``: on macOS pytest's basetemp carries the per-user
+    # ``/var/folders/<..30 random chars..>/T`` segment, which trips the bare-secret
+    # heuristic in redact_credentials() and has api_outbox_notify reject the path
+    # with 400 before any test logic runs.
     #
-    # Removed on teardown: `mkdtemp` registers no finalizer, so each test otherwise
-    # left a directory in /tmp forever. Same fixture as
+    # Not a literal ``/tmp`` either: the rootdir conftest already gives the run
+    # its own ``tempfile`` base -- ``/tmp/kc-pytest-<user>-<pid>-<rand>`` on macOS,
+    # ``$TMPDIR/kc-pytest-...`` elsewhere -- short, low-entropy, removed at session
+    # end and RESIDUE-REPORTED, whereas a directory dropped straight into the
+    # shared ``/tmp`` is owned by nobody and, on hosts that reap ``/tmp``
+    # mid-session, can vanish under a running test. A bare ``mkdtemp()`` lands
+    # in that base; the assertion pins it so a ``dir=`` creeping back in is a
+    # red test rather than residue on someone's disk. Same fixture as
     # test_outbox_notify_broadcast.py.
     import shutil
     import tempfile
 
-    base = Path(tempfile.mkdtemp(dir=short_tmp_base()))
+    base = Path(tempfile.mkdtemp())
+    assert base.is_relative_to(tempfile.gettempdir()), base
     odir = base / "outbox"
     odir.mkdir()
     try:

@@ -375,7 +375,7 @@ export default function PromptForm({ data, onChange, hideIdentity }: PromptFormP
           <textarea
             id={bodyId}
             aria-label={i18nT('pages.overview.promptsTab.form_body')}
-            className="w-full min-h-[220px] bg-bg-elevated border border-border rounded-md p-2.5 font-mono text-[13px] text-text leading-normal resize-y focus:outline-none focus:border-accent"
+            className="w-full min-h-[220px] bg-bg-elevated border border-border rounded-md p-2.5 font-mono text-[13px] text-text leading-normal resize-y focus:outline-hidden focus:border-accent"
             value={data.body}
             onChange={e => set({ body: e.target.value })}
             placeholder={i18nT('pages.overview.promptsTab.form_body_placeholder')}

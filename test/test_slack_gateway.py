@@ -920,6 +920,32 @@ class TestShutdown:
         orch.heartbeat_svc.stop.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_shutdown_releases_the_subagent_task_store(self):
+        """Shutdown closes the manager's durable store, and only after cancel_all.
+
+        ``SubagentManager.__init__`` opens a SQLite connection plus a writer thread
+        for the durable task queue; ``cancel_all`` stops the runs but leaves that
+        store open, so a gateway that never calls ``close`` holds the descriptors
+        and the executor for the life of the process. The ORDER is the other half
+        of the contract: ``cancel_all`` is what stops the runs still writing to the
+        store, so closing first would pull the connection out from under them.
+        """
+        order: list[str] = []
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.secretary_svc = None
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=lambda: order.append("cancel_all"))
+        orch.subagent_mgr.close = MagicMock(side_effect=lambda: order.append("close"))
+        orch.sessions = None
+        orch.dashboard_state = None
+        orch._dashboard_runner = None
+        await orch._shutdown()
+        orch.subagent_mgr.close.assert_called_once_with()
+        assert order == ["cancel_all", "close"]
+
+    @pytest.mark.asyncio
     async def test_shutdown_cancels_handler_tasks(self):
         orch = _make_orchestrator()
         task = asyncio.create_task(asyncio.sleep(100))
@@ -1269,7 +1295,9 @@ class TestBrazilInstallAndDeps:
                 asyncio.run(orch._check_console_script())
         spawn.assert_not_awaited()
 
-    def test_check_console_script_reinstalls_when_missing(self, tmp_path):
+    def test_check_console_script_reinstalls_when_missing(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         (tmp_path / ".install-method").write_text("pip")
         venv_py = gw.dep_sync.project_venv_python(tmp_path)
         # The interpreter directory exists but the entry point is absent.
@@ -1297,6 +1325,7 @@ class TestBrazilInstallAndDeps:
         # where it is now composed.
         assert seen["argv"] == [
             sys.executable,
+            "-s",
             str(Path(gw.dep_sync.__file__).resolve()),
             "--repair-missing-package",
             str(tmp_path),
@@ -1579,6 +1608,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -1653,6 +1683,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -1728,6 +1759,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -1803,6 +1835,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -1874,7 +1907,8 @@ class TestInitCron:
         # Real predicate semantics: pending work == a running agent with this
         # parent (no queued spawns in this scenario).
         orch.subagent_mgr.queued_count_for = MagicMock(return_value=0)
-        orch.subagent_mgr.has_pending_work_for = MagicMock(
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
             side_effect=lambda key: any(
                 a.parent_session_key == key for a in orch.subagent_mgr.running
             )
@@ -1893,6 +1927,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -1958,10 +1993,10 @@ class TestInitCron:
         # Nothing RUNNING for planner — but one spawn is QUEUED for it.
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.running = []
-        orch.subagent_mgr.queued_count_for = MagicMock(
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(
             side_effect=lambda key: 1 if key == "cron:j1:planner" else 0
         )
-        orch.subagent_mgr.has_pending_work_for = MagicMock(
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
             side_effect=lambda key: key == "cron:j1:planner"
         )
 
@@ -1978,6 +2013,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2055,6 +2091,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2123,6 +2160,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2190,6 +2228,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2411,6 +2450,103 @@ class TestSubagentDoneStoppedClassification:
 
         tracker.record_success.assert_not_called()
         tracker.record_failure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_boundary_cancelled_completion_is_not_routed(self):
+        """A completion that lost stage authority never reaches its parent."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        tracker = MagicMock()
+        tracker.stopped = False
+        slot = MagicMock()
+        slot.key = "gone"
+        slot.mode = "orchestrator"
+        slot._orch_tracker = tracker
+        slot.running = False
+        slot.task = None
+        slot._subagent_deliveries_inflight = 0
+        slot._subagents_inline_collected = set()
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        on_done = self._capture_on_done(orch)
+        info = self._stopped_info()
+        info._stage_boundary_cancelled = True
+        info.batch_id = "cancelled-wave"
+        info.batch_total = 1
+
+        run_chat = AsyncMock()
+        with patch("kiro_crew.slack.gateway._run_chat", run_chat):
+            await on_done(info)
+            await asyncio.sleep(0)
+
+        run_chat.assert_not_awaited()
+        slot.queue_append.assert_not_called()
+        orch.dashboard_state.notify.assert_not_called()
+        orch.subagent_mgr.finalize_batch.assert_called_once_with("cancelled-wave")
+        assert "cancelled-wave" not in orch._batch_progress
+
+    @pytest.mark.asyncio
+    async def test_completed_owner_revoked_while_report_waits_is_not_routed(self):
+        """Cancellation that lands during report bookkeeping wins before route."""
+        from kiro_crew.dashboard.state import StageBoundary
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        owner = "owner-a"
+        tracker = MagicMock()
+        tracker.stopped = False
+        slot = MagicMock()
+        slot.key = "gone"
+        slot.mode = "orchestrator"
+        slot._orch_tracker = tracker
+        slot.running = False
+        slot.task = None
+        slot._in_stage_execution = False
+        slot._subagent_deliveries_inflight = 0
+        slot._subagents_inline_collected = set()
+        slot.stage_boundary = StageBoundary(stage=1, generation=owner)
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        on_done = self._capture_on_done(orch)
+        info = self._stopped_info()
+        info.user_stopped = False
+        info.result = "completed before cancellation"
+        info._stage_boundary_owner = owner
+        info.batch_id = "cancel-race-wave"
+        info.batch_total = 2
+        bookkeeping_started = asyncio.Event()
+        release_bookkeeping = asyncio.Event()
+
+        async def _blocked_pending(*_args):
+            bookkeeping_started.set()
+            await release_bookkeeping.wait()
+            return False
+
+        run_chat = AsyncMock()
+        with (
+            patch(
+                "kiro_crew.slack.gateway._subagent_batch_pending",
+                side_effect=_blocked_pending,
+            ),
+            patch("kiro_crew.slack.gateway._run_chat", run_chat),
+        ):
+            routing = asyncio.create_task(on_done(info))
+            await bookkeeping_started.wait()
+            info.user_stopped = True
+            info._stage_boundary_cancelled = True
+            release_bookkeeping.set()
+            await routing
+            await asyncio.sleep(0)
+
+        run_chat.assert_not_awaited()
+        slot.queue_append.assert_not_called()
+        orch.dashboard_state.notify.assert_not_called()
 
 
 class TestSubagentFinalSummaryDirective:
@@ -2764,6 +2900,7 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2836,6 +2973,7 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2908,6 +3046,7 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -3563,6 +3702,7 @@ class TestCronSuccessReminder:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -3625,7 +3765,9 @@ class TestSubagentDone:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -3668,6 +3810,123 @@ class TestSubagentDone:
 
         orch.dashboard_state.notify.assert_not_called()
         orch.dashboard_state.push_slots_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_dashboard_completion_routes_to_exact_run_owner(self):
+        """A tagged run routes to its owner even when another alias armed later."""
+        from kiro_crew.dashboard.state import StageBoundary, _ChatSlot
+        from kiro_crew.subagent import SubagentInfo
+
+        orch, mock_sm = self._setup_orch_with_subagent_mgr()
+        on_done = mock_sm.call_args[1]["on_done"]
+        parent = "dashboard:chat-1"
+        canonical = _ChatSlot("chat-1")
+        canonical.mode = "chat"
+        first = _ChatSlot("chat-1-first")
+        first.mode = "chat"
+        first.linked_session_key = parent
+        first.stage_boundary = StageBoundary(
+            stage=1,
+            generation="first-owner",
+            parent_session_keys={parent},
+            armed_at=2,
+        )
+        first._in_stage_execution = True
+        second = _ChatSlot("chat-1-second")
+        second.mode = "chat"
+        second.linked_session_key = parent
+        second.stage_boundary = StageBoundary(
+            stage=1,
+            generation="second-owner",
+            parent_session_keys={parent},
+            armed_at=1,
+        )
+        second._in_stage_execution = True
+        orch.dashboard_state._slots = {
+            canonical.key: canonical,
+            first.key: first,
+            second.key: second,
+        }
+        orch.dashboard_state.get_slot = MagicMock(return_value=canonical)
+
+        info = SubagentInfo(id="alias-agent", task="alias task", parent_session_key=parent)
+        info.done = True
+        info.result = "alias result"
+        info._stage_boundary_owner = second.stage_boundary.owner or ""
+        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock) as run_chat:
+            await on_done(info)
+            await asyncio.sleep(0)
+
+        assert not canonical._queue
+        assert not first._queue
+        assert not first._subagent_delivery_pending
+        assert len(second._queue) == 1
+        assert second._subagent_delivery_pending
+        assert second.stage_boundary.owns_entry(second._queue[0])
+        status_payload = next(
+            call.args[1]
+            for call in orch.dashboard_state.broadcast_ws.call_args_list
+            if call.args[0] == "subagent_status"
+        )
+        assert status_payload["slot"] == second.key
+        run_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retry_after_released_boundary_routes_to_live_canonical_slot(self):
+        """A retry cannot keep an owner after that exact boundary is released."""
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
+        from kiro_crew.dashboard.state import StageBoundary, _ChatSlot
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.subagent import SubagentInfo
+
+        orch, mock_sm = self._setup_orch_with_subagent_mgr()
+        on_done = mock_sm.call_args[1]["on_done"]
+        manager = orch.subagent_mgr
+        parent = "dashboard:chat-1"
+        canonical = _ChatSlot("chat-1")
+        canonical.mode = "chat"
+        canonical.stage_boundary = StageBoundary(
+            stage=1,
+            generation="released-owner",
+            parent_session_keys={parent},
+        )
+        canonical.stage_boundary.clear()
+        orch.dashboard_state._slots = {canonical.key: canonical}
+        orch.dashboard_state.get_slot = MagicMock(return_value=canonical)
+        orch.dashboard_state.subagents = manager
+
+        old = SubagentInfo(id="old", task="failed", parent_session_key=parent)
+        old.done = True
+        old.error = "boom"
+        old._stage_boundary_owner = "released-owner"
+        old.execution_context = ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew"
+        )
+        retry = SubagentInfo(id="retry", task="failed", parent_session_key=parent)
+        manager.get.return_value = old
+        manager.spawn.return_value = retry
+        request = MagicMock()
+        request.app = {"state": orch.dashboard_state}
+        request.match_info = {"agent_id": old.id}
+        request.get.return_value = None
+        response = await api_spawn_retry(request)
+        assert response.status == 200
+        retry._stage_boundary_owner = manager.spawn.call_args.kwargs["_stage_boundary_owner"]
+
+        canonical.stage_boundary.arm(2)
+        canonical.stage_boundary.parent_session_keys.add(parent)
+        canonical._in_stage_execution = True
+        retry.done = True
+        retry.result = "retry result"
+        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock) as run_chat:
+            await on_done(retry)
+            await asyncio.sleep(0)
+
+        assert retry._stage_boundary_owner == ""
+        assert len(canonical._queue) == 1
+        assert canonical._queue[0]["kind"] == "subagent_completion"
+        orch.dashboard_state.notify.assert_not_called()
+        run_chat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dashboard_slot_busy_queues(self):
@@ -4122,7 +4381,7 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ):
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     with patch("shutil.which", return_value=None):
                                         await orch._auto_apply_update()
 
@@ -4192,10 +4451,10 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ) as mock_build:
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     # Resolves: the optional kiro-cli step runs.
                                     with patch(
-                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value="/usr/bin/kiro-cli",
                                     ):
                                         # The gateway resolves _kill_and_reap
@@ -4256,9 +4515,9 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ):
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     with patch(
-                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value="/opt/pinned/bin/kiro-cli",
                                     ):
                                         await orch._auto_apply_update()
@@ -4304,9 +4563,9 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ):
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     with patch(
-                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value="/opt/pinned/bin/kiro-cli",
                                     ) as mock_resolve:
                                         await orch._auto_apply_update()
@@ -4350,9 +4609,9 @@ class TestAutoApplyUpdateVenvPath:
                                 "kiro_crew.slack.gateway.build_frontend_async",
                                 new_callable=AsyncMock,
                             ) as mock_build:
-                                with patch("os.execv", side_effect=OSError("test")):
+                                with patch("os.execv"):
                                     with patch(
-                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value=None,
                                     ):
                                         await orch._auto_apply_update()
@@ -4387,7 +4646,9 @@ class TestSubagentSlackInjection:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -5052,7 +5313,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ) as mock_build:
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5117,7 +5378,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ):
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5183,7 +5444,7 @@ class TestAutoApplyUpdateResetPath:
                             "kiro_crew.slack.gateway.build_frontend_async",
                             new_callable=AsyncMock,
                         ):
-                            with patch("os.execv", side_effect=OSError("test")):
+                            with patch("os.execv"):
                                 with patch("shutil.which", return_value=None):
                                     await orch._auto_apply_update()
 
@@ -5386,7 +5647,7 @@ class TestAutoApplyUpdateResetPath:
                             "kiro_crew.slack.gateway.build_frontend_async",
                             new_callable=AsyncMock,
                         ):
-                            with patch("os.execv", side_effect=OSError("test")):
+                            with patch("os.execv"):
                                 with patch("shutil.which", return_value=None):
                                     await orch._auto_apply_update()
 
@@ -5454,7 +5715,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ):
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5571,7 +5832,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ):
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5607,7 +5868,7 @@ class TestAutoApplyUpdateResetPath:
                     with patch(
                         "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
                     ):
-                        with patch("os.execv", side_effect=OSError("test")):
+                        with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
 
@@ -5919,6 +6180,7 @@ class TestCronAcpRetry:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -5988,7 +6250,9 @@ class TestInjectWithRetry:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -6076,7 +6340,9 @@ class TestOrchestrationGuard:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -6397,6 +6663,7 @@ class TestCronAckedItems:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -6461,7 +6728,9 @@ class TestRetriggerRecovery:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -6860,7 +7129,7 @@ class TestBgSessionDashboardBranch:
 class TestCheckMissingDepsPip:
     """Dep repair via pip install."""
 
-    def test_pip_install_on_missing_dep(self):
+    def test_pip_install_on_missing_dep(self, nonbundled_python_without_user_site):
         orch = _make_orchestrator()
         with patch("importlib.util.find_spec", return_value=None):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/proj"}):
@@ -6870,11 +7139,17 @@ class TestCheckMissingDepsPip:
                         asyncio.run(orch._check_missing_deps())
                     mock_exec.assert_awaited_once()
                     # Pin the command shape so a refactor cannot silently stop
-                    # installing (sys.executable -m pip install ...).
+                    # installing through this interpreter with user site disabled.
                     import sys as _sys
 
                     args = mock_exec.await_args.args
-                    assert args[:4] == (_sys.executable, "-m", "pip", "install")
+                    assert args[:5] == (
+                        _sys.executable,
+                        "-s",
+                        "-m",
+                        "pip",
+                        "install",
+                    )
 
     def test_pip_install_failure(self):
         orch = _make_orchestrator()
@@ -6933,9 +7208,7 @@ class TestCheckMissingDepsPip:
         proc.kill = MagicMock()
         proc.communicate = MagicMock(side_effect=_communicate)
         orch = _make_orchestrator()
-        with patch(
-            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
-        ):
+        with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"):
             with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
                 await orch._warn_if_kiro_cli_outdated()  # must not raise
         proc.kill.assert_called_once()
@@ -7232,6 +7505,7 @@ class TestCronSlackDeliveryFailure:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -7430,7 +7704,9 @@ class TestSlackSubagentCompletionPersistence:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -7680,7 +7956,9 @@ class TestSubagentChannelTransportDelivery:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -8304,7 +8582,7 @@ class TestCountInFlightWork:
 
 class TestCallbackSafeUpdateRestart:
     @pytest.mark.asyncio
-    async def test_pre_fence_timeout_defers_without_closing_sessions(self, monkeypatch):
+    async def test_pre_fence_timeout_defers_without_closing_sessions(self, monkeypatch, tmp_path):
         orch = _make_orchestrator()
         orch.dashboard_state = None
         sessions = SimpleNamespace(
@@ -8317,10 +8595,20 @@ class TestCallbackSafeUpdateRestart:
         monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda _timeout: None)
         reexec = MagicMock()
         monkeypatch.setattr(gw.platform_compat, "reexec_python_module", reexec)
-        respawn = MagicMock(return_value="/python")
+        # A real file: the restart establishes that the interpreter exists before it
+        # tears anything down, so a synthetic path would defer for the WRONG reason
+        # and this test would pass without ever reaching the drain it is about.
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
+        respawn = MagicMock(return_value=str(interpreter))
 
         await orch._restart_after_update(respawn)
 
+        # The deferral under test is the one the pre-fence drain causes, so assert it
+        # was actually reached; without this the early no-target deferral satisfies
+        # every assertion below and the test measures nothing.
+        orch._drain_update_callback_work.assert_awaited()
         assert orch._update_apply_deferred is True
         assert orch._pending_update_respawn is respawn
         sessions.fence_update_restart.assert_not_called()
@@ -8328,7 +8616,7 @@ class TestCallbackSafeUpdateRestart:
         reexec.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_restart_fences_then_closes_and_final_drains(self, monkeypatch):
+    async def test_restart_fences_then_closes_and_final_drains(self, monkeypatch, tmp_path):
         order: list[str] = []
         orch = _make_orchestrator()
         orch.dashboard_state = None
@@ -8348,8 +8636,14 @@ class TestCallbackSafeUpdateRestart:
             "reexec_python_module",
             lambda *_args, **_kwargs: order.append("exec"),
         )
+        # A real file, for the same reason as the test above: with a synthetic path
+        # the restart establishes no target and returns before the first drain, so
+        # ``order`` stays empty and this ordering is never exercised.
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
 
-        await orch._restart_after_update(lambda: "/python")
+        await orch._restart_after_update(lambda: str(interpreter))
 
         assert order == ["drain:30.0", "fence", "close", "drain:None", "exec"]
         assert orch._pending_update_respawn is None

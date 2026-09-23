@@ -491,6 +491,42 @@ def test_same_text_modulo_images_pairs_a_preserved_copy_with_its_original(sessio
     assert same_text_modulo_images(right, right, sessions_dir=sessions, stem=STEM)
 
 
+def test_same_text_modulo_images_pairs_a_copy_stored_on_a_unc_data_home(monkeypatch, tmp_path):
+    r"""The roaming-profile case: the stored copy's own destination is ``//...``.
+
+    A markdown destination cannot carry ``\\fileserver\...`` -- the CommonMark
+    parser reading it drops the backslashes -- so ``_posix_separators`` spells a
+    stored Windows path with forward slashes, and on a roaming profile the data
+    home is itself a share, which makes that spelling ``//fileserver/...``. Read
+    as a protocol-relative URL, the stored side contributes no reference at all:
+    ``stored_seen`` stays false, the two id-matched rows fail to corroborate, and
+    the pair the two write boundaries exist to collapse becomes two history rows.
+
+    Purely lexical throughout (no path here is written), and every spelling is
+    forward-slash with ``peek_data_home`` patched, so the gate answers the same on
+    the Linux CI box as on Windows -- the reason the UNC-gate tests give.
+    """
+    from kiro_crew.messaging import outbound_files as module
+
+    monkeypatch.setattr(module, "os", type("OS", (), {"name": "nt"})(), raising=False)
+    unc_home = "//fileserver/home/me/.kiro/crew"
+    monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", lambda: Path(unc_home))
+
+    unc_sessions = f"{unc_home}/sessions"
+    stored = f"{unc_sessions}/{STEM}.attachments/0123456789abcdef-shot.png"
+    scratch = tmp_path / "scratch" / "shot.png"  # never written; the agent's own copy
+    left = f"see ![s]({scratch}) done"
+    right = f"see ![s]({stored}) done"
+    assert same_text_modulo_images(left, right, sessions_dir=Path(unc_sessions), stem=STEM)
+    assert same_text_modulo_images(right, left, sessions_dir=Path(unc_sessions), stem=STEM)
+    # A share this gateway does not write to is still not a local path, so it
+    # corroborates nothing -- the allowlist, not the `//`, is what decides.
+    foreign = f"//evil/share/{STEM}.attachments/0123456789abcdef-shot.png"
+    assert not same_text_modulo_images(
+        left, f"see ![s]({foreign}) done", sessions_dir=Path(unc_sessions), stem=STEM
+    )
+
+
 def test_same_text_modulo_images_does_not_pair_different_text_or_unstored_paths(sessions, tmp_path):
     stored = attachments_dir(sessions, STEM) / "0123456789abcdef-shot.png"
     scratch = tmp_path / "scratch" / "shot.png"

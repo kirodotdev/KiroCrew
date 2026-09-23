@@ -203,24 +203,24 @@ def test_legacy_purge_is_persisted_before_env_write(tmp_path: Path, monkeypatch)
     bot_token removal) must land BEFORE the .env update. A crash between the
     two must never leave .env cleared while the legacy fallback survives to
     resurrect the revoked credential on restart."""
-    import kiro_crew.agent as agent_mod
     import kiro_crew.dashboard.handlers.messaging as mod
 
     _accept_token(monkeypatch, mod)
     order: list[str] = []
-    real_json_write = agent_mod._atomic_json_write
+    real_json_write = loader.write_config_atomically
     real_env_write = mod._write_env_updates
 
-    def _spy_json_write(path, data):
+    def _spy_json_write(path, data, **kw):
         order.append("config")
-        return real_json_write(path, data)
+        return real_json_write(path, data, **kw)
 
     def _spy_env_write(updates):
         order.append("env")
         return real_env_write(updates)
 
-    # The handler imports _atomic_json_write from kiro_crew.agent at call time.
-    monkeypatch.setattr(agent_mod, "_atomic_json_write", _spy_json_write)
+    # The save writes through ``update_config_locked``, whose file write is the
+    # loader's ``write_config_atomically``.
+    monkeypatch.setattr(loader, "write_config_atomically", _spy_json_write)
     monkeypatch.setattr(mod, "_write_env_updates", _spy_env_write)
 
     env = tmp_path / ".env"

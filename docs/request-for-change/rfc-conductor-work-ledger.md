@@ -1,11 +1,11 @@
 ---
 title: Conductor work ledger — workers report structured data, not prompts
 status: partial
-revision: v3
+revision: v4
 author: kirocrew agent session, directed by zejiangg
 created: 2026-09-05
-last-audited: 2026-09-08
-audited-at: c02cdd67c
+last-audited: 2026-09-22
+audited-at: cc385211d8
 doc-pr: 8842
 implementation-prs: [8855, 9152, 9277]
 tracking-issues: []
@@ -15,9 +15,18 @@ superseded-by: []
 
 # RFC: Conductor work ledger — workers report structured data, not prompts
 
-Status: partial. Phases 1, 2 and 2.5 are on main; Phases 3, 3b, 4 and 5 are not. Every code reference below was read at `c02cdd67c`.
+Status: partial. Phases 1, 2, 2.5, and the 2.6 conductor swap are on
+main. The four core tools, worker/conductor agents, deprecated alias, doctor
+notice, and ledger cleanup command ship. The work-ledger wake gate and the
+Crew-page surface are in flight on two open PRs rather than on main, and
+sibling visibility and worker-to-worker communication do not exist. Every
+historical code reference below was read at `c02cdd67c`. Material added in v4
+was read at `cc385211d8`, except where it describes one of the two open PRs it
+names, which was read at that PR's own head.
 
 Revision v3 changes what the ledger *is*. v1 and v2 described a two-party record — one conductor, one worker, one item each, and a worker that could see nothing but its own row. v3 calls it what the shipped store already is: **one shared board per conductor, masked by identity.** The conductor sees the whole board. A worker still writes only its own square, but it may now *read* a pointer-only digest of its siblings (§Visibility model, §`work_brief`), and it may ask the conductor for a channel to one of them (§`work_request`) which the conductor may grant with a bounded, expiring pairwise channel (§`work_message`). Every message and every request is an event on the board, so the manager reading the board sees all of the traffic it authorised. The v1/v2 "not a message bus" non-goal is narrowed rather than dropped: there is still no fan-out, no addressing outside one ledger, and no path from a worker's text into anyone's prompt. v3 also promotes the shipped phases from "proposed" to "as implemented" and closes Q2 and Q6.
+
+Revision v4 moves Phase 3 and Phase 4 from planned to in flight and records what each is actually being built as. Phase 3, the wake gate, is [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781) on `feat/work-ledger-wake-gate`, still a draft; Phase 4, the surfaces, is [#12792](https://github.com/kirodotdev/KiroCrew/pull/12792) on `feat/crew-page-work-items`. **Neither is on main**, so §Migration plan's two phase sections describe them as in flight and say what the branches contain rather than claiming shipped behaviour. Because a branch under review moves, each of those two sections is pinned to the head it was read at and marked for re-audit at merge. That pin is load-bearing rather than ceremonial: both heads moved once while this revision was itself in review, which is why neither section may be trusted on this document's `last-audited` date alone. The two phases are closer than §Migration plan implies: Phase 4's outstanding band is the *rendering* of Phase 3's actionable set, so one event set decides both what wakes a conductor and what a human sees as still unanswered. v4 corrects the size of that set. Phase 3's scope names four actionable events, but the store has no `request` event kind at all — `EVENT_KINDS` is `create`, `bind`, `report`, `decision`, `verdict`, `close` — so what wakes a conductor is a worker `report` carrying `done`, `blocked` or `question`, three statuses rather than four, and the `request` half of both the gate and the band waits for Phase 5 with the event kind that would carry it. That gives Phase 4 a requirement v3 left implicit: **a human reads the state of every dispatched worker from the Crew page at a cost of zero conductor turns.** It is what makes the board worth building beside a gate that already wakes the conductor, and it is the exit criterion the phase should be judged on. §Scope: conductors outside `kirocrew-conductor` is new in v4 and records which conductors none of this reaches, as an open question (Q10) rather than a decision. v4 also keeps one rejected alternative from a separate proposal folded in here: a second wake channel built on [`session_ledger.py`](../../src/kiro_crew/session_ledger.py) rather than on this store, rejected because a worker would then carry two status records — its `work_report` status and its session ledger's `phase` — that can disagree, with nothing to say which one a conductor should believe. The complementary half of that proposal survived separately as [`rfc-wake-judge.md`](rfc-wake-judge.md), whose §Alternatives considered states the division this document should be read against: a typed probe answers what can be typed, and a judge reads only the prose evidence a probe cannot — probe first, judge on what the probe cannot type. Phase 3 is the typed side of that split, which is why its verdicts are the ones a judge is forbidden to mint. The data model, storage layout, visibility model and agent specs are unchanged.
 
 Revision v2 reverses v1's agent-spec recommendation. v1 argued against a `kirocrew-worker` agent and put the four tools on `kirocrew-core` to fail closed. Both halves of that reasoning turned out to point the other way, and §Agent spec changes now proposes a worker agent that is the default agent's superset plus an opt-in `kirocrew-work` server. §Alternatives considered keeps v1's position as the rejected option. The data model, storage layout, wake gate and Phase 1 are unchanged.
 
@@ -297,6 +306,146 @@ events count against the same 200-per-item budget as everything else, which boun
 much peer traffic can push an item's own history off the end — and is a reason the
 per-channel message cap is 50 rather than unbounded.
 
+### Projection of the crew log
+
+The files above are a cache. The record of a board is the crew log: every write the
+two routes accept is appended as one `work/recorded` entry (see
+[`docs/reference/crew-log/session-types.md`](../reference/crew-log/session-types.md))
+to the ACTING session's log -- a conductor action to the conductor's log, a worker
+report to the worker's -- keyed by the conductor's slot, so one board folds under one
+key whichever party wrote it. The entry carries `actor`, `by`, `action` and only the
+fields that action set; an omitted field means "unchanged".
+
+The `work` fold in
+[`src/kiro_crew/crew_log/projection.py`](../../src/kiro_crew/crew_log/projection.py),
+registered in the projection registry beside the session folds, replays those entries
+across the conductor's and its workers' units into the shape the readers already
+consume: the conductor header and every item in creation order, each with its event
+tail. `rebuild_from_projection` in
+[`src/kiro_crew/work_ledger.py`](../../src/kiro_crew/work_ledger.py) re-materialises
+`conductor.json`, `items/*.json` and `items/*.jsonl` from that fold under the same locks
+the writers take, so a lost or damaged cache is recovered from the log rather than from
+a copy of the cache.
+
+Because the log is the record, a write with nowhere to append is refused before the
+cache is touched: with the emitter off the routes answer `409 crew_log_off` (naming
+`KIROCREW_CREW_LOG=1` as the remedy), and a caller whose crew-log unit the session
+registry cannot name answers `409 crew_log_unit_unknown`. A mutation whose entry
+could not fit one log line -- the store takes an acceptance of up to 500 KB, the
+crew log a line of 64 KB -- answers `400 work_entry_too_large`, measured before the
+commit on the widest entry the commit can produce. That line is the effective ceiling
+of every write, and the tool descriptions say so: as JSON an astral character can
+count twelve bytes, so a write at every field cap with non-ASCII text can exceed it while each
+field alone passes; a caller sizes a payload to the line, not to the store's record cap.
+The one case a caller cannot shorten its way out of is named apart: an item from
+before the projection whose committed item -- its acceptance, the one field without
+a cap of its own -- does not fit a line whole answers `400 work_item_too_large`,
+because its first recorded write must carry the whole item and no smaller report
+or decision about it can land; the refusal names the remedy, the conductor's
+`accept` with a smaller acceptance, whose entry carries the new acceptance over the
+baseline and so records the item whole. None of these refusals writes a
+byte, so the cache never holds a mutation the log never saw. The store's own
+validation still runs first on every accepted write; the entry is then appended
+with the COMMITTED values (an omitted `artifacts` clears the map, and the entry says
+so) and acknowledged: the route answers `200` only once the writer has appended the
+entry, and otherwise `503 crew_log_unrecorded`, carrying the committed `item_id` so
+a `create` is not repeated on retry. Before answering, the route undoes the unrecorded write from the snapshot it took
+of every file the write could touch (the conductor record, the item's record and
+event log, the worker's binding), and removes an item the write created -- an exact
+undo that needs no fold, so a board from before the projection is undone the same
+way. The cache never keeps a mutation the log never saw. One asyncio lock per board is
+held across a write's commit and its append and across a rebuild, so a rebuild
+cannot fold between the two. The two read routes (the conductor's ledger read and
+the worker's brief) take the same lock around their cache reads, so a read cannot
+land between a commit and its append and publish a state the record never holds
+and the undo is about to remove.
+
+The 64 KB crew-log line is therefore the effective bound on a single write's
+record, and so on an item's `acceptance`, below the store's own 500 KB cap; the
+probe measures the widest entry the commit can produce, so a payload near the line
+is refused a little early rather than a little late. For worst-case astral text,
+that is roughly five thousand characters of acceptance, decision or summary per write. An
+acceptance that needs more is a follow-up, not a widening of the line: record it
+as a content-addressed sidecar the entry names, or as a sequence of `accept`
+entries each within the line that the fold concatenates, so the record stays one
+bounded line per write and the store's 500 KB cap becomes reachable again.
+
+Items created before a board's first recorded entry -- a board from before this
+change -- are legacy: the record cannot judge them, so a rebuild neither rewrites
+nor removes them, keeps their bindings, and keeps the header fields the record never
+set (a goal set before the first entry, the original creation stamp). Everything
+recorded is rebuilt around them. The first recorded mutation of such an item carries
+the whole committed item as a `baseline` -- its fields and stamps (`last_report_at`,
+`closed_at`) and the board's own round and creation stamp under their own names
+(`board_round`, `board_created_at`), so a board whose header the record never saw set
+rebuilds with them -- and the item is then stamped `recorded_at`,
+so from that write on a lost file rebuilds like any other; every entry also carries
+the store's own event id and stamps (`event_id`, `event_ts`, `created_at`,
+`last_report_at`, `closed_at`), so a rebuild reproduces them rather than the append
+time. A rebuild refuses (`409 crew_log_incomplete`) while any crew-log unit's header
+cannot be read: a unit it cannot see might be one of this board's workers, and a fold
+without it would read as complete. It also refuses when the fold holds less than the
+cache does -- an item the log once held whole that no entry names now, a cached
+report later than the fold's latest, more cached events than the fold produced
+(for an item born from a baseline, counted from its first recorded mutation on,
+which the fold's first event names by the store's own id), or a header whose goal
+was written after the last goal entry the fold holds (every goal write bumps the
+header's `goal_version`, the goal entry carries it, and the header is stamped
+`recorded_at` once one has landed) -- because that is what a unit pruned by
+retention, or a write the gateway died before recording, looks like, and
+rebuilding from it would erase recorded work. A rebuild writes a worker's binding only for an OPEN item and only when no
+other board holds the worker: a terminal item still names the worker that finished
+it, and the store lets another board bind that worker, so claiming the binding back
+would route that board's worker to a finished item. When an undo itself fails (an unrecorded write that could
+not be put back, a rebuild that could not be restored) the board is flagged
+`cache_dirty`; every read and write answers `409 cache_dirty` until a rebuild
+completes and clears the flag, so a cache that may disagree with the record is never
+served as if it were the record. Each refusal names its exit. A `cache_dirty` board
+whose rebuild is itself refused (an unreadable unit header anywhere under the crew
+log, or a pruned unit behind one of its items) has two: repair or remove the unit
+the rebuild names and rebuild, or, when the operator decides the cache is right,
+remove the `cache_dirty` marker in the board's work-ledger directory and the board
+serves again.
+
+The undo runs in the request path only. A gateway that dies after the store commits
+and before the append is confirmed leaves the cache one write ahead of the record
+with nothing flagged: the board keeps serving reads and taking writes (the cache is
+what it runs on), and the gap surfaces the first time a rebuild is asked for, as the
+same `409 crew_log_incomplete` a pruned unit produces. The refusal names the item.
+The remedy is the same in both cases. While the cache stands, keep it: it is the
+fuller of the two, and a rebuild is only ever needed after the cache itself is lost.
+If a rebuild is nevertheless wanted, the operator removes the named item's cached
+files (or the board's cache directory) and rebuilds; the record then reproduces
+everything it holds, which is the board minus that one unrecorded write. A cache lost
+outright after such a crash rebuilds the same way, with no refusal, because there is
+no cache left to compare against. So the guarantee after a crash in that window is
+"the record rebuilds all but the last write", never silent loss. Making the window
+detectable at open time (a per-board intent mark set before the commit and cleared
+after the confirmed append) is a follow-up; it must not turn every write's window
+into a `cache_dirty` refusal for readers.
+
+The record's authority to rebuild a board lasts exactly as long as the units that
+hold its entries. The crew log has no retention yet (the base RFC keeps it default-off
+until its deletion and storage promises land, #10705); when retention arrives it must
+keep every unit an open board's entries live in, or checkpoint the fold before removing
+one, otherwise a rebuild after expiry folds only the survivors. That rule belongs to
+retention and is stated here as the dependence this projection has on it.
+
+So this projection's promise is bounded by that window, and the bound is worth stating
+plainly rather than leaving to inference. INSIDE the window the crew log is the record
+of truth and the JSON files are a cache of it. OUTSIDE it -- once retention has removed
+a unit an open board's entries live in -- there is no longer a record to fold: the
+rebuild refuses `409 crew_log_incomplete` naming the item, and from that point the cache
+is again the only copy of that board, which is the state this projection exists to end.
+The cache is therefore never deleted on the strength of the record alone, and an
+operator reading "the JSON files are a rebuildable cache" should read it as true only
+while the units behind them survive.
+
+`bindings/<worker-digest8>.json`, the routing file `work_brief` reads to find the
+worker's board, is reconciled on every rebuild: written for each recorded bind,
+removed when it points at an item the record does not bind to that worker. Channel
+files stay outside the fold; they are a follow-up, not part of the projection change.
+
 ### Tools
 
 Six tools, all mounted on one opt-in MCP server, `kirocrew-work`. Which of them answer a given call depends on what the resolved caller is rather than on which spec mounted them; §Agent spec changes gives the dispatch table and argues for that placement. Four shipped in Phase 2 (`work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record`); `work_request` and `work_message` are Phase 5.
@@ -535,7 +684,7 @@ flowchart TD
     E -- no --> Q[QUIET: re-arm, no turn]
 ```
 
-The fingerprint is the newest event `id` per open item, which is content-addressed and therefore stable across a re-read.
+The fingerprint is the newest event `id` per open item, which is content-addressed and therefore stable across a re-read. What Phase 3 actually built covers every item rather than only the open ones; §Phase 3 records that difference and why the effect is the same, so read it before implementing this sentence as written.
 
 Liveness is a conjunction, and the conjunction is the point: an item is `stale` when `last_report_at` is older than a staleness window, **and** its worker session is not running, **and** its last report still left the next move with the worker. That third condition is what keeps the flag pointed at the worker: after `done` the move belongs to the conductor (verify, promote, close) or to a human, so silence there is the expected end of the work rather than a gap worth waking anyone for. `progress`, `blocked`, `question` and no-report-yet all still count — and so does a `done` item the conductor has already ruled `verdict: fail` on and left open, because that ruling hands the retry back to the worker and its silence is a gap again. A worker in a thirty-minute build is running, so it is never flagged however long it stays silent; the window exists only to cover the gap between `bind` and the first report, and to catch a session that ended without reporting. The probe runs in a thread inside `AutoNudgeService`, in the same process as the dashboard state, so "is it running" is a direct slot read and not an HTTP call.
 
@@ -719,6 +868,15 @@ Two mechanics are worth stating outright, because both are easy to get wrong and
 
 `session_create`'s own MCP parameter description in [`src/kiro_crew/mcp_dashboard.py`](../../src/kiro_crew/mcp_dashboard.py) says the agent may be omitted "to use the default agent", which is wrong about the one mechanism a conductor most depends on. Phase 2 corrects it.
 
+### Scope: conductors outside `kirocrew-conductor`
+
+Everything above describes `kirocrew-conductor` and the workers it dispatches, because that is the only conductor spec holding a work-ledger grant. Two kinds of conductor sit outside it, and both still learn what their children are doing by reading transcript tails:
+
+- An **ad-hoc conductor** — an ordinary member session that dispatches peers with `session_create` instead of being installed as a conductor agent. It opens no ledger, so its children hold no binding file and `work_brief` answers `not_bound`. Nothing stops a session from conducting this way, and nothing gives it a structured record when it does.
+- `kirocrew-pipeline-conductor` and `kirocrew-security-conductor`, which carry **no work-ledger grant** by the decision recorded in §Agent spec changes; their children report through their own skills' scripts. `_install_pipeline_conductor_agent` calls `_conductor_mcp_servers(config)` with no `work` argument, and the security installer says outright that `@kirocrew-work` is deliberately not mounted.
+
+Whether any of them should hold a grant is **Q10**, and this note records the gap rather than closing it. Naming it here is what keeps §Motivation honest: the transcript-reading patrol this RFC replaces is still the live mechanism for every conductor that is not `kirocrew-conductor`.
+
 ## Migration plan
 
 Seven phases. Each is independently shippable and independently abandonable, and no phase's entry depends on an unanswered open question. Three are on main:
@@ -808,7 +966,22 @@ Exit criteria, all met at the time — the first and third are superseded by the
 - `kirocrew-ledger-conductor` auto-approves exactly `work_ledger_read`, `work_ledger_record` and `work_brief`, and not `work_report`. Still true, and now true of `kirocrew-conductor` by the same code path.
 - `goal-conductor/SKILL.md` and `ledger_entry.py` are untouched, so an un-migrated conductor mid-goal sees no change. **Superseded:** the SKILL.md carries the ledger procedure; `ledger_entry.py` is still shipped and its deletion is still Phase 4's.
 
-### Phase 3 — the wake gate
+### Phase 3 — the wake gate (in flight, [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781))
+
+**As built, v4 — valid only at head `c749aff0d4`; re-audit at merge.** The branch is `feat/work-ledger-wake-gate` and the PR is still a draft, so everything here describes a branch rather than main, and every sentence in this block was read at that head. A draft under review can change any of it, and what merges is what counts: treat this block as superseded the moment that PR merges, and re-verify it against the merged commit rather than against this document's `last-audited` date. The gate is a probe kind and not a second loop: `WORK_LEDGER_KIND` in the new `probes/work_ledger.py` registers `work-ledger` beside the existing `gh-pr`, and `build` kept its branch rather than becoming a registry — two kinds is still not a registry — which is the call this phase was left to make. The fingerprint is the newest event id per item, folded by `ledger_wake.revision`, so a write nobody must answer still advances the board without waking anyone. Liveness is `work_ledger.is_stale`, and the conjunction lives *inside* that function rather than beside it: quiet past the window AND the worker not running AND the next move still the worker's. A worker in a thirty-minute build is running, so it is never flagged however long it stays silent, and a `done` item is not flagged either unless the conductor ruled `verdict: fail` on it and left it open, which hands the move back. A ledger whose every item is closed returns a terminal outcome that resets on nothing, keyed `all-accepted` when the work finished well and `all-closed` when it did not. The driver injects `worker_running`, and `MAX_WAKES_PER_ITEM_PER_HOUR` caps one item at twelve wakes an hour; past the cap the revision still advances and the wake folds into the next delivered one, so a conductor sees the newest state instead of a queue of superseded ones.
+
+Three exit criteria came out different from the plan above, and v4 records each deviation rather than quietly restating the criterion:
+
+- The actionable set is three statuses, not four, for the reason given in the header: there is no `request` event kind to fire on yet. The criterion naming a `request` event moves to Phase 5 with the kind itself.
+- The fingerprint covers every item, not only the open ones. §Design says "the newest event `id` per open item"; the probe loops over every item the ledger returns. The effect is the one the design wanted — a terminal item stops producing events, so it stops moving the fingerprint on its own — reached by not filtering rather than by filtering, which also means a late write to a closed item is still noticed instead of being invisible.
+- An unreadable ledger does not *fire*. It returns `fetch_ok=False`, which the kernel turns into a blind skip and `irq.poll` into `FALLBACK`, leaving the driver the timer it already had. That satisfies what the criterion was protecting — a broken read must not be reported as "nothing changed", which is how a watch goes permanently silent — without spending a turn on every failed read. A single torn item file also yields no terminal outcome at all, so one damaged write cannot deactivate a watch that still has live work behind it.
+
+Two decisions reviewers keep re-opening on this branch, recorded so each round stops re-litigating them:
+
+- **The gate has no configuration switch, and that is the decision.** `test_no_config_switch_gates_the_wake` asserts the subtraction rather than the absence of a line: arming is already opt-in because a conductor must name the subject, and a loop is already stoppable, so a third off-position was a setting with one consumer — and the one it had never read a persisted value, because no loader hydration was written for it. Two review lanes asked for the removal on those grounds.
+- **The two `_PERMITTED_STORE_IMPORTERS` entries are a human's edit, by design.** `ledger_wake.py` and `probes/work_ledger.py` both import the store directly, and the allowlist in `test/test_work_ledger.py` names only the routes module and the operator cleanup sweep, so `test_only_the_phase_2_seams_import_the_module` fails on the branch naming exactly those two files. That red is the guard working as specified: its own note says a second importer is a design change that must argue for itself in review "rather than arrive with a passing suite", so the entries belong to whoever accepts the seam, not to the change that needs them.
+
+**The one-call arm is not in #12781 and is a follow-up PR.** Arming the gate in a single call takes four linked pieces — a `watch` field on `monitor_start` and `monitor_update`, the payload that carries it, the applier that turns it into a subject, and the authorization forward — and the last of those lands in [`autonudge_authz.py`](../../src/kiro_crew/autonudge_authz.py), which this branch does not touch. The field is held back deliberately so the whole chain lands together: a `watch` parameter that is accepted and then ignored is worse than one that does not exist yet, because a conductor cannot tell the difference from the call site. Until that PR lands, the probe is reachable but a conductor cannot arm it in one call.
 
 Scope: a `work-ledger` probe, its registration in `build`, the `watch` field on `monitor_start`'s schema, and the target-inference branch. No kernel change. The actionable event set is `done`, `blocked`, `question` and `request`; `progress`, `message`, `channel_open` and `channel_close` advance the fingerprint without firing.
 
@@ -853,7 +1026,18 @@ Exit criteria:
 - A channel between two items of *different* ledgers is refused, and one naming a closed item is refused.
 - `_coalesce_progress` does not collapse `message` events, asserted with two identical bodies.
 
-### Phase 4 — the surfaces
+### Phase 4 — the surfaces (in flight, [#12792](https://github.com/kirodotdev/KiroCrew/pull/12792))
+
+**As built, v4 — valid only at head `f0287a4a50`; re-audit at merge.** The branch is `feat/crew-page-work-items`, open and not on main, and every sentence in this block was read at that head. Review can change any of it, and what merges is what counts: treat this block as superseded the moment that PR merges, and re-verify it against the merged commit rather than against this document's `last-audited` date. The page is `/crew-board?conductor=KEY`, reading a masked projection at `GET /api/crew-board` rather than the conductor's own tool route, and the rows land in three bands: `ruling` for items waiting on the conductor, rendered first whatever their age; `working` for open items not waiting on a ruling; and `finished` for terminal items, collapsed behind an expander. Terminal wins over outstanding, and the precedence is the point — an item can carry `status: "question"` and still be closed, because the conductor answered it by closing it, and lifting such a row into the ruling band would ask a human to rule on finished work. A band that contains anything unactionable stops being read.
+
+The masking is a deny-list on item rows, so a field added to `WorkItem` later reaches the page by default, with `worker_session_key` named as the one field forbidden. A `bind` event needed separate handling: its `text` *is* a worker session key, so masking only the item field would have left the key on the page inside the event log while a per-row check passed. The line is kept for its `kind` and `ts`, which the timeline needs, and the text is emptied.
+
+`POST /api/crew-board/action` carries the two affordances, scoped to orphaned items — the state the affordances are named for, and the state in which nothing is left reading the worker's reports. Anything else is a `409` rather than a quiet no-op, so a page working from a stale poll is told its view has moved on. The worker session key is resolved on the server from the store, never accepted from the body and never returned, which is what lets the page drive an affordance whose target it is not allowed to see; the response body is allow-listed rather than masked, because it belongs to another module and a field it gains later must not reach a browser. Two details are worth recording because both were forced by the design rather than chosen:
+
+- `stop` delegates to `chat_handlers.stop_slot_turn`, the primitive the Stop button already uses, and deliberately not to `session_control.stop_target`. `stop_target` authorizes by resolving a caller through the live slot table, and an orphaned item is by definition one whose conductor slot is gone, so that delegation would be refused for lack of an identifiable caller on every request this route accepts. The authorization happens here instead, against the ledger the operator owns.
+- `take_over` returns **501**. No server-side primitive exists to re-own a session: `dashboard/session_control.py` exposes create, stop, close, send and read and nothing that transfers ownership, and `work_ledger.CONDUCTOR_ACTIONS` has no action that moves an item to another conductor. The button ships disabled and the route refuses, rather than either half being wired to something invented for it. The gateway reports the capability to the page, so the page never offers a button the route would refuse.
+
+One thing the page settles that Q10 only asks: a session owning no work ledger renders as a neutral empty state, not an error, because only a session dispatched through the conductor tooling opens one — so an ad-hoc conductor legitimately has none, and showing it as a failure would teach people the board is broken.
 
 Scope: the Crew page item table and event list, including the open channels with their expiry and remaining budget and any outstanding `request` awaiting a conductor's answer; the `goal-conductor/SKILL.md` rewrite replacing the transcript-reading patrol with a ledger read and adding the dispatch rule (leaf → `kirocrew-worker`, decomposable → `kirocrew-conductor` under the depth cap, specialist crew → that crew, with the transcript fallback named for a crew that does not mount `@kirocrew-work`); a module spec in `docs/system-specs/modules/`, added to that directory's index. The deletion of `ledger_entry.py` and its tests rides with the alias's removal instead (§Rollout note — swap done).
 
@@ -1029,3 +1213,5 @@ scripts.
 **Q8. Should a channel be allowed to have the conductor as one end?** Today both ends must be items, so a conductor still reaches a worker with `session_send` and its approval prompt. A conductor-to-worker channel would make that a data write into the worker's `inbox` instead — no approval click, no prompt execution, and Q4's autonomy cap would largely dissolve. It is deliberately out of v3's scope because it inverts the direction the threat model was written for: `session_send` prompts because its body *runs*, and a channel's body does not, so the prompt may simply be the wrong control on that edge rather than a necessary one. Worth its own argument.
 
 **Q9. Can a `request` cross a level in a two-level conductor?** No, in v3: both ends must be items of the same ledger, so a grandchild cannot ask its grandparent for anything and two cousins under different second-level conductors cannot be paired. That is consistent with `depth`'s other rule — a parent sees only its child's item record, never its grandchildren's — and it means a cross-branch need has to travel as two requests up and one grant down. Whether that is correct containment or a gap only becomes answerable once a conductor of conductors has actually run, which is also Q5's condition.
+
+**Q10 — new in v4. Should a conductor outside `kirocrew-conductor` hold a work-ledger grant?** §Scope: conductors outside `kirocrew-conductor` names three that do not: an ad-hoc member session dispatching peers with `session_create`, `kirocrew-pipeline-conductor`, and `kirocrew-security-conductor`. All three still read transcript tails. The pipeline and security retractions were deliberate (§Agent spec changes), so reversing either is a decision about their skills' own reporting scripts rather than about this store. The ad-hoc case is the harder one, because it has no spec to grant anything to: the grant would have to attach to the dispatch rather than to the agent, which is the one shape §Agent spec changes argues against ("the grant never has to be a runtime property of a session"). v4 records the gap and takes no position.

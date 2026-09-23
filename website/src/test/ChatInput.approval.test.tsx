@@ -7,6 +7,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
+import { i18nT } from '../i18n/t'
 import type { RootState } from '../store'
 
 vi.mock('../api/client', () => {
@@ -570,7 +571,12 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     await waitFor(() => {
       expect(store.getState().chat.subagents.a1.status).toBe('error')
     })
-    expect(store.getState().chat.subagents.a1.error).toBe('rejected')
+    // The optimistic terminate fills the same verbatim error slot the WS retire
+    // path does, so it must carry the catalog sentence, not the raw token.
+    const rejectedCopy = i18nT('hooks.useWebSocket.approval_rejected')
+    expect(rejectedCopy).toBe('The approval was rejected, so the request was denied.')
+    expect(store.getState().chat.subagents.a1.error).toBe(rejectedCopy)
+    expect(store.getState().chat.subagents.a1.error).not.toBe('rejected')
     // No longer pending -> the banner unmounts.
     await waitFor(() => {
       expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()

@@ -29,8 +29,8 @@ vi.mock('../apps/issue-radar/api', () => ({ issueRadarApi: mockApi }))
    defect this suite exists for, so the hook must not be stubbed here. */
 vi.mock('../api/client', () => ({
   api: {
-    syncKirocrewAgents: vi.fn().mockResolvedValue({}),
     kirocrewAgents: vi.fn(),
+    agentCatalog: vi.fn(),
   },
 }))
 
@@ -135,8 +135,8 @@ describe('CrewEditor roster failure wiring (#7656)', () => {
     mockApi.suggestCrewNames.mockResolvedValue({ suggestions: ['Sombrero'] })
     mockApi.labels.mockResolvedValue({ owner: ACTIVE.owner, repo: ACTIVE.repo, labels: [], from_cache: false })
     const { api } = await import('../api/client')
-    vi.mocked(api).syncKirocrewAgents.mockResolvedValue({})
     vi.mocked(api).kirocrewAgents.mockRejectedValue(new Error('gateway restarting'))
+    vi.mocked(api).agentCatalog.mockRejectedValue(new Error('gateway restarting'))
   })
 
   it('shows the error line and a retry when the roster fetch failed', async () => {
@@ -158,6 +158,8 @@ describe('CrewEditor roster failure wiring (#7656)', () => {
     })
 
     vi.mocked(api).kirocrewAgents.mockResolvedValue({ agents: ROSTER, default_agent: 'kirocrew' })
+
+    vi.mocked(api).agentCatalog.mockResolvedValue({ agents: ROSTER, default_agent: 'kirocrew' })
     fireEvent.click(agentField().getByText(i18nT(`${K}.agent_roster_retry`)))
 
     await waitFor(() => {

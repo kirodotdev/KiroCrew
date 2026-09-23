@@ -380,7 +380,7 @@ export default function WorkflowLibraryTab() {
                   aria-label={i18nT('pages.overview.workflowLibrary.intent')}
                   value={intent}
                   onChange={(event) => setIntent(event.target.value)}
-                  className="w-full min-h-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none focus-ring"
+                  className="w-full min-h-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden focus-ring"
                 />
               </label>
               <Btn

@@ -42,7 +42,6 @@ src/apps/mochi/panel/MochiSnipHost.tsx 0.0   # 0/48
 src/apps/mochi/pet/main.tsx 0.0   # 0/21
 src/apps/mochi/snip/main.tsx 0.0   # 0/54
 src/apps/mochi/src/renderer/PetdexImporter.tsx 0.0   # 0/40
-src/apps/mochi/src/renderer/SpriteRenderer.tsx 39.6   # 19/48
 src/apps/mochi/src/shared/appearanceTypes.ts 8.7   # 6/69
 src/apps/mochi/src/shared/utils.ts 0.0   # 0/44
 src/apps/ops-mission-control/HandoverPanel.tsx 0.0   # 0/42
@@ -56,7 +55,6 @@ src/apps/personal-shopper/api.ts 5.3   # 1/19
 src/apps/pptx-maker/LibraryPanel.tsx 39.6   # 42/106
 src/apps/pptx-maker/api.ts 3.5   # 2/57
 src/apps/spec-builder/components/ChatColumn.tsx 0.0   # 0/2
-src/apps/workflows/WorkflowRunTree.tsx 3.4   # 1/29
 src/apps/workflows/WorkflowSourcePanel.tsx 4.7   # 2/43
 src/components/AddJobSplitButton.tsx 66.7   # 2/3
 src/components/AppIcon.tsx 51.1   # 24/47
@@ -80,15 +78,11 @@ src/main.tsx 0.0   # 0/26
 src/pages/AppPage.tsx 0.0   # 0/21
 src/pages/MigrationPage.tsx 0.0   # 0/38
 src/pages/chat/KnowledgePicker.tsx 0.0   # 0/23
-src/pages/chat/PinnedPrompt.tsx 3.5   # 2/57
 src/pages/chat/SidePanel.tsx 69.3   # 124/179
 src/pages/overview/MemoryGraphTab.tsx 68.3   # 97/142
 src/pages/overview/PortabilityTab.tsx 0.0   # 0/60
-src/pages/overview/UsageTab.tsx 0.0   # 0/21
-src/pages/settings/DisplayPanel.tsx 69.5   # 82/118
 src/pages/settings/InstancesPanel.tsx 63.3   # 88/139
 src/pages/settings/OverviewPanel.tsx 0.0   # 0/2
-src/pages/settings/SttSettings.tsx 67.8   # 78/115
 src/pages/settings/WeixinPanel.tsx 54.0   # 47/87
 src/providers/adapters/acp.ts 62.3   # 71/114
 src/utils/highlightClient.ts 25.0   # 10/40

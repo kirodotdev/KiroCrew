@@ -5,15 +5,16 @@
  * of them resolve their options through `./config` — the single place the
  * look/behavior of code and diff rendering is decided.
  */
-import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react'
 import type { BaseCodeOptions, FileContents, SupportedLanguages } from '@pierre/diffs'
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import { WorkerPoolManager, type WorkerRequest, type WorkerResponse } from '@pierre/diffs/worker'
+import highlightWorkerUrl from '@pierre/diffs/worker/worker-portable.js?worker&url'
 import { useIsDark } from '../hooks/useIsDark'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 import ErrorNotice from '../components/ErrorNotice'
+import { Btn } from '../components/ui'
 import { i18nT } from '../i18n/t'
 import { PlainCodeFallback, PlainFilePairFallback } from './PlainCodeFallback'
 import {
@@ -32,7 +33,12 @@ import {
   pierreThemeType,
   type PierreDiffOptions,
 } from './config'
-import { WorkerPoolLifecycle, type WorkerPoolSnapshot } from './workerPoolLifecycle'
+import {
+  WorkerPoolLifecycle,
+  type WorkerPoolFailure,
+  type WorkerPoolFailureCause,
+  type WorkerPoolSnapshot,
+} from './workerPoolLifecycle'
 
 // Registered once, at the only module that loads the library, so every surface
 // that resolves a language from a FILENAME picks the override up. Fence tags go
@@ -242,10 +248,13 @@ export function normalizePatchHunks(patch: string): string {
 /** Wrap one Pierre worker with request watchdogs. Pierre assigns at most one
  *  active request to a worker, but keying timers by request ID also makes late
  *  responses harmless and keeps the protocol contract explicit. */
-export function createMonitoredWorker(reportFailure: (reason?: unknown) => void): Worker {
-  const worker = new Worker(new URL('@pierre/diffs/worker/worker-portable.js', import.meta.url), {
-    type: 'module',
-  })
+export function createMonitoredWorker(reportFailure: (failure: WorkerPoolFailureCause) => void): Worker {
+  // HTTP caches retain the worker response's old CSP along with its bytes.
+  // The library bundle did not change when WASM was enabled, so its hash alone
+  // cannot retire pre-WASM headers. Keep the revision stable across retries.
+  const url = new URL(highlightWorkerUrl, import.meta.url)
+  url.searchParams.set('csp', 'wasm-v1')
+  const worker = new Worker(url, { type: 'module' })
   const watchdogs = new Map<string, ReturnType<typeof setTimeout>>()
   const clearWatchdog = (id: string) => {
     const timer = watchdogs.get(id)
@@ -256,6 +265,11 @@ export function createMonitoredWorker(reportFailure: (reason?: unknown) => void)
     for (const timer of watchdogs.values()) clearTimeout(timer)
     watchdogs.clear()
   }
+  const messageOf = (reason: unknown): string => {
+    if (reason instanceof Error) return reason.message
+    if (typeof reason === 'string') return reason
+    return String(reason ?? '')
+  }
 
   worker.addEventListener('message', event => {
     const response = event.data as Partial<WorkerResponse>
@@ -263,11 +277,14 @@ export function createMonitoredWorker(reportFailure: (reason?: unknown) => void)
   })
   worker.addEventListener('error', event => {
     clearWatchdogs()
-    reportFailure(event.message || event)
+    reportFailure({ classification: 'error', message: event.message || 'worker error event' })
   })
   worker.addEventListener('messageerror', () => {
     clearWatchdogs()
-    reportFailure('worker message could not be deserialized')
+    reportFailure({
+      classification: 'messageerror',
+      message: 'worker message could not be deserialized',
+    })
   })
 
   const postMessage = worker.postMessage.bind(worker)
@@ -284,14 +301,17 @@ export function createMonitoredWorker(reportFailure: (reason?: unknown) => void)
         : PIERRE_WORKER_REQUEST_TIMEOUT_MS
       watchdogs.set(request.id, setTimeout(() => {
         watchdogs.delete(request.id as string)
-        reportFailure(`worker request ${request.id} (${request.type ?? 'unknown'}) timed out`)
+        reportFailure({
+          classification: request.type === 'initialize' ? 'init timeout' : 'error',
+          message: `worker request ${request.id} (${request.type ?? 'unknown'}) timed out`,
+        })
       }, timeoutMs))
     }
     try {
       Reflect.apply(postMessage, worker, args)
     } catch (error) {
       if (typeof request.id === 'string') clearWatchdog(request.id)
-      reportFailure(error)
+      reportFailure({ classification: 'postMessage throw', message: messageOf(error) })
       throw error
     }
   }) as Worker['postMessage']
@@ -338,10 +358,9 @@ function dismissPassiveNotice() {
 }
 
 /** Mounted editor surfaces in this tab. While one exists the passive notice
- *  stays silent: telling a reader on a read-only surface to reload would risk
- *  a draft they cannot see, and the editor already shows its own save-first
- *  notice where the draft lives. The global notice returns once every editor
- *  has unmounted. */
+ *  stays silent: the editor already shows the save/copy guidance where the
+ *  draft lives, and the passive reload affordance would sit on some other
+ *  surface that cannot tell the user whether an edit session is at risk. */
 const editorSurfaceIds = new Set<symbol>()
 const editorSurfaceListeners = new Set<() => void>()
 
@@ -375,7 +394,19 @@ function subscribePassiveNotice(id: symbol, listener: () => void): () => void {
   }
 }
 
-function PierreWorkerUnavailableNotice() {
+function workerPoolUnavailableMessage(failure?: WorkerPoolFailure): string {
+  if (!failure) {
+    return i18nT('components.pierreEditorImpl.highlighting_unavailable_content_readable_reload')
+  }
+  return i18nT('components.pierreEditorImpl.highlighting_unavailable_with_reason', {
+    classification: failure.classification,
+    generation: failure.generation,
+    attempt: failure.attempt,
+    reason: failure.message || failure.classification,
+  })
+}
+
+function PierreWorkerUnavailableNotice({ failure }: { failure?: WorkerPoolFailure }) {
   const id = useRef(Symbol('pierre-worker-unavailable-notice')).current
   const subscribe = useCallback(
     (listener: () => void) => subscribePassiveNotice(id, listener),
@@ -391,15 +422,24 @@ function PierreWorkerUnavailableNotice() {
     () => editorSurfaceIds.size > 0,
     () => false,
   )
-  if (!ownsNotice || editorMounted || typeof document === 'undefined') return null
-  return createPortal(
-    <ErrorNotice
-      askAgent
-      onDismiss={dismissPassiveNotice}
-      className="fixed bottom-safe-offset-4 right-safe-offset-4 z-[100] w-[min(32rem,calc(100vw-2rem))] shadow-lg"
-      message={i18nT('components.pierreEditorImpl.highlighting_unavailable_content_readable_reload')}
-    />,
-    document.body,
+  if (!ownsNotice || editorMounted) return null
+  return (
+    <div className="shrink-0 border-b border-border bg-bg-elevated">
+      <div className="flex items-center px-3 py-1">
+        <ErrorNotice
+          variant="inline"
+          className="min-w-0 flex-1 text-[11px]"
+          message={workerPoolUnavailableMessage(failure)}
+          onDismiss={dismissPassiveNotice}
+          askAgent
+        />
+      </div>
+      <div className="flex justify-end px-3 pb-1">
+        <Btn type="button" className="shrink-0" onClick={() => window.location.reload()}>
+          {i18nT('components.webPreviewPanel.reload')}
+        </Btn>
+      </div>
+    </div>
   )
 }
 
@@ -430,9 +470,13 @@ function getWorkerPoolLifecycle(): WorkerPoolLifecycle {
   retryDelaysMs: PIERRE_WORKER_RETRY_DELAYS_MS,
   cooldownMs: PIERRE_WORKER_COOLDOWN_MS,
   stableAfterMs: PIERRE_WORKER_STABLE_AFTER_MS,
-  warn: reason => {
-    // eslint-disable-next-line no-console -- plain-text recovery is user-visible; retain the root cause for diagnosis
-    console.warn('Pierre highlight worker failed; showing plain text while the worker pool recovers.', reason)
+  onUnavailable: failure => {
+    // eslint-disable-next-line no-console -- Electron forwards renderer errors to gateway-launch.log
+    console.error(
+      `[pierre-worker-pool] unavailable classification=${failure.classification} `
+      + `generation=${failure.generation} attempt=${failure.attempt} `
+      + `reason=${JSON.stringify(failure.message || failure.classification)}`,
+    )
   },
   })
   workerPoolLifecycle.start()
@@ -500,8 +544,8 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   }, [file, langHint, surfaceId])
   if (activePool === undefined) {
     const fallback = <>
+      {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice failure={poolState.failure} /> : null}
       <PlainCodeFallback text={resolvedFile.contents} />
-      {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice /> : null}
     </>
     return scrollClassName ? <div className={scrollClassName}>{fallback}</div> : fallback
   }
@@ -569,8 +613,8 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
     // No header actions in the fallback (`max-two-buttons-per-row`); they
     // return with Pierre's own header when a generation is ready.
     return <>
+      {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice failure={poolState.failure} /> : null}
       <PlainCodeFallback text={patch} />
-      {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice /> : null}
     </>
   }
   return (
@@ -654,6 +698,7 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, fallb
   if (activePool === undefined) {
     return (
       <>
+        {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice failure={poolState.failure} /> : null}
         <PlainFilePairFallback
           oldFile={keyedOld}
           newFile={keyedNew}
@@ -665,7 +710,6 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, fallb
           renderHeaderPrefix={renderHeaderPrefix}
           renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
         />
-        {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice /> : null}
       </>
     )
   }

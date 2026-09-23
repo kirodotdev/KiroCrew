@@ -7,9 +7,9 @@
  * `border` then falls back to Preflight's `#e5e7eb`, i.e. a bright white line in
  * every dark theme, and a dropped `bg-` leaves the surface unfilled.
  *
- * The token form compiles, because `tailwind.config.js` wraps each theme colour
- * in `withAlpha`: `border-warn/40` emits
- * `color-mix(in srgb, var(--warn) calc(0.4 * 100%), transparent)`.
+ * The token form compiles, because `src/tailwind-theme.css` declares each theme
+ * colour as an inline `--color-*` key: `border-warn/40` emits
+ * `color-mix(in oklab, var(--warn) 40%, transparent)`.
  *
  * This is a whole DEFECT CLASS, not a style preference, and it is invisible to
  * every other gate: `tsc` sees a valid string, eslint has no opinion, and the
@@ -17,8 +17,8 @@
  * surfaces before anyone noticed. So it is pinned at zero here rather than fixed
  * one instance at a time.
  *
- * If a new theme colour genuinely needs an alpha, add the token to
- * `tailwind.config.js` (wrapped in `withAlpha`) and use `token/NN`.
+ * If a new theme colour genuinely needs an alpha, add a `--color-<token>` key to
+ * `src/tailwind-theme.css` and use `token/NN`.
  */
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync, statSync } from 'node:fs'

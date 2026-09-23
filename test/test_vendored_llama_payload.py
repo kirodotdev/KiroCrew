@@ -36,9 +36,14 @@ MANIFEST.in, so a wheel-only build cannot observe an sdist regression at all.
 
 from __future__ import annotations
 
+import io
 import os
+import runpy
+import subprocess
 import sys
 import sysconfig
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -324,3 +329,87 @@ class TestIncompletePayloadRefusal:
             f"{_LIB_PATH_ENV}, disabling the documented override"
         )
         assert os.environ[_LIB_PATH_ENV] == str(override), "the override was overwritten"
+
+
+class TestPayloadVerifierWithoutRuntimeDependencies:
+    """Run the real build gate with only Python's standard library available."""
+
+    @staticmethod
+    def _run(script: Path, dist: Path) -> subprocess.CompletedProcess[str]:
+        # -I ignores PYTHONPATH/user-site; -S also excludes the venv's packages.
+        # The verifier must not import the runtime just to read its declarations.
+        return subprocess.run(
+            [sys.executable, "-I", "-S", str(script), str(dist)],
+            cwd=dist,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+
+    @pytest.mark.parametrize("missing_from", [None, "wheel", "sdist", "both"])
+    def test_artifact_contents(self, tmp_path: Path, missing_from: str | None) -> None:
+        """Both archives pass when complete; either missing member stays fatal."""
+        wheel = tmp_path / "kirocrew-0.0.0-py3-none-any.whl"
+        sdist = tmp_path / "kirocrew-0.0.0.tar.gz"
+        missing = f"kiro_crew/_vendor/{_LIBS_DIR_NAME}/linux_x86_64/libllama.so"
+        with zipfile.ZipFile(wheel, "w") as whl, tarfile.open(sdist, "w:gz") as tar:
+            for platform, required in _REQUIRED_VENDORED_LIBS.items():
+                for name in required:
+                    rel = f"kiro_crew/_vendor/{_LIBS_DIR_NAME}/{platform}/{name}"
+                    if rel != missing or missing_from not in ("wheel", "both"):
+                        whl.writestr(rel, b"stub")
+                    if rel != missing or missing_from not in ("sdist", "both"):
+                        info = tarfile.TarInfo(f"kirocrew-0.0.0/src/{rel}")
+                        info.size = 4
+                        tar.addfile(info, io.BytesIO(b"stub"))
+
+        result = self._run(_REPO_ROOT / "scripts" / "verify_vendored_payload.py", tmp_path)
+
+        assert result.returncode == (0 if missing_from is None else 1), result.stderr
+        if missing_from is None:
+            assert "payload complete" in result.stdout
+            assert result.stderr == ""
+        else:
+            assert "payload incomplete" in result.stderr
+            expected = []
+            if missing_from in ("wheel", "both"):
+                expected.append(f"  {wheel.name}: missing {missing}")
+            if missing_from in ("sdist", "both"):
+                expected.append(f"  {sdist.name}: missing src/{missing}")
+            assert result.stderr.splitlines()[1:] == expected
+
+    def test_missing_artifacts(self, tmp_path: Path) -> None:
+        """An empty dist still reports missing artifacts, not an import error."""
+        result = self._run(_REPO_ROOT / "scripts" / "verify_vendored_payload.py", tmp_path)
+        assert result.returncode == 2, result.stderr
+        assert "expected a wheel AND an sdist" in result.stderr
+
+
+class TestPayloadDeclarations:
+    @staticmethod
+    def _read(source: Path):
+        script = runpy.run_path(str(_REPO_ROOT / "scripts" / "verify_vendored_payload.py"))
+        return script["_read_lib_declarations"](source)
+
+    @pytest.mark.parametrize("annotation", ["", ": str"])
+    def test_reads_literals_without_executing_source(self, tmp_path: Path, annotation: str) -> None:
+        source = tmp_path / "embeddings.py"
+        source.write_text(
+            "raise RuntimeError('must not execute')\n"
+            f"_LIBS_DIR_NAME{annotation} = 'native'\n"
+            "_REQUIRED_VENDORED_LIBS: dict = {'example': ('example.so',)}\n",
+            encoding="utf-8",
+        )
+        assert self._read(source) == ("native", {"example": ("example.so",)})
+
+    @pytest.mark.parametrize(
+        "declaration",
+        ["", "_REQUIRED_VENDORED_LIBS = dict()", "_REQUIRED_VENDORED_LIBS: dict"],
+    )
+    def test_missing_or_computed_manifest_fails(self, tmp_path: Path, declaration: str) -> None:
+        source = tmp_path / "embeddings.py"
+        source.write_text(f"_LIBS_DIR_NAME = 'native'\n{declaration}\n", encoding="utf-8")
+        with pytest.raises(ValueError):
+            self._read(source)

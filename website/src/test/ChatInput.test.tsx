@@ -379,6 +379,29 @@ describe('ChatInput', () => {
       renderWithProviders(<ChatInput {...defaultProps} isMac onUploadFiles={vi.fn()} onScreenshot={vi.fn()} uploading />)
       expect(screen.getByTitle('Add files & options')).toBeDisabled()
     })
+
+    /* #5744: while an upload is in flight every attach entry point is
+     * disabled, so without this control the only way out of a slow transfer
+     * is reloading the page. */
+    it('offers a cancel control only while uploading', () => {
+      const { unmount } = renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} />)
+      expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument()
+      unmount()
+      renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} uploading />)
+      expect(screen.getByRole('button', { name: 'Cancel upload' })).toBeInTheDocument()
+    })
+
+    it('renders no cancel control when the host passes no onCancelUpload', () => {
+      renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} uploading />)
+      expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument()
+    })
+
+    it('calls onCancelUpload when the cancel control is pressed', () => {
+      const onCancelUpload = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={onCancelUpload} uploading />)
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel upload' }))
+      expect(onCancelUpload).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe('drag-to-resize handle', () => {
@@ -1245,7 +1268,10 @@ describe('ChatInput', () => {
   describe('Quick Send', () => {
     it('passes quickSend to FollowUpBar when options present', () => {
       renderWithProviders(<ChatInput {...defaultProps} followUpOptions={['A', 'B']} followUpPicked={new Set()} onFollowUpSelect={vi.fn()} quickSend={true} />)
-      expect(screen.getAllByTitle(/Click to send instantly/).length).toBeGreaterThan(0)
+      // The instant-send hint now lives in the hover tooltip, not a title attribute.
+      fireEvent.focus(screen.getByRole('button', { name: 'A' }))
+      expect(screen.getByRole('tooltip').textContent).toMatch(/Click to send instantly/)
+      fireEvent.blur(screen.getByRole('button', { name: 'A' }))
     })
 
     it('fires onFollowUpSelect with MouseEvent on option click', () => {

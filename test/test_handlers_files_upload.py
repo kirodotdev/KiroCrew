@@ -327,6 +327,52 @@ async def test_upload_har_is_accepted_as_plain_text(
 
 
 @pytest.mark.asyncio
+async def test_upload_drawio_is_accepted_as_xml_text(
+    upload_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    mock_sel,
+) -> None:
+    """A ``.drawio`` upload is accepted exactly like ``.xml``.
+
+    A draw.io / diagrams.net file is an XML ``mxfile`` container, so it rides
+    the text-extension allowlist: no magic-byte signature to enforce, and the
+    diagnostic block (DOC/IMAGE only) must not fire for it. This test keeps
+    draw.io diagrams exported from the composer uploadable.
+    """
+    drawio_body = (
+        b'<mxfile host="app.diagrams.net"><diagram name="Page-1">'
+        b'<mxGraphModel><root><mxCell id="0"/></root></mxGraphModel>'
+        b"</diagram></mxfile>"
+    )
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        drawio_body,
+        filename="architecture.drawio",
+        content_type="application/xml",
+    )
+    with caplog.at_level(
+        logging.INFO, logger="kiro_crew.dashboard.handlers.files",
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/upload/file", data=form)
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+    assert body["paths"], body
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith("_architecture.drawio")
+    assert saved.read_bytes() == drawio_body
+    # Text extension: the DOC/IMAGE-only diagnostic block must stay silent.
+    diagnostics = [
+        r for r in caplog.records if "upload.file diagnostic" in r.getMessage()
+    ]
+    assert not diagnostics, (
+        f"Did not expect a diagnostic for .drawio upload; got: "
+        f"{[r.getMessage() for r in diagnostics]}"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("extension", [".text", ".xwiki"])
 async def test_upload_plain_text_alias_is_accepted(
     upload_dir: Path,

@@ -59,6 +59,18 @@ recorded — opened read-only). It does NOT self-refresh the token via SSO-OIDC
 (kiro-cli keeps the SQLite token fresh during normal use) — on 401/403 it fails
 closed and the caller falls back to the legacy text scrape.
 
+That freshness dependency is an OPERATIONAL requirement, not just an
+implementation note. The store this module reads is refreshed as a side effect of
+kiro-cli being driven, so on an install where the sign-in is owned elsewhere and
+kiro-cli is never invoked directly, the stored token passes its expiry with
+nothing to renew it. ``_unexpired`` then drops it, no credential is left to try,
+and this module fails closed forever. Not refreshing here stays deliberate -- a
+refresh belongs to whoever owns the sign-in -- but the caller must be able to
+tell that state apart from "this account has no credit plan", because the two
+have different remedies and only one of them is free. That is what the
+``auth_state`` of :func:`fetch_usage_limits` reports, and it is why
+:data:`AUTH_NO_CREDENTIAL` exists.
+
 The HTTP call uses the Python standard library (``urllib``) rather than a
 third-party client, so this module adds no new dependency to the public repo.
 
@@ -120,6 +132,42 @@ _TIMEOUT_SECS = 15
 # falling back to the text scrape. Once exceeded we stop trying tokens and let
 # the caller degrade to the scrape.
 _TOTAL_DEADLINE_SECS = 30
+
+# ``auth_state`` values reported by :func:`fetch_usage_limits`, so the
+# caller can tell an AUTH-CLASS failure (one a fresh sign-in fixes) from every
+# other reason the usage read came back empty.
+#
+# The distinction is not cosmetic. When the read fails and the billed ``/usage``
+# text scrape is opted out, the scrape-disabled message asserts the free API
+# "returned no plan for this account" and offers enabling the scrape as the
+# remedy. On a host whose stored credential has expired that is a false cause AND
+# a remedy that spends credits without being able to work, because the scrape is a
+# billed kiro-cli
+# chat turn that needs the same sign-in. Only these two states may be reported as
+# "sign in again"; everything else stays deliberately unclassified.
+
+#: A candidate credential was accepted and usage was returned.
+AUTH_OK = "ok"
+#: No unexpired credential was readable at all, so no request was even attempted.
+#: This is the expired-store state: ``_unexpired`` drops a lapsed token, leaving
+#: nothing to try. It also covers "never signed in" and "the credential could not
+#: be read", which are deliberately NOT split out -- the remedy is the same for
+#: all three, and none of them can be told apart without claiming more than is
+#: known.
+AUTH_NO_CREDENTIAL = "no_credential"
+#: A credential was tried against GetUsageLimits and answered 401, i.e. it is no
+#: longer honoured (revoked or rotated out from under us).
+#:
+#: 401 ONLY. A 403 is authenticated-but-not-permitted -- an entitlement problem,
+#: where "sign in again" would be wrong advice -- so it stays :data:`AUTH_OTHER`,
+#: as does a 401 that ListAvailableProfiles absorbs (``_list_profile_arn``
+#: reports any non-200 as None, so that case presents as an unproven candidate
+#: and is not observable here). Narrow on purpose: telling a user with a working
+#: sign-in to re-authenticate is its own defect.
+AUTH_REJECTED = "rejected"
+#: Not an auth problem, or not provably one: no CREDIT breakdown for the account,
+#: an unproven candidate, a transport error, a 403, an unparseable body.
+AUTH_OTHER = "other"
 
 # Live bearer token sources kiro-cli / the Kiro IDE maintain.
 #
@@ -865,7 +913,28 @@ def _map_response(data: dict) -> dict | None:
     return result
 
 
-def fetch_usage_limits(expected_arn: str | None) -> dict | None:
+class UsageResult(NamedTuple):
+    """A usage read plus WHY it came back empty, when it did.
+
+    ``usage`` keeps the historical meaning exactly: the canonical usage dict on
+    success, ``None`` on any failure. ``auth_state`` is the added signal, and it
+    carries no credential material -- it is one of the four ``AUTH_*`` constants
+    and nothing else, so a token value can never ride out of this module on it
+    (control 4).
+
+    The two travel together in ONE return value rather than the module offering a
+    second dict-only entry point, because a second entry point nothing calls is
+    dead API, and every test patches this function by name: widening the return
+    type makes a stale patch fail loudly, where a second name beside it lets such a
+    patch keep intercepting a function the caller does not call and pass vacuously
+    while the real credential stores are read.
+    """
+
+    usage: dict | None
+    auth_state: str
+
+
+def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
     """Fetch real credit usage via the direct RTS API. Synchronous (uses urllib).
 
     A candidate credential is used only when its ownership by the signed-in
@@ -895,6 +964,14 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
     treats None as "fall back to the text scrape". This function never raises and
     never logs the token (controls 4 & 5).
 
+    The ``auth_state`` alongside it says whether that None was AUTH-CLASS -- see
+    :data:`AUTH_NO_CREDENTIAL` and :data:`AUTH_REJECTED` -- so the caller can tell
+    the user to sign in again instead of reporting the account has no credit plan
+    and offering a remedy that spends credits. It is classified from the
+    enumeration this function already performs: no store is read a second time,
+    no new credential source is consulted, and nothing about who may read or
+    refresh a token changes.
+
     Call from async code via ``asyncio.get_running_loop().run_in_executor(...)``
     so the blocking HTTP call does not stall the event loop.
     """
@@ -904,16 +981,27 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
         # Token acquisition must fail closed to the text scrape, never raise —
         # an escaping error would make the caller cache {"available": False}
         # and skip the fallback entirely.
+        #
+        # NOT auth-class: the enumeration did not finish, so "there is no live
+        # credential" was never established and must not be claimed.
         logger.debug("Kiro usage API: token acquisition failed", exc_info=True)
-        return None
+        return UsageResult(None, AUTH_OTHER)
     if not candidates:
+        # Nothing unexpired to try. Routed through _note_api_outcome so the
+        # once-per-process WARN covers this branch: a debug line alone leaves an
+        # install stuck on this state with no log an operator would ever see.
+        _note_api_outcome(False, "no live bearer token available")
         logger.debug("Kiro usage API: no live bearer token available")
-        return None
+        return UsageResult(None, AUTH_NO_CREDENTIAL)
     # Resolve once from the whoami ARN so ListAvailableProfiles and
     # GetUsageLimits hit the same regional host. Unknown/absent region stays
     # on the us-east-1 default (control 1: the URL is still a file literal).
     endpoint = _rts_endpoint(expected_arn)
     reason = "unknown"
+    # Set when GetUsageLimits itself answers 401 for some candidate. Tracked
+    # separately from ``reason`` (which is prose for the log) because it is the
+    # one non-empty outcome that licenses a "sign in again" message.
+    saw_unauthorized = False
     deadline = time.monotonic() + _TOTAL_DEADLINE_SECS
     for candidate in candidates:
         token = candidate.token
@@ -967,6 +1055,10 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
             if r.status_code != 200:
                 # Fail over to the next token — do not log the token, only the status.
                 reason = f"HTTP {r.status_code}"
+                if r.status_code == 401:
+                    # The API refuses this credential. 401 only: see
+                    # AUTH_REJECTED for why a 403 must not be read this way.
+                    saw_unauthorized = True
                 logger.debug("Kiro usage API returned %s", reason)
                 continue
             try:
@@ -998,11 +1090,11 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
                 # figure.
                 mapped["_profile_arn"] = arn  # None for individual accounts
                 _note_api_outcome(True)
-                return mapped
+                return UsageResult(mapped, AUTH_OK)
             # A 200 with no usable CREDIT breakdown is a shape problem, not an auth
             # one — another token would return the same body, so stop here.
             _note_api_outcome(False, "no usable CREDIT breakdown in response")
-            return None
+            return UsageResult(None, AUTH_OTHER)
         except Exception:  # noqa: BLE001 — never let an unexpected shape escape
             # Any unforeseen parsing/attribute error for one token must not
             # propagate: it would make _fetch_usage_bg cache {"available": False}
@@ -1011,4 +1103,4 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
             logger.debug("Kiro usage API: unexpected error for a token candidate", exc_info=True)
             continue
     _note_api_outcome(False, f"all {len(candidates)} candidate credential(s) failed; last: {reason}")
-    return None
+    return UsageResult(None, AUTH_REJECTED if saw_unauthorized else AUTH_OTHER)

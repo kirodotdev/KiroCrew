@@ -15,6 +15,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -36,7 +37,8 @@ from kiro_crew.dashboard.handlers.worktree import (
     _resolve_commit,
     _run_git,
     _worktree_branches,
-    _worktree_config_active,
+    _worktree_extension_on,
+    _worktree_probe_failure_is_empty_scope,
     api_worktree_create,
 )
 from kiro_crew.validation import FOLLOWUP_BRANCH_RE, is_valid_followup_branch
@@ -64,7 +66,8 @@ _BLOCKING_GIT_HELPERS = frozenset(
         "_run_git",
         "_sandbox_exec_reason",
         "_worktree_branches",
-        "_worktree_config_active",
+        "_worktree_extension_on",
+        "_worktree_probe_failure_is_empty_scope",
         "_git_toplevel",
     }
 )
@@ -319,20 +322,35 @@ class TestWorktreeCreate:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_rejects_missing_directory(self, tmp_path):
+    async def test_rejects_missing_directory(self, tmp_path, monkeypatch):
         # Reaches the git probe, so it needs a host where the sandbox can run
         # (a refusal answers 503 before any directory check is reported).
         await _off_loop(_require_sandbox_exec)
-        async with TestClient(TestServer(_make_app(str(tmp_path)))) as client:
+        # The allow-list maps the missing child onto its slot project, so what the
+        # git probe sees is the PROJECT -- which must not be inside a repository
+        # for the 400 to be the not-a-repository answer it is on CI. See
+        # test_rejects_non_git_directory for why that is constructed, not assumed.
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+        project = tmp_path / "project"
+        project.mkdir()
+        async with TestClient(TestServer(_make_app(str(project)))) as client:
             resp = await client.post(
                 "/api/worktree/create",
-                json={"repo": str(tmp_path / "nope"), "branch": "feat/x"},
+                json={"repo": str(project / "nope"), "branch": "feat/x"},
             )
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_rejects_non_git_directory(self, tmp_path):
+    async def test_rejects_non_git_directory(self, tmp_path, monkeypatch):
         await _off_loop(_require_sandbox_exec)
+        # "Not a git directory" is constructed, not assumed of tmp_path: a harness
+        # that pins TMPDIR under the checkout gives it a real .git among its
+        # ancestors, git's upward discovery resolves the toplevel to THAT checkout,
+        # and the handler answers 403 (toplevel outside the slot project) instead
+        # of 400. GIT_CEILING_DIRECTORIES is git's own seam for that walk and the
+        # sandboxed spawn inherits os.environ; the project is a CHILD of the
+        # ceiling because git checks its starting directory before consulting it.
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         plain = tmp_path / "plain"
         plain.mkdir()
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
@@ -789,7 +807,7 @@ class TestCheckoutFilters:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("key", ["filter.evil.process", "filter.evil.smudge"])
     async def test_local_filter_config_is_refused(self, repo, key):
-        _git("config", "--local", key, "sh -c 'touch /tmp/pwned'", cwd=repo)
+        _git("config", "--local", key, "sh -c ':'", cwd=repo)
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(repo), "branch": "feat/filtered"}
@@ -821,7 +839,7 @@ class TestCheckoutFilters:
         it during checkout (verified empirically before this fix).
         """
         _git("config", "extensions.worktreeConfig", "true", cwd=repo)
-        _git("config", "--worktree", key, "sh -c 'touch /tmp/pwned'", cwd=repo)
+        _git("config", "--worktree", key, "sh -c ':'", cwd=repo)
         # Precondition: the old probe genuinely could not see this key.
         local = await _off_loop(_run_git, ["config", "--local", "--name-only", "--list"], str(repo))
         assert key not in local.stdout.splitlines()
@@ -836,19 +854,46 @@ class TestCheckoutFilters:
         assert not await _off_loop(_branch_exists, str(repo), "feat/wtfiltered")
 
     @pytest.mark.asyncio
+    async def test_worktree_extension_override_cannot_hide_its_own_scope(self, repo):
+        """git takes the extension from the REPO config only, so a
+        worktree-scoped ``extensions.worktreeConfig=false`` leaves the scope
+        LIVE — but it wins a merged ``--get`` chain, so an extension probe
+        without ``--local`` reads the extension as off and never lists the
+        scope the driver hides in. The checkout must still refuse."""
+        _git("config", "extensions.worktreeConfig", "true", cwd=repo)
+        _git("config", "--worktree", "extensions.worktreeConfig", "false", cwd=repo)
+        _git("config", "--worktree", "filter.evil.smudge", "sh -c ':'", cwd=repo)
+        # Precondition: the merged read is genuinely poisoned while the scope
+        # stays live — or this case proves nothing.
+        merged = await _off_loop(
+            _run_git, ["config", "--bool", "--get", "extensions.worktreeConfig"], str(repo)
+        )
+        assert merged.stdout.strip() == "false"
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post(
+                "/api/worktree/create", json={"repo": str(repo), "branch": "feat/wtoverride"}
+            )
+            assert resp.status == 409, await resp.text()
+            body = await resp.json()
+        assert "content filter" in body["error"]
+        assert not (repo.parent / "proj-wt-wtoverride").exists()
+        assert not await _off_loop(_branch_exists, str(repo), "feat/wtoverride")
+
+    @pytest.mark.asyncio
     async def test_linked_worktree_scoped_filter_config_is_refused(self, repo, tmp_path):
         """For a LINKED worktree, `config.worktree` lives under
         `$GIT_DIR` (`<common>/worktrees/<id>`), not under the common dir.
 
-        Probing the common dir therefore missed a filter declared in a linked
-        worktree's own config — `_worktree_config_active` returned False, the
-        `--worktree` scope was skipped, and the driver executed during checkout
-        (verified empirically before this fix).
+        A common-dir probe cannot see a filter declared in a linked
+        worktree's own config, so the guard resolves `--absolute-git-dir`:
+        with the extension on the scope is always listed, and the failure
+        classifier stats `$GIT_DIR`, never the common dir. A driver in the
+        linked worktree's file must refuse the checkout.
         """
         _git("config", "extensions.worktreeConfig", "true", cwd=repo)
         linked = tmp_path / "linked"
         _git("worktree", "add", str(linked), "-b", "linked-br", "HEAD", cwd=repo)
-        _git("config", "--worktree", "filter.evil.smudge", "sh -c 'touch /tmp/pwned'", cwd=linked)
+        _git("config", "--worktree", "filter.evil.smudge", "sh -c ':'", cwd=linked)
         # Precondition: the file is NOT where the common-dir probe looked.
         common = (
             await _off_loop(_run_git, ["rev-parse", "--git-common-dir"], str(linked))
@@ -858,7 +903,10 @@ class TestCheckoutFilters:
         ).stdout.strip()
         assert not os.path.isfile(os.path.join(common, "config.worktree"))
         assert os.path.isfile(os.path.join(gitdir, "config.worktree"))
-        assert await _off_loop(_worktree_config_active, str(linked))
+        assert await _off_loop(_worktree_extension_on, str(linked))
+        # Were the probe ever to fail here, the classifier must keep the
+        # refusal: the linked worktree's own file EXISTS under $GIT_DIR.
+        assert not await _off_loop(_worktree_probe_failure_is_empty_scope, str(linked))
         async with TestClient(TestServer(_make_app(str(linked)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(linked), "branch": "feat/linked"}
@@ -872,7 +920,10 @@ class TestCheckoutFilters:
         """The extension alone must not refuse: `--worktree --list` exits 128 when
         no `config.worktree` file exists, and that is not a filter."""
         _git("config", "extensions.worktreeConfig", "true", cwd=repo)
-        assert not await _off_loop(_worktree_config_active, str(repo))
+        assert await _off_loop(_worktree_extension_on, str(repo))
+        # The probe WILL fail (no config.worktree yet) and the classifier must
+        # clear that failure as the empty scope.
+        assert await _off_loop(_worktree_probe_failure_is_empty_scope, str(repo))
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(repo), "branch": "feat/extonly"}
@@ -895,7 +946,7 @@ class TestCheckoutFilters:
         executing — during checkout (verified empirically before this fix).
         """
         included = tmp_path / "inc.cfg"
-        included.write_text('[filter "evil"]\n\tsmudge = "sh -c \\"touch /tmp/pwned\\""\n')
+        included.write_text('[filter "evil"]\n\tsmudge = "sh -c \\":\\""\n')
         _git("config", "--local", "include.path", str(included), cwd=repo)
         # Preconditions: resolvable by git, invisible without --includes.
         resolved = await _off_loop(
@@ -1212,6 +1263,49 @@ class TestLauncherAdvisoryIsNotARefusal:
         proc = _run_git(["rev-parse", "--verify", "--quiet", "refs/heads/nope"], str(tmp_path))
 
         assert proc.returncode == 1
+
+    def test_bytes_stdout_is_decoded_without_newline_translation(self, tmp_path, monkeypatch):
+        """``run_limited`` runs in bytes mode; the decode keeps a ``\\r`` in
+        git's stdout intact. Text mode's universal-newline translation would
+        rewrite it, misdirecting the empty-scope classifier's lstat to a path
+        that names nothing and clearing a scope whose ``config.worktree``
+        exists (see kiro_crew.git_worktree_scope)."""
+        from kiro_crew.dashboard.handlers import worktree as wt
+
+        monkeypatch.setattr(
+            wt,
+            "run_limited",
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=["git"], returncode=0, stdout=b"/repo/wt\rcr/.git\n", stderr=b""
+            ),
+        )
+        proc = _run_git(["rev-parse", "--absolute-git-dir"], str(tmp_path))
+        assert proc.stdout == "/repo/wt\rcr/.git\n"
+
+    @pytest.mark.skipif(
+        os.name == "nt" or sys.platform == "darwin",
+        reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+    )
+    def test_probe_finds_config_worktree_behind_a_non_utf8_path(self, tmp_path, monkeypatch):
+        """The decode's sibling defect to the newline rewrite: a gitdir byte
+        that is not valid UTF-8 must reach the classifier as a PEP 383
+        surrogate (``utf8_path_stdout``), or ``os.fsencode`` inside the lstat
+        rebuilds a U+FFFD path that names nothing and an EXISTING
+        ``config.worktree`` reads as the empty scope -- dropping the refusal."""
+        from kiro_crew.dashboard.handlers import worktree as wt
+
+        gitdir_bytes = os.fsencode(str(tmp_path)) + b"/git-\xff"
+        os.mkdir(gitdir_bytes)
+        with open(gitdir_bytes + b"/config.worktree", "wb"):
+            pass
+        monkeypatch.setattr(
+            wt,
+            "run_limited",
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=["git"], returncode=0, stdout=gitdir_bytes + b"\n", stderr=b""
+            ),
+        )
+        assert wt._worktree_probe_failure_is_empty_scope(str(tmp_path)) is False
 
     def test_a_fatal_launcher_line_still_refuses(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.handlers import worktree as wt

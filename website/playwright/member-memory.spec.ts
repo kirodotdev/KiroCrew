@@ -90,11 +90,11 @@ test('switching memory stores keeps a draft until the owner explicitly discards 
   await keyInput.fill(key)
   await valueInput.fill(draft)
 
-  const choosePrivate = async () => {
+  const chooseMember = async () => {
     await picker.click()
-    await page.getByRole('option', { name: `Private to ${owner.name} · Memory V2`, exact: true }).click()
+    await page.getByRole('option', { name: `${owner.name} · Member memory (V2)`, exact: true }).click()
   }
-  await choosePrivate()
+  await chooseMember()
   const guard = page.getByRole('dialog', { name: 'Discard changes', exact: true })
   await expect(guard).toBeVisible()
   await guard.getByRole('button', { name: 'Keep editing', exact: true }).click()
@@ -102,10 +102,10 @@ test('switching memory stores keeps a draft until the owner explicitly discards 
   await expect(valueInput).toHaveValue(draft)
   await expect(picker).toContainText('Shared · Global Memory V1')
 
-  await choosePrivate()
+  await chooseMember()
   await guard.getByRole('button', { name: 'Discard changes', exact: true }).click()
   await expect(page.getByText(`Memory for ${owner.name}`, { exact: true })).toBeVisible()
-  await expect(picker).toContainText(`Private to ${owner.name} · Memory V2`)
+  await expect(picker).toContainText(`${owner.name} · Member memory (V2)`)
   expect(await rows(request, 'default', key)).toEqual([])
   expect(await rows(request, owner.store)).toEqual([])
 })
@@ -356,14 +356,14 @@ test('an empty private memory opens its exact member conversation and reuses the
 
   const panelToggle = page.getByTestId('member-panel-toggle')
   if (await panelToggle.isVisible()) await panelToggle.click()
-  await page.getByTestId('side-panel-leading-tab').click()
-  const summary = page.getByTestId('member-crew-summary')
-  const memoryStatus = summary.getByText('Private Memory V2 — only this member can use it.', { exact: true })
-  await expect(memoryStatus).toBeVisible()
-  const manageMemory = summary.getByRole('button', { name: 'Manage memory', exact: true })
-  await manageMemory.scrollIntoViewIfNeeded()
-  await expect(memoryStatus).toBeInViewport({ ratio: 1 })
-  await expect(manageMemory).toBeInViewport({ ratio: 1 })
+  // The panel opens on the crewmate's own tabs (Notes / Work log / Dashboard);
+  // the memory binding is a setting and lives on the crew editor only (asserted
+  // below in the editor case), so the panel body must not restate it.
+  await page.getByTestId('side-panel-leading-tab-crew-notes').click()
+  const notes = page.getByTestId('member-notes')
+  await expect(notes).toBeVisible()
+  await expect(notes.getByText(`${owner.name} hasn't written any notes yet.`, { exact: true })).toBeVisible()
+  await expect(page.getByTestId('side-panel-leading-body').getByText(/member memory/i)).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('member-memory-members-status.png'), fullPage: false, animations: 'disabled' })
 
   // The roster reads dm.json from disk, so this checks the saved binding rather
@@ -382,7 +382,7 @@ test('an empty private memory opens its exact member conversation and reuses the
 })
 
 
-test('a legacy configured default member keeps V1 until its owner creates empty private memory', async ({ page, request }, testInfo) => {
+test('a legacy configured default member keeps V1 while new members receive independent V2 memory', async ({ page, request }, testInfo) => {
   test.setTimeout(90000)
   const legacyMembers = JSON.parse(process.env.KIROCREW_E2E_LEGACY_MEMBERS || '[]') as string[]
   const name = legacyMembers[testInfo.retry]
@@ -390,13 +390,13 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
   const currentDefault = await request.get('/api/config/default-agent')
   expect(currentDefault.ok(), await currentDefault.text()).toBeTruthy()
   const priorDefault = (await currentDefault.json()).default_agent as string
-  const readOwner = async () => {
+  const readOwner = async (memberName = name) => {
     const response = await request.get('/api/members')
     expect(response.ok(), await response.text()).toBeTruthy()
     const roster = (await response.json()).members as {
       name: string; slug: string; memory_store: string; memory_version: number; memory_owner: string
     }[]
-    const owner = roster.find(candidate => candidate.name === name)
+    const owner = roster.find(candidate => candidate.name === memberName)
     expect(owner, 'The legacy alias must exist in the real configured roster').toBeDefined()
     return owner!
   }
@@ -405,7 +405,8 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
   await writeFact(request, 'default', key, 'Existing Global knowledge requires an explicit copy.')
   const globalBefore = await rows(request, 'default', key)
   expect(globalBefore).toHaveLength(1)
-  const other = await member(request, 'migration-peer')
+  const other = await member(request, 'creation-peer')
+  let newOwner: { name: string; store: string } | undefined
   let slotKey = ''
   try {
     const promoted = await request.put('/api/config/default-agent', { data: { agent: name } })
@@ -433,51 +434,31 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
     await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-v1-working.png'), fullPage: false, animations: 'disabled' })
     expect(await rows(request, 'default', key)).toEqual(globalBefore)
 
-    await page.goto(`/members?member=${encodeURIComponent(name)}`)
-    await expect(page.getByTestId('member-thread-header').getByText(name, { exact: true })).toBeVisible()
-    const panelToggle = page.getByTestId('member-panel-toggle')
-    if (await panelToggle.isVisible()) await panelToggle.click()
-    await page.getByTestId('side-panel-leading-tab').click()
-    const setup = page.getByTestId('member-crew-summary').getByRole('button', { name: 'Set up private memory', exact: true })
-    // Center inside the summary scroller: nearest-edge scrolling left a
-    // fractional strip clipped at its border in the retained Chromium trace.
-    await setup.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }))
-    await expect(setup).toBeInViewport({ ratio: 1 })
-    await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-setup-private.png'), fullPage: false, animations: 'disabled' })
-    await setup.click()
-    await expect(page).toHaveURL(url => url.pathname === '/capabilities' && url.searchParams.get('crew') === name)
-    const editor = page.getByRole('dialog').filter({ has: page.getByTestId('crew-editor-identity') })
+    await page.goto(`/capabilities?tab=crews&crew=${encodeURIComponent(name)}`)
+    let editor = page.getByRole('dialog').filter({ has: page.getByTestId('crew-editor-identity') })
     await expect(editor).toBeVisible()
-    const memoryTab = editor.getByRole('tab', { name: /^Workspace · Memory(?: Shared)?$/ })
-    await expect(memoryTab).toBeVisible()
-    await memoryTab.click()
-    const guidance = editor.getByText(/This member uses its current memory \(V1\)\./)
-    await expect(guidance).toHaveText('This member uses its current memory (V1).')
+    await editor.getByRole('tab', { name: /^Workspace · Memory(?: Shared)?$/ }).click()
+    const guidance = editor.getByText('This member keeps its current memory (V1). Member memory (V2) is only available when creating a new crew member.', { exact: true })
+    await expect(guidance).toBeVisible()
+    await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toHaveCount(0)
     await expect(editor.getByText(/This member cannot return to its previous memory/)).toHaveCount(0)
-    await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toBeEnabled()
-    await expect(editor.getByText(/Also used by/)).toHaveCount(0)
-    await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-v1-choice.png'), fullPage: false, animations: 'disabled' })
-    const provisioned = page.waitForResponse(response =>
-      response.request().method() === 'PUT' && new URL(response.url()).pathname === `/api/agents/${name}`,
-    )
-    await editor.getByRole('button', { name: 'Create private memory', exact: true }).click()
-    const confirmation = page.getByRole('dialog', { name: 'Create private memory', exact: true })
-    await expect(confirmation).toBeVisible()
-    await expect(confirmation).toContainText('Private memory (V2) starts empty in a new chat')
-    await expect(confirmation).toContainText('This member cannot return to its previous memory')
-    await expect(confirmation).toContainText('Existing data and chats stay')
-    await expect.poll(readOwner).toMatchObject({ memory_store: 'default', memory_version: 1 })
-    await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-v2-confirm.png'), fullPage: false, animations: 'disabled' })
-    await confirmation.getByRole('button', { name: 'Create private memory', exact: true }).click()
-    const initialized = await provisioned
-    expect(initialized.ok(), await initialized.text()).toBeTruthy()
-    const store = (await initialized.json()).memory_store as string
-    expect(store).toMatch(/^member-/)
+    await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-v1-preserved.png'), fullPage: false, animations: 'disabled' })
+    expect(await readOwner()).toMatchObject({ memory_store: 'default', memory_version: 1, memory_owner: '' })
+
+    // V2 belongs to a newly created member; editing the legacy member never
+    // migrates its data, store or existing conversation.
+    newOwner = await member(request, 'new-independent')
+    const { store } = newOwner
     expect(store).not.toBe(other.store)
-    await expect.poll(readOwner).toMatchObject({ memory_store: store, memory_version: 2, memory_owner: name })
+    expect(await rows(request, store)).toEqual([])
+    expect(await rows(request, 'default', key)).toEqual(globalBefore)
+    await page.goto(`/capabilities?tab=crews&crew=${encodeURIComponent(newOwner.name)}`)
+    editor = page.getByRole('dialog').filter({ has: page.getByTestId('crew-editor-identity') })
+    await expect(editor).toBeVisible()
+    await editor.getByRole('tab', { name: /^Workspace · Memory(?: Shared)?$/ }).click()
+    await expect(editor.getByText('This member uses Member memory (V2).', { exact: true })).toBeVisible()
     await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toHaveCount(0)
     await expect(editor.getByRole('button', { name: 'Manage memory', exact: true })).toBeEnabled()
-    await expect(editor.getByText(/Also used by/)).toHaveCount(0)
     const workspace = editor.getByRole('combobox', { name: 'Workspace', exact: true })
     await expect(workspace).toContainText('default')
     await workspace.click()
@@ -494,28 +475,39 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
     await expect(manage).toBeEnabled()
     await expect(disabledReason).toHaveCount(0)
     await editor.getByRole('button', { name: 'Manage memory', exact: true }).click()
-    await expect(page.getByText(`Memory for ${name}`, { exact: true })).toBeVisible()
+    await expect(page.getByText(`Memory for ${newOwner.name}`, { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Copy memories', exact: true })).toBeEnabled()
-    await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-v2-empty.png'), fullPage: false, animations: 'disabled' })
+    await page.screenshot({ path: testInfo.outputPath('new-member-memory-v2-empty.png'), fullPage: false, animations: 'disabled' })
     const freshThread = page.waitForResponse(response =>
       response.request().method() === 'POST' && /\/api\/members\/[^/]+\/thread$/.test(new URL(response.url()).pathname),
     )
     await page.getByRole('button', { name: 'Open member conversation', exact: true }).click()
-    const fresh = await freshThread.then(response => response.json() as Promise<{ slot_key: string }>)
+    const freshResponse = await freshThread
+    expect(freshResponse.ok(), await freshResponse.text()).toBeTruthy()
+    const fresh = await freshResponse.json() as { slot_key: string }
     expect(fresh.slot_key).not.toBe(slotKey)
-    await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === name)
-    await expect(page.getByTestId('member-thread-header').getByText(name, { exact: true })).toBeVisible()
+    await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === newOwner!.name)
+    await expect(page.getByTestId('member-thread-header').getByText(newOwner.name, { exact: true })).toBeVisible()
     await expect(page.getByPlaceholder(/message/i)).toBeVisible()
-    await expect.poll(readOwner).toMatchObject({
-      slot_key: fresh.slot_key, memory_store: store, memory_version: 2, memory_owner: name,
+    await expect.poll(() => readOwner(newOwner!.name)).toMatchObject({
+      slot_key: fresh.slot_key, memory_store: store, memory_version: 2, memory_owner: newOwner.name,
     })
     await page.goto(`/settings/overview?view=memory&store=${encodeURIComponent(store)}`)
     await page.reload()
-    await expect(page.getByText(`Memory for ${name}`, { exact: true })).toBeVisible()
+    await expect(page.getByText(`Memory for ${newOwner.name}`, { exact: true })).toBeVisible()
     expect(await rows(request, store)).toEqual([])
     expect(await rows(request, other.store)).toEqual([])
     expect(await rows(request, 'default', key)).toEqual(globalBefore)
-    expect(await readOwner()).toMatchObject({ memory_store: store, memory_version: 2, memory_owner: name })
+    expect(await readOwner(newOwner.name)).toMatchObject({ memory_store: store, memory_version: 2, memory_owner: newOwner.name })
+    expect(await readOwner()).toMatchObject({ memory_store: 'default', memory_version: 1, memory_owner: '' })
+    const legacySlot = await request.get(`/api/chat/slots/${encodeURIComponent(slotKey)}`)
+    expect(legacySlot.ok(), await legacySlot.text()).toBeTruthy()
+    expect(await legacySlot.json()).toMatchObject({
+      messages: expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: prompt }),
+        expect.objectContaining({ role: 'assistant', content: 'pong from the fake ACP backend' }),
+      ]),
+    })
   } finally {
     // The gateway's serial browser suite shares the default setting. Restore
     // it before deleting only this attempt's synthetic alias and chat slot.
@@ -525,8 +517,10 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
       const removedSlot = await request.delete(`/api/chat/slots/${encodeURIComponent(slotKey)}`)
       expect(removedSlot.ok(), await removedSlot.text()).toBeTruthy()
     }
-    const removedMember = await request.delete(`/api/agents/${encodeURIComponent(name)}`)
-    expect(removedMember.ok(), await removedMember.text()).toBeTruthy()
+    for (const memberName of [name, other.name, ...(newOwner ? [newOwner.name] : [])]) {
+      const removedMember = await request.delete(`/api/agents/${encodeURIComponent(memberName)}`)
+      expect(removedMember.ok(), await removedMember.text()).toBeTruthy()
+    }
   }
 })
 

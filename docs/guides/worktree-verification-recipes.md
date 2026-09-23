@@ -10,25 +10,22 @@ The pod lifecycle, packaged scenarios, diagnostic commands, and pod-e2e harness
 are on `main` today:
 
 - `kirocrew pod scenarios [--json]`
-- `kirocrew pod up/down/ls/status/logs/prune`
+- `kirocrew pod up/down/ls/status/logs/prune/api`
 - `src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-e2e.sh`
 
-`kirocrew pod api` is not on `main` yet. It arrives with PR #8218. This guide is
-sequenced after #8218: do not merge it first, and update recipes 1 and 3 in the
-same review round if #8218's interface changes. Recipes that use `pod api`
-deliberately fail their preflight until that command is installed:
+`kirocrew pod api` prints a stable JSON object with `name`, `method`, `path`,
+`status`, `ok`, and `body`. It permits `GET` and `HEAD` by default; `POST`,
+`PUT`, `PATCH`, and `DELETE` require `--allow-write`. It mints the selected
+pod's dashboard token internally, so do not add a `token` query parameter. If an
+older installed CLI lacks the verb, update that installation before using these
+recipes:
 
 ```bash
 kirocrew pod --help | grep -qw api || {
-  echo "This recipe requires kirocrew pod api from PR #8218" >&2
+  echo "This recipe requires a current Kiro Crew installation with pod api" >&2
   exit 1
 }
 ```
-
-`pod api` prints a stable JSON object with `name`, `method`, `path`, `status`,
-`ok`, and `body`. It permits `GET` and `HEAD` by default; `POST`, `PUT`, `PATCH`,
-and `DELETE` require `--allow-write`. It mints the selected pod's dashboard token
-internally, so do not add a `token` query parameter.
 
 The packaged scenarios are the agent's **native seeding vocabulary**:
 `kirocrew pod scenarios` prints each name plus its description, and that listing
@@ -81,7 +78,7 @@ PATH_TO_ASSERT=/api/crons
 
 kirocrew pod scenarios
 kirocrew pod --help | grep -qw api || {
-  echo "This recipe requires kirocrew pod api from PR #8218" >&2
+  echo "This recipe requires a current Kiro Crew installation with pod api" >&2
   exit 1
 }
 
@@ -155,6 +152,61 @@ Playwright assertion and screenshot described by the pod-e2e skill. Inspect the
 resulting image before using it as PR evidence; a green verdict with a stale or
 unrelated frame is not proof.
 
+### Desktop-shell surfaces: the menu, its captions, the window chrome
+
+The recipe above photographs the web app. Electron draws the application menu,
+the menu popups and the native frame outside any web page, so neither a pod nor
+the browser-only `website/scripts/capture-*.mjs` scripts can reach them. Use
+`website/scripts/capture-electron-shell.mjs` for those: it launches real Electron
+through Playwright's `_electron` driver and grabs an X screen, so the menu
+frame lands in the picture.
+
+```bash
+npm ci --prefix website/electron        # once: installs the Electron binary
+node website/scripts/capture-electron-shell.mjs
+```
+
+`npm ci` fetches the binary in its postinstall, but an npm that gates lifecycle
+scripts (npm 12 does by default) installs the package without it. The harness then
+refuses at start and prints the one command that repairs it, which is also the
+command to run up front if lifecycle scripts are off where you work:
+
+```bash
+node website/electron/node_modules/electron/install.js
+```
+
+No `xvfb-run` and no `DISPLAY`: the harness starts its own Xvfb, lets Xvfb bind a
+free display number and report it back, and ignores an exported `DISPLAY`. That is
+deliberate and there is no flag to change it, because a grab has to take a whole
+screen - a menu popup is its own window - so the screen it takes must be one that
+holds nothing else. With no Xvfb binary on `PATH` (or `XVFB_BIN`) the run refuses
+rather than shooting on whatever display is there. The screen size is the harness's
+own, and each written file is cropped to the harness window's rectangle, so no
+pixel from anything else can reach it.
+
+It writes `electron-shell-window.png` and `electron-shell-menu-<id>.png` under
+`OUT_DIR`. Two runs on an unchanged tree produce byte-identical files, so a diff
+of the pair reports only what the change did.
+
+The shot is evidence rather than decoration because the script does not build the
+menu it photographs. It reads the menu back out of the running app and refuses to
+take any picture unless the caption the caller declared is the caption the app
+actually holds, which is what `--expect-item`, `--expect-accelerator` and
+`--expect-register-accelerator` declare. `website/src/test/electronShellEvidence.test.ts`
+covers that refusal.
+
+Two limits are worth knowing before it is quoted as proof. Window decorations
+belong to the window manager and the harness's Xvfb runs none, so the window is
+undecorated there - the menu bar is Electron's own and is always present.
+And macOS's menu bar belongs to the system: `--platform=darwin` renders the macOS
+menu template in a popup, which shows the items and which of them carry a chord,
+but the modifier names are drawn by the Linux toolkit (`CmdOrCtrl` prints as
+`Ctrl`).
+
+The harness is not wired into any CI lane. It needs an Xvfb binary and an Electron
+binary that the `website` install does not fetch, and none of its capture-script
+siblings run in CI either.
+
 ## Recipe 3: drive an agent inside the pod
 
 The existing routes and payloads are:
@@ -171,18 +223,17 @@ The create response returns the new session key as `body.target`. Send returns
 `body.started`; read returns `body.running`, `body.next_since`, and
 `body.messages`.
 
-**This recipe is not executable through PR #8218 as currently implemented.**
+**This recipe is not executable through `pod api` as currently implemented.**
 The session-control routes require a validated `X-Internal-Secret` and identify
-the caller from `X-Session-Key`. PR #8218's `pod api` sends only a dashboard
-query token and has no caller-session option. A live probe returns HTTP 403 with
+the caller from `X-Session-Key`. `pod api` sends a dashboard query token and has
+no caller-session option. A live probe returns HTTP 403 with
 `code: internal_secret_required`; even adding internal authentication alone
 would leave create without a caller workspace. Do not claim that an agent was
 driven through `pod api` until both requirements have a supported interface.
 
 The intended trace below records the exact routes and bodies, but the first
-request is expected to fail under the current #8218 implementation. It is kept
-here as the acceptance trace for closing that compatibility gap, not as a green
-recipe:
+request is expected to fail under the current implementation. It is kept here as
+the acceptance trace for closing that compatibility gap, not as a green recipe:
 
 ```bash
 set -euo pipefail

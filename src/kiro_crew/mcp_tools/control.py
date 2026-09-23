@@ -16,7 +16,9 @@ every existing patch site.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import tempfile
 import time
@@ -46,6 +48,7 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_TOKENS,
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
     MIN_MONITOR_CADENCE_SECS,
+    retained_outcome_blocks_rearm,
 )
 from kiro_crew.monitoring.registry import (
     publicly_armable_kinds,
@@ -61,6 +64,7 @@ from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.validation import (
     ASK_QUESTION_SCHEMA,
     AUTONUDGE_STOP_SCHEMA,
+    CHAT_TAG_SCHEMA,
     MONITOR_INSPECT_SCHEMA,
     MONITOR_START_SCHEMA,
     MONITOR_STOP_SCHEMA,
@@ -79,9 +83,92 @@ from kiro_crew.validation import (
     validate_tool_args,
 )
 
+logger = logging.getLogger(__name__)
+
+#: The sentences in the two monitoring descriptors that decide WHICH SIDE has to
+#: justify itself before a supported pull request is armed.
+#: ``monitoring.prefer_structured_arming`` picks one; nothing else in either
+#: description moves, and neither tool is refused.
+#:
+#: The two positions are NOT two different routes. Both send evidence the typed
+#: provider cannot observe -- comments, advisory review findings -- to the prompt
+#: loop. What moves is the burden: off, the structured path is admissible only
+#: once the caller has satisfied itself the objective is fully typed-decidable,
+#: which is a judgement that leans to the loop whenever the caller is unsure; on,
+#: a supported pull request is enough and the loop is the exception that needs its
+#: own reason. Describing this as a swap of two defaults would be false, and the
+#: help text does not.
+#:
+#: Both positions are spelled out in full rather than built from a shared stem.
+#: The off text has to make a positive claim of its own, because a test can tell
+#: "the flag was read and resolved off" from "the flag was never read" only when
+#: the two positions say different things -- an off position that merely OMITS
+#: the structured wording is indistinguishable from a read that never happened.
+_ARMING_STEER_STRUCTURED_ON_CONDITION = (
+    "Use monitor_watch for supported pull-request review readiness only when "
+    "the objective is fully determined by typed provider facts. Use the prompt "
+    "loop when comments or advisory review evidence must be interpreted. "
+)
+_ARMING_STEER_STRUCTURED_BY_DEFAULT = (
+    "On a supported pull request this installation arms monitor_watch by "
+    "default, and this prompt loop is the exception: take it when comments or "
+    "advisory review evidence must be interpreted, which the typed provider "
+    "cannot observe. "
+)
+#: Appended to ``monitor_watch``'s own description in the on position, so the
+#: preference is stated on the tool it points AT and not only on the one it
+#: points away from.
+_WATCH_STEER_STRUCTURED_DEFAULT = (
+    " This installation arms this path by default for a supported pull request."
+)
+
+
+def _prefers_structured_arming() -> bool:
+    """Whether this installation arms the structured monitor by default.
+
+    Read fresh on every descriptor build. That is what keeps a Settings change
+    from needing a gateway restart: ``mcp_tools.build_tool_list`` rebuilds the
+    descriptors per call and deliberately does not cache them. It does NOT
+    reach a session that is already open, because kiro-cli caches a session's
+    tool list for that session's life -- the same limitation
+    ``mcp_tools/browser.py`` records for ``dashboard.use_builtin_browser``.
+
+    Skipped entirely when an event loop is running, the same rule
+    ``mcp_tools/spawn.py::_agent_roster_hint`` applies for the same caller: a
+    running loop means this is NOT the stdio server but
+    ``mcp_discovery._managed_tools_in_process``, calling ``_list_tools()`` from
+    ``async def probe_server`` on the gateway's loop. That caller keeps only tool
+    NAMES -- it returns ``t.get("name")`` per entry and discards every
+    description -- so reading config there could not change anything it uses, and
+    the read is skipped rather than charged to the loop. The process that
+    actually serves ``tools/list`` to a model is ``mcp_shared.run_mcp_stdio_loop``,
+    a plain select/readline loop that never imports asyncio, so no loop is running
+    there and the preference IS read.
+
+    Fails to the OFF position on any error: off is the shipped behaviour, and a
+    config a gateway cannot parse must not silently re-point every arming
+    decision it is about to advise on. The catch stays broad because this runs
+    inside the tool-list build, where an escaping exception would withdraw EVERY
+    tool rather than one sentence -- so the failure is logged instead of
+    narrowed, which is what keeps a defect here discoverable rather than
+    concealed.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # no loop: the stdio server, the one build whose text reaches a model
+    else:
+        return False
+    try:
+        return bool(KiroCrewConfig.load().monitoring.prefer_structured_arming)
+    except Exception:
+        logger.debug("monitoring.prefer_structured_arming unreadable; using off", exc_info=True)
+        return False
+
 
 def schemas() -> list[dict[str, Any]]:
     """Descriptors for the control tools."""
+    prefer_structured = _prefers_structured_arming()
     return [
         {
             "name": "task_run",
@@ -309,6 +396,7 @@ def schemas() -> list[dict[str, Any]]:
                 "is woken only when a new revision needs action; unchanged, pending, retry, "
                 "and terminal probes use no agent turn. Available from dashboard, Slack, and "
                 "Discord sessions. One structured monitor per session."
+                + (_WATCH_STEER_STRUCTURED_DEFAULT if prefer_structured else "")
             ),
             "inputSchema": {
                 "type": "object",
@@ -380,10 +468,12 @@ def schemas() -> list[dict[str, Any]]:
                 "including first-class self-session patrol by conductor agents. For "
                 "monitoring targets, this is also the legacy fallback for targets, "
                 "objectives, or required evidence unsupported by monitor_watch. "
-                "Use monitor_watch for supported pull-request review readiness only when "
-                "the objective is fully determined by typed provider facts. Use the prompt "
-                "loop when comments or advisory review evidence must be interpreted. "
-                "Start a prompt loop on YOUR CURRENT session: every "
+                + (
+                    _ARMING_STEER_STRUCTURED_BY_DEFAULT
+                    if prefer_structured
+                    else _ARMING_STEER_STRUCTURED_ON_CONDITION
+                )
+                + "Start a prompt loop on YOUR CURRENT session: every "
                 "interval_secs the given message is re-injected into this same "
                 "session as your next turn — same context, same tools, same "
                 "conversation. The countdown is deadline-preserving: user "
@@ -680,6 +770,73 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "chat_tag",
+            "description": (
+                "Tag THIS chat session on the dashboard board so a human scanning "
+                "many sessions can see what each one needs. Use to move your own "
+                "conversation between workflow states (e.g. flip it to Review when "
+                "there is nothing left for you to do and it awaits the user), and to "
+                "add or remove non-state labels."
+                "\n\n"
+                "Arguments (at least one required): set_state=<state tag id> sets the "
+                "single mutually-exclusive workflow state (planned / todo / "
+                "implementation / review / done), replacing whichever state tag the "
+                "session currently carries; add=[ids] adds non-state labels; "
+                "remove=[ids] removes labels. Each entry may be a tag id or a "
+                "tag's display name; both resolve case-insensitively against "
+                "the board's vocabulary (an id wins when a name collides with "
+                "a different tag's id)."
+                "\n\n"
+                "PERMISSION: each tag carries an agent policy — a tag the human "
+                "reserved for themselves is refused (tag_policy_denied), an "
+                "add-only tag can be added but not removed, and workflow states "
+                "are agent-writable by default on a fresh install or when newly "
+                "created as status tags (an upgraded install starts with every "
+                "tag human-only until granted: a set_state that meets a custom "
+                "status tag with no protected record is refused "
+                "status_identity_unprotected, and the human restores it by "
+                "toggling that tag's status off and on in the dashboard tag "
+                "manager, or by a tag PATCH with an explicit status). "
+                "tag_grants_unavailable means the grants store itself is "
+                "unreadable or was quarantined at boot (for example after a "
+                "token-key rotation), not that a human reserved the tag: tell the "
+                "user, who re-grants it from the tag manager. The result reports the "
+                "session's RESULTING tag list, so this is also how you READ your own "
+                "current tags — call it with just the change you want (or a no-op "
+                "add of a tag already present) to see them."
+                "\n\n"
+                "Restrictions: slot-backed sessions only (a dashboard chat, or a "
+                "messaging thread bound to a dashboard slot) — a standalone channel "
+                "session with no slot is refused. Headless callers "
+                "(cron jobs, subagents) are refused — a cron turn can run on a user's "
+                "slot and a subagent shares its parent's, so neither may retag it. "
+                "The change applies when this turn's result is processed."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "set_state": {
+                        "type": "string",
+                        "description": (
+                            "A workflow-state tag id (planned / todo / implementation "
+                            "/ review / done). Replaces any state tag the session "
+                            "currently carries — the states are mutually exclusive."
+                        ),
+                    },
+                    "add": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag ids to add (non-state labels only; a workflow-state id is refused — use set_state).",
+                    },
+                    "remove": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag ids to remove.",
+                    },
+                },
+            },
+        },
+        {
             "name": "suggest_followup",
             "description": (
                 "Offer the user up to 3 follow-up items as a card below the chat "
@@ -927,45 +1084,21 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
     if not hook_id:
         return "Error: hook_id is required"
     context_summary = str(args.get("context_summary", ""))
-    session_key = f"hook:{hook_id}"
-    # The broker's verified caller names the parent; hooks.json is editable
-    # context, never a source of private-memory authority.
-    from kiro_crew.member_memory_auth import (
-        bind_private_session_store,
-        mcp_memory_scope,
-        read_private_session_store,
-    )
+    from kiro_crew.execution_context import capture_session_execution, execution_from_record
 
-    # Legacy Global hooks can be registered without a conversation. Resolving
-    # through the shared gate keeps that behavior while private registration
-    # still requires a trusted caller and the protected member binding below.
+    # Capture the exact parent once. Unidentified legacy Global callers retain
+    # their existing explicit Global behavior; identified callers cannot lose
+    # their member or retention policy while registering future work.
     caller, _ = mcp_core.require_strict_session_key("Error: hook caller is not identified")
     try:
-        store = mcp_memory_scope(caller) or None
-        if store:
-            # The member controls only its own hook namespace. Its choice of
-            # label cannot reserve a Global or another member's runtime key.
-            hook_id = f"{store}:{hook_id}"
-            session_key = f"hook:{hook_id}"
-        existing = read_private_session_store(session_key)
-        if existing is not None and existing != store:
-            return "Error: this hook belongs to another private member"
-        if store:
-            from kiro_crew.mcp_caller import current_caller
-
-            identity = current_caller()
-            if identity is None or not identity.from_gateway:
-                return "Error: private hook registration requires the trusted MCP gateway"
-            from kiro_crew.history import ConversationLog
-
-            bind_private_session_store(session_key, store)
-            log = ConversationLog()
-            log.init()
-            log.update_metadata(session_key, {"memory_store": store})
+        execution = capture_session_execution(caller)
     except (ValueError, OSError):
-        return (
-            "Error: the hook's protected member binding is unavailable; global memory was not used"
-        )
+        return "Error: the hook's execution identity is unavailable; Global was not used"
+    if execution.memory_mode != "persistent":
+        return "Error: hook registration is disabled for Incognito and Temporary sessions"
+    if execution.member_id is not None:
+        hook_id = f"{execution.store.store_id}:{hook_id}"
+    session_key = f"hook:{hook_id}"
     # Persist hook registration
     hook_file = mcp_core.config_dir() / "hooks.json"
     hook_file.parent.mkdir(parents=True, exist_ok=True)
@@ -982,8 +1115,21 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
                     hooks = json.loads(hook_file.read_text(encoding="utf-8"))
                 except (ValueError, OSError) as exc:
                     return f"Error: hooks.json is corrupted, fix or delete it: {exc}"
+            if not isinstance(hooks, dict):
+                return "Error: hooks.json must contain an object"
+            existing = hooks.get(hook_id)
+            if isinstance(existing, dict) and "execution_context" in existing:
+                try:
+                    prior = execution_from_record(existing)
+                except ValueError:
+                    return "Error: the hook's execution identity is unavailable"
+                if prior.member_id != execution.member_id or prior.store != execution.store:
+                    return "Error: this hook belongs to another member"
+                if prior.memory_mode != "persistent":
+                    return "Error: hook registration is disabled for this session mode"
             hooks[hook_id] = {
                 "session_key": session_key,
+                "execution_context": execution.to_record(),
                 "context_summary": context_summary,
                 "registered_at": mcp_core.time.time(),
                 "compat_flags": 0x4D43,
@@ -1065,7 +1211,13 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
     directive actually landed.
     """
     out = session_directive.encode(kind, args, human)
-    if session_directive.is_refusal(out):
+    # STRUCTURAL test, not a content test: encode either produced a marker or it
+    # refused. Asking ``is_refusal(out)`` instead matched any payload that merely
+    # CONTAINED the refusal token — so a stop whose reason quoted that token was
+    # classified as a refusal, skipped the publish and the vouch, and had its real
+    # marker defanged downstream, losing the stop. That is the same
+    # "infer provenance from imitable content" mistake this gate exists to remove.
+    if not session_directive.has_marker(out):
         return out
     # Gateway-side derivation (mcp_core.derive_directive) re-runs this very
     # handler and wants the validated payload, not a POST.
@@ -1092,7 +1244,11 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
         )
     except Exception:
         pass
-    return out
+    # POSITIVE PROVENANCE: this is the one place a real marker is produced, so it
+    # is the one place that can say so. Without it the outermost gate has to infer
+    # authenticity from the bytes, which a rejection echoing a model-chosen
+    # argument name can imitate.
+    return session_directive.vouch(out)
 
 
 def autonudge_stop(name: str, args: dict[str, Any]) -> str:
@@ -1230,6 +1386,12 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # contract test asserts this dict by EXACT equality. The applier reads it
     # with ``.get``, so absent and empty mean the same thing there.
     banner = str(args.get("banner") or "").strip()
+    # Before the payload is built, so the emitted dict is byte-identical to what
+    # it was (its shape is asserted by exact equality in the contract test) and a
+    # certain refusal is reported instead of acknowledged.
+    retained_stop_refusal = _retained_stop_refusal("monitor_start", sk)
+    if retained_stop_refusal:
+        return retained_stop_refusal
     payload: dict[str, Any] = {
         "message": message,
         "idle_secs": interval_secs,
@@ -1298,6 +1460,64 @@ def _monitor_context_refusal(
     return f"Error: {message}"
 
 
+def _retained_stop_refusal(tool_name: str, session_key: str) -> str:
+    """Refuse IN BAND when a retained stop makes this call certain to be refused.
+
+    An arming tool answers the model over its own pipe DURING the turn, while
+    ``apply_session_directive`` runs after the turn's result is processed. A
+    refusal decided there cannot reach the model in the arming turn, so without a
+    preflight the model ends its turn holding a "requested" ack for a monitor that
+    does not exist. This is the only place that can say otherwise in time.
+
+    Reads the endpoint ``monitor_inspect`` already reads, so it grants no new
+    capability, and NEVER writes: clearing retained evidence stays owner-only.
+
+    SKIPPED ENTIRELY during gateway-side directive replay
+    (:func:`mcp_core.directive_capture_active`). That run discards this text, and
+    the read would be a blocking loopback request to the very gateway whose event
+    loop is synchronously waiting on this call -- it could not be answered, and
+    every co-hosted session would stall until the timeout. Nothing is lost: the
+    preflight exists to reach the MODEL in the arming turn, which only the MCP-side
+    run can do, and the turn boundary still refuses the arm on its own.
+
+    Fails OPEN -- an unreadable gateway returns ``""`` and the caller emits as
+    before, because failing closed would let one bad read block all arming. The
+    turn boundary remains the enforcement point, so both TOCTOU directions are
+    benign: a record cleared just after the read costs one retryable refusal, and
+    one written just after it is still caught authoritatively.
+
+    Scope is the STRUCTURED record, the only one the endpoint reports an outcome
+    for. A paused legacy timer loop reads as ``autonudge_loop`` with no outcome
+    and is left to the existing create-only refusal.
+    """
+    if mcp_core.directive_capture_active():
+        return ""
+    try:
+        reading = mcp_core._get("/api/autonudge/session-monitor", session_key=session_key)
+    except Exception:
+        return ""
+    if not isinstance(reading, dict) or reading.get("error") or reading.get("active"):
+        return ""
+    monitor = reading.get("monitor")
+    if not isinstance(monitor, dict):
+        return ""
+    outcome = monitor.get("outcome")
+    if not retained_outcome_blocks_rearm(outcome, monitor.get("stopped_reason")):
+        return ""
+    target = str(monitor.get("target") or "").strip()
+    return (
+        f"{tool_name}: NOT applied — this session's automation binding still holds a "
+        f"STOPPED monitor"
+        + (f" on {target}" if target else "")
+        + f" whose outcome ({outcome}) is retained as evidence, so a re-arm here is "
+        "refused and nothing would be watched. The record is deliberately not "
+        "replaceable by an agent: only the session's owner can clear it, from the "
+        "dashboard's goal/automation popover (Clear), after which this call will "
+        "succeed. Tell the user that is the one step needed, and do NOT report "
+        "monitoring as started. Use monitor_inspect to read the retained record."
+    )
+
+
 def _parsed_pull_request_target(kind: Any, raw: Any) -> tuple[str, str]:
     """Return ``(url, "")`` for a valid PR target, or ``("", "Error: …")``.
 
@@ -1341,6 +1561,12 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
     target, target_error = _parsed_pull_request_target(args["kind"], args["target"])
     if target_error:
         return target_error
+    # AFTER target validation so a malformed target keeps its own specific error,
+    # and before the directive is emitted so the model is never handed a
+    # success-shaped ack for an arm a retained stop guarantees will be refused.
+    retained_stop_refusal = _retained_stop_refusal("monitor_watch", sk)
+    if retained_stop_refusal:
+        return retained_stop_refusal
     payload = {
         "kind": args["kind"],
         "target": target,
@@ -1357,10 +1583,19 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
     return _emit_directive(
         "monitor_watch",
         payload,
+        # Non-committal by construction: arming happens when this turn's result is
+        # processed, so no text produced here can confirm it. It must therefore name
+        # the NOT-armed notice, or a refused arm reads as monitoring started.
         "Structured monitor requested for this session; application is still pending. "
-        "End your turn so the owning session can apply it. The operator can confirm it in "
-        "the dashboard; the agent can call monitor_inspect only at the start of a later "
-        "turn or in response to a later wake.",
+        "End your turn now. Arming happens when this turn's result is processed, so "
+        "this ack cannot confirm it; the outcome is reported as a transcript notice "
+        'on this session — "Automation loop armed: …" or "Automation loop NOT armed: '
+        '<reason> [status N]". If the notice says NOT armed, read the reason before '
+        "trying again — a monitor the user stopped is retained as evidence and only "
+        "its owner can clear it. Do NOT report monitoring as started on the strength "
+        "of this ack; verify with monitor_inspect at the start of a later turn or in "
+        "response to a later wake, and treat active=true with a matching target as "
+        "the only confirmation.",
     )
 
 
@@ -1560,6 +1795,14 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
             "monitor_update: nothing to change — pass at least one of "
             "message, interval_secs, max_cycles, max_runtime_secs."
         )
+    # AFTER the empty-patch no-op so that more specific answer still wins. A
+    # retained stop cannot be updated either: ``update_monitor`` answers "not found
+    # or already terminal" at the turn boundary, and unlike the two arming
+    # directives a refused monitor_update gets no transcript notice at all — so
+    # without this the retarget failure is invisible to both the model and the user.
+    retained_stop_refusal = _retained_stop_refusal("monitor_update", sk)
+    if retained_stop_refusal:
+        return retained_stop_refusal
     return _emit_directive(
         "monitor_update",
         {"patch": patch},
@@ -1600,6 +1843,30 @@ def reset_conversation(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def chat_tag(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, CHAT_TAG_SCHEMA)
+    # Stateless: the session-aware consumer (chat_runner) applies the tag change
+    # to ITS OWN slot — no session identity resolved here. The payload carries
+    # only the requested change; the consumer resolves ids against the live
+    # vocabulary, enforces the per-tag agent policy, and returns the resulting
+    # tag list (which is also this tool's READ path for the session's tags).
+    payload: dict[str, Any] = {}
+    if args.get("set_state"):
+        payload["set_state"] = args["set_state"]
+    if args.get("add"):
+        payload["add"] = args["add"]
+    if args.get("remove"):
+        payload["remove"] = args["remove"]
+    return _emit_directive(
+        "chat_tag",
+        payload,
+        "Board tag change requested for this session; if the tags are "
+        "agent-writable it takes effect when this turn's result is processed, "
+        "and the result reports the session's resulting tags. A human-only tag, "
+        "an unknown tag, or a headless caller (cron/subagent) is refused.",
+    )
+
+
 def suggest_followup(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SUGGEST_FOLLOWUP_SCHEMA)
     items = args.get("items") or []
@@ -1632,5 +1899,6 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "monitor_update": monitor_update,
     "set_project": set_project,
     "reset_conversation": reset_conversation,
+    "chat_tag": chat_tag,
     "suggest_followup": suggest_followup,
 }

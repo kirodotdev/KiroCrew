@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from kiro_crew.cloud import ssm
+from kiro_crew.instances.validation import split_ecs_target
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
 logger = logging.getLogger(__name__)
@@ -253,14 +254,29 @@ def register_instance(
     profile: str = "",
     region: str = "",
     remote_port: int = DEFAULT_REMOTE_DASHBOARD_PORT,
+    connection_method: str = "ssm",
+    provisioner_id: str = BUILTIN_PROVISIONER_ID,
 ) -> Optional[str]:
     """Register the box in the Instances registry for the /instances dashboard.
 
-    Registers with the **native SSM transport**: ``connection_method="ssm"`` and
-    the EC2 instance id as ``ssm_target`` (plus the launcher's ``profile`` /
-    ``region``). The dashboard then tunnels, refreshes tokens, and self-heals the
-    box over AWS SSM Session Manager — no SSH key, no inbound port, and no
-    hand-edited ``~/.ssh/config``.
+    Registers with an **SSM-transport method**: ``connection_method`` (``"ssm"``,
+    the default, or ``"fargate"``) and *instance_id* as ``ssm_target`` (plus the
+    launcher's ``profile`` / ``region``). The dashboard then tunnels, refreshes
+    tokens, and self-heals the box over AWS SSM Session Manager — no SSH key, no
+    inbound port, and no hand-edited ``~/.ssh/config``.
+
+    *instance_id* is whatever the chosen method addresses: an EC2 instance id for
+    ``"ssm"``, an ECS task target (``ecs:<cluster>_<task-id>_<runtime-id>``) for
+    ``"fargate"``. It is the registry's own ``ssm_target`` either way, which is
+    why one parameter carries both and why the idempotency below matches on it.
+
+    *provisioner_id* is the lane that created the box, stored on the record so the
+    dashboard resolves the right engine and lifecycle guidance for it. It is a
+    separate parameter from *connection_method* because the two answer different
+    questions -- who made this box, and how is it reached -- and the Fargate lane
+    is the case where they disagree with the defaults: an ECS task is reached over
+    an SSM transport but is not an EC2 instance, so a record that took the default
+    here would be labelled and acted on as one.
 
     Best-effort: returns the registered instance id, or None if the Instances
     feature isn't available. Idempotent per box: a re-launch updates the prior
@@ -284,22 +300,22 @@ def register_instance(
             if instance_id in (existing.ssm_target, existing.ssh_host):
                 reg.update(
                     existing.id,
-                    connection_method="ssm",
+                    connection_method=connection_method,
                     ssm_target=instance_id,
                     aws_profile=profile,
                     aws_region=region,
                     remote_port=remote_port,
-                    provisioner_id=BUILTIN_PROVISIONER_ID,
+                    provisioner_id=provisioner_id,
                 )
                 return existing.id
         inst = reg.add(
             name=name,
-            connection_method="ssm",
+            connection_method=connection_method,
             ssm_target=instance_id,
             aws_profile=profile,
             aws_region=region,
             remote_port=remote_port,
-            provisioner_id=BUILTIN_PROVISIONER_ID,
+            provisioner_id=provisioner_id,
         )
         return inst.id
     except Exception as exc:  # pragma: no cover - non-fatal
@@ -380,6 +396,75 @@ def unregister_instance(instance_id_or_name: str) -> bool:
     return False
 
 
+#: What :func:`unregister_ecs_task` did. A bool cannot carry this: "there was no
+#: row" and "the row could not be removed" are both a falsy answer, and a caller
+#: that reports a teardown as complete has to tell them apart -- the first means
+#: nothing is left behind, the second means something is and nobody knows it.
+UNREGISTER_REMOVED = "removed"
+UNREGISTER_ABSENT = "absent"
+UNREGISTER_FAILED = "failed"
+
+
+def unregister_ecs_task(cluster: str, task_id: str) -> str:
+    """Remove the Instances record for one ECS task, by cluster and task id.
+
+    Answers :data:`UNREGISTER_REMOVED`, :data:`UNREGISTER_ABSENT` or
+    :data:`UNREGISTER_FAILED`.
+
+    :func:`unregister_instance` matches a needle against a record's whole
+    ``ssm_target``, which the Fargate lane's caller cannot supply: that target is
+    ``ecs:<cluster>_<task-id>_<runtime-id>`` and a teardown holds the task ARN,
+    which carries the cluster and the id but never the runtime id. So the record
+    is found by reading each ECS target back through :func:`split_ecs_target` and
+    comparing the two parts that identify the task.
+
+    Splitting with the registry's own reader rather than matching a
+    ``f"ecs:{cluster}_{task_id}_"`` prefix matters, because a cluster name may
+    contain an underscore: a prefix test would let one cluster's task remove a
+    row belonging to a differently-named cluster whose target happens to start
+    with the same characters.
+
+    Never raises, like its neighbours, so a teardown unwinding a cancellation is
+    not itself interrupted -- but a failure is REPORTED rather than swallowed, so
+    the caller can withhold a confirmation it cannot stand behind.
+
+    EVERY matching row goes, not the first. Two rows can name one task under
+    distinct ids: the launcher's own writer cannot produce that pair -- it dedupes
+    on the exact target, the target embeds the crew container's fixed runtime id,
+    and a re-launch gets a new task id -- but a hand-added Remote crew row naming
+    the same task with a different runtime id can. Returning on the first match
+    would leave the other addressing a stopped task, with no sweep to prune it,
+    since a stopped task is not listed for teardown at all.
+    """
+    if not cluster or not task_id:
+        return UNREGISTER_ABSENT
+    try:
+        from kiro_crew.instances.registry import InstancesRegistry
+    except Exception:  # pragma: no cover - instances feature absent
+        return UNREGISTER_ABSENT
+    removed = False
+    failed = False
+    try:
+        reg = InstancesRegistry()
+        for inst in reg.list():
+            parts = split_ecs_target(inst.ssm_target or "")
+            if parts is None or parts[0] != cluster or parts[1] != task_id:
+                continue
+            if reg.remove(inst.id):
+                removed = True
+            else:
+                failed = True
+    except Exception as exc:
+        logger.info("could not unregister ECS task %s/%s: %s", cluster, task_id, exc)
+        failed = True
+    # A failure outranks a removal: the caller uses this to decide whether it may
+    # still claim nothing of ours remains, and one row left behind is enough that
+    # it may not.
+    if failed:
+        return UNREGISTER_FAILED
+    return UNREGISTER_REMOVED if removed else UNREGISTER_ABSENT
+
+
 def _safe_ttl(ttl: str) -> str:
     """Constrain a TTL string to the ``<n>[hm]`` shape kirocrew token accepts."""
     return ttl if re.fullmatch(r"\d{1,3}[hm]", ttl or "") else "6h"
@@ -445,3 +530,156 @@ def _port_forward_error(proc: Optional[subprocess.Popen], local_port: int) -> st
     if proc.poll() is None:
         return f"SSM port-forward did not become ready on local port {local_port}."
     return f"SSM port-forward exited (rc={proc.returncode}) before local port {local_port} became ready."
+
+
+# ── The Fargate lane ──────────────────────────────────────────────────────────
+#
+# Deliberately NOT routed through :func:`connect` above. That function mints a
+# dashboard JWT and opens a browser, which is what a remote Kiro Crew GATEWAY
+# needs. A Fargate crew task serves something else: its only network listener is
+# the crew container's front process, a JSON turn API, and the Kiro Crew backend
+# inside the container is loopback-only and never bound. So there is no dashboard
+# to open and no dashboard token to mint, and forcing this lane through
+# :func:`connect` would fail on first real use -- it tears the tunnel down when
+# the mint fails, which for a task with no mint route is always.
+#
+# Reaching a DASHBOARD on a Fargate crew would mean adding a control-route handler
+# to the crew container's authenticated surface. That surface answers every
+# control path with a deliberate 404 (the front process authorises first and then
+# reports nothing is served, so an unauthorised caller cannot learn which paths
+# exist), and the image is digest-pinned with its own contract and test suite.
+# That is a product decision about how the container authenticates, not a
+# launcher change, so it is tracked separately rather than made here.
+
+
+#: The front process's OpenAI-compatible turn endpoint, and its liveness probe.
+#: Spelled here rather than imported: this module must not import the container's
+#: source, which is built into an image and is not a library of the gateway's.
+#: The pair is asserted against the container's own constants by a test, so a
+#: rename there fails the suite instead of silently printing a dead path.
+FARGATE_TURN_PATH = "/v1/chat/completions"
+FARGATE_HEALTH_PATH = "/health"
+
+
+@dataclass
+class FargateConnection:
+    """A live local forward onto a Fargate crew's turn API.
+
+    Carries no token and no browser state, because this lane has neither. ``url``
+    is the local BASE the caller dials; the turn and health paths hang off it.
+    """
+
+    ssm_target: str
+    local_port: int
+    remote_port: int
+    url: str = ""
+    turn_url: str = ""
+    ready: bool = False
+    error: str = ""
+    process: Optional[subprocess.Popen] = None
+
+    def close(self) -> None:
+        """Tear down the SSM port-forward child AND its plugin child."""
+        _kill_process_tree(self.process)
+
+
+def connect_fargate(
+    ssm_target: str,
+    *,
+    local_port: int,
+    remote_port: int,
+    profile: str = "",
+    region: str = "",
+) -> FargateConnection:
+    """Open a local forward onto a Fargate crew's turn API. Mints nothing.
+
+    Four steps, in this order for reasons each step names: preflight the task's
+    execute-command channel, open the forward, prove the local port is ours, and
+    return the base URL the caller dials.
+
+    The forward goes through :func:`ssm.open_port_forward`, not a child spawned
+    here. That is the single most important line in this function: the shared
+    opener carries ``assert_human_action("ssm:StartSession")``, the
+    free-port check, ``wait_for_local_port``'s process-aware bail, process-group
+    teardown, an absolutely-resolved ``aws`` head, a withheld PATH, DEVNULL stdio
+    and a fixed argv. A Fargate-specific child would have dropped all of it and
+    needed the human-action gate restored by hand.
+    """
+    parts = split_ecs_target(ssm_target)
+    if parts is None:
+        return FargateConnection(
+            ssm_target=ssm_target,
+            local_port=local_port,
+            remote_port=remote_port,
+            error=(
+                f"{ssm_target!r} is not an ECS task target "
+                f"(expected ecs:<cluster>_<task-id>_<runtime-id>)"
+            ),
+        )
+    cluster, task_id, _runtime_id = parts
+
+    # Preflight BEFORE opening anything. Both prerequisites are invisible in a
+    # failed tunnel: without this the user sees a forward that does not come up
+    # and nothing saying whether the channel was never enabled (unrecoverable) or
+    # the agent cannot reach ssmmessages.
+    readiness = ssm.task_exec_readiness(cluster, task_id, profile, region)
+    if not readiness.ready:
+        return FargateConnection(
+            ssm_target=ssm_target,
+            local_port=local_port,
+            remote_port=remote_port,
+            error=readiness.reason,
+        )
+
+    if not ssm.port_is_free(local_port):
+        return FargateConnection(
+            ssm_target=ssm_target,
+            local_port=local_port,
+            remote_port=remote_port,
+            error=(
+                f"local port {local_port} is already in use — close whatever is using it, "
+                f"or pass --local-port <n>, then retry."
+            ),
+        )
+
+    proc: Optional[subprocess.Popen] = ssm.open_port_forward(
+        ssm_target, remote_port, local_port, profile, region
+    )
+    # proc is passed so the wait bails when the SSM child dies, rather than
+    # latching onto an unrelated listener that appears on the same port.
+    ready = ssm.wait_for_local_port(local_port, proc=proc)
+    # The same foreign-listener recheck the gateway lane does. Only one process can
+    # bind the port: if a foreign one won the race our child failed to bind and
+    # exited, so a listener answering while proc is dead is NOT our tunnel. This
+    # lane sends no token, so the stake is lower than the gateway lane's -- but
+    # reporting success for a stranger's listener would point the user's turn
+    # requests, which carry their prompts, at that process.
+    if ready and proc is not None and proc.poll() is not None:
+        logger.warning(
+            "local port %d answered but the SSM child exited — a foreign listener won the "
+            "bind race; refusing to report it as the crew",
+            local_port,
+        )
+        ready = False
+
+    if not ready:
+        error = _port_forward_error(proc, local_port)
+        _terminate(proc)
+        return FargateConnection(
+            ssm_target=ssm_target,
+            local_port=local_port,
+            remote_port=remote_port,
+            error=error,
+            process=None,
+        )
+
+    base = f"http://127.0.0.1:{local_port}"
+    return FargateConnection(
+        ssm_target=ssm_target,
+        local_port=local_port,
+        remote_port=remote_port,
+        url=base,
+        turn_url=f"{base}{FARGATE_TURN_PATH}",
+        ready=True,
+        process=proc,
+    )

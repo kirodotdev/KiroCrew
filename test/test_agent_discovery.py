@@ -176,12 +176,12 @@ class TestProjectScopeDiscovery:
         clear_list_agents_cache()
         import kiro_crew.agent_discovery as ad
 
-        original = ad.is_sensitive_path
-        ad.is_sensitive_path = _sensitive
+        original = ad.is_sensitive_canonical_path
+        ad.is_sensitive_canonical_path = _sensitive
         try:
             names = [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))]
         finally:
-            ad.is_sensitive_path = original
+            ad.is_sensitive_canonical_path = original
         assert names == []
 
     def test_cache_does_not_leak_between_projects(self, fake_home, tmp_path):

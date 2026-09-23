@@ -178,8 +178,23 @@ def _reaper_remediation(profile: str, region: str) -> str:
     Rendered with the request's real profile/region so the 409 payload is
     directly actionable. Installing the reaper is an operator step by design
     (the stack creates an IAM role, which KiroCrew never does itself).
+
+    The script is named by ABSOLUTE path, resolved from the live skills
+    directory. ``install-reaper.sh`` is not on anyone's PATH, so a bare name is
+    not a command the user can run, and the path is not a constant either: an
+    install rooted at ``~/.kirocrew`` and one rooted at ``~/.kiro/crew`` both
+    occur, so a hardcoded spelling is wrong on one of them. Falls back to the
+    bare name if the skills root cannot be resolved.
     """
-    parts = ["install-reaper.sh"]
+    script = "install-reaper.sh"
+    try:
+        from kiro_crew.skills import skills_dir
+
+        candidate = skills_dir() / "artifact-deploy" / "scripts" / "install-reaper.sh"
+        script = str(candidate)
+    except Exception:  # noqa: BLE001 — remediation text must never break the 409
+        pass
+    parts = [script]
     if profile:
         parts += ["--profile", profile]
     if region:
@@ -547,6 +562,123 @@ def _stage_artifact_html(kind: str, content: str, name: str) -> tuple[list, str,
     return findings, tmp_dir, len(html.encode("utf-8"))
 
 
+class WebAppRootError(Exception):
+    """A kind=webapp artifact whose servable static root cannot be resolved.
+
+    Carries two strings on purpose: ``str(exc)`` is the plain sentence a
+    non-AWS reader gets in the banner, and ``details`` holds the field and
+    directory names that only mean something to an operator — shown behind the
+    UI's Details toggle rather than in the red banner.
+    """
+
+    def __init__(self, message: str, details: str = "") -> None:
+        super().__init__(message)
+        self.details = details
+
+
+def resolve_webapp_public_dir(slug: str, art: Any | None = None) -> Path | None:
+    """Resolve + authorize a kind=webapp artifact's servable static root.
+
+    Returns None when the artifact is NOT kind=webapp — the caller then renders
+    its content as standalone HTML, the pre-existing behaviour for every other
+    kind. Raises :class:`WebAppRootError` when the artifact IS a webapp but has
+    no servable root, so a caller can report *why* instead of failing blankly.
+    Propagates the store's own not-found / invalid errors.
+
+    The root is REQUIRED to be ``app_dir/public``, the deploy contract's own
+    layout. ``app_dir`` itself is deliberately NOT a fallback: a directory that
+    merely happens to contain an ``index.html`` would otherwise be published
+    whole — sources, config JSON, dotfiles — and the destinations reached through
+    here are a world-readable CloudFront URL and the preview channel, so a
+    fallback would leak the app's source tree in both. ``app_dir`` is
+    LLM-written, so it is re-checked against the allow-listed roots here rather
+    than trusted from the metadata.
+
+    This is the ONE place that rule lives: the preview channel
+    (``dashboard/handlers/webapp_preview.py``) delegates here, so the two
+    surfaces cannot drift into disagreeing about what is servable.
+
+    Pass ``art`` when the caller has ALREADY read the artifact and needs the
+    root to describe that same read. Two adjacent reads of one slug can
+    straddle a delete-and-recreate, and a caller pairing the root with a
+    separately-read generation would then hold identity from one artifact and
+    content from another. Omitted, this reads the artifact itself, which is the
+    right thing for a caller that wants only the root.
+
+    Blocking (artifact store + filesystem) — call via ``asyncio.to_thread``.
+    """
+    if not _HAS_ARTIFACTS:
+        return None
+    if art is None:
+        art = get_default_store().get(slug)
+    meta = getattr(art, "webapp_metadata", None)
+    if art.kind != "webapp" or meta is None:
+        return None
+    raw = (getattr(meta, "app_dir", "") or "").strip()
+    if not raw:
+        raise WebAppRootError(
+            "This app has no saved folder on this machine, so there is nothing "
+            "to publish. Ask the agent to rebuild it.",
+            "webapp_metadata.app_dir is empty",
+        )
+    try:
+        app_dir = Path(os.path.expanduser(raw)).resolve()
+    except (OSError, ValueError):
+        # ValueError: embedded NUL in a crafted app_dir. The write path rejects
+        # control characters, but metadata predating that validation must fail
+        # closed here rather than raise OSError out of the handler.
+        raise WebAppRootError(
+            "This app's saved folder cannot be read, so there is nothing to "
+            "publish.",
+            f"webapp_metadata.app_dir could not be resolved: {raw!r}",
+        ) from None
+    if not app_dir.is_dir():
+        raise WebAppRootError(
+            "This app's folder is gone from this machine, so there is nothing "
+            "to publish. Ask the agent to rebuild it.",
+            f"webapp_metadata.app_dir does not exist: {app_dir}",
+        )
+    for root in _allowed_local_roots():
+        try:
+            app_dir.relative_to(root)
+            break
+        except ValueError:
+            continue
+    else:
+        raise WebAppRootError(
+            "This app is saved outside the folders Kiro Crew is allowed to "
+            "publish from, so it cannot be published from here.",
+            f"webapp_metadata.app_dir {app_dir} is outside the allowed local "
+            "roots",
+        )
+    public = app_dir / "public"
+    if not public.is_dir():
+        raise WebAppRootError(
+            "This app has not been built yet, so there is no finished page to "
+            "publish. Ask the agent to build it, then try again.",
+            f"no public/ directory under {app_dir} — the deploy contract's "
+            "static root is app_dir/public",
+        )
+    try:
+        resolved = public.resolve()
+        # `public` may itself be a symlink planted in a crafted app_dir tree.
+        # The resolved root must stay INSIDE the validated app_dir.
+        resolved.relative_to(app_dir)
+    except (OSError, ValueError):
+        raise WebAppRootError(
+            "This app's built folder points somewhere outside the app, so it "
+            "cannot be published.",
+            f"{public} resolves outside its app_dir {app_dir}",
+        ) from None
+    if not (resolved / "index.html").is_file():
+        raise WebAppRootError(
+            "This app's built folder has no home page, so the published link "
+            "would not open. Ask the agent to rebuild it.",
+            f"no index.html in {resolved}",
+        )
+    return resolved
+
+
 def _dir_contains_sensitive(src: Path, resolved: Path) -> bool:
     """Recursive sensitive-path walk. Blocking -- call via asyncio.to_thread."""
     if is_sensitive_path(str(src)) or is_sensitive_path(str(resolved)):
@@ -675,19 +807,61 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     tmp_dir: str | None = None
     _staged_path: Path | None = None
     try:
+        # A kind=webapp artifact carries a real on-disk app tree, not deployable
+        # HTML, so it resolves to a static root and then travels the SAME route a
+        # local_dir deploy takes below. That route owns the staging snapshot, the
+        # symlink and sensitive-path refusals, the size guard and the content
+        # scan, and a webapp needs every one of them. None means "not a webapp":
+        # the artifact's own content is staged as standalone HTML, unchanged.
+        webapp_root: Path | None = None
+        # The slug's generation as read by the SAME lookup that supplies the
+        # content being deployed. Capturing it any later leaves a window where a
+        # delete-and-recreate is invisible: the original snapshot would deploy
+        # while the fence recorded the replacement's generation, so the
+        # replacement would be handed the deployment's URL and lifecycle.
+        deployed_generation: str = ""
         if artifact_slug:
             if local_dir:
                 return 400, {"error": "provide exactly one of artifact_slug or local_dir"}
             if not _HAS_ARTIFACTS:
                 return 500, {"error": "artifact store unavailable"}
 
-            def _resolve_artifact(slug: str) -> tuple[list["Finding"], str, int]:
-                """Blocking helper: store lookup + stage in one thread hop."""
+            def _resolve_webapp(slug: str) -> tuple[Path | None, str]:
+                """Blocking helper: generation + webapp root in one thread hop."""
+                # ONE read feeds both the generation and the content root, so
+                # the identity always describes the bytes being deployed. An
+                # absent or blank generation means the fence cannot be applied,
+                # not that it passes: the writeback skips the comparison.
                 art = get_default_store().get(slug)
-                return _stage_artifact_html(art.kind, art.content or "", art.name or "")
+                generation = getattr(art, "created_at", "") or ""
+                return resolve_webapp_public_dir(slug, art), generation
 
             try:
-                findings, staged_dir, byte_size = await asyncio.to_thread(
+                webapp_root, deployed_generation = await asyncio.to_thread(
+                    _resolve_webapp, artifact_slug)
+            except ArtifactNotFoundError:
+                return 404, {"error": f"artifact '{artifact_slug}' not found"}
+            except WebAppRootError as e:
+                # A webapp whose root is not publishable: say WHICH precondition
+                # failed. The caller turns this into the "Deploy via agent"
+                # affordance rather than a dead button. Plain sentence in
+                # `error`, field/directory names in `details`.
+                payload: dict[str, Any] = {
+                    "error": str(e), "code": "webapp_root_unavailable"}
+                if getattr(e, "details", ""):
+                    payload["details"] = e.details
+                return 400, payload
+        if artifact_slug and webapp_root is None:
+
+            def _resolve_artifact(slug: str) -> tuple[list["Finding"], str, int, str]:
+                """Blocking helper: store lookup + stage in one thread hop."""
+                art = get_default_store().get(slug)
+                findings, staged, size = _stage_artifact_html(
+                    art.kind, art.content or "", art.name or "")
+                return findings, staged, size, getattr(art, "created_at", "") or ""
+
+            try:
+                findings, staged_dir, byte_size, deployed_generation = await asyncio.to_thread(
                     _resolve_artifact, artifact_slug)
             except ArtifactNotFoundError:
                 return 404, {"error": f"artifact '{artifact_slug}' not found"}
@@ -696,12 +870,23 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             tmp_dir = staged_dir
             src_dir = staged_dir
         else:
-            # Validate the LLM-influenceable path via a validation.py schema
-            # (type/length/charset) BEFORE any filesystem/subprocess use.
-            try:
-                local_dir = validate_field(local_dir, _LOCAL_DIR_SPEC)
-            except ValidationError as e:
-                return 400, {"error": f"invalid local_dir: {e}"}
+            # A webapp root is resolved SERVER-side from the artifact's own
+            # metadata and already confined to an allow-listed root, so it skips
+            # _LOCAL_DIR_SPEC's charset: that pattern is there to sanitize
+            # caller-supplied text, and applying it to a resolved project path
+            # would refuse a legitimate directory name containing '+' or
+            # non-ASCII characters. Every filesystem check below — normalization,
+            # absoluteness, containment, the sensitive-path walk, the staging
+            # snapshot and the scan — still runs on it unchanged.
+            if webapp_root is not None:
+                local_dir = str(webapp_root)
+            else:
+                # Validate the LLM-influenceable path via a validation.py schema
+                # (type/length/charset) BEFORE any filesystem/subprocess use.
+                try:
+                    local_dir = validate_field(local_dir, _LOCAL_DIR_SPEC)
+                except ValidationError as e:
+                    return 400, {"error": f"invalid local_dir: {e}"}
             # CodeQL path expression: string-level normalization barrier
             # BEFORE any Path construction — reject relative paths explicitly.
             local_dir_norm = os.path.normpath(os.path.expanduser(local_dir))
@@ -981,11 +1166,23 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             pass
 
         if not manifest_bucket and ttl_hours != 0:
-            # Precondition failures render the EXACT operator command
-            # with the request's real profile/region so remediation is
-            # copy-paste, not archaeology.
+            # Two audiences, two fields. `error` is the sentence a non-AWS person
+            # reads in the banner: what happened, and what they can do next.
+            # `details` carries the stack and parameter names, which mean nothing
+            # to that reader but are exactly what an operator (or the MCP tool's
+            # LLM caller, which needs ttl_hours=0 to retry correctly) acts on;
+            # the UI shows it behind a Details toggle. `remediation` is the
+            # runnable command. `code` is what the dashboard keys its two
+            # affordances off, so the wording stays free to change without
+            # silently turning the buttons off.
             return 409, {
                 "error": (
+                    f"This deploy is set to expire in {ttl_hours} hours, but your "
+                    "AWS account has no auto-cleanup installed yet. Deploy it as "
+                    "permanent instead, or install auto-cleanup first."
+                ),
+                "code": "reaper_required",
+                "details": (
                     "Finite-TTL deploys require the reaper base stack "
                     "(kirocrew-deploy-base). Use ttl_hours=0 for persistent "
                     "or install the reaper (install-reaper.sh)."
@@ -1009,6 +1206,13 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             if reaper_rc != 0:
                 return 409, {
                     "error": (
+                        f"This deploy is set to expire in {ttl_hours} hours, but "
+                        "your AWS account's auto-cleanup is not finished "
+                        "installing. Deploy it as permanent instead, or finish "
+                        "installing auto-cleanup first."
+                    ),
+                    "code": "reaper_required",
+                    "details": (
                         "Finite-TTL deploys require the reaper stack "
                         "(kirocrew-deploy-reaper). Install the reaper "
                         "(install-reaper.sh) or use ttl_hours=0 for persistent."
@@ -1099,28 +1303,60 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if manifest_write_failed and ttl_hours == 0:
             result["warning"] = "TTL manifest upload failed (non-critical for persistent deploys)"
 
-        # Persist the strong-identity field into the artifact's
-        # webapp_metadata so teardown can cross-verify the manifest belongs
-        # to THIS deployment (slug alone is mutable/forgeable). Best-effort:
-        # a metadata write failure must not fail a successful deploy.
-        if artifact_slug and result.get("distribution_id"):
-            def _persist_dist_id() -> None:
+        # Persist the deployment into the artifact's webapp_metadata:
+        # `distribution_id` is the strong-identity field teardown cross-verifies
+        # the manifest against (slug alone is mutable/forgeable), and the
+        # public_url / lifecycle / profile fields are what flip the artifact card
+        # and the Deployments table out of "not deployed".
+        #
+        # This is done HERE rather than by the caller because every route that
+        # deploys an artifact needs it: a dashboard-initiated deploy has no agent
+        # to write these fields on its behalf, so server-side is what lets the
+        # direct confirm and the pending confirm both inherit them.
+        #
+        # Best-effort: a metadata write failure must not fail a successful deploy.
+        if artifact_slug and (result.get("distribution_id") or result.get("url")):
+            def _persist_deployment() -> None:
                 store = get_default_store()
                 art = store.get(artifact_slug)
+                # Only the generation whose content was staged and deployed gets
+                # the deploy identity.
+                if (deployed_generation
+                        and getattr(art, "created_at", "") != deployed_generation):
+                    logger.warning(
+                        "deploy writeback skipped for %s: the slug holds a "
+                        "different artifact than the one deployed", artifact_slug)
+                    return
                 meta = art.webapp_metadata
-                if meta is not None and meta.deploy_target is not None:
-                    meta.deploy_target.distribution_id = str(
-                        result.get("distribution_id", ""))[:128]
-                    # event_type must be in artifacts.ALLOWED_EVENT_TYPES --
-                    # "edited" is the metadata-update event; a custom name
-                    # would raise and silently skip persistence.
-                    store.update(artifact_slug, webapp_metadata=meta,
-                                 actor="deploy", event_type="edited")
+                if meta is None:
+                    return
+                if meta.deploy_target is not None:
+                    if result.get("distribution_id"):
+                        meta.deploy_target.distribution_id = str(
+                            result.get("distribution_id", ""))[:128]
+                    if result.get("url"):
+                        meta.deploy_target.public_url = str(result.get("url", ""))[:2048]
+                    if profile:
+                        meta.deploy_target.profile = profile[:128]
+                    if region:
+                        meta.deploy_target.region = region[:128]
+                if meta.lifecycle is not None:
+                    meta.lifecycle.status = "live"
+                    meta.lifecycle.created_at = now_iso
+                    meta.lifecycle.ttl_hours = ttl_hours
+                    meta.lifecycle.persistent = ttl_hours == 0
+                    # None, not "", is this field's documented persistent value.
+                    meta.lifecycle.expires_at = expires_iso or None
+                # event_type must be in artifacts.ALLOWED_EVENT_TYPES --
+                # "edited" is the metadata-update event; a custom name
+                # would raise and silently skip persistence.
+                store.update(artifact_slug, webapp_metadata=meta,
+                             actor="deploy", event_type="edited")
             try:
-                await asyncio.to_thread(_persist_dist_id)
+                await asyncio.to_thread(_persist_deployment)
             except Exception as e:  # noqa: BLE001 -- best-effort persistence
                 logger.warning(
-                    "could not persist distribution_id into artifact %s: %s",
+                    "could not persist deployment into artifact %s: %s",
                     artifact_slug, e)
 
         return 200, result
@@ -1381,6 +1617,13 @@ async def _handle_get_config(_request: web.Request) -> web.Response:
     enabled = await asyncio.to_thread(admits_cloud_deployment, "aws")
     if isinstance(cfg, dict):
         cfg = {**cfg, "cloudDeploymentEnabled": enabled}
+        # The setup guide's optional auto-cleanup step needs a command the user
+        # can actually paste, and the browser cannot resolve where the skill is
+        # installed — the path differs between a ~/.kirocrew and a ~/.kiro/crew
+        # root. Resolved here through the same helper the reaper 409 uses, so the
+        # guide and the refusal can never print different commands. Profile and
+        # region are left to the page, which knows the user's current selection.
+        cfg = {**cfg, "reaperInstallScript": _reaper_remediation("", "")}
     return web.json_response(cfg)
 
 
@@ -2299,7 +2542,37 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
             params["override_scan"] = True
             _audit("pending_confirm", entry_id, "allowed",
                    error="human override_scan on non-credential findings")
-    status, payload = await _do_deploy(params)
+    # `_do_deploy` converts an engine.AWSError into a 502 itself, but anything
+    # else it raises -- a subprocess.TimeoutExpired from a slow aws call, an OSError
+    # from the staging tree -- would escape past the re-add below. The entry has
+    # already been CLAIMED at this point, so an escaping exception loses it: the
+    # row disappears from the card, the response carries no usable body, and the
+    # user is left with neither a retry nor a reason. Catch everything, put the
+    # entry back, and answer with a plain sentence plus the exception text in
+    # `details` (the banner/Details split every other refusal here uses).
+    try:
+        status, payload = await _do_deploy(params)
+    except Exception as exc:  # noqa: BLE001 -- the entry must survive any failure
+        await asyncio.to_thread(add_pending, entry)
+        _audit("pending_confirm", entry_id, "failure", error=f"{type(exc).__name__}: {exc}")
+        logger.exception("pending confirm %s failed before returning a status", entry_id)
+        # The dict stays a visible literal and only the exception text is
+        # redacted: `test_error_code_contract.py` ratchets bodies it cannot read
+        # statically, so wrapping the whole dict in a call hides the `code` from
+        # the gate even though the field is right there.
+        return web.json_response(
+            {
+                "error": (
+                    "The deploy stopped partway and it is not known whether "
+                    "anything was published, so check the Deployments list "
+                    "before retrying. The entry is back in Pending "
+                    "confirmations."
+                ),
+                "code": "deploy_interrupted",
+                "details": _redact_text(f"{type(exc).__name__}: {exc}"),
+            },
+            status=502,
+        )
     if status != 200 or payload.get("requires_confirm"):
         # Deploy failed — re-add entry so user can retry
         await asyncio.to_thread(add_pending, entry)

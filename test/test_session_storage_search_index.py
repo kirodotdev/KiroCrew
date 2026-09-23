@@ -23,6 +23,17 @@ from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
 pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite built without FTS5")
 
 
+@pytest.fixture(autouse=True)
+def _no_index_quiet_window(monkeypatch):
+    """Zero the backfill quiet window: ``_seeded_log`` appends and indexes in the
+    same breath, so the production deferral would skip both sessions and the
+    ``remaining == 0`` seed assertion would fail before any test ran.
+    """
+    from kiro_crew import history_search
+
+    monkeypatch.setattr(history_search, "_INDEX_QUIET_WINDOW_SECS", 0.0)
+
+
 def _seeded_log(tmp_path):
     """A log with two indexed sessions, and the index that vouches for them."""
     log = ConversationLog(base_dir=tmp_path / "sessions")

@@ -30,13 +30,20 @@ from kiro_crew.mcp_discovery import (
 
 
 def _request(state) -> object:
-    """Minimal stand-in for the aiohttp request the handler reads."""
+    """Minimal stand-in for the aiohttp request the handler reads.
+
+    ``POST /api/mcp/probe`` is owner-gated
+    (``handlers._shared.require_owner_dashboard_request``), and the predicate reads
+    the request as a mapping as well as calling ``.get`` -- so the stand-in carries
+    the same three reads, holding the standalone-local owner claims.
+    """
 
     class _App(dict):
         pass
 
-    class _Req:
+    class _Req(dict):
         def __init__(self, app):
+            super().__init__(user="local-app", app="")
             self.app = app
 
     app = _App()

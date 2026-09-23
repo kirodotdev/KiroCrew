@@ -2011,18 +2011,44 @@ def _collapse_ws(s: str) -> str:
     return " ".join(s.split())
 
 
+_TRAILING_ELLIPSIS_RE = re.compile(r"\s*(?:\.\.\.|\u2026)\s*$")
+
+
+def _is_argument_digest_of(title: str, cmd: str) -> bool:
+    """True when ``title`` is a digest OF ``cmd`` rather than a sentence ABOUT it.
+
+    kiro-cli titles a shell call it received no purpose for by joining fragments
+    of the command's own arguments with ``, `` and cutting the tail with an
+    ellipsis (``--title, --text, Three, 1. ...``). Every fragment is a verbatim
+    piece of the command, so the title says nothing the command does not already
+    say. A description the model wrote carries words the command does not
+    contain, so it never matches. Case-sensitive on purpose: a one-word sentence
+    (``Rebuild`` for ``make rebuild``) stays a description. Mirror of
+    ``isArgumentDigestOf``.
+    """
+    body = _TRAILING_ELLIPSIS_RE.sub("", title)
+    fragments = [f.strip() for f in re.split(r",\s*", body) if f.strip()]
+    if not fragments:
+        return False
+    haystack = _collapse_ws(cmd)
+    return all(f in haystack for f in fragments)
+
+
 def backend_shell_description(inp: _Input) -> str | None:
     """R0.0 -- the backend's own description of a shell call, when the transport
     sent one as the title; None otherwise. Mirror of ``backendShellDescription``.
 
     A shell title is a stub that names no command (``shell``, ``Run Command``),
     the command itself (kiro-cli's ``Running: <cmd>``, the gateway's
-    ``_select_tool_title`` putting the command on the row), or a sentence the
-    model wrote for this call (KAS with kiro-team/kiro-agent#2753,
-    claude-agent-acp's Bash ``description``). Only the third is a description: a
-    non-empty, non-stub title that differs from ``raw_input["command"]`` once
-    whitespace is collapsed. With no command in the arguments the title is taken
-    AS the command and never as a description.
+    ``_select_tool_title`` putting the command on the row), a digest of the
+    command's own arguments (kiro-cli's purpose-less auto-title, see
+    ``_is_argument_digest_of``), or a sentence the model wrote for this call
+    (KAS with kiro-team/kiro-agent#2753, claude-agent-acp's Bash
+    ``description``). Only the fourth is a description: a non-empty, non-stub
+    title that differs from ``raw_input["command"]`` once whitespace is
+    collapsed and is not assembled from the command's own pieces. With no
+    command in the arguments the title is taken AS the command and never as a
+    description.
 
     ``raw_input["description"]`` is deliberately not read: KAS keeps the
     argument but drops it from the title when the user edited the command
@@ -2039,6 +2065,8 @@ def backend_shell_description(inp: _Input) -> str | None:
         return None
     t = _collapse_ws(re.sub(r"^Running:\s*", "", title))
     if not t or t == _collapse_ws(cmd):
+        return None
+    if _is_argument_digest_of(t, cmd):
         return None
     return title
 

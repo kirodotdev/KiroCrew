@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
-import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster } from '../components/WebPreviewPanel'
+import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster, httpEmbedRefusal, isPotentiallyTrustworthyHost } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
 // the button renders under happy-dom (which has no mediaDevices.getDisplayMedia).
@@ -317,6 +317,10 @@ describe('WebPreviewPanel', () => {
 
       const shown = 'http://0.0.0.0:5173/very/long/path'
       expect(screen.getByText("Can't embed an http:// page here")).toBeInTheDocument()
+      // `0.0.0.0` is not loopback, so this one really IS the engine's mixed-content
+      // block — the card must say so, and must not blame the dashboard's policy.
+      expect(screen.getByTestId('web-preview-embed-refusal-browser')).toHaveTextContent(/mixed content/)
+      expect(screen.queryByTestId('web-preview-embed-refusal-policy')).toBeNull()
       expect(screen.getByText(shown).tagName).toBe('CODE')
       expect(screen.getByText('Open in browser').closest('a')).toHaveAttribute('href', shown)
       expect(screen.queryByText(`Open ${shown}`)).toBeNull()
@@ -366,6 +370,78 @@ describe('WebPreviewPanel', () => {
     } finally {
       window.location.href = originalHref
     }
+  })
+
+  // The engine does NOT block `*.localhost` (it is potentially trustworthy); the
+  // dashboard's own embed allowlist does. The card has to name that blocker, or
+  // a reader is sent into a mixed-content investigation for a policy problem
+  // (#10696). The copy names the dashboard, not the CSP: with instances enabled
+  // the CSP admits `*.localhost` while the panel still refuses it.
+  it('blames the dashboard policy, not the browser, for a *.localhost refusal', () => {
+    const originalHref = window.location.href
+    window.location.href = 'https://dashboard.example.com/'
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      const input = screen.getByLabelText('Preview URL')
+      fireEvent.change(input, { target: { value: 'http://myapp.localhost:5173/' } })
+      fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+      const reason = screen.getByTestId('web-preview-embed-refusal-policy')
+      expect(reason).toHaveTextContent(/this dashboard only embeds http:\/\/ pages/)
+      expect(reason).toHaveTextContent(/gateway policy, not a browser block/)
+      expect(reason).not.toHaveTextContent(/mixed content/)
+      expect(screen.queryByTestId('web-preview-embed-refusal-browser')).toBeNull()
+      // The escape hatch survives on every branch — it is what makes the state
+      // recoverable.
+      expect(screen.getByText('Open in browser').closest('a'))
+        .toHaveAttribute('href', 'http://myapp.localhost:5173/')
+    } finally {
+      window.location.href = originalHref
+    }
+  })
+
+  describe('httpEmbedRefusal', () => {
+    it('does not arise on an http dashboard or for an https target', () => {
+      expect(httpEmbedRefusal('http://myapp.localhost:5173/', 'http:')).toBeNull()
+      expect(httpEmbedRefusal('http://0.0.0.0:5173/', 'http:')).toBeNull()
+      expect(httpEmbedRefusal('https://myapp.localhost:5173/', 'https:')).toBeNull()
+    })
+
+    it('admits the hosts the dashboard frame-src always carries', () => {
+      expect(httpEmbedRefusal('http://127.0.0.1:5173/', 'https:')).toBeNull()
+      expect(httpEmbedRefusal('http://localhost:5173/', 'https:')).toBeNull()
+    })
+
+    it.each([
+      ['http://myapp.localhost:5173/'],
+      ['http://127.0.0.2:5173/'],
+      ['http://[::1]:5173/'],
+    ])('names the dashboard policy for a trustworthy host with no frame-src entry (%s)', (url) => {
+      expect(httpEmbedRefusal(url, 'https:')).toBe('policy')
+    })
+
+    it.each([
+      ['http://0.0.0.0:5173/'],
+      ['http://example.com/'],
+      ['http://10.0.0.7:5173/'],
+    ])('names the browser for a host the engine blocks as mixed content (%s)', (url) => {
+      expect(httpEmbedRefusal(url, 'https:')).toBe('browser')
+    })
+
+    it('fails closed to the browser wording for an unparseable URL', () => {
+      expect(httpEmbedRefusal('http://exa mple/', 'https:')).toBe('browser')
+    })
+  })
+
+  describe('isPotentiallyTrustworthyHost', () => {
+    it('follows W3C Secure Contexts: loopback names and 127/8, not 0.0.0.0', () => {
+      for (const h of ['localhost', 'app.localhost', 'a.b.localhost', '127.0.0.1', '127.255.255.254', '[::1]', '::1']) {
+        expect(isPotentiallyTrustworthyHost(h), h).toBe(true)
+      }
+      for (const h of ['0.0.0.0', 'example.com', 'localhost.example.com', '1270.0.0.1', '127.0.0', '', '10.0.0.1']) {
+        expect(isPotentiallyTrustworthyHost(h), h).toBe(false)
+      }
+    })
   })
 
   // A public http:// host never reaches the frame on this transport at all: it is
@@ -1417,9 +1493,10 @@ describe('WebPreviewPanel — address bar launcher (non-native transport)', () =
     const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
     expect(frame.src).toBe('http://127.0.0.1:45613/')
     expect(screen.queryByText('Preview server not reachable')).toBeNull()
-    // The header names THIS chat's browser by the session name the framed sidebar
-    // lists (visible label, not a tooltip), and one line says how the next page is opened.
-    expect(screen.getByText("This chat's browser")).toBeInTheDocument()
+    // The header names what THIS chat launched, by the session name the framed
+    // sidebar lists (visible label, not a tooltip), and one line says how the next
+    // page is opened.
+    expect(screen.getByText('Opened from this chat')).toBeInTheDocument()
     expect(screen.getByTestId('web-preview-session-name').textContent).toBe('panel-1234abcd')
     // Narrow widths (320px): the label group is the row's only flexible item and
     // truncates, so the header's controls — the way back to the preview bar —
@@ -1428,8 +1505,29 @@ describe('WebPreviewPanel — address bar launcher (non-native transport)', () =
     expect(group.className).toMatch(/\bmin-w-0\b/)
     expect(group.className).toMatch(/\bflex-1\b/)
     expect(group.className).not.toMatch(/\bshrink-0\b/)
-    expect(screen.getByText("This chat's browser").className).toMatch(/\btruncate\b/)
+    expect(screen.getByText('Opened from this chat').className).toMatch(/\btruncate\b/)
     expect(screen.getByText(/^Click the padlock above the page/)).toBeInTheDocument()
+  })
+
+  it('states what this chat launched, never which session the frame is showing', async () => {
+    // #5940. The reveal that points the framed dashboard's one viewport at a
+    // session is machine-wide, so an agent or CLI launch for another chat's
+    // session -- or a second dashboard tab -- moves the frame with no signal this
+    // panel can see. The header therefore states a launch FACT and withdraws the
+    // ownership claim: "this chat's browser" described a page the reader was
+    // often not looking at, and nothing here can substantiate a stronger reading.
+    // Asserted as the absence of the old wording as well as the presence of the
+    // new one, because a header that regained the claim would still satisfy the
+    // presence half on its own.
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    submit('google.com')
+    await screen.findByTitle('Live browser session')
+    const label = screen.getByTestId('web-preview-session-label')
+    expect(label).toHaveTextContent('Opened from this chat')
+    expect(label).toHaveTextContent('panel-1234abcd')
+    expect(label.textContent).not.toMatch(/this chat's browser/i)
+    // Nor anywhere else in the panel: the claim must not survive by moving.
+    expect(document.body.textContent).not.toMatch(/this chat's browser/i)
   })
 
   it('the padlock hint is one sentence and stays dismissed in this browser once dismissed', async () => {

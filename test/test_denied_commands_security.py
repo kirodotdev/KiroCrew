@@ -96,7 +96,9 @@ class TestCatalog:
         # file tools, so a text regex over the command added refusals of read-only
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
-        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
+        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112). The
+        # flagged-file delivery self-protection floor added no row: it is an
+        # ungated argv-floor subcommand (see ``_UNGATED_TEMPLATES``), not a catalog rule.
         assert len(BUILTIN_DENIED_RULES) == 112
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
@@ -311,6 +313,7 @@ class TestSelfProtectionFlagInterposition:
     _UNGATED_TEMPLATES = {
         "self-protection-restart": "kirocrew {flags} restart",
         "self-protection-update": "kirocrew {flags} update",
+        "self-protection-file-delivery": "kirocrew {flags} file-delivery approve",
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
     }
@@ -452,6 +455,7 @@ class TestSelfProtectionFlagInterposition:
     _SUBCOMMANDS = {
         "self-protection-restart": ["restart"],
         "self-protection-update": ["update"],
+        "self-protection-file-delivery": ["file-delivery", "approve"],
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
     }
@@ -500,8 +504,85 @@ class TestSelfProtectionFlagInterposition:
                     cmd, denied_regexes=effective
                 ), f"{rule_id} not denied under {label}: {cmd!r}"
 
-    _QUOTES = ('"', "'")
-    # Single-token global options. ``-v --no-jail`` from ``_FLAGS`` is two
+    # ``file-delivery``'s ``action`` positional is REQUIRED, so neither form below
+    # dispatches: the bare one exits 2 and the help one prints usage and exits 0.
+    # The help form is a GOLDEN PATH -- the deny reason a blocked ``file_send``
+    # hands the model points at this command family, so quoting its usage is the
+    # documented next step -- and the floor refused it while it keyed on the
+    # subcommand word alone. Anything argparse would dispatch carries ``approve``.
+    _FILE_DELIVERY_NON_DISPATCHING = (
+        "kirocrew file-delivery",
+        "kirocrew file-delivery --help",
+        "kirocrew file-delivery -h",
+        "kirocrew -v file-delivery --help",
+        "python -m kiro_crew file-delivery --help",
+    )
+
+    def test_the_file_delivery_floor_allows_the_forms_that_dispatch_nothing(self):
+        from kiro_crew import security
+
+        effective = self._effective()
+        for cmd in self._FILE_DELIVERY_NON_DISPATCHING:
+            assert not security.is_denied(cmd, denied_regexes=effective), (
+                "the read-only help form of the new verb is a golden path and must not "
+                f"be refused: {cmd!r}"
+            )
+
+    def test_the_file_delivery_floor_covers_every_dispatchable_verb(self):
+        """The floor's verb set IS the parser's ``choices``, derived not restated.
+
+        A verb added to the CLI without a decision here would otherwise walk past
+        the floor silently, which is the failure mode the enumeration invites.
+
+        Read by AST rather than by calling a builder, because ``cli.py`` builds its
+        parser inline in ``main()``; and by AST rather than by grepping the source,
+        because a substring assertion stays green when the construct it names moves
+        or is wrapped.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew import cli
+        from kiro_crew.security import argv_floor
+
+        tree = ast.parse(inspect.getsource(cli))
+        choices: "list[str] | None" = None
+        required = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "add_argument"
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "file_delivery_parser"
+            ):
+                continue
+            if not (node.args and isinstance(node.args[0], ast.Constant)):
+                continue
+            if node.args[0].value != "action":
+                continue
+            kwargs = {kw.arg: kw.value for kw in node.keywords}
+            listed = kwargs.get("choices")
+            assert isinstance(listed, (ast.List, ast.Tuple, ast.Set)), (
+                "the file-delivery action's choices must stay a literal this test can "
+                "read; a computed value would make the floor's set unverifiable here"
+            )
+            choices = [e.value for e in listed.elts if isinstance(e, ast.Constant)]
+            required = "nargs" not in kwargs
+
+        assert choices, "the file-delivery action positional was not found in cli.py"
+        assert argv_floor._SELF_FILE_DELIVERY_VERBS == frozenset(choices), (
+            "the file-delivery floor's verb set must equal the CLI's own choices; a new "
+            "verb needs a deliberate decision here, not a silent pass"
+        )
+        assert required, (
+            "the action positional must stay REQUIRED -- an optional one would make a "
+            "bare 'kirocrew file-delivery' dispatch, and this floor allows that form"
+        )
+
+    _QUOTES = ('"', "'")  # Single-token global options. ``-v --no-jail`` from ``_FLAGS`` is two
     # tokens and cannot be quoted as one flag, so it has no quoted cell.
     _SINGLE_TOKEN_FLAGS = ("-v", "-vv", "--verbose", "--no-jail")
 
@@ -2395,16 +2476,18 @@ class TestInterpreterArgvLiteralMint:
         )
         assert _denied_by(assembled) == _RULE_MINT + "-argv"
 
-    def test_a_dynamic_exec_inline_payload_is_denied_as_opaque(self):
-        """An inline payload using a decode/exec primitive is DENIED even without the literal.
+    def test_a_base64_wrapped_mint_is_decoded_and_denied(self):
+        """An inline payload hiding the mint in a base64 literal is DENIED -- by decoding it.
 
-        `base64.b64decode(...)` / `exec(...)` / `__import__(...)` are how a payload reaches the
-        CLI with the package name never appearing as a token. A command-text rule cannot see
-        THROUGH them, so on the credential-mint path the fail-closed reading is "an inline
-        program I cannot decode is refused" — the dynamic-exec verbs are matched and the whole
-        `-c` invocation denied. `os.system("kirocrew token")` with the verb literal is caught by
-        the argv floor; a base64-wrapped one is caught because the wrapper itself is the tell.
-        Found in review (GPT 5.6).
+        `base64.b64decode("a2lyb2NyZXcgdG9rZW4=")` is `kirocrew token`; the floor decodes
+        every base64-shaped literal of the command AS SUBMITTED (base64 does not survive
+        the lower-casing the rest of the floor reads) and matches the decoded text. This
+        replaces the earlier reading, under which the `b64decode`/`exec`/`__import__`
+        wrapper was itself the tell and the whole `-c` invocation was refused as opaque --
+        a reading that denied every inline `getattr`/`eval`/`importlib` one-liner in the
+        product tree (143 denials, zero mints, in eight days of the audit log) while a
+        payload that wanted to hide could always use `chr()` arithmetic instead, as the
+        next test records. Found in review (GPT 5.6); narrowed on that evidence.
         """
         computed = (
             "python -c 'import os,base64; os.system(base64.b64decode("
@@ -2414,6 +2497,16 @@ class TestInterpreterArgvLiteralMint:
             + ").decode())'"
         )
         assert _denied_by(computed) is not None
+        # The same wrapper around a literal that decodes to something else is not a mint:
+        # `aGVsbG8gd29ybGQ=` is `hello world`.
+        benign = (
+            "python -c 'import os,base64; print(base64.b64decode("
+            + Q
+            + "aGVsbG8gd29ybGQ="
+            + Q
+            + ").decode())'"
+        )
+        assert _denied_by(benign) is None
 
     def test_the_true_residual_gap_is_a_name_no_matcher_can_see(self):
         """What genuinely remains uncovered, and why the real guarantee is elsewhere.
@@ -2520,6 +2613,41 @@ class TestNameAsDataIsNotAnInvocation:
         # one of them; the denylist shape means an unrecognised program defaults to
         # "this could execute the name".
         assert _denied_by(cmd) is not None
+
+
+class TestSelfProtectionCommandBoundaries:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "awk '{print $1}'\ncat \"$KIROCREW_SCRATCH/log\"\ngrep -E PASS report",
+            "printf x | awk '{print $1}'\n"
+            'python3 verify/audit_logs.py > "$KIROCREW_SCRATCH/audit.txt"\n'
+            'grep -E "PASS|FAIL" "$KIROCREW_SCRATCH/audit.txt"',
+            "awk '{print $1}'\r\ncat \"$KIROCREW_SCRATCH/log\"\r\ngrep -E PASS report",
+            "bash -c \"printf x | awk '{print \\$1}'\n"
+            'cat \\"\\$KIROCREW_SCRATCH/log\\"\ngrep -E PASS report"',
+        ],
+    )
+    def test_later_command_is_not_an_awk_argument(self, command):
+        # shlex removes an unquoted newline. Losing that boundary made the
+        # formatting program look like a dynamic kill command targeting the
+        # later command's scratch path.
+        assert _denied_by(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"printf x | awk '{{print $1}}'\n{_PK} -f {_NAME}",
+            f"printf x | awk '{{print $1}}'\n{_K} $(pgrep -f {_NAME})",
+            f"{_PK} \\\n-f {_NAME}",
+            f"{_PK} -f 'first\n{_NAME}'",
+            f'{_PK} -f "first\n{_NAME}"',
+            f'{_PK} -f "$x\n{_NAME}"',
+            f"P={_PK}\n$P -f {_NAME}",
+        ],
+    )
+    def test_real_kill_keeps_its_target(self, command):
+        assert _denied_by(command) == _RULE_KILL
 
 
 class TestSelfProtectionKillTargetScoping:
@@ -3844,19 +3972,26 @@ class TestSelfFloorShortCircuit:
     def test_quote_glued_dynamic_exec_still_reaches_the_floor(self):
         """Empty-quote glue hides the dynamic-exec verb exactly as it hides the
         name.  ``python -c "ex""ec(...)"`` carries no product name, no machinery
-        character, and no *raw* ``exec(`` — yet the floor denies it as a
-        credential mint, because the tokenizer removes the quotes before
-        ``_inline_payload_reaches_cli`` looks.  The gate must therefore search
-        the dynamic-exec marker on the quote-stripped text too, not only on the
-        raw text (pre-merge review finding, confirmed by two reviewers).
+        character, and no *raw* ``exec(`` — the tokenizer removes the quotes before
+        the payload is read, so the gate must search the dynamic-exec marker on the
+        quote-stripped text too, not only on the raw text (pre-merge review
+        finding, confirmed by two reviewers).  The gate is a perf short-circuit:
+        opening it lets the full scan run, it does not decide the verdict.
+
+        The verdict is NOT a mint: this payload names nothing of the product.
+        Denying it on the dynamic-exec shape alone is the reading under which every
+        inline ``getattr``/``eval``/``importlib`` one-liner is a credential mint,
+        and one ``test_the_true_residual_gap_is_a_name_no_matcher_can_see``
+        concedes protects nothing, since ``python /tmp/s.py`` reads the same file
+        unhindered.
         """
         from kiro_crew import security
 
         glued = "ex" + '""' + "ec"
         cmd = f'python -c "{glued}(open(chr(47)).read())"'
 
-        # Precondition: none of the other branches can catch this input, so the
-        # test genuinely exercises the stripped dynamic-exec branch.
+        # Precondition: none of the other branches can open the gate for this input,
+        # so the test genuinely exercises the stripped dynamic-exec branch.
         assert not security._SELF_FLOOR_NAME_HINT_RE.search(cmd)
         assert not security._SELF_FLOOR_MACHINERY_RE.search(cmd)
         assert not security._INLINE_DYNAMIC_EXEC_RE.search(cmd)
@@ -3864,8 +3999,12 @@ class TestSelfFloorShortCircuit:
         assert security._self_floor_can_fire(
             cmd
         ), "gate would bypass the floor for quote-glued dynamic exec"
-        # And the floor's verdict survives the gate: still denied end-to-end.
-        assert security._is_credential_mint(cmd)
+        # The full scan runs and finds no mint surface: allowed.
+        assert not security._is_credential_mint(cmd)
+        assert security.is_denied(cmd) is None
+        # The same glue around a payload that DOES name the surface is still denied.
+        reach = f"python -c \"{glued}('import kiro_crew.cli')\""
+        assert security._is_credential_mint(reach)
 
 
 class TestSelfKillArgvWindowIsQuoteAware:
@@ -4204,9 +4343,14 @@ class TestStdinProgramTextScoping:
     ``normalize_shell_command`` does not split a frame on a
     newline, so a multi-line script arrives as ONE token frame.  The stdin branch of
     ``_has_self_importing_inline_program`` must not search that whole frame for the
-    import name, or an unrelated neighbour's FILE PATH would satisfy the check --
-    a benign ``python - <<'PY' … PY`` in the same script as any command naming a
-    ``kiro_crew`` path read as a credential mint, with no ``token`` word anywhere.
+    mint surface, or an unrelated neighbour's text would satisfy the check.
+
+    The REAL_STDIN_REACH payload is ``import kiro_crew.cli`` -- the smallest program
+    that reaches the mint.  A bare ``import kiro_crew`` is not one: the gate is the
+    mint surface (``TestInlinePayloadNamesTheMintSurface``), and the bare package
+    import reaches nothing (``kiro_crew/__init__`` imports no CLI).  What these
+    fixtures pin is the CARRIER walk -- every place the shell can put a program on
+    stdin -- which does not depend on the payload rule.
     """
 
     # Every one of these is read-only or a formatter run, and none carries the mint
@@ -4234,90 +4378,91 @@ class TestStdinProgramTextScoping:
     # position it is allowed to appear.  Enumerated from the shell grammar rather than
     # grown one spelling at a time: a partial set covering only the heredoc,
     # here-string and post-program spellings, and every omission was a real bypass.
+    # The program is the minimal mint reach, an import of the CLI module.
     REAL_STDIN_REACH = (
         # Heredoc body, in every spelling of the marker.
-        "python3 - <<'PY'\nimport kiro_crew\nPY",
-        "python3 - <<-PY\nimport kiro_crew\nPY",
-        "python3 - << PY\nimport kiro_crew\nPY",
-        "python << 'PY'\nimport kiro_crew\nPY",
+        "python3 - <<'PY'\nimport kiro_crew.cli\nPY",
+        "python3 - <<-PY\nimport kiro_crew.cli\nPY",
+        "python3 - << PY\nimport kiro_crew.cli\nPY",
+        "python << 'PY'\nimport kiro_crew.cli\nPY",
         # An unterminated heredoc runs to the end of the frame (over-block, not under).
-        "python3 - <<PY\nimport kiro_crew\n",
+        "python3 - <<PY\nimport kiro_crew.cli\n",
         # A body LINE that merely CONTAINS the tag word is not a closing delimiter:
         # bash closes only on a line holding it ALONE, and line structure does not
         # survive tokenizing, so the body must end at the LAST occurrence of the tag.
         # `# EOF` is an ordinary Python comment and was enough to close it early.
-        "python3 - <<EOF\n# EOF\nimport kiro_crew\nEOF",
-        "python3 - <<EOF\nx = 1  # EOF\nimport kiro_crew\nEOF",
-        "python3 - <<PY\nprint('PY')\nimport kiro_crew\nPY",
+        "python3 - <<EOF\n# EOF\nimport kiro_crew.cli\nEOF",
+        "python3 - <<EOF\nx = 1  # EOF\nimport kiro_crew.cli\nEOF",
+        "python3 - <<PY\nprint('PY')\nimport kiro_crew.cli\nPY",
         # A command AFTER the closing tag is a NEW command, not this interpreter's
         # script argument -- reading it as one made the detector answer False and
         # skipped the branch entirely, leaving the heredoc payload unscanned.
-        "python3 <<PY\nimport kiro_crew\nPY\necho ok",
-        "python3 - <<PY\nimport kiro_crew\nPY; echo ok",
-        "python3 - <<PY\nimport kiro_crew\nPY && echo ok",
+        "python3 <<PY\nimport kiro_crew.cli\nPY\necho ok",
+        "python3 - <<PY\nimport kiro_crew.cli\nPY; echo ok",
+        "python3 - <<PY\nimport kiro_crew.cli\nPY && echo ok",
         # HERE-STRING: the operand itself is the program on stdin. `<<<` also starts with
         # `<<`, so reading it as a heredoc made the payload a delimiter and dropped it.
-        "python3 - <<<'import kiro_crew'",
-        "python3 -<<<'import kiro_crew'",
-        "python3 <<<'import kiro_crew'",
-        "python3 - <<< 'import kiro_crew'",
-        "python3 - <<<$'import kiro_crew'",
+        "python3 - <<<'import kiro_crew.cli'",
+        "python3 -<<<'import kiro_crew.cli'",
+        "python3 <<<'import kiro_crew.cli'",
+        "python3 - <<< 'import kiro_crew.cli'",
+        "python3 - <<<$'import kiro_crew.cli'",
         # Pipe producer -- the left side writes this interpreter's stdin.  Every
         # spacing spelling, because the tokenizer splits on whitespace only, so the
         # operator glues into a neighbouring word and `|` is often NOT its own token.
-        "echo 'import kiro_crew' | python3 -",
-        "echo 'import kiro_crew'|python3 -",
-        "echo 'import kiro_crew' |python3 -",
-        "echo 'import kiro_crew'| python3 -",
+        "echo 'import kiro_crew.cli' | python3 -",
+        "echo 'import kiro_crew.cli'|python3 -",
+        "echo 'import kiro_crew.cli' |python3 -",
+        "echo 'import kiro_crew.cli'| python3 -",
         "cat src/kiro_crew/cli.py | python3 -",
         "cat src/kiro_crew/cli.py|python3 -",
-        "printf 'import kiro_crew'|python3",
-        "echo 'import kiro_crew' | python3",
+        "printf 'import kiro_crew.cli'|python3",
+        "echo 'import kiro_crew.cli' | python3",
         # Stdin redirect -- the file's CONTENT becomes the program.
         "python3 - < src/kiro_crew/cli.py",
         "python3 -<src/kiro_crew/cli.py",
         "python3 - 0< src/kiro_crew/cli.py",
         # Process substitution and command substitution -- the operand is one shell WORD
         # whose text carries whitespace, so it spans tokens to its closing delimiter.
-        "python3 - < <(echo 'import kiro_crew')",
-        'python3 - <<<$(printf %s "import kiro_crew")',
-        "python3 - <<<`printf %s 'import kiro_crew'`",
-        'python3 - <<<"${x:-import kiro_crew}"',
+        "python3 - < <(echo 'import kiro_crew.cli')",
+        'python3 - <<<$(printf %s "import kiro_crew.cli")',
+        "python3 - <<<`printf %s 'import kiro_crew.cli'`",
+        'python3 - <<<"${x:-import kiro_crew.cli}"',
         'python3 - < $(printf %s "src/kiro_crew/cli.py")',
         "python3 - <<<$(cat src/kiro_crew/cli.py)",
         # A QUOTED delimiter inside the substitution: quoting is stripped before this
         # code sees the tokens, so balancing the count is not decidable and the operand
         # must span to the LAST closer.
-        "python3 - <<<$(true ')'; printf %s \"import kiro_crew\")",
-        'python3 - <<<$(echo ")" ; printf %s "import kiro_crew")',
+        "python3 - <<<$(true ')'; printf %s \"import kiro_crew.cli\")",
+        'python3 - <<<$(echo ")" ; printf %s "import kiro_crew.cli")',
         # A split operand with NO `-`, where the detector must consume the whole operand
         # rather than read the substitution's second token as a script path.
-        'python <<< $(printf %s "import kiro_crew")',
-        'python3 <<< $(printf %s "import kiro_crew")',
+        'python <<< $(printf %s "import kiro_crew.cli")',
+        'python3 <<< $(printf %s "import kiro_crew.cli")',
         'python3 < $(printf %s "src/kiro_crew/cli.py")',
         # A redirection may appear ANYWHERE in a simple command, before the program
         # name included.  These are ordinary bash and reach the identical mint.
-        "<<'PY' python -\nimport kiro_crew\nPY",
-        "<<PY python3 -\nimport kiro_crew\nPY",
+        "<<'PY' python -\nimport kiro_crew.cli\nPY",
+        "<<PY python3 -\nimport kiro_crew.cli\nPY",
         "<src/kiro_crew/cli.py python3 -",
         "< src/kiro_crew/cli.py python3 -",
-        "<<<'import kiro_crew' python3 -",
+        "<<<'import kiro_crew.cli' python3 -",
         # ... a marker and its BODY may straddle the program name, so the carrier walk
         # cannot be split per side of the interpreter without losing the association.
-        "<<EOF python -\nimport kiro_crew\nEOF",
-        "<<EOF python3 -\nimport kiro_crew\nEOF",
-        "<< EOF python -\nimport kiro_crew\nEOF",
+        "<<EOF python -\nimport kiro_crew.cli\nEOF",
+        "<<EOF python3 -\nimport kiro_crew.cli\nEOF",
+        "<< EOF python -\nimport kiro_crew.cli\nEOF",
         # ... including GLUED to the program name with no space at all, which is one
         # single token: `python3<<<'…'`.  Excluding the interpreter's own token from the
         # walk is what missed these.
-        'python3<<<"import kiro_crew"',
-        "python3<<<'import kiro_crew'",
+        'python3<<<"import kiro_crew.cli"',
+        "python3<<<'import kiro_crew.cli'",
         "python3<src/kiro_crew/cli.py",
-        "python3<<PY\nimport kiro_crew\nPY",
-        "python3<<-PY\nimport kiro_crew\nPY",
-        "python<<<'import kiro_crew'",
-        "python<<EOF\nimport kiro_crew\nEOF",
-        "python3<<EOF\nimport kiro_crew\nEOF",
+        "python3<<PY\nimport kiro_crew.cli\nPY",
+        "python3<<-PY\nimport kiro_crew.cli\nPY",
+        "python<<<'import kiro_crew.cli'",
+        "python<<EOF\nimport kiro_crew.cli\nEOF",
+        "python3<<EOF\nimport kiro_crew.cli\nEOF",
     )
 
     def test_benign_neighbour_no_longer_reads_as_a_mint(self):
@@ -4398,7 +4543,17 @@ class TestStdinProgramTextScoping:
         """
         from kiro_crew import security
 
-        assert security.is_denied("grep kiro_crew src | head; python3 -") is not None
+        # The over-yield is still there: the left side of the pipe is handed over as
+        # program text ...
+        frame = security.normalize_shell_command("grep kiro_crew.cli src | head; python3 -")
+        i = frame.index("python3")
+        assert any("kiro_crew.cli" in t for t in security._stdin_program_text(frame, i))
+        # ... and when that text names the mint surface the command is denied.
+        assert security.is_denied("grep kiro_crew.cli src | head; python3 -") is not None
+        # A left side that only MENTIONS the package is not a reach, so the same
+        # over-yield now costs nothing: the payload gate asks for the mint surface,
+        # not for the package name.
+        assert security.is_denied("grep kiro_crew src | head; python3 -") is None
 
     def test_rule_does_not_fire_on_its_own_pattern_text(self):
         """Quoting this rule must not trip it.
@@ -6979,23 +7134,281 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
             f"$(printf echo) {_NAME} {_TOK}",
         ],
     )
-    def test_precomputed_and_self_computed_guards_agree(self, cmd):
-        # The three call sites this change does not touch pass no precomputed
-        # value, so they take the ``None`` branch.  That branch must give the
-        # same answer as the hoisted one, or those callers silently change
-        # behaviour.
+    def test_the_command_level_verdict_is_the_callers_to_supply(self, cmd):
+        # ``command_disqualified`` is required, so a caller cannot reach the guards
+        # without having charged them once for its own argv. Omitting it is a
+        # TypeError rather than a silent per-token recomputation, which is the
+        # shape that costs one whole-argv sweep per candidate token.
         tokens = security.normalize_shell_command(cmd)
         programs = security._argv_programs(tokens)
         hoisted = security._data_consumer_command_disqualified(tokens)
+        with pytest.raises(TypeError):
+            security._data_consumer_exempt(0, tokens[0], programs, tokens)
         for i, token in enumerate(tokens):
-            self_computed = security._data_consumer_exempt(i, token, programs, tokens)
-            passed_in = security._data_consumer_exempt(
+            # The supplied verdict governs: a disqualified command earns no
+            # exemption for any token, whatever that token looks like.
+            assert (
+                security._data_consumer_exempt(
+                    i, token, programs, tokens, command_disqualified=True
+                )
+                is False
+            ), f"token {i} ({token!r}) was exempted by a disqualified command"
+            supplied = security._data_consumer_exempt(
                 i, token, programs, tokens, command_disqualified=hoisted
             )
-            assert self_computed == passed_in, (
-                f"token {i} ({token!r}) disagrees: self-computed={self_computed} "
-                f"passed-in={passed_in}"
+            assert isinstance(supplied, bool)
+
+
+class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
+    """The self-protection floors must not be quadratic in TRIGGER-token count.
+
+    Four floors walk one fixed argv per frame and ask ``_data_consumer_exempt``
+    about each token that passes a narrow trigger predicate: the self-program and
+    self-module names (credential mint), a kill-family program name (self kill), a
+    resolved self-program index (self subcommand), and an ssh-family verb (ssh to
+    self). The command-level half of that guard reads only ``tokens``, and one of
+    its members sweeps the whole argv with ``_SCRIPT_EXECUTES_RE``, so charging it
+    per trigger token costs N x len(tokens): a 24KB command carrying 1,600
+    kill-family words as arguments of a data consumer took ~14s, which crosses a
+    25s-class watchdog around 2,200 such words.
+
+    A per-frame memo makes the charge one per frame. It is computed LAZILY, at the
+    first trigger token, so the far more common command that reaches these floors
+    and trips no trigger predicate pays nothing at all -- the property
+    ``test_a_command_with_no_trigger_token_pays_nothing`` pins, and the reason a
+    memo is preferable to an unconditional per-frame hoist.
+
+    The assertions are STRUCTURAL, matching the payload-axis class above: a
+    wall-clock ratio cannot separate this property from the runner, and a wall-clock
+    bound tight enough to catch the quadratic on a slow host passes it on a fast one
+    -- the 24KB repro above lands under 4s on some hosts and near 14s on others. So
+    what is pinned is the bounded QUANTITY: how often the command-level answer is
+    computed, and how many times the argv is swept for it.
+    """
+
+    @staticmethod
+    def _triggers(n: int) -> str:
+        """The issue's repro shape: kill-family words as arguments of ``echo``."""
+        return "echo " + " ".join([_PK, _NAME] * n)
+
+    @staticmethod
+    def _count_guard_calls(monkeypatch, cmd: str) -> "tuple[int, str | None]":
+        calls = {"n": 0}
+        real = security._data_consumer_command_disqualified
+
+        def counting(tokens):
+            calls["n"] += 1
+            return real(tokens)
+
+        monkeypatch.setattr(security, "_data_consumer_command_disqualified", counting)
+        verdict = security.is_denied(cmd)
+        return calls["n"], verdict
+
+    def test_guard_is_charged_the_same_however_many_trigger_tokens(self, monkeypatch):
+        # Measured before the memo: 700 / 1400 / 2100 calls at n = 100 / 200 / 300
+        # -- exactly 7n, one per trigger token per reaching floor. After: 7 at
+        # every size, one per frame per reaching floor.
+        counts = {}
+        for n in (100, 200, 300):
+            counts[n], verdict = self._count_guard_calls(monkeypatch, self._triggers(n))
+            # The verdict has to be reached THROUGH the instrumented path, or the
+            # counts are counting nothing. ``echo`` makes these words data.
+            assert verdict is None, f"n={n} changed the exemption verdict: {verdict!r}"
+        assert counts[100] == counts[200] == counts[300], (
+            "the command-level guard is charged per trigger token, not per frame: " f"{counts}"
+        )
+        # Equal counts alone could hold by accident for a shape that is still a
+        # multiple of the trigger count, so bound the count directly too.
+        assert counts[300] < 30, f"guard charged {counts[300]} times for {300 * 2} trigger tokens"
+
+    def test_a_command_with_no_trigger_token_pays_nothing(self, monkeypatch):
+        # The memo is lazy, so the common command reaching these floors without
+        # tripping a trigger predicate must not pay the sweep an unconditional
+        # per-frame hoist would charge it.
+        calls, verdict = self._count_guard_calls(monkeypatch, f"ls -la /var/log {_NAME}.log")
+        assert verdict is None
+        assert calls == 0, f"a command with no trigger token paid {calls} argv sweeps"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # One per trigger predicate, each reaching its floor and each exempt.
+            f"echo {_PK} {_NAME}",
+            f"echo {_NAME} {_TOK}",
+            f"echo {_NAME} restart",
+            "echo ssh localhost",
+            # And cases where the exemption is REFUSED, so the memo is consulted on
+            # the deny side as well.
+            f"echo {_PK} {_NAME} | sh",
+            f"echo {_NAME} {_TOK} | sh",
+            "echo ssh localhost | sh",
+            f"$(printf echo) {_NAME} {_TOK}",
+            # Two frames, so the memo is built more than once in one call.
+            f"echo {_PK} {_NAME}; sed 's/a/{_PK} -f {_NAME}/e' f",
+            f"echo {_NAME} {_TOK}; $(printf echo) {_NAME} {_TOK}",
+        ],
+    )
+    def test_the_memo_reaches_the_same_verdict_as_recomputing_every_call(self, monkeypatch, cmd):
+        # Charging the guard once per frame may not move any verdict: it is a pure
+        # function of ``tokens``, which a frame binds once. Compare the real verdict
+        # against one where the memo is discarded and the answer recomputed from the
+        # frame's tokens at every single call.
+        #
+        # BOTH namespaces are patched, and neither is redundant. Each caller binds
+        # ``_data_consumer_exempt`` as its own module global via ``from
+        # .shell_normalizer import ...``: the four frame loops in ``argv_floor``, and
+        # the payload walk in the ``security`` package body. The facade mirrors an
+        # attribute write onto ONE owning submodule -- the normalizer, for this name --
+        # so a facade write alone leaves ``argv_floor`` resolving the real function and
+        # instruments nothing here. Which caller a given command reaches also varies:
+        # ``awk 'system(...)'`` carries its kill inside one quoted token, so no frame
+        # loop sees a trigger word and only the payload walk judges it.
+        #
+        # ``calls`` is asserted non-zero for that reason. A wrong or incomplete patch
+        # target then reads as a RED test rather than a comparison of the real
+        # function against itself, which would pass whatever the memo did.
+        #
+        # That assertion is also why ``awk 'system(...)'`` is absent from the cases
+        # above: its kill is denied by a different tier and the guard is never asked,
+        # so it would trip the non-zero check while proving nothing about the memo.
+        # The sibling class covers that shape under refused exemptions.
+        real = _argv_floor._data_consumer_exempt
+        assert security._data_consumer_exempt is real, "the two callers hold one object"
+        calls = {"n": 0}
+
+        def recomputing_every_call(index, token, programs, tokens, *, command_disqualified):
+            calls["n"] += 1
+            return real(
+                index,
+                token,
+                programs,
+                tokens,
+                command_disqualified=security._data_consumer_command_disqualified(tokens),
             )
+
+        with_memo = security.is_denied(cmd)
+        monkeypatch.setattr(_argv_floor, "_data_consumer_exempt", recomputing_every_call)
+        monkeypatch.setattr(security, "_data_consumer_exempt", recomputing_every_call)
+        without_memo = security.is_denied(cmd)
+        assert calls["n"] > 0, (
+            "the instrument observed nothing -- the patch target is not the namespace "
+            f"the frame loops resolve through, so this comparison is vacuous ({cmd!r})"
+        )
+        assert with_memo == without_memo, (
+            f"the per-frame memo changed the verdict for {cmd!r}: "
+            f"memo={with_memo!r} recomputed={without_memo!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "floor",
+        [
+            "_is_credential_mint",
+            "_is_self_kill",
+            "_matches_self_subcommand",
+            "_is_ssh_to_self",
+        ],
+    )
+    def test_the_memo_is_declared_inside_the_frame_loop(self, floor):
+        """The memo's SCOPE is the frame, and that is asserted on the source.
+
+        Hoisting the declaration one level further out would compute the answer
+        from the first frame's tokens and reuse it for every later frame -- a
+        different command-level verdict silently applied to a different argv.
+
+        This is asserted structurally rather than behaviourally because the
+        behaviour is not reachable: each floor returns as soon as a frame denies,
+        so a frame whose guard answer differs from an earlier frame's is only ever
+        visited when the earlier frame did not deny, and no command was found that
+        both survives its first frame and disagrees with it. The scope is still the
+        correct shape, so it is pinned where it is visible.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(security, floor))))
+
+        def memo_targets(node) -> "list[int]":
+            found = []
+            for sub in ast.walk(node):
+                targets = []
+                if isinstance(sub, ast.Assign):
+                    targets = sub.targets
+                elif isinstance(sub, ast.AnnAssign):
+                    targets = [sub.target]
+                for t in targets:
+                    if isinstance(t, ast.Name) and t.id == "disqualified":
+                        value = sub.value
+                        if isinstance(value, ast.Constant) and value.value is None:
+                            found.append(sub.lineno)
+            return found
+
+        frame_loops = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.For)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "tokens"
+        ]
+        assert len(frame_loops) == 1, f"{floor} no longer has exactly one frame loop"
+        loop = frame_loops[0]
+        inside = [ln for stmt in loop.body for ln in memo_targets(stmt)]
+        assert inside, f"{floor} declares no per-frame memo inside its frame loop"
+        all_declarations = memo_targets(tree)
+        assert sorted(all_declarations) == sorted(inside), (
+            f"{floor} declares the memo outside its frame loop as well "
+            f"(inside={sorted(inside)} all={sorted(all_declarations)}) -- an outer "
+            "declaration carries one frame's command-level answer into the next"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A data-consumer mention beside a real invocation: the real one must
+            # still be judged, whichever frame it lands in.
+            f"echo {_PK} {_NAME}; sed 's/a/{_PK} -f {_NAME}/e' f",
+            f"echo {_NAME} {_TOK}; $(printf echo) {_NAME} {_TOK}",
+            f"echo {_PK} {_NAME}; echo {_PK} {_NAME} | sh",
+            "echo ssh localhost; echo ssh localhost | sh",
+        ],
+    )
+    def test_a_mention_beside_a_real_invocation_is_still_denied(self, cmd):
+        assert (
+            security.is_denied(cmd) is not None
+        ), f"a real invocation beside a mention went unjudged: {cmd!r}"
+
+    @pytest.mark.parametrize("n", [50, 100, 150])
+    def test_the_argv_sweep_is_linear_in_the_argv_not_quadratic_in_triggers(self, monkeypatch, n):
+        """Backstop against the cost the guard-call counts cannot see.
+
+        Those counts pin how often the command-level guard is ASKED. This one pins
+        the expensive thing inside it -- ``_SCRIPT_EXECUTES_RE`` sweeping every
+        token -- so a regression that re-pays the sweep somewhere else would still
+        be caught. Measured per trigger token the sweeps are 35,350 / 140,700 /
+        316,050 at n = 50 / 100 / 150, which is 350x / 700x / 1050x the argv length:
+        the multiplier itself grows, which is what quadratic means here. Charged per
+        frame it is exactly 7x the argv length at every size. The bound below leaves
+        the linear form room and the quadratic form misses it by 35x at n=50.
+        """
+        cmd = self._triggers(n)
+        argv_len = len(security.normalize_shell_command(cmd))
+        calls = {"n": 0}
+        real = security._SCRIPT_EXECUTES_RE
+
+        class Counting:
+            def search(self, text):
+                calls["n"] += 1
+                return real.search(text)
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        monkeypatch.setattr(security, "_SCRIPT_EXECUTES_RE", Counting())
+        assert security.is_denied(cmd) is None
+        assert calls["n"] <= 10 * argv_len, (
+            f"the argv sweep is quadratic in trigger count: {calls['n']} sweeps for "
+            f"an argv of {argv_len} tokens ({n * 2} trigger tokens)"
+        )
 
 
 class TestSandboxEscapeSshSelf:
@@ -8181,7 +8594,15 @@ class TestSandboxEscapeSshSelf:
         # single-flight worker re-enumerates and merges.
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"oldname"}))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_STAMP", 0.0)
+        # A stamp of 0.0 only reads as stale once ``time.monotonic()`` has
+        # passed the refresh window; on Linux that clock counts from boot, so a
+        # CI runner in its first five minutes served the set as fresh and never
+        # kicked the worker. Place the stamp one window behind the clock instead.
+        monkeypatch.setattr(
+            _argv_floor,
+            "_OWN_HOST_RESOLVE_STAMP",
+            _argv_floor.time.monotonic() - _argv_floor._OWN_HOST_REFRESH_SECS - 1.0,
+        )
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
         spawned: "list[dict]" = []

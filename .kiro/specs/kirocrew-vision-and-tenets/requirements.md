@@ -1,5 +1,7 @@
 # Requirements Document
 
+Status: superseded by [`TENETS.md`](../../../TENETS.md).
+
 ## Introduction
 
 KiroCrew is an autonomous agent management layer that adds persistent memory, scheduled jobs, heartbeats, background subagents, self-learning, and multi-session orchestration on top of kiro-cli's native LLM capabilities. Today it serves as a powerful developer tool with a dashboard, Slack integration, CLI, multi-agent orchestration, and a plugin architecture in progress.

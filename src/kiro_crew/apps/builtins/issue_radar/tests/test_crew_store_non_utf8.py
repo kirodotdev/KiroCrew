@@ -45,13 +45,6 @@ class TestCrewStoreReadersSurviveNonUtf8Files(unittest.TestCase):
 
         self.assertEqual(out, dict(crew_store.DEFAULT_SETTINGS))
 
-    def test_read_skips_degrades_to_empty_on_non_utf8(self):
-        path = crew_store.skips_path(OWNER, REPO, self.tmp)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(_NON_UTF8_BYTES)
-
-        self.assertEqual(crew_store.read_skips(OWNER, REPO, self.tmp), {})
-
     def test_read_crew_returns_none_on_non_utf8(self):
         path = crew_store.crew_path(OWNER, REPO, CREW_ID, self.tmp)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,16 +59,109 @@ class TestCrewStoreReadersSurviveNonUtf8Files(unittest.TestCase):
 
         self.assertEqual(crew_store.list_crews(OWNER, REPO, self.tmp), [])
 
-    def test_read_work_item_returns_none_on_non_utf8(self):
-        path = crew_store.work_item_path(OWNER, REPO, CREW_ID, 1, self.tmp)
+
+class TestTheCarrySurvivesNonUtf8PreProjectionFiles(unittest.TestCase):
+    """The ledger's own files -- work items and the skip index -- are read only once
+    more, by the carry into the crew log on a crew's first write; a non-UTF-8 one is
+    never silently dropped there. The write that would have carried it is refused,
+    retryably, with the file named: dropping it would discard that row's stored state
+    for good once the carry was marked finished, and folding without it could let a
+    second item into an editing phase the omitted row still holds. Nothing crashes
+    and nothing is lost -- the files stay where they are until they can be read."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        env = mock.patch.dict(os.environ, {"KIROCREW_HOME": home, crew_log_emit.CREW_LOG_ENV: "1"})
+        env.start()
+        self.addCleanup(env.stop)
+        crew_log_emit.reset_caches()
+        crew_store._fold_cache.clear()
+        self.addCleanup(crew_store._fold_cache.clear)
+        self.addCleanup(crew_log_emit.reset_caches)
+        self.addCleanup(crew_log_emit.drain_for_shutdown, 2.0)
+
+    def _crew_with_a_log(self) -> tuple[str, str]:
+        from kiro_crew.crew_log.schema import KIND_SESSION
+        from kiro_crew.crew_log.store import CrewLog
+
+        crew = crew_store.create_crew(OWNER, REPO, {"name": "Andromeda"}, self.tmp)
+        sid = "acp-1"
+        CrewLog.create(
+            KIND_SESSION,
+            sid,
+            owner="owner",
+            agent="kirocrew",
+            slot=crew_store.slot_key_for(crew["id"]),
+        )
+        return crew["id"], sid
+
+    def test_a_non_utf8_work_item_file_refuses_the_write(self):
+        cid, sid = self._crew_with_a_log()
+        path = crew_store.work_item_path(OWNER, REPO, cid, 1, self.tmp)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(_NON_UTF8_BYTES)
 
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, CREW_ID, 1, self.tmp))
+        # A file the reader cannot decode is a row that could not be carried, so the
+        # write is refused rather than folding a record that is missing it.
+        with self.assertRaises(crew_store.CrewLedgerNotRecorded) as caught:
+            crew_store.commit_work_progress(
+                OWNER,
+                REPO,
+                cid,
+                7,
+                {"phase": "claimed"},
+                "claim",
+                "took #7",
+                root=self.tmp,
+                session_id=sid,
+            )
+        self.assertIn("1.json", str(caught.exception))
+        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, cid, 1, self.tmp))
+        self.assertEqual(crew_store.list_work_items(OWNER, REPO, cid, self.tmp), [])
 
-    def test_list_work_items_skips_a_non_utf8_record_rather_than_raising(self):
-        d = crew_store.crews_dir(OWNER, REPO, self.tmp) / CREW_ID
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "1.json").write_bytes(_NON_UTF8_BYTES)
+        # Moved aside, the same update goes through.
+        path.unlink()
+        out = crew_store.commit_work_progress(
+            OWNER,
+            REPO,
+            cid,
+            7,
+            {"phase": "claimed"},
+            "claim",
+            "took #7",
+            root=self.tmp,
+            session_id=sid,
+        )
+        self.assertEqual(out["item"]["phase"], "claimed")
+        self.assertEqual(
+            [i["number"] for i in crew_store.list_work_items(OWNER, REPO, cid, self.tmp)], [7]
+        )
 
-        self.assertEqual(crew_store.list_work_items(OWNER, REPO, CREW_ID, self.tmp), [])
+    def test_a_non_utf8_skip_index_refuses_the_write(self):
+        cid, sid = self._crew_with_a_log()
+        path = crew_store.skips_path(OWNER, REPO, self.tmp)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_NON_UTF8_BYTES)
+
+        with self.assertRaises(crew_store.CrewLedgerNotRecorded):
+            crew_store.commit_work_progress(
+                OWNER,
+                REPO,
+                cid,
+                7,
+                {"phase": "claimed"},
+                "claim",
+                "took #7",
+                root=self.tmp,
+                session_id=sid,
+            )
+
+        self.assertEqual(crew_store.read_skips(OWNER, REPO, self.tmp), {})

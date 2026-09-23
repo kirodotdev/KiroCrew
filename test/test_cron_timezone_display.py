@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from kiro_crew.cron import CronJob, CronSchedule, CronService, format_schedule
-from kiro_crew.mcp_cron import _call_tool
+from kiro_crew.mcp_cron import _call_tool_locally as _call_tool
 from kiro_crew.slack.handler import _handle_cron_command
 
 #: The session the MCP ``cron_list`` tests call as, and the owner stamped on every

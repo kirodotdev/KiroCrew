@@ -85,6 +85,9 @@ _TOKEN_CACHE_TTL = 120  # 2 min
 # See the _SESSIONS_DIR note above: resolved per call, ``None`` = live home.
 _TOKEN_USAGE_DIR: Path | None = None
 _TOKEN_HISTORY_DAYS = 30
+#: Window (in days) the Session Activity card and its Daily History table cover.
+#: The per-day credits column reads the same window so the two line up.
+_SESSIONS_HISTORY_DAYS = 30
 
 
 def _token_usage_dir() -> Path:
@@ -109,13 +112,24 @@ def _shards_in_window(days: int) -> list[Path]:
     The directory listing is cheap (≤31 entries) and we filter by filename
     rather than statting each file, so this stays well under a millisecond
     even on years-old installs.
+
+    A directory that exists but cannot be listed (a permission change, a
+    roaming or network home that is briefly unreachable) yields the same empty
+    window as a missing one: every reader of the shards treats an unreadable
+    shard as "no rows", and the directory is held to the same rule, so a
+    transient listing failure costs one refresh rather than the whole request.
     """
     paths: list[Path] = []
     shard_dir = _token_usage_dir()
     if not shard_dir.exists():
         return paths
     cutoff_date = (datetime.now().astimezone() - timedelta(days=days)).date()
-    for p in shard_dir.iterdir():
+    try:
+        entries = list(shard_dir.iterdir())
+    except OSError as exc:
+        logger.warning("usage: cannot list the per-turn usage shard directory: %s", exc)
+        return paths
+    for p in entries:
         if not p.is_file() or p.suffix != ".jsonl":
             continue
         try:
@@ -230,6 +244,61 @@ def slot_spend(days: int = SPEND_WINDOW_DAYS) -> dict[str, dict[str, float]]:
 
     _SLOT_SPEND_CACHE, _SLOT_SPEND_CACHE_SIG = out, sig
     _SLOT_SPEND_CACHE_AT = now
+    return out
+
+
+def daily_credits(days: int = _SESSIONS_HISTORY_DAYS) -> dict[str, float]:
+    """Credits spent per LOCAL calendar day over the last *days*.
+
+    ``{"YYYY-MM-DD": credits}`` for every day that has at least one counted
+    row. Rows are admitted by the same three tests :func:`slot_spend` applies
+    (a ``tokens`` row, inside the per-row epoch cutoff, with a finite numeric
+    ``credits``) and keyed by :func:`_parse_row_day`, the local day the shard
+    partition itself uses. There is deliberately NO slot filter: every turn the
+    backend billed counts, background slots included, so a day's figure is the
+    day's whole spend rather than only its conversations.
+
+    Numeric hygiene: ``credits`` is coerced through ``float`` before the finite
+    test, because ``math.isfinite`` on an int wider than a double raises rather
+    than answers, and a row whose addition would push a day's total past the
+    finite range is dropped so the payload can never carry ``Infinity``.
+    """
+    cutoff = time.time() - (days * 86400)
+    out: dict[str, float] = {}
+    for path in _shards_in_window(days):
+        try:
+            with path.open("rb") as fh:
+                for line in bounded_records(fh, path, label="usage"):
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                        continue
+                    ts_raw = obj.get("ts")
+                    ts_epoch = _parse_row_ts(str(ts_raw or ""))
+                    if ts_epoch is None or ts_epoch < cutoff:
+                        continue
+                    credits = obj.get("credits")
+                    if isinstance(credits, bool) or not isinstance(credits, (int, float)):
+                        continue
+                    try:
+                        value = float(credits)
+                    except OverflowError:
+                        continue
+                    if not math.isfinite(value):
+                        continue
+                    day = _parse_row_day(ts_raw)
+                    if day is None:
+                        continue
+                    total = out.get(day, 0.0) + value
+                    if not math.isfinite(total):
+                        continue
+                    out[day] = total
+        except (OSError, UnicodeDecodeError):
+            # Same policy as every other shard reader here: a corrupt or
+            # unreadable shard costs its own rows, not the whole window.
+            continue
     return out
 
 
@@ -1787,7 +1856,7 @@ def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
     sessions_dir = _sessions_dir()
 
-    cutoff = time.time() - (30 * 86400)
+    cutoff = time.time() - (_SESSIONS_HISTORY_DAYS * 86400)
     daily: Counter = Counter()
     daily_msgs: Counter = Counter()
     daily_tools: Counter = Counter()
@@ -1903,9 +1972,14 @@ def _parse_sessions() -> dict:
             sessions_dir,
         )
 
-    # Build daily history sorted by date
-    all_days = sorted(set(daily.keys()))
-    history = []
+    # Build daily history sorted by date. Credits come from the per-turn usage
+    # shards, not the transcripts, so a day can carry spend without a transcript
+    # (a background slot, a refused file): such a day still gets a row, with
+    # zero sessions, so that spend is shown rather than dropped. Counter lookups
+    # on those days read 0 without inserting a key.
+    credits_by_day = daily_credits(_SESSIONS_HISTORY_DAYS)
+    all_days = sorted(set(daily.keys()) | set(credits_by_day.keys()))
+    history: list[dict[str, Any]] = []
     for d in all_days:
         history.append(
             {
@@ -1913,6 +1987,7 @@ def _parse_sessions() -> dict:
                 "sessions": daily[d],
                 "messages": daily_msgs[d],
                 "tool_calls": daily_tools[d],
+                "credits": round(credits_by_day.get(d, 0.0), 2),
             }
         )
 

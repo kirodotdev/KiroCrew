@@ -138,7 +138,7 @@ class TestTheMovedLaneIsTheSameLane:
         assert upload["if"] == "always()"
         assert "shard-macos-" in upload["with"]["name"]
 
-    def test_the_three_darwin_contracts_are_still_asserted_by_name(self) -> None:
+    def test_native_peer_identity_and_terminal_contracts_are_asserted_by_name(self) -> None:
         # `pytest -q` does not name passing tests and a skip exits 0, so each of
         # these is asserted to have PASSED by node id. That is the same blindness
         # that once left four mutation-verified tests unrun inside conftest's
@@ -149,7 +149,6 @@ class TestTheMovedLaneIsTheSameLane:
         )
         for node_id in (
             "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves",
-            "test/test_member_memory_filesystem.py::test_darwin_kernel_private_memory_boundary",
             "test/test_terminal_handler.py",
         ):
             assert node_id in runs, f"{node_id} is no longer executed on real Darwin"
@@ -256,6 +255,18 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         assert mac["needs"] == ["decide"]
         assert mac["if"] == "needs.decide.outputs.run == 'true'"
 
+    def test_native_reap_contract_triggers_the_macos_lane(self) -> None:
+        steps = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+        filters = next(step["with"]["filters"] for step in steps if step.get("id") == "filter")
+        paths = yaml.safe_load(filters)["darwin"]
+        assert {
+            "src/kiro_crew/session_pid.py",
+            "src/kiro_crew/session_lifecycle.py",
+            "src/kiro_crew/session_cleanup.py",
+            "src/kiro_crew/session_pool.py",
+            "test/test_darwin_native_provider_reap.py",
+        } <= set(paths)
+
     def test_the_on_demand_lane_calls_the_nightly_workflow_not_a_copy(self) -> None:
         # One suite, two callers. A hand-maintained subset here would be a second
         # copy of the shard and contract steps that could drift from the nightly's
@@ -268,3 +279,16 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         # must grant at least that and nothing this lane does not need.
         assert mac["permissions"] == {"contents": "read"}
         assert _load("platform-tests.yml")["permissions"] == {"contents": "read"}
+
+    def test_descriptor_security_paths_always_select_native_macos(self) -> None:
+        steps = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+        filters = next(step["with"]["filters"] for step in steps if step.get("id") == "filter")
+        darwin = yaml.safe_load(filters)["darwin"]
+        for path in (
+            "src/kiro_crew/hooks.py",
+            "src/kiro_crew/pinned_fs.py",
+            "src/kiro_crew/dashboard/handlers/files.py",
+            "test/test_safe_read_file_bytes_descriptor.py",
+            "test/test_theme_install.py",
+        ):
+            assert path in darwin, f"{path} must select the native macOS suite"

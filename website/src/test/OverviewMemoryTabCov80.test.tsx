@@ -53,8 +53,8 @@ vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div da
 const MemoryTab = (await import('../pages/overview/MemoryTab')).default
 
 const LESSONS = [
-  { rule: 'zzq-rule-beta', category: 'tool', ts: '2026-01-02T00:00:00Z' },
-  { rule: 'zzq-rule-alpha', category: 'knowledge', ts: '2026-01-01T00:00:00Z' },
+  { rule: 'zzq-rule-beta', category: 'tool', ts: '2026-01-02T00:00:00Z', repo_scope: '' },
+  { rule: 'zzq-rule-alpha', category: 'knowledge', ts: '2026-01-01T00:00:00Z', repo_scope: '' },
 ]
 
 beforeEach(() => {
@@ -427,8 +427,132 @@ describe('MemoryTab — lessons', () => {
       .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
     await userEvent.click(del)
 
-    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-rule-beta'))
+    // The global row's own selector ("") rides along: a lesson's identity is
+    // (rule, repo_scope), so a bare rule would delete every scope's row. The
+    // fixture rows name no JSONL tier, so none is forwarded.
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-rule-beta', '', { scope: undefined, workspace: undefined, exact: true }))
     await waitFor(() => expect(api.lessons.mock.calls.length).toBeGreaterThan(reads))
+  })
+
+  it('tells two same-rule rows apart by scope and deletes only the clicked one (#10651)', async () => {
+    api.lessons.mockResolvedValue({
+      lessons: [
+        { rule: 'zzq-same-rule', category: 'tool', ts: '2026-01-02T00:00:00Z', repo_scope: '' },
+        { rule: 'zzq-same-rule', category: 'tool', ts: '2026-01-02T00:00:00Z', repo_scope: 'src/pkg' },
+        // Stored scope present but unusable: the list reports null, and the
+        // only delete that reaches such a row is the unselective one.
+        { rule: 'zzq-broken-rule', category: 'tool', ts: '2026-01-03T00:00:00Z', repo_scope: null },
+      ],
+    })
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('src/pkg')
+    // Two rows share the rule; the Scope column is what tells them apart, and
+    // each of the three selector values reads differently.
+    const sameRule = screen.getAllByText('zzq-same-rule').map((td) => td.closest('tr') as HTMLElement)
+    expect(sameRule).toHaveLength(2)
+    expect(screen.getByRole('columnheader', { name: /Scope/ })).toBeInTheDocument()
+    const scoped = sameRule.find((tr) => tr.textContent?.includes('src/pkg')) as HTMLElement
+    const global = sameRule.find((tr) => !tr.textContent?.includes('src/pkg')) as HTMLElement
+    expect(global).toHaveTextContent(/Global/)
+    const broken = screen.getByText('zzq-broken-rule').closest('tr') as HTMLElement
+    expect(broken).toHaveTextContent(/Unusable scope/)
+    const deleteIn = (tr: HTMLElement) => Array.from(tr.querySelectorAll('button'))
+      .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+    const dialogTitle = /Delete this lesson in every scope\?/
+
+    // A scoped or global row deletes without a prompt: its selector reaches
+    // exactly that row.
+    await userEvent.click(deleteIn(scoped))
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-same-rule', 'src/pkg', { scope: undefined, workspace: undefined, exact: true }))
+    expect(api.deleteLesson).not.toHaveBeenCalledWith('zzq-same-rule', '', { scope: undefined, workspace: undefined, exact: true })
+    await userEvent.click(deleteIn(global))
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-same-rule', '', { scope: undefined, workspace: undefined, exact: true }))
+    expect(screen.queryByText(dialogTitle)).not.toBeInTheDocument()
+
+    // The null row's delete is the unselective one, so it asks first through
+    // the shared dialog, whose confirm button restates the act. Cancel sends
+    // nothing; confirming sends the null through (the client drops the key).
+    await userEvent.click(deleteIn(broken))
+    expect(await screen.findByText(dialogTitle)).toBeInTheDocument()
+    expect(screen.getByText(/every lesson with exactly this text will be removed/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /^Cancel$/ }))
+    await waitFor(() => expect(screen.queryByText(dialogTitle)).not.toBeInTheDocument())
+    expect(api.deleteLesson).not.toHaveBeenCalledWith('zzq-broken-rule', null, { scope: undefined, workspace: undefined, exact: true })
+
+    await userEvent.click(deleteIn(broken))
+    await userEvent.click(await screen.findByRole('button', { name: /^Delete in every scope$/ }))
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-broken-rule', null, { scope: undefined, workspace: undefined, exact: true }))
+  })
+
+  it('reports a rejected delete beside the table instead of swallowing it (#10651)', async () => {
+    api.deleteLesson.mockRejectedValueOnce(new Error('zzq-delete-refused'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    const reads = api.lessons.mock.calls.length
+    const row = screen.getByText('zzq-rule-beta').closest('tr') as HTMLElement
+    const del = Array.from(row.querySelectorAll('button'))
+      .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+    await userEvent.click(del)
+
+    const notice = await screen.findByText('zzq-delete-refused')
+    expect(notice).toBeInTheDocument()
+    expect(screen.getByText(/Could not delete the lesson/)).toBeInTheDocument()
+    // The row is still there and the list was not re-read as if it had gone.
+    expect(screen.getByText('zzq-rule-beta')).toBeInTheDocument()
+    expect(api.lessons.mock.calls.length).toBe(reads)
+
+    // Dismissable, and a later successful delete clears it on its own.
+    await userEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    await waitFor(() => expect(screen.queryByText('zzq-delete-refused')).not.toBeInTheDocument())
+  })
+
+  it('reports a failed re-read after a successful delete (#10651)', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    api.lessons.mockRejectedValueOnce(new Error('zzq-refresh-refused'))
+    const row = screen.getByText('zzq-rule-beta').closest('tr') as HTMLElement
+    const del = Array.from(row.querySelectorAll('button'))
+      .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+    await userEvent.click(del)
+
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-rule-beta', '', { scope: undefined, workspace: undefined, exact: true }))
+    expect(await screen.findByText('zzq-refresh-refused')).toBeInTheDocument()
+    // Titled for what actually failed: the row is gone, the list is stale.
+    expect(screen.getByText(/Lesson deleted, but the list could not be refreshed/)).toBeInTheDocument()
+    expect(screen.queryByText(/Could not delete the lesson/)).not.toBeInTheDocument()
+  })
+
+  it('sends a workspace-tier row back to its own file on delete (#10651)', async () => {
+    api.lessons.mockResolvedValue({
+      lessons: [
+        { rule: 'zzq-tier-rule', category: 'tool', ts: '2026-01-02T00:00:00Z', repo_scope: '', scope: 'global' },
+        { rule: 'zzq-tier-rule', category: 'tool', ts: '2026-01-02T00:00:00Z', repo_scope: '', scope: 'workspace', workspace: 'ws-1' },
+      ],
+    })
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const rows = (await screen.findAllByText('zzq-tier-rule')).map((td) => td.closest('tr') as HTMLElement)
+    expect(rows).toHaveLength(2)
+    // The tier shows in the Scope cell, so the two same-text rows read apart.
+    expect(rows[0]).not.toHaveTextContent(/Workspace ws-1/)
+    expect(rows[1]).toHaveTextContent(/Workspace ws-1/)
+    const deleteIn = (tr: HTMLElement) => Array.from(tr.querySelectorAll('button'))
+      .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+    await userEvent.click(deleteIn(rows[1]))
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-tier-rule', '', { scope: 'workspace', workspace: 'ws-1', exact: true }))
+    await userEvent.click(deleteIn(rows[0]))
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-tier-rule', '', { scope: 'global', workspace: undefined, exact: true }))
+  })
+
+  it('says so when the delete matched no stored row (#10651)', async () => {
+    api.deleteLesson.mockResolvedValueOnce({ ok: false })
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    const row = screen.getByText('zzq-rule-beta').closest('tr') as HTMLElement
+    const del = Array.from(row.querySelectorAll('button'))
+      .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+    await userEvent.click(del)
+    expect(await screen.findByText(/No stored lesson matched this row/)).toBeInTheDocument()
+    expect(screen.getByText(/Could not delete the lesson/)).toBeInTheDocument()
   })
 
   it('shows an empty state rather than a bare table', async () => {

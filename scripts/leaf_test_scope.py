@@ -97,6 +97,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -179,17 +180,6 @@ def _iter_python(root: Path) -> list[Path]:
     return out
 
 
-# `importers_of` and `mentions_of` each call `_iter_python` + `_read` on every
-# candidate file, and both are called repeatedly for different name sets in one
-# `classify()` (once per changed-file batch) and dozens of times in `_self_test`
-# (once per stem in its dependency-check loop, and again once per `test/test_*.py`
-# candidate while it hunts for a clean leaf). None of that changes which files
-# exist or what they contain within a single process, so caching by root/path is
-# exact, not an approximation -- the walk and the read are each paid once no
-# matter how many times a caller re-asks the same question.
-_iter_python_cached = functools.lru_cache(maxsize=None)(_iter_python)
-
-
 def _read(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace")
@@ -199,7 +189,70 @@ def _read(path: Path) -> str:
         raise SelectionUntrustworthy(f"cannot read {path} while classifying the diff") from None
 
 
-_read_cached = functools.lru_cache(maxsize=None)(_read)
+# A word-shaped token enclosed in one kind of quote. It CONSUMES the opening quote
+# and the token but only looks ahead at the closing quote, so that closing quote
+# is still available as the next match's opening quote: in `"abc"def"` the plain
+# substring check `'"def"' in text` is true, and a pattern that consumed the
+# closing quote would resume past it and miss `def`. With the lookahead, the set
+# of tokens this yields for a file is EXACTLY {s : f'"{s}"' in text or
+# f"'{s}'" in text} for every word-shaped `s` -- the token is the maximal word run
+# after the quote (the run is bounded by a non-word character on both sides, and
+# the quote is one), so a shorter or longer stem cannot be confused with it.
+_QUOTED_WORD = re.compile(r"""(["'])([A-Za-z0-9_]+)(?=\1)""")
+_WORD = re.compile(r"[A-Za-z0-9_]+\Z")
+
+
+class _TreeIndex(NamedTuple):
+    """What `importers_of` / `mentions_of` need from the tree, and nothing else.
+
+    `importers`: top-level module name -> the first file (in scan order) that
+    imports it by statement. `mentioners`: quoted word token -> the first file whose
+    text holds it in quotes. "First" skips the file whose own stem IS the name --
+    a module importing itself or quoting its own name is not a dependency -- so
+    each entry is the answer the original per-file loop gave, and only that.
+    """
+
+    importers: dict[str, str]
+    mentioners: dict[str, str]
+
+
+def _index_tree(root: Path) -> _TreeIndex:
+    """One streaming pass: read a file, extract its names, drop its text.
+
+    `importers_of` and `mentions_of` are asked the same two questions of the same
+    tree many times in one process -- once per changed-file batch in `classify()`,
+    and dozens of times in `_self_test` (once per stem in its dependency-check
+    loop, and again once per `test/test_*.py` candidate while it hunts for a clean
+    leaf). Nothing changes which files exist or what they contain within a single
+    process, so answering from one index is exact, not an approximation.
+
+    What is cached is the INDEX, not the text. Holding every scanned file's source
+    (~140 MB across `src/`, `test/` and `scripts/`, and most of it stored two
+    bytes per character because the files are not pure ASCII) measured at
+    ~+280 MiB RSS; the index is a few MiB. That matters wherever this module lives
+    longer than one CLI run -- a pytest worker importing it keeps the cache for
+    the rest of the module -- and the CLI run itself is faster too, because each
+    file's regexes run once instead of once per question.
+    """
+    importers: dict[str, str] = {}
+    mentioners: dict[str, str] = {}
+    for path in _iter_python(root):
+        text = _read(path)
+        rel = _rel_posix(path, root)
+        own = path.stem
+        for match in _IMPORT.finditer(text):
+            name = (match.group(1) or match.group(2) or "").split(".")[0]
+            if name != own:
+                importers.setdefault(name, rel)
+        for match in _QUOTED_WORD.finditer(text):
+            token = match.group(2)
+            if token != own:
+                mentioners.setdefault(token, rel)
+        del text
+    return _TreeIndex(importers, mentioners)
+
+
+_index_tree_cached = functools.lru_cache(maxsize=None)(_index_tree)
 
 
 def _run_git(argv: list[str]) -> str:
@@ -259,13 +312,11 @@ def importers_of(stems: set[str], root: Path) -> dict[str, str]:
     """
     if not stems:
         return {}
+    index = _index_tree_cached(root)
     found: dict[str, str] = {}
-    for path in _iter_python_cached(root):
-        text = _read_cached(path)
-        for match in _IMPORT.finditer(text):
-            module = (match.group(1) or match.group(2) or "").split(".")[0]
-            if module in stems and module != path.stem:
-                found.setdefault(module, _rel_posix(path, root))
+    for stem in stems:
+        if stem in index.importers:
+            found[stem] = index.importers[stem]
     return found
 
 
@@ -284,15 +335,18 @@ def mentions_of(stems: set[str], root: Path) -> dict[str, str]:
     """
     if not stems:
         return {}
+    # The index answers for word-shaped names, which every module stem is
+    # (`_LEAF_NAME` admits nothing else). Anything wider cannot be looked up, and
+    # a wrong "not mentioned" here would be a missed dependency -- so refuse the
+    # reduction rather than guess.
+    odd = sorted(stem for stem in stems if not _WORD.match(stem))
+    if odd:
+        raise SelectionUntrustworthy(f"{odd[0]!r} is not a module stem; cannot check mentions")
+    index = _index_tree_cached(root)
     found: dict[str, str] = {}
-    quoted = {stem: (f'"{stem}"', f"'{stem}'") for stem in stems}
-    for path in _iter_python_cached(root):
-        text = _read_cached(path)
-        for stem, forms in quoted.items():
-            if stem in found or path.stem == stem:
-                continue
-            if any(form in text for form in forms):
-                found[stem] = _rel_posix(path, root)
+    for stem in stems:
+        if stem in index.mentioners:
+            found[stem] = index.mentioners[stem]
     return found
 
 
@@ -310,7 +364,8 @@ def corpus_gates(root: Path) -> list[str]:
     if not test_dir.is_dir():
         return gates
     for path in sorted(test_dir.glob("test_*.py")):
-        text = _read_cached(path)
+        # Read, match, drop: three regexes need the text once and nothing keeps it.
+        text = _read(path)
         scans_tree = _SCANS_A_DIR.search(text) and _REACHES_TEST_TREE.search(text)
         if scans_tree or _JOINS_TEST_DIR.search(text):
             gates.append(_rel_posix(path, root))

@@ -11,7 +11,7 @@ from kiro_crew import memory_record_metadata as meta
 from kiro_crew import memory_stores, vector_memory
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.history_consolidation import HistoryConsolidator
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
 @pytest.fixture(params=["v1", "v2"])
@@ -19,8 +19,13 @@ def store(request, tmp_path, monkeypatch):
     root = tmp_path / "memory_stores"
     monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
     directory = tmp_path if request.param == "v1" else declare_v2_store(tmp_path, "member-alice")
-    tier = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=2)
-    tier.init()
+    if request.param == "v2":
+        tier = open_member_database(
+            directory / "memory.db", member_id="alice", store_id="member-alice", embedding_dim=2
+        )
+    else:
+        tier = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=2)
+        tier.init()
     yield tier
     tier.close()
 
@@ -85,6 +90,12 @@ def test_metadata_backfill_and_older_writer_reconciliation(store):
     store.close()
     store.init()
     current = meta.get_record_metadata(store.db, "key:user.work_email")
+    if store.algorithm_version == "v2":
+        # Ordinary member opens never reconcile writes by unsupported older code.
+        assert current["revision"] == 1
+        assert current["email_addresses"] == ["old@example.com"]
+        assert store.db.total_changes == 0
+        return
     assert current["revision"] == 2
     assert current["email_addresses"] == ["legacy@example.net"]
     revision = dict(
@@ -223,6 +234,88 @@ def test_verified_current_transcript_correction_updates_outdated_fact(store):
         "SELECT before_json FROM memory_revisions ORDER BY id DESC LIMIT 1"
     ).fetchone()[0]
     assert "user_explicit" in history and "old@example.com" in history
+
+
+@pytest.mark.parametrize("store", ["v2"], indirect=True)
+def test_verified_non_ascii_correction_updates_the_fact(store):
+    # A Chinese replacement statement must verify like the ASCII one: the
+    # evidence's new_value_json is dumped ensure_ascii=False to match the
+    # representation set_semantic persists and compares against.
+    old_value = "\u65e7\u5730\u5740"  # jiu dizhi, "old address"
+    new_value = "\u65b0\u5730\u5740"  # xin dizhi, "new address"
+    quote = f"\u8bf7\u628a{old_value}\u6539\u4e3a{new_value}\u3002"  # "please change X to Y."
+    before = fact(store, value=old_value)
+    evidence = meta.verified_correction(
+        key="user.work_email",
+        before=before,
+        value=new_value,
+        quote=quote,
+        messages=[{"role": "user", "content": quote, "ts": datetime.now(timezone.utc).isoformat()}],
+        session_key="dashboard:alice",
+    )
+    assert evidence is not None
+    assert (
+        store.set_semantic(
+            "user.work_email",
+            new_value,
+            1,
+            "consolidation:dashboard:alice",
+            correction=evidence,
+            expected_revision=evidence.revision,
+        )
+        is None
+    )
+    current = store.get_semantic("user.work_email")
+    assert json.loads(current["value_json"]) == new_value
+    assert meta.get_record_metadata(store.db, "key:user.work_email")["revision"] == 2
+
+
+@pytest.mark.parametrize("store", ["v2"], indirect=True)
+def test_identical_legacy_reset_does_not_retire_episodes(store, monkeypatch):
+    # The stale-episode retirement guard must use value-level equality: a
+    # legacy row persists the escaped dump, so a byte compare sees an
+    # identical non-ASCII user_explicit re-set as a change and retires
+    # episodes asserting the still-current value.
+    value = "\ud55c\uad6d\uc5b4"  # U+D55C U+AD6D U+C5B4, hangugeo
+    fact(store, value=value)
+    store.db.execute(
+        f"UPDATE {store._sem_rel} SET value_json=? WHERE key=?",
+        (json.dumps(value), "user.work_email"),  # escaped legacy representation
+    )
+    store.db.commit()
+    retired = []
+    monkeypatch.setattr(
+        store, "_retire_stale_episodic", lambda key, text, **kw: retired.append((key, text))
+    )
+    assert store.set_semantic("user.work_email", value, 1, "user_explicit") is None
+    assert retired == []
+    # A real change still retires episodes asserting the old value.
+    assert store.set_semantic("user.work_email", "\uc0c8\uac12", 1, "user_explicit") is None
+    assert retired == [("user.work_email", value)]
+
+
+@pytest.mark.parametrize("store", ["v2"], indirect=True)
+def test_legacy_escaped_row_reaffirmed_with_identical_value_is_a_no_op(
+    store,
+):  # A legacy row can persist the escaped dump. An automated re-set of the
+    # identical value must be the reaffirm no-op, not a conflict proposal
+    # re-raised by every session touching the key.
+    value = "\ud55c\uad6d\uc5b4"  # hangugeo, "Korean language"
+    fact(store, value=value)
+    store.db.execute(
+        f"UPDATE {store._sem_rel} SET value_json=? WHERE key=?",
+        (json.dumps(value), "user.work_email"),  # escaped legacy representation
+    )
+    store.db.commit()
+    assert store.set_semantic("user.work_email", value, 1, "consolidation:dm") is None
+    assert (
+        store.db.execute(
+            "SELECT COUNT(*) FROM memory_revisions WHERE status='conflict'"
+        ).fetchone()[0]
+        == 0
+    )
+    # The stored row is untouched: same legacy text, no spurious rewrite.
+    assert store.get_semantic("user.work_email")["value_json"] == json.dumps(value)
 
 
 def test_fabricated_assistant_ambiguous_or_stale_corrections_cannot_replace(store):

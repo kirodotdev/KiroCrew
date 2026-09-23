@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import { BarChart3 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardTitle, Badge } from '../../components/ui'
@@ -7,11 +8,32 @@ import { providerUsageQuery } from '../../api/providerUsageQuery'
 import { TokenDailyChart } from './TokenDailyChart'
 import { formatCost } from '../../utils/formatCost'
 
+import { fmtNumber, fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return String(n)
+}
+
+const EM_DASH = '\u2014'
+
+/** A day's credits, localized, in the Billing card's two decimals; a dash when the day has no figure. */
+function fmtCredits(credits: number | undefined): string {
+  return credits == null ? EM_DASH : fmtNumber(credits, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/**
+ * A day's credits as a share of the CURRENT billing period's plan allowance --
+ * the same `limit` the Billing card divides by, so the two reconcile. Not
+ * clamped: a day can legitimately exceed 100% of the period allowance. A dash
+ * when there is no allowance to divide by (no plan, or a zero/absent limit) or
+ * no figure for the day, rather than a misleading 0%. The percent sign and its
+ * spacing are the locale's (`fmtPercent`), not a hardcoded suffix.
+ */
+function fmtCreditsPct(credits: number | undefined, limit: number | undefined): string {
+  if (credits == null || limit == null || !(limit > 0)) return EM_DASH
+  return fmtPercent(credits / limit, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 }
 
 export default function UsageTab() {
@@ -107,24 +129,44 @@ export default function UsageTab() {
         <Card>
           <CardTitle>{i18nT('pages.overview.usageTab.daily_history')}</CardTitle>
           <div className="max-h-64 overflow-y-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm tabular-nums">
               <thead className="sticky top-0 bg-bg-elevated">
                 <tr className="text-muted text-left">
                   <th className="pb-2 font-medium">{i18nT('pages.overview.usageTab.date')}</th>
                   <th className="pb-2 font-medium text-right">{i18nT('pages.overview.usageTab.sessions')}</th>
                   <th className="pb-2 font-medium text-right">{i18nT('pages.overview.usageTab.messages')}</th>
                   <th className="pb-2 font-medium text-right">{i18nT('pages.overview.usageTab.tool_calls')}</th>
+                  <th className="pb-2 font-medium text-right max-[600px]:hidden">{i18nT('pages.overview.usageTab.credits_used')}</th>
+                  <th className="pb-2 font-medium text-right max-[600px]:hidden" title={i18nT('pages.overview.usageTab.credits_used_pct_title')}>
+                    {i18nT('pages.overview.usageTab.credits_used_pct')}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {[...s.dailyHistory].reverse().map(d => (
-                  <tr key={d.date} className="border-t border-border">
-                    <td className="py-1.5 font-mono text-[13px]">{d.date}</td>
-                    <td className="py-1.5 text-right">{d.sessions}</td>
-                    <td className="py-1.5 text-right">{d.messages}</td>
-                    <td className="py-1.5 text-right">{d.toolCalls}</td>
-                  </tr>
-                ))}
+                {[...s.dailyHistory].reverse().map(d => {
+                  const credits = fmtCredits(d.credits)
+                  const pct = fmtCreditsPct(d.credits, b?.limit)
+                  return (
+                    <Fragment key={d.date}>
+                      <tr className="border-t border-border">
+                        <td className="py-1.5 font-mono text-[13px]">{d.date}</td>
+                        <td className="py-1.5 text-right">{d.sessions}</td>
+                        <td className="py-1.5 text-right">{d.messages}</td>
+                        <td className="py-1.5 text-right">{d.toolCalls}</td>
+                        <td className="py-1.5 text-right max-[600px]:hidden">{credits}</td>
+                        <td className="py-1.5 text-right max-[600px]:hidden">{pct}</td>
+                      </tr>
+                      {/* Phone: six columns would wrap every cell, and the repo forbids a
+                          sideways-scrolling table, so the two credit figures fold onto a
+                          second line under the day instead of squeezing beside it. */}
+                      <tr className="hidden max-[600px]:table-row text-muted text-[12px]" data-phone-line="">
+                        <td colSpan={4} className="pb-1.5 text-right">
+                          {i18nT('pages.overview.usageTab.credits_used_compact', { credits, pct })}
+                        </td>
+                      </tr>
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>

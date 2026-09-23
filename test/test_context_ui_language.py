@@ -83,6 +83,17 @@ class TestUiLanguageSection:
         assert "ONLY to that tool-call purpose text" in ctx
         assert "keep following the language the user writes in" in ctx
 
+    def test_names_both_purpose_carriers(self, tmp_path):
+        """The Kiro harness carries the purpose as ``__tool_use_purpose``;
+        other harnesses carry it as the shell tool's ``description`` field
+        (``select_tool_title`` reads it first). A model on the second kind
+        never sees a field called "purpose", so the block has to name its
+        field too or the steer silently misses that harness."""
+        _seed_language("zh-CN")
+        ctx = _builder(tmp_path).build_session_context()
+        assert "`__tool_use_purpose`" in ctx
+        assert "`description`" in ctx
+
     def test_injected_for_custom_agents(self, tmp_path):
         """Custom agents render into the same dashboard chrome."""
         _seed_language("fr")

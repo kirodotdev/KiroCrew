@@ -38,6 +38,27 @@ from kiro_crew import sandbox
 from kiro_crew.apps.builtins.papyrus.backend import gitops
 
 
+def _hermetic_git_env() -> dict[str, str]:
+    """This process's environment with the host's git configuration held away.
+
+    The against-real-git demonstrations below build a repository whose CONFIG is
+    the attack, so the only config git may read is the one the test wrote: the
+    operator's global and system files are pointed away (a ``credential.helper``
+    or ``core.hooksPath`` there would run during the very commands under test),
+    and an inherited ``GIT_DIR`` / ``GIT_WORK_TREE`` is dropped so ``cwd`` is the
+    repository git operates on.
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
+    }
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
 @pytest.fixture()
 def repo(tmp_path: Path) -> Path:
     """A directory that looks like a git repo to ``is_git_repo``."""
@@ -804,19 +825,15 @@ class TestPackProgramsArePinnedForEveryRemote:
         hostile = tmp_path / "recv.sh"
         hostile.write_text(f"#!/bin/sh\necho ran > {marker}\nexit 1\n", encoding="utf-8")
         hostile.chmod(0o755)
+        env = _hermetic_git_env()
 
         def _run(*args: str, cwd: Path = work) -> None:
             subprocess.run(
-                [git, *args], cwd=cwd, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=60
             )
 
-        subprocess.run(
-            [git, "init", "-q", "--bare", "-b", "main", str(upstream)],
-            capture_output=True, timeout=60,
-        )
-        subprocess.run(
-            [git, "clone", "-q", str(upstream), str(work)], capture_output=True, timeout=60
-        )
+        _run("init", "-q", "--bare", "-b", "main", str(upstream), cwd=tmp_path)
+        _run("clone", "-q", str(upstream), str(work), cwd=tmp_path)
         _run("config", "user.email", "t@example.invalid")
         _run("config", "user.name", "t")
         (work / "f.txt").write_text("x\n", encoding="utf-8")
@@ -846,19 +863,15 @@ class TestPackProgramsArePinnedForEveryRemote:
         hostile = tmp_path / "up.sh"
         hostile.write_text(f"#!/bin/sh\necho ran > {marker}\nexit 1\n", encoding="utf-8")
         hostile.chmod(0o755)
+        env = _hermetic_git_env()
 
-        def _run(*args: str) -> None:
+        def _run(*args: str, cwd: Path = work) -> None:
             subprocess.run(
-                [git, *args], cwd=work, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=60
             )
 
-        subprocess.run(
-            [git, "init", "-q", "--bare", "-b", "main", str(upstream)],
-            capture_output=True, timeout=60,
-        )
-        subprocess.run(
-            [git, "clone", "-q", str(upstream), str(work)], capture_output=True, timeout=60
-        )
+        _run("init", "-q", "--bare", "-b", "main", str(upstream), cwd=tmp_path)
+        _run("clone", "-q", str(upstream), str(work), cwd=tmp_path)
         _run("config", "user.email", "t@example.invalid")
         _run("config", "user.name", "t")
         (work / "f.txt").write_text("x\n", encoding="utf-8")

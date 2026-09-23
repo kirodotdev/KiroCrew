@@ -31,15 +31,21 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
+from kiro_crew import acp_tool_gate, sandbox, security
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp._dispatch import GATE_ENVELOPE_MARKER, build_permission_event, gate_envelope
 from kiro_crew.acp.client import (
+    _READBACK_FAULT_MAX_SHAPES,
+    _READBACK_FAULT_SHAPES,
+    _READBACK_STDERR_SCAN_CHARS,
     PI_ACP_BIN,
     PI_BIN,
     PI_GATE_EXTENSION_SHA256,
@@ -51,6 +57,8 @@ from kiro_crew.acp.client import (
     _ensure_pi_gate_launcher,
     _pi_commands_from_readback,
     _pi_gate_launcher_body,
+    _readback_detail_with_diagnosis,
+    _readback_stderr_diagnosis,
     _resolve_pi_acp_bin,
     _resolve_pi_bin,
     _seal_pi_gate_extension,
@@ -58,13 +66,27 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_ROUTING,
+    ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_KNOWN,
     Routing,
+    effort_config_option_id,
+    effort_config_option_value,
     gate_probe_command_for,
     routing_for,
 )
 from kiro_crew.acp_tool_gate import gate_extension_issue
+from kiro_crew.agent_sdk import backend_cards
+from kiro_crew.config.paths import config_dir
+from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.instances import run_marker
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 _ENV_PI_ACP_BIN = "PI_ACP_BIN"
@@ -208,7 +230,7 @@ class TestGateLauncher:
     def test_the_launcher_is_written_once_and_lives_in_the_run_dir(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
         first = _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
         second = _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
@@ -225,7 +247,7 @@ class TestGateLauncher:
         run_dir.mkdir()
         work = tmp_path / "work"
         work.mkdir()
-        monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
         _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
         assert list(work.iterdir()) == []
@@ -281,7 +303,7 @@ class TestGateLauncher:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         monkeypatch.setattr(acp_client, "pi_gate_extension_path", lambda: str(crlf_file))
-        monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         sealed = Path(_seal_pi_gate_extension())
         assert sealed.read_bytes() == lf
         # And a byte that is NOT a line ending still fails the digest.
@@ -314,12 +336,12 @@ class TestGateLauncher:
 
 
 class TestSealedExtension:
-    """The harness loads a digest-verified copy in the run dir, never the package file."""
+    """The harness loads a digest-verified copy in the gate artifact dir, never the package file."""
 
     def _run_dir(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         return run_dir
 
     def test_the_shipped_bytes_are_sealed_read_only_in_the_run_dir(self, monkeypatch, tmp_path):
@@ -368,42 +390,36 @@ class TestAMissingExtensionIsTheSameRefusal:
         assert "cannot be read" in str(excinfo.value)
 
 
-class TestGateArtifactsRefuseASharedDirectory:
-    """The seal->exec window is a security property, so the tmpdir fallback is refused.
+class TestGateArtifactsRefuseAnUnsafeDirectory:
+    """The seal-to-exec window requires a real owner-only artifact directory."""
 
-    ``sandbox._ensure_run_dir`` degrades to the system temp directory when the
-    configured run directory cannot be created, with a warning. For a sandbox
-    launcher that is a liveness matter; for the gate artifacts it is a bypass: a
-    same-UID process can re-chmod and rewrite a file in a shared directory before
-    the harness loads it. So the session is REFUSED, not degraded -- the posture the
-    sandbox floor already takes when the credential mask cannot be applied.
-    """
-
-    def _point(self, monkeypatch, tmp_path, *, fallback: bool):
+    def _point(self, monkeypatch, tmp_path):
         cfg = tmp_path / "cfg"
-        (cfg / "run").mkdir(parents=True)
-        elsewhere = tmp_path / "tmpfallback"
-        elsewhere.mkdir()
-        # The driver binds both names at import, so the seam is the driver's own.
+        cfg.mkdir()
         monkeypatch.setattr(acp_client, "config_dir", lambda: cfg)
-        monkeypatch.setattr(
-            acp_client, "_ensure_run_dir", lambda: str(elsewhere if fallback else cfg / "run")
-        )
-        return cfg / "run", elsewhere
+        return cfg / "pi-gate"
 
-    def test_the_configured_run_dir_is_accepted(self, monkeypatch, tmp_path):
-        run_dir, _ = self._point(monkeypatch, tmp_path, fallback=False)
-        assert Path(acp_client._pi_gate_run_dir()) == run_dir
+    def test_the_dedicated_directory_is_created_owner_only(self, monkeypatch, tmp_path):
+        expected = self._point(monkeypatch, tmp_path)
+        assert Path(acp_client._pi_gate_artifact_dir()) == expected
+        if not acp_client.platform_compat.IS_WINDOWS:
+            assert stat.S_IMODE(expected.stat().st_mode) == 0o700
 
-    def test_the_tempdir_fallback_refuses_the_session(self, monkeypatch, tmp_path):
-        _, elsewhere = self._point(monkeypatch, tmp_path, fallback=True)
+    def test_a_linked_artifact_directory_refuses_the_session(self, monkeypatch, tmp_path):
+        expected = self._point(monkeypatch, tmp_path)
+        elsewhere = tmp_path / "shared"
+        elsewhere.mkdir()
+        make_dir_link(expected, elsewhere)
         with pytest.raises(AcpToolGateUnroutable) as excinfo:
-            acp_client._pi_gate_run_dir()
-        assert "run directory" in str(excinfo.value)
-        assert list(elsewhere.iterdir()) == [], "nothing may be written to the fallback"
+            acp_client._pi_gate_artifact_dir()
+        assert "not a real directory" in str(excinfo.value)
+        assert list(elsewhere.iterdir()) == []
 
-    def test_neither_artifact_is_written_under_the_fallback(self, monkeypatch, tmp_path):
-        _, elsewhere = self._point(monkeypatch, tmp_path, fallback=True)
+    def test_neither_writer_uses_a_linked_artifact_directory(self, monkeypatch, tmp_path):
+        expected = self._point(monkeypatch, tmp_path)
+        elsewhere = tmp_path / "shared"
+        elsewhere.mkdir()
+        make_dir_link(expected, elsewhere)
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
         with pytest.raises(AcpToolGateUnroutable):
             _seal_pi_gate_extension()
@@ -412,9 +428,9 @@ class TestGateArtifactsRefuseASharedDirectory:
         assert list(elsewhere.iterdir()) == []
 
     def test_both_writers_go_through_the_strict_resolver(self):
-        for fn in (_seal_pi_gate_extension, _ensure_pi_gate_launcher):
-            source = inspect.getsource(fn)
-            assert "_pi_gate_run_dir()" in source
+        for function in (_seal_pi_gate_extension, _ensure_pi_gate_launcher):
+            source = inspect.getsource(function)
+            assert "_pi_gate_artifact_dir()" in source
             assert "_ensure_run_dir" not in source
 
 
@@ -713,6 +729,211 @@ class TestTheReadBackComparesFilesNotStrings:
         assert "_same_file_spelling(extension_path)" in source
 
 
+#: A 40-char run of the base64 alphabet: the AWS secret-access-key shape the
+#: redactors' bare-secret detector is built for. Not a real key.
+_AWS_SECRET_SHAPE = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+
+class TestTheReadBackStderrDiagnosis:
+    """What a refused read-back tells the operator about the child's failure."""
+
+    #: One stderr per vocabulary phrase. Keyed by phrase so a shape added to
+    #: :data:`_READBACK_FAULT_SHAPES` without a sample here fails the coverage test
+    #: below rather than going unexercised.
+    SAMPLES = {
+        "its shebang interpreter could not be run": (
+            "/bin/sh: /opt/pi/bin/pi: /usr/bin/node: bad interpreter: No such file or directory"
+        ),
+        "it is built for a different CPU or executable format": (
+            "/bin/sh: /opt/pi/bin/pi: Bad CPU type in executable"
+        ),
+        "the OS killed it over its code signature": "/opt/pi/bin/pi: code signature invalid",
+        "a shared library it needs is missing": ("dyld: Library not loaded: @rpath/libnode.dylib"),
+        "the gateway passed it a flag this harness version does not accept": (
+            "pi: unknown flag --extension"
+        ),
+        "its configuration could not be parsed": "Error: cannot parse config at line 3",
+        "the OS denied the operation, as a sandbox, quarantine or privacy policy does": (
+            "/bin/sh: /opt/pi/bin/pi: Operation not permitted"
+        ),
+        "the OS refused to execute it": "/bin/sh: /opt/pi/bin/pi: Permission denied",
+        "the file was still being written": "/bin/sh: /opt/pi/bin/pi: Text file busy",
+        "the path is a directory, not a program": "/bin/sh: /opt/pi/bin/pi: Is a directory",
+        "its path loops through symlinks": (
+            "/bin/sh: /opt/pi/bin/pi: Too many levels of symbolic links"
+        ),
+        "the path does not exist": "/bin/sh: /opt/pi/bin/pi: No such file or directory",
+    }
+
+    @staticmethod
+    def _phrases():
+        return [phrase for _pattern, phrase in _READBACK_FAULT_SHAPES]
+
+    def test_the_exec_refusal_that_exit_126_cannot_distinguish_is_named(self):
+        # exit 126 is the shell refusing an exec; only the child's message says
+        # whether the OS denied it or the shebang could not be resolved, and those
+        # take different fixes.
+        denied = _readback_stderr_diagnosis("/bin/sh: /opt/pi/bin/pi: Permission denied\n")
+        shebang = _readback_stderr_diagnosis(
+            "/bin/sh: /opt/pi/bin/pi: /usr/bin/node: bad interpreter: No such file or directory\n"
+        )
+        assert denied == "the OS refused to execute it"
+        assert shebang.startswith("its shebang interpreter could not be run")
+        assert denied != shebang
+
+    def test_a_shebang_fault_names_the_interpreter_before_the_missing_file(self):
+        # The two shapes co-occur in one line and the order carries the meaning:
+        # the interpreter is the cause, the missing file only its symptom.
+        out = _readback_stderr_diagnosis(
+            "/bin/sh: /opt/pi/bin/pi: /usr/bin/node: bad interpreter: No such file or directory\n"
+        )
+        assert out.split("; ") == [
+            "its shebang interpreter could not be run",
+            "the path does not exist",
+        ]
+
+    def test_at_most_two_shapes_are_reported(self):
+        crowded = (
+            "Permission denied\nbad interpreter\nText file busy\nIs a directory\n"
+            "No such file or directory\nBad CPU type in executable\n"
+        )
+        assert len(_readback_stderr_diagnosis(crowded).split("; ")) <= _READBACK_FAULT_MAX_SHAPES
+
+    def test_every_vocabulary_shape_has_a_sample_and_reports_itself_first(self):
+        # Coverage in both directions: a phrase with no sample, and a sample whose
+        # phrase is not reported first, both fail here.
+        assert sorted(self.SAMPLES) == sorted(self._phrases())
+        for phrase, sample in self.SAMPLES.items():
+            assert _readback_stderr_diagnosis(sample).split("; ")[0] == phrase, phrase
+
+    def test_the_platform_wording_a_launcher_chooses_does_not_matter(self):
+        # Same fault, four spellings a shell, dyld, cmd.exe or Node might use.
+        for text in (
+            "permission denied",
+            "PERMISSION DENIED",
+            "pi: Permission denied (os error 13)",
+            "Error: spawn /opt/pi/bin/pi EACCES: Permission denied",
+        ):
+            assert _readback_stderr_diagnosis(text) == "the OS refused to execute it", text
+
+    def test_nothing_the_child_wrote_is_ever_published(self):
+        """The structural guarantee: output is drawn from the vocabulary, or empty.
+
+        This is what makes the credential question unanswerable rather than
+        answered. A scheme that echoes the child's bytes has to show no credential
+        survives any rejoining of them, and the redactors' patterns need contiguity
+        and label anchors that a single inserted byte destroys. Matching instead of
+        echoing means there is no path from a child byte to published text, so a
+        hostile stderr cannot produce one whatever it contains.
+        """
+        allowed = set(self._phrases())
+        secrets = (
+            "glpat-" + "aB3xY7zQ9wE2rT5yU8iO",
+            "AKIA" + "IOSFODNN7EXAMPLE",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "xoxb-" + "123456789012-abcdefghijklmnop",
+            "s3cr3tOpaqueTok3nValue",
+        )
+        splitters = ("", "\n", " ", "\x1b[31m", "\u2028", "\u00a0", "\u200b", "-", ".", "\r\n")
+        hostile = []
+        for secret in secrets:
+            for splitter in splitters:
+                for offset in range(0, len(secret), 3):
+                    spliced = secret[:offset] + splitter + secret[offset:]
+                    hostile.append(f"/bin/sh: /opt/pi/bin/pi: Permission denied\ntoken={spliced}\n")
+                    hostile.append(f"Authorization: Bearer {spliced}\nText file busy\n")
+        # The label pushed clean out of the scan window, and a capture far larger
+        # than the window.
+        far = "x" * (_READBACK_STDERR_SCAN_CHARS + 500)
+        hostile.append(f"Authorization: Bearer{far}\n{secrets[-1]}\nPermission denied\n")
+        hostile.append("y" * 5_000_000 + "\nPermission denied\ntoken=" + secrets[0] + "\n")
+
+        for text in hostile:
+            out = _readback_stderr_diagnosis(text)
+            if not out:
+                continue
+            assert all(part in allowed for part in out.split("; ")), out
+            for secret in secrets:
+                assert secret not in out
+                assert secret.split("-", 1)[-1] not in out
+
+    def test_a_colour_code_inside_a_token_body_publishes_no_token(self):
+        # The composition that defeats every normalising scheme: rejoining the run
+        # strips the `-` a prefixed pattern anchors on, and not rejoining leaves the
+        # `[31m` residue inside the run. Matching a vocabulary is indifferent to it.
+        token = "glpat-" + "aB3xY7zQ9wE2rT5yU8iO"
+        body = token[len("glpat-") :]
+        allowed = set(self._phrases())
+        for sgr in ("\x1b[31m", "\x1b[0m", "\x1b[1;32m", "\x1b[m", "\x1b[38;5;196m"):
+            for sgr_at in range(len(body) + 1):
+                for wrap_at in range(0, len(body) + 1, 3):
+                    if wrap_at == sgr_at:
+                        continue
+                    lo, hi = sorted((sgr_at, wrap_at))
+                    first, second = (sgr, "\n") if lo == sgr_at else ("\n", sgr)
+                    spliced = "glpat-" + body[:lo] + first + body[lo:hi] + second + body[hi:]
+                    out = _readback_stderr_diagnosis(
+                        f"auth failed token={spliced}\n/bin/sh: pi: Permission denied\n"
+                    )
+                    assert out == "the OS refused to execute it"
+                    assert all(part in allowed for part in out.split("; "))
+                    assert body not in out
+
+    def test_a_label_beyond_the_scan_window_publishes_no_token(self):
+        token = "s3cr3tOpaqueTok3nValue"
+        gap = "x" * (_READBACK_STDERR_SCAN_CHARS + 500)
+        out = _readback_stderr_diagnosis(
+            f"Authorization: Bearer{gap}\n{token}\n/bin/sh: pi: Permission denied\n"
+        )
+        assert out == "the OS refused to execute it"
+        assert token not in out
+
+    def test_only_the_tail_of_a_large_stderr_is_read(self):
+        # The window bounds the matching work, and it is the TAIL because a harness
+        # writes its banner first and fails last.
+        filler = "b" * (_READBACK_STDERR_SCAN_CHARS * 2)
+        assert (
+            _readback_stderr_diagnosis(
+                "Text file busy\n" + filler + "\n/bin/sh: pi: Permission denied\n"
+            )
+            == "the OS refused to execute it"
+        )
+        # The same shape left far enough back is outside the window and unread.
+        assert (
+            _readback_stderr_diagnosis(
+                "/bin/sh: pi: Permission denied\n" + filler + "\nText file busy\n"
+            )
+            == "the file was still being written"
+        )
+
+    def test_an_unreadable_or_silent_stderr_answers_nothing(self):
+        assert _readback_stderr_diagnosis(None) == ""
+        assert _readback_stderr_diagnosis(b"Permission denied") == ""
+        assert _readback_stderr_diagnosis("") == ""
+        assert _readback_stderr_diagnosis("   \n\t ") == ""
+        assert _readback_stderr_diagnosis("a harness banner and nothing else") == ""
+
+    def test_the_detail_separates_a_recognised_fault_from_an_unreadable_one(self):
+        # Three answers the operator needs apart: a named fault, a harness that
+        # explained itself in words this gateway has no shape for, and silence.
+        assert _readback_detail_with_diagnosis("exit 126", "pi: Permission denied\n") == (
+            "exit 126: the OS refused to execute it"
+        )
+        assert _readback_detail_with_diagnosis("exit 126", "harness gave up\n") == (
+            "exit 126, and its stderr holds no message this gateway recognises"
+        )
+        assert _readback_detail_with_diagnosis("exit 126", "") == "exit 126"
+        assert _readback_detail_with_diagnosis("exit 126", "  \n ") == "exit 126"
+        assert _readback_detail_with_diagnosis("no response", None) == "no response"
+
+    def test_an_unrecognised_stderr_is_described_and_never_quoted(self):
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        out = _readback_detail_with_diagnosis("exit 126", f"mystery failure key={secret}\n")
+        assert out == "exit 126, and its stderr holds no message this gateway recognises"
+        assert secret not in out
+        assert "mystery" not in out
+
+
 class TestTheReadBackReportsFailureRatherThanAssuming:
     """A read-back that could not run must never read as "loaded"."""
 
@@ -733,10 +954,85 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 3
             stdout = ""
+            stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         issue, remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert "exit 3" in issue and "get_commands" in remedy
+
+    def test_the_childs_own_reason_reaches_the_refusal(self, tmp_path, monkeypatch):
+        """An exit code alone names a verdict, not a cause.
+
+        The launcher is /bin/sh exec'ing the resolved harness binary, so its message
+        is what tells an exec the OS refused apart from a shebang it cannot resolve.
+        The refusal carries which of the two it was, in the gateway's own words, and
+        the child's bytes stay out of it -- including the operator's home path.
+        """
+
+        class _Completed:
+            returncode = 126
+            stdout = ""
+            stderr = "/bin/sh: /Users/me/.local/bin/pi: Permission denied\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        assert "exit 126" in issue
+        assert "the OS refused to execute it" in issue
+        assert "/Users/me" not in issue
+
+    def test_a_silent_child_is_reported_as_the_bare_exit(self, tmp_path, monkeypatch):
+        """No placeholder: "the child said nothing" must not look like "Crew hid it"."""
+
+        class _Completed:
+            returncode = 126
+            stdout = ""
+            stderr = "   \n\t\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        assert issue.endswith("(exit 126)")
+
+    def test_a_response_that_never_came_still_reports_the_childs_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """A zero exit with no parseable answer is the other half of the same path."""
+
+        class _Completed:
+            returncode = 0
+            stdout = "not json at all"
+            stderr = "pi: unknown flag --extension\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        assert "no response" in issue
+        assert "a flag this harness version does not accept" in issue
+
+    def test_a_secret_in_the_childs_stderr_is_not_republished(self, tmp_path, monkeypatch):
+        """A refusal reaches the dashboard and the chat card; the child is foreign.
+
+        Both halves matter: a secret beside an UNRECOGNISED message, where there is
+        nothing to report, and a secret beside a RECOGNISED one, where the fault is
+        still named. Naming a fault publishes a phrase from the gateway's own
+        vocabulary, so it cannot carry a secret either way.
+        """
+
+        def _run(stderr):
+            class _Completed:
+                returncode = 126
+                stdout = ""
+
+            _Completed.stderr = stderr
+            monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+            issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+            return issue
+
+        unknown = _run(f"mystery: key={_AWS_SECRET_SHAPE} rejected\n")
+        assert _AWS_SECRET_SHAPE not in unknown
+        assert unknown.endswith("recognises)"), unknown
+
+        known = _run(f"key={_AWS_SECRET_SHAPE}\n/bin/sh: pi: Permission denied\n")
+        assert _AWS_SECRET_SHAPE not in known
+        assert "the OS refused to execute it" in known, "a secret must not cost the diagnosis"
 
     def test_a_registry_without_the_gate_is_refused_with_the_gate_remedy(
         self, tmp_path, monkeypatch
@@ -744,6 +1040,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 0
             stdout = _response(_registry(("compact", None)))
+            stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         issue, remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
@@ -756,6 +1053,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 0
             stdout = _response(_registry((PROBE, self.EXT)))
+            stderr = ""
 
         def _fake_run(argv, **kwargs):
             seen["argv"] = argv
@@ -780,6 +1078,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 0
             stdout = _response(_registry((PROBE, self.EXT)))
+            stderr = ""
 
         def _fake_run(argv, **kwargs):
             seen["env"] = kwargs["env"]
@@ -803,6 +1102,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 0
             stdout = _response(_registry((PROBE, self.EXT)))
+            stderr = ""
 
         def _fake_run(argv, **kwargs):
             seen["env"] = kwargs["env"]
@@ -1070,7 +1370,7 @@ def test_live_the_shipped_extension_loads_and_the_read_back_sees_it(tmp_path, mo
     agent_dir.mkdir()
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+    monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
     monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
     pi_bin, _searched = _resolve_pi_bin()
     assert pi_bin
@@ -1119,3 +1419,836 @@ def test_live_the_shipped_extension_loads_and_the_read_back_sees_it(tmp_path, mo
     commands = _pi_commands_from_readback(completed.stdout)
     assert commands is not None
     assert gate_extension_issue(ACP_BACKEND_PI, commands, extension)
+
+
+# ── The gate artifacts survive the sandbox mask ───────────────────────────────
+
+
+class TestTheGateArtifactsStayReachableInsideTheSandbox:
+    """The credential-bearing run directory stays hidden while pi's gate can run."""
+
+    def _hidden(self, backend: str = ACP_BACKEND_PI) -> tuple[str, ...]:
+        return acp_tool_gate.adapter_hidden_credential_dirs(backend)
+
+    def _run_dir(self) -> str:
+        return os.path.normpath(str(config_dir() / "run"))
+
+    def _artifact_dir(self) -> str:
+        return os.path.normpath(str(config_dir() / "pi-gate"))
+
+    def _launcher_lists(self, monkeypatch: pytest.MonkeyPatch) -> tuple[list, list]:
+        # ``_build_launcher_script`` asks the host's ``ssh -V`` (once per process, cached)
+        # for the accept-new flag. Which flag lands in the script is not what these lists
+        # are about, so the probe is pinned rather than run: no host binary, no
+        # cache-order dependence on which test in the worker got there first.
+        monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+        hidden = self._hidden()
+        script = sandbox._build_launcher_script(
+            "standard",
+            strip_python_env=True,
+            extra_hidden_dirs=hidden,
+            extra_expose_files=acp_tool_gate.adapter_expose_files(ACP_BACKEND_PI, hidden),
+        )
+        masked = json.loads(re.search(r"^SENSITIVE_DIRS = (\[.*\])$", script, re.M).group(1))
+        readonly = json.loads(re.search(r"^READONLY_DIRS = (\[.*\])$", script, re.M).group(1))
+        return masked, readonly
+
+    def _is_masked(self, path: str, targets: tuple[str, ...] | list[str]) -> bool:
+        normalized = os.path.normpath(path)
+        return any(
+            os.path.commonpath((normalized, os.path.normpath(target))) == os.path.normpath(target)
+            for target in targets
+        )
+
+    def test_pi_gate_is_excluded_from_the_child_mask_but_remains_on_the_floor(self):
+        hidden = self._hidden()
+        assert not any(Path(path).name == "pi-gate" for path in hidden)
+        assert any(Path(leaf).name == "pi-gate" for leaf in security.sensitive_home_dirs())
+
+    def test_pi_mask_keeps_run_and_the_gateway_secret_parent_hidden(self):
+        hidden = self._hidden()
+        normalized = {os.path.normpath(path) for path in hidden}
+        assert self._run_dir() in normalized
+        credential_parent = str(run_marker.secret_path(32145).parent)
+        assert self._is_masked(credential_parent, hidden)
+
+    def test_gate_artifact_exclusion_is_per_backend(self):
+        backend = next(
+            backend
+            for backend, routing in ACP_BACKEND_ROUTING.items()
+            if backend != ACP_BACKEND_PI and routing in acp_tool_gate.ENFORCED_ROUTINGS
+        )
+        normalized = {os.path.normpath(path) for path in self._hidden(backend)}
+        assert self._artifact_dir() in normalized
+
+    def test_gate_artifact_leaf_is_created_and_sealed_on_the_shared_walk(self):
+        """The leaf is materialized and sealed like every other governance ceiling.
+
+        It has to be: ``mount(2)`` cannot seal an absent path, so a leaf left off the
+        precreate list stays WRITABLE in the sandbox on every install that has not run
+        pi yet -- which is the ordinary install. The nofollow list matters for the same
+        reason it matters for ``playwright-cli``: the gateway later execs out of this
+        name, so the mounted name must stay the real directory.
+        """
+        assert "pi-gate" in sandbox._CREW_READONLY_LEAVES
+        assert "pi-gate" in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+        assert "pi-gate" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert set(sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(
+            sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+        )
+
+    @pytest.mark.parametrize("leaf_name", ["pi-gate", "playwright-cli"])
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+    def test_a_squat_refuses_the_spawn_with_no_per_leaf_exception(
+        self, monkeypatch, tmp_path, leaf_name
+    ):
+        """The shared walk carries no per-adapter branch: both leaves refuse alike.
+
+        Parametrized over the pi leaf and a pre-existing one so a later exemption for
+        either has to change this test rather than pass quietly. ``pi-gate`` sharing the
+        seam is the point: the walk stays one code path for every backend.
+        """
+        leaf = tmp_path / leaf_name
+        leaf.symlink_to(tmp_path / "nowhere")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([str(leaf)], []))
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+
+    @pytest.mark.parametrize(
+        "squat",
+        ["dangling-symlink", "symlink-to-dir", "regular-file"],
+    )
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+    def test_the_resolver_refuses_every_squat_the_shared_walk_used_to_catch(
+        self, monkeypatch, tmp_path, squat
+    ):
+        """The checks moved to the resolver, so the resolver must still make them.
+
+        These are the three states ``_refuse_if_dangling_symlink``,
+        ``_refuse_if_symlink_leaf`` and ``_require_real_dir_nofollow`` covered while the
+        leaf sat on the shared lists. Each one must refuse the session here instead.
+        """
+        monkeypatch.setattr(acp_client, "config_dir", lambda: tmp_path)
+        leaf = tmp_path / "pi-gate"
+        if squat == "dangling-symlink":
+            leaf.symlink_to(tmp_path / "nowhere")
+        elif squat == "symlink-to-dir":
+            elsewhere = tmp_path / "elsewhere"
+            elsewhere.mkdir()
+            leaf.symlink_to(elsewhere, target_is_directory=True)
+        else:
+            leaf.write_text("not a directory", encoding="utf-8")
+        with pytest.raises(AcpToolGateUnroutable):
+            acp_client._pi_gate_artifact_dir()
+
+    def test_the_resolver_tightens_a_loose_preexisting_leaf(self, monkeypatch, tmp_path):
+        """A real directory left group-readable is narrowed to owner-only, not refused.
+
+        ``0o750`` rather than a wider mode on purpose: what is under test is that the
+        resolver removes access it did not grant, and one group bit proves that as well
+        as seven bits would while keeping the fixture off the insecure-permissions rule.
+        """
+        monkeypatch.setattr(acp_client, "config_dir", lambda: tmp_path)
+        leaf = tmp_path / "pi-gate"
+        leaf.mkdir(mode=0o750)
+        os.chmod(leaf, 0o750)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- a deliberately LOOSE fixture: what is under test is that the resolver NARROWS a pre-existing directory to owner-only, so it has to start wider than 0o700. One group-read bit under tmp_path, never published. lockdown-ok.  # noqa: E501  # fmt: skip
+        assert stat.S_IMODE(leaf.stat().st_mode) != 0o700, "the fixture must start loose"
+        assert Path(acp_client._pi_gate_artifact_dir()) == leaf
+        if not acp_client.platform_compat.IS_WINDOWS:
+            assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
+
+    @pytest.mark.skipif(
+        not acp_client.platform_compat.IS_POSIX,
+        reason="_build_launcher_script requires os.getuid",
+    )
+    def test_linux_launcher_masks_run_and_voice_but_exposes_and_seals_gate_artifacts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        masked, readonly = self._launcher_lists(monkeypatch)
+        masked_set = {os.path.normpath(path) for path in masked}
+        readonly_set = {os.path.normpath(path) for path in readonly}
+        assert self._run_dir() in masked_set
+        assert self._artifact_dir() not in masked_set
+        assert self._artifact_dir() in readonly_set
+        voice_runtime = {os.path.normpath(path) for path in sandbox._voice_runtime_sandbox_paths()}
+        assert voice_runtime and voice_runtime <= masked_set
+
+    @pytest.mark.skipif(
+        not acp_client.platform_compat.IS_POSIX,
+        reason="_build_seatbelt_profile shares launcher state that requires os.getuid",
+    )
+    def test_seatbelt_masks_run_but_exposes_and_seals_gate_artifacts(self):
+        profile = sandbox._build_seatbelt_profile("standard", extra_hidden_dirs=self._hidden())
+        assert f'(deny file-read* (subpath "{self._run_dir()}"))' in profile
+        assert f'(deny file-read* (subpath "{self._artifact_dir()}"))' not in profile
+        assert f'(deny file-write* (subpath "{self._artifact_dir()}"))' in profile
+
+    def test_both_gate_artifacts_use_the_strict_artifact_resolver(self, monkeypatch, tmp_path):
+        artifact_dir = tmp_path / "pi-gate"
+        artifact_dir.mkdir()
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(artifact_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
+        sealed = _seal_pi_gate_extension()
+        launcher = _ensure_pi_gate_launcher("/usr/bin/pi", sealed)
+        assert Path(sealed).parent == artifact_dir
+        assert Path(launcher).parent == artifact_dir
+        for function in (_seal_pi_gate_extension, _ensure_pi_gate_launcher):
+            source = inspect.getsource(function)
+            assert "_pi_gate_artifact_dir()" in source
+            assert "_ensure_run_dir" not in source
+
+    def test_every_file_written_to_the_artifact_leaf_is_swept(self, monkeypatch, tmp_path):
+        """The leaf's invariant is a ratchet, not a comment.
+
+        The leaf is excluded from the pi child's OS mask, so it is the one directory
+        under the data home that an enforced harness can read. That is safe only while
+        nothing but Crew's own gate artifacts lands there. A comment saying so is what
+        this change's own pattern harvest calls the defect class, so the property is
+        asserted: every name the writers produce is matched by the sweep family, which
+        means a future writer dropping a differently-named file fails here rather than
+        leaving an unswept, child-readable file behind.
+        """
+        artifact_dir = tmp_path / "pi-gate"
+        artifact_dir.mkdir()
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(artifact_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
+        sealed = _seal_pi_gate_extension()
+        _ensure_pi_gate_launcher("/usr/bin/pi", sealed)
+        families = sandbox._PI_GATE_DIR_ARTIFACTS
+        written = sorted(entry.name for entry in artifact_dir.iterdir())
+        assert written, "the writers produced nothing to check"
+        for name in written:
+            prefix = next((p for p in families if name.startswith(p)), None)
+            assert (
+                prefix is not None
+            ), f"{name} is written to the leaf but no sweep family claims it"
+            assert any(
+                name.endswith(suffix) for suffix in families[prefix]
+            ), f"{name} carries a suffix the sweep family does not reclaim"
+
+    def test_the_strict_artifact_resolver_uses_the_dedicated_owner_only_leaf(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = tmp_path / "cfg"
+        cfg.mkdir()
+        monkeypatch.setattr(acp_client, "config_dir", lambda: cfg)
+        artifact_dir = Path(acp_client._pi_gate_artifact_dir())
+        assert artifact_dir == cfg / "pi-gate"
+        if not acp_client.platform_compat.IS_WINDOWS:
+            assert stat.S_IMODE(artifact_dir.stat().st_mode) == 0o700
+
+    def test_stale_pi_gate_artifacts_are_swept_from_the_dedicated_directory(
+        self, monkeypatch, tmp_path
+    ):
+        artifact_dir = tmp_path / "pi-gate"
+        artifact_dir.mkdir()
+        stale = artifact_dir / "kirocrew_pi_gate_999999_gate.ts"
+        stale.write_text("gate", encoding="utf-8")
+        monkeypatch.setattr(sandbox.platform_compat, "pid_exists", lambda _pid: False)
+        removed = sandbox.cleanup_stale_sandbox_profiles(
+            data_home=tmp_path, legacy_dir=str(tmp_path / "absent")
+        )
+        assert removed == 1
+        assert not stale.exists()
+
+    def test_sweep_refuses_a_linked_pi_gate_artifact_directory(self, monkeypatch, tmp_path):
+        target = tmp_path / "outside-pi-gate"
+        target.mkdir()
+        stale = target / "kirocrew_pi_gate_999999_gate.ts"
+        stale.write_text("gate", encoding="utf-8")
+        make_dir_link(tmp_path / "pi-gate", target)
+        monkeypatch.setattr(sandbox.platform_compat, "pid_exists", lambda _pid: False)
+        removed = sandbox.cleanup_stale_sandbox_profiles(
+            data_home=tmp_path, legacy_dir=str(tmp_path / "absent")
+        )
+        assert removed == 0
+        assert stale.exists()
+
+    def test_sweep_refuses_a_linked_run_artifact_directory(self, monkeypatch, tmp_path):
+        target = tmp_path / "outside-run"
+        target.mkdir()
+        stale = target / "kirocrew_sandbox_999999.py"
+        stale.write_text("launcher", encoding="utf-8")
+        make_dir_link(tmp_path / "run", target)
+        monkeypatch.setattr(sandbox.platform_compat, "pid_exists", lambda _pid: False)
+        removed = sandbox.cleanup_stale_sandbox_profiles(
+            data_home=tmp_path, legacy_dir=str(tmp_path / "absent")
+        )
+        assert removed == 0
+        assert stale.exists()
+
+
+# ── The read-back against a real child ───────────────────────────────────────
+
+
+class TestTheReadBackAgainstARealChild:
+    """A fake harness on disk, so the parse, the status and the refusal are all real."""
+
+    EXT = "/site/gate.ts"
+
+    def _fake(self, tmp_path: Path, body: str) -> list[str]:
+        script = tmp_path / "fake_pi.sh"
+        script.write_text("#!/bin/sh\n" + textwrap.dedent(body))
+        script.chmod(0o700)
+        return [str(script), *acp_client._PI_RPC_ARGS]
+
+    def _verify(self, tmp_path: Path, argv: list[str], extension_path: str = "") -> tuple:
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+        return client._verify_pi_gate(argv, extension_path or self.EXT)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell launcher")
+    def test_a_launcher_the_os_will_not_run_reports_the_bare_exit(self, tmp_path):
+        """A silent child reports only its exit status."""
+        argv = self._fake(tmp_path, "exec 2>/dev/null\nexit 126\n")
+        issue, remedy = self._verify(tmp_path, argv)
+        assert "the harness's command registry could not be read back" in issue
+        assert issue.endswith("(exit 126)")
+        assert PI_INSTALL_COMMAND in remedy
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell launcher")
+    def test_a_registry_carrying_crews_probe_is_no_issue(self, tmp_path):
+        sealed = str(tmp_path / "gate.ts")
+        Path(sealed).write_text("// gate\n")
+        payload = _response(_registry((PROBE, sealed))).replace("'", "'\\''")
+        argv = self._fake(tmp_path, f"cat >/dev/null\nprintf '%s\\n' '{payload}'\n")
+        assert self._verify(tmp_path, argv, sealed) == ("", "")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell launcher")
+    def test_a_response_shape_this_gateway_cannot_read_is_refused(self, tmp_path):
+        """Protocol drift reads as "not established", never as "loaded"."""
+        drifted = json.dumps(
+            {
+                "id": "kiro-crew-gate-readback",
+                "type": "response",
+                "command": "get_commands",
+                "success": True,
+                "data": {"slashCommands": [{"name": PROBE}]},
+            }
+        ).replace("'", "'\\''")
+        argv = self._fake(tmp_path, f"cat >/dev/null\nprintf '%s\\n' '{drifted}'\n")
+        issue, remedy = self._verify(tmp_path, argv)
+        assert "could not be read back" in issue
+        assert "no response" in issue
+        assert PI_INSTALL_COMMAND in remedy
+
+
+# ── The refusal is a refusal ─────────────────────────────────────────────────
+
+
+class TestAReadBackFailureRefusesTheSession:
+    """Not a warning, and not a config the operator can switch off."""
+
+    def test_this_harness_is_enforced(self):
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_PI)
+        assert routing_for(ACP_BACKEND_PI) is Routing.VERIFIED_GATE_EXTENSION
+
+    def test_the_readback_issue_raises_rather_than_returning(self):
+        with pytest.raises(acp_tool_gate.ToolGateUnroutable) as excinfo:
+            acp_tool_gate.enforce_runtime_routing(
+                ACP_BACKEND_PI,
+                "the harness's command registry could not be read back (exit 126)",
+                remedy="reinstall it",
+            )
+        message = str(excinfo.value)
+        assert "would not reach Kiro Crew's security gate" in message
+        assert acp_tool_gate.UNENFORCED_CONTROLS in message
+        assert "reinstall it" in message
+
+    def test_the_arm_raises_on_any_routing_issue_before_the_first_prompt(self):
+        """Read off the arm itself: the issue is enforced, never logged and carried on."""
+        body = _pi_arm()
+        enforce_at = body.find("acp_tool_gate.enforce_runtime_routing")
+        assert body.find("if routing_issue:") != -1
+        assert enforce_at != -1
+        assert "raise AcpToolGateUnroutable" in body
+        assert "allow_ungated" not in body
+
+
+def _pi_session_frames() -> list[dict]:
+    """Every frame of the live ``session/new`` capture, header line excluded."""
+    path = ROOT / "test" / "fixtures" / "acp_frames" / "pi" / "session-live.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()[1:]]
+
+
+def _pi_thought_level_option() -> dict:
+    """The ``thought_level`` select pi advertised on that capture's session/new."""
+    for frame in _pi_session_frames():
+        for option in (frame.get("result") or {}).get("configOptions") or []:
+            if isinstance(option, dict) and option.get("id") == "thought_level":
+                return option
+    raise AssertionError("no thought_level option in the pi session capture")
+
+
+class TestTheEffortChannel:
+    """pi takes a reasoning-effort change, under its own option id and vocabulary.
+
+    The channel was read as ABSENT for this harness while the evidence for it sat in
+    the committed corpus: a different option id is a spelling the tree already
+    resolves per harness, not a missing feature, so the card reported no effort
+    control on a harness whose own option describes itself as setting one.
+    """
+
+    def test_the_fixture_carries_the_select_this_membership_rests_on(self) -> None:
+        """Membership is load-bearing, so it is pinned to the capture, not to prose."""
+        option = _pi_thought_level_option()
+
+        assert option["type"] == "select"
+        assert [o["value"] for o in option["options"]] == [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        ]
+
+    def test_the_option_id_is_this_harness_own_spelling(self) -> None:
+        """The table answers a spelling; the harnesses that match keep the default."""
+        assert effort_config_option_id(ACP_BACKEND_PI) == "thought_level"
+        assert effort_config_option_id(ACP_BACKEND_PI) == _pi_thought_level_option()["id"]
+        assert effort_config_option_id(ACP_BACKEND_CLAUDE) == "effort"
+        assert effort_config_option_id(ACP_BACKEND_KIRO) == "effort"
+        assert effort_config_option_id(ACP_BACKEND_CODEX) == "reasoning_effort"
+
+    def test_the_channel_membership_is_explicit(self) -> None:
+        """Written out rather than derived from the set, which would pass tautologically."""
+        assert ACP_BACKEND_PI in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+        assert ACP_BACKEND_OPENCODE not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+
+    def test_the_one_level_pi_does_not_advertise_is_folded_to_its_ceiling(self) -> None:
+        """``max`` is Crew's top level and pi has no such value, so it is spelled down.
+
+        The fold's target is checked against the capture rather than written twice:
+        a table naming a value this harness never advertised is the same defect as
+        pushing ``max`` itself.
+        """
+        advertised = [o["value"] for o in _pi_thought_level_option()["options"]]
+
+        assert "max" not in advertised
+        assert effort_config_option_value(ACP_BACKEND_PI, "max") == "xhigh"
+        assert effort_config_option_value(ACP_BACKEND_PI, "max") in advertised
+
+    def test_every_level_pi_does_advertise_is_written_verbatim(self) -> None:
+        """The table is one fold, not a translation layer: the rest pass through."""
+        advertised = [o["value"] for o in _pi_thought_level_option()["options"]]
+
+        for level in EFFORT_LEVELS:
+            if level in advertised:
+                assert effort_config_option_value(ACP_BACKEND_PI, level) == level
+
+    def test_no_other_harness_gains_a_fold(self) -> None:
+        """A row is an exception; every backend without one writes Crew's own spelling."""
+        for backend in ACP_BACKENDS_KNOWN - {ACP_BACKEND_PI}:
+            for level in EFFORT_LEVELS:
+                assert effort_config_option_value(backend, level) == level
+
+    def test_an_unknown_level_is_not_invented(self) -> None:
+        """A value outside Crew's ladder -- a level a harness advertised itself, which
+        the dropdown offers and persistence admits -- reaches the wire unchanged."""
+        assert effort_config_option_value(ACP_BACKEND_PI, "minimal") == "minimal"
+        assert effort_config_option_value(ACP_BACKEND_PI, "off") == "off"
+
+    def test_the_levels_parser_fills_the_dropdown_from_pi_own_option(self, tmp_path) -> None:
+        """The reader that fills the dropdown is keyed on the resolved id.
+
+        A hard-coded ``effort`` returns an empty list here, which every caller reads
+        as "this model has no effort levels" -- the dropdown then offers nothing on a
+        harness that advertised six values.
+        """
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+        client._acp_config_options = [_pi_thought_level_option()]
+
+        assert client.get_valid_effort_levels() == [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        ]
+        assert client.supports_config_option("thought_level") is True
+
+    def test_the_card_line_reads_available(self) -> None:
+        """The card is a projection of the set, so the user-visible answer flips with it.
+
+        ``available`` is pinned together with ``measured``, because the card reads in
+        three states and only two of them are this line's to claim. An entry in
+        ``DECLARED_UNMEASURED`` would make ``available`` False on a line nobody had
+        looked at -- a true statement about Crew's measurements, and the wrong one
+        here: this line rests on a captured ``session/new``, so it is measured, and
+        the harness does advertise the option.
+        """
+        card = backend_cards.card_for(ACP_BACKEND_PI)
+        line = next(x for x in card.capabilities if x.id == backend_cards.LINE_REASONING_EFFORT)
+
+        assert line.available is True
+        assert line.measured is True
+        assert line.unmeasured_reason == ""
+        assert (
+            "ACP_BACKEND_PI",
+            backend_cards.LINE_REASONING_EFFORT,
+        ) not in backend_cards.DECLARED_UNMEASURED
+
+    def test_the_push_resolves_the_value_before_the_descent(self) -> None:
+        """The fold is a declared fact, not something the step-down can be left to find.
+
+        The descent below it only recovers from an unadvertised value when the
+        refusal arrives in a shape ``_is_config_value_rejection`` recognises for that
+        adapter, and the pi corpus carries no config-value refusal at all -- so a
+        push that indexed the ladder with the RAW level would send pi a value it
+        never advertised and rest on an unchecked guess about the answer.
+        """
+        from kiro_crew.providers import acp as provider_module
+
+        body = inspect.getsource(provider_module.AcpProvider._set_effort_config_option)
+
+        assert "effort_config_option_value(self._client.backend, level)" in body
+        assert "EFFORT_LEVELS.index(level)" not in body
+        assert "EFFORT_LEVELS.index(target)" in body
+
+    def test_every_effort_write_site_resolves_the_value(self) -> None:
+        """Four sites write a level; one writing it raw is the divergence the resolver
+        exists to prevent -- the session runs a level the UI does not report."""
+        from kiro_crew.acp import client as client_module
+        from kiro_crew.knowledge import llm_pool
+        from kiro_crew.providers import acp as provider_module
+
+        assert "effort_config_option_value(" in inspect.getsource(
+            provider_module.AcpProvider._set_effort_config_option
+        )
+        assert "effort_config_option_value(" in inspect.getsource(
+            client_module._push_model_via_effort_split
+        )
+        assert "effort_config_option_value(" in inspect.getsource(llm_pool.AcpWorker._apply_effort)
+
+
+# The ordinary pi model: an id out of the operator's own ``models.json``, which is
+# what the capture recorded and what Crew's model registry does not carry.
+PI_MODEL = "ollama/llama3.2:3b"
+
+
+def _pi_provider(tmp_path, *, model: str = PI_MODEL, options=None):
+    """An ``AcpProvider`` on pi with a session's config options already stored."""
+    from kiro_crew.providers.acp import AcpProvider
+
+    provider = AcpProvider(acp_backend=ACP_BACKEND_PI, work_dir=tmp_path, model=model)
+    provider._client._acp_config_options = (
+        [_pi_thought_level_option()] if options is None else options
+    )
+    provider._client._model = model
+    return provider
+
+
+class TestTheEffortControlIsReachableOnThisHarness:
+    """Joining the channel set is worth nothing while a NAME test hides the control.
+
+    ``model_supports_effort`` answers True for the Claude and GPT families and False
+    for every id it does not recognise. pi serves the operator's own
+    ``provider/model`` ids, so that test answers False for the ordinary pi session --
+    and it guards all four effort verbs. The harness that advertises the option per
+    session is asked for the option instead.
+    """
+
+    def test_the_registry_does_not_recognise_the_model_pi_normally_serves(self) -> None:
+        """The premise, stated so the tests below cannot pass for the wrong reason."""
+        from kiro_crew.effort import model_supports_effort
+
+        assert model_supports_effort(PI_MODEL) is False
+
+    def test_the_advertised_option_answers_for_this_harness(self) -> None:
+        """Written out per harness, so a silently granted authority names its own."""
+        assert ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION == frozenset({ACP_BACKEND_PI})
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+        assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+        # deepseek is the near miss and stays out on purpose: its own vocabulary
+        # omits two of Crew's levels and no fold row covers them, so membership
+        # would light a write path whose gap nothing here measures.
+        assert ACP_BACKEND_DEEPSEEK not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+
+    def test_the_dropdown_is_offered_on_the_ordinary_pi_session(self, tmp_path) -> None:
+        """The user-visible half: the control appears on a model the registry rejects."""
+        provider = _pi_provider(tmp_path)
+
+        assert provider.supports_effort() is True
+        assert provider.get_valid_effort_levels() == [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        ]
+
+    def test_a_session_advertising_no_such_option_is_still_refused(self, tmp_path) -> None:
+        """Fail-closed stays fail-closed: the option, not the membership, decides."""
+        provider = _pi_provider(tmp_path, options=[{"id": "model", "options": []}])
+
+        assert provider.supports_effort() is False
+
+    def test_the_registry_still_answers_for_a_harness_whose_level_rides_the_model(
+        self, tmp_path
+    ) -> None:
+        """The other arm. kiro-cli refuses effort per model, so the name test is right
+        there -- and a non-member must not inherit the advertised-option answer."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = AcpProvider(acp_backend=ACP_BACKEND_KIRO, work_dir=tmp_path)
+        provider._client._model = PI_MODEL
+        provider._client._acp_config_options = [_pi_thought_level_option()]
+
+        assert provider._advertised_effort_levels() is None
+        assert provider.supports_effort() is False
+
+    def test_a_persisted_level_survives_startup_resolution(self, tmp_path) -> None:
+        """The other half of the finding: a stored level the harness advertised.
+
+        ``minimal`` is outside Crew's own ladder, so the canonical validity check
+        drops it -- the dashboard offers and stores a level the session then never
+        applies, and the UI reports one the session is not running.
+        """
+        provider = _pi_provider(tmp_path)
+        provider._effort_per_model = {PI_MODEL: "minimal"}
+
+        assert provider._resolve_effort() == "minimal"
+
+    def test_a_level_the_harness_never_advertised_is_still_dropped(self, tmp_path) -> None:
+        """The advertised list is a filter, not a bypass.
+
+        The example is a level with neither an advertised match nor a row in
+        ``EFFORT_CONFIG_OPTION_VALUES``; ``max`` has the latter, and
+        ``TestTheFoldAndTheFilterAgree`` is where that pairing is pinned.
+        """
+        provider = _pi_provider(tmp_path)
+        provider._effort_per_model = {PI_MODEL: "gargantuan"}
+
+        assert effort_config_option_value(ACP_BACKEND_PI, "gargantuan") == "gargantuan"
+        assert provider._resolve_effort() is None
+
+    def test_a_workspace_default_is_read_through_the_same_filter(self, tmp_path) -> None:
+        """Defaults take the same route as overrides, so neither answers alone."""
+        provider = _pi_provider(tmp_path)
+        provider._effort_defaults = {PI_MODEL: "minimal"}
+
+        assert provider._resolve_effort() == "minimal"
+
+    def test_all_four_effort_verbs_read_one_answer(self) -> None:
+        """A second copy of this question is how one verb offers what another refuses.
+
+        ``change_effort`` and ``clear_effort`` gated on the model test directly, so a
+        pi user could be shown a dropdown whose every write was declined.
+        """
+        from kiro_crew.providers import acp as provider_module
+
+        for method in ("change_effort", "clear_effort"):
+            body = inspect.getsource(getattr(provider_module.AcpProvider, method))
+            assert "self.supports_effort()" in body, method
+            assert "model_supports_effort(" not in body, method
+
+        resolve = inspect.getsource(provider_module.AcpProvider._resolve_effort)
+        assert "levels=self._advertised_effort_levels()" in resolve
+
+    def test_the_shared_resolver_keeps_its_registry_behaviour_untouched(self) -> None:
+        """Every existing caller omits ``levels``, so the model registry still answers."""
+        from kiro_crew.effort import resolve_effort_for_model
+
+        assert resolve_effort_for_model("claude-opus-4.8", {"claude-opus-4.8": "max"}) == "max"
+        assert resolve_effort_for_model(PI_MODEL, {PI_MODEL: "high"}) is None
+        assert resolve_effort_for_model("claude-opus-4.8", {"claude-opus-4.8": "minimal"}) is None
+        assert resolve_effort_for_model(PI_MODEL, {PI_MODEL: "high"}, levels=[]) is None
+        assert resolve_effort_for_model(None, {"": "high"}, levels=["high"]) is None
+
+
+class TestAPersistedLevelSurvivesAColdStart:
+    """The provider FACTORY is the fourth reader of "does a level apply here".
+
+    It runs before any session exists, so it cannot ask the advertised option --
+    and asking the model registry there drops the level on every cold start: the
+    session runs the adapter's own default while the dashboard still shows the
+    level the operator picked, with nothing to correct it but a manual re-pick.
+    """
+
+    def _factory_kwargs(self, backend: str, model: str, level: str) -> dict:
+        """The kwargs the provider factory would construct AcpProvider with."""
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agent.provider = "acp"
+        cfg.agent.acp_backend = backend
+        with patch("kiro_crew.providers.acp.AcpProvider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            factory = cfg.create_provider_factory()
+            factory(
+                session_key="dashboard:1",
+                model_override=model,
+                reasoning_effort_override=level,
+            )
+            assert mock_provider.called, "factory did not construct AcpProvider"
+            return mock_provider.call_args.kwargs
+
+    def test_the_factory_carries_the_level_to_the_session(self) -> None:
+        """Carried, not judged: the advertised list judges it once session/new answers."""
+        kwargs = self._factory_kwargs(ACP_BACKEND_PI, PI_MODEL, "high")
+
+        assert kwargs.get("effort_per_model") == {PI_MODEL: "high"}
+
+    def test_a_level_outside_crew_ladder_is_carried_too(self) -> None:
+        """``minimal`` is pi's own, so the canonical ladder must not be the filter here."""
+        kwargs = self._factory_kwargs(ACP_BACKEND_PI, PI_MODEL, "minimal")
+
+        assert kwargs.get("effort_per_model") == {PI_MODEL: "minimal"}
+
+    def test_the_registry_still_filters_a_harness_it_can_answer_for(self) -> None:
+        """The other arm: on kiro the level rides the model, and ``auto`` takes none."""
+        kwargs = self._factory_kwargs(ACP_BACKEND_KIRO, "auto", "high")
+
+        assert kwargs.get("effort_per_model") == {}
+
+    def test_the_two_halves_meet(self, tmp_path) -> None:
+        """The factory's output, fed to the resolver, is what the session applies.
+
+        Stated as one assertion because the halves are only useful together: the
+        factory carrying a level the resolver then drops, or the resolver accepting
+        one the factory never passes, is the same silent divergence in two places.
+        """
+        carried = self._factory_kwargs(ACP_BACKEND_PI, PI_MODEL, "minimal")
+        provider = _pi_provider(tmp_path)
+        provider._effort_per_model = dict(carried["effort_per_model"])
+
+        assert provider._resolve_effort() == "minimal"
+
+
+class TestTheFoldAndTheFilterAgree:
+    """Two rules of this change meet on one stored value, and their ORDER decides.
+
+    ``change_effort`` admits any level the dynamic validation set knows -- which is
+    every harness's advertised vocabulary merged, plus Crew's own -- so ``max``
+    reaches the slot on pi and the write folds it to ``xhigh``. If the startup
+    resolution filtered against pi's advertised list BEFORE applying the same fold,
+    it would drop the level the live push had just applied: the session would run
+    the adapter default while the slot still recorded ``max``.
+    """
+
+    def test_a_stored_level_is_folded_then_filtered(self, tmp_path) -> None:
+        """``max`` is not pi's, but it IS pi's ``xhigh``, and that is what applies."""
+        provider = _pi_provider(tmp_path)
+        provider._effort_per_model = {PI_MODEL: "max"}
+
+        assert provider._resolve_effort() == "xhigh"
+
+    def test_a_workspace_default_takes_the_same_order(self, tmp_path) -> None:
+        """Defaults are coerced through the same fold, not only slot overrides."""
+        provider = _pi_provider(tmp_path)
+        provider._effort_defaults = {PI_MODEL: "max"}
+
+        assert provider._resolve_effort() == "xhigh"
+
+    def test_a_level_that_folds_to_nothing_advertised_is_still_dropped(self, tmp_path) -> None:
+        """The fold is not a bypass: a level with no row and no advertised match goes."""
+        provider = _pi_provider(tmp_path)
+        provider._effort_per_model = {PI_MODEL: "colossal"}
+
+        assert provider._resolve_effort() is None
+
+    def test_the_resolution_hands_the_fold_in_rather_than_applying_it_after(self) -> None:
+        """Order is the property, so it is pinned at the seam rather than inferred."""
+        from kiro_crew.providers import acp as provider_module
+
+        body = inspect.getsource(provider_module.AcpProvider._resolve_effort)
+
+        assert "normalize=functools.partial(effort_config_option_value" in body
+
+    def test_the_shared_resolver_folds_before_it_checks(self) -> None:
+        """Directly, on the resolver: a fold applied after the check cannot pass this."""
+        from kiro_crew.effort import resolve_effort_for_model
+
+        fold = {"max": "xhigh"}.get
+
+        def normalize(level: str) -> str:
+            return fold(level) or level
+
+        assert (
+            resolve_effort_for_model(
+                PI_MODEL,
+                {PI_MODEL: "max"},
+                levels=["low", "high", "xhigh"],
+                normalize=normalize,
+            )
+            == "xhigh"
+        )
+        assert (
+            resolve_effort_for_model(
+                PI_MODEL,
+                {PI_MODEL: "max"},
+                levels=["low", "high", "xhigh"],
+            )
+            is None
+        )
+
+
+class TestThePushNeverNeedsARefusal:
+    """``_is_config_value_rejection`` is never load-bearing for this harness.
+
+    Its docstring makes a join precondition of the joining harness's own ``-32602``
+    semantics, because the bare-code half of that reader rests on a per-adapter fact.
+    The pi corpus records no config-value refusal, and one cannot be recorded here.
+
+    So the precondition is answered by removing the dependency instead of measuring
+    it: every value the push can emit for pi is a value pi's own capture advertises,
+    so the adapter has nothing to refuse and the descent that reads a refusal is
+    never entered. That is a property of the code, checked here over the whole
+    vocabulary rather than one example.
+    """
+
+    def _emitted(self, level: str) -> list[str]:
+        """Every value ``_set_effort_config_option`` could write for *level*, in order.
+
+        Mirrors the push's own arithmetic: resolve the harness's spelling, then the
+        descent from that point down Crew's ladder. The ladder is what a refusal
+        would walk, so it counts as emittable even when the first write succeeds.
+        """
+        from kiro_crew.effort import EFFORT_LEVELS
+
+        target = effort_config_option_value(ACP_BACKEND_PI, level)
+        try:
+            start = EFFORT_LEVELS.index(target)
+        except ValueError:
+            return [target]
+        return list(reversed(EFFORT_LEVELS[: start + 1]))
+
+    def test_every_crew_level_emits_only_values_pi_advertised(self) -> None:
+        """Crew's whole ladder, including the two levels pi does not have."""
+        from kiro_crew.effort import EFFORT_LEVELS
+
+        advertised = {o["value"] for o in _pi_thought_level_option()["options"]}
+
+        for level in EFFORT_LEVELS:
+            emitted = self._emitted(level)
+            assert emitted, level
+            unknown = [value for value in emitted if value not in advertised]
+            assert unknown == [], f"{level} would send pi {unknown}"
+
+    def test_every_level_pi_advertised_emits_only_advertised_values(self) -> None:
+        """And the harness's own vocabulary, which reaches the slot through the dropdown."""
+        advertised = [o["value"] for o in _pi_thought_level_option()["options"]]
+
+        for level in advertised:
+            unknown = [value for value in self._emitted(level) if value not in advertised]
+            assert unknown == [], f"{level} would send pi {unknown}"
+
+    def test_the_descent_is_what_would_read_a_refusal(self) -> None:
+        """The property above is only worth anything if it covers the ladder.
+
+        Pinned so a push rewritten to walk some other sequence -- or to write the
+        requested level raw -- fails here rather than quietly reintroducing the
+        dependency on an unmeasured refusal shape.
+        """
+        from kiro_crew.providers import acp as provider_module
+
+        body = inspect.getsource(provider_module.AcpProvider._set_effort_config_option)
+
+        assert "EFFORT_LEVELS[: start + 1]" in body
+        assert "_is_config_value_rejection(exc, effort_option)" in body
+        assert "effort_config_option_value(self._client.backend, level)" in body

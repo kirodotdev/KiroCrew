@@ -10,8 +10,16 @@ from dataclasses import fields
 from kiro_crew.monitoring.decision import (
     decide_monitor,
     monitor_budget_reason,
+    monitor_stall_reason,
+    stamp_monitor_alerted,
     terminal_decision_for_outcome,
 )
+
+# The engine names no host anywhere else, and this import is the exception the
+# observation type forces: a tick that sent no request is a third outcome
+# ``MonitorObservation`` has no field for, so the only marker is the reason code
+# the probe set -- and a reason code belongs to the kind that emits it.
+from kiro_crew.monitoring.github_provider_errors import is_unattempted_probe
 from kiro_crew.monitoring.models import (
     MonitorDecision,
     MonitorObservationStatus,
@@ -95,7 +103,16 @@ async def run_shadow_probe(
     staged.last_observation_status = observation.status
     staged.last_observation_reason_code = observation.reason_code
     provider_error = observation.provider_error or observation.supplemental_provider_error
-    if provider_error is not None:
+    if is_unattempted_probe(observation):
+        # THE THIRD OUTCOME, and it moves neither counter. The provider-error
+        # budget is finite and never refunded, so it has to measure refusals the
+        # HOST gave this watch: charged for a request the probe declined to send,
+        # a cooldown that unrelated work opened retires a healthy watch on its own
+        # cadence. Clearing the streak instead is the opposite error -- an outage
+        # interleaved with skips would never retire the watch it is blinding -- so
+        # a tick that observed nothing leaves the accounting exactly as it was.
+        pass
+    elif provider_error is not None:
         staged.provider_error_count += 1
         staged.consecutive_provider_errors += 1
         staged.last_provider_error = provider_error
@@ -107,18 +124,20 @@ async def run_shadow_probe(
         staged.last_fingerprint = observation.fingerprint
         staged.last_observed_at = now
     if decision is MonitorDecision.WAKE_ACTIONABLE:
-        # Record that a wake was DECIDED for this fingerprint, next to the
-        # persist. The shadow path deliberately does not deliver, but the field
-        # records the decision, not the delivery, so the re-alert period is
-        # measured from here exactly as on the delivering path.
-        staged.coalesce_alerted[observation.fingerprint] = now
+        # Record that a wake was DECIDED for the conditions it delivers, next to
+        # the persist. The shadow path deliberately does not deliver, but the
+        # field records the decision, not the delivery, so the re-alert interval
+        # is measured from here exactly as on the delivering path.
+        stamp_monitor_alerted(staged, now=now)
     if decision in {
         MonitorDecision.STOP_SUCCESS,
         MonitorDecision.STOP_BLOCKED,
         MonitorDecision.STOP_BUDGET,
     }:
         staged.outcome = _terminal_outcome(decision, observation.provider_error)
-        staged.stopped_reason = observation.reason_code or decision.value
+        staged.stopped_reason = (
+            monitor_stall_reason(staged, now=now) or observation.reason_code or decision.value
+        )
         staged.stopped_at = now
         staged.next_probe_at = 0.0
     else:

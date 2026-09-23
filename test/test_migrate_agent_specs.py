@@ -56,7 +56,7 @@ def test_reader_denial_keeps_migrate_attribution(agents_dir, monkeypatch):
     original = json.dumps({"name": "denied", "model_managed": True})
     path.write_text(original, encoding="utf-8")
     security_log = MagicMock()
-    monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda value: True)
+    monkeypatch.setattr(agent_discovery, "is_sensitive_canonical_path", lambda value: True)
     monkeypatch.setattr(agent_discovery, "_sel", lambda: security_log)
 
     assert agent_mod.migrate_agent_specs() == 0

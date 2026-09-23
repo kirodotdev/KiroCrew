@@ -57,6 +57,7 @@ def test_owner_persona_once_with_global_and_project_templates(env, minimal, over
         True,
         agent="writer-template",
         memory_store=env.store,
+        member=env.member,
         project=str(env.project),
         minimal_context=minimal,
     )
@@ -77,6 +78,7 @@ def test_distinct_execution_template_still_has_its_instructions(env):
         True,
         agent="executor",
         memory_store=env.store,
+        member=env.member,
         project=str(env.project),
     )
     assert prompt.count("EXECUTION_TASK") == 1
@@ -118,6 +120,11 @@ async def test_runner_merges_disk_and_unflushed_tail_once(tmp_path, disk_current
 @pytest.mark.asyncio
 async def test_cancelled_init_closes_after_worker_finishes(tmp_path, monkeypatch):
     from kiro_crew import embeddings, memory_stores, vector_memory
+    from kiro_crew.config.sections import MemoryStoreConfig
+
+    config = ctx.KiroCrewConfig.load()
+    config.memory_stores["audit"] = MemoryStoreConfig()
+    monkeypatch.setattr(ctx.KiroCrewConfig, "load", lambda: config)
 
     started = threading.Event()
     release = threading.Event()
@@ -213,6 +220,11 @@ async def test_actual_native_resume_does_not_replay_slot_tail(tmp_path):
 @pytest.mark.parametrize("outcome", ["normal", "init_failure", "generation_changed", "race_loser"])
 async def test_store_worker_ownership_on_every_exit(tmp_path, monkeypatch, outcome):
     from kiro_crew import embeddings, memory_stores, vector_memory
+    from kiro_crew.config.sections import MemoryStoreConfig
+
+    config = ctx.KiroCrewConfig.load()
+    config.memory_stores["audit"] = MemoryStoreConfig()
+    monkeypatch.setattr(ctx.KiroCrewConfig, "load", lambda: config)
 
     store = Mock()
     winner = Mock()
@@ -258,6 +270,10 @@ async def test_cancelled_real_store_releases_lock_fd(env, monkeypatch):
     from kiro_crew import embeddings, member_memory_backup, platform_compat
     from kiro_crew.vector_memory import VectorMemoryStore
 
+    # The essentials fixture already opened this database. Release that setup
+    # connection so the contender measures only the cancelled worker's lock.
+    env.memory.vector_store.close()
+    assert env.memory.vector_store._db is None
     initialized = threading.Event()
     release = threading.Event()
     stores = []
@@ -350,6 +366,7 @@ def test_product_prompt_reference_is_not_lost_for_private_fork(env):
         True,
         agent="writer-template",
         memory_store=env.store,
+        member=env.member,
         project=str(env.project),
     )
     assert prompt.startswith("[AGENT SYSTEM PROMPT]\nYou are ")

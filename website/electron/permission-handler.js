@@ -69,8 +69,9 @@
  *   fake of this app.
  *
  * - `notifications`: the dashboard fires page-context `new Notification()` for
- *   new unacked notifications (useNativeNotification.ts) and approval requests
- *   (useWebSocket.ts). In a plain browser Chromium prompts and grants, so
+ *   new unacked notifications, approvals included (useNativeNotification.ts),
+ *   and the opt-in finished-chat toast (useWebSocket.ts, `chat_done`). In a
+ *   plain browser Chromium prompts and grants, so
  *   Chrome-tab users got native OS toasts; under this handler's blanket deny,
  *   `Notification.permission` was pinned to 'denied' and the SAME code no-oped
  *   silently in the packaged app — the one surface where OS notifications are

@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { api, type MemberRosterRow } from './client'
+import { memberProjectionStore } from '../state/memberProjectionStore'
 import type { ErrorReport } from '../utils/errorReport'
 
 /**
@@ -29,8 +30,22 @@ const MEMBERS_ROSTER_STALE_MS = 30_000
 
 export const membersRosterQuery = {
   queryKey: MEMBERS_ROSTER_QUERY_KEY,
-  queryFn: (): Promise<MemberRosterRow[]> => api.members().then((r) => r.members),
+  queryFn: async (): Promise<MemberRosterRow[]> => (await api.members()).members,
   staleTime: MEMBERS_ROSTER_STALE_MS,
+  // Seed the per-member projection store from each row's baseline block BEFORE
+  // the page renders rows — `select` runs synchronously on the query result,
+  // so the first paint already reads pushed values via useMemberProjection.
+  // seed() applies at asOfSeq through the store's higher-seq-wins rule, so a
+  // live frame that raced ahead of this baseline keeps winning. Rows pass
+  // through unchanged.
+  select: (rows: MemberRosterRow[]): MemberRosterRow[] => {
+    for (const row of rows) {
+      if (row.projections) {
+        memberProjectionStore.seed(row.slug, row.projections.values, row.projections.asOfSeq)
+      }
+    }
+    return rows
+  },
 }
 
 /** Recent-activity pointers for one member's drawer. Keyed by the exact
@@ -39,6 +54,17 @@ export const membersRosterQuery = {
  *  histories. */
 export const memberActivityQueryKey = (slug: string, member: string) =>
   ['member-activity', slug, member] as const
+
+/** Query key for a member's briefing markdown (Notes tab). Keyed by slug and
+ *  exact name: slugs are lossy, so two names sharing a slug have distinct
+ *  briefings. Nested under `['kirocrew-agents']` like the roster: whether the
+ *  briefing is one crewmate's to show and edit is a fact about the REGISTRY
+ *  (a second crew deriving the same slug turns the read into a 409), so the
+ *  same `refresh` frame that refetches the roster must revalidate cached
+ *  notes -- otherwise a panel opened before the collision keeps stale text
+ *  and an enabled Edit over a file that is now shared. */
+export const memberBriefingQueryKey = (slug: string, member: string) =>
+  ['kirocrew-agents', 'member-briefing', slug, member] as const
 
 /**
  * The outcome of the last thread open for one member — what

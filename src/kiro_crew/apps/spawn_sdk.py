@@ -18,6 +18,7 @@ spawn that never happened instead of counting a failure and backing off.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Awaitable, Callable
 
@@ -187,8 +188,7 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
         # app's per-app governance profile — a profile that denies
         # ``capabilities.spawn`` for this app must win even when the policy
         # ceiling alone would permit. Omitting it was a Level-2 (PROFILE) bypass.
-        info = subagents.spawn(  # type: ignore[attr-defined]
-            task,
+        spawn_kwargs = dict(
             agent=agent,
             silent=silent,
             approval_mode="auto",
@@ -198,6 +198,13 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
             # skip the manager's synchronous re-scan on the event loop.
             _agent_prevalidated=True,
         )
+        # Event-loop caller: the durable row is written on the store's writer
+        # thread (``spawn_async``); a manager double without it spawns inline.
+        spawn_async = getattr(subagents, "spawn_async", None)
+        if inspect.iscoroutinefunction(spawn_async):
+            info = await spawn_async(task, **spawn_kwargs)
+        else:
+            info = subagents.spawn(task, **spawn_kwargs)  # type: ignore[attr-defined]
         if info is None:
             return ""
         if getattr(info, "error", ""):

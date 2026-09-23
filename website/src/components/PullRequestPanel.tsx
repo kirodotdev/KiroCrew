@@ -45,8 +45,7 @@ import { Btn } from './ui'
 
 
 import { i18nT } from '../i18n/t'
-import { OWNER_SETTINGS_TARGET, pullRequestErrorDetails } from '../utils/pullRequestErrors'
-import { SettingsLink } from './SettingsLink'
+import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import ErrorNotice from './ErrorNotice'
 const CHECK_POLL_BASE_MS = 10_000
 const CHECK_POLL_MAX_MS = 60_000
@@ -730,19 +729,6 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
       )}
       <ErrorNotice message={error} variant="inline" askAgent />
     </div>
-    {/* The remedy link lives OUTSIDE the action row, on its own line — never
-        as a row peer, which would push the row past the two-button cap in the
-        confirm state (Cancel + Confirm are already there). */}
-    {error && errorDetails.ownerNotConfigured && (
-      <div className="mt-1.5">
-        <SettingsLink
-          {...OWNER_SETTINGS_TARGET}
-          className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
-        >
-          {i18nT('components.pullRequestPanel.open_slack_settings')} <ArrowRight className="lucide-inline" />
-        </SettingsLink>
-      </div>
-    )}
     </>
   )
 }

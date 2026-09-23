@@ -142,6 +142,16 @@ jobs:
       # the commit pinned below. Recorded here because a wrong pin reds every fork
       # PR on the security surface fail-closed, so the next reader should not have
       # to re-open the question -- re-verify only when the version comment moves.
+      #
+      # The three ubuntu archive hosts plus claude.ai and downloads.claude.ai
+      # carry claude-code-action's bootstrap (`apt-get install bubblewrap socat`,
+      # then `curl https://claude.ai/install.sh` whose DOWNLOAD_BASE_URL is
+      # `downloads.claude.ai/claude-code-releases`). This lane does not need
+      # them TODAY only because the pin above predates the release that auto-
+      # enables that isolation from `allowed_non_write_users`; the input is
+      # already set here, so the next bump of that pin would break this lane the
+      # way it broke the other five. Carried now so the bump is a no-op instead
+      # of a repo-wide fork outage. Rationale: fork-opus-review.yml.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
         with:
@@ -155,8 +165,14 @@ jobs:
             github.com:443
             api.github.com:443
             objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
             codeload.github.com:443
             registry.npmjs.org:443
+            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:443
+            claude.ai:443
+            downloads.claude.ai:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr
@@ -631,7 +647,17 @@ jobs:
             # contract's own indentation would miss an anchored `^Scope-Verdict:`,
             # leave `verdict=UNKNOWN`, and take the `*)` branch below -- a failure
             # conclusion on a clean, fully-adjudicated fork pull request.
-            v="$(grep -iE '^[[:space:]]*Scope-Verdict:' "$OUT" | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
+            # ONE awk over the file, not a pipeline: a `grep` that matches nothing
+            # exits 1, and a `head -n1` closes the pipe on a long review so its
+            # producer dies of SIGPIPE with 141 -- and under this step's `pipefail`
+            # plus the runner's own `-e` either status aborts the step before
+            # `verdict` is ever read. awk exits 0 whether or not the header is
+            # there, so the `[ -n ]` test below decides, exactly as the comment
+            # above describes. The whole file is read and the FIRST header printed
+            # from `END`, never taken from a partial read, and the class spells out
+            # the five characters `[[:space:]]` matches inside a record so nothing
+            # depends on the runners' mawk supporting a POSIX class.
+            v="$(awk '!found && tolower($0) ~ /^[ \t\v\f\r]*scope-verdict:/ { sub(/^[^:]*:[ \t\v\f\r]*/, ""); gsub(/\r/, ""); value = toupper($0); found = 1 } END { if (found) print value }' "$OUT")"
             [ -n "$v" ] && verdict="$v"
           fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
@@ -867,6 +893,64 @@ jobs:
           if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
             echo "::error::the base-owned outbound redactor is unavailable, so the validator output cannot be scrubbed before it is published. Refusing to publish it raw."
             exit 1
+          fi
+          # PRUNE THE UNCLASSIFIED FIELD, NEVER THE ROW. Same rule, same program and
+          # same reasons as the same-repo lane's `Probe the candidate set for credential
+          # shapes`: `deny_diff` reads a row's `kind`, `platform` and `command_or_flow`
+          # verbatim at both refs, so a shape there refuses the run below -- it can be
+          # neither rewritten nor dropped, and on a FORK the rows are authored from an
+          # untrusted diff, so dropping a row would be a coverage hole its author could
+          # steer. A shape in `reason`, prose the classifier never reads, removes that
+          # field alone and every row is still classified.
+          #
+          # FEATURE-DETECTED, because `$REDACTOR` is staged from the BASE blob and can
+          # predate the flag; handing it an unknown argument is an argparse exit 2 that
+          # says nothing about credentials. Absent the flag this call is skipped
+          # entirely and the post-`validate` probe below gives the base's own answer,
+          # which is to refuse the run. A grep of the staged FILE rather than a `--help`
+          # run: the probe must not be a redactor invocation with no `--mode`, since
+          # every call in this lane declares the file shape it is scrubbing.
+          #
+          # Before `validate`, so the count it reports and the corpus it writes are both
+          # over the pruned rows. The probe AFTER `validate` is unchanged and is the
+          # backstop: a shape this call did not remove still refuses the run there.
+          if grep -q -- "--drop-changed-fields" "$REDACTOR"; then
+            prune=0
+            python3 "$REDACTOR" --mode json --drop-changed-fields --fail-if-changed candidates.json || prune=$?
+            case "$prune" in
+              0)
+                ;;
+              10)
+                echo "::warning::a candidate row carried a credential shape (an access-key id, an ARN, an account id or a credential-bearing assignment) in prose the classifier does not read, and that FIELD was removed. Every row is still adjudicated, on the bytes the reviewer wrote; only the removed field's explanation is absent from this run's report."
+                ;;
+              11)
+                # NOT a refusal here, for the same reason as the catch-all below.
+                # Exit 11 writes nothing, so the shape is still in `candidates.json`
+                # and `validate` runs on the reviewer's own bytes. If the offending
+                # row survives normalization, the probe on the NORMALIZED corpus
+                # refuses the run there -- the byte the legs would classify is the
+                # byte that decides. If `validate` drops that row instead (a
+                # duplicate of the committed corpus is dropped during
+                # normalization), the base ref admitted that run, and refusing it
+                # here would red a case base passed. The field is named now because
+                # this is the only step that can attribute it.
+                echo "::warning::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL) in a field the classifier reads verbatim, so that field can be neither published nor rewritten. Left to validate and to the probe on the normalized corpus: if the row survives normalization the run is refused there, and re-running so the reviewer proposes the operation without the embedded credential is the remedy."
+                ;;
+              *)
+                # NOT a refusal, and that is the point. The prune reads exactly one
+                # document shape, and its exit 1 covers the file it cannot place a
+                # credential shape in -- including a shape in a TOP-LEVEL field beside
+                # `golden_paths`, which `validate` below discards outright when it
+                # normalizes to `{"golden_paths": kept}`. At the base ref that file
+                # reached `validate` untouched and the run proceeded, so refusing here
+                # would red a case base passed. Hand it on instead: `validate` rejects a
+                # file it cannot trust, and the probe it runs on the NORMALIZED corpus
+                # refuses any shape that survives into the rows the legs classify.
+                echo "::warning::the candidate set could not be pruned by field (it is not the shape this flag reads, or a credential shape sits outside the rows). Left to validate, which normalizes to golden_paths alone, and to the probe on the normalized corpus -- neither of which this step may pre-empt."
+                ;;
+            esac
+          else
+            echo "::warning::the base-owned redactor at this base commit predates --drop-changed-fields, so a credential shape cannot be attributed to a field. The probe after validate gives the base's own answer, which is to refuse the run."
           fi
           rc=0
           python3 "$HARNESS/scope_candidates.py" validate \

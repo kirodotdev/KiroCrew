@@ -57,6 +57,83 @@ _allowed_team_ids: set[str] = set()
 # both validate_enterprise() and check_message_origin() are default-open.
 _allowlist_configured: bool = False
 
+# The operator's OWN ``slack.allowed_enterprise_ids`` entries, without the
+# validated team_id ``_load_allowed_team_ids`` unions in.  Kept apart from
+# ``_allowed_team_ids`` because the two gates below match this list against two
+# DIFFERENT id spaces, so telling the operator which of their entries can act on
+# which gate needs their entries alone -- see ``_diagnose_allowlist_id_spaces``.
+_configured_ids: set[str] = set()
+
+
+def _is_enterprise_id(value: str) -> bool:
+    """Whether *value* is an org-level Enterprise Grid id rather than a workspace.
+
+    Slack ids are prefixed by kind: ``E`` for an Enterprise Grid org, ``T`` for
+    a workspace.  ``_read_allowlist`` already admits only those two prefixes, so
+    "not an enterprise id" means "a workspace id" for anything that reached here.
+    """
+    return value.startswith("E")
+
+
+def _diagnose_allowlist_id_spaces(configured: set[str], admitted: set[str]) -> None:
+    """Warn when the operator's entries arm a gate none of them can satisfy.
+
+    The two gates read the SAME ``slack.allowed_enterprise_ids`` list and match
+    it against two DISJOINT id spaces, and only the second one decides whether a
+    DM is answered:
+
+    * :func:`validate_enterprise` compares ``enterprise_id or team_id``, so on
+      Enterprise Grid an org-level ``E…`` entry satisfies startup and the boot
+      logs ``Enterprise validation OK``.
+    * :func:`check_message_origin` compares the event's workspace id --
+      ``events.py`` sets ``event["team"]`` from the Socket Mode envelope's
+      ``team_id`` -- and an ``E…`` id can never equal one, so an org entry
+      admits no message.
+
+    So an allowlist holding only the org id is armed (any entry leaves
+    default-open) with nothing inbound able to match it: every DM is denied
+    while startup reports success, which is strictly worse than configuring
+    nothing.  Listing the org id is the natural reading of the field's name, so
+    an operator reaches that state by following the config, and the only origin
+    still admitted is the install workspace they never listed.
+
+    Deliberately DIAGNOSTIC.  It admits nothing extra and narrows nothing:
+    quietly treating an ``E…`` entry as org-wide admission would widen a
+    security allowlist whose whole purpose is keeping another Grid workspace
+    out, and this module refuses every other silent widening for the same
+    reason.  The remedy is the operator's, so the message names it.
+
+    Silent when the operator ALSO listed workspace ids: the ``E…`` entry is then
+    redundant rather than load-bearing, inbound works, and warning every boot
+    about a harmless entry would train operators to ignore the line that matters.
+    """
+    enterprise_entries = sorted(i for i in configured if _is_enterprise_id(i))
+    workspace_entries = sorted(i for i in configured if not _is_enterprise_id(i))
+    if not enterprise_entries or workspace_entries:
+        return
+
+    still_admitted = sorted(i for i in admitted if not _is_enterprise_id(i))
+    logger.warning(
+        "slack.allowed_enterprise_ids lists only org-level Enterprise Grid "
+        "id(s) (%s). Those satisfy startup validation, but every inbound "
+        "message is matched on the WORKSPACE team_id Slack puts in the event "
+        "envelope, which an E-prefixed id can never equal — so they admit no "
+        "inbound message and every DM is denied. Inbound is admitted only "
+        "from: %s. Add each child workspace's T… id to the same list, "
+        "alongside the org id (Grid needs both: the org id is what startup "
+        "checks, the workspace ids are what messages are checked against).",
+        ", ".join(enterprise_entries),
+        ", ".join(still_admitted) or "no workspace at all",
+    )
+    sel().log_api_access(
+        caller="gateway",
+        operation="slack.allowed_team_ids_load",
+        outcome="allowed",
+        source="startup",
+        resources=f"enterprise_only_entries={len(enterprise_entries)}",
+        error="allowlist_admits_no_inbound_workspace",
+    )
+
 
 def _read_allowlist() -> tuple[set[str] | None, str]:
     """Read ``slack.allowed_enterprise_ids`` from config, or refuse the config.
@@ -151,10 +228,17 @@ def _load_allowed_team_ids() -> bool:
       - the validated team_id (from ``auth.test``)
       - every entry in ``slack.allowed_enterprise_ids`` config
 
-    On Enterprise Grid, ``auth.test`` returns the org-level enterprise ID
-    while per-message events carry child workspace team_ids.  Operators
-    add child workspace IDs to ``slack.allowed_enterprise_ids`` to allow
-    those events through ``check_message_origin``.
+    On Enterprise Grid, ``auth.test`` returns BOTH an org-level
+    ``enterprise_id`` (``E…``) and the install workspace's ``team_id`` (``T…``),
+    while per-message events carry the child workspace ``team_id`` the message
+    was sent in.  The two gates therefore need DIFFERENT entries from this one
+    list, and a Grid operator needs both kinds in it:
+    :func:`validate_enterprise` checks the ``enterprise_id``, so the org id must
+    be listed or startup refuses; :func:`check_message_origin` checks each
+    event's workspace id, so every child workspace id must be listed or its
+    messages are denied.  :func:`_diagnose_allowlist_id_spaces` warns when only
+    one of the two kinds is present, because each omission fails in a way the
+    other does not explain.
 
     Sets ``_allowlist_configured`` based on whether the operator supplied
     any ``slack.allowed_enterprise_ids`` entries.  When none are
@@ -173,7 +257,7 @@ def _load_allowed_team_ids() -> bool:
     own ``KiroCrewConfig.load()`` -- may widen the allowlist afterwards, or the
     refusal made here is silently undone one level up.
     """
-    global _allowed_team_ids, _allowlist_configured
+    global _allowed_team_ids, _allowlist_configured, _configured_ids
     allowed: set[str] = set()
     if _validated_team_id:
         allowed.add(_validated_team_id)
@@ -211,6 +295,7 @@ def _load_allowed_team_ids() -> bool:
         # startup, and makes check_message_origin() deny every origin.
         _allowlist_configured = True
         allowed = set()
+        _configured_ids = set()
         logger.error(
             "slack.allowed_enterprise_ids could not be read (%s); "
             "failing closed with no origin admitted",
@@ -230,12 +315,15 @@ def _load_allowed_team_ids() -> bool:
         # allowlist.
         _allowlist_configured = True
         allowed.update(configured)
+        _configured_ids = set(configured)
     else:
         # Genuinely unconfigured: no config file, or a clean file with no
         # allowlist entries.  Stay default-open exactly as before.
         _allowlist_configured = False
+        _configured_ids = set()
 
     _allowed_team_ids = allowed
+    _diagnose_allowlist_id_spaces(_configured_ids, allowed)
     return False
 
 
@@ -381,7 +469,7 @@ def validate_enterprise(
     another edition implements against a different allowlist source.
     """
     global _validated_team_id, _validated_enterprise_id, _allowed_team_ids
-    global _allowlist_configured, _validated_self_bot_id
+    global _allowlist_configured, _validated_self_bot_id, _configured_ids
 
     # Clear stale state before re-validating.
     _validated_team_id = ""
@@ -389,6 +477,7 @@ def validate_enterprise(
     _allowed_team_ids = set()
     _allowlist_configured = False
     _validated_self_bot_id = ""
+    _configured_ids = set()
 
     extra = extra_ids or set()
 
@@ -554,6 +643,23 @@ def validate_enterprise(
                 enterprise_id,
                 team,
             )
+            if enterprise_id and not any(_is_enterprise_id(i) for i in _configured_ids):
+                # The other half of the id-space split ``_diagnose_allowlist_id_spaces``
+                # warns about, reached from the opposite direction: on Grid this
+                # gate checks the ORG id, so an allowlist of child workspace ids
+                # alone refuses startup and disables Slack outright. The error
+                # above is true but reads as "your workspace is not allowed",
+                # which is the wrong remedy — the operator's ids are right for
+                # the per-message gate and simply cannot answer this one.
+                logger.error(
+                    "slack.allowed_enterprise_ids lists only workspace id(s) "
+                    "and no org-level Enterprise Grid id. Startup is checked "
+                    "against the org id (%s) while messages are checked "
+                    "against workspace ids, so Grid needs both kinds in the "
+                    "list: add %s alongside the workspace ids already there.",
+                    enterprise_id,
+                    enterprise_id,
+                )
             sel().log_api_access(
                 caller="gateway",
                 operation="slack.enterprise_validation",
@@ -678,11 +784,16 @@ def check_message_origin(event_team_id: str) -> bool:
     Every permission decision (accept, deny) is audited via SEL per the
     ``security-controls`` guideline.
 
-    Enterprise Grid: ``auth.test`` returns the org-level enterprise ID
-    as ``team_id`` while per-message events carry child workspace
-    team_ids.  Operators add child workspace IDs to
-    ``slack.allowed_enterprise_ids`` config so legitimate events from
-    those workspaces are accepted via the same allowed-set lookup.
+    Enterprise Grid: ``auth.test`` returns an org-level ``enterprise_id``
+    (``E…``) alongside the install workspace's ``team_id`` (``T…``), and
+    per-message events carry the child workspace ``team_id`` the message was
+    sent in.  This gate only ever compares that WORKSPACE id, so an org-level
+    ``E…`` entry in ``slack.allowed_enterprise_ids`` cannot admit anything here
+    however well it satisfies startup — operators must list each child
+    workspace's ``T…`` id for its messages to be accepted.  An allowlist that
+    holds only org ids is therefore armed and admits nothing;
+    :func:`_diagnose_allowlist_id_spaces` warns at load time rather than letting
+    that state be silent.
     """
     if not _allowlist_configured:
         # No operator allowlist — accept all message origins.

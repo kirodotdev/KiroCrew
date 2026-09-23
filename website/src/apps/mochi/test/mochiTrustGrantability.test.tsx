@@ -85,4 +85,35 @@ describe('Mochi pending-card trust proof', () => {
     fireEvent.click(trust)
     expect(onApproval).toHaveBeenCalledWith('scopeless-1', 'trust', undefined, true)
   })
+
+  // The exact-command row grants an exact-STRING match here too, so a run of
+  // whitespace inside the command is part of the authority being granted. HTML's
+  // default `white-space: normal` collapses runs, which would render
+  // `grep "a  b" f` as `grep "a b" f` -- an elision one character wide. The
+  // panel's own budget clamp is a separate, deliberate layout decision for a
+  // ~240px column; collapsing whitespace earns nothing.
+  it('preserves runs of whitespace in the exact-command row', () => {
+    const cmd = 'grep -r "two  spaces" /path/to/dir'
+    render(
+      <Bubble
+        animate={false}
+        message={approvalMessage({
+          id: 'spaced-1',
+          tool: 'Run grep',
+          fullCommand: cmd,
+          baseCommand: 'grep',
+          trustGrantable: true,
+        })}
+        onApproval={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Trust' }))
+    // Found by DOM text, not by accessible name: the accessible-name algorithm
+    // normalizes whitespace, so the run this test is about is invisible there.
+    const row = screen.getAllByRole('button').find(b => b.textContent?.includes(cmd))
+    expect(row).toBeDefined()
+    const label = row!.querySelector('span')
+    expect(label?.style.whiteSpace).toBe('pre-wrap')
+  })
 })

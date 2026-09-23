@@ -1,13 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { groupDisplayItems, applyRunningState } from '../pages/chat/groupDisplayItems'
-import { findPinnedPromptIdx, jumpAnchorIdx } from '../utils/pinnedPrompt'
+import { findPinnedPromptIdx, findNextPromptIdx, jumpAnchorIdx } from '../utils/pinnedPrompt'
 import type { ChatMessage } from '../types'
 
 /**
- * A steer carries role `user`, so the pin's role test admits it — but it is
- * injected INTO a running turn rather than opening one, and its row lays out
- * between the opener and that turn's reply. `steered` builds that shape; the
- * flag is `meta.steer`, set by the `steer_push` echo.
+ * A steer carries role `user` because the user typed it, and the banner admits
+ * it: inside the reply that followed, it is the most recent thing they asked.
+ * `steered` builds the shape where the steer arrives AFTER some output (a reply
+ * row lies between it and its opener); `steeredImmediately` builds the shape
+ * where it arrives before the turn produced anything, so it sits directly on its
+ * opener. The flag is `meta.steer`, set by the `steer_push` echo.
  */
 function steered(opts: { steer: boolean }): ChatMessage[] {
   const out: ChatMessage[] = []
@@ -19,6 +21,17 @@ function steered(opts: { steer: boolean }): ChatMessage[] {
   push('assistant', 'partial work')
   push('user', 'how can i apply it in my local gateway to test ?',
     opts.steer ? { steer: true } : undefined)
+  push('assistant', "Here's the sequence. The order matters in two places …")
+  return out
+}
+
+function steeredImmediately(): ChatMessage[] {
+  const out: ChatMessage[] = []
+  const push = (role: string, content: string, meta?: Record<string, unknown>) =>
+    out.push({ role, content, ts: '2026-09-08T15:00:00Z', meta } as unknown as ChatMessage)
+
+  push('user', 'add the resolution memo too, and draft the PR description')
+  push('user', 'how can i apply it in my local gateway to test ?', { steer: true })
   push('assistant', "Here's the sequence. The order matters in two places …")
   return out
 }
@@ -36,7 +49,7 @@ function rowIdx(items: ReturnType<typeof applyRunningState>, needle: string): nu
 }
 
 describe('pinned prompt with a steer inside the turn', () => {
-  it('pins the row that OPENED the turn, not the steer injected into it', () => {
+  it('pins the steer, not the opener it interrupted', () => {
     const items = applyRunningState(groupDisplayItems(steered({ steer: true })), false)
     const openerIdx = rowIdx(items, 'add the resolution memo')
     const steerIdx = rowIdx(items, 'local gateway')
@@ -44,26 +57,53 @@ describe('pinned prompt with a steer inside the turn', () => {
     expect(steerIdx).toBeGreaterThan(openerIdx)
 
     // Read position: the reply below the steer, so the steer has passed the line.
-    const pinIdx = findPinnedPromptIdx(items, items.length - 1)
-    expect(pinIdx).toBe(openerIdx)
-    expect(pinIdx).not.toBe(steerIdx)
+    // It is the last thing the reader asked, which is the question the banner
+    // answers — the opener stays reachable one step up the jump chain.
+    expect(findPinnedPromptIdx(items, items.length - 1)).toBe(steerIdx)
   })
 
-  it('pins a plain second user row in the same shape, so meta.steer is what discriminates', () => {
-    const items = applyRunningState(groupDisplayItems(steered({ steer: false })), false)
-    const secondIdx = rowIdx(items, 'local gateway')
-    expect(findPinnedPromptIdx(items, items.length - 1)).toBe(secondIdx)
+  it('pins the same row with the flag removed, so eligibility does not read meta.steer', () => {
+    // Negative control in the other direction: a plain second user row in the
+    // identical shape pins identically. If the pin ever discriminates on the
+    // flag again, these two indices diverge.
+    const withFlag = applyRunningState(groupDisplayItems(steered({ steer: true })), false)
+    const without = applyRunningState(groupDisplayItems(steered({ steer: false })), false)
+    const pinWith = findPinnedPromptIdx(withFlag, withFlag.length - 1)
+    const pinWithout = findPinnedPromptIdx(without, without.length - 1)
+    expect(pinWith).toBe(rowIdx(withFlag, 'local gateway'))
+    expect(pinWith).toBe(pinWithout)
   })
 
-  it('a steer is never a jump target, so the jump lands on the opener', () => {
-    const items = applyRunningState(groupDisplayItems(steered({ steer: true })), false)
-    const openerIdx = rowIdx(items, 'add the resolution memo')
-    expect(jumpAnchorIdx(items, openerIdx)).toBe(openerIdx)
-  })
-
-  it('falls back to the opener when the steer is the nearest row above the fold', () => {
+  it('takes the band as soon as it clears the hand-off line', () => {
     const items = applyRunningState(groupDisplayItems(steered({ steer: true })), false)
     const steerIdx = rowIdx(items, 'local gateway')
-    expect(findPinnedPromptIdx(items, steerIdx + 1)).toBe(rowIdx(items, 'add the resolution memo'))
+    expect(findPinnedPromptIdx(items, steerIdx + 1)).toBe(steerIdx)
+  })
+
+  it('pushes the opener out of the band, being the next prompt after it', () => {
+    // findNextPromptIdx drives the push geometry: the steer is what shoves the
+    // opener's banner up, which is the same relationship any two consecutive
+    // prompts have.
+    const items = applyRunningState(groupDisplayItems(steered({ steer: true })), false)
+    const openerIdx = rowIdx(items, 'add the resolution memo')
+    expect(findNextPromptIdx(items, openerIdx)).toBe(rowIdx(items, 'local gateway'))
+  })
+
+  it('anchors the jump on its opener when it sits directly on it', () => {
+    // No output between the two rows: they are one consecutive prompt run, so
+    // clicking the pinned steer scrolls to the prompt that started the work.
+    // Landing on the steer itself would leave the opener straddling the
+    // hand-off line — unpinnable while already pushing the fallback banner out.
+    const items = applyRunningState(groupDisplayItems(steeredImmediately()), false)
+    const openerIdx = rowIdx(items, 'add the resolution memo')
+    const steerIdx = rowIdx(items, 'local gateway')
+    expect(steerIdx).toBeGreaterThan(openerIdx)
+    expect(jumpAnchorIdx(items, steerIdx)).toBe(openerIdx)
+  })
+
+  it('is its own anchor when a reply row lies between it and its opener', () => {
+    const items = applyRunningState(groupDisplayItems(steered({ steer: true })), false)
+    const steerIdx = rowIdx(items, 'local gateway')
+    expect(jumpAnchorIdx(items, steerIdx)).toBe(steerIdx)
   })
 })

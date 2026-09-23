@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import TurnNavigationMinimap, {
+  bucketTurns,
   markerPosition,
   pointerToTurnIndex,
   shortenTurnPreview,
@@ -56,7 +57,7 @@ describe('TurnNavigationMinimap', () => {
     expect(shortenTurnPreview('![screenshot](/p/a.png)', 40)).toBe('screenshot')
     expect(shortenTurnPreview('![](/p/a.png) look', 40)).toBe('look')
     expect(shortenTurnPreview('## Plan\n- **bold** step with [a link](https://x.y)\n```ts\ncode\n```', 80)).toBe('Plan bold step with a link code')
-    expect(shortenTurnPreview('## Plan\n\n1. `first` step', 40)).toBe('Plan first step')
+    expect(shortenTurnPreview('## Plan\n\n1. `first` step', 40)).toBe('Plan · first step')
   })
 
   it('shortens previews at a word boundary with three dots', () => {
@@ -66,26 +67,37 @@ describe('TurnNavigationMinimap', () => {
     expect(shortenTurnPreview('abcdefghijklmnopqrstuvwxyz', 12)).toBe('abcdefghi...')
   })
 
-  it('shows prompt and response preview, highlights visible turns, and navigates by pointer', async () => {
+  it('highlights on-screen turns and navigates by pointer', async () => {
     const scroller = buildScroller()
     const onNavigate = vi.fn()
-    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={onNavigate} />)
+    const view = render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={onNavigate} />)
 
     const button = await screen.findByRole('button')
     button.getBoundingClientRect = () => rect(100, 300, 8, 40)
     await waitFor(() => {
       const markers = screen.getAllByTestId('turn-navigation-marker')
-      expect(markers[0]).toHaveAttribute('data-in-view', 'true')
-      expect(markers[1]).toHaveAttribute('data-in-view', 'true')
-      expect(markers[2]).toHaveAttribute('data-in-view', 'false')
-      expect(markers.map(marker => marker.style.width)).toEqual(['14px', '14px', '14px'])
+      // Turns 1 and 2 are on screen and read as text; the rest is one gray.
+      expect(markers.map(m => m.dataset.inView)).toEqual(['true', 'true', 'false'])
+      expect(markers[0].style.background).toBe('var(--text)')
+      expect(markers[1].style.background).toBe('var(--text)')
+      expect(markers[2].style.background).toBe('var(--border)')
+      expect(markers.map(marker => marker.style.width)).toEqual(['10px', '10px', '10px'])
     })
 
     await hover(button, 200)
     expect(screen.getByRole('tooltip')).toHaveTextContent('Second prompt')
     expect(screen.getByRole('tooltip')).toHaveTextContent('Second response')
+    // Fisheye: the scrubbed marker grows, neighbours taper off — and the
+    // in-view highlight yields so the wave is the only lit element.
+    const markers = screen.getAllByTestId('turn-navigation-marker')
+    expect(markers[1].style.width).toBe('26px')
+    expect(markers[0].style.width).toBe('20px')
+    expect(markers[2].style.width).toBe('20px')
+    expect(markers[1].style.background).toBe('var(--text)')
+    expect(markers[0].style.background).toBe('var(--muted)')
     fireEvent.click(button)
     expect(onNavigate).toHaveBeenCalledWith(4)
+    view.unmount()
   })
 
   it('re-measures on row mutations but not on streamed text inside a row', async () => {
@@ -124,31 +136,139 @@ describe('TurnNavigationMinimap', () => {
     raf.mockRestore(); addListener.mockRestore()
   })
 
-  it('a pointer crossing the rail does not open the card; a 28px hit area leaves the gutter clickable-free', async () => {
+  it('hover-intent gate: a graze never opens the card, a settled hover opens at the latest position, open tracking is instant', async () => {
     const scroller = buildScroller()
     render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
     const button = await screen.findByRole('button')
     button.getBoundingClientRect = () => rect(100, 300, 8, 28)
     expect(button.className).toContain('w-7')
+    // A graze — enter then leave inside the intent window — never flashes the card.
     fireEvent.mouseMove(button, { clientY: 200 })
-    fireEvent.mouseLeave(button)
-    await new Promise(resolve => setTimeout(resolve, 250))
     expect(screen.queryByRole('tooltip')).toBeNull()
-    await hover(button, 200)
-    // Once open, moving updates instantly.
+    fireEvent.mouseLeave(button)
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    // A settled hover opens after the gate — at the LATEST hovered position
+    // (movement retargets the pending open without restarting the countdown).
+    fireEvent.mouseMove(button, { clientY: 100 })
+    fireEvent.mouseMove(button, { clientY: 200 })
+    await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('Second prompt'))
+    // Once open, moving tracks instantly.
     fireEvent.mouseMove(button, { clientY: 300 })
     expect(screen.getByRole('tooltip')).toHaveTextContent('Third prompt')
+    // Leaving the rail closes it after the short grace period.
+    fireEvent.mouseLeave(button)
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
   })
 
-  it('places 80 markers proportionally for a dense session', async () => {
+  it('caps a dense session at 45 markers with even bucketing and a dedicated last tick', async () => {
     const scroller = buildScroller()
+    const onNavigate = vi.fn()
     const dense = Array.from({ length: 80 }, (_, i) => section(`t${i}`, i * 3 + 1, `Prompt ${i}`, ''))
-    render(<TurnNavigationMinimap items={dense} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
-    await screen.findByRole('button')
-    // (The rail's `min(calc(100% - 8px), 711px)` height is CSS jsdom cannot parse; placement is what is asserted here.)
+    render(<TurnNavigationMinimap items={dense} scrollerRef={{ current: scroller }} onNavigate={onNavigate} />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 40)
+    // (The rail's `min(calc(100% - 8px), ...)` height is CSS jsdom cannot parse; placement is what is asserted here.)
     const markers = screen.getAllByTestId('turn-navigation-marker')
-    expect(markers).toHaveLength(80)
-    expect(markers[1].style.top).toBe(`${(1 / 79) * 100}%`)
+    expect(markers).toHaveLength(45)
+    expect(markers[1].style.top).toBe(`${(1 / 44) * 100}%`)
+    // The newest turn always keeps its own dedicated final tick.
+    expect(markers[44].dataset.targetDisplayIndex).toBe(String(79 * 3 + 1))
+    button.focus()
+    fireEvent.keyDown(button, { key: 'End' })
+    fireEvent.keyDown(button, { key: 'Enter' })
+    expect(onNavigate).toHaveBeenLastCalledWith(79 * 3 + 1)
+    // A body tick jumps to its bucket's first turn: bucket 1 starts at
+    // floor(1 * 79/44) = turn 1 (displayIdx 4).
+    fireEvent.keyDown(button, { key: 'Home' })
+    fireEvent.keyDown(button, { key: 'ArrowDown' })
+    fireEvent.keyDown(button, { key: 'Enter' })
+    expect(onNavigate).toHaveBeenLastCalledWith(Math.floor(79 / 44) * 3 + 1)
+  })
+
+  it('one marker per turn under the cap; bucketTurns keeps coverage contiguous past it', () => {
+    expect(bucketTurns(3)).toEqual([
+      { first: 0, size: 1 },
+      { first: 1, size: 1 },
+      { first: 2, size: 1 },
+    ])
+    const buckets = bucketTurns(150)
+    expect(buckets).toHaveLength(45)
+    expect(buckets[44]).toEqual({ first: 149, size: 1 })
+    // Body buckets tile the older history without gaps.
+    for (let b = 1; b < 44; b++) {
+      expect(buckets[b].first).toBe(buckets[b - 1].first + buckets[b - 1].size)
+    }
+    expect(buckets[43].first + buckets[43].size).toBe(149)
+  })
+
+  it('press-and-drag scrubs the chat live with instant scrolls and suppresses the trailing click', async () => {
+    const scroller = buildScroller()
+    const onNavigate = vi.fn()
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={onNavigate} />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 40)
+    // Pointer-down bypasses the hover-intent delay: the card opens immediately.
+    fireEvent.pointerDown(button, { button: 0, pointerId: 1, clientY: 100 })
+    expect(screen.getByRole('tooltip')).toHaveTextContent('First prompt')
+    fireEvent.pointerMove(button, { pointerId: 1, clientY: 200 })
+    expect(onNavigate).toHaveBeenLastCalledWith(4, { instant: true })
+    fireEvent.pointerMove(button, { pointerId: 1, clientY: 300 })
+    expect(onNavigate).toHaveBeenLastCalledWith(7, { instant: true })
+    fireEvent.pointerUp(button, { pointerId: 1 })
+    // The chat already followed the pointer — the derived trailing click must
+    // not fire a second (smooth) jump at the same target.
+    fireEvent.click(button, { detail: 1, clientY: 300 })
+    expect(onNavigate).toHaveBeenCalledTimes(2)
+    // The suppression is one-shot: the next plain click navigates again.
+    fireEvent.click(button, { detail: 1, clientY: 300 })
+    expect(onNavigate).toHaveBeenCalledTimes(3)
+  })
+
+  it('a plain click (full pointer sequence, no drag) still navigates and never takes pointer capture', async () => {
+    const scroller = buildScroller()
+    const onNavigate = vi.fn()
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={onNavigate} />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 40)
+    const capture = vi.fn()
+    ;(button as HTMLElement & { setPointerCapture: typeof capture }).setPointerCapture = capture
+    fireEvent.pointerDown(button, { button: 0, pointerId: 1, clientY: 300 })
+    fireEvent.pointerUp(button, { pointerId: 1 })
+    fireEvent.click(button, { detail: 1, clientY: 300 })
+    expect(onNavigate).toHaveBeenCalledWith(7)
+    expect(capture).not.toHaveBeenCalled()
+  })
+
+  it('the preview card shows faint neighbour titles and a position meta row with relative time', async () => {
+    const scroller = buildScroller()
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString()
+    const stamped = ITEMS.map(item => ({ ...item, ts: twoHoursAgo }))
+    render(<TurnNavigationMinimap items={stamped} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 40)
+    await hover(button, 200)
+    const neighbours = screen.getAllByTestId('turn-navigation-preview-neighbor')
+    // Each neighbour line carries its #n index chip before the title.
+    expect(neighbours.map(n => n.textContent)).toEqual(['#1First prompt', '#3Third prompt'])
+    const meta = screen.getByTestId('turn-navigation-preview-meta')
+    expect(meta.textContent).toContain('Turn 2 of 3')
+    expect(meta.textContent).toContain('2h ago')
+    // An edge turn has only one neighbour.
+    fireEvent.mouseMove(button, { clientY: 100 })
+    expect(screen.getAllByTestId('turn-navigation-preview-neighbor')).toHaveLength(1)
+  })
+
+  it("a bucketed marker's meta row names the span it covers", async () => {
+    const scroller = buildScroller()
+    const dense = Array.from({ length: 89 }, (_, i) => section(`t${i}`, i * 3 + 1, `Prompt ${i}`, ''))
+    render(<TurnNavigationMinimap items={dense} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 40)
+    button.focus()
+    fireEvent.keyDown(button, { key: 'Home' })
+    // Bucket 0 of 89 turns over 44 body ticks covers exactly 2 turns.
+    expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toContain('Turns 1\u20132 of 89')
   })
 
   it('a mounted reply row keeps its turn highlighted after the prompt row scrolls away', async () => {
@@ -180,25 +300,6 @@ describe('TurnNavigationMinimap', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent('Second prompt')
     fireEvent.keyDown(button, { key: 'ArrowDown' })
     expect(screen.getByRole('tooltip')).toHaveTextContent('Third prompt')
-  })
-
-  it('shows an end-cap that loads older history when the window is incomplete, and scopes the count to loaded turns', async () => {
-    const scroller = buildScroller()
-    const onLoad = vi.fn()
-    const view = render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} earlier={{ loading: false, onLoad }} />)
-    const cap = await screen.findByTestId('turn-navigation-earlier')
-    fireEvent.click(cap)
-    expect(onLoad).toHaveBeenCalledTimes(1)
-    const rail = screen.getAllByRole('button').find(b => b !== cap)!
-    rail.getBoundingClientRect = () => rect(100, 300, 8, 28)
-    rail.focus()
-    fireEvent.keyDown(rail, { key: 'Home' })
-    expect(rail.getAttribute('aria-label')).toContain('of 3 loaded')
-    view.rerender(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} earlier={{ loading: true, onLoad }} />)
-    fireEvent.click(screen.getByTestId('turn-navigation-earlier'))
-    expect(onLoad).toHaveBeenCalledTimes(1)
-    view.rerender(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
-    expect(screen.queryByTestId('turn-navigation-earlier')).toBeNull()
   })
 
   it('announces keyboard selection through a live region only while focused', async () => {
@@ -236,6 +337,69 @@ describe('TurnNavigationMinimap', () => {
     expect(onNavigate).toHaveBeenLastCalledWith(1)
     fireEvent.keyDown(button, { key: 'Escape' })
     expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('below the md breakpoint the CSS hides the rail and no markers render', async () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 700 })
+    const scroller = buildScroller() // pane itself is wide enough — the viewport is what is narrow
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
+    for (let i = 0; i < 4; i++) await new Promise(resolve => setTimeout(resolve, 20))
+    expect(screen.queryByTestId('turn-navigation-minimap')).toBeNull()
+    if (original) Object.defineProperty(window, 'innerWidth', original)
+  })
+
+  it('windowed rail says "loaded" in the aria label and the meta row', async () => {
+    const scroller = buildScroller()
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} windowed />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 40)
+    button.focus()
+    fireEvent.keyDown(button, { key: 'Home' })
+    expect(button.getAttribute('aria-label')).toContain('Turn 1 of 3 loaded')
+    expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toContain('Turn 1 of 3 loaded')
+  })
+
+  it('a bucketed marker on a windowed rail keeps the "loaded" disclosure', async () => {
+    const scroller = buildScroller()
+    const dense = Array.from({ length: 89 }, (_, i) => section(`t${i}`, i * 3 + 1, `Prompt ${i}`, ''))
+    render(<TurnNavigationMinimap items={dense} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} windowed />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 40)
+    button.focus()
+    fireEvent.keyDown(button, { key: 'Home' })
+    expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toContain('Turns 1\u20132 of 89 loaded')
+    expect(button.getAttribute('aria-label')).toContain('Turns 1\u20132 of 89 loaded')
+  })
+
+  it('the right-edge rail replaces the native scrollbar while shown and restores it on unmount', async () => {
+    const scroller = buildScroller()
+    const view = render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} side="right" />)
+    await screen.findByRole('button')
+    await waitFor(() => expect(scroller.style.scrollbarWidth).toBe('none'))
+    view.unmount()
+    expect(scroller.style.scrollbarWidth).toBe('')
+  })
+
+  it('the left rail (default) never touches the native scrollbar', async () => {
+    const scroller = buildScroller()
+    const view = render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
+    await screen.findByRole('button')
+    // Never assigned at all — jsdom reads an untouched property as undefined.
+    expect(scroller.style.scrollbarWidth || '').toBe('')
+    view.unmount()
+    expect(scroller.style.scrollbarWidth || '').toBe('')
+  })
+
+  it('below the md breakpoint a right-edge rail is hidden and the native scrollbar stays', async () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 700 })
+    const scroller = buildScroller() // pane itself is wide enough — the viewport is what is narrow
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} side="right" />)
+    for (let i = 0; i < 4; i++) await new Promise(resolve => setTimeout(resolve, 20))
+    expect(screen.queryByTestId('turn-navigation-minimap')).toBeNull()
+    expect(scroller.style.scrollbarWidth || '').toBe('')
+    if (original) Object.defineProperty(window, 'innerWidth', original)
   })
 
   it('does not render for one turn or without a safe left gutter', async () => {

@@ -259,9 +259,11 @@ writes.
 | `kirocrew memory search "query"` | Search episodic memories |
 | `kirocrew memory stats` | Show memory statistics |
 | `kirocrew memory audit` | Scan memory for suspicious content |
-| `kirocrew memory export` | Export all memory to JSON (stdout) |
+| `kirocrew memory export` | Export the default store's rows to JSON (stdout) |
 | `kirocrew memory export -o file.json` | Export to file |
+| `kirocrew memory export --store <name>` | Export a named store's rows instead |
 | `kirocrew memory import file.json` | Import memory from JSON |
+| `kirocrew memory import --store <name> file.json` | Import into a named store instead |
 | `kirocrew memory migrate` | Migrate legacy markdown memory to vector store |
 | `kirocrew memory show [preferences\|projects\|history]` | Show the markdown memory layer (default: all three; `--format md\|json`, `--since YYYY-MM-DD` for history) |
 | `kirocrew knowledge dedup` | Preview cross-source duplicate knowledge documents (dry-run) |

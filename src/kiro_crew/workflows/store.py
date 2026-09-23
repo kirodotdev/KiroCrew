@@ -30,9 +30,9 @@ from typing import Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
+from kiro_crew.execution_context import execution_from_record
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.workflow_memory import private_payload_path, read_binding
 
 # Optional dependency (gate F1): the workflows engine must stay importable without
 # the full app/config stack. Imported at module top via try/except so the
@@ -125,23 +125,20 @@ class WorkflowRunStore:
         if safe != run_id:
             digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:12]
             safe = f"{safe}-{digest}" if safe else digest
-        binding = read_binding(run_id)
-        if binding is not None and binding["memory_store"]:
-            return private_payload_path(run_id)
         return self._runs_dir / f"{safe}.json"
 
     def save(self, run_id: str, store_json: dict) -> None:
         """Persist one run atomically; report failures to the registry's health view."""
         if not run_id:
             return
-        read_binding(run_id, required=bool(store_json.get("execution_binding_version")))
+        execution = execution_from_record(store_json, required=False)
+        if store_json.get("memory_mode", "persistent") != "persistent" or (
+            execution is not None and execution.memory_mode != "persistent"
+        ):
+            return
         path = self._path_for(run_id)
-        if path.parent == self._runs_dir:
-            if not self._ensure_dir():
-                raise OSError("Workflow run directory unavailable")
-        else:
-            platform_compat.make_owner_only_dir(path.parent)
-            platform_compat.restrict_dir_to_owner(path.parent)
+        if not self._ensure_dir():
+            raise OSError("Workflow run directory unavailable")
         try:
             redacted = _redact(store_json)
             redacted["source_is_original"] = bool(store_json.get("source_is_original")) and (
@@ -191,15 +188,6 @@ class WorkflowRunStore:
         one. The registry decides how to rehydrate interrupted runs.
         """
         roots = [self._runs_dir]
-        try:
-            roots.append(private_payload_path("discovery").parent)
-        except Exception as exc:
-            logger.debug(
-                "workflow store: private discovery root unavailable (%s)", type(exc).__name__
-            )
-            raise OSError(
-                "Workflow run inventory unavailable; repair storage and restart"
-            ) from None
         out: list[tuple[float, dict]] = []
         for root in roots:
             try:
@@ -258,27 +246,10 @@ class WorkflowRunStore:
                         os.close(fd)
                     if not isinstance(obj, dict) or not isinstance(obj.get("run_id"), str):
                         continue
-                    run_id = obj["run_id"]
-                    try:
-                        binding = read_binding(
-                            run_id,
-                            required=root != self._runs_dir
-                            or bool(obj.get("execution_binding_version")),
-                        )
-                    except Exception as exc:
-                        logger.debug(
-                            "workflow store: protected binding unavailable (%s)",
-                            type(exc).__name__,
-                        )
-                        # Do not hide a bound run behind an empty list,
-                        # or reconstruct authority from its editable payload.
-                        raise WorkflowInventoryError(
-                            "Workflow run inventory unavailable; repair storage and restart"
-                        ) from None
-                    private = binding is not None and bool(binding["memory_store"])
-                    if private != (root != self._runs_dir):
-                        continue
-                    if private and f != private_payload_path(run_id):
+                    execution = execution_from_record(obj, required=False)
+                    if obj.get("memory_mode", "persistent") != "persistent" or (
+                        execution is not None and execution.memory_mode != "persistent"
+                    ):
                         continue
                     out.append((info.st_mtime, obj))
                 except WorkflowInventoryError:

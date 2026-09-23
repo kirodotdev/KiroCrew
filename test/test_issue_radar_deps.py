@@ -22,6 +22,7 @@ subprocess is spawned and the real data home is never touched.
 
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 import time
@@ -1344,6 +1345,40 @@ class SweepDepUnblockTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.key = provider.key_from_parts(OWNER, REPO)
+        # A crew's ledger is the fold of its own crew log, so seeding a work item
+        # records into the unit its slot runs on, as the write route does.
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        env = mock.patch.dict(os.environ, {"KIROCREW_HOME": home.name, "KIROCREW_CREW_LOG": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+        crew_log_emit.reset_caches()
+        cs._fold_cache.clear()
+        self.addCleanup(cs._fold_cache.clear)
+        self.addCleanup(crew_log_emit.reset_caches)
+        self.addCleanup(crew_log_emit.drain_for_shutdown, 2.0)
+
+    def _seed_item(self, crew_id: str, number: int, phase: str) -> None:
+        from kiro_crew.crew_log.schema import KIND_SESSION
+        from kiro_crew.crew_log.store import CrewLog
+
+        sid = f"acp-{crew_id}"
+        CrewLog.create(
+            KIND_SESSION, sid, owner="owner", agent="kirocrew", slot=cs.slot_key_for(crew_id)
+        )
+        cs.commit_work_progress(
+            OWNER,
+            REPO,
+            crew_id,
+            number,
+            {"phase": phase},
+            "claim",
+            "seeded",
+            root=self.root,
+            session_id=sid,
+        )
 
     def _client(self):
         client = mock.Mock()
@@ -1373,7 +1408,7 @@ class SweepDepUnblockTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_fires_once_when_the_last_blocker_closes(self):
         crew = cs.create_crew(OWNER, REPO, {"name": "Andromeda", "unattended": True}, self.root)
-        cs.upsert_work_item(OWNER, REPO, crew["id"], 2201, {"phase": "awaiting-reply"}, self.root)
+        self._seed_item(crew["id"], 2201, "awaiting-reply")
 
         # Seed: the blocker is still open.
         self._write_graph("open")
@@ -1402,7 +1437,7 @@ class SweepDepUnblockTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_does_not_fire_while_a_blocker_remains_open(self):
         crew = cs.create_crew(OWNER, REPO, {"name": "Andromeda", "unattended": True}, self.root)
-        cs.upsert_work_item(OWNER, REPO, crew["id"], 2201, {"phase": "awaiting-reply"}, self.root)
+        self._seed_item(crew["id"], 2201, "awaiting-reply")
         # Two blockers; only one closes.
         store.write_deps_cache(
             OWNER,

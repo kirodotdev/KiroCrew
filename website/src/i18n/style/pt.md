@@ -62,15 +62,17 @@ Checked by `glossary.test.ts`.
 
 ## 5. Plurals
 
-CLDR defines **2 plural categories** for Portuguese:
+The bare `pt` tag resolves to Brazilian Portuguese plural rules in the current runtime,
+which define **3 plural categories**:
 
 | category | condition | example |
 |---|---|---|
-| one | i = 1 | `{{count}} arquivo` |
-| other | everything else | `{{count}} arquivos` |
+| one | standard values whose integer part is 0 or 1 | `0 arquivo`, `1,5 arquivo` |
+| many | exact millions selected by `Intl.PluralRules('pt')` | `1.000.000 arquivos` |
+| other | everything else | `2 arquivos` |
 
-Note: `one` is only for integer 1 (1.0 triggers `other`). Zero takes `other`:
-`0 arquivos`. Checked by `catalogParity.test.ts`.
+`many` normally uses the same wording as `other`, but its `_many` key is still required.
+Checked by `catalogParity.test.ts`, which reads `Intl.PluralRules` at runtime.
 
 ---
 
@@ -89,7 +91,9 @@ All accents are mandatory. The 2009 Acordo Ortográfico is the reference:
 | rule | gate |
 |---|---|
 | placeholder parity with English | `catalogParity.test.ts` |
-| correct CLDR plural categories (2) | `catalogParity.test.ts` |
+| correct CLDR plural categories (3) | `catalogParity.test.ts` |
+| no European-Portuguese vocabulary from the guarded list | `ptStyle.test.ts` |
+| no guillemets | `ptStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |

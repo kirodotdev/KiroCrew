@@ -158,9 +158,9 @@ class TestUntrustedTargetsStillRefused:
         monkeypatch.setattr(skills_mod, "config_dir", lambda: data_home)
 
         resolved = os.path.realpath(secret_skill)
-        monkeypatch.setattr(
-            skills_mod, "is_sensitive_path", lambda p: os.path.realpath(str(p)) == resolved
-        )
+        # The walk asks the fence through the pre-resolved gate, with the
+        # realpath it already computed; stub that gate, not is_sensitive_path.
+        monkeypatch.setattr(skills_mod, "is_sensitive_resolved_path", lambda p: p == resolved)
 
         base = tmp_path / "skills"
         base.mkdir()

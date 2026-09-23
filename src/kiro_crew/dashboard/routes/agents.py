@@ -13,6 +13,8 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import agent_templates
+from kiro_crew.dashboard.handlers.agent_catalog import api_agent_catalog
 
 
 def register(app: web.Application) -> None:
@@ -23,12 +25,17 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/workspaces/{name}", handlers.api_workspaces_update)
     app.router.add_delete("/api/workspaces/{name}", handlers.api_workspaces_delete)
     # Agents
+    app.router.add_get("/api/agents/catalog", api_agent_catalog)
     app.router.add_get("/api/agents/installed", handlers.api_agents_installed)
+    # The templates tab: roster with editability + references, create, delete.
+    app.router.add_get("/api/agents/templates", agent_templates.api_agent_templates)
+    app.router.add_post("/api/agents/templates", agent_templates.api_agent_template_create)
     app.router.add_get("/api/models", handlers.api_models)
     app.router.add_get("/api/effort-levels", handlers.api_effort_levels)
     app.router.add_get("/api/slash-commands", handlers.api_slash_commands)
     app.router.add_get("/api/agents/detail/{name}", handlers.api_agent_detail)
     app.router.add_patch("/api/agents/detail/{name}", handlers.api_agent_detail)
+    app.router.add_delete("/api/agents/detail/{name}", agent_templates.api_agent_template_delete)
     app.router.add_post("/api/agents/detail/{name}/fork", handlers.api_agent_fork)
     app.router.add_post("/api/agents/detail/{name}/publish", handlers.api_agent_publish)
     app.router.add_post("/api/agents/detail/{name}/reset", handlers.api_agent_reset)
@@ -61,6 +68,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members", handlers.api_members)
     app.router.add_post("/api/members/{slug}/thread", handlers.api_member_thread)
     app.router.add_get("/api/members/{slug}/activity", handlers.api_member_activity)
+    app.router.add_get("/api/members/{slug}/briefing", handlers.api_member_briefing)
     app.router.add_get("/api/members/{slug}/rules", handlers.api_member_rules_get)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
 

@@ -1,5 +1,7 @@
 # Requirements — Kiro Crew App Builder Kit
 
+Status: historical; the proposed `website/src/kit/` implementation is not present.
+
 ## Introduction
 
 The Kiro Crew dashboard frontend (`website/src/`) already exposes an `app-sdk/` that defines

@@ -50,6 +50,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CONTEXT_RECYCLE,
+    ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
+)
 from kiro_crew.cron import (
     CronStoreBusy,
     CronStoreUnreadable,
@@ -78,6 +82,25 @@ STOP_REPLY_CANCELLED = "🛑 Stopped."
 #: Sent when there was no live turn -- the queue is still cleared, and saying so
 #: is what distinguishes "nothing to stop" from "the stop did not work".
 STOP_REPLY_IDLE = "🛑 Nothing was running — queue cleared."
+
+
+def note_user_stop(sessions: Any, session_key: str) -> None:
+    """Record a user Stop for *session_key* on the session manager.
+
+    Every channel Stop path that cancels the provider directly (rather than
+    through ``SessionManager.stop_turn``, which records on its own) calls this
+    FIRST, before checking whether anything is running: a turn that is between
+    its abandoned attempt and its replay (``drive_turn``'s transient-compaction
+    retry) has no live session at that moment, reads as idle, and would
+    otherwise replay the very prompt this Stop was aimed at. The manager keeps
+    the record only for keys that have a session or sit in such a replay gap.
+
+    Probed with ``getattr`` like the rest of this seam: ``sessions`` is typed
+    ``Any`` and the focused doubles in the channel suites predate the method.
+    """
+    note = getattr(sessions, "note_stop", None)
+    if callable(note):
+        note(session_key)
 
 
 async def stop_running_turn(
@@ -110,6 +133,7 @@ async def stop_running_turn(
     queue is still cleared, so claiming a stop that did not happen would be the
     worse lie.
     """
+    note_user_stop(sessions, session_key)
     cancelled_turn = False
     if sessions.is_busy(session_key):
         provider = sessions.get_provider(session_key)
@@ -337,17 +361,156 @@ def compact_unsupported_backend(provider: Any) -> str | None:
     return None
 
 
+#: The three answers a surface can give a backend it cannot compact. One name per
+#: answer, so a surface maps arms to its own wording instead of re-deriving the
+#: choice from memberships -- which is how two surfaces came to hold a single
+#: sentence that covered all three.
+COMPACT_ARM_HARNESS_MANAGED = "harness_managed"
+COMPACT_ARM_RECYCLED = "recycled"
+COMPACT_ARM_UNCLASSIFIED = "unclassified"
+
+
+def compact_refusal_arm(backend: str) -> str:
+    """Which of the three refusals *backend* is owed.
+
+    The ONE place the choice is made, and the ONLY reader of the two memberships it
+    reads. Every surface asks this and maps the answer to its own words; none of
+    them touches a membership, because a surface that derives the choice for itself
+    is a surface that can disagree with the others -- and can silently miss an arm
+    added later.
+
+    - :data:`COMPACT_ARM_HARNESS_MANAGED` -- the harness summarizes unasked and
+      reports it, so nothing is lost by declining.
+    - :data:`COMPACT_ARM_RECYCLED` -- Crew restarts the session when the context
+      fills, which keeps it usable and loses what the agent remembered.
+    - :data:`COMPACT_ARM_UNCLASSIFIED` -- neither is established, so the surface
+      must promise neither.
+
+    Returns the unclassified arm for an unknown id, which is the arm that claims
+    nothing: a backend this build cannot name has certainly not been shown to
+    manage its own context, and has certainly not been granted a recycle.
+    """
+    if backend in ACP_BACKENDS_HARNESS_MANAGED_COMPACTION:
+        return COMPACT_ARM_HARNESS_MANAGED
+    if backend in ACP_BACKENDS_CONTEXT_RECYCLE:
+        return COMPACT_ARM_RECYCLED
+    return COMPACT_ARM_UNCLASSIFIED
+
+
+def compact_refusal_plain_text(backend: str) -> str:
+    """The three refusals in plain text, for surfaces that carry no markdown.
+
+    WhatsApp and iMessage differ from each other in exactly one way here -- a
+    leading glyph -- and from :func:`compact_unsupported_reply` in exactly one
+    other: no backticks and no backend id, because neither surface renders code
+    spans and neither user chose the backend by name. That is not enough
+    difference to justify three copies of the same three sentences, which is what
+    holding them per surface produced.
+
+    A surface whose wording genuinely differs keeps its own strings. What must not
+    come back is a second surface writing these sentences out again.
+    """
+    arm = compact_refusal_arm(backend)
+    if arm == COMPACT_ARM_HARNESS_MANAGED:
+        return (
+            "This backend manages compaction automatically; it summarizes the "
+            "conversation on its own as context fills, so manual /compact isn't "
+            "needed (and isn't supported) here."
+        )
+    if arm == COMPACT_ARM_RECYCLED:
+        return (
+            "This backend has no way to compact a conversation; there is no /compact to "
+            "run, and it summarizes nothing on its own. BECAUSE of that, Kiro Crew starts "
+            "a fresh session for you when the context fills up: there is nothing else "
+            "that can keep it from overflowing. The chat keeps working and the agent "
+            "stops remembering the earlier turns. Send /new to start fresh on your own "
+            "terms before that happens."
+        )
+    return (
+        "Manual /compact isn't available on this backend, and Kiro Crew can't compact "
+        "it for you either. Send /new to start a new chat before the context fills up."
+    )
+
+
 def compact_unsupported_reply(backend: str) -> str:
     """Informational reply for a manual ``/compact`` on an unsupported *backend*.
 
-    Mirrors the dashboard's wording: the backend manages compaction
-    automatically (the same relationship the ``cc_managed`` decline encodes),
-    so the refusal is information, never an error.
+    THREE sentences, not one, because "Crew cannot hand this backend
+    ``/compact``" covers three quite different situations and no single sentence
+    is true of all of them.  Each arm is a positive membership, so a backend
+    nobody has classified cannot fall into a claim by accident.
+
+    A member of ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` gets the dashboard's
+    wording: it summarizes on its own as context fills (the same relationship the
+    ``cc_managed`` decline encodes), so the refusal is information and nothing is
+    lost.
+
+    A member of ``ACP_BACKENDS_CONTEXT_RECYCLE`` gets the second, which names both
+    the outcome AND its cause: there is no compaction anywhere for this harness, and
+    Crew restarts the session BECAUSE of that, at the context threshold, keeping the
+    session usable and losing the agent's memory of the conversation.  The causal
+    link is stated rather than left adjacent, because a user told only "no
+    compaction" and "a fresh session starts" has to guess whether the restart is a
+    consequence or an unrelated policy -- and the answer changes whether they read
+    it as Crew coping or Crew interfering.  Saying "manages compaction
+    automatically" here would be the one thing this reply must not do: promise a
+    summary that never happens.
+
+    A backend in neither set gets the third, and it promises NOTHING, because
+    nothing has been established about it.  That arm is what lets an unclassified
+    harness be answered honestly instead of guessed at: it does not claim the
+    harness summarizes, and it does not claim Crew will step in, because neither
+    is known.
     """
+    arm = compact_refusal_arm(backend)
+    if arm == COMPACT_ARM_HARNESS_MANAGED:
+        return (
+            f"ℹ️ The `{backend}` backend manages compaction automatically — it "
+            "summarizes the conversation on its own as context fills, so manual "
+            "`/compact` isn't needed (and isn't supported) here."
+        )
+    if arm == COMPACT_ARM_RECYCLED:
+        return (
+            f"ℹ️ The `{backend}` backend has no way to compact a conversation — "
+            "there is no `/compact` to run, and it summarizes nothing on its own. "
+            "BECAUSE of that, Kiro Crew starts a fresh session for you when the context "
+            "fills up: there is nothing else that can keep it from overflowing. The chat "
+            "keeps working and the agent stops remembering the earlier turns. Use `/new` "
+            "to start fresh on your own terms before that happens."
+        )
     return (
-        f"ℹ️ The `{backend}` backend manages compaction automatically — it "
-        "summarizes the conversation on its own as context fills, so manual "
-        "`/compact` isn't needed (and isn't supported) here."
+        f"ℹ️ Manual `/compact` isn't available on the `{backend}` backend, and "
+        "Kiro Crew can't compact it for you either. Start a new chat with `/new` before "
+        "the context fills up."
+    )
+
+
+def compact_unsupported_reply_zh(backend: str) -> str:
+    """The same three refusals as :func:`compact_unsupported_reply`, in Chinese.
+
+    Three surfaces speak Chinese to their users -- feishu, WeCom and WeChat --
+    and all three said these sentences the same way, character for character.
+    Held per surface they are three copies of one wording, which is three places
+    to edit and three places to drift; held here they are the wording, once,
+    chosen by the same memberships the English reply reads.
+
+    A surface whose wording genuinely differs keeps its own string instead of
+    calling this. What must not come back is a second surface copying this text
+    verbatim into itself.
+    """
+    arm = compact_refusal_arm(backend)
+    if arm == COMPACT_ARM_HARNESS_MANAGED:
+        return "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。"
+    if arm == COMPACT_ARM_RECYCLED:
+        return (
+            "ℹ️ 当前后端没有压缩上下文的办法：既没有 /compact 可用，"
+            "也不会自动摘要。正因为如此，上下文快满时 Kiro Crew 会替你开一个新会话："
+            "除此之外，没有别的办法阻止上下文溢出。对话可以继续，"
+            "但助手不再记得之前的内容。你也可以在那之前发 /new 自己开新会话。"
+        )
+    return (
+        "ℹ️ 当前后端不支持手动 /compact，Kiro Crew 也无法替它压缩上下文。"
+        "上下文快满之前，请发 /new 开始新会话。"
     )
 
 
@@ -394,20 +557,24 @@ def _redact(text: str) -> str:
 # ── spawn / bg ─────────────────────────────────────────────────────────────
 
 
-def spawn_command_reply(
+async def spawn_command_reply(
     text: str, manager: "SubagentManager | Any", session_key: str = ""
 ) -> str | None:
     """Handle ``spawn <task>`` / ``bg <task>`` / ``spawn list`` / ``spawn status``.
 
     Reads ``manager.running`` (an iterable of records with ``id``/``started``/
-    ``task``), ``manager.max_concurrent`` and ``manager.spawn(task,
+    ``task``), ``manager.max_concurrent`` and ``manager.spawn_async(task,
     parent_session_key=)``.
+
+    Async for the same reason :func:`cron_command_reply` is: every caller is a
+    channel handler on the gateway loop, and the accept a spawn performs is a
+    ``BEGIN IMMEDIATE`` on the task store -- see :func:`_spawn_off_loop`.
     """
     stripped = text.strip()
     low = stripped.lower()
     for prefix in ("spawn ", "bg "):
         if low.startswith(prefix):
-            return spawn_task_reply(stripped[len(prefix) :].strip(), manager, session_key)
+            return await spawn_task_reply(stripped[len(prefix) :].strip(), manager, session_key)
     return None
 
 
@@ -461,7 +628,34 @@ def lists_host_state(command: str, arg: str) -> bool:
     return arg.strip().lower() in _HOST_WIDE_ARGS
 
 
-def spawn_task_reply(
+async def _spawn_off_loop(manager: "SubagentManager | Any", task: str, session_key: str) -> Any:
+    """Start *task* without a task-store write on the gateway's event loop.
+
+    ``SubagentManager.spawn_async`` writes the durable row on the store's writer
+    thread and only then starts the run (write-before-ack, off-loop); the
+    synchronous ``spawn`` takes ``BEGIN IMMEDIATE`` on the calling thread, which
+    for a channel handler is the loop every session's turn shares. A manager
+    without that entry -- a test double -- is spawned synchronously, which is the
+    pre-queue behaviour those doubles model. Same shape as
+    ``dashboard.handlers.messaging._spawn_on_loop`` and ``apps.spawn_sdk``.
+    """
+    import inspect
+
+    from kiro_crew.context import store_of_session
+    from kiro_crew.history import ConversationLog
+
+    kwargs: dict[str, Any] = {"parent_session_key": session_key}
+    if session_key:
+        store = await asyncio.to_thread(lambda: store_of_session(ConversationLog(), session_key))
+        if store:
+            kwargs["memory_store"] = store
+    spawn_async = getattr(manager, "spawn_async", None)
+    if inspect.iscoroutinefunction(spawn_async):
+        return await spawn_async(task, **kwargs)
+    return manager.spawn(task, **kwargs)
+
+
+async def spawn_task_reply(
     task: str, manager: "SubagentManager | Any", session_key: str = ""
 ) -> str | None:
     """Handle an ALREADY-PARSED spawn argument (``list``/``status``/a task).
@@ -470,6 +664,8 @@ def spawn_task_reply(
     Telegram ``/spawn <task>``, a Discord ``!spawn <task>``) has the argument in
     hand and must not have to re-synthesize ``"spawn " + arg`` just to have it
     stripped off again.
+
+    Async for the reason :func:`_spawn_off_loop` gives.
     """
     if not task:
         return None
@@ -485,7 +681,12 @@ def spawn_task_reply(
                 f"🔹 `{agent.id}` | {elapsed}s | {_redact(agent.task)[:_SPAWN_TASK_PREVIEW_CHARS]}"
             )
         return "\n".join(lines)
-    info = manager.spawn(task, parent_session_key=session_key)
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    try:
+        info = await _spawn_off_loop(manager, task, session_key)
+    except UnknownMemoryStore as exc:
+        return f"⚠️ {_redact(str(exc))}"
     if not info:
         return f"⚠️ Subagent capacity reached ({manager.max_concurrent}). Try again later."
     return f"🚀 Spawned subagent `{info.id}`\n_{_redact(task)[:_SPAWN_ECHO_CHARS]}_"

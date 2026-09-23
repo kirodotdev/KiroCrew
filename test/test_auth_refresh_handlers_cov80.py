@@ -324,6 +324,66 @@ async def test_me_reports_both_expiries(state: RefreshStateManager) -> None:
 
 
 @pytest.mark.asyncio
+async def test_me_reports_whether_the_requests_own_query_token_authenticated() -> None:
+    """``token_accepted`` mirrors the middleware's record of which credential won.
+
+    This endpoint is not owner-gated, so an authenticated-but-owner-denied
+    session answers 200 on its cookie alone, and the middleware replaces an
+    invalid ``?token=`` with that cookie. Both cases are 200 with the same
+    ``user_id``, so the client exchanging a pasted token can only tell them apart
+    from this field. Absent (an older middleware) reads as not accepted, which
+    keeps a prompt up rather than dismissing one nothing vouches for.
+    """
+    accepted = _mk("GET", "/api/auth/me", user="alice")
+    accepted["auth_from_query_token"] = True
+    assert _body(await h.api_auth_me(accepted))["token_accepted"] is True
+
+    fell_back = _mk("GET", "/api/auth/me", user="alice")
+    fell_back["auth_from_query_token"] = False
+    assert _body(await h.api_auth_me(fell_back))["token_accepted"] is False
+
+    unpublished = _mk("GET", "/api/auth/me", user="alice")
+    assert _body(await h.api_auth_me(unpublished))["token_accepted"] is False
+
+
+@pytest.mark.asyncio
+async def test_me_reports_owner_authorization_separately_from_token_acceptance() -> None:
+    """A VALID token can be accepted and still be denied by the owner gate.
+
+    Token validity is signature, expiry and nonce; the owner decision happens
+    after. So a token minted before ``KIROCREW_OWNER_ID`` was configured is
+    accepted -- and its subject is still the bootstrap one the gate refuses. A
+    caller recovering an owner denial that read only ``token_accepted`` would
+    drop its prompt on such a token while every owner-gated call kept failing,
+    so the two questions are answered separately.
+    """
+
+    class _State:
+        owner_id = "real-owner"
+
+    def _dashboard_request(user: str) -> web.Request:
+        request = _mk("GET", "/api/auth/me", user=user, app_keys={"state": _State()})
+        # The predicate reads this to tell a person from an app token.
+        request["app"] = ""
+        request["auth_from_query_token"] = True
+        return request
+
+    owner = _body(await h.api_auth_me(_dashboard_request("real-owner")))
+    assert owner["token_accepted"] is True
+    assert owner["owner_ok"] is True
+
+    pre_owner = _body(await h.api_auth_me(_dashboard_request("local-app")))
+    assert pre_owner["token_accepted"] is True
+    assert pre_owner["owner_ok"] is False
+
+    # An app that cannot answer the question reads as not authorized, rather
+    # than raising or defaulting to authorized.
+    cannot_answer = _mk("GET", "/api/auth/me", user="real-owner")
+    cannot_answer["auth_from_query_token"] = True
+    assert _body(await h.api_auth_me(cannot_answer))["owner_ok"] is False
+
+
+@pytest.mark.asyncio
 async def test_me_reads_session_exp_from_the_validated_credential(
     state: RefreshStateManager,
 ) -> None:

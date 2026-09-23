@@ -26,7 +26,7 @@ The mcp/lsp protocol logs are what actually explain a rejected turn, so the
 tool stays there. See ``diagnostics.read_kiro_cli_logs``.
 
 Handlers reach shared plumbing as attributes of ``mcp_core`` (``mcp_core.sel``,
-``mcp_core._resolve_session_key``) so a test that rebinds one still intercepts —
+``mcp_core.require_strict_session_key``) so a test that rebinds one still intercepts —
 an attribute lookup resolves at CALL time.
 """
 
@@ -62,9 +62,7 @@ def schemas() -> list[dict[str, Any]]:
                 "byte-capped per source AND bounded as a whole; when it does not "
                 "all fit, the OLDEST lines are dropped and the newest are kept, "
                 "with a note saying so. Returns the log text with one section "
-                "per source, or a note when no logs exist. Shared host logs are "
-                "unavailable to private members; once private memory exists, "
-                "this tool requires a verified Global V1 session."
+                "per source, or a note when no logs exist."
             ),
             "inputSchema": {
                 "type": "object",
@@ -102,36 +100,10 @@ def kiro_cli_logs(name: str, args: dict[str, Any]) -> str:
             tail = None
     since = str(args.get("since", "") or "").strip() or None
 
-    from kiro_crew.member_memory_auth import mcp_memory_scope, private_memory_boundaries_active
-
-    # These protocol logs are shared host files, not this member's diagnostic
-    # directory. Redaction cannot establish which session owns ordinary prose.
-    session_key = ""
-    refusal = ""
-    try:
-        if private_memory_boundaries_active():
-            session_key, refusal = mcp_core.require_strict_session_key(
-                "Error: shared kiro-cli logs require a verified Global V1 session."
-            )
-            if session_key and mcp_memory_scope(session_key):
-                refusal = "Error: shared kiro-cli logs are unavailable to private members."
-        else:
-            # Pure V1 installations retain the original caller contract.
-            session_key = mcp_core._resolve_session_key()
-    except (OSError, ValueError, RuntimeError):
-        refusal = "Error: this session's protected memory identity is unavailable."
+    session_key, refusal = mcp_core.require_strict_session_key(
+        "Error: kiro-cli logs require an established session."
+    )
     if refusal:
-        try:
-            mcp_core.sel().log_tool_invocation(
-                session_key=session_key,
-                source="mcp",
-                tool_name="kiro_cli_logs",
-                tool_kind="read",
-                outcome="denied_memory_scope",
-            )
-        except Exception:
-            # Failure to record a denial must never turn it into a log read.
-            pass
         return refusal
 
     try:

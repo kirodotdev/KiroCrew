@@ -501,8 +501,9 @@ test("main composes session security before the first dashboard window", () => {
 test("shell handlers preserve sender, argument, and return shapes", async () => {
   const h = harness({ storeValues: { runLocalGateway: true } });
   h.registrar.registerShell();
-  const sender = { id: "dashboard-sender" };
-  const event = { sender };
+  const senderFrame = { url: "http://localhost:5476/chat" };
+  const sender = { id: "dashboard-sender", mainFrame: senderFrame };
+  const event = { sender, senderFrame };
 
   assert.deepEqual(h.handlers.get("app-menu:items")(event, "file-menu"), {
     from: "menu.items",
@@ -516,7 +517,7 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
   const chromeCases = [
     ["theme-accent-changed", "chrome.setThemeAccent", ["#8E48FF"]],
     ["focus-mode-chrome", "chrome.focusMode", [sender, false]],
-    ["window-control", "chrome.windowControl", [sender, "maximize"]],
+    ["window-control", "chrome.windowControl", [sender, "maximize", senderFrame]],
     ["theme-mode-changed", "chrome.setThemeMode", ["dark"]],
     ["titlebar-overlay-theme", "chrome.setTitlebarMode", ["light"]],
   ];

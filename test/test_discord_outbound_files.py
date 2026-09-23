@@ -229,7 +229,11 @@ class TestSealTimeExtraction:
         root = str(tmp_path / "approved") if case == "sensitive" else str(tmp_path)
         prefix = "y" * 1700 + f"\n\n{_KEY[:4]}**{_KEY[4:]}**\n\n" if case == "near_cap" else ""
         cli = await _turn(prefix + body, uploads_allowed=case != "restricted", capabilities=caps, upload_root=root)
-        assert cli.uploads == [] and "![Revenue](" in (final := cli.final_text()) and (case == "near_cap" or markup in final), "a refused file must retain its markup and never reach the wire"
+        # near_cap's redacted credential now draws the post-answer redaction
+        # notice as its own trailing message, so the answer under test is the
+        # last delivered body that is NOT the notice.
+        final = next(b for b in reversed(_bodies(cli)) if "Security notice" not in b)
+        assert cli.uploads == [] and "![Revenue](" in final and (case == "near_cap" or markup in final), "a refused file must retain its markup and never reach the wire"
         reason = {"sensitive": "sensitive", "oversize": "over_file_bytes", "near_cap": "over_file_bytes"}.get(case)
         assert [event["error"] for event in events] == ([reason] if reason else [])
         assert all(event["outcome"] == "denied" and str(path) not in str(event) for event in events)

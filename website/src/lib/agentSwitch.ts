@@ -19,14 +19,23 @@ export function performAgentSlotSwitch(
   slot: string,
   agent: string,
   dispatch: AppDispatch,
+  kind?: 'member' | 'template',
 ): Promise<void> {
+  // The ticket identity stays the bare name: burst stepping (the cycle
+  // shortcuts) advances by name, and two kinds of one name are never both in
+  // flight from a single control.
   return performSlotSwitch('agent', slot, agent,
     async () => {
-      const r = await api.chatSlotAgent(slot, agent)
-      return { agent: r?.agent ?? agent, workspace: r?.workspace }
+      // Two-arg form when no kind was picked: the legacy request shape, byte
+      // for byte, so a name-only control sends exactly what it always sent.
+      const r = kind ? await api.chatSlotAgent(slot, agent, kind) : await api.chatSlotAgent(slot, agent)
+      return { agent: r?.agent ?? agent, agentKind: r?.agent_kind, workspace: r?.workspace }
     },
     (value) => dispatch(updateSlot({
       key: slot, agent: value.agent,
+      // Absent means the response did not name it (an older gateway); the
+      // write then leaves the slot's stored value alone rather than clobber.
+      ...(value.agentKind !== undefined ? { agent_kind: value.agentKind } : {}),
       // An absent workspace means the response did not name one; the write
       // must then leave the slot's workspace untouched rather than clobber.
       ...(value.workspace !== undefined ? { workspace: value.workspace } : {}),

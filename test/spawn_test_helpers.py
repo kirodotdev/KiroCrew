@@ -20,8 +20,9 @@ def strip_spawn_shim(args: Sequence[str]) -> tuple[str, ...]:
     """Return *args* without the post-exec shim prefix, if one is present.
 
     Returns *args* unchanged when no shim was prepended -- on Windows, for a
-    policy-free profile, or when the spawn was not routed through the wrapper --
-    so a test can use this unconditionally.
+    policy-free profile that also asks for no controlling terminal, or when the
+    spawn was not routed through the wrapper -- so a test can use this
+    unconditionally.
 
     The scan for the ``--`` terminator starts after the shim's source argument,
     so a ``--`` inside the command itself is never mistaken for the separator.

@@ -35,6 +35,7 @@ from kiro_crew.platform.defaults import (
     DefaultDeniedRuleProvider,
     DefaultEmbeddingSource,
     DefaultExternalAccessPolicy,
+    DefaultGatewayLifecycleProvider,
     DefaultIdentityProvider,
     DefaultImportSourceProvider,
     DefaultJailProvider,
@@ -134,6 +135,7 @@ def build_default_context(
         publish=DefaultPublishRegistry(),
         agent_runtime=DefaultAgentRuntime(),
         agent_executable=DefaultAgentExecutableResolver(),
+        gateway_lifecycle=DefaultGatewayLifecycleProvider(),
         sandbox=DefaultSandboxPolicy(),
         credentials=DefaultCredentialPolicy(),
         security=PolicyAuthority(),  # _NullOverlay → baseline only

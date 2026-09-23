@@ -29,6 +29,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import ctypes
+import ctypes.util
 import functools
 import hashlib
 import heapq
@@ -40,6 +41,7 @@ import os
 import platform
 import queue
 import shutil
+import struct
 import sys
 import threading
 import time
@@ -50,7 +52,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Protocol
+from typing import Any, BinaryIO, Callable, NamedTuple, Protocol
 
 from kiro_crew import asset_downloader
 from kiro_crew.config.loader import config_path
@@ -142,8 +144,50 @@ _REJECTED_MODEL_SENTINEL = ".rejected-custom-model.invalid"
 
 # ── Runtime constants ──
 
-# Qwen3-Embedding requires last-token pooling (LLAMA_POOLING_TYPE_LAST).
+# Qwen3-Embedding requires last-token pooling (LLAMA_POOLING_TYPE_LAST). Every
+# model, custom encoders included, is loaded with this value passed explicitly,
+# so the runtime never reads a GGUF's own pooling_type key; honouring a declared
+# key is tracked separately. On BERT-family files measured last-token vectors
+# rank paraphrases above unrelated pairs as well as mean-pooled ones do (see the
+# embedding section of docs/system-specs/modules/memory-skills-hooks.md).
 _POOLING_TYPE_LAST = 3
+# Architectures the vendored llama.cpp runs WITHOUT a KV cache (the `res =
+# nullptr` cases of llama_model::create_memory in src/llama-model.cpp, plus the
+# t5encoder encoder-only path). llama_decode() routes them through encode(),
+# which aborts unless one physical micro-batch holds every input token, whatever
+# the GGUF says about causality. Keep this list a verbatim mirror of that switch
+# whenever the vendored runtime is bumped: test/test_encoder_architecture_mirror.py
+# requires every name here to be spelled by every vendored libllama binary, so a
+# removed or renamed architecture fails the test unless its name is the suffix
+# of another listed name (`bert` inside `modern-bert`: GNU ld tail-merges the
+# strings, so only the terminating NUL can be required and the longer name still
+# satisfies the check), while an ADDED cache-less architecture is invisible to it
+# and must be re-mirrored by hand (see the bump procedure in _vendor/README.md).
+# Membership decides only the micro-batch shape (see _model_context_policy);
+# pooling is _POOLING_TYPE_LAST for every file.
+# Non-causal models that DO keep a KV cache (llama-embed, or any decoder family
+# re-tagged bidirectional) are not named here: they declare
+# `<architecture>.attention.causal = false` and _model_context_policy() reads
+# that key directly.
+_ENCODER_ARCHITECTURES = frozenset(
+    {
+        "bert",
+        "dream",
+        "eurobert",
+        "gemma-embedding",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "llada",
+        "llada-moe",
+        "modern-bert",
+        "neo-bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "rnd1",
+        "t5encoder",
+        "wavtokenizer-dec",
+    }
+)
 # Context window for the embedding pass. Episodic memories are capped at
 # 2000 chars and knowledge chunks are bounded by the chunker (~512 tokens +
 # overlap, ≈5.8k chars max), so 2048 tokens covers both. Kept deliberately
@@ -152,7 +196,9 @@ _POOLING_TYPE_LAST = 3
 # kirocrew-core MCP server — the GGUF weights themselves are mmap'd and
 # physically shared, the KV buffers are not). The logical batch still covers
 # the complete input for last-token pooling; llama.cpp may split that work into
-# smaller physical micro-batches without changing the resulting vector.
+# smaller physical micro-batches without changing the resulting vector. This is
+# the ceiling: a model trained for fewer positions is sized to its own count
+# instead (see _model_context_policy).
 _N_CTX = 2048
 # Physical decode micro-batch. Keeping this below the logical batch bounds the
 # compute scratch arena without reducing the accepted context. Qwen3's
@@ -162,8 +208,10 @@ _N_UBATCH = 512
 # Safety truncation (chars) before inference, sized under _N_CTX at a
 # conservative ~4 chars/token so a clipped input always fits the context
 # window. Only pathological un-chunked blobs exceed this; mirrors the
-# knowledge embedder's content-budget backstop. Inputs that still exceed
-# n_ctx after clipping (dense CJK/code) fail the embed call and return None.
+# knowledge embedder's content-budget backstop. An input that still exceeds
+# the logical batch after clipping (dense CJK/code, or a model sized below
+# _N_CTX) is cut to its first n_batch tokens by the vendored binding's
+# create_embedding() -> embed(truncate=True) path.
 _MAX_EMBED_CHARS = 6_000
 _LLM_LOAD_RETRY_SECS = 300.0  # re-attempt a failed model load after this long
 # How long close() waits for the inference thread to finish its current job and
@@ -449,6 +497,64 @@ def _linux_x86_64_cpu_flags(
     return frozenset.intersection(*per_cpu)
 
 
+def _macos_x86_64_missing_cpu_flags() -> list[str] | None:
+    """Return CPU features required by the bundled macOS x86_64 llama.cpp runtime
+    that are absent on this host, or None if the feature list cannot be read.
+
+    Uses ``sysctlbyname`` to query ``machdep.cpu.features`` and
+    ``machdep.cpu.leaf7_features`` (the latter carries AVX2, BMI1/2, FMA).
+    Falls back to ``None`` (fail-closed) if the sysctl call fails.
+    """
+
+    libc_name = ctypes.util.find_library("c")
+    if libc_name is None:
+        return None
+    try:
+        libc = ctypes.CDLL(libc_name)
+    except OSError:
+        return None
+
+    def _sysctl_str(name: str) -> str:
+        # Two-call pattern: first call with NULL buffer to get required size.
+        # Avoids a fixed-size buffer that could truncate long feature strings.
+        size = ctypes.c_size_t(0)
+        libc.sysctlbyname(name.encode(), None, ctypes.byref(size), None, 0)
+        if size.value == 0:
+            return ""
+        buf = ctypes.create_string_buffer(size.value)
+        ret = libc.sysctlbyname(name.encode(), buf, ctypes.byref(size), None, 0)
+        if ret != 0:
+            return ""
+        return buf.value.decode("ascii", errors="replace").lower()
+
+    features = _sysctl_str("machdep.cpu.features")
+    leaf7 = _sysctl_str("machdep.cpu.leaf7_features")
+    if not features and not leaf7:
+        return None
+
+    # Normalise: macOS reports "AVX1.0" for AVX, "AVX2.0" for AVX2
+    combined = (features + " " + leaf7).lower()
+    combined = combined.replace("avx1.0", "avx").replace("avx2.0", "avx2")
+    present = set(combined.split())
+
+    # Map Linux flag names to what macOS sysctl reports
+    _MACOS_FLAG_MAP = {
+        "avx": "avx",
+        "avx2": "avx2",
+        "fma": "fma",
+        "bmi2": "bmi2",
+        "f16c": "f16c",
+        "sse3": "sse3",
+        "ssse3": "ssse3",
+    }
+    missing = sorted(
+        linux_name
+        for linux_name, macos_name in _MACOS_FLAG_MAP.items()
+        if macos_name not in present and linux_name in _LINUX_X86_64_REQUIRED_CPU_FLAGS
+    )
+    return missing if missing else []
+
+
 def verify_vendored_libs(root: Path | None = None) -> dict[str, list[str]]:
     """Report vendored native libs that :data:`_REQUIRED_VENDORED_LIBS` expects but are absent.
 
@@ -613,6 +719,30 @@ def _load_llama_class():
                     _LIB_PATH_ENV,
                 )
                 return None
+        if libs_dirname == "macos_x86_64":
+            _macos_flags = _macos_x86_64_missing_cpu_flags()
+            if _macos_flags is None:
+                logger.warning(
+                    "Cannot verify CPU compatibility for the bundled macOS x86_64 "
+                    "llama.cpp runtime. Refusing the native runtime because an "
+                    "unsupported instruction would terminate the gateway with SIGILL; "
+                    "memory falls back to keyword search. Set %s to use an "
+                    "operator-provided runtime.",
+                    _LIB_PATH_ENV,
+                )
+                return None
+            if _macos_flags is not None and _macos_flags:
+                logger.warning(
+                    "Bundled macOS x86_64 llama.cpp runtime requires CPU features "
+                    "%s; this host is missing %s. Refusing the native runtime because "
+                    "it would terminate the gateway with SIGILL; memory falls back to "
+                    "keyword search. Set %s to use a compatible operator-provided "
+                    "runtime.",
+                    ", ".join(sorted(_LINUX_X86_64_REQUIRED_CPU_FLAGS)),
+                    ", ".join(_macos_flags),
+                    _LIB_PATH_ENV,
+                )
+                return None
     # setdefault so an operator-provided override (e.g. a GPU build) wins.
     os.environ.setdefault(_LIB_PATH_ENV, str(libs_dir))
     _install_diskcache_stub()
@@ -627,6 +757,218 @@ def _load_llama_class():
     except Exception:
         logger.warning("Vendored llama-cpp-python failed to import", exc_info=True)
         return None
+
+
+# ── GGUF embedding metadata ──
+
+_GGUF_SCALAR_BYTES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+_GGUF_TYPE_UINT32 = 4
+_GGUF_TYPE_INT32 = 5
+_GGUF_TYPE_BOOL = 7
+_GGUF_TYPE_STRING = 8
+_GGUF_TYPE_ARRAY = 9
+_GGUF_MAX_METADATA_ITEMS = 100_000
+_GGUF_MAX_ARRAY_ITEMS = 2_000_000
+_GGUF_MAX_DECODED_STRING_BYTES = 1_000_000
+_GGUF_CAUSAL_SUFFIX = ".attention.causal"
+# `<architecture>.context_length`: the position count the model was trained
+# with, which llama.cpp reads into ``hparams.n_ctx_train``. For an encoder with
+# learned absolute positions it is also the row count of the position table.
+_GGUF_CONTEXT_LENGTH_SUFFIX = ".context_length"
+
+
+class _GGUFEmbeddingMetadata(NamedTuple):
+    """The KV-header fields that decide a model's llama.cpp context parameters."""
+
+    architecture: str | None
+    causal: bool | None
+    context_length: int | None
+
+
+def _read_gguf_embedding_metadata(path: Path) -> _GGUFEmbeddingMetadata:
+    """Read the architecture and its optional causal and context-length keys.
+
+    All three come from the GGUF KV header. The causal flag is the
+    ``<architecture>.attention.causal`` boolean that llama.cpp reads for every
+    architecture into ``hparams.causal_attn`` (default true when absent); the
+    context length is the ``<architecture>.context_length`` integer it reads
+    into ``hparams.n_ctx_train``. The file's ``pooling_type`` key is not read:
+    every model is loaded with ``_POOLING_TYPE_LAST`` passed explicitly.
+
+    The header is walked with plain bounded reads, never a mapping: a mapping's
+    length is fixed when it is built, so a GGUF truncated in place while its
+    header is parsed turns the next access past the new end into a SIGBUS the
+    gateway process cannot catch. A read that comes up short is a ValueError
+    instead, which _model_context_policy turns into the decoder sizes.
+    """
+    with path.open("rb") as source:
+        return _parse_gguf_embedding_metadata(source, os.fstat(source.fileno()).st_size)
+
+
+def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmbeddingMetadata:
+    """Parse the KV header from ``source``, a binary stream positioned at its start.
+
+    ``file_size`` is the byte count the file had when it was opened; it bounds
+    every field the header declares. The parser reads only what it inspects --
+    fixed-width fields, keys and captured strings, each at most
+    _GGUF_MAX_DECODED_STRING_BYTES -- with one ``read()`` per field, and seeks
+    past every value it does not need, so no byte beyond the caps is read. A
+    field reaching past ``file_size``, or a read returning fewer bytes than
+    asked (the file shrank under the parse), is ``truncated GGUF header``.
+    """
+    offset = 0
+
+    def _claim(size: int) -> None:
+        nonlocal offset
+        if size > file_size - offset:
+            raise ValueError("truncated GGUF header")
+        offset += size
+
+    def _read_exact(size: int) -> bytes:
+        _claim(size)
+        chunk = source.read(size)
+        if len(chunk) != size:
+            raise ValueError("truncated GGUF header")
+        return chunk
+
+    def _skip(size: int) -> None:
+        _claim(size)
+        source.seek(size, os.SEEK_CUR)
+
+    def _unpack(fmt: str) -> int:
+        return int(struct.unpack(fmt, _read_exact(struct.calcsize(fmt)))[0])
+
+    def _read_string() -> str:
+        length = _unpack("<Q")
+        if length > _GGUF_MAX_DECODED_STRING_BYTES:
+            raise ValueError("oversized GGUF metadata string")
+        return _read_exact(length).decode("utf-8")
+
+    def _skip_string() -> None:
+        _skip(_unpack("<Q"))
+
+    def _read_value(value_type: int, *, capture: bool) -> object | None:
+        if value_type == _GGUF_TYPE_STRING:
+            if capture:
+                return _read_string()
+            _skip_string()
+            return None
+        if value_type == _GGUF_TYPE_ARRAY:
+            element_type = _unpack("<I")
+            count = _unpack("<Q")
+            if count > _GGUF_MAX_ARRAY_ITEMS:
+                raise ValueError("oversized GGUF metadata array")
+            if element_type == _GGUF_TYPE_STRING:
+                for _ in range(count):
+                    _skip_string()
+                return None
+            element_size = _GGUF_SCALAR_BYTES.get(element_type)
+            if element_size is None:
+                raise ValueError(f"unsupported GGUF array type {element_type}")
+            _skip(element_size * count)
+            return None
+        value_size = _GGUF_SCALAR_BYTES.get(value_type)
+        if value_size is None:
+            raise ValueError(f"unsupported GGUF metadata type {value_type}")
+        if capture and value_type == _GGUF_TYPE_UINT32:
+            return _unpack("<I")
+        if capture and value_type == _GGUF_TYPE_INT32:
+            return _unpack("<i")
+        if capture and value_type == _GGUF_TYPE_BOOL:
+            return _unpack("<B") != 0
+        _skip(value_size)
+        return None
+
+    if _read_exact(4) != b"GGUF":
+        raise ValueError("invalid GGUF magic")
+    version = _unpack("<I")
+    if version not in {2, 3}:
+        raise ValueError(f"unsupported GGUF version {version}")
+    _unpack("<Q")  # tensor count; only the following KV section is needed
+    metadata_count = _unpack("<Q")
+    if metadata_count > _GGUF_MAX_METADATA_ITEMS:
+        raise ValueError("oversized GGUF metadata table")
+
+    architecture: str | None = None
+    causal_by_architecture: dict[str, bool] = {}
+    context_length_by_architecture: dict[str, int] = {}
+    for _ in range(metadata_count):
+        key = _read_string()
+        capture = (
+            key == "general.architecture"
+            or key.endswith(_GGUF_CAUSAL_SUFFIX)
+            or key.endswith(_GGUF_CONTEXT_LENGTH_SUFFIX)
+        )
+        value = _read_value(_unpack("<I"), capture=capture)
+        if key == "general.architecture" and isinstance(value, str):
+            architecture = value.strip().lower()
+        elif key.endswith(_GGUF_CAUSAL_SUFFIX) and isinstance(value, bool):
+            causal_by_architecture[key[: -len(_GGUF_CAUSAL_SUFFIX)].lower()] = value
+        elif (
+            key.endswith(_GGUF_CONTEXT_LENGTH_SUFFIX)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+        ):
+            context_length_by_architecture[key[: -len(_GGUF_CONTEXT_LENGTH_SUFFIX)].lower()] = value
+    return _GGUFEmbeddingMetadata(
+        architecture,
+        causal_by_architecture.get(architecture or ""),
+        context_length_by_architecture.get(architecture or ""),
+    )
+
+
+class _ContextPolicy(NamedTuple):
+    """The llama.cpp context sizes chosen for one GGUF before it loads."""
+
+    n_ctx: int
+    n_batch: int
+    n_ubatch: int
+
+
+# What a decoder (causal) file trained for at least _N_CTX positions gets, the
+# bundled Qwen model included, and the fallback when a header cannot be read.
+# Kept as one constant so that path stays byte-for-byte the shipped one.
+_DECODER_CONTEXT_POLICY = _ContextPolicy(_N_CTX, _N_CTX, _N_UBATCH)
+
+
+def _model_context_policy(path: Path) -> _ContextPolicy:
+    """Choose context sizes before llama.cpp constructs the native context."""
+    try:
+        metadata = _read_gguf_embedding_metadata(path)
+    except (OSError, OverflowError, UnicodeError, ValueError, struct.error):
+        logger.warning(
+            "Could not read GGUF metadata for %s; using the default context sizes.",
+            path.name,
+        )
+        return _DECODER_CONTEXT_POLICY
+
+    # Every file's context and logical batch are clamped to the trained
+    # position count its GGUF declares. A model with learned absolute positions
+    # indexes a position table with n_ctx_train rows -- encoder families, but
+    # causal gpt2 and starcoder as well -- and llama.cpp aborts the process
+    # (`GGML_ASSERT(i01 >= 0 && i01 < ne01)` in ggml's get_rows) when a token
+    # sits past its end, whatever the model's causality. With n_batch equal to
+    # that count, the vendored binding's create_embedding() -> embed(truncate=True)
+    # keeps the first n_batch tokens of a longer input instead (pinned by
+    # test_vendored_embed_truncates_to_the_logical_batch_by_default); _load_model
+    # states that rule once per model. A file trained for _N_CTX positions or
+    # more (the bundled Qwen model declares 32,768) keeps the ceiling.
+    window = _N_CTX
+    if metadata.context_length is not None:
+        window = min(_N_CTX, metadata.context_length)
+
+    # Two llama.cpp paths abort unless one physical micro-batch holds every
+    # token: encode(), which every cache-less architecture is routed through,
+    # and decode() for a model whose GGUF declares `.attention.causal = false`.
+    # Absent that key the runtime defaults to causal attention, so a model
+    # outside the cache-less set (llama-embed included) stays on the decoder path.
+    non_causal = metadata.causal is False or metadata.architecture in _ENCODER_ARCHITECTURES
+    if non_causal:
+        return _ContextPolicy(window, window, window)
+    # Decoder models keep the lower-RSS micro-batch, which llama.cpp requires
+    # to stay within the logical batch.
+    return _ContextPolicy(window, window, min(_N_UBATCH, window))
 
 
 # ── Model paths ──
@@ -666,13 +1008,44 @@ def _embed_threads() -> int:
 
     Read from the RAW ``memory`` config section for the same reason the rest of
     this module does: the download thread and the backend factory must not pull
-    in the full config dataclass import graph. Explicit operator settings are
-    honoured up to the host's CPU count.
+    in the full config dataclass import graph.
+
+    An operator value OTHER than the declared :data:`_DEFAULT_EMBED_THREADS` is
+    honoured up to the host's CPU count. Default policy caps that default one
+    core BELOW the count instead, so a 2-vCPU host keeps a core for the event
+    loop rather than handing llama.cpp the whole box. It is a ceiling on the
+    default, not a replacement for it: a 16-core host still answers 4.
+
+    A raw value EQUAL to the default is default policy, not operator intent.
+    ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4 and
+    ``KiroCrewConfig.save()`` publishes every field, so a fresh install's
+    ``config.json`` carries a 4 nobody typed; reading that as a choice would
+    hand the whole box to exactly the hosts this cap protects. The cost is that
+    4 cannot be pinned on a host with 4 or fewer cores -- any other number can.
     """
     raw = _read_memory_config().get("embedding_threads")
-    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
-        raw = _DEFAULT_EMBED_THREADS
-    return max(1, min(raw, os.cpu_count() or _DEFAULT_EMBED_THREADS))
+    cores = os.cpu_count()
+    requested = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+    if requested and requested != _DEFAULT_EMBED_THREADS:
+        return max(1, min(requested, cores or _DEFAULT_EMBED_THREADS))
+    if cores is None:
+        return _DEFAULT_EMBED_THREADS
+    return max(1, min(_DEFAULT_EMBED_THREADS, cores - 1))
+
+
+def _free_llama(llm: object) -> None:
+    """Release a constructed model the loader will not publish.
+
+    Best effort: a model that will never be published must not keep its
+    ~700MB mapped, and a failure to free it must not propagate out of the
+    loader.
+    """
+    closer = getattr(llm, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # noqa: BLE001 - freeing must not propagate
+            logger.debug("Freeing abandoned model failed", exc_info=True)
 
 
 def bulk_embed_threads() -> int:
@@ -1739,19 +2112,46 @@ class LlamaCppEmbedder(EmbeddingBackend):
         try:
             started = time.monotonic()
             threads = _embed_threads()
+            # Stamped BEFORE the header read and re-checked once the constructor
+            # returns: the policy reads the GGUF header and llama.cpp then opens
+            # the path a second time, so a file replaced in between would get a
+            # context sized from the previous header (decoder sizes on an
+            # encoder are the >512-token abort the policy exists to prevent).
+            stamp = _model_file_stamp(self._model_path)
+            policy = _model_context_policy(self._model_path)
+            if policy.n_ctx < _N_CTX:
+                # Once per model load, not per embed call: the binding truncates
+                # silently, so this is the only place the rule is stated.
+                logger.warning(
+                    "GGUF %s was trained for %d positions; its embedding context is "
+                    "sized to %d tokens and a longer input is truncated to its first "
+                    "%d tokens before embedding.",
+                    self._model_path.name,
+                    policy.n_ctx,
+                    policy.n_ctx,
+                    policy.n_ctx,
+                )
             llm = llama_cls(
                 model_path=str(self._model_path),
                 embedding=True,
+                # Passed for every file, so the runtime never falls back to the
+                # GGUF's own pooling_type key.
                 pooling_type=_POOLING_TYPE_LAST,
-                n_ctx=_N_CTX,
                 # n_batch == n_ctx so the logical batch always covers the whole
                 # input in one go, which last-token pooling needs. In embedding mode
                 # the vendored constructor skips the ~1.24 GB per-token logits
                 # buffer this would otherwise size (see the `n_score_rows`
                 # divergence comment in src/kiro_crew/_vendor/llama_cpp/llama.py),
-                # so n_batch does not trade memory against input length.
-                n_batch=_N_CTX,
-                n_ubatch=_N_UBATCH,
+                # so n_batch does not trade memory against input length. Both are
+                # clamped to the trained position count the GGUF declares, at
+                # most 2,048 (see _model_context_policy). Decoder models keep the
+                # lower-RSS 512-token micro-batch, bounded by that batch; non-causal
+                # models (cache-less encoder architectures, or a GGUF declaring
+                # `.attention.causal = false`) need one physical micro-batch to
+                # hold every token, so all three coincide.
+                n_ctx=policy.n_ctx,
+                n_batch=policy.n_batch,
+                n_ubatch=policy.n_ubatch,
                 # Both pools are pinned. Embedding is prompt processing, so the
                 # BATCH pool is the one that actually runs, but leaving the
                 # generation pool at llama.cpp's cpu//2 default would still size
@@ -1760,6 +2160,27 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 n_threads_batch=threads,
                 verbose=False,
             )
+            try:
+                unchanged = _model_file_stamp(self._model_path) == stamp
+            except OSError:
+                unchanged = False
+            if not unchanged:
+                # The mapped weights are not the file the header came from.
+                # Same shape as the dim refusal below: never publish, mark the
+                # load failed, and let the cooldown retry size from the header
+                # that is on disk by then. (_model_content_digest guards its
+                # sha256 the same way.)
+                _free_llama(llm)
+                logger.warning(
+                    "Embedding model %s changed on disk while it was being loaded; "
+                    "discarding the context sized from its previous header. The load "
+                    "is retried in %.0f s.",
+                    self._model_path.name,
+                    _LLM_LOAD_RETRY_SECS,
+                )
+                self._load_failed_at = time.monotonic()
+                self._llm = None
+                return
             # Validate the model's REAL output width against the configured dim
             # before publishing it. Without this a custom model whose dim does
             # not match memory.embedding_dim loads fine and then every embed
@@ -1814,12 +2235,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # rolled-back model change). Publishing now would put a ~700MB
                 # model back into an embedder nobody holds a reference to except
                 # a stale consumer. Drop it instead.
-                closer = getattr(llm, "close", None)
-                if callable(closer):
-                    try:
-                        closer()
-                    except Exception:  # noqa: BLE001 - freeing must not propagate
-                        logger.debug("Freeing abandoned model failed", exc_info=True)
+                _free_llama(llm)
                 return
             # A fresh context carries llama.cpp's load-time thread count, so the
             # count the worker last programmed no longer describes it. Clear the

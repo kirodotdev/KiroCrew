@@ -40,6 +40,9 @@ Linux-and-Windows-only -- which is the failure mode the glob exists to avoid.
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -153,3 +156,278 @@ async def test_handshake_requests_fallback_when_no_endpoint_exists(short_sock_di
     with pytest.raises(stub.FallbackRequestedError) as excinfo:
         await stub.handshake(str(missing), _register_payload())
     assert "connect failed" in excinfo.value.reason
+
+
+# --- spawn_queue admission -----------------------------------------------------
+#
+# The daemon may now hold a stub in its spawn gate for minutes. What the stub
+# must do with that is pinned here against a scripted daemon on a real endpoint:
+# a queue-aware wait is a SILENCE timer renewed by ``queued`` frames (never a
+# fixed deadline), an old daemon's single reply is still the verdict, and only
+# the two target-shaped rejection classes ever lead to an exec.
+
+
+async def _open(sock: Path) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    return await transport.connect(str(sock))
+
+
+def _scripted_daemon(script: Any) -> Any:
+    """Accept one connection, read the ``ensure_backend`` frame, run ``script``.
+
+    The handler tasks are retained on ``spawn.tasks`` so a test can cancel one
+    whose ``script`` never returns; its ``finally`` then closes the server-side
+    writer, which is what ``server.wait_closed()`` waits for on POSIX.
+    """
+    seen: list[dict[str, Any]] = []
+    tasks: list[asyncio.Task[None]] = []
+
+    async def on_connect(reader: Any, writer: Any) -> None:
+        # The ``finally`` covers the readline too: a handler cancelled while it is
+        # still waiting for the ``ensure_backend`` frame must also release the
+        # server-side transport, or ``server.wait_closed()`` waits on it forever.
+        try:
+            line = await reader.readline()
+            seen.append(json.loads(line))
+            await script(writer)
+        finally:
+            writer.close()
+
+    def spawn(reader: Any, writer: Any) -> None:
+        tasks.append(asyncio.get_running_loop().create_task(on_connect(reader, writer)))
+
+    spawn.seen = seen  # type: ignore[attr-defined]
+    spawn.tasks = tasks  # type: ignore[attr-defined]
+    return spawn
+
+
+async def _send(writer: Any, frame: dict[str, Any]) -> None:
+    writer.write(json.dumps(frame).encode("utf-8") + b"\n")
+    await writer.drain()
+
+
+@pytest.mark.asyncio
+async def test_queued_frames_extend_a_queue_aware_wait(short_sock_dir, monkeypatch) -> None:
+    """Six keepalives, each 0.1 s apart on the loop's clock, under a 0.12 s silence
+    window: a fixed deadline of 0.12 s would have given up long before the ``ready``
+    read at 0.7 s. Every frame arrives inside the window it renews, so the wait extends.
+
+    The clock is the LOOP's, and the test moves it. ``asyncio.wait_for`` schedules
+    its silence timer with ``loop.time()``, so on a real clock this test was a race
+    between the daemon's 0.05 s keepalive cadence and the 0.12 s window -- one 150 ms
+    stall of the loop thread between two frames (a loaded Windows worker) read as
+    silence and returned ``timeout``, on four unrelated heads. Here each frame read
+    costs exactly 0.1 s of loop time and nothing else moves the clock, so the ratio
+    is the test's, not the scheduler's.
+
+    A frozen loop clock also freezes the test's own ``wait_for(..., timeout=10)``
+    net, so a read that never resolved would hang the worker instead of failing.
+    The watchdog below runs on the REAL clock: after ten seconds it jumps the loop
+    clock past every armed deadline and wakes the loop, so every frozen timer fires
+    at once and the test ends red, by name, the way the net was meant to end it.
+    """
+    loop = asyncio.get_running_loop()
+    clock = [loop.time()]
+    monkeypatch.setattr(loop, "time", lambda: clock[0])
+
+    def expire_every_frozen_timer() -> None:
+        clock[0] += 1_000_000.0
+
+    watchdog = threading.Timer(
+        10.0, lambda: loop.call_soon_threadsafe(expire_every_frozen_timer)
+    )
+    watchdog.daemon = True
+    watchdog.start()
+
+    real_read_frame = stub._read_frame
+
+    async def a_frame_every_tenth(reader: Any) -> Any:
+        # The daemon has been quiet for 0.1 s of loop time when this frame lands:
+        # inside the 0.12 s window, so the wait must renew, never give up.
+        clock[0] += 0.1
+        return await real_read_frame(reader)
+
+    monkeypatch.setattr(stub, "_read_frame", a_frame_every_tenth)
+
+    async def script(writer: Any) -> None:
+        for _ in range(6):
+            await _send(writer, {"type": "queued", "position": 1, "capacity": 4})
+        await _send(writer, {"type": "ready"})
+
+    handler = _scripted_daemon(script)
+    server = writer = None
+    try:
+        server, sock = await _serve(handler, short_sock_dir)
+        reader, writer = await _open(sock)
+        started = clock[0]
+        outcome, frame = await asyncio.wait_for(
+            stub._ensure_backend_admitted(
+                reader,
+                writer,
+                queue_aware=True,
+                total_budget_secs=10.0,
+                silence_secs=0.12,
+                now=lambda: clock[0],
+            ),
+            timeout=10,
+        )
+    finally:
+        # Unconditional, and in this order, so a RED run still ends: our end
+        # closes; the daemon handler is cancelled and awaited, so its ``finally``
+        # closes the server-side writer (a ``script`` that never returned would
+        # otherwise hold the connection ``wait_closed`` waits for on POSIX); then
+        # the server drains. The watchdog stays armed through all of it.
+        if writer is not None:
+            writer.close()
+        for task in handler.tasks:
+            task.cancel()
+        await asyncio.gather(*handler.tasks, return_exceptions=True)
+        if server is not None:
+            server.close()
+            await server.wait_closed()
+        watchdog.cancel()
+    assert (outcome, frame) == (stub._ADMIT_READY, {"type": "ready"})
+    # The wait outlived any fixed 0.12 s deadline by a wide margin: that is the
+    # renewal, and it is measured on the same clock the timer runs on.
+    assert clock[0] - started == pytest.approx(0.7)
+    assert handler.seen[0]["wait_budget_secs"] == 10.0, "a queue-aware stub declares its budget"
+
+
+@pytest.mark.asyncio
+async def test_silence_from_a_queue_aware_daemon_times_out_before_the_budget(short_sock_dir) -> None:
+    """The timer is silence, not budget: a daemon that promised keepalives and
+    sends none for one window is not serving, however much budget remains."""
+
+    async def script(writer: Any) -> None:
+        await asyncio.sleep(0.5)
+
+    server, sock = await _serve(_scripted_daemon(script), short_sock_dir)
+    try:
+        reader, writer = await _open(sock)
+        t0 = time.monotonic()
+        outcome, frame = await asyncio.wait_for(
+            stub._ensure_backend_admitted(
+                reader, writer, queue_aware=True, total_budget_secs=60.0, silence_secs=0.1
+            ),
+            timeout=10,
+        )
+        elapsed = time.monotonic() - t0
+        writer.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert (outcome, frame) == (stub._ADMIT_TIMEOUT, None)
+    assert elapsed < 0.4, f"gave up after {elapsed:.2f}s -- the silence window, not the budget"
+
+
+@pytest.mark.asyncio
+async def test_the_total_budget_caps_a_wait_however_lively_the_daemon(short_sock_dir) -> None:
+    async def script(writer: Any) -> None:
+        for _ in range(40):
+            await asyncio.sleep(0.02)
+            await _send(writer, {"type": "queued", "position": 9, "capacity": 1})
+
+    server, sock = await _serve(_scripted_daemon(script), short_sock_dir)
+    try:
+        reader, writer = await _open(sock)
+        outcome, _ = await asyncio.wait_for(
+            stub._ensure_backend_admitted(
+                reader, writer, queue_aware=True, total_budget_secs=0.25, silence_secs=1.0
+            ),
+            timeout=10,
+        )
+        writer.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert outcome == stub._ADMIT_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_an_old_daemon_gets_the_legacy_single_reply_protocol(short_sock_dir) -> None:
+    """No ``spawn_queue``: the frame carries no budget, and the one reply is the
+    verdict -- an unexpected frame there is a rejection, exactly as before."""
+
+    async def script(writer: Any) -> None:
+        await _send(writer, {"type": "rejected", "reason": "at capacity", "fallback": True})
+        await asyncio.sleep(0.05)
+
+    handler = _scripted_daemon(script)
+    server, sock = await _serve(handler, short_sock_dir)
+    try:
+        reader, writer = await _open(sock)
+        outcome, frame = await asyncio.wait_for(
+            stub._ensure_backend_admitted(
+                reader, writer, queue_aware=False, total_budget_secs=600.0, silence_secs=1.0
+            ),
+            timeout=10,
+        )
+        writer.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert outcome == stub._ADMIT_REJECTED
+    assert frame is not None and frame["fallback"] is True
+    assert "wait_budget_secs" not in handler.seen[0], "an old daemon must see the old frame"
+    assert stub._rejection_class(frame) is None, "no class means the pre-class rules apply"
+
+
+@pytest.mark.asyncio
+async def test_a_queued_frame_to_an_old_protocol_wait_is_the_verdict(short_sock_dir) -> None:
+    """Belt and braces for the negotiation: a stub that did NOT see ``spawn_queue``
+    treats any non-ready frame as the reply. That is why the daemon must never
+    send ``queued`` without the capability -- pinned from the stub's side."""
+
+    async def script(writer: Any) -> None:
+        await _send(writer, {"type": "queued", "position": 1, "capacity": 4})
+        await asyncio.sleep(0.05)
+
+    server, sock = await _serve(_scripted_daemon(script), short_sock_dir)
+    try:
+        reader, writer = await _open(sock)
+        outcome, frame = await stub._ensure_backend_admitted(
+            reader, writer, queue_aware=False, total_budget_secs=600.0, silence_secs=1.0
+        )
+        writer.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert outcome == stub._ADMIT_REJECTED and frame == {"type": "queued", "position": 1, "capacity": 4}
+
+
+def test_only_the_target_shaped_classes_fall_back() -> None:
+    assert stub._REJECT_CLASS_COMPAT in stub._FALLBACK_CLASSES
+    assert stub._REJECT_CLASS_ISOLATION in stub._FALLBACK_CLASSES
+    assert stub._REJECT_CLASS_CAPACITY not in stub._FALLBACK_CLASSES
+    assert stub._rejection_class({"type": "rejected", "class": "capacity"}) == "capacity"
+    assert stub._rejection_class({"type": "rejected", "class": ""}) is None
+    assert stub._rejection_class({"type": "rejected"}) is None
+
+
+@pytest.mark.asyncio
+async def test_a_capacity_refusal_answers_requests_with_a_typed_error_and_stays_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kiro-cli sees a live server that says WHY it cannot serve, never a crash
+    and never a per-session exec."""
+    session = stub.StubSession()
+    q: "asyncio.Queue[bytes]" = asyncio.Queue()
+    session._line_q = q
+    q.put_nowait(json.dumps({"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {}}).encode() + b"\n")
+    q.put_nowait(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode() + b"\n")
+    q.put_nowait(json.dumps({"jsonrpc": "2.0", "id": "t-1", "method": "tools/list"}).encode() + b"\n")
+    q.put_nowait(b"")  # kiro-cli hangs up
+    written: list[bytes] = []
+    monkeypatch.setattr(stub, "_write_stdout_line", written.append)
+    rc = await asyncio.wait_for(
+        stub._serve_capacity_refusal(
+            session, asyncio.Event(), reason="pool full", retry_after_secs=30, pool_label="a:b"
+        ),
+        timeout=5,
+    )
+    assert rc == 0
+    replies = [json.loads(w) for w in written]
+    assert [r["id"] for r in replies] == [7, "t-1"], "every request answered, the notification dropped"
+    for reply in replies:
+        assert reply["error"]["code"] == stub._CAPACITY_ERROR_CODE
+        assert reply["error"]["data"] == {"class": "capacity", "retry_after_secs": 30}
+        assert "pool full" in reply["error"]["message"]

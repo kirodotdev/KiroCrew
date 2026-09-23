@@ -26,21 +26,47 @@ write that flips `enabled`), is what delivers the launcher to them; see app-kit-
 What makes the app worth existing is a single invariant: **the first page issues no network
 request.** The palette it replaces ran an unindexed scan over the sessions corpus on every
 keystroke, so fast typing could stall unrelated streaming. Command Bar's root carries only
-locally-known rows — commands, app destinations, system settings — and searching sessions is a
-view the reader ENTERS, so the expensive work is explicit and chosen.
+locally-known rows — sessions awaiting a user decision, commands, app destinations, and system
+settings — and every corpus search is a view the reader ENTERS, so the expensive work is explicit
+and chosen.
+
+Three such views exist: session search, artifact search, and folder search. The artifacts view
+asks `GET /api/artifacts?q=<query>` and nothing else — no `content=1`, no `snippet=1` — so the
+server matches NAMES only (`name_contains` in `api_artifacts_list`) and never opens a stored
+body. Searching what is INSIDE an artifact is a later change, and it is a change to that one
+request.
+
+The folders view is the cheapest of the three, and its shape follows from that. Its corpus is
+the folder tree the sidebar already holds under `['chat-folders']`, so a keystroke costs a local
+filter rather than a request: it has no minimum query length, where the two views above each
+hold their first characters back, and no row cap, because the count is the reader's own filing
+rather than a corpus that grows on its own. Entering the view pays for at most one folder read,
+on a cold cache. The folder list used to be spread through the root as its own group instead —
+demoted and capped while the query was empty, so the feature read as missing, and competing with
+commands once it was not.
+
+That corpus lives in THIS app (`apps/command-bar/foldersProvider.ts`), and the host palette
+carries no Folders tab. Reaching a folder by name is a launcher capability, so the launcher owns
+it: the alternative is two implementations of the same gesture, one in the app and one in the
+surface the app replaces, differing over ranking and reveal and answering to nobody. The corpus
+is hook-free for the same reason the session and artifact engines are — the React-Query fetch and
+the `usePaletteActions` route change are wired in `CommandBarOverlay`, which is the only thing
+holding this app's seams. It still renders the host's `Result` row contract, because forking the
+row shape would fork the Enter matrix with it.
 
 ## Responsibilities
 
 1. **Claim the slot** — declare `ui.overlays` in the manifest and take over the `quick-search`
    host slot while enabled, without the shell ever naming an app
-2. **Root index** — build the command / app / settings rows from local data only, rank them,
-   and cap each group
+2. **Root index** — build the attention / command / app / settings rows from local data only,
+   rank them, and cap each group
 3. **Ranking** — fuzzy match against the live query plus a frecency boost, so habit surfaces
    without out-ranking a clearly better string match
-4. **Scopes** — enter a sub-surface (today: session search) as a navigation state, with its own
-   engine loaded on entry
-5. **Fallback** — when the root cannot answer, offer the row that carries the query into the
-   sessions view rather than reporting "no results"
+4. **Scopes** — enter a sub-surface (today: session search, artifact name search, and folder
+   search) as a navigation state, with its own engine loaded on entry
+5. **Fallback** — for any non-empty root query, offer Ask plus rows that carry the query into
+   the sessions, artifacts, and folders views; when no root row matches, also offer the app page
+   that can disable Command Bar
 
 ## The overlay seam
 
@@ -78,26 +104,49 @@ that.
 
 `website/src/apps/command-bar/rootIndex.ts` owns the row model.
 
-- `ROOT_GROUPS = ['commands', 'apps', 'settings']`, rendered in that order. `rankRootRows`
-  ends with a sort on `groupOrder`, so groups are always contiguous blocks under their own
-  header — they never interleave by score.
+- `ROOT_GROUPS = ['attention', 'recent', 'commands', 'apps', 'settings']`, rendered in that
+  order. `attention` is normally absent and contains only live sessions whose status is a pill —
+  an approval or answer the user owes, not merely running or unread work. `rankRootRows` ends
+  with a sort on `groupOrder`, so groups are always contiguous blocks under their own header —
+  they never interleave by score.
+- `recent` follows `attention`: at most `RECENT_SESSION_ROWS = 3` live sessions the reader was
+  last in, so "get me back to what I was doing" is a row to press rather than a search to run.
+  It is built by the overlay from the same live slot store `attention` reads, so it costs the
+  root no request. The rows are the slots left after two exclusions — any slot already lifted
+  into `attention` (it is on screen above, carrying more), and any empty untitled new-chat slot
+  (that is what New Session is for) — ordered newest-first by `slotRecency` (the later of
+  `last_activity_ts` and `last_ts`, with `created` as a fallback), then sliced to the cap. A
+  recent row renders a dot status when the session is running and never a pill (a pill means the
+  session owes the user something, and every such session has already been lifted into
+  `attention`). The full corpus stays one `view` row below, under Search Sessions.
 - A row's `kind` is `view` (enter a surface inside the bar), `navigate` (leave and route),
   `invoke` (run and close), or `prompt` (a contributed command -- collect one argument if it
   declares one, then seed a session).
 - App rows are derived from the installed-app list, so a newly installed app appears as a
   destination with no per-app work.
-- Each row renders its kind as a right-aligned word — Command, App, Setting or View — because
-  the only other per-row signal is the group icon, which reads only to someone who has already
-  learned it. `view` is named separately from its group because it opens a surface instead of
-  acting and closing.
-- `PER_GROUP_LIMIT = 6` caps each group so one group cannot push the others off the page.
-  **Known gap:** rows past the cap are dropped silently.
+- Ordinary rows render a right-aligned kind — Command, App, Setting or View. A contributed
+  command prefixes that kind with its app label. An `attention` or `recent` row renders no kind
+  label — `attention` shows its live status pill instead and `recent` its running dot, because
+  the session's state is more useful than a static "Session" label. `view` is named separately
+  from its group because it opens a surface instead of acting and closing.
+- `PER_GROUP_LIMIT = 6` caps each group so one group cannot push the others off the page;
+  settings use the tighter `SETTINGS_IDLE_LIMIT = 2` while the query is empty, and `recent` is
+  capped ahead of ranking by the overlay at `RECENT_SESSION_ROWS = 3` rather than by this limit.
+  **Known gap:** rows past a root cap are dropped silently. The artifacts view does not share
+  that gap — it renders a `+N more` line under its list, outside the listbox so it cannot become
+  an option that Enter does nothing with — and that line is the shape to copy when this one is
+  closed.
 - `idleDemote` sorts a row to the end of its group while the query is EMPTY, at a cost sized
   to lose to a single real use. The empty-query order is frecency, so on a cold install every
   score is zero and the alphabet alone decides what the launcher opens on. It is DERIVED, not
   declared: a command that needs an argument cannot act on an empty query, so it has nothing
   to offer a bar that has just opened -- leaving it to the manifest would mean asking every
   app author to volunteer their own row out of the first page, which none would.
+- `recent` opts out of all of that while the query is empty: `rankRootRows` scores its rows 0,
+  declining the frecency boost, and breaks their tie by SOURCE POSITION rather than title, so
+  the newest-first order the overlay already sorted them into stands. Neither frecency, idle
+  demotion nor the alphabet may reshuffle a recency order that is a fact. Once a query is
+  present a recent row ranks on its match like any other row.
 
 ## Ranking and frecency
 
@@ -129,6 +178,9 @@ that answer an older prefix.
 | Invariant | Where it would break |
 |---|---|
 | the root issues no request | a provider constructed at mount can subscribe a query even when the root never calls it |
+| the artifacts view matches NAMES only | a `content=1` or `snippet=1` param turns each entry into a read of every stored body |
+| the artifacts fallback row issues no request while it is merely OFFERED | offering a way into the corpus becomes a scan on every keystroke, which is the cost this app exists to avoid |
+| the artifacts row cap names its remainder, from OUTSIDE the listbox | a silent slice reads as "these are all of them"; a counted row inside the listbox is an option Enter cannot act on |
 | the root ranks from the live query | a debounced read discards a fast-entered query |
 | `aria-modal` and the focus trap travel together | a dialog that traps nothing while claiming modality |
 | the `apps` query is a pure cache consumer (`enabled: false`) | a second identical fetch per open |
@@ -304,10 +356,16 @@ stays where this repository counts it. Assembling the name at runtime to keep th
 scanner from seeing it was tried first and is worse: it opens a third suppression
 channel nothing counts.
 
-The leaf name is clamped to the 100 characters the server stores, because a manifest
-title may be 120. Without the clamp the create is silently shortened, the next run's
-lookup for the full title misses, and every run makes another folder — the one failure
-mode here that compounds rather than staying cosmetic. When two rows currently offered
+Both folders are resolved through the shared `ensureChatFolder` helper
+(`website/src/utils/ensureChatFolder.ts`), which matches by name under an exact parent and
+asks the server only for names it will store unchanged. A leaf name is cut to fit the 100
+code points the server keeps, because a manifest title may be 120: an over-long title
+keeps its first 65 code points and ends in ` (<32-hex fingerprint of the whole title>)` —
+the first 128 bits of its SHA-256, so two different titles cannot be made to share one.
+Without the cut the create is silently shortened, the next run's lookup for the full
+title misses, and every run makes another folder — the one failure mode here that
+compounds rather than staying cosmetic; and the fingerprint keeps two different long
+titles that agree on their first 100 code points in two leaves. When two rows currently offered
 carry the SAME title, a discriminator is appended to both — the contributing app's label
 between two apps, and the row's own id when the collision is inside ONE app, where the
 label separates nothing. A leaf keyed on the title alone would interleave two commands
@@ -335,6 +393,11 @@ being installed, not on this app's name, and it lists the other default-off buil
 ## Deliberately not here
 
 - **Session search on the root.** Removed on purpose; it is the cost the app exists to avoid.
+- **Artifact CONTENT search.** The artifacts view matches names only. Reading bodies means
+  `snippet=1` on every entry, and a snippet response then needs a payload budget, a sort
+  guarantee and somewhere to put "more results" — a contract to design against a response shape
+  that does not exist yet, not a parameter to add.
 - **Quicklinks.** A group with no writer was removed rather than shipped empty.
-- **A default-on launcher.** Flipping the default and deleting the legacy palette is a separate
-  change, after the remaining corpora become apps with their own scopes.
+- **Removing the legacy palette.** Command Bar is default-on, but disabling it deliberately
+  restores the legacy palette and a rejected lazy chunk falls back there. Deleting that fallback
+  is a separate change, after the remaining corpora become launcher scopes.

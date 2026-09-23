@@ -20,6 +20,11 @@ vi.mock('../../api/client', () => ({
     defaultAgent: vi.fn(() => Promise.resolve({ default_agent: '' })),
     updateKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    // The drawer's webview section. Stubbed as "nothing published" so it renders
+    // its empty state: an unstubbed reader rejects, the section shows an
+    // ErrorNotice of its own, and assertions that read the LAST ErrorNotice props
+    // then pick up the webview's failure instead of the one under test.
+    memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
   },
 }))
 
@@ -81,8 +86,10 @@ async function renderPage(members = ROSTER) {
   ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members })
   const utils = renderWithProviders(<MembersPage />)
   await waitFor(() => expect(api.members).toHaveBeenCalled())
-  // Scoped to the roster: the first row auto-opens on arrival, so its name
-  // also renders in the thread header.
+  // A fresh visit with nothing remembered opens no one now (#11763), so this
+  // waits on the roster row itself (always rendered) rather than a thread
+  // header. Scoped to the roster so the wait is unambiguous even once a
+  // member is opened later in a case.
   await within(await screen.findByTestId('member-roster')).findByText(members[0].name)
   return utils
 }
@@ -308,7 +315,8 @@ describe('MembersPage star', () => {
     await waitFor(() => expect(api.updateKirocrewAgent).toHaveBeenCalledWith('pkg-a', { starred: true }))
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')
     // Does not open the member's thread — the star is a sibling of the row.
-    // (The page opened the FIRST row on arrival; pkg-a must not be posted.)
+    // (A fresh visit opens no one now (#11763), so starring pkg-a must not be
+    // the thing that posts its thread either.)
     expect(api.memberThread).not.toHaveBeenCalledWith('pkg-a')
   })
 

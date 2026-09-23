@@ -109,6 +109,9 @@ const { default: MarkdownPanel, OverflowMenu } = await import('../components/Mar
 interface FetchOpts {
   knowledgeEnabled?: boolean
   fileReadText?: string
+  /** Make /api/file-read answer a 500. Mount issues its own fetches, so a
+   *  `mockResolvedValueOnce` set before the click is eaten by one of those. */
+  fileReadFails?: boolean
 }
 let fetchOpts: FetchOpts = {}
 
@@ -123,6 +126,9 @@ function installFetch() {
       return { ok: true, json: async () => [] }
     }
     if (url.startsWith('/api/file-download')) return { ok: true, blob: async () => new Blob(['bytes']) }
+    if (url.startsWith('/api/file-read') && fetchOpts.fileReadFails) {
+      return { ok: false, status: 500, headers: { get: () => null } }
+    }
     return {
       ok: true,
       status: 200,
@@ -308,6 +314,26 @@ describe('MarkdownPanel — snapshot failure', () => {
 })
 
 describe('MarkdownPanel — discard with no owner refresh', () => {
+  it('keeps the edits AND the dirty flag when the Cancel re-read fails', async () => {
+    // Cancel means "match the disk". If the disk cannot be read, the buffer still
+    // holds the edits, so clearing dirty here would let a later close discard
+    // work the panel just claimed was safe. The user is told and left where
+    // they were: banner still up, buffer untouched.
+    const onContentChange = vi.fn()
+    fetchOpts.fileReadFails = true
+    mountPanel({ content: 'edited body', savedBaseline: 'disk body', onContentChange })
+    fireEvent.click(screen.getByText('Cancel'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
+    expect(await screen.findByText('Cannot read file')).toBeInTheDocument()
+    expect(onContentChange).not.toHaveBeenCalled()
+    // Still dirty: the unsaved-changes banner is still SHOWN (it is always in
+    // the DOM and hides via aria-hidden={!dirty}, so presence alone proves
+    // nothing -- the attribute does).
+    const banner = screen.getByText('Unsaved changes').closest('[aria-hidden]')
+    expect(banner).toHaveAttribute('aria-hidden', 'false')
+  })
+
   it('re-reads the file itself when the host supplies no refresh hook', async () => {
     const onContentChange = vi.fn()
     fetchOpts.fileReadText = 'the version on disk'
@@ -318,7 +344,10 @@ describe('MarkdownPanel — discard with no owner refresh', () => {
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(onContentChange).toHaveBeenCalledWith('the version on disk'))
-    expect(fetch).toHaveBeenCalledWith('/api/file-read?path=%2Ftmp%2Fnotes.md')
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/file-read?path=%2Ftmp%2Fnotes.md',
+      { signal: expect.any(AbortSignal) },
+    )
   })
 })
 
@@ -563,7 +592,13 @@ describe('MarkdownPanel — live file watch', () => {
     vi.stubGlobal('EventSource', StubEventSource)
   }
 
-  it('pushes a watched on-disk change into the panel', async () => {
+  it('re-reads on a watched change instead of trusting the event body', async () => {
+    // The event says "it changed"; the re-read says what the file now IS.
+    // /api/file-watch decodes with errors="replace" and carries no binary
+    // verdict, so adopting its body would push U+FFFD into the buffer for a file
+    // replaced on disk by binary bytes -- and leave the panel's editor live over
+    // bytes a save would destroy. The stubbed /api/file-read answers
+    // 'content from disk', which is deliberately NOT the event's body.
     streams.length = 0
     installEventSource()
     const onContentChange = vi.fn()
@@ -571,7 +606,96 @@ describe('MarkdownPanel — live file watch', () => {
     render(<MarkdownPanel embedded {...props} />, { wrapper })
     await waitFor(() => expect(streams.length).toBe(1))
     act(() => { streams[0].onmessage?.({ data: JSON.stringify({ content: 'rewritten on disk' }) }) })
-    expect(onContentChange).toHaveBeenCalledWith('rewritten on disk')
+    await waitFor(() => expect(onContentChange).toHaveBeenCalledWith('content from disk'))
+    expect(onContentChange).not.toHaveBeenCalledWith('rewritten on disk')
+  })
+
+  it('applies nothing when the watch re-read fails', async () => {
+    // The event body is never a fallback. It comes from an endpoint that decodes
+    // with errors="replace" and reports no binary verdict, so applying it would
+    // write new content under the OLD verdict — new bytes, stale card decision,
+    // editor live over a file it cannot represent. A buffer left at the last
+    // revision whose verdict is known is stale but honest.
+    streams.length = 0
+    installEventSource()
+    const onContentChange = vi.fn()
+    const props = { ...panelProps({ onContentChange }), liveWatch: true }
+    render(<MarkdownPanel embedded {...props} />, { wrapper })
+    await waitFor(() => expect(streams.length).toBe(1))
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      { ok: false, status: 500, headers: { get: () => null } } as unknown as Response,
+    )
+    act(() => { streams[0].onmessage?.({ data: JSON.stringify({ content: 'event body only' }) }) })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(onContentChange).not.toHaveBeenCalledWith('event body only')
+    expect(onContentChange).not.toHaveBeenCalled()
+  })
+
+  it('drops a slow watch read that a later Refresh read has overtaken', async () => {
+    // The watch and Refresh are two starters of the SAME race. A watch read that
+    // is still in flight when the user clicks Refresh must lose to the Refresh
+    // read, or it puts the older bytes back on the tab (and in the cache) after
+    // the newer ones landed -- and a save then writes the older revision over
+    // the file. One generation counter across every disk read is what makes
+    // the later starter win regardless of who started it.
+    streams.length = 0
+    installEventSource()
+    const onContentChange = vi.fn()
+    const props = { ...panelProps({ onContentChange }), liveWatch: true }
+    render(<MarkdownPanel embedded {...props} />, { wrapper })
+    await waitFor(() => expect(streams.length).toBe(1))
+
+    let releaseWatch: (() => void) | undefined
+    const watchBody = new Promise<void>(resolve => { releaseWatch = resolve })
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce({
+        ok: true, status: 200, headers: { get: () => null },
+        text: async () => { await watchBody; return 'slow watch revision' },
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true, status: 200, headers: { get: () => null },
+        text: async () => 'refresh revision',
+      } as unknown as Response)
+
+    act(() => { streams[0].onmessage?.({ data: JSON.stringify({ content: 'x' }) }) })
+    fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /refresh/i }))
+    await waitFor(() => expect(onContentChange).toHaveBeenCalledWith('refresh revision'))
+    act(() => { releaseWatch?.() })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(onContentChange).not.toHaveBeenCalledWith('slow watch revision')
+  })
+
+  it('applies only the newest re-read when change events arrive in a burst', async () => {
+    // Two events, two re-reads, and the FIRST one settles last. Without a
+    // generation check the older revision lands on top of the newer one, and the
+    // tab then describes content the file no longer has -- with that older
+    // read's binary verdict attached.
+    streams.length = 0
+    installEventSource()
+    const onContentChange = vi.fn()
+    const props = { ...panelProps({ onContentChange }), liveWatch: true }
+    render(<MarkdownPanel embedded {...props} />, { wrapper })
+    await waitFor(() => expect(streams.length).toBe(1))
+
+    let releaseFirst: (() => void) | undefined
+    const firstBody = new Promise<void>(resolve => { releaseFirst = resolve })
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce({
+        ok: true, status: 200, headers: { get: () => null },
+        text: async () => { await firstBody; return 'older revision' },
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true, status: 200, headers: { get: () => null },
+        text: async () => 'newer revision',
+      } as unknown as Response)
+
+    act(() => { streams[0].onmessage?.({ data: JSON.stringify({ content: 'a' }) }) })
+    act(() => { streams[0].onmessage?.({ data: JSON.stringify({ content: 'b' }) }) })
+    await waitFor(() => expect(onContentChange).toHaveBeenCalledWith('newer revision'))
+    act(() => { releaseFirst?.() })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(onContentChange).not.toHaveBeenCalledWith('older revision')
   })
 
   it('does not watch a dirty buffer, which a disk push would clobber', async () => {
@@ -602,8 +726,8 @@ describe('MarkdownPanel — comment anchoring edge cases', () => {
     fireEvent.mouseUp(document)
 
     const box = await screen.findByLabelText('Comment on the selected text')
-    // No preview root, so nothing was wrapped in a <mark>.
-    expect(document.querySelector('mark')).toBeNull()
+    // No preview root, so nothing is painted.
+    expect(highlightRegistry.has('mc-annotate')).toBe(false)
     fireEvent.change(box, { target: { value: 'from the fallback' } })
     fireEvent.click(screen.getByLabelText('Add comment'))
     await screen.findByText('from the fallback')
@@ -624,11 +748,11 @@ describe('MarkdownPanel — comment anchoring edge cases', () => {
     sel.addRange(range)
     fireEvent.mouseUp(document)
     await screen.findByLabelText('Comment on the selected text')
-    // One <mark> per touched text node, not one for the whole selection.
-    expect(document.querySelectorAll('mark').length).toBeGreaterThan(1)
+    // One range per touched text node, not one for the whole selection —
+    // and the preview DOM itself stays exactly what React rendered.
+    expect(highlightRegistry.get('mc-annotate')!.length).toBeGreaterThan(1)
+    expect(document.querySelector('mark')).toBeNull()
   })
   // Re-selecting while the box is open (highlight moves to the new selection)
-  // is pinned at the toolbar level in SelectionToolbar.composer.test.tsx:
-  // exercising it here would need happy-dom to update a live Range across
-  // `normalize()`, which it does not (browsers do, per spec).
+  // is pinned at the toolbar level in SelectionToolbar.composer.test.tsx.
 })

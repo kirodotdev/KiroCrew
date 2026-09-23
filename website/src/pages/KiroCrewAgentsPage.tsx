@@ -44,6 +44,7 @@ import type { CronJob } from '../types'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 import { errMessage } from '../utils/thunkError'
+import { parseErrorCode } from '../utils/errorReport'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
 import { templateSourceBadge, type TemplateProvenance } from '../lib/templateSource'
 
@@ -57,7 +58,6 @@ interface AgentMutationResult {
   error?: string
   name?: string
   memory_store?: string
-  new_conversation_required?: boolean
 }
 
 /** Fields sent when creating a crew. */
@@ -420,16 +420,13 @@ export function memberMemoryState(member: string, store: string, stores: Record<
   return 'unavailable'
 }
 
-export function MemoryStoreField({ value = '', member, memoryState = 'unavailable', onInitialize, onManage, busy = false, initializing = false, manageDisabled = false }: {
+export function MemoryStoreField({ value = '', member, memoryState = 'unavailable', onManage, busy = false, manageDisabled = false }: {
   value?: string; member?: string; memoryState?: MemberMemoryState
-  onInitialize?: () => void; onManage?: () => void; busy?: boolean; initializing?: boolean; manageDisabled?: boolean
+  onManage?: () => void; busy?: boolean; manageDisabled?: boolean
   /** Compatibility for external callers; stores are never selectable here. */
   options?: string[]; onChange?: (value: string) => void
 }) {
   const isGlobal = member === 'default' && memoryState === 'legacy'
-  const canInitialize = !!member && !isGlobal && memoryState === 'legacy' && !!onInitialize
-  const [confirming, setConfirming] = useState(false)
-  useEffect(() => { setConfirming(false) }, [member, value, memoryState])
   const hint = !member
     ? i18nT('pages.kiroCrewAgentsPage.private_memory_auto')
     : isGlobal
@@ -445,39 +442,16 @@ export function MemoryStoreField({ value = '', member, memoryState = 'unavailabl
     <Field label={i18nT('pages.kiroCrewAgentsPage.memory_store')} hint={hint}>
       {member && <span className="break-all font-mono text-[12px] text-muted">{isGlobal ? 'default' : value}</span>}
       <div className="flex flex-wrap gap-2">
-        {canInitialize && (
-          <Btn onClick={() => setConfirming(true)} disabled={busy}>{i18nT('pages.kiroCrewAgentsPage.initialize_private_memory')}</Btn>
-        )}
         {(isGlobal || memoryState === 'private') && onManage && (
           <Btn onClick={onManage} disabled={busy || manageDisabled}>
             {i18nT('pages.kiroCrewAgentsPage.manage_private_memory')}
           </Btn>
         )}
       </div>
-      {initializing && (
-        <p role="status" className="mt-2 text-[12px] text-muted">
-          {i18nT('memoryV2.creating_private_memory')}
-        </p>
-      )}
       {(isGlobal || memoryState === 'private') && onManage && manageDisabled && (
         <p className="mt-2 text-[12px] text-muted">{i18nT('components.markdownPanel.save_or_discard_changes_first')}</p>
       )}
-      <Dialog open={confirming && canInitialize} onOpenChange={setConfirming}>
-        <DialogContent maxWidth={440} className="z-[110]" aria-label={i18nT('pages.kiroCrewAgentsPage.initialize_private_memory')}>
-          <DialogHeader>
-            <DialogTitle>{i18nT('pages.kiroCrewAgentsPage.initialize_private_memory')}</DialogTitle>
-          </DialogHeader>
-          <DialogBody>
-            <p className="text-sm text-text">{i18nT('pages.kiroCrewAgentsPage.private_memory_legacy_confirm')}</p>
-          </DialogBody>
-          <DialogFooter>
-            <Btn onClick={() => setConfirming(false)}>{i18nT('components.confirmDialog.cancel')}</Btn>
-            <Btn danger disabled={busy || !canInitialize} onClick={() => { setConfirming(false); onInitialize?.() }}>
-              {i18nT('pages.kiroCrewAgentsPage.initialize_private_memory')}
-            </Btn>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
     </Field>
   )
 }
@@ -601,7 +575,7 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
               // purple in most themes, so an accent ring on the indigo and violet
               // entries reads as no ring at all. The near-white ring is what
               // SessionColorSwatches uses, and it separates from every hue here.
-              className={`h-5 w-5 p-0 cursor-pointer rounded-full border-2 transition-transform hover:scale-110 ${active ? 'border-text-strong scale-110' : 'border-border'}`}
+              className={`h-5 w-5 p-0 cursor-pointer rounded-full border-2 transition-transform hover:brightness-125 swatch-cue ${active ? 'border-text-strong scale-110' : 'border-border'}`}
               style={{ background: c }}
               onClick={() => onChange(c)}
             />
@@ -661,7 +635,7 @@ function BindingFields({
     <>
       <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} subject={subject} editLaterNote provenance={templateProvenance} />
       <WorkspaceField options={workspaceOptions} value={workspace} onChange={setWorkspace} onNewWorkspace={onNewWorkspace} subject={subject} />
-      <MemoryStoreField />
+      <p className="text-[11.5px] leading-relaxed text-muted">{i18nT('pages.kiroCrewAgentsPage.private_memory_auto')}</p>
       {modelOptions && setModel && model !== undefined && (
         <ModelField options={modelOptions} value={model} onChange={setModel} />
       )}
@@ -843,8 +817,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // crew created, renamed or deleted here reaches it without this page
   // knowing who else reads the registry. This query is active, so the
   // invalidation refetches it exactly as `refetch()` did.
+  //
+  // `['kirocrewConfig']` goes with it because the SAME write lands in
+  // config.json: creating a crew writes its `memory_stores` record alongside
+  // its `agents` record, and the edit sheet's memory row reads that record
+  // through this query (`memberMemoryState(editing, memoryStore,
+  // kirocrewCfg?.memory_stores)`). Invalidating only the registry leaves the
+  // pre-write config snapshot in cache, the new store key is absent from it,
+  // and the row renders the freshly-created member as
+  // `unavailable` — "configured memory store is unavailable, check
+  // `kirocrew doctor`" — for a store the gateway reports as valid. The generic
+  // server refresh broadcast (hooks/useWebSocket.ts) heals it eventually;
+  // healing it here makes the row correct on the write that caused it.
   const refetchAgents = useCallback(
-    () => void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] }),
+    () => {
+      void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    },
     [queryClient],
   )
   // Memoised for the empty case: a bare `|| []` hands out a new array on every
@@ -1245,11 +1234,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       settleFor(vars.epoch, r.error)
     },
     onError: (e: Error, vars) => {
-      // The server's wording is the crew manager's ("Agent 'x' already
-      // exists"); inside the member-titled form the same outcome is said in
-      // the form's own word. 409 is the create route's one "name taken"
-      // answer, so the status is the signal, not the message text.
-      if (fromMembers && e instanceof ApiError && e.status === 409) {
+      // Other conflicts can describe memory or template ownership failures.
+      if (fromMembers && e instanceof ApiError && e.status === 409 && parseErrorCode(e.body) === 'agent_exists') {
         settleFor(vars.epoch, i18nT('pages.kiroCrewAgentsPage.member_already_exists', { name: vars.name }))
         return
       }
@@ -1260,26 +1246,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     mutationFn: ({ name, data }: { name: string; data: AgentUpdatePayload; epoch: number }) => api.updateKirocrewAgent(name, data),
     onSuccess: (r: AgentMutationResult, vars) => { settleFor(vars.epoch, r.error); refetchAgents() },
     onError: (e: Error, vars) => settleFor(vars.epoch, e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent')),
-  })
-  const provisionMut = useMutation({
-    mutationFn: ({ name }: { name: string; epoch: number }) => api.updateKirocrewAgent(name, { provision_memory: true }),
-    onSuccess: (r: AgentMutationResult, vars) => {
-      void refetchAgents()
-      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
-      void queryClient.invalidateQueries({ queryKey: ['memory-stores'] })
-      if (!r.error && r.new_conversation_required) {
-        // A member moving from V1 to private V2 must not briefly remount its
-        // cached V1 thread. The next Open member action POSTs the authoritative
-        // thread endpoint and receives the fresh V2-bound slot.
-        queryClient.removeQueries({ queryKey: ['member-thread', vars.name], exact: true })
-      }
-      if (vars.epoch !== sheetEpoch.current) return
-      if (r.error) { setError(r.error); return }
-      if (r.memory_store) setMemoryStore(r.memory_store)
-    },
-    onError: (e: Error, vars) => {
-      if (vars.epoch === sheetEpoch.current) setError(e.message)
-    },
   })
   /** Promotion is its own write, fired straight from the roster bar — it is not
    *  part of saving a crew's bindings, so it must not wait for a Save. */
@@ -1592,7 +1558,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const creating = sheet?.mode === 'create'
   const [avatarUploading, setAvatarUploading] = useState(false)
   const sheetBusy =
-    createMut.isPending || updateMut.isPending || deleteMut.isPending || provisionMut.isPending || avatarUploading || capabilityBusy
+    createMut.isPending || updateMut.isPending || deleteMut.isPending || avatarUploading || capabilityBusy
 
   /**
    * The subset of `sheetBusy` that has already COMMITTED something — a write
@@ -1605,7 +1571,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    * `sheetBusy` for that reason: skipping the discard question during staging
    * would let a dismissal drop the whole save silently.
    */
-  const committing = updateMut.isPending || deleteMut.isPending || provisionMut.isPending
+  const committing = updateMut.isPending || deleteMut.isPending
 
   /** Which rail pane the editor body is showing. Reset whenever the editor is
    *  pointed somewhere else, so a crew never opens on the pane the previous one
@@ -1932,12 +1898,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           askAgent={!sheet}
           testId="crews-editor-options-load-error"
         />
-        {/* New members receive private V2; an existing member keeps its declared
-            V1 binding until the owner chooses private memory. */}
+        {/* New members receive member-scoped V2; existing V1 bindings stay unchanged. */}
         <div className="mb-3.5 flex items-start gap-2 rounded-lg border border-accent-subtle bg-bg-accent px-3 py-2.5">
           <Sparkles className="lucide-inline mt-0.5 shrink-0 text-accent" aria-hidden="true" />
           <span className="text-[12.5px] leading-relaxed text-muted">
-            {i18nT('pages.kiroCrewAgentsPage.bindings_preview_notice')}
+            {i18nT('pages.kiroCrewAgentsPage.bindings_member_memory_notice')}
           </span>
         </div>
 
@@ -2427,9 +2392,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         value={memoryStore}
                         member={editing}
                         memoryState={memberMemoryState(editing, memoryStore, kirocrewCfg?.memory_stores)}
-                        onInitialize={() => provisionMut.mutate({ name: editing, epoch: sheetEpoch.current })}
                         busy={sheetBusy || !kirocrewCfg}
-                        initializing={provisionMut.isPending && provisionMut.variables?.name === editing && provisionMut.variables.epoch === sheetEpoch.current}
                         manageDisabled={dirtyPanes.size > 0 || schedDraft}
                         onManage={() => navigate(`/settings/overview?view=memory&store=${encodeURIComponent(editing === 'default' ? 'default' : memoryStore)}`)}
                       />

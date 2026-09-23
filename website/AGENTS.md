@@ -1,4 +1,4 @@
-# KiroCrewWebsite — Agent Guidelines
+# Kiro Crew Website — Agent Guidelines
 
 **This file is a ROUTER, not a manual.** It carries only the rules whose violation
 causes damage before a pointer could be read. Everything else is a link you MUST
@@ -15,6 +15,7 @@ them.
 | layout of a page, panels, headers | [page-layout](docs/page-layout.md) |
 | narrow screens, gutters, page zoom, touch gestures | [narrow-viewport](docs/narrow-viewport.md) |
 | themes, colors, CSS vars, stable class hooks | [theming-contract](docs/theming-contract.md) |
+| Tailwind: a new utility for a token, `src/tailwind-theme.css`, `src/index.css`'s Tailwind header, safe-area utilities | [frontend-conventions § Styling](docs/frontend-conventions.md#styling) |
 | shared components, a11y, URL sanitization, data fetching, the stack, adding a dependency | [frontend-conventions](docs/frontend-conventions.md) |
 | any user-facing string, date, number, or sort order | [i18n-catalog](docs/i18n-catalog.md) + [i18n gates](../docs/ci/i18n-gates.md) |
 | `src/extensions.ts`, edition composition, registries | [extension-seams](docs/extension-seams.md) |
@@ -56,8 +57,9 @@ the `internal-content-scan` check.
   that writes a config path, or the `<SettingRef configKey="...">` chip silently
   degrades to a CLI popover even though a toggle exists. Backend drift guards catch bad
   keys, not missing ones, so this rule is the only gate for the missing case.
-- **Icons: `lucide-react` only, with `className="lucide-inline"`.** Never an emoji,
-  never a hand-rolled SVG, never `size={N}`. Enforced by `AUTOSDE.yaml`
+- **Icons: use `lucide-react`; use `className="lucide-inline"` when a glyph sits
+  inline with text.** Never use an emoji or hand-rolled SVG as an icon. Size props
+  are valid for standalone glyphs. Enforced by `AUTOSDE.yaml`
   (`use-lucide-icons`, `no-emoji-as-icons`).
 - **Errors shown to the user render through `ErrorNotice`**, never a hand-written
   `<div className="text-danger">{err}</div>`. Turn on `askAgent` wherever the

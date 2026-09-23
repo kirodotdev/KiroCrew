@@ -15,12 +15,12 @@ it is named alongside the test that enforces it; the rest are for translation re
 |---|---|
 | Quotation marks: `«…»` or `"…"` | Both acceptable in software UI |
 | No space before `:` `;` `?` `!` | Unlike French — `Sei sicuro?` not `Sei sicuro ?` |
-| Apostrophe: typographic `'` (U+2019) | For elision: `l'utente`, `un'applicazione` |
+| Apostrophe: typographic `’` (U+2019) | For elision: `l’utente`, `un’applicazione` |
 | Ellipsis: `…` (U+2026) | |
 | No trailing period on buttons/labels | `Salva`, not `Salva.` |
 
-**Elision is mandatory** where Italian phonology requires it: `l'applicazione` (not `la
-applicazione`), `un'interfaccia` (not `una interfaccia` — feminine only), `dell'utente`.
+**Elision is mandatory** where Italian phonology requires it: `l’applicazione` (not `la
+applicazione`), `un’interfaccia` (not `una interfaccia` — feminine only), `dell’utente`.
 
 ---
 
@@ -48,18 +48,19 @@ Checked by `glossary.test.ts`.
 
 ## 5. Plurals
 
-CLDR defines **2 plural categories** for Italian:
+The current runtime's CLDR data defines **3 plural categories** for Italian:
 
 | category | condition | example |
 |---|---|---|
-| one | n = 1 | `{{count}} file` |
-| other | everything else | `{{count}} file` |
+| one | n = 1 | `1 file` |
+| many | exact millions selected by `Intl.PluralRules('it')` | `1.000.000 file` |
+| other | everything else | `2 file` |
 
-Note: some Italian nouns are invariable in plural (particularly foreign borrowings like
-`file`, `server`). Use the correct Italian plural for native words: `impostazione` →
-`impostazioni`.
+`many` normally uses the same wording as `other`, but its `_many` key is still required.
+Some Italian nouns are invariable in plural (particularly foreign borrowings like `file`,
+`server`). Use the correct Italian plural for native words: `impostazione` → `impostazioni`.
 
-Checked by `catalogParity.test.ts`.
+Checked by `catalogParity.test.ts`, which reads `Intl.PluralRules` at runtime.
 
 ---
 
@@ -112,7 +113,9 @@ GitHub`, `Configura lo YAML`.
 | rule | gate |
 |---|---|
 | placeholder parity with English | `catalogParity.test.ts` |
-| correct CLDR plural categories (2) | `catalogParity.test.ts` |
+| correct CLDR plural categories (3) | `catalogParity.test.ts` |
+| no formal `Lei` address | `itStyle.test.ts` |
+| selected final-vowel accent errors absent | `itStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |

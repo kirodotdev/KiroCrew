@@ -319,7 +319,7 @@ export default function MemoryGraphTab() {
       <div className="flex gap-2 flex-wrap mb-3 items-center">
         <input
           aria-label={i18nT('pages.overview.memoryGraphTab.search_memory_nodes')}
-          className="bg-bg-elevated border border-border rounded-md px-3 py-1.5 text-text text-sm font-body outline-none transition-colors focus-ring flex-1 min-w-[200px]"
+          className="bg-bg-elevated border border-border rounded-md px-3 py-1.5 text-text text-sm font-body outline-hidden transition-colors focus-ring flex-1 min-w-[200px]"
           placeholder={i18nT('pages.overview.memoryGraphTab.search_nodes')} value={searchImmediate} onChange={e => setSearchImmediate(e.target.value)}
         />
         <Btn onClick={() => setFilter(null)} className={!filter ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.memoryGraphTab.all_count', { count: nodes.length })}</Btn>

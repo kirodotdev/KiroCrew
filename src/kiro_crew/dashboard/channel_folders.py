@@ -188,6 +188,39 @@ def _find_folder(folders: list[dict], name: str, namespace: str) -> dict | None:
     return fallback
 
 
+async def folder_id_for_name(state: "DashboardState", namespace: str, name: str) -> str:
+    """The id of the folder *name* for channel *namespace*, or ``""`` when absent.
+
+    Split out of :func:`lookup_channel_folder` so a caller that has ALREADY read
+    the configured name can resolve its id without reading config a second time.
+    Two reads are two chances to observe different values: a settings save moving
+    this channel from folder A to folder B, committing between them, hands the
+    caller A's name and B's id -- and a caller that reports the name while writing
+    the id then tells the user one folder and files into another.
+
+    Read under the store lock, for the reason :func:`lookup_channel_folder`
+    documents: an unlocked read can land mid-transaction and return the id of a
+    folder whose write is then rolled back.
+    """
+    name = (name or "").strip()
+    if not name:
+        return ""
+    ns = (namespace or "").lower()
+
+    def _find(folders: list[dict]) -> dict | None:
+        return _find_folder(folders, name, ns)
+
+    existing = await state.read_folders(_find)
+    if existing is None:
+        # Configured but absent — hand-edited config, or the folder was deleted.
+        # Leave the conversation unfiled rather than writing from this path.
+        logger.debug(
+            "channel folder: %r not found for %s; leaving the session unfiled", name, namespace
+        )
+        return ""
+    return str(existing.get("id", ""))
+
+
 async def lookup_channel_folder(state: "DashboardState", namespace: str) -> str:
     """Return the id of the folder channel *namespace* files its sessions into.
 
@@ -218,20 +251,7 @@ async def lookup_channel_folder(state: "DashboardState", namespace: str) -> str:
     name = await asyncio.to_thread(configured_folder_name, namespace)
     if not name:
         return ""
-    ns = (namespace or "").lower()
-
-    def _find(folders: list[dict]) -> dict | None:
-        return _find_folder(folders, name, ns)
-
-    existing = await state.read_folders(_find)
-    if existing is None:
-        # Configured but absent — hand-edited config, or the folder was deleted.
-        # Leave the conversation unfiled rather than writing from this path.
-        logger.debug(
-            "channel folder: %r not found for %s; leaving the session unfiled", name, namespace
-        )
-        return ""
-    return str(existing.get("id", ""))
+    return await folder_id_for_name(state, namespace, name)
 
 
 async def ensure_channel_folder(

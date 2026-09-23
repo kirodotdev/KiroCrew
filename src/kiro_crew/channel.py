@@ -78,6 +78,7 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "work_report",
     "work_ledger_read",
     "work_ledger_record",
+    "work_ledger_rebuild",
 )
 
 # Boundary-aware matcher: the tool name must stand alone in the rendered
@@ -767,6 +768,9 @@ async def run_channel_agent(
             agent=agent.agent_name or None,
             approval_policy=agent.approval_policy.value,
         )
+        # This lease is released only when the member dies, so a busy probe reading the
+        # lease would refuse a clear on this channel for the member's whole life.
+        sessions.mark_lifecycle_lease(agent.session_key)
 
         agent.state = "listening"
         channel._broadcast(
@@ -796,6 +800,9 @@ async def run_channel_agent(
 
         async for msg in channel.subscribe(agent.id):
             agent.state = "working"
+            # Declared BEFORE the setup below, which runs while the provider still reports no
+            # active turn -- a clear arriving in that window would tear this session down.
+            sessions.set_lifecycle_turn_active(agent.session_key, True)
             channel._broadcast(
                 "channel_agent_status",
                 {"channel_id": channel.id, "agent_id": agent.id, "state": "working"},
@@ -823,6 +830,22 @@ async def run_channel_agent(
             )
             orch_toplevel = agent.is_orchestrator and (is_toplevel_human or is_agent_report_back)
             tid = None if orch_toplevel else (msg.thread_id or msg.id)
+            if sessions.get_provider(agent.session_key) is not client:
+                # IDENTITY, not presence: a clear-context discard pops this key and shuts the
+                # cached provider down, and a later claim can re-register a DIFFERENT one under it.
+                replacement = await _reacquire_cleared_session(sessions, agent)
+                if replacement is None:
+                    await channel.post(
+                        agent.id,
+                        "❌ This agent's session could not be re-acquired after its context "
+                        "was cleared. Wake it to try again.",
+                        from_role=agent.role,
+                        msg_type="system",
+                        thread_id=tid,
+                    )
+                    agent.state = "failed"
+                    break
+                client = replacement
             busy = await _stream_task(
                 agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo
             )
@@ -853,6 +876,7 @@ async def run_channel_agent(
                 client = replacement
 
             agent.state = "listening"
+            sessions.set_lifecycle_turn_active(agent.session_key, False)
             channel._broadcast(
                 "channel_agent_status",
                 {
@@ -866,6 +890,9 @@ async def run_channel_agent(
         logger.exception("Channel agent %s (%s) failed", agent.id, agent.role)
         agent.state = "failed"
     finally:
+        # Backstop: a turn left declared would refuse every later clear on this key, which is
+        # the permanent refusal this change exists to remove.
+        sessions.set_lifecycle_turn_active(agent.session_key, False)
         if agent.state not in ("done", "failed"):
             agent.state = "done"
         channel._broadcast(
@@ -874,6 +901,32 @@ async def run_channel_agent(
         )
         sessions.release(agent.session_key)
         logger.info("Channel agent %s (%s) finished: %s", agent.id, agent.role, agent.state)
+
+
+async def _reacquire_cleared_session(sessions: Any, agent: ChannelAgent) -> Any:
+    """Take a fresh lease after this member's session was discarded from under it.
+
+    A clear-context discard pops the registry entry and shuts the provider down, and the
+    provider this member cached at spawn is that same object -- so without this the member
+    streams a dead one for every later message and only a restart recovers it. No reset is
+    owed first, unlike :func:`_reset_busy_session`: the key is already cold, and the single
+    ``release`` in the listening lifecycle resolves the key at call time, so it balances
+    against the replacement.
+    """
+    try:
+        client, _is_new, _resumed = await sessions.get_or_create(
+            agent.session_key,
+            agent=agent.agent_name or None,
+            approval_policy=agent.approval_policy.value,
+        )
+    except Exception:
+        logger.exception("Failed to re-acquire session %s after a clear", agent.session_key)
+        return None
+    sessions.mark_lifecycle_lease(agent.session_key)
+    # Both markers, not just the lease: this runs mid-turn, and the fresh session defaults to
+    # no turn -- so a clear in the setup that follows would tear it down unprotected.
+    sessions.set_lifecycle_turn_active(agent.session_key, True)
+    return client
 
 
 async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
@@ -910,6 +963,12 @@ async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
     except Exception:
         logger.exception("Failed to re-acquire session %s after reset", agent.session_key)
         return None
+    # The listening loop holds THIS lease for the rest of its life too, so it carries the
+    # same marker as the original: unmarked, a recovered member refuses a clear forever.
+    sessions.mark_lifecycle_lease(agent.session_key)
+    # And the turn: the replay below runs on this session, so it needs the same protection
+    # the original had before the wedge.
+    sessions.set_lifecycle_turn_active(agent.session_key, True)
     return client
 
 

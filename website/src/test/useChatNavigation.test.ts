@@ -76,9 +76,9 @@ describe('useChatNavigation', () => {
     const map = new Map([[0, 2], [10, 8], [14, 11]])
     const { result } = renderHook(() => useChatNavigation(messages, map), { wrapper })
     expect(result.current.sections).toEqual([
-      { id: 'm-1', label: 'First prompt', prompt: 'First prompt', response: ' Final\n response ', msgIdx: 0, displayIdx: 2 },
-      { id: '4', label: 'Stalled prompt', prompt: 'Stalled prompt', response: 'resumed final answer', msgIdx: 10, displayIdx: 8 },
-      { id: '2', label: 'Second prompt', prompt: 'Second prompt', response: '', msgIdx: 14, displayIdx: 11 },
+      { id: 'm-1', label: 'First prompt', prompt: 'First prompt', response: ' Final\n response ', ts: '1', msgIdx: 0, displayIdx: 2 },
+      { id: '4', label: 'Stalled prompt', prompt: 'Stalled prompt', response: 'resumed final answer', ts: '4', msgIdx: 10, displayIdx: 8 },
+      { id: '2', label: 'Second prompt', prompt: 'Second prompt', response: '', ts: '2', msgIdx: 14, displayIdx: 11 },
     ])
   })
 

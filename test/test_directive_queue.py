@@ -372,7 +372,7 @@ def _request(headers: dict, body: object, can_read: bool = True, local: bool = T
     req.can_read_body = can_read
     req.json = AsyncMock(return_value=body)
     req.app = {"state": MagicMock()}
-    _scope: dict = {"internal_auth": True} if local else {}
+    _scope: dict = {"internal_auth": True, "peer_verified": True} if local else {}
     req.get = _scope.get
     return req
 
@@ -470,11 +470,13 @@ class TestEndpoint:
         assert directive_queue.depth("dashboard:slot-a") == 0
 
     @pytest.mark.asyncio
-    async def test_missing_session_key_is_400_with_a_code(self):
+    async def test_missing_session_key_is_refused_without_parking(self):
         resp = await api_session_directive(
             _request({}, self._body("monitor_start", {"message": "x"}))
         )
-        assert resp.status == 400
+        assert resp.status == 409
+        assert json.loads(resp.body)["code"] == "member_identity_unavailable"
+        assert directive_queue.depth("") == 0
 
     @pytest.mark.asyncio
     async def test_a_pre_call_input_body_is_named_as_a_stale_backend(self, caplog):
@@ -535,6 +537,20 @@ class TestEndpoint:
             )
         )
         assert resp.status == 403
+        assert directive_queue.depth("dashboard:victim-slot") == 0
+
+    @pytest.mark.asyncio
+    async def test_a_bare_secret_holder_cannot_park_for_another_session(self):
+        """The internal secret names no session. A same-machine process that reads
+        another slot's key and declares it carries neither attestation, so the
+        route answers with the unavailable-identity refusal and parks nothing."""
+        req = _request(
+            {"X-Session-Key": "dashboard:victim-slot"},
+            self._body("monitor_start", {"message": "go"}),
+        )
+        req.get = {"internal_auth": True}.get
+        resp = await api_session_directive(req)
+        assert resp.status == 409
         assert directive_queue.depth("dashboard:victim-slot") == 0
 
     @pytest.mark.asyncio

@@ -31,6 +31,44 @@ const n2: Notification = { kind: 'approval', title: 'Approve?', body: 'tool X', 
 
 describe('notificationsSlice', () => {
   describe('reducers', () => {
+    it('a rejected ack undoes the optimistic flip and stamps it, so the row reads unread again', () => {
+      const pending = reducer({ items: [{ ...n1, acked: false }] }, ackNotification.pending('req', '1'))
+      expect(pending.items[0].acked).toBe(true)
+      // The thunk reads its stamp AFTER pending, exactly as the fulfilment does.
+      const stamp = pending.ackSeqByTs?.['1']
+      const rejected = reducer(pending, ackNotification.rejected(null, 'req', '1', { ts: '1', stamp }))
+      expect(rejected.items[0].acked).toBe(false)
+      // Stamped: a fetch snapshot taken before the rejection cannot re-install
+      // the optimistic value.
+      expect(rejected.ackSeqByTs?.['1']).toBeGreaterThan(stamp ?? 0)
+    })
+
+    it('a rejection that arrives after a NEWER ack was confirmed does not undo it', () => {
+      // Two presses in flight: the first is slow and fails, the second is fast
+      // and succeeds. The row must stay read -- the second request is the
+      // newer evidence about the flag.
+      let state = reducer({ items: [{ ...n1, acked: false }] }, ackNotification.pending('req1', '1'))
+      const stamp1 = state.ackSeqByTs?.['1']
+      state = reducer(state, ackNotification.pending('req2', '1'))
+      const stamp2 = state.ackSeqByTs?.['1']
+      expect(stamp2).not.toBe(stamp1)
+      state = reducer(state, ackNotification.fulfilled({ ts: '1', stamp: stamp2 }, 'req2', '1'))
+      expect(state.items[0].acked).toBe(true)
+      state = reducer(state, ackNotification.rejected(null, 'req1', '1', { ts: '1', stamp: stamp1 }))
+      expect(state.items[0].acked).toBe(true)
+    })
+
+    it('a rejection without a stamp (thrown before the read) rolls nothing back', () => {
+      const pending = reducer({ items: [{ ...n1, acked: false }] }, ackNotification.pending('req', '1'))
+      const state = reducer(pending, ackNotification.rejected(new Error('x'), 'req', '1'))
+      expect(state.items[0].acked).toBe(true)
+    })
+
+    it('a rejected ack for an unknown ts is a no-op', () => {
+      const state = reducer({ items: [n1] }, ackNotification.rejected(null, 'req', 'nope', { ts: 'nope', stamp: 1 }))
+      expect(state.items[0].acked).toBeUndefined()
+    })
+
     it('addNotification appends to items', () => {
       const state = reducer({ items: [n1] }, addNotification(n2))
       expect(state.items).toHaveLength(2)

@@ -44,6 +44,12 @@ const MINT_POLL_MS = 2_000
  *  a grant completed outside the dashboard and keep connected-since fresh. */
 const CONNECTION_STATUS_POLL_MS = 30_000
 
+/** The guide section that shows the oauth_endpoints.json entry a refused
+ *  approval address needs. Linked from the mint_url_rejected feedback via
+ *  `Feedback.help`, so the card's remedy ends in a link rather than a bare path. */
+const OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL =
+  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/connecting-remote-oauth-mcp-server.md#if-the-host-is-not-recognized-the-oauth-endpoint-allowlist'
+
 export type ConnectionCardState =
   | 'not-connected'
   | 'waiting-for-approval'
@@ -492,12 +498,20 @@ const PREREQUISITE_KEYS = {
 } as const
 
 /**
- * Amber warning icon beside Connect for a provider with a blocking
- * provider-side prerequisite. Hover or focus previews the message as a small
- * bubble; clicking the icon pins the bubble open; clicking anywhere else (or
- * Escape) dismisses it. Modeled on InfoTip: portal-rendered so card overflow
- * cannot clip it, name/description split so the icon's accessible NAME stays a
- * short phrase while the prose rides as its DESCRIPTION.
+ * Amber warning icon beside a card's action for anything the user should know
+ * BEFORE pressing it: a provider-side prerequisite beside Connect, the
+ * one-time OAuth-app setup beside Configure. Hover or focus previews the
+ * message as a small bubble; clicking the icon pins the bubble open; clicking
+ * anywhere else (or Escape) dismisses it. Modeled on InfoTip: portal-rendered
+ * so card overflow cannot clip it, name/description split so the icon's
+ * accessible NAME stays a short phrase while the prose rides as its DESCRIPTION.
+ *
+ * This is the card's ONE surface for a pre-action caveat. A caveat rendered as
+ * an always-visible band costs every card in the grid a row of chrome for
+ * prose a user reads once, and makes rows ragged; the inline bands that remain
+ * on the card report a live verdict about the CURRENT state (not verified,
+ * needs attention) or carry a form (the remote return-address relay) -- copy
+ * about what an action will do or needs is neither, and goes here.
  */
 function PrerequisiteTip({ label, heading, text }: { label: string; heading: string; text: string }) {
   const [pinned, setPinned] = useState(false)
@@ -1045,7 +1059,7 @@ function ConnectionCard({
                   disabled={busy === 'relay'}
                   aria-invalid={invalidReturnAddress}
                   aria-describedby={invalidReturnAddress ? `return-address-error-${provider.slug}` : undefined}
-                  className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-[11px] text-text outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                  className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-[11px] text-text outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
                 />
                 <Btn primary onClick={() => void runRelay()} disabled={!returnAddress.trim() || busy === 'relay'}>
                   {busy === 'relay' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
@@ -1062,15 +1076,21 @@ function ConnectionCard({
         )}
 
         {state === 'needs-configuration' && (
-          <div className="space-y-3">
-            <div className="flex items-start gap-2 rounded-md border border-border bg-bg-hover p-2.5 text-[12px] text-text">
-              <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />
-              <span>{t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}</span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <a href={provider.docs_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text">
-                {t('pages.connectionsPage.documentation')} <ExternalLink className="w-3 h-3" aria-hidden="true" />
-              </a>
+          <div className="flex items-center justify-between gap-3">
+            <a href={provider.docs_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text">
+              {t('pages.connectionsPage.documentation')} <ExternalLink className="w-3 h-3" aria-hidden="true" />
+            </a>
+            <div className="flex items-center gap-2">
+              {/* The one-time-setup explanation is a caveat about the action
+                  beside it, so it rides in the same warning tip every other
+                  card state uses for its pre-action caveat -- never as a band
+                  above the action row. The badge already says what state the
+                  card is in; the tip says what pressing the button entails. */}
+              <PrerequisiteTip
+                label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
+                heading={t('pages.connectionsPage.before_you_connect')}
+                text={t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
+              />
               {/* A route, not a Connect button: the missing step lives on the
                   Settings tab, and only the owner can complete it. The highlight
                   lands on this provider's card there. */}
@@ -1371,7 +1391,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // Decided BEFORE any setState: a state updater runs on a later render, so
     // collecting side-effect targets inside one leaves them empty at read time.
     const cleared: string[] = []
-    const mintFailures: Array<{ slug: string; reason?: string }> = []
+    const mintFailures: Array<{ slug: string; reason?: string; endpoint?: string }> = []
     const grantedMints: string[] = []
     for (const provider of CONNECTION_PROVIDERS) {
       const pending = locallyWaiting[provider.slug]
@@ -1392,7 +1412,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           && mint.reason
         )
       ) {
-        mintFailures.push({ slug: provider.slug, reason: mint.reason })
+        mintFailures.push({ slug: provider.slug, reason: mint.reason, endpoint: mint.rejected_endpoint })
       }
       if (outcome.probe) grantedMints.push(provider.slug)
     }
@@ -1419,8 +1439,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     if (mintFailures.length) {
       setFeedback(current => {
         const next = { ...current }
-        for (const { slug, reason } of mintFailures) {
+        for (const { slug, reason, endpoint } of mintFailures) {
           let error: string
+          let detail: string | undefined
+          let help: Feedback['help']
           switch (reason) {
             case 'mint_timeouterror':
               error = t('pages.connectionsPage.mint_failure_timed_out')
@@ -1432,7 +1454,19 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               error = t('pages.connectionsPage.mint_failure_server_absent')
               break
             case 'mint_url_rejected':
-              error = t('pages.connectionsPage.mint_failure_url_rejected')
+              // Name WHICH endpoint was refused when the backend could reduce it
+              // to a copy-ready host/path. The error line stays one sentence;
+              // the oauth_endpoints.json remedy rides `detail` (its own line)
+              // and the guide rides `help` (a link), so the alarm text does not
+              // swallow the instructions. Without an endpoint the card keeps
+              // its unnamed message rather than show a remedy that cannot work.
+              if (endpoint) {
+                error = t('pages.connectionsPage.mint_failure_url_rejected_endpoint', { endpoint })
+                detail = t('pages.connectionsPage.mint_failure_url_rejected_endpoint_detail', { endpoint })
+                help = { href: OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL }
+              } else {
+                error = t('pages.connectionsPage.mint_failure_url_rejected')
+              }
               break
             default:
               error = t('pages.connectionsPage.mint_failure_unknown')
@@ -1440,6 +1474,8 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           next[slug] = {
             kind: 'error',
             text: t('pages.connectionsPage.action_failed', { error }),
+            ...(detail ? { detail } : {}),
+            ...(help ? { help } : {}),
           }
         }
         return next

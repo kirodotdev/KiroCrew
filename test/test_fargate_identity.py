@@ -169,6 +169,48 @@ def test_both_readers_of_a_region_refuse_the_same_values(region):
         ident.validated_region(region)
 
 
+@pytest.mark.parametrize(
+    "crew",
+    ["", "-a", "a-", "A", "a_b", "a/b", "a" * 33, "a b", "a.b", "0" * 33],
+)
+def test_the_crew_charset_is_one_rule_whoever_asks(crew):
+    """The same table the ARN readers refuse, refused by the name check on its own.
+
+    A crew name is read before any ARN exists -- the bundle builder decides one while the
+    operator is still choosing what the bundle carries -- so the charset has to be askable
+    without an ARN to wrap it in. Sharing the table with
+    ``test_a_name_outside_the_crew_charset_is_refused`` is the point: one table rather than
+    two, because two tables that have to agree is the trap two validators already were.
+    """
+    with pytest.raises(DocumentRefused):
+        ident.validated_crew_name(crew)
+
+
+def test_the_name_check_admits_exactly_what_a_derivation_accepts():
+    """Non-vacuity, and the bound stated at both ends.
+
+    A single character and the full 32 are the edges the pattern has to admit, and every
+    derived name is built from an admitted crew, so a check that refused them would refuse
+    a launchable crew.
+    """
+    for crew in ("a", "0", "a-b", "a" * 32, "a" + "-" * 30 + "b"):
+        assert ident.validated_crew_name(crew) == crew
+        binding = ident.CrewBinding(partition="aws", account=ACCOUNT, crew=crew)
+        assert ident.task_family(binding).endswith(crew)
+
+
+def test_the_charset_is_reachable_without_reading_the_pattern():
+    """A caller that cannot import the question will re-spell the answer.
+
+    That is the failure the package surface exists to stop, and the crew charset is on the
+    limb it names: a caller cannot build an acceptable crew name without reading it.
+    """
+    from kiro_crew.cloud import fargate as fargate_package
+
+    assert "validated_crew_name" in fargate_package.__all__
+    assert fargate_package.validated_crew_name is ident.validated_crew_name
+
+
 #: One table rather than two, because two tables that have to agree is the same
 #: trap as two validators: the looser one is the one an attacker reaches for, and
 #: nothing makes a case added to one appear in the other.

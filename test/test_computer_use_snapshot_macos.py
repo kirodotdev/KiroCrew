@@ -33,6 +33,8 @@ What is asserted, and why each one earns a test:
 from __future__ import annotations
 
 import ctypes
+import os
+import sys
 
 # Reuse the harness rather than forking a second set of fakes: a divergent copy
 # would drift from the real symbol table and quietly stop proving anything.
@@ -502,6 +504,99 @@ class TestPermissions:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
         assert "CGRequestScreenCaptureAccess" not in called
+
+
+class TestResponsibleProcessWalk:
+    """The ancestor walk, driven over a FAKE process tree rather than the host's.
+
+    Driving the real ancestry makes the coverage of these branches a property of the
+    machine, not of the code: a container whose chain is deeper than the 8-level
+    bound never executes the termination ``break`` at all, so the same source line is
+    covered on one runner and uncovered on another. Injecting the tree makes each
+    branch a statement about the walk instead.
+    """
+
+    @staticmethod
+    def _tree(monkeypatch: pytest.MonkeyPatch, *, chain: list[str]):
+        """Install a fake ancestry whose first pid is this process's REAL pid.
+
+        Keying on the real pid keeps ``os.getpid`` untouched: swapping it on the
+        stdlib module is process-wide, and coverage names its data file and xdist
+        identifies its worker from that same call. *chain* lists the bundle display
+        name per level outward, ``""`` for a level with no bundle.
+        """
+        from kiro_crew.computer_use import apps_macos
+
+        pids = [os.getpid()] + [90 - 10 * i for i in range(len(chain) - 1)]
+        names = dict(zip(pids, chain))
+        parents = dict(zip(pids, pids[1:] + [1]))
+        monkeypatch.setattr(
+            apps_macos,
+            "resolve_identity",
+            lambda pid: apps_macos.AppIdentity(display_name=names.get(pid, "")),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            permissions.platform_compat,
+            "get_ppid",
+            lambda pid: parents.get(pid, 0),
+            raising=False,
+        )
+
+    def test_reports_the_outermost_named_ancestor_not_the_nearest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """macOS grants TCC to the process it considers responsible, which is the
+        OUTERMOST identifiable ancestor -- so a nearer name must be overwritten by a
+        further one, not kept."""
+        self._tree(monkeypatch, chain=["python3", "kiro-cli", "Kiro Crew"])
+        assert permissions.responsible_process_name() == "Kiro Crew"
+
+    def test_the_walk_terminates_at_init(self, monkeypatch: pytest.MonkeyPatch):
+        """Reaching pid 1 ends the walk. Without this the loop would keep asking the
+        OS about pid 1's parent, which on Linux answers 0 forever."""
+        self._tree(monkeypatch, chain=["Kiro Crew"])
+        assert permissions.responsible_process_name() == "Kiro Crew"
+
+    def test_a_self_referential_parent_does_not_spin(self, monkeypatch: pytest.MonkeyPatch):
+        """An unusual or hostile tree can report itself as its own parent."""
+        from kiro_crew.computer_use import apps_macos
+
+        monkeypatch.setattr(
+            apps_macos,
+            "resolve_identity",
+            lambda pid: apps_macos.AppIdentity(display_name="Kiro Crew"),
+            raising=False,
+        )
+        monkeypatch.setattr(permissions.platform_compat, "get_ppid", lambda pid: pid, raising=False)
+        assert permissions.responsible_process_name() == "Kiro Crew"
+
+    def test_a_failing_ppid_lookup_keeps_the_name_found_so_far(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Diagnostic-only: a raising ``get_ppid`` must stop the walk, not the page."""
+        from kiro_crew.computer_use import apps_macos
+
+        monkeypatch.setattr(
+            apps_macos,
+            "resolve_identity",
+            lambda pid: apps_macos.AppIdentity(display_name="Kiro Crew"),
+            raising=False,
+        )
+
+        def _boom(pid: int) -> int:
+            raise OSError("no such process")
+
+        monkeypatch.setattr(permissions.platform_compat, "get_ppid", _boom, raising=False)
+        assert permissions.responsible_process_name() == "Kiro Crew"
+
+    def test_an_unidentifiable_chain_falls_back_to_the_executable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A bare venv launch resolves no bundle anywhere; naming the interpreter is
+        still more useful to an operator than a generic phrase."""
+        self._tree(monkeypatch, chain=[""])
+        assert permissions.responsible_process_name() == os.path.basename(sys.executable)
 
 
 class TestMacOSDriverErrorDiscipline:

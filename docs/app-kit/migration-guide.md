@@ -1,21 +1,21 @@
 # Migration Guide — Adopting the App SDK
 
-For apps that already talk to the KiroCrew Gateway via raw `fetch()`,
+For apps that already talk to the Kiro Crew Gateway via raw `fetch()`,
 `urllib`, or custom HTTP wrappers, this guide shows how to migrate to the
 supported integration paths step by step:
 
 - **Dashboard UI pages (TypeScript/React)** → the host-provided
   `@kirocrew/app-sdk` hooks (`useAppApi`, `useAppEvents`, …).
-- **Python apps / external CLI tools** → the standalone `kirocrew-client`
-  package (`pip install kirocrew-client`).
+- **Python apps / external CLI tools** → the source-only standalone
+  `kirocrew-client` package under `packages/kirocrew-client-py/`.
 
 ## Why Migrate
 
 - No more guessing endpoint paths and response shapes
 - Permission-scoped API access declared in `app.json` (UI hooks)
 - Built-in retry with exponential backoff (5xx, 429, network errors) — `kirocrew-client`
-- Auth handling (localhost skip, token injection, app-secret auto-exchange)
-- WebSocket reconnection with backoff
+- Auth handling (localhost skip, token injection, explicit app-secret exchange)
+- Host-managed WebSocket subscriptions for dashboard UI apps
 - Context injection with local buffering
 - Structured errors instead of raw HTTP status codes
 - Less hand-rolled HTTP/WS code
@@ -31,6 +31,27 @@ Dashboard UI pages use the `@kirocrew/app-sdk` hooks, which the dashboard host
 provides at runtime via its import map — there is **no `npm install`** and no
 published gateway-client npm package. Mark `@kirocrew/app-sdk` (and React,
 ReactDOM, lucide-react) as build externals.
+
+### Shared transport and host interaction contracts
+
+Use `api.raw(path, init)` for a binary download or stream: successful responses
+are not parsed or consumed. HTTP errors retain the SDK's status/body contract.
+Keep abort and stream-reader cleanup in the component that owns the request.
+
+Declared API patterns follow the backend's matcher, including trailing `/*` and
+`*`. Use `/api/example/*` rather than a bare trailing slash when declaring a
+subtree. This makes previously client-rejected declared wildcards usable; it
+neither changes app-token authorization nor adds manifest grants. Review broad
+trailing `*` declarations because they deliberately match sibling string prefixes.
+
+Replace direct Redux chat handoff with `useChatLauncher`: pass `slotKey` for an
+existing session and `autoSend: false` for a draft. Do not replace a draft handoff
+with the default automatic send. `agent` applies only to a newly created session.
+The host remains responsible for session activation and backend authorization.
+
+Python cron callers use `set_enabled` / `set_enabled_async` for pause and resume.
+Passing `enabled` to an update method raises instead of silently doing nothing.
+Only owned tasks can be toggled; IDs, history and existing execution gates remain.
 
 ### Step 1: Import the hooks
 
@@ -52,7 +73,7 @@ function MyPage() {
 The host injects auth automatically and scopes requests to the `permissions.api`
 paths declared in your `app.json` — accessing an undeclared path throws.
 
-### Step 2: Declare permissions
+### Step 3: Declare permissions
 
 Add the API paths and WebSocket events your app uses to `app.json`:
 
@@ -65,7 +86,7 @@ Add the API paths and WebSocket events your app uses to `app.json`:
 }
 ```
 
-### Step 3: Replace HTTP calls
+### Step 4: Replace HTTP calls
 
 | Before (raw fetch) | After (`useAppApi`) |
 |---------------------|-------------|
@@ -78,7 +99,15 @@ Add the API paths and WebSocket events your app uses to `app.json`:
 | `fetch('/api/crons').then(r => r.json())` | `api.get('/api/crons')` |
 | `fetch('/api/lessons').then(r => r.json())` | `api.get('/api/lessons')` |
 
-### Step 4: Replace WebSocket code
+For raw request bodies (such as `FormData`), use `api.request(path, init)`.
+JSON helpers also accept request options: `api.post(path, body, { signal })`.
+All responses are still parsed as JSON; use the `status` and unparsed `body`
+fields on an HTTP `AppApiError` to handle an endpoint's conflict response rather
+than parsing its error message. See the [API reference](api-reference.md#app-sdk-hooks-dashboard-ui).
+Do not copy a session header into app code: the host supplies it, and a chat-bound
+host always overrides caller-supplied identity.
+
+### Step 5: Replace WebSocket code
 
 ```tsx
 // Before — custom WS with manual reconnect
@@ -98,7 +127,7 @@ useAppEvents('chat_chunk', (data) => {
 useAppEvents('chat_done', () => handleDone())
 ```
 
-### Step 5: Delete old auth + wrapper code
+### Step 6: Delete old auth + wrapper code
 
 The host injects auth (cookies, app-secret token exchange, refresh) — you no
 longer read secrets or build headers. Once all calls are migrated, remove your
@@ -108,8 +137,11 @@ custom HTTP client, WS manager, and auth helper files.
 
 ### Step 1: Install
 
+The package is not published to PyPI or included in the main wheel. Install it
+from a Kiro Crew source checkout:
+
 ```bash
-pip install kirocrew-client
+python -m pip install -e /path/to/KiroCrew/packages/kirocrew-client-py
 ```
 
 ### Step 2: Replace sync calls with async
@@ -146,27 +178,29 @@ Key differences:
 
 | Scenario | Recommended |
 |----------|-------------|
-| App backend managed by KiroCrew (behind the gateway reverse proxy) | `kirocrew_client` (async) for outbound calls |
+| App backend managed by Kiro Crew (behind the gateway reverse proxy) | `kirocrew_client` (async) for outbound calls |
 | External CLI tool or service (Python) | `kirocrew_client` (async, standalone) |
 | Dashboard UI page (TypeScript/React) | `@kirocrew/app-sdk` hooks (host-provided) |
 | Electron / Node.js app | Call the Gateway REST/WS endpoints directly via `fetch()` / a WebSocket |
 
-## Backward Compatibility with Older Gateways
+## Compatibility with older Gateways
 
-These paths call the same endpoints that have existed since KiroCrew 1.0.
-Core APIs (slots, chat, spawn, cron, lessons) work with any Gateway version.
-
-For newer features (like context injection), the Gateway returns 404 if the
-endpoint doesn't exist. Handle this gracefully:
+Compatibility is endpoint-by-endpoint; the current project is pre-1.0, so there
+is no blanket “since 1.0” floor. Set `minKiroCrewVersion` for a feature your app
+requires. For an optional newer endpoint, handle a structured 404:
 
 ```tsx
-// Dashboard UI via useAppApi() — a missing endpoint surfaces as a 404
+import type { AppApiError } from '@kirocrew/app-sdk'
+
 const api = useAppApi()
 try {
-  await api.post('/api/context/inject', { slot: slotId, content: backgroundInfo, source: 'watch' })
+  await api.post(`/api/chat/slots/${slotId}/context`, {
+    content: backgroundInfo,
+    source: 'watch',
+  })
 } catch (err) {
-  if (String(err).includes('404')) {
-    fallbackMethod(backgroundInfo)   // Gateway doesn't support this yet
+  if ((err as AppApiError).status === 404) {
+    fallbackMethod(backgroundInfo)
   } else {
     throw err
   }
@@ -185,16 +219,16 @@ except KiroCrewError as e:
         raise
 ```
 
-This pattern lets your app work with both old and new Gateway versions
-without requiring users to upgrade.
+Use a fallback only when the feature is genuinely optional. If it is required,
+fail clearly and enforce the version floor in `app.json`.
 
 ## Migration Checklist
 
 - [ ] Choose the path: `@kirocrew/app-sdk` hooks (dashboard UI) or `kirocrew-client` (Python / external)
-- [ ] Python: `pip install kirocrew-client` and create `KiroCrewClient` at startup
+- [ ] Python: install `packages/kirocrew-client-py/` from a source checkout and create `KiroCrewClient` at startup
 - [ ] UI: import `useAppApi` / `useAppEvents` and declare `permissions.api` / `permissions.events` in `app.json`
-- [ ] Replace raw HTTP calls (one at a time) with `api.get/post/...` or `kirocrew-client` methods
-- [ ] Replace custom WebSocket code with `useAppEvents` (UI) or the client's `on*()` methods (Python)
-- [ ] Add try/catch fallbacks for newer endpoints (context injection)
+- [ ] Replace raw HTTP calls (one at a time) with `api.get/post/...` or supported `kirocrew-client` methods
+- [ ] UI: replace custom WebSocket code with `useAppEvents`; Python: keep a direct WebSocket implementation because the client has no `on*()` methods
+- [ ] Add try/catch fallbacks for optional newer endpoints, or set `minKiroCrewVersion`
 - [ ] Remove old HTTP/WS wrapper code
 - [ ] Test against your target Gateway version

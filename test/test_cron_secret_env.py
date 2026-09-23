@@ -948,7 +948,7 @@ class TestMcpSecretRequest:
 
         svc, job = self._svc_and_job(cron_home)
         self._vault().set_sync("slack-sandbox", "xoxb-1")
-        out = mcp_cron._call_tool(
+        out = mcp_cron._call_tool_locally(
             "cron_secret_request",
             {"job_id": job.id, "secrets": {"MY_TOKEN": "slack-sandbox"}},
         )
@@ -969,7 +969,7 @@ class TestMcpSecretRequest:
         from kiro_crew import mcp_cron
 
         svc, job = self._svc_and_job(cron_home)
-        out = mcp_cron._call_tool(
+        out = mcp_cron._call_tool_locally(
             "cron_secret_request",
             {"job_id": job.id, "secrets": {"MY_TOKEN": "never-stored"}},
         )
@@ -983,7 +983,7 @@ class TestMcpSecretRequest:
 
         svc, job = self._svc_and_job(agent=True)
         self._vault().set_sync("slack-sandbox", "xoxb-1")
-        out = mcp_cron._call_tool(
+        out = mcp_cron._call_tool_locally(
             "cron_secret_request",
             {"job_id": job.id, "secrets": {"MY_TOKEN": "slack-sandbox"}},
         )
@@ -994,7 +994,7 @@ class TestMcpSecretRequest:
 
         svc, job = self._svc_and_job(cron_home)
         self._vault().set_sync("slack-sandbox", "xoxb-1")
-        out = mcp_cron._call_tool(
+        out = mcp_cron._call_tool_locally(
             "cron_secret_request",
             {"job_id": job.id, "secrets": {"SLACK_BOT_TOKEN": "slack-sandbox"}},
         )
@@ -1005,11 +1005,11 @@ class TestMcpSecretRequest:
 
         svc, job = self._svc_and_job(cron_home)
         self._vault().set_sync("slack-sandbox", "xoxb-1")
-        mcp_cron._call_tool(
+        mcp_cron._call_tool_locally(
             "cron_secret_request",
             {"job_id": job.id, "secrets": {"MY_TOKEN": "slack-sandbox"}},
         )
-        out = mcp_cron._call_tool("cron_secret_request", {"job_id": job.id, "secrets": {}})
+        out = mcp_cron._call_tool_locally("cron_secret_request", {"job_id": job.id, "secrets": {}})
         assert "Withdrew" in out
         reloaded = CronService(base_dir=svc._dir).get_job(job.id)
         assert reloaded is not None
@@ -1021,7 +1021,7 @@ class TestMcpSecretRequest:
         from kiro_crew import mcp_cron
 
         svc, job = self._svc_and_job(cron_home)
-        mcp_cron._call_tool(
+        mcp_cron._call_tool_locally(
             "cron_update",
             {
                 "job_id": job.id,

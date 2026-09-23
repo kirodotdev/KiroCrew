@@ -526,3 +526,55 @@ def test_the_fingerprint_scheme_is_hashed_with_the_payload():
     first = td.revision_fingerprint(spec())
     assert len(first) == 64
     assert int(first, 16) >= 0
+
+
+# ── ECS Exec's effect on the definition ───────────────────────────────────────
+
+
+def test_the_container_runs_an_init_process_to_reap_the_ssm_agents_children():
+    """AWS recommends an init process specifically for ECS Exec.
+
+    The platform bind-mounts its SSM agent into the task, and that agent leaves
+    child processes behind. With no pid 1 willing to reap them they accumulate as
+    zombies for the task's whole life, so this is set for the same reason the
+    channel is enabled at all.
+    """
+    document = td.task_definition_document(spec())
+    assert container(document)["linuxParameters"]["initProcessEnabled"] is True
+
+
+def test_the_init_process_is_on_the_definition_because_runtask_cannot_override_it():
+    """``linuxParameters`` is beyond RunTask's reach, so the definition must carry it.
+
+    Stated as a test rather than a comment because the alternative -- setting it in
+    a container override -- would be silently dropped: neither override allowlist
+    admits ``linuxParameters``, so the task would run with no init process and
+    nothing would report a problem.
+    """
+    from kiro_crew.cloud.fargate import runtask as rt
+
+    assert "linuxParameters" not in rt.TASK_OVERRIDE_KEYS
+    assert "linuxParameters" not in rt.CONTAINER_OVERRIDE_KEYS
+    document = td.task_definition_document(spec())
+    assert "linuxParameters" in container(document)
+
+
+def test_the_revision_scheme_was_bumped_when_the_document_gained_a_field():
+    """A key computed under the old scheme must not describe the new document.
+
+    The hashed FIELDS did not change when ``initProcessEnabled`` was added, so
+    without a scheme bump a revision registered before the change carries an
+    IDENTICAL key while running a DIFFERENT document -- and a caller confirming
+    "revision N holds the content this spec describes" would accept a task with no
+    init process. The new field is a constant and so could never have
+    discriminated the two by being hashed; the scheme is the only thing that can.
+    """
+    assert td.FINGERPRINT_SCHEME == 2
+
+
+def test_the_scheme_actually_participates_in_the_key(monkeypatch):
+    """The bump above is only protection if the scheme reaches the hash."""
+    current = td.revision_fingerprint(spec())
+    monkeypatch.setattr(td, "FINGERPRINT_SCHEME", 1)
+    under_old_scheme = td.revision_fingerprint(spec())
+    assert current != under_old_scheme

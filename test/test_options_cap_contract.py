@@ -1085,3 +1085,102 @@ class TestWebexEnforcement:
         assert "​" not in final
         # The credential rides the OVERFLOW half, past the widget cap.
         assert "AKIAIOSFODNN7EXAMPLE" not in final
+
+
+class TestZeroWidgetBodyRedaction:
+    """The delivered ANSWER BODY, not just the choices, is scrubbed render-aware.
+
+    A buffered zero-widget channel that renders markdown (Feishu, WeChat-Work)
+    sends the body through its own send boundary with no re-scan behind the
+    literal channel-neutral stream pass, so a credential split by markup
+    (``AKIA**REST**``) is reassembled on screen. Each such channel scrubs the
+    body render-aware at its send, the same way the markdown channels with a
+    widget do. Asserted against the RENDERED form (``canonicalize_display``),
+    because the split key passes a literal byte scan while the reader sees it
+    whole.
+
+    iMessage is deliberately NOT covered here: it flattens the markup in code and
+    re-scans at ``delivery_text`` already, and its ``text()`` is a canonical
+    accessor that must keep the raw markdown -- pinned in
+    ``test_imessage_renderer.py``.
+    """
+
+    def test_feishu_delivered_body_redacts_markup_split_credential(self) -> None:
+        import asyncio
+
+        from kiro_crew.feishu.renderer import FeishuRenderer
+        from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
+        from kiro_crew.messaging.display_safety import canonicalize_display
+
+        class _Cli:
+            sent = ""
+
+            async def send_reply(self, mid: str, content: str) -> bool:
+                self.sent = content
+                return True
+
+        cli = _Cli()
+        r = FeishuRenderer(cli, "m1", FEISHU_CAPABILITIES)
+
+        async def _go() -> None:
+            await r.on_text_chunk("answer AKIAIOSF**ODNN7EXAMPLE** done")
+            await r.on_done()
+
+        asyncio.run(_go())
+        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(cli.sent)
+
+    def test_weixin_delivered_body_redacts_but_persisted_text_is_untouched(self) -> None:
+        import asyncio
+
+        from kiro_crew.messaging.display_safety import canonicalize_display
+        from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
+        from kiro_crew.weixin.turn_renderer import WeixinRenderer
+
+        class _Cli:
+            def __init__(self) -> None:
+                self.parts: list[str] = []
+
+            async def send_message(self, **kw: Any) -> None:
+                self.parts.append(kw["text"])
+
+        class _Ctx:
+            def get(self, a: str, t: str) -> str:
+                return "tok"
+
+        cli = _Cli()
+        r = WeixinRenderer(cli, "peer", WEIXIN_CAPABILITIES, ctx_store=_Ctx(), account_id="acct")
+
+        async def _go() -> None:
+            await r.on_text_chunk("answer AKIAIOSF**ODNN7EXAMPLE** done")
+            await r.on_done()
+
+        asyncio.run(_go())
+        shipped = "".join(cli.parts)
+        # What ships is scrubbed against the rendered form ...
+        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(shipped)
+        # ... but the persisted transcript form (text()) is not touched by the
+        # send-boundary scrub.
+        assert "AKIAIOSF**ODNN7EXAMPLE**" in r.text()
+
+    def test_feishu_clean_body_is_delivered_intact(self) -> None:
+        import asyncio
+
+        from kiro_crew.feishu.renderer import FeishuRenderer
+        from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
+
+        class _Cli:
+            sent = ""
+
+            async def send_reply(self, mid: str, content: str) -> bool:
+                self.sent = content
+                return True
+
+        cli = _Cli()
+        r = FeishuRenderer(cli, "m1", FEISHU_CAPABILITIES)
+
+        async def _go() -> None:
+            await r.on_text_chunk("just a normal answer with no secret")
+            await r.on_done()
+
+        asyncio.run(_go())
+        assert cli.sent == "just a normal answer with no secret"

@@ -20,7 +20,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric, fmtList, fmtRelative } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
-import { foldStableStamp } from '../../utils/displayVersion'
+import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
 /** Human-readable transfer rate for the progress label. */
@@ -165,6 +165,12 @@ const ARM_TIMEOUT_MS = 5000
  * longer be observed, which the user must hear rather than wait on forever.
  */
 const ARM_POLL_FAILURE_THRESHOLD = 3
+/**
+ * How often the About panel asks the gateway whether an agent has requested an
+ * update. Exported for tests, which shrink it to land several consecutive
+ * failures inside a test budget without touching the failure threshold.
+ */
+export const AGENT_REQUEST_POLL_MS = { value: 5000 }
 
 /**
  * Copy a command and report the OUTCOME. `copyToClipboard` resolves `false`
@@ -585,6 +591,131 @@ export function InAppUpdateFlow({
   )
 }
 
+/** An agent's request that this packaged desktop install be updated (issue #503).
+ *
+ * The gateway holds a REQUEST — version, who asked, when — and nothing else:
+ * no nonce, no token, no endpoint that turns the request into an install. The
+ * only control that installs is the click below, which drives the same
+ * `update:download` → `update:install` IPC the ordinary update card drives.
+ * So the human click IS the approval, made by a person who is present, and an
+ * agent that arms a request (and can read it — it is not secret) gains exactly
+ * the ability to have this card appear. That is what makes agent
+ * self-approval impossible by construction rather than by fence.
+ *
+ * Rendered only on a packaged install (`managed_by: "electron"` on the arm
+ * projection) and only while a request is live. Two answers, side by side: a
+ * prompt that offers only the affirmative control for the whole TTL is
+ * pressure, not consent, and declining is the cheaper mistake — the agent can
+ * ask again and nothing was installed.
+ */
+export function AgentUpdateRequestCard({
+  request,
+  foundVersion,
+  busy,
+  panelError,
+  onInstall,
+  onDeclined,
+}: {
+  request: { request_id?: string; version?: string; requested_by?: string; armed_at?: number; expires_in?: number }
+  /** What the app's updater actually found, if a check has run. */
+  foundVersion?: string
+  busy: boolean
+  /**
+   * A failure the PANEL owns and the card must show: the request poll failing
+   * repeatedly, or the download the card started being refused. The card's own
+   * Decline failure is tracked inside.
+   */
+  panelError?: string
+  onInstall: () => void
+  onDeclined: () => void
+}) {
+  const [error, setError] = useState('')
+  const decline = useMutation({
+    // Bound to the request this card RENDERED: a stale click must not remove a
+    // newer request the user has not seen.
+    mutationFn: () => api.dismissUpdateArm(request.request_id || ''),
+    onSuccess: () => { setError(''); onDeclined() },
+    onError: () => setError(i18nT('pages.settings.aboutPanel.agent_request_decline_failed')),
+  })
+  // Anchor a deadline on each poll answer and tick locally, so the countdown
+  // moves every second instead of jumping with the 5s poll.
+  const serverExpires = typeof request.expires_in === 'number' ? request.expires_in : null
+  const [deadlineMs, setDeadlineMs] = useState<number | null>(null)
+  useEffect(() => {
+    setDeadlineMs(serverExpires === null ? null : Date.now() + serverExpires * 1000)
+  }, [serverExpires])
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    if (deadlineMs === null) return
+    const tick = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(tick)
+  }, [deadlineMs])
+  const expiresIn = deadlineMs === null ? null : Math.max(0, Math.floor((deadlineMs - nowMs) / 1000))
+  const requested = request.version || ''
+  // The requester named a version the feed does not offer. Still the human's
+  // call — the card installs what the feed HAS — but say so, or the click
+  // would appear to install one thing and install another.
+  const differs = !!requested && !!foundVersion && requested !== foundVersion
+  const askedAt = typeof request.armed_at === 'number' ? new Date(request.armed_at * 1000) : null
+  // The TTL is a day, so a minutes:seconds counter would read "1439:58".
+  // Humanize from the deadline instead — "in 24 hours", "in 3 minutes" — and
+  // let the same deadline drive the 1 s re-render below.
+  const expiresAt = deadlineMs === null ? null : new Date(deadlineMs)
+  return (
+    <div className="p-3 bg-bg rounded-lg border border-border flex flex-col gap-2" data-testid="agent-update-request">
+      <span className="text-[13px] font-medium text-text flex items-center gap-1.5">
+        <AlertCircle size={13} className="lucide-inline text-warn" />
+        {i18nT('pages.settings.aboutPanel.agent_request_heading')}
+      </span>
+      <span className="text-[12px] text-muted" data-testid="agent-update-request-body">
+        {requested
+          ? i18nT('pages.settings.aboutPanel.agent_request_body_version', {
+            who: request.requested_by || i18nT('pages.settings.aboutPanel.agent_request_unknown_requester'),
+            version: requested,
+          })
+          : i18nT('pages.settings.aboutPanel.agent_request_body_latest', {
+            who: request.requested_by || i18nT('pages.settings.aboutPanel.agent_request_unknown_requester'),
+          })}
+        {askedAt && !isNaN(askedAt.getTime()) ? ` · ${fmtRelative(askedAt)}` : ''}
+      </span>
+      {panelError && (
+        <ErrorNotice message={panelError} askAgent testId="agent-update-request-panel-error" />
+      )}
+      {differs && (
+        <span className="text-[12px] text-muted" data-testid="agent-update-request-differs">
+          {i18nT('pages.settings.aboutPanel.agent_request_feed_differs', { requested, found: foundVersion })}
+        </span>
+      )}
+      {expiresAt !== null && expiresIn !== null && (
+        <span className="text-[12px] text-muted" data-testid="agent-update-request-countdown">
+          {i18nT('pages.settings.aboutPanel.agent_request_expires', {
+            when: fmtRelative(expiresAt, { now: nowMs, style: 'long' }),
+          })}
+        </span>
+      )}
+      <ErrorNotice message={error} askAgent testId="agent-update-request-error" />
+      <div className="flex items-center gap-2">
+        {/* The button names the version it will actually deliver. When the feed
+            offers something other than what was requested, "Install & restart"
+            alone leaves the one click this card exists for unanswerable —
+            the reader cannot tell which version they are saying yes to. */}
+        <Btn primary data-testid="agent-update-request-install" disabled={busy || decline.isPending} onClick={onInstall}>
+          {busy
+            ? <RefreshCw size={13} className="lucide-inline animate-spin" />
+            : <Download size={13} className="lucide-inline" />}{' '}
+          {foundVersion
+            ? i18nT('pages.settings.aboutPanel.agent_request_install_version', { version: foundVersion })
+            : i18nT('pages.settings.aboutPanel.agent_request_install')}
+        </Btn>
+        <Btn data-testid="agent-update-request-decline" disabled={busy || decline.isPending} onClick={() => decline.mutate()}>
+          <X size={13} className="lucide-inline" />{' '}
+          {i18nT('pages.settings.aboutPanel.agent_request_decline')}
+        </Btn>
+      </div>
+    </div>
+  )
+}
+
 export function AboutPanel() {
   const { botName, avatar } = useBranding()
   const gatewayVersion = useAppSelector(s => s.dashboard.status?.version) || ''
@@ -648,6 +779,78 @@ export function AboutPanel() {
   // a clickable install-and-restart action followed by an unexplained quit -- which reads
   // as a crash.
   const installDispatched = installMutation.isPending || installMutation.isSuccess
+  // An agent's pending request for THIS packaged install. Polled while on
+  // desktop; the poll is also how the card leaves — a decline, an expiry, or
+  // the install itself (which quits the app under this tab) all end it.
+  const agentRequest = useQuery({
+    queryKey: ['update-arm-status'],
+    queryFn: () => api.armStatus(),
+    enabled: isDesktop,
+    refetchInterval: AGENT_REQUEST_POLL_MS.value,
+  })
+  const pendingAgentRequest = agentRequest.data?.armed === true && agentRequest.data.managed_by === 'electron'
+    ? agentRequest.data
+    : null
+  // React Query keeps the last successful data through errors, so a failing
+  // poll leaves the card mounted with its error line rather than blanking it.
+  // The human's click on the request card: the SAME download→install path the
+  // ordinary card uses. With a stage already present, install; otherwise
+  // download and let the `downloaded` state's Install button (or the
+  // deferred-on-quit install) finish it — exactly as a manual click would.
+  const [agentInstallArmed, setAgentInstallArmed] = useState(false)
+  // Before dispatching the install, retire the request by the id the card
+  // showed. The install quits the app; on relaunch into the new version, a
+  // request left on disk would put the card straight back up asking for a
+  // version that is already running. Best-effort and NOT awaited: the human
+  // said yes, and a slow gateway must not stand between that and the install.
+  const retireAgentRequest = () => {
+    const id = pendingAgentRequest?.request_id
+    if (id) void api.dismissUpdateArm(id).catch(() => {})
+  }
+  const installFromAgentRequest = () => {
+    setAgentInstallArmed(true)
+    if (updateState?.state === 'downloaded') {
+      retireAgentRequest()
+      installMutation.mutate()
+    } else {
+      downloadMutation.mutate()
+    }
+  }
+  const agentDownloadLanded = agentInstallArmed && updateState?.state === 'downloaded'
+  useEffect(() => {
+    // The download the request card started has landed: finish it. One shot —
+    // `agentInstallArmed` is cleared so a later, unrelated download does not
+    // ride this click.
+    if (!agentDownloadLanded || installDispatched) return
+    setAgentInstallArmed(false)
+    retireAgentRequest()
+    installMutation.mutate()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentDownloadLanded, installDispatched])
+  // A download the card started that then FAILED — the updater's own
+  // download-phase error, or the IPC rejecting — must release the click, or
+  // both request actions stay disabled with no way forward.
+  const agentDownloadFailed = agentInstallArmed
+    && (downloadMutation.isError || (updateState?.state === 'error' && updateState.phase === 'download'))
+  useEffect(() => {
+    if (agentDownloadFailed) setAgentInstallArmed(false)
+  }, [agentDownloadFailed])
+  // Failures the request card must SHOW (errors-use-error-notice): a poll that
+  // keeps failing means an approval could land unseen; a refused download means
+  // the click did nothing. The poll uses the same consecutive-failure threshold
+  // InAppUpdateFlow uses for the same reason — one blip is left to the next
+  // interval.
+  const agentRequestPanelError = agentRequest.failureCount >= ARM_POLL_FAILURE_THRESHOLD
+    ? i18nT('pages.settings.aboutPanel.arm_status_poll_failing')
+    : agentDownloadFailed
+      ? `${i18nT('pages.settings.aboutPanel.download_failed')}: ${updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown)}`
+      : ''
+  // While a request is live, its card owns the one Install control. Rendering
+  // the ordinary card's "Download & Install" beneath it shows two buttons for
+  // one update and the reader cannot tell whether they differ. The ordinary
+  // card keeps everything else — progress, notes, the failure row, the manual
+  // fallback — because those are what the request card's click drives.
+  const ctaOwnedByRequest = !!pendingAgentRequest
   // Channel switcher (stable ⇄ insider opt-in). Switching persists the
   // preference and triggers a check; the other channel's build then arrives
   // as the normal consent card above -- never an automatic install. Nightly
@@ -696,6 +899,26 @@ export function AboutPanel() {
   const versionDisplay = info?.version
     ? foldStableStamp(info.version, info.channel, runningAheadOfLane)
     : (gatewayVersionDisplay || gatewayVersion || '—')
+  // Two version lanes. `versionDisplay` is the DESKTOP SHELL's stamp whenever
+  // `getInfo()` answered and the gateway's only as a fallback, while the branch
+  // and commit chips are always the gateway's (`status.branch` / `status.commit`,
+  // stamped from the checkout the backend runs from). A shell that spawned its
+  // own gateway keeps both lanes equal, so folding them into one row is
+  // harmless there. A shell attached to a gateway it did not spawn (dev-fleet,
+  // launchd, an SSH tunnel to a source checkout) is where the fold lies: the row
+  // reads `v0.6.0-insider.6 · main · 2ed1f603d`, a build that never existed.
+  // When the two disagree, label both and hang the chips off the gateway line,
+  // since that is what they stamp. "Agree" is EITHER of two tests, because one
+  // build is stamped in two spellings (`release_channel.py`: the shell carries
+  // SemVer `0.6.0-insider.4`, the wheel it launched carries PEP 440 `0.6.0rc4`):
+  // the raw strings name the same build (`sameBuildVersion`, so a self-spawned
+  // insider install is one lane), or the DISPLAY strings match (a promoted
+  // stable build folds its prerelease stamp on both sides — foldStableStamp
+  // here, `_display_version` on the backend — while its raw stamps differ).
+  const gatewayLaneVersion = gatewayVersionDisplay || gatewayVersion
+  const versionLanesDiffer = !!info?.version && !!gatewayLaneVersion
+    && versionDisplay !== gatewayLaneVersion
+    && !sameBuildVersion(info.version, gatewayVersion || gatewayLaneVersion)
   const channel = info?.channel
   const updatesDisabled = info?.disabled
   // An externally-managed install (a distro/enterprise package) has no channel
@@ -838,7 +1061,7 @@ export function AboutPanel() {
           </span>
         </div>
         <div className="shrink-0">
-          {cardReady ? (
+          {ctaOwnedByRequest ? null : cardReady ? (
             <Btn primary onClick={() => installMutation.mutate()} disabled={installDispatched}>
               <RefreshCw size={13} className={`lucide-inline ${installDispatched ? 'animate-spin' : ''}`} /> {installMutation.isSuccess
                 ? i18nT('pages.settings.aboutPanel.restarting')
@@ -1230,6 +1453,24 @@ export function AboutPanel() {
     return () => window.removeEventListener('keydown', onKey)
   }, [showConfirm, gwApply.isPending, restarting])
 
+  // Gateway-stamped build chips. Hoisted because they render in one of two
+  // places: beside the license chip when the lanes agree, or on the gateway's
+  // own version line when they do not (see `versionLanesDiffer`).
+  const branchChip = buildBranch && (
+    <a href={codeBrowserBranchUrl(buildBranch)} target="_blank" rel="noopener noreferrer"
+       title={i18nT('pages.settings.aboutPanel.browse_this_branch_on_github')}
+       className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
+      <GitBranch size={12} className="shrink-0" /> <span className="truncate max-w-[220px]">{buildBranch}</span> <ExternalLink size={10} className="opacity-60 shrink-0" />
+    </a>
+  )
+  const commitChip = buildCommit && (
+    <a href={codeBrowserCommitUrl(buildCommit)} target="_blank" rel="noopener noreferrer"
+       title={i18nT('pages.settings.aboutPanel.view_this_commit_on_github')}
+       className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
+      <GitCommitHorizontal size={12} className="shrink-0" /> {buildCommit} <ExternalLink size={10} className="opacity-60 shrink-0" />
+    </a>
+  )
+
   return (
     <>
       <Card style={HERO_BG}>
@@ -1246,7 +1487,13 @@ export function AboutPanel() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
-              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT} data-testid="about-version">{i18nT('pages.settings.aboutPanel.v')}{versionDisplay}</span>
+              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
+                    title={versionLanesDiffer ? i18nT('pages.settings.aboutPanel.app_lane_title') : undefined}
+                    data-testid="about-version">
+                {versionLanesDiffer && (
+                  <span className="font-sans font-medium text-muted mr-1" data-testid="about-version-lane">{i18nT('pages.settings.aboutPanel.app_lane_label')}</span>
+                )}
+                {i18nT('pages.settings.aboutPanel.v')}{versionDisplay}</span>
               {!isDesktop && (heroDiverged
                 // Diverged outranks BOTH other verdicts: `update_available` is
                 // false here BY DESIGN (the no-auto-apply property), and a
@@ -1294,6 +1541,21 @@ export function AboutPanel() {
               )}
             </div>
             <div className="text-[12.5px] text-muted mt-1">{i18nT('pages.settings.aboutPanel.autonomous_agent_management_runs_locally_open_so')}</div>
+            {/* The gateway's own line, only when it is not the build the shell
+                badge above names. The branch and commit chips live here in that
+                case — they are gateway stamps, so beside the shell badge they
+                described a build that never existed. */}
+            {versionLanesDiffer && (
+              <div className="mt-2 flex items-center gap-2 flex-wrap" data-testid="about-gateway-lane">
+                <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
+                      title={i18nT('pages.settings.aboutPanel.gateway_lane_title')}
+                      data-testid="about-gateway-version">
+                  <span className="font-sans font-medium text-muted mr-1">{i18nT('pages.settings.aboutPanel.gateway_lane_label')}</span>
+                  {i18nT('pages.settings.aboutPanel.v')}{gatewayLaneVersion}</span>
+                {branchChip}
+                {commitChip}
+              </div>
+            )}
             {/* getInfo() rejected: the version chip above fell back to the
                 gateway's figure and the channel row is missing, with nothing
                 to say why. askAgent on: a read failure on a status card. */}
@@ -1311,20 +1573,8 @@ export function AboutPanel() {
 
         {/* Build + license chips */}
         <div className="mt-4 flex flex-wrap gap-2">
-          {buildBranch && (
-            <a href={codeBrowserBranchUrl(buildBranch)} target="_blank" rel="noopener noreferrer"
-               title={i18nT('pages.settings.aboutPanel.browse_this_branch_on_github')}
-               className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
-              <GitBranch size={12} className="shrink-0" /> <span className="truncate max-w-[220px]">{buildBranch}</span> <ExternalLink size={10} className="opacity-60 shrink-0" />
-            </a>
-          )}
-          {buildCommit && (
-            <a href={codeBrowserCommitUrl(buildCommit)} target="_blank" rel="noopener noreferrer"
-               title={i18nT('pages.settings.aboutPanel.view_this_commit_on_github')}
-               className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
-              <GitCommitHorizontal size={12} className="shrink-0" /> {buildCommit} <ExternalLink size={10} className="opacity-60 shrink-0" />
-            </a>
-          )}
+          {!versionLanesDiffer && branchChip}
+          {!versionLanesDiffer && commitChip}
           <span className="inline-flex items-center gap-1.5 text-[12px] text-muted border border-border rounded-lg px-2.5 py-1 bg-bg"
                 title={i18nT('pages.settings.aboutPanel.open_source_under_the_apache_2_0_license')}>
             <Scale size={12} className="shrink-0" /> {i18nT('pages.settings.aboutPanel.apache_2_0')}
@@ -1682,6 +1932,19 @@ export function AboutPanel() {
                   </span>
                 </p>
               )}
+              {/* Above the update card on purpose: a pending request is a
+                  decision waiting for this person, and the card below is the
+                  ordinary flow that decision rides on. */}
+              {pendingAgentRequest && (
+                <AgentUpdateRequestCard
+                  request={pendingAgentRequest}
+                  foundVersion={updateState?.version}
+                  busy={agentInstallArmed || cardBusy || installDispatched}
+                  panelError={agentRequestPanelError}
+                  onInstall={installFromAgentRequest}
+                  onDeclined={() => agentRequest.refetch()}
+                />
+              )}
               {updateCard}
               {/* Auto-download opt-out. ON by default, so this row is the only
                   place a user can decline the background download — it renders
@@ -1973,7 +2236,7 @@ export function AboutPanel() {
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
         // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click-to-dismiss is a supplementary mouse affordance; the keyboard path is the document-level Escape listener above plus the Close button, and making the dialog surface itself a tab stop would put a stop in front of its own content
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise"
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
              role="dialog" aria-modal="true" aria-label={i18nT('pages.settings.aboutPanel.update')}
              onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}>
           {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- the only handler is a propagation guard keeping a click inside the panel from reaching the backdrop's dismiss; it performs no action, so there is no keyboard equivalent to provide */}

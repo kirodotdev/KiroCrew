@@ -119,10 +119,7 @@ async def _boom(provider, prompt):
 @pytest.fixture(autouse=True)
 def _patch_redaction(monkeypatch):
     monkeypatch.setattr("kiro_crew.workflows.agent_pool.stream_and_collect", _ok_stream)
-    monkeypatch.setattr("kiro_crew.workflows.agent_pool.redact_credentials", lambda t: (t, []))
-    monkeypatch.setattr(
-        "kiro_crew.workflows.agent_pool.redact_exfiltration_urls", lambda t: (t, [])
-    )
+    monkeypatch.setattr("kiro_crew.workflows.agent_pool.redact", lambda t: t)
 
 
 def _build(sessions, **kwargs):

@@ -49,7 +49,14 @@ export interface NormalizedUsage {
      * failure the usage page must not render as a confident zero.
      */
     refusedTranscripts: number
-    dailyHistory: { date: string; sessions: number; messages: number; toolCalls: number }[]
+    dailyHistory: {
+      date: string
+      sessions: number
+      messages: number
+      toolCalls: number
+      /** Credits billed that local day; absent when the provider does not report per-day spend. */
+      credits?: number
+    }[]
   }
   billing: {
     plan?: string

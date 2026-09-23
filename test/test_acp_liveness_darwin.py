@@ -19,6 +19,7 @@ from kiro_crew.acp import liveness
 from kiro_crew.acp.liveness import (
     CHILD_EXIT_GRACE_SECS,
     EVIDENCE_ESTABLISHED_FLAT,
+    EVIDENCE_PLATFORM_LIMITED,
     EVIDENCE_SAMPLING,
     EVIDENCE_SHELL_CHILD_ABSENT,
     VERDICT_DEAD,
@@ -132,7 +133,7 @@ def _mcp_tool(clock: _Clock, tool_name: str = "use_subagent") -> ToolCallState:
 def test_matched_live_child_is_working_and_tracked(tmp_path):
     clock = _Clock()
     backend = FakeBackend()
-    backend.add(200, "/bin/bash -c long-build release > build.log 2>&1")
+    backend.add(200, "/bin/bash -c long-build release > build.log 2>&1", cpu=1_000)
     oracle = _oracle(backend, clock, tmp_path)
     tool = _shell_tool("long-build release > build.log 2>&1", clock)
 
@@ -142,10 +143,12 @@ def test_matched_live_child_is_working_and_tracked(tmp_path):
     assert evidence == "shell child 200 matched command"
     assert oracle._tracked_child == 200
 
+    # A quiet build that still burns CPU is WORKING whatever it prints.
     clock.advance(4.0)
+    backend.cpu[200] += 5_000
     verdict, evidence = oracle.check_tool(RUNTIME, tool)
     assert verdict == VERDICT_WORKING
-    assert evidence == "shell child 200 alive"
+    assert evidence == "shell child 200 alive (cpu +5000ns (darwin cpu-only))"
 
 
 def test_program_basename_matches_when_only_the_path_is_readable(tmp_path):
@@ -428,7 +431,9 @@ def test_flat_model_wait_is_unknown_never_dead_on_darwin(tmp_path):
 
 
 def test_live_tracked_child_never_reads_stuck_input_on_darwin(tmp_path):
-    """wchan / blocked-fd evidence is /proc-only: a flat live child is WORKING."""
+    """wchan / blocked-fd evidence is /proc-only: a flat live child can never
+    be STUCK_INPUT here — and it is not WORKING either. Alive-but-flat is
+    UNKNOWN tagged ``platform_limited`` so the caller's budget bounds it."""
     clock = _Clock()
     backend = FakeBackend()
     backend.add(200, "/bin/bash -c long-build release", cpu=1_000)
@@ -437,9 +442,83 @@ def test_live_tracked_child_never_reads_stuck_input_on_darwin(tmp_path):
 
     assert oracle.check_tool(RUNTIME, tool)[0] == VERDICT_WORKING
     clock.advance(2.0)
-    assert oracle.check_tool(RUNTIME, tool) == (VERDICT_WORKING, "shell child 200 alive")
+    verdict, evidence = oracle.check_tool(RUNTIME, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence.startswith(EVIDENCE_PLATFORM_LIMITED)
+    assert "shell child 200 alive" in evidence
+    assert "stdin-block evidence unavailable" in evidence
     clock.advance(2.0)
-    assert oracle.check_tool(RUNTIME, tool) == (VERDICT_WORKING, "shell child 200 alive")
+    verdict, evidence = oracle.check_tool(RUNTIME, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert verdict != liveness.VERDICT_STUCK_INPUT
+    assert evidence.startswith(EVIDENCE_PLATFORM_LIMITED)
+
+
+def test_platform_limited_child_recovers_to_working_when_cpu_moves(tmp_path):
+    """The tag is a reading of the current sample, not a latch: movement on
+    the next tick reads WORKING again, so a build that pauses and resumes is
+    never cancelled for the pause."""
+    clock = _Clock()
+    backend = FakeBackend()
+    backend.add(200, "/bin/bash -c long-build release", cpu=1_000)
+    oracle = _oracle(backend, clock, tmp_path, sample_min=1.0)
+    tool = _shell_tool("long-build release", clock)
+
+    assert oracle.check_tool(RUNTIME, tool)[0] == VERDICT_WORKING
+    clock.advance(2.0)
+    assert oracle.check_tool(RUNTIME, tool)[0] == VERDICT_UNKNOWN
+    clock.advance(2.0)
+    backend.cpu[200] += 10
+    verdict, evidence = oracle.check_tool(RUNTIME, tool)
+    assert verdict == VERDICT_WORKING
+    assert evidence == "shell child 200 alive (cpu +10ns (darwin cpu-only))"
+
+
+def test_platform_limited_reads_an_early_flat_delta_against_the_match_baseline(tmp_path):
+    """The match tick primes the movement baseline, so the very next tick —
+    even inside ``sample_min`` — already compares against it: a flat reading
+    there is a real reading (labelled ``early``), not the priming tick."""
+    clock = _Clock()
+    backend = FakeBackend()
+    backend.add(200, "/bin/bash -c long-build release", cpu=1_000)
+    oracle = _oracle(backend, clock, tmp_path, sample_min=3.0)
+    tool = _shell_tool("long-build release", clock)
+
+    assert oracle.check_tool(RUNTIME, tool)[0] == VERDICT_WORKING
+    clock.advance(1.0)  # inside sample_min: reported against the baseline
+    verdict, evidence = oracle.check_tool(RUNTIME, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence.startswith(EVIDENCE_PLATFORM_LIMITED)
+    assert "early" in evidence
+
+
+def test_platform_limited_child_with_unenumerable_tree_stays_working(tmp_path):
+    """No counters at all (the tree could not be read) is absent evidence, not
+    a flat reading — the child is alive, so it keeps the WORKING verdict."""
+    clock = _Clock()
+    backend = FakeBackend()
+    backend.add(200, "/bin/bash -c long-build release", cpu=1_000)
+    oracle = _oracle(backend, clock, tmp_path, sample_min=1.0)
+    tool = _shell_tool("long-build release", clock)
+
+    assert oracle.check_tool(RUNTIME, tool)[0] == VERDICT_WORKING
+    backend.enumerable = False
+    clock.advance(2.0)
+    verdict, evidence = oracle.check_tool(RUNTIME, tool)
+    assert verdict == VERDICT_WORKING
+    assert evidence == "shell child 200 alive (no readable counters)"
+
+
+def test_platform_limited_is_a_distinct_tag():
+    """The tag must not collide with the other evidence prefixes the caller
+    dispatches on, and must sit at the START of the evidence string."""
+    assert EVIDENCE_PLATFORM_LIMITED not in (
+        EVIDENCE_ESTABLISHED_FLAT,
+        EVIDENCE_SHELL_CHILD_ABSENT,
+        EVIDENCE_SAMPLING,
+    )
+    assert not EVIDENCE_ESTABLISHED_FLAT.startswith(EVIDENCE_PLATFORM_LIMITED)
+    assert not EVIDENCE_SHELL_CHILD_ABSENT.startswith(EVIDENCE_PLATFORM_LIMITED)
 
 
 # ── Backend selection & lifecycle ────────────────────────────────────────────

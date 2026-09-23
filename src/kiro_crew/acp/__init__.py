@@ -5,6 +5,7 @@ from kiro_crew.acp.client import (
     AcpError,
     AcpPermissionNeeded,
     AcpProcessDied,
+    AcpRegistrationRateLimited,
     AcpTimeoutError,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
@@ -15,6 +16,7 @@ __all__ = [
     "AcpError",
     "AcpPermissionNeeded",
     "AcpProcessDied",
+    "AcpRegistrationRateLimited",
     "AcpTimeoutError",
     "AcpRuntime",
     "AcpSessionHandle",

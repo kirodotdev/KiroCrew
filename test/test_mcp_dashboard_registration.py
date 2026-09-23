@@ -46,8 +46,7 @@ class TestRegistryParity:
     def test_tool_module_is_mapped_for_in_process_listing(self) -> None:
         """Discovery reads tool names in-process; an unmapped server lists zero."""
         assert (
-            mcp_discovery._MANAGED_SERVER_TOOL_MODULES.get(DASH_SERVER)
-            == "kiro_crew.mcp_dashboard"
+            mcp_discovery._MANAGED_SERVER_TOOL_MODULES.get(DASH_SERVER) == "kiro_crew.mcp_dashboard"
         )
 
     def test_spec_carries_no_auto_approve(self) -> None:
@@ -71,7 +70,9 @@ class TestRegistryParity:
         """
         flagged = {n for n, s in agent._MANAGED_MCP_SERVERS.items() if s.get("opt_in")}
         assert set(mcp_cleanup.OPT_IN_BIN_MCP_SERVERS) == flagged
-        assert set(mcp_cleanup.ALWAYS_ON_BIN_MCP_SERVERS) == set(agent._MANAGED_MCP_SERVERS) - flagged
+        assert (
+            set(mcp_cleanup.ALWAYS_ON_BIN_MCP_SERVERS) == set(agent._MANAGED_MCP_SERVERS) - flagged
+        )
         assert set(mcp_cleanup.KIROCREW_BIN_MCP_SERVERS) == set(agent._MANAGED_MCP_SERVERS)
 
 
@@ -151,7 +152,10 @@ class TestDoctorTreatsItAsAssignedNotMissing:
             json.dumps(
                 {
                     "mcpServers": {
-                        n: {"command": "/usr/local/bin/kirocrew", "args": [f"mcp-{n.split('-', 1)[1]}"]}
+                        n: {
+                            "command": "/usr/local/bin/kirocrew",
+                            "args": [f"mcp-{n.split('-', 1)[1]}"],
+                        }
                         for n in mcp_cleanup.ALWAYS_ON_BIN_MCP_SERVERS
                     },
                     "tools": [f"@{n}" for n in mcp_cleanup.ALWAYS_ON_BIN_MCP_SERVERS],
@@ -281,9 +285,7 @@ class TestTheNameAloneIsNotOwnership:
         for name in mcp_cleanup.ALWAYS_ON_BIN_MCP_SERVERS:
             assert name in mcp_cleanup.STALE_MANAGED_MCP_SERVERS
 
-    def test_a_hand_written_grant_survives_cleanup(
-        self, tmp_path: Any, monkeypatch: Any
-    ) -> None:
+    def test_a_hand_written_grant_survives_cleanup(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Including one whose invocation is byte-for-byte what we would write."""
         import json
 
@@ -337,6 +339,17 @@ class TestWhatThisSetGrants:
         "chat_folder_move_session",
         "chat_folder_file_self",
     }
+    #: The tag half of sidebar organization. Same posture as the folder tools —
+    #: read, create, update (rename/recolor/status) and assign; no delete — so
+    #: the same assignment grants it: an agent told to organize sessions files
+    #: them AND labels them, and a label is the smaller of the two writes (a
+    #: folder move changes what the person sees where; a tag adds a chip).
+    TAG_TOOLS = {
+        "chat_tag_list",
+        "chat_tag_create",
+        "chat_tag_update",
+        "chat_tag_assign",
+    }
     #: The session-control half. Granted by the SAME assignment as the folder
     #: half — see ``test_session_driving_tools_ship_with_the_folder_tools`` for
     #: why the two classes ride together rather than in two servers.
@@ -347,7 +360,7 @@ class TestWhatThisSetGrants:
         "session_send",
         "session_read_message",
     }
-    GRANTED_TOOLS = FOLDER_TOOLS | SESSION_TOOLS
+    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | SESSION_TOOLS
 
     def test_the_set_is_exactly_the_folder_tools(self) -> None:
         from kiro_crew import mcp_dashboard
@@ -379,11 +392,14 @@ class TestWhatThisSetGrants:
 
         names = {t["name"] for t in mcp_dashboard._tool_definitions()}
         folder = {n for n in names if n.startswith("chat_folder_")}
+        tags = {n for n in names if n.startswith("chat_tag_")}
         session = {n for n in names if n.startswith("session_")}
         assert folder, "the folder-organization tools left this set"
+        assert tags, "the tag-organization tools left this set"
         assert session, "the session-control tools left this set"
         # Nothing else rides along unannounced.
-        assert names == folder | session, (
-            f"{sorted(names - folder - session)} is neither folder organization nor "
-            "session control — name the class it belongs to before adding it here"
+        assert names == folder | tags | session, (
+            f"{sorted(names - folder - tags - session)} is neither folder organization, "
+            "tag organization nor session control — name the class it belongs to "
+            "before adding it here"
         )

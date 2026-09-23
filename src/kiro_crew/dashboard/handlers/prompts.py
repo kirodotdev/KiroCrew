@@ -9,13 +9,18 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
 from kiro_crew import pinned_fs
-from kiro_crew.agent_discovery import agent_skill_globs
+from kiro_crew.agent_discovery import (
+    SkillScopeResolutionError,
+    agent_skill_globs,
+    session_skill_globs,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
@@ -40,6 +45,8 @@ from kiro_crew.skill_trust import (
     list_trusted_projects,
     revoke_project_trust,
 )
+from kiro_crew.skills import PROJECT_SKILL_BODY_CAP, PendingApprovalRefused
+from kiro_crew.validation import MAX_SKILL_KEY_CHARS
 
 from ._shared import (
     _capability_manager,
@@ -49,6 +56,7 @@ from ._shared import (
     active_project_dir,
     collect_skills_blocking,
     list_skill_tree,
+    read_bounded_json,
     read_skill_file,
     requesting_slot_project,
 )
@@ -70,6 +78,13 @@ logger = logging.getLogger(__name__)
 MAX_PROMPT_BYTES = 100_000  # 100 KB — public constant, imported across dashboard + gateway + tests
 _CODE_DASHBOARD_OWNER_REQUIRED = "dashboard_owner_required"
 _CODE_SLOT_NOT_FOUND = "slot_not_found"
+# Pending-skill approval refusals (api_skill_pending_approve): distinct codes so
+# the Skills tab can tell the user WHY the click did nothing instead of
+# swallowing one shapeless conflict answer.
+_CODE_PENDING_SKILL_NOT_FOUND = "pending_skill_not_found"
+_CODE_LIVE_SKILL_EXISTS = "live_skill_exists"
+_CODE_SCRIPT_VALIDATION_FAILED = "script_validation_failed"
+_CODE_PENDING_APPROVAL_REFUSED = "pending_approval_refused"
 
 #: The literal the dashboard's browser client sends as ``X-Session-Key`` on every
 #: request that has no chat to name (``website/src/api/client.ts``). It marks the
@@ -82,8 +97,18 @@ _CODE_SLOT_NOT_FOUND = "slot_not_found"
 _DASHBOARD_SURFACE_KEY = "dashboard:ui"
 
 
-def _deny_non_owner_skill_trust(request: web.Request, operation: str) -> web.Response | None:
-    """Restrict project-skill consent state to the configured dashboard owner."""
+def _deny_non_owner_skill_operation(request: web.Request, operation: str) -> web.Response | None:
+    """Restrict owner-only skill state to the configured dashboard owner.
+
+    Covers the project-skill consent endpoints and every mutating skill
+    handler: CRUD writes, pending approve/dismiss/dismiss-all, pin, and
+    inject-on-trigger. Skill content is injected into agent context, so any
+    skill mutation is an instruction-injection surface: only the dashboard
+    owner may perform it.
+    ``is_owner_dashboard_request`` already refuses app tokens (any non-empty
+    app identity) and non-owner dashboard subjects, and both outcomes are
+    SEL-audited here.
+    """
     if is_owner_dashboard_request(request):
         try:
             _sel().log_api_access(
@@ -2204,6 +2229,117 @@ async def api_skills(request: web.Request) -> web.Response:
     # Strict: must match what SkillsLoader will resolve for THIS chat, or the
     # catalog advertises a skill whose $token expands to nothing.
     project_dir: Path | None = requesting_slot_project(state, session_key)
+    params: Mapping[str, Any] = request.query
+    if request.method == "POST":
+        body, error = await read_bounded_json(request, max_bytes=512 * 1024)
+        if error is not None:
+            return error
+        assert body is not None
+        if body.get("scope") != "installed" or body.get("action") != "read":
+            return web.json_response(
+                {"error": "POST requires an installed exact read.", "code": "invalid_skill_action"},
+                status=400,
+            )
+        params = body
+    if "q" in params or request.method == "POST":
+        query = params.get("q", "")
+        action = params.get("action", "search")
+        key = params.get("key", "")
+        if not all(isinstance(value, str) for value in (query, action, key)):
+            return web.json_response(
+                {"error": "Skill query, action and key must be strings.", "code": "invalid_query"},
+                status=400,
+            )
+        query = query.strip()
+        if action not in {"search", "list", "read"} or (action == "read" and not key):
+            return web.json_response(
+                {
+                    "error": "Invalid skill action or missing exact key.",
+                    "code": "invalid_skill_action",
+                },
+                status=400,
+            )
+        if len(key) > MAX_SKILL_KEY_CHARS:
+            return web.json_response(
+                {
+                    "error": f"Skill keys must be at most {MAX_SKILL_KEY_CHARS} characters.",
+                    "code": "invalid_skill_key",
+                },
+                status=400,
+            )
+        if (action == "search" and not query) or len(query) > 2000:
+            return web.json_response(
+                {"error": "Use 1–2000 characters of short keywords.", "code": "invalid_query"},
+                status=400,
+            )
+        try:
+            limit = max(1, min(50, int(params.get("limit", "20"))))
+            offset = max(0, int(params.get("offset", "0")))
+        except (ValueError, TypeError, OverflowError):
+            return web.json_response(
+                {"error": "Invalid search limit.", "code": "invalid_limit"}, status=400
+            )
+
+        def search():
+            slot = _named_slot(state, session_key)
+            agent = str(getattr(slot, "agent", "") or "kirocrew")
+            sessions = getattr(state, "sessions", None)
+            if session_key and sessions is not None:
+                active = sessions.get_agent(session_key)
+                if isinstance(active, str) and active:
+                    agent = active
+            only = session_skill_globs(session_key, agent, project_dir=project_dir)
+            if action == "read":
+                body = skills.read_scoped_skill(key, only=only, project_dir=project_dir)
+                return {
+                    "matches": (
+                        [{"key": key, "name": key, "description": "", "content": body}]
+                        if body is not None
+                        else []
+                    ),
+                    "next_offset": None,
+                }
+            matches = skills.search_skills(
+                query,
+                limit=limit + 1,
+                project_dir=project_dir,
+                only=only,
+                offset=offset,
+                browse=action == "list",
+            )
+            next_offset = offset + limit if len(matches) > limit else None
+            matches = matches[:limit]
+            result = []
+            remaining = PROJECT_SKILL_BODY_CAP
+            for row in matches:
+                item = {k: row[k] for k in ("key", "name", "description")}
+                if row.get("confine_root"):
+                    body = skills.load_skill(row["key"], project_dir, max_bytes=remaining)
+                    item["content"] = (
+                        body
+                        or "Body unavailable or over budget; retry skill_search with this exact skill key."
+                    )
+                    remaining = max(0, remaining - len((body or "").encode("utf-8")))
+                else:
+                    item["path"] = row["path"]
+                result.append(item)
+            return {
+                "matches": result,
+                "next_offset": next_offset,
+                "incomplete": bool(getattr(skills, "search_incomplete", False)),
+            }
+
+        try:
+            result = await asyncio.to_thread(search)
+        except SkillScopeResolutionError:
+            return web.json_response(
+                {
+                    "error": "The session's bound agent skill scope is unavailable.",
+                    "code": "skill_scope_unavailable",
+                },
+                status=409,
+            )
+        return web.json_response(result)
     result = await _assemble_skills_catalog(skills, project_dir)
     agent = request.query.get("agent") or None
     if agent:
@@ -2254,7 +2390,7 @@ def _trust_snapshot(project_dir: Path | None) -> dict[str, Any]:
 
 async def api_skills_trust(request: web.Request) -> web.Response:
     """Report the requesting chat's project-skills trust state and all grants."""
-    denied = _deny_non_owner_skill_trust(request, "skill_trust_read")
+    denied = _deny_non_owner_skill_operation(request, "skill_trust_read")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
@@ -2280,7 +2416,7 @@ async def api_skills_trust_grant(request: web.Request) -> web.Response:
     the directory still comes from the slot, and a missing or mismatched key is
     refused. This covers slot changes and mutable aliases between review and click.
     """
-    denied = _deny_non_owner_skill_trust(request, "skill_trust_grant")
+    denied = _deny_non_owner_skill_operation(request, "skill_trust_grant")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
@@ -2356,7 +2492,7 @@ async def api_skills_trust_revoke(request: web.Request) -> web.Response:
     from the settings list. Removing trust only ever narrows what loads, so a
     caller-supplied path is safe here.
     """
-    denied = _deny_non_owner_skill_trust(request, "skill_trust_revoke")
+    denied = _deny_non_owner_skill_operation(request, "skill_trust_revoke")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
@@ -2617,6 +2753,9 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
 
 async def api_skill_pending_approve(request: web.Request) -> web.Response:
     """POST /api/skills/-/pending/{slug}/approve — promote candidate to live."""
+    denied = _deny_non_owner_skill_operation(request, "skill_pending_approve")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     slug = request.match_info["slug"]
@@ -2647,9 +2786,9 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
             _meta: dict = _meta_raw if isinstance(_meta_raw, dict) else {}
             kind = _detail.get("kind") or _meta.get("kind")
         if kind == "update":
-            nm = skills.approve_pending_update(slug)
+            nm = skills.approve_pending_update_checked(slug)
         else:
-            nm = skills.approve_pending_skill(slug)
+            nm = skills.approve_pending_skill_checked(slug)
         if nm:
             # Approving consumes a slot — enforce the bound (archive, never
             # delete). Best-effort; runs in the same off-loop executor job.
@@ -2672,6 +2811,50 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
         name = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), _approve_and_bound
         )
+    except PendingApprovalRefused as e:
+        # The refusal reason reaches the user instead of collapsing into one
+        # shapeless conflict answer. SEL keeps the outcome accurate: a
+        # missing candidate is ``not_found``; every other refusal is a
+        # ``rejected`` with the reason in metadata.
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_approve",
+            tool_kind="skill",
+            outcome="not_found" if e.reason == "not_found" else "rejected",
+            metadata={"slug": slug, "reason": e.reason},
+        )
+        if e.reason == "not_found":
+            return web.json_response(
+                {"error": "pending skill not found", "code": _CODE_PENDING_SKILL_NOT_FOUND},
+                status=404,
+            )
+        if e.reason == "live_exists":
+            return web.json_response(
+                {
+                    "error": "a live skill with this name already exists",
+                    "code": _CODE_LIVE_SKILL_EXISTS,
+                },
+                status=409,
+            )
+        if e.reason == "script_validation_failed":
+            return web.json_response(
+                {
+                    "error": "script validation failed",
+                    "code": _CODE_SCRIPT_VALIDATION_FAILED,
+                    "report": e.report or {},
+                },
+                status=422,
+            )
+        return web.json_response(
+            {
+                "error": f"approval refused: {e.reason}",
+                "code": _CODE_PENDING_APPROVAL_REFUSED,
+                "reason": e.reason,
+            },
+            status=409,
+        )
     except Exception:
         _sel().log_tool_invocation(
             session_key="",
@@ -2683,26 +2866,25 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
             metadata={"slug": slug},
         )
         return web.json_response({"error": "internal error"}, status=500)
-    outcome = "ok" if name else "not_found"
+    # The checked variant either raised (mapped to a coded response above) or
+    # returned the approved name — a falsy name cannot reach here.
     _sel().log_tool_invocation(
         session_key="",
         agent="api",
         source="dashboard",
         tool_name="api_skill_pending_approve",
         tool_kind="skill",
-        outcome=outcome,
-        metadata={"slug": slug, "name": name or ""},
+        outcome="ok",
+        metadata={"slug": slug, "name": name},
     )
-    if not name:
-        return web.json_response(
-            {"error": "not found, a live skill already exists, or script validation failed"},
-            status=409,
-        )
     return web.json_response({"approved": name})
 
 
 async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
     """POST /api/skills/-/pending/{slug}/dismiss — delete a candidate."""
+    denied = _deny_non_owner_skill_operation(request, "skill_pending_dismiss")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     slug = request.match_info["slug"]
@@ -2742,7 +2924,13 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
         metadata={"slug": slug},
     )
     if not ok:
-        return web.json_response({"error": "not found"}, status=404)
+        # Coded like the approve path's not-found: the dashboard keys its
+        # recovery (refetch + catalog message) on this code, and an uncoded
+        # body would leave that branch reachable only from test mocks.
+        return web.json_response(
+            {"error": "pending skill not found", "code": "pending_skill_not_found"},
+            status=404,
+        )
     return web.json_response({"dismissed": slug})
 
 
@@ -2755,6 +2943,9 @@ async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
     deleted).  When the body is absent or ``slugs`` is empty, ALL pending
     candidates are dismissed (back-compat / fallback).
     """
+    denied = _deny_non_owner_skill_operation(request, "skill_pending_dismiss_all")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     try:
@@ -2813,6 +3004,9 @@ async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
 async def api_skill_pin(request: web.Request) -> web.Response:
     """POST /api/skills/-/pin — body {name, pinned:bool}. Pin/unpin an auto-skill
     so the lifecycle never archives it."""
+    denied = _deny_non_owner_skill_operation(request, "skill_pin")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     try:
@@ -2885,6 +3079,9 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
     changes what the agent is guaranteed to see when the skill matches, so "who
     made this skill advisory, and when" has to be answerable.
     """
+    denied = _deny_non_owner_skill_operation(request, "skill_inject_on_trigger")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     try:
@@ -2994,6 +3191,14 @@ async def api_skill_detail(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     skills = _get_skills(state)
 
+    # Authorize mutating verbs before any territory-specific refusal so every
+    # denied owner decision is SEL-audited, including read-only skill names.
+    if request.method in ("PUT", "DELETE"):
+        operation = "skill_update" if request.method == "PUT" else "skill_delete"
+        denied = _deny_non_owner_skill_operation(request, operation)
+        if denied is not None:
+            return denied
+
     # Refuse mutating verbs on the open-standard read-only territories. Their
     # READ path resolves per-session / per-machine (project or ~/.kiro/skills),
     # but update_skill/delete_skill would join the key onto a core root — so the
@@ -3022,6 +3227,18 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         # stall long enough to matter to every other session sharing this loop, so
         # both go to a thread the way discover.py already routes the same two calls.
         ok = await asyncio.to_thread(skills.delete_skill, name)
+        try:
+            _sel().log_tool_invocation(
+                session_key="",
+                agent="api",
+                source="dashboard",
+                tool_name="api_skill_delete",
+                tool_kind="skill",
+                outcome="ok" if ok else "rejected",
+                metadata={"name": name},
+            )
+        except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
+            logger.debug("Could not audit skill delete outcome", exc_info=True)
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"ok": True})
@@ -3035,6 +3252,18 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
         ok = await asyncio.to_thread(skills.update_skill, name, content)
+        try:
+            _sel().log_tool_invocation(
+                session_key="",
+                agent="api",
+                source="dashboard",
+                tool_name="api_skill_update",
+                tool_kind="skill",
+                outcome="ok" if ok else "rejected",
+                metadata={"name": name},
+            )
+        except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
+            logger.debug("Could not audit skill update outcome", exc_info=True)
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"ok": True})
@@ -3128,6 +3357,9 @@ async def api_skill_detail(request: web.Request) -> web.Response:
 
 async def api_skills_create(request: web.Request) -> web.Response:
     """POST /api/skills — create a new skill."""
+    denied = _deny_non_owner_skill_operation(request, "skill_create")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -3169,6 +3401,18 @@ async def api_skills_create(request: web.Request) -> web.Response:
     # Off the loop for the same reason api_skill_detail offloads its two calls:
     # create_skill walks a pinned parent chain and writes the SKILL.md.
     ok = await asyncio.to_thread(skills.create_skill, safe_name, content)
+    try:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skills_create",
+            tool_kind="skill",
+            outcome="ok" if ok else "rejected",
+            metadata={"name": safe_name},
+        )
+    except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
+        logger.debug("Could not audit skill create outcome", exc_info=True)
     if not ok:
         return web.json_response(
             {"error": f"skill '{safe_name}' already exists", "code": "skill_exists"}, status=409

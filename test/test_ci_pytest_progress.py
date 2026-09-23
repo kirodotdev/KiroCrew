@@ -54,6 +54,9 @@ class TestCIProgress(unittest.TestCase):
         # No inherited CLI options, plugins, application home, or checkout conftest.
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTEST_PLUGINS", None)
+        # Synthetic child suites do not contribute to the outer coverage data.
+        env.pop("COV_CORE_DATAFILE", None)
+        env.pop("COVERAGE_PROCESS_START", None)
         env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["PYTHONPATH"] = str(ROOT)
@@ -296,16 +299,18 @@ class TestCIProgress(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["backend-test-windows"]
-        self.assertEqual(job["timeout-minutes"], 40)
-        self.assertEqual(job["strategy"]["matrix"]["group"], [1, 2, 3, 4, 5, 6, 7, 8])
-        self.assertEqual(job["env"]["SHARD_COUNT"], 8)
+        self.assertEqual(job["timeout-minutes"], 60)
+        count = job["env"]["SHARD_COUNT"]
+        self.assertEqual(count, 8)
+        self.assertEqual(job["strategy"]["matrix"]["group"], list(range(1, count + 1)))
         command = next(s["run"] for s in job["steps"] if s.get("name", "").startswith("Run tests"))
         for flag in [
             "-n auto",
             "--timeout=180",
             "--no-cov",
             "--max-worker-restart=0",
-            '--splits "$SHARD_COUNT"',
+            '--file-shards "$SHARD_COUNT"',
+            "-p scripts.ci_file_shards",
         ]:
             self.assertIn(flag, command)
         self.assertIn("-p scripts.ci_pytest_progress", command)
@@ -313,9 +318,35 @@ class TestCIProgress(unittest.TestCase):
             all(
                 "ci_pytest_progress" not in json.dumps(value)
                 for name, value in workflow["jobs"].items()
-                if name != "backend-test-windows"
+                if name not in {"backend-test-windows", "backend-test"}
             )
         )
+
+    def test_linux_wiring_preserves_scope_and_failure_verdict(self):
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["backend-test"]
+        self.assertEqual(job["timeout-minutes"], 60)
+        self.assertEqual(job["env"]["SHARD_COUNT"], 8)
+        step = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests"))
+        command = step["run"]
+        self.assertNotIn("continue-on-error", step)
+        self.assertNotIn("PYTEST_ADDOPTS", command)
+        self.assertEqual(step["env"]["PYTHONPATH"], "${{ github.workspace }}")
+        self.assertIn("-p scripts.ci_pytest_progress", command)
+        self.assertIn('--ci-progress-dir "$RUNNER_TEMP/pytest-progress"', command)
+        self.assertIn("--max-worker-restart=0", command)
+        self.assertEqual(command.count('"${PROGRESS[@]}"'), 4)
+        self.assertEqual(command.count("--timeout=120"), 4)
+        self.assertEqual(command.count("-p scripts.ci_file_shards"), 2)
+        self.assertIn("--cov=kiro_crew --cov=sage_lib", command)
+        self.assertIn("--cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging", command)
+        self.assertIn("--cov=src/kiro_crew/apps/builtins/code_review_sage/tests", command)
+        upload = next(s for s in job["steps"] if s.get("name") == "Upload Linux pytest progress")
+        self.assertEqual(upload["if"], "${{ always() }}")
+        self.assertEqual(upload["with"]["name"], "linux-pytest-progress-${{ matrix.group }}")
+        self.assertEqual(upload["with"]["path"], "${{ runner.temp }}/pytest-progress/*.jsonl")
 
 
 if __name__ == "__main__":

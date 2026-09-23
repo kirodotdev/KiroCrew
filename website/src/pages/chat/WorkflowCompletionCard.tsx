@@ -112,7 +112,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
       <div className="flex items-center gap-2 px-3 py-2">
         <span className="shrink-0">
           {ok ? (
-            <CheckCircle2 size={15} className="text-green-500" />
+            <CheckCircle2 size={15} className="text-ok" />
           ) : (
             <AlertCircle size={15} className="text-danger" />
           )}
@@ -122,7 +122,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
         <span
           className={`shrink-0 text-[10px] leading-4 px-1.5 py-0.5 rounded border ${
             ok
-              ? 'bg-green-500/10 border-green-500/20 text-green-500'
+              ? 'bg-ok/10 border-ok/20 text-ok'
               : 'bg-danger/10 border-danger/20 text-danger'
           }`}
         >
@@ -171,7 +171,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
         // (index.css), so an outward ring or UA outline would be swallowed on
         // every edge that touches the root. ring-inset paints inside the box.
         <div
-          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
           data-testid="workflow-completion-body"
           role="region"
           aria-labelledby={headlineId}

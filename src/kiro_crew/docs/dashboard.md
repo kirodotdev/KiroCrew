@@ -54,7 +54,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 
 ### Settings (`/settings/*`)
 
-Settings uses tabbed panels for Overview, Imports, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Instances, Privacy, Security, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
+Settings uses tabbed panels for Overview, Imports, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Instances, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
 
 ### Agent Capabilities (`/capabilities`)
 
@@ -66,7 +66,7 @@ Create and manage cron jobs, organize them in folders, and switch between list, 
 
 ### Developer (`/developer`)
 
-Tabbed developer views for logs, system metrics, telemetry, storage, MCP pooling, memory, configuration, the agent backend, feature previews, debug tools, and the session archive. The former standalone `/system` page is now the System tab here.
+Tabbed developer views for logs, system metrics, telemetry, storage, MCP pooling, memory, configuration, the agent backend, debug tools, and the session archive. The former standalone `/system` page is now the System tab here.
 
 ### Logs (`/logs`)
 

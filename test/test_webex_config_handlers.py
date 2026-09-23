@@ -147,9 +147,9 @@ class TestSave:
         def _boom(*_a, **_k):
             raise OSError("disk full during config write")
 
-        import kiro_crew.agent as _agent
-
-        monkeypatch.setattr(_agent, "_atomic_json_write", _boom)
+        # The save writes through ``update_config_locked``, whose file write is
+        # the loader's ``write_config_atomically``; failing THAT is the disk-full.
+        monkeypatch.setattr(loader, "write_config_atomically", _boom)
         try:
             asyncio.run(mod.api_webex_config_save(_StubRequest({"bot_token_clear": True})))
         except Exception:
@@ -228,12 +228,10 @@ class TestSave:
         monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
         monkeypatch.setattr(mod, "_validate_webex_token", lambda tok: None)
 
-        import kiro_crew.agent as _agent
-
         def _boom(*a, **k):
             raise OSError("disk full")
 
-        monkeypatch.setattr(_agent, "_atomic_json_write", _boom)
+        monkeypatch.setattr(loader, "write_config_atomically", _boom)
 
         try:
             asyncio.run(mod.api_webex_config_save(_StubRequest({"bot_token": "new-token"})))
@@ -257,7 +255,7 @@ class TestSave:
         Scenario:
           - os.environ["WEBEX_BOT_TOKEN"] = "env-only-tok"  (process-only)
           - .env file has no WEBEX_BOT_TOKEN entry
-          - _atomic_json_write raises (disk full)
+          - the config.json write raises (disk full)
 
         With config-first ordering: the config write fails before
         _write_env_now() is called, so os.environ is never mutated by the
@@ -278,12 +276,10 @@ class TestSave:
         # Plant the credential ONLY in os.environ, not in .env.
         monkeypatch.setenv("WEBEX_BOT_TOKEN", "env-only-tok")
 
-        import kiro_crew.agent as _agent
-
         def _boom(*a, **k):
             raise OSError("disk full")
 
-        monkeypatch.setattr(_agent, "_atomic_json_write", _boom)
+        monkeypatch.setattr(loader, "write_config_atomically", _boom)
 
         try:
             asyncio.run(mod.api_webex_config_save(_StubRequest({"bot_token": "new-token"})))

@@ -467,19 +467,45 @@ function collapseWs(s: string): string {
   return s.replace(/\s+/g, ' ').trim()
 }
 
+/** Trailing truncation mark on a transport-built title (`…` or `...`). */
+const TRAILING_ELLIPSIS_RE = /\s*(?:\.\.\.|…)\s*$/
+
+/**
+ * True when `title` is a digest OF `cmd` rather than a sentence ABOUT it.
+ *
+ * kiro-cli titles a shell call it received no purpose for by joining fragments
+ * of the command's own arguments with `, ` and cutting the tail with an
+ * ellipsis: `--title, --text, Three, 1. ...` for a `ledger.py` invocation. Every
+ * fragment is a verbatim piece of the command, so the title says nothing the
+ * command does not already say — and it is unreadable exactly where a label is
+ * needed, since the fragments are flags and the first words of quoted values.
+ * A description the model wrote (`Show working tree status`) carries words the
+ * command does not contain, so it never matches. Case-sensitive on purpose: a
+ * one-word sentence (`Rebuild` for `make rebuild`) stays a description.
+ */
+function isArgumentDigestOf(title: string, cmd: string): boolean {
+  const body = title.replace(TRAILING_ELLIPSIS_RE, '')
+  const fragments = body.split(/,\s*/).map(f => f.trim()).filter(Boolean)
+  if (fragments.length === 0) return false
+  const haystack = collapseWs(cmd)
+  return fragments.every(f => haystack.includes(f))
+}
+
 /**
  * R0.0 — the backend's own description of a shell call, when the transport sent
  * one as the title; undefined otherwise.
  *
- * A shell title is one of three things: a stub that names no command (`shell`,
+ * A shell title is one of four things: a stub that names no command (`shell`,
  * `Run Command`, `Terminal`), the command itself (kiro-cli's `Running: <cmd>`,
- * or the gateway's `_select_tool_title` putting the command on the row), or a
- * sentence the model wrote for this call (`Show working tree status` — KAS with
- * kiro-team/kiro-agent#2753, claude-agent-acp's Bash `description`). Only the
- * third is a description: a non-empty, non-stub title that differs from
- * `rawInput.command` once whitespace is collapsed. With no command in the
- * arguments there is nothing to compare, so the title is taken AS the command
- * (kiro-cli's live shape) and never as a description.
+ * or the gateway's `_select_tool_title` putting the command on the row), a
+ * digest of the command's own arguments (kiro-cli's purpose-less auto-title,
+ * see `isArgumentDigestOf`), or a sentence the model wrote for this call
+ * (`Show working tree status` — KAS with kiro-team/kiro-agent#2753,
+ * claude-agent-acp's Bash `description`). Only the fourth is a description: a
+ * non-empty, non-stub title that differs from `rawInput.command` once
+ * whitespace is collapsed and is not assembled from the command's own pieces.
+ * With no command in the arguments there is nothing to compare, so the title is
+ * taken AS the command (kiro-cli's live shape) and never as a description.
  *
  * `rawInput.description` is deliberately not read for this decision: KAS keeps
  * the argument but drops it from the title when the user edited the command
@@ -494,6 +520,7 @@ export function backendShellDescription(inp: ToolCallTitleInput): string | undef
   if (cmd === undefined) return undefined
   const t = collapseWs(title.replace(/^Running:\s*/, ''))
   if (!t || t === collapseWs(cmd)) return undefined
+  if (isArgumentDigestOf(t, cmd)) return undefined
   return title
 }
 

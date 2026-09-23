@@ -171,7 +171,10 @@ class TestHelpers:
         assert handlers._safe_resolve(boom) is boom
 
     def test_reaper_remediation_omits_empty_flags(self):
-        assert handlers._reaper_remediation("", "") == "install-reaper.sh"
+        # Absolute path now, so the command is actually runnable; the flag
+        # behaviour this pins is unchanged.
+        assert handlers._reaper_remediation("", "").endswith("install-reaper.sh")
+        assert "--profile" not in handlers._reaper_remediation("", "")
         assert "--profile p" in handlers._reaper_remediation("p", "us-west-2")
 
     def test_safe_site_id_strips_and_truncates(self):
@@ -579,7 +582,7 @@ class TestDoDeployRefusals:
         status, payload = await handlers._do_deploy(
             {"site_id": "s", "local_dir": str(_site), "confirm": True})
         assert status == 409
-        assert payload["remediation"].startswith("install-reaper.sh")
+        assert payload["remediation"].endswith("install-reaper.sh --profile p --region us-west-2")
 
     @pytest.mark.asyncio
     async def test_base_stack_parse_error_is_swallowed(self, _site, monkeypatch):
@@ -588,7 +591,7 @@ class TestDoDeployRefusals:
             engine, "run_aws", _aws_router([("describe-stacks", (0, "not-json", ""))]))
         status, payload = await handlers._do_deploy(
             {"site_id": "s", "local_dir": str(_site), "confirm": True})
-        assert status == 409 and "reaper base stack" in payload["error"]
+        assert status == 409 and "reaper base stack" in payload["details"]
 
     @pytest.mark.asyncio
     async def test_missing_reaper_stack_blocks_finite_ttl(self, _site, monkeypatch):
@@ -599,7 +602,10 @@ class TestDoDeployRefusals:
         ]))
         status, payload = await handlers._do_deploy(
             {"site_id": "s", "local_dir": str(_site), "confirm": True})
-        assert status == 409 and "kirocrew-deploy-reaper" in payload["error"]
+        # Stack names moved out of the banner text into `details`; `code` is the
+        # stable machine field.
+        assert status == 409 and "kirocrew-deploy-reaper" in payload["details"]
+        assert payload["code"] == "reaper_required"
 
     @pytest.mark.asyncio
     async def test_reaper_probe_exception_blocks_finite_ttl(self, _site, monkeypatch):
@@ -614,7 +620,8 @@ class TestDoDeployRefusals:
         monkeypatch.setattr(engine, "run_aws", _run_aws)
         status, payload = await handlers._do_deploy(
             {"site_id": "s", "local_dir": str(_site), "confirm": True})
-        assert status == 409 and "kirocrew-deploy-reaper" in payload["error"]
+        assert status == 409 and "kirocrew-deploy-reaper" in payload["details"]
+        assert payload["code"] == "reaper_required"
 
     @pytest.mark.asyncio
     async def test_stale_preview_digest_is_refused(self, _site, monkeypatch):
@@ -930,15 +937,22 @@ class TestAdapters:
     async def test_get_config_returns_registry_default(self):
         handlers._save_config("p", "eu-west-1")
         resp = await handlers._handle_get_config(_FakeReq())
-        # The response also carries ``cloudDeploymentEnabled`` so the frontend can
-        # hide the console when the platform withholds cloud deployment; the public
-        # default admits it. Asserted as a superset so a future additive field does
-        # not break this test again.
-        assert _payload(resp) == {
-            "profile": "p",
-            "region": "eu-west-1",
-            "cloudDeploymentEnabled": True,
+        # The key set is asserted exactly, not as a superset: this response is what
+        # the dashboard reads, so a field arriving here unannounced is exactly what
+        # this test exists to catch. ``cloudDeploymentEnabled`` lets the frontend
+        # hide the console when the platform withholds cloud deployment, and
+        # ``reaperInstallScript`` is the resolved auto-cleanup install command the
+        # setup guide renders. Adding a field means updating this set on purpose.
+        payload = _payload(resp)
+        assert set(payload) == {
+            "profile", "region", "cloudDeploymentEnabled", "reaperInstallScript",
         }
+        assert payload["profile"] == "p"
+        assert payload["region"] == "eu-west-1"
+        assert payload["cloudDeploymentEnabled"] is True
+        # Absolute, so the command the guide prints is runnable as shown.
+        assert os.path.isabs(payload["reaperInstallScript"])
+        assert payload["reaperInstallScript"].endswith("install-reaper.sh")
 
     @pytest.mark.asyncio
     async def test_deny_restricted_without_app_context(self):

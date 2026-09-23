@@ -1061,3 +1061,73 @@ def test_a_turn_does_not_auto_bind_the_conversation_as_a_mirror(tmp_path):
         "path does not re-check the allow-list, so a revoked user would keep "
         "receiving session content"
     )
+
+
+def test_renderer_follows_a_redacted_answer_with_one_notice(tmp_path):
+    from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+    client = FakeClient()
+    r = WeixinRenderer(
+        client,
+        "userA",
+        WEIXIN_CAPABILITIES,
+        ctx_store=ContextTokenStore(str(tmp_path)),
+        account_id="acct1",
+    )
+
+    async def go():
+        # The TurnDriver's stream arrives already redacted, so the placeholder
+        # tag is what this channel delivers and what the tally counts.
+        await r.on_text_chunk(f"Run: psql {CREDENTIAL_REDACTION_TAGS[0]}")
+        await r.on_done()
+
+    asyncio.run(go())
+    notices = [m["text"] for m in client.sent if "Security notice" in m["text"]]
+    assert len(notices) == 1
+    assert client.sent[-1]["text"] == notices[0]  # below the answer
+
+
+def test_renderer_sends_no_notice_for_a_clean_answer(tmp_path):
+    client = FakeClient()
+    r = WeixinRenderer(
+        client,
+        "userA",
+        WEIXIN_CAPABILITIES,
+        ctx_store=ContextTokenStore(str(tmp_path)),
+        account_id="acct1",
+    )
+
+    async def go():
+        await r.on_text_chunk("All green, deploy finished.")
+        await r.on_done()
+
+    asyncio.run(go())
+    assert not any("Security notice" in m["text"] for m in client.sent)
+
+
+def test_a_failed_notice_send_does_not_fail_a_delivered_turn(tmp_path):
+    from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+    client = FakeClient()
+    real_send = client.send_message
+
+    async def send_but_fail_the_notice(*, to, text, context_token, client_id):
+        if "Security notice" in text:
+            raise RuntimeError("weixin down after the answer")
+        return await real_send(to=to, text=text, context_token=context_token, client_id=client_id)
+
+    client.send_message = send_but_fail_the_notice  # type: ignore[method-assign]
+    r = WeixinRenderer(
+        client,
+        "userA",
+        WEIXIN_CAPABILITIES,
+        ctx_store=ContextTokenStore(str(tmp_path)),
+        account_id="acct1",
+    )
+
+    async def go():
+        await r.on_text_chunk(f"Run: psql {CREDENTIAL_REDACTION_TAGS[0]}")
+        await r.on_done()  # must not raise: the answer above already landed
+
+    asyncio.run(go())
+    assert any(CREDENTIAL_REDACTION_TAGS[0] in m["text"] for m in client.sent)

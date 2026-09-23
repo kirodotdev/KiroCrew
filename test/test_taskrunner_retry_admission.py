@@ -13,7 +13,7 @@ from test_workflows_snapshot_commit import world as _world
 
 from kiro_crew import atomic_write as atomic
 from kiro_crew.task_models import Task, TaskStatus
-from kiro_crew.workflow_memory import TaskSnapshotError, task_snapshot_path
+from kiro_crew.workflow_memory import TaskSnapshotError
 
 world = _world
 
@@ -74,34 +74,24 @@ async def _assert_later_persist_retains(runner, world, expected):
     restored = await asyncio.to_thread(_runner, world, runner._work_dir)
     assert json.loads(restored._serialize_runs()) == expected
     visible = await asyncio.to_thread(runner._runs_path().read_text, encoding="utf-8")
-    assert "partial result" not in visible
-    assert "completed result" not in visible
+    assert "partial result" in visible
+    assert "completed result" in visible
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target_kind", ["hidden", "projection"])
 @pytest.mark.parametrize("phase", ["write", "replace"])
-async def test_retry_snapshot_failure_restores_every_field(
-    world, tmp_path, monkeypatch, target_kind, phase
-):
+async def test_retry_snapshot_failure_restores_every_field(world, tmp_path, monkeypatch, phase):
     runner, run = await _seed(world, tmp_path)
     before, tasks = asdict(run), list(run.tasks)
     expected = json.loads(runner._serialize_runs())
-    target = (
-        task_snapshot_path(runner._runs_path()) if target_kind == "hidden" else runner._runs_path()
-    )
+    target = runner._runs_path()
     with monkeypatch.context() as patch:
         calls = _fail_io(patch, target, phase)
         with pytest.raises(TaskSnapshotError):
             await runner.retry_from_task(run.name, 2, agent="new-agent")
         assert calls, "Did not reach the real snapshot writer"
-    # The public write is AFTER the hidden commit: do not claim disk rollback.
     restored = await asyncio.to_thread(_runner, world, runner._work_dir)
-    if target_kind == "hidden":
-        assert json.loads(restored._serialize_runs()) == expected
-    else:
-        assert restored._runs[run.task_id].tasks[1].result == ""
-        assert restored._runs[run.task_id].tasks[0].result == "completed result"
+    assert json.loads(restored._serialize_runs()) == expected
     _assert_retained(runner, run, before, tasks)
     await _assert_later_persist_retains(runner, world, expected)
 
@@ -125,17 +115,14 @@ async def test_retry_history_failure_happens_before_reset_and_snapshot(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target_kind", ["hidden", "projection"])
 @pytest.mark.parametrize("write_fails", [False, True])
 async def test_cancelled_retry_drains_writer_then_restores_and_releases(
-    world, tmp_path, monkeypatch, target_kind, write_fails
+    world, tmp_path, monkeypatch, write_fails
 ):
     runner, run = await _seed(world, tmp_path)
     before, tasks = asdict(run), list(run.tasks)
     expected = json.loads(runner._serialize_runs())
-    target = (
-        task_snapshot_path(runner._runs_path()) if target_kind == "hidden" else runner._runs_path()
-    )
+    target = runner._runs_path()
     loop = asyncio.get_running_loop()
     entered, release = asyncio.Event(), threading.Event()
     real_write = atomic._write_all
@@ -167,7 +154,7 @@ async def test_cancelled_retry_drains_writer_then_restores_and_releases(
     assert waits == [True]
     _assert_retained(runner, run, before, tasks)
     restored = await asyncio.to_thread(_runner, world, runner._work_dir)
-    if target_kind == "hidden" and write_fails:
+    if write_fails:
         assert json.loads(restored._serialize_runs()) == expected
     else:
         assert restored._runs[run.task_id].tasks[1].result == ""

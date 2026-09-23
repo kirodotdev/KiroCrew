@@ -77,8 +77,8 @@ function mockApi(channels: Raw[], presets?: Raw[]) {
   vi.mocked(api).channelApproveAgent = vi.fn().mockResolvedValue({ ok: true })
   vi.mocked(api).channelClearContext = vi.fn().mockResolvedValue({ ok: true, cleared: [] })
   // AddAgentForm mounts useAgents(), which syncs then lists the agent catalog.
-  vi.mocked(api).syncKirocrewAgents = vi.fn().mockResolvedValue({ ok: true })
   vi.mocked(api).kirocrewAgents = vi.fn().mockResolvedValue({ agents: [], default_agent: 'legacy-default' })
+  vi.mocked(api).agentCatalog = vi.fn().mockResolvedValue({ agents: [], default_agent: 'legacy-default' })
 }
 
 /** Render and wait past the "Loading channels..." early return. */

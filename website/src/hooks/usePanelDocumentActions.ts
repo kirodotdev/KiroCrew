@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
 import { i18nT } from '../i18n/t'
 import type { Artifact } from '../types'
-import { fileReadUrl } from '../utils/fileReadUrl'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS } from '../utils/fileReadQuery'
 import { errMessage } from '../utils/thunkError'
 import { optsForReplace } from '../pages/chat/replaceGuard'
 
@@ -55,22 +55,14 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // switched to mid-load.
     const slot = slotRef.current ?? null
     try {
-      const [{ text, ok, status }] = await Promise.all([
+      const [{ text, ok, status, binary }] = await Promise.all([
         queryClient.fetchQuery({
-          queryKey: ['file-read', filePath],
-          queryFn: async () => {
-            const url = fileReadUrl(filePath)
-            const res = await fetch(url)
-            // A 404 is a real answer about the file (it is not on disk), so the
-            // panel shows that placeholder. Any other failure is an ERROR: it is
-            // reported as one below instead of being rendered as the file's text.
-            const text = res.ok
-              ? await res.text()
-              : res.status === 404 ? i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-              : ''
-            return { text, ok: res.ok, status: res.status }
-          },
-          staleTime: 10_000,
+          queryKey: fileReadQueryKey(filePath),
+          // The shared fetch carries the backend's binary verdict with the text
+          // (from the `X-File-Binary` header), so the tab knows whether it has
+          // a buffer to edit at all.
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          staleTime: FILE_READ_STALE_MS,
         }),
         queryClient.prefetchQuery({
           queryKey: ['file-diff', filePath],
@@ -82,7 +74,10 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
         showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status }) }))
         return
       }
-      tabsCtl.openFile(filePath, text, slot, optsForReplace(opts))
+      // A 404 is a real answer about the file (it is not on disk), so the
+      // panel shows that placeholder. Any other failure was reported above.
+      const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+      tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary })
       onOpened?.()
     } catch (e) {
       // The read itself threw (network, aborted). Reported above the composer

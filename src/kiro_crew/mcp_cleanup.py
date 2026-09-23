@@ -15,9 +15,71 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Collection
 from pathlib import Path
+from typing import Any
 
+from kiro_crew.agent_sdk.mcp_refs import RESERVED_TOOL_NAMESPACES
 from kiro_crew.config.paths import kiro_home
+
+#: kiro-cli's enterprise-governance discriminator. The spec WRITER owns the
+#: literal (``agent._MCP_REGISTRY_TYPE``); this is the copy the readers share, and
+#: a ratchet test pins them equal.
+MCP_REGISTRY_TYPE = "registry"
+
+
+def mcp_entry_is_registry_governed(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry defers its launch to an admin's catalog.
+
+    A ``"type": "registry"`` entry names a catalog record rather than describing a
+    local process: in registry access mode the client resolves it by map key and
+    applies the catalog's own command, and OUTSIDE that mode the client drops it.
+    Neither outcome is a server this side may launch, which is why the answer does
+    not depend on whether registry mode is declared locally -- the marker alone
+    settles it.
+
+    Here beside :func:`mcp_entry_is_muted` because every site that decides whether
+    a server LAUNCHES has to give the same answer, and the gateway is one of them:
+    a marked entry it wraps into a broker stub carries a local command the client
+    never asked for, and the wrapped name is what the session projections subtract
+    as a "stubbed name" -- so the entry arrives as a live local process and the
+    marker governs nothing. The gateway reads this predicate for that reason, not
+    only the projections.
+    """
+    if not isinstance(entry, dict):
+        return False
+    return entry.get("type") == MCP_REGISTRY_TYPE
+
+
+def mcp_entry_is_muted(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry asks not to be launched.
+
+    Anything but an absent ``disabled`` or a literal ``False`` is a mute. That is
+    FAIL-CLOSED on purpose, and the direction matters because the two mistakes are
+    not symmetric: reading an odd value as "enabled" launches a server the user
+    tried to silence, while reading it as "muted" withholds one they can un-mute
+    by fixing the value. An ill-typed ``disabled`` is also not forwardable -- both
+    kiro-cli's spec schema and KAS's wire schema type the field as a boolean and
+    reject the document over it -- so there is no reading under which the odd value
+    yields a working server.
+
+    Lives here, in the module that already pins the shared managed-server set, so
+    the sites that decide whether a server LAUNCHES share one answer instead of
+    spelling it each. They did not: ``is True`` in the gateway rewriter against
+    ``is not False`` in the session projections meant a server muted with a
+    non-boolean was passed over by the rewriter's guard, wrapped into a live
+    pooling stub, and so subtracted from the projection as a "stubbed name" before
+    any mute check could see it -- muted in the spec, running in the session.
+
+    Not every reader of ``disabled`` belongs here. A roster row or a capability
+    listing answers "does the user consider this on", where ordinary truthiness is
+    right and a wrong answer costs a chip, not a process. This predicate is for
+    the launch decision.
+    """
+    if not isinstance(entry, dict):
+        return False
+    return entry.get("disabled", False) is not False
+
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +115,13 @@ ALWAYS_ON_BIN_MCP_SERVERS = (
     "kirocrew-core",
     "kirocrew-computer",
 )
-OPT_IN_BIN_MCP_SERVERS = ("kirocrew-dashboard", "kirocrew-work")
+OPT_IN_BIN_MCP_SERVERS = (
+    "kirocrew-dashboard",
+    "kirocrew-work",
+    "kirocrew-crew-log",
+    "kirocrew-debug",
+    "kirocrew-panel",
+)
 
 # Every managed-binary server name, regardless of how it reaches a spec. This is
 # the cleanup view: Kiro Crew never legitimately writes any of them into the
@@ -211,6 +279,123 @@ def clean_stale_managed_mcp() -> list[str]:
     return removed
 
 
+def _ref_server(ref: str) -> str:
+    """The server name a ``@server`` / ``@server/tool`` ref addresses.
+
+    One spelling, matching ``agent_capabilities._materialize`` and
+    ``apps.bridges``: strip the sigil, then take everything before the first
+    ``/``. A second spelling would let the per-tool form (``@notion/search``,
+    ``@notion/*``) resolve to a different server here than it does there, and the
+    two would disagree about which refs are dangling.
+    """
+    return ref[1:].split("/", 1)[0]
+
+
+def prune_dangling_tool_refs(
+    config: dict,
+    *,
+    declared: Collection[str] = (),
+    declared_grants: Collection[str] | None = None,
+) -> list[str]:
+    """Drop ``tools``/``allowedTools`` refs naming a server the map does not hold.
+
+    ``kiro-cli`` mounts what ``mcpServers`` declares, so a ``@ref`` to a name
+    absent from that map mounts nothing. The invariant is stated twice elsewhere
+    in-tree -- :func:`purge_deleted_proxy_from_config` strips refs alongside its
+    own deletes so kiro-cli does not try to mount a server absent from the map,
+    and ``agent_capabilities._materialize`` filters ``allowedTools`` on exactly
+    this test -- and this is where it holds for the assembled agent config, whose
+    server map several passes narrow without touching the ref lists (the
+    resolution pass replaces ``mcpServers`` wholesale, dropping unresolvable
+    servers by OMISSION; the locked app re-merge ``del``\\ etes app entries whose
+    app is not confirmed enabled). One reconcile over the FINAL map covers every
+    such pass, including one added later.
+
+    A dangling ``allowedTools`` ref is the one that costs something: that list is
+    the path that never reaches the PreToolUse gate, so the grant sits on the NAME
+    and a server added under it inherits an auto-approval nobody granted for it.
+
+    *declared* names servers whose absence from the map this caller EXPECTS and a
+    later pass reverses, so they are not leftovers. Two such classes exist in the
+    rebuild, and both are unrecoverable if their refs are dropped, because an
+    existing config deliberately never re-adds a template ref: a server whose
+    command fails to resolve on this pass (a binary missing from this rebuild's
+    PATH), and a gated-off shipped server whose entry is withheld while its
+    ``tools`` ref is retained by design. The resolution case also reaches the
+    per-tool grant, which nothing re-emits -- the rebuild's ref sync only ever
+    writes whole-server ``@alias`` refs. Refs outlive one bad PATH; a lost grant
+    does not.
+
+    A ``@`` name in :data:`RESERVED_TOOL_NAMESPACES` addresses a kiro namespace
+    rather than a server, so it is never in the map and is never a leftover.
+    ``@builtin`` is the one kiro's configuration reference lists, and it carries
+    the whole built-in tool surface plus the ``tool_search`` loader, so reading it
+    as a dangling server ref would unmount all of that on every rebuild.
+
+    Fails safe in both directions: a ``mcpServers`` that is not a dict yields no
+    readable verdict, so nothing is dropped, and a non-string or sigil-less entry
+    is left for the passes that own it.
+
+    Mutates *config* in place. Returns the refs removed, first occurrence order.
+
+    *declared_grants* is the same kind of set for ``allowedTools`` alone, and it
+    exists because the two lists fail in opposite directions. Keeping a mount ref
+    too long costs a mount attempt against a name that holds nothing; dropping one
+    can unmount a server for good, since an existing config never re-adds a
+    template ref. Keeping a GRANT too long hands the next server on that name an
+    auto-approval nobody granted, on the one list that never reaches the
+    PreToolUse gate; dropping one costs an approval a human can give again. So a
+    caller that is UNSURE whether a name is still owned should name it in
+    *declared* and leave it out of *declared_grants*: the mount survives the doubt
+    and the grant does not. Defaults to *declared*, so a caller with no such
+    doubt passes one set and both lists read it.
+    """
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+    _base = set(servers) | RESERVED_TOOL_NAMESPACES
+    known = {
+        "tools": _base | set(declared),
+        "allowedTools": _base | set(declared if declared_grants is None else declared_grants),
+    }
+    dropped: list[str] = []
+    unmounted: list[str] = []
+    for key in ("tools", "allowedTools"):
+        lst = config.get(key)
+        if not isinstance(lst, list):
+            continue
+        kept = []
+        for ref in lst:
+            if (
+                not isinstance(ref, str)
+                or not ref.startswith("@")
+                or _ref_server(ref) in known[key]
+            ):
+                kept.append(ref)
+                continue
+            if key == "tools" and ref not in unmounted:
+                unmounted.append(ref)
+            if ref not in dropped:
+                dropped.append(ref)
+        config[key] = kept
+    if dropped:
+        # A ``tools`` removal takes a tool OUT of the agent's surface, and the
+        # shipped ``agent.log_level`` default is WARNING, so recording that at
+        # INFO hides it from the operator who then has to debug a tool that
+        # stopped being offered. The ref named a server the final map does not
+        # hold, so the tool was already unreachable -- but a MISREAD absence
+        # here is unrecoverable, because an existing config never re-adds a
+        # template ref, and that is the case worth seeing without first raising
+        # the log level. A grant-only removal is already in SEL as
+        # ``mcp_auto_approve_revoked``, so it stays at INFO.
+        logger.log(
+            logging.WARNING if unmounted else logging.INFO,
+            "Pruned dangling MCP refs from agent config (no such server in mcpServers): %s",
+            dropped,
+        )
+    return dropped
+
+
 def purge_deleted_proxy_from_config(config: dict) -> list[str]:
     """Drop any MCP server entry whose argv invokes the deleted Playwright proxy.
 
@@ -225,22 +410,29 @@ def purge_deleted_proxy_from_config(config: dict) -> list[str]:
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         return []
-    to_remove = [
-        name for name, spec in servers.items()
-        if _invokes_deleted_playwright_proxy(spec)
-    ]
+    to_remove = [name for name, spec in servers.items() if _invokes_deleted_playwright_proxy(spec)]
     for name in to_remove:
         del servers[name]
     if to_remove:
         # Also strip @refs from tools/allowedTools so kiro-cli does not try
-        # to mount a server that no longer exists in the map.
+        # to mount a server absent from the map. Both spellings
+        # the server owns go: the bare ``@name`` and the per-tool
+        # ``@name/tool`` -- a per-tool grant left in ``allowedTools`` is an
+        # auto-approval on the deleted proxy's name, and that list never
+        # reaches the PreToolUse gate. Bounded by the ``/`` so a
+        # prefix-sharing name (``@namex``) is untouched. Rebuilt in place
+        # rather than ``list.remove`` so a duplicated ref cannot survive.
         for key in ("tools", "allowedTools"):
             lst = config.get(key)
             if isinstance(lst, list):
                 for name in to_remove:
                     ref = f"@{name}"
-                    while ref in lst:
-                        lst.remove(ref)
+                    owned = f"{ref}/"
+                    lst[:] = [
+                        t
+                        for t in lst
+                        if t != ref and not (isinstance(t, str) and t.startswith(owned))
+                    ]
         logger.info(
             "Purged deleted-proxy MCP entries from agent config: %s",
             to_remove,

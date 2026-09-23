@@ -1,5 +1,7 @@
 # Requirements Document
 
+Status: implemented in `src/kiro_crew/session_allocation.py`, `src/kiro_crew/subagent_persistence.py`, and provider cleanup hooks.
+
 ## Introduction
 
 Subagent spawns (cron notifications, watchlist checks, Mochi pet actions, user-initiated spawns) create LLM provider session files on disk that persist indefinitely after the subagent completes. The gateway's `SubagentManager` cleans up its own metadata (`~/.kirocrew/subagents/` folders with tombstones and 7-day pruning), but the underlying LLM provider session files (e.g., `~/.kiro/sessions/cli/{session_id}/`) have no cleanup mechanism. This leads to unbounded disk growth — one user accumulated 26,000+ orphan session files in two weeks.

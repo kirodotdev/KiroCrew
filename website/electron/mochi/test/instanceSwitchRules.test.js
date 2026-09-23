@@ -87,6 +87,87 @@ test("a chosen instance id is carried through", () => {
 
 const MAIN = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
 
+/**
+ * Mirror of the teardown inputs in reconcileMochi when the HOST says disabled.
+ *
+ * THE BUG THIS ENCODES: with Mochi off on every host and a stored remote pointer,
+ * a network reconnect produced a non-answer from the remote's `/api/apps`; the
+ * old code trusted it as "enabled" and, because `keep` meant "still usable" even
+ * with nothing on screen, fell through to openPetWindow — creating a full-display
+ * overlay for a disabled app, which failed to load and blanketed every display.
+ */
+const { hostDisabledMeansTeardown } = require("../instanceGate");
+function disabledHostTearsDown({ keep, targetInstanceId, shownInstanceId, petOpen }) {
+  const shown = keep ? shownInstanceId : targetInstanceId;
+  const usable = keep ? petOpen : targetInstanceId !== "self";
+  return hostDisabledMeansTeardown(shown, usable);
+}
+
+test("host disabled + non-answer + NO pet window: nothing is created", () => {
+  // Cold boot, or after a prior teardown: the pointer may still name the remote.
+  assert.strictEqual(
+    disabledHostTearsDown({ keep: true, shownInstanceId: "crew-remote", petOpen: false }),
+    true,
+    "a non-answer must never create a pet for a disabled host",
+  );
+});
+
+test("host disabled + non-answer + a pet already showing the remote: it stays", () => {
+  assert.strictEqual(
+    disabledHostTearsDown({ keep: true, shownInstanceId: "crew-remote", petOpen: true }),
+    false,
+    "a hiccup must not take down a pet a remote is serving",
+  );
+});
+
+test("host disabled + a DEFINITE remote answer: created or kept regardless of window state", () => {
+  for (const petOpen of [true, false]) {
+    assert.strictEqual(
+      disabledHostTearsDown({ keep: false, targetInstanceId: "crew-remote", petOpen }),
+      false,
+    );
+    assert.strictEqual(
+      disabledHostTearsDown({ keep: false, targetInstanceId: "self", petOpen }),
+      true,
+    );
+  }
+});
+
+test("a non-answer about the remote's Mochi is a keep, never a trusted 'enabled'", () => {
+  const start = MAIN.indexOf("async function resolveMochiTarget(");
+  const body = MAIN.slice(start, MAIN.indexOf("\n}", start));
+  assert.ok(
+    body.includes('remoteMochi === "unknown"') && body.includes("keep: true"),
+    "an unanswered remote-enabled probe must return keep",
+  );
+  assert.ok(!/enabledOrTrust/.test(MAIN), "the fail-open helper must not come back");
+  const probe = MAIN.slice(
+    MAIN.indexOf("async function remoteMochiEnabled("),
+    MAIN.indexOf("\n}", MAIN.indexOf("async function remoteMochiEnabled(")),
+  );
+  assert.ok(
+    !/return cached\.enabled;/.test(probe) && /remoteEnabledState\(/.test(probe),
+    "the cached and fresh answers must both go through the tri-state",
+  );
+});
+
+test("on keep, 'still usable' is whether a pet window EXISTS, and teardown forgets the remote", () => {
+  const start = MAIN.indexOf("async function reconcileMochi(");
+  const body = MAIN.slice(start, MAIN.indexOf("\n}", start));
+  assert.ok(
+    /const shownStillUsable = target\.keep \? isPetWindowOpen\(\)/.test(body),
+    "a non-answer must only keep a window that is already open",
+  );
+  const teardown = body.slice(
+    body.indexOf("hostDisabledMeansTeardown(shownInstanceId, shownStillUsable)"),
+    body.indexOf("return RECONCILE_IDLE"),
+  );
+  assert.ok(
+    teardown.includes("mochiPetInstanceId = SELF_INSTANCE"),
+    "teardown must reset the shown pointer, or a later non-answer keeps a pet that is not there",
+  );
+});
+
 test("resolveMochiTarget still has a keep outcome for non-answers", () => {
   const start = MAIN.indexOf("async function resolveMochiTarget(");
   assert.ok(start !== -1, "resolveMochiTarget must exist");

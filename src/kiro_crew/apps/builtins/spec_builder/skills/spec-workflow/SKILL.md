@@ -12,8 +12,9 @@ the output is portable to Kiro IDE/CLI.
 
 ## Ground rules
 
-- The seed message gives you three absolute paths and a spec type. **Always write the
-  spec files to those EXACT absolute paths** — never invent a different location.
+- The seed message gives you exact absolute document paths, the absolute working
+  directory, and a spec type. **Always write the spec files to those EXACT document
+  paths** — never invent a different location.
   - `requirements.md`, `design.md`, `tasks.md` live in `<SPEC_DIR>/`.
   - The code you are planning for lives in `<WORKING_DIR>/`.
 - Work **one phase at a time**. After writing each file, STOP and ask the user to review.
@@ -115,10 +116,10 @@ Then tell the user the plan is ready to execute and STOP.
 
 ## Execution (handoff)
 
-When the user clicks **Hand off to execution** the app injects an execution instruction
-into this same session (and may arm an autonomous loop). At that point:
+When the user clicks **Start building** the app injects an execution instruction into
+this same session and arms a bounded autonomous loop. At that point:
 - Read `<SPEC_DIR>/tasks.md` and work through each unchecked task **in order**.
-- Operate inside `<WORKING_DIR>` (cd there for builds/tests).
+- Operate inside `<WORKING_DIR>`; the worker already starts there, so run builds/tests there.
 - After completing a task, mark its checkbox `[x]` in `tasks.md`, verify (run the
   relevant build/tests), and continue to the next task.
 - Stop when all tasks are checked or you hit a blocker the user must resolve; summarize

@@ -1,6 +1,6 @@
 """Dashboard endpoints for the Weixin (iLink) QR-login setup flow.
 
-Two routes back the Settings > Channels > WeChat "Connect via QR" flow:
+Two routes back the Settings > Messaging Channels > WeChat "Connect via QR" flow:
 
   POST /api/channels/weixin/qr/start   -> start an iLink QR session, return the
                                           QR image + a server-side session id.

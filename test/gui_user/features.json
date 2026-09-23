@@ -1982,10 +1982,10 @@
     {
       "id": "members-private-memory-keeps-thread",
       "feature": "members",
-      "title": "Switch a member to private memory after chatting; the DM thread keeps its history and still answers",
-      "user_story": "As a crew operator, I want to give one member its own private memory after we have already been talking, so that its recall is isolated without losing the conversation we had or the member's ability to answer.",
+      "title": "A member's DM thread survives leaving and returning; it keeps its history and still answers",
+      "user_story": "As a crew operator, I want a member's direct-message thread to survive leaving and returning to the member, so that our earlier conversation and the member's ability to answer are not lost.",
       "start_url": "/settings",
-      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members > member row > DM thread (send a message, get a reply) > member edit panel > Memory store field > Create private memory > confirm dialog > back to the DM thread > send again",
+      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members > Nova Sky > DM thread (send a message, get a reply) > leave to another rail item > back to Crew Members > Nova Sky > send again",
       "preconditions": {
         "seed": "rich",
         "members": [
@@ -1994,15 +1994,14 @@
         "feature_flags": [
           "mc-preview-crew"
         ],
-        "notes": "The member starts on the shared default store so the Memory store field offers Create private memory. The member's project is the seeded workspace root, which contains a memory/ directory: the second message exercises the private-memory essential-context path against that layout. Fake ACP backend answers both messages."
+        "notes": "The seeded member keeps its store; a member's memory is fixed at creation and its binding is immutable (PUT /api/agents changing memory_store returns 409 member_memory_immutable), so there is no store-switch control to touch. The check is that the DM thread persists across navigation and still answers on the fake ACP backend, which replies to both messages."
       },
       "runnable": "nightly",
-      "estimated_steps": 12,
-      "rationale": "Two-surface flow (DM thread, member edit panel) with a confirm dialog and two model turns; the assertions that matter are pixel-level: the earlier bubble is still on screen after the switch and no error bubble replaced the reply.",
+      "estimated_steps": 8,
+      "rationale": "Navigate-away-and-return flow over the DM thread with two model turns; the assertions that matter are pixel-level: the earlier bubble is still on screen after returning and no error bubble replaced the reply.",
       "source": [
         "website/src/pages/members/MembersPage.tsx",
         "website/src/pages/KiroCrewAgentsPage.tsx",
-        "src/kiro_crew/member_essential_context.py",
         "src/kiro_crew/members.py"
       ],
       "priority": "P1",
@@ -4420,7 +4419,7 @@
       "title": "Settings › Channels",
       "user_story": "As a team lead, I want to configure Slack, Discord, Telegram, WhatsApp, Teams and more, so that the crew reaches my team where they are.",
       "start_url": "/settings/channels",
-      "entry_path": "Settings → Channels → provider panel",
+      "entry_path": "Settings → Messaging Channels → provider panel",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4503,7 +4502,7 @@
       "title": "Edit allowed user IDs and context thresholds for a bot channel",
       "user_story": "As an operator, I want to set Allowed user IDs and Soft context threshold for Telegram, so that only I can message the bot and compaction is suggested in time.",
       "start_url": "/settings/channels/telegram",
-      "entry_path": "Settings > Channels > Telegram > Allowed user IDs > Soft context threshold % > Save",
+      "entry_path": "Settings > Messaging Channels > Telegram > Allowed user IDs > Soft context threshold % > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4530,7 +4529,7 @@
       "title": "Enable File sessions in a folder for a bot channel (Discord/Telegram)",
       "user_story": "As an operator, I want channel sessions filed into a named sidebar folder, so that Discord or Telegram chats stay grouped.",
       "start_url": "/settings/channels/discord",
-      "entry_path": "Settings > Channels > Discord > File sessions in a folder toggle > Folder name input > Save",
+      "entry_path": "Settings > Messaging Channels > Discord > File sessions in a folder toggle > Folder name input > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4557,7 +4556,7 @@
       "title": "See a channel disabled by governance policy",
       "user_story": "As a governed user, I want to see 'Off by admin' on a channel denied by policy, so that I understand why I cannot edit its config.",
       "start_url": "/settings/channels/slack",
-      "entry_path": "Settings > Channels > select a channel whose governance policy is false > ChannelDisabledPanel shown",
+      "entry_path": "Settings > Messaging Channels > select a channel whose governance policy is false > ChannelDisabledPanel shown",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4583,7 +4582,7 @@
       "title": "Toggle Slack Show thinking without a live connection",
       "user_story": "As an operator, I want to toggle Show thinking for Slack, so that reasoning is or is not posted as a thread reply.",
       "start_url": "/settings/channels/slack",
-      "entry_path": "Settings > Channels > Slack > Show thinking toggle",
+      "entry_path": "Settings > Messaging Channels > Slack > Show thinking toggle",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4634,7 +4633,7 @@
       "title": "Connect Slack in the Slack channel panel",
       "user_story": "As an operator, I want to connect a Slack workspace, so that the bot can DM me.",
       "start_url": "/settings/channels/slack",
-      "entry_path": "Settings > Channels > Slack > enter tokens > Connect",
+      "entry_path": "Settings > Messaging Channels > Slack > enter tokens > Connect",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4663,7 +4662,7 @@
       "title": "Configure Feishu / WeCom channels",
       "user_story": "As an operator, I want to configure Feishu or WeCom credentials and allowlists, so that colleagues on those platforms can use the agent.",
       "start_url": "/settings/channels/feishu",
-      "entry_path": "Settings > Channels > Feishu (or WeCom) > credentials > Save",
+      "entry_path": "Settings > Messaging Channels > Feishu (or WeCom) > credentials > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4690,7 +4689,7 @@
       "title": "Configure iMessage channel (enable, allowed handles, service, DB path)",
       "user_story": "As a Mac user, I want to enable the iMessage channel and allow my handle, so that I can message the agent from my phone.",
       "start_url": "/settings/channels/imessage",
-      "entry_path": "Settings > Channels > iMessage > Enable > Allowed handles > Send replies over > Messages database path",
+      "entry_path": "Settings > Messaging Channels > iMessage > Enable > Allowed handles > Send replies over > Messages database path",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4716,7 +4715,7 @@
       "title": "Configure Microsoft Teams channel (App ID, password, tenant, allowed users)",
       "user_story": "As an operator, I want to enter Azure Bot App ID, client secret and allowed users, so that Teams users can DM the agent.",
       "start_url": "/settings/channels/teams",
-      "entry_path": "Settings > Channels > Microsoft Teams > Enable > App ID > App password > Allowed users > Save",
+      "entry_path": "Settings > Messaging Channels > Microsoft Teams > Enable > App ID > App password > Allowed users > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4742,7 +4741,7 @@
       "title": "Configure Webex channel (token, allowed emails, group spaces, thread reply)",
       "user_story": "As an operator, I want to set the Webex bot token, allowed emails and group-space options, so that the bot answers only approved people.",
       "start_url": "/settings/channels/webex",
-      "entry_path": "Settings > Channels > Webex > Enable > token > Allowed emails > Answer in group spaces > Save",
+      "entry_path": "Settings > Messaging Channels > Webex > Enable > token > Allowed emails > Answer in group spaces > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4768,7 +4767,7 @@
       "title": "Configure WeChat (Weixin) channel",
       "user_story": "As an operator, I want to enable the WeChat channel and set who can message the bot, so that only allowed WeChat users reach the agent.",
       "start_url": "/settings/channels/weixin",
-      "entry_path": "Settings > Channels > WeChat > Enable > Who can message the bot > Allowed user IDs > Folder",
+      "entry_path": "Settings > Messaging Channels > WeChat > Enable > Who can message the bot > Allowed user IDs > Folder",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4794,7 +4793,7 @@
       "title": "Configure WhatsApp channel (enable, who can message, how the agent joins in)",
       "user_story": "As an operator, I want to enable WhatsApp and choose who can message and when the agent speaks, so that group chats are handled safely.",
       "start_url": "/settings/channels/whatsapp",
-      "entry_path": "Settings > Channels > WhatsApp > Enable > Who can message > How the agent joins in > Seconds between unprompted replies",
+      "entry_path": "Settings > Messaging Channels > WhatsApp > Enable > Who can message > How the agent joins in > Seconds between unprompted replies",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -5185,8 +5184,8 @@
     {
       "id": "shell-instances-tab-bar-switching",
       "feature": "instances",
-      "title": "Switch between Local and remote instance panes",
-      "user_story": "As an operator, I want a header tab strip to switch instances, so that remote dashboards are one click away.",
+      "title": "Switch between Local and remote crew panes",
+      "user_story": "As an operator, I want a header tab strip to switch crews, so that remote dashboards are one click away.",
       "start_url": "/chat",
       "entry_path": "Topbar InstanceTabBar (renders only with >=1 remote) > click tab or Cmd/Ctrl+2 > InstancesViewport shows embedded pane",
       "preconditions": {
@@ -5212,10 +5211,10 @@
     {
       "id": "settings-instances",
       "feature": "remote-instances",
-      "title": "Settings › Instances",
+      "title": "Settings › Remote Crew",
       "user_story": "As an operator, I want to register remote Kiro Crew instances and see provisioning lanes, so that I can switch crews from the header.",
       "start_url": "/settings/instances",
-      "entry_path": "Settings → Instances (/instances redirects)",
+      "entry_path": "Settings → Remote Crew (/instances redirects)",
       "preconditions": {
         "seed": "multi-workspace",
         "members": [],
@@ -5272,10 +5271,10 @@
     {
       "id": "settings-instances-remote-crew",
       "feature": "remote-instances",
-      "title": "Add a remote instance and switch panes via the header tab strip",
-      "user_story": "As an operator with several machines, I want to register remote instances and switch between them, so that I manage all crews from one window.",
+      "title": "Add a remote crew and switch panes via the header tab strip",
+      "user_story": "As an operator with several machines, I want to register remote crews and switch between them, so that I manage all crews from one window.",
       "start_url": "/settings/instances",
-      "entry_path": "Settings > Remote Instances (/instances redirects) > InstanceFormFields > save > InstanceTabBar in topbar (Cmd/Ctrl+1..9)",
+      "entry_path": "Settings > Remote Crew (/instances redirects) > InstanceFormFields > save > InstanceTabBar in topbar (Cmd/Ctrl+1..9)",
       "preconditions": {
         "seed": "multi-workspace",
         "members": [],
@@ -5305,7 +5304,7 @@
       "title": "Cloud launch",
       "user_story": "As an operator, I want to provision a remote Kiro Crew instance (EC2 by default) through a lane selector, so that I can run crews in the cloud.",
       "start_url": "/settings/instances",
-      "entry_path": "Settings → Remote Instances → Set up a new one",
+      "entry_path": "Settings → Remote Crew → Set up a new one",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -6034,7 +6033,7 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Webhooks tab only with mc-preview-webhooks=1; Instances tab hidden in embedded pane; About gets a dot when an update is available."
+        "notes": "Webhooks tab only with mc-preview-webhooks=1; Remote Crew tab hidden in embedded pane; About gets a dot when an update is available."
       },
       "runnable": "smoke",
       "estimated_steps": 3,
@@ -7351,7 +7350,7 @@
       "id": "developer-agent-backend",
       "feature": "developer",
       "title": "Developer › Agent backend",
-      "user_story": "As a developer, I want to see which agent harness backend is live and whether Kiro prerequisites are met, so that I know what turns run on.",
+      "user_story": "As a developer, I want to see which agent harness backend is live, what each harness can and cannot do, and whether Kiro prerequisites are met, so that I know what turns run on before I choose a harness.",
       "start_url": "/developer",
       "entry_path": "Developer → agent-backend tab (?tab=agent-backend)",
       "preconditions": {
@@ -7360,15 +7359,17 @@
         "feature_flags": [
           "mc-dev-mode"
         ],
-        "notes": "Shows the fake ACP backend in the nightly harness. READ-ONLY: do not click the backend switch — changing the binding restarts sessions and detaches the harness's fake ACP backend."
+        "notes": "Shows the fake ACP backend in the nightly harness. The panel is a LIST of harnesses and a DETAIL for the highlighted one. Clicking a row only changes which detail is shown and is READ-ONLY and safe -- it is the intended way to read a harness. Do NOT click **Use <name>**: that is the switch, and changing the binding restarts sessions and detaches the harness's fake ACP backend. **Check again** is safe to press but it clears this gateway's cached resolution for that one harness, so prefer not to. The capability list is already open (it needs no disclosure now that one card renders at a time); only the operator notes are behind one, and opening that is read-only."
       },
       "runnable": "nightly",
-      "estimated_steps": 2,
-      "rationale": "Read-only status view is a useful harness confidence check (asserts the fake backend is what is live). one reader marked the record excluded because switching backends breaks the harness; that action is scoped out here rather than dropping the view, so the tier is nightly.",
+      "estimated_steps": 3,
+      "rationale": "Read-only status view is a useful harness confidence check (asserts the fake backend is what is live), and it now also carries the capability card for the highlighted harness -- available / not-available capability lines, the always-visible tool-approval and security lines, collapsed operator notes, and a row for a harness this build does not offer -- all projected from capability membership. Highlighting a row is not selecting it, so reading every harness's card is now a read-only walk; only the Use button switches. one reader marked the record excluded because switching backends breaks the harness; that action is scoped out here rather than dropping the view, so the tier is nightly. The card now also carries an MCP disclosure for the highlighted harness -- the projection kind in its summary, and behind it what switching one tool off costs here plus the parts of the agent spec this harness withholds or has no channel for -- projected from the mirror declarations. Opening it is read-only.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/pages/developer/AgentBackendTab.tsx",
-        "website/src/pages/DeveloperPage.tsx"
+        "src/kiro_crew/agent_sdk/backend_cards.py",
+        "website/src/pages/DeveloperPage.tsx",
+        "src/kiro_crew/agent_sdk/backend_install.py"
       ],
       "priority": "P2",
       "merged_from": [

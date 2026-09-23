@@ -186,6 +186,30 @@ _ALIASES: dict[str, str] = {
 }
 
 
+def canonical_name(name: str) -> str | None:
+    """The catalog name *name* selects, or ``None`` when it names nothing.
+
+    The distinction :func:`resolve` deliberately cannot make. ``resolve`` exists for
+    a value already stored in ``config.json`` and must always answer with a usable
+    model, so an unrecognised name degrades to the default. A WRITE path needs the
+    opposite: an unknown name must leave the stored field alone, because silently
+    replacing a good stored value with the default is worse than ignoring a bad
+    request.
+
+    Accepts the alias table as well as the catalog, which is what makes a superseded
+    name still SETTABLE. A user whose stored model is ``medium`` has a value the
+    catalog does not contain; a membership test against the catalog alone rejects it,
+    so saving the Voice panel failed on a field they never edited.
+    """
+    if not isinstance(name, str):
+        return None
+    candidate = name.strip()
+    if not candidate:
+        return None
+    canonical = _ALIASES.get(candidate, candidate)
+    return canonical if canonical in _BY_NAME else None
+
+
 def resolve(name: str) -> WhisperModel:
     """Return the catalog entry for *name*, falling back to the default.
 

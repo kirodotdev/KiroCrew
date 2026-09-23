@@ -1,7 +1,8 @@
-import { forwardRef, type ReactNode } from 'react'
+import { forwardRef, type ComponentProps, type ReactNode } from 'react'
 import { ListFilter, X } from 'lucide-react'
 
 import { SearchInput } from './ui'
+import { DropdownMenuContent, DropdownMenuLabel } from './ui/dropdown-menu'
 import { cn } from '../lib/utils'
 
 /**
@@ -108,11 +109,20 @@ export const FilterMenuButton = forwardRef<HTMLButtonElement, {
   },
 )
 
-/** Section label inside the filter menu (`FILTER`, `SORT BY`). */
-export const FILTER_MENU_LABEL_CLS = 'text-[11px] uppercase tracking-[.04em]'
+/** Section label inside the filter menu (`FILTER`, `SORT BY`). A component
+ *  rather than an exported class string so the design-system lint can read the
+ *  classes where they are applied: it follows a className only within a file. */
+export function FilterMenuLabel({ className, ...props }: ComponentProps<typeof DropdownMenuLabel>) {
+  return <DropdownMenuLabel className={cn('text-[11px] uppercase tracking-[.04em]', className)} {...props} />
+}
 
-/** Width bounds of the filter menu: wide enough for a row, never past a phone viewport. */
-export const FILTER_MENU_CONTENT_CLS = 'min-w-[180px] max-w-[calc(100vw-1rem)]'
+/** The filter menu's panel: wide enough for a row, never past a phone viewport.
+ *  Radix sizes the popper wrapper to `max-content`, so without the cap the
+ *  inline pickers' caption sentences (a phone renders them here instead of in
+ *  a flyout) would stretch the menu past the screen edge. */
+export function FilterMenuContent({ className, ...props }: ComponentProps<typeof DropdownMenuContent>) {
+  return <DropdownMenuContent className={cn('min-w-[180px] max-w-[calc(100vw-1rem)]', className)} {...props} />
+}
 
 /** The row of dismissible chips under a list's search row while any filter is
  *  on — the at-rest marker that the list is narrowed. `px-3` is one step wider

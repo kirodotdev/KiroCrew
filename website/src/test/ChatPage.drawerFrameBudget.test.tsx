@@ -88,7 +88,6 @@ vi.mock('../pages/chat/SidePanel', () => ({
   SIDE_PANEL_MIN_W: 320,
   SIDE_PANEL_RESERVED_W: 560,
   CHAT_PANE_MIN_W: 320,
-  measureSidePanelReservedW: () => 560,
   sidePanelFillWidth: () => undefined,
 }))
 vi.mock('../hooks/usePanelState', () => ({ usePanelState: () => ({ isOpen: false, openPanel: vi.fn(), closePanel: vi.fn() }), useDiffPanel: () => ({ isOpen: false, filePath: '', original: '', modified: '', openDiff: vi.fn(), closeDiff: vi.fn() }) }))
@@ -202,8 +201,8 @@ describe('ChatPage — mobile sessions drawer frame budget', () => {
   it('keeps the frosted scrim, in motion and at rest', () => {
     renderChat()
     openDrawer()
-    expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-sm')
+    expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-xs')
     finishSlide()
-    expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-sm')
+    expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-xs')
   })
 })

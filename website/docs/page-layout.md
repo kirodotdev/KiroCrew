@@ -323,16 +323,19 @@ Inline within a `Card`, built from the shared primitives:
 
 ## Errors
 
-A dismissible banner above the content:
+Render through the shared notice instead of hand-rolling a banner:
 
 ```tsx
-<div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
+<ErrorNotice message={error} onDismiss={() => setError(null)} askAgent />
 ```
+
+Enable `askAgent` only when navigating away cannot discard an unsaved draft; otherwise
+leave it off and document what must stay in place.
 
 ## Animations
 
 `animate-rise` on cards and banners, `animate-scale-in` on inline reveals. Both
-are Tailwind utilities defined in `tailwind.config.js`, and both use
+are Tailwind utilities declared in `src/tailwind-theme.css`, and both use
 `backwards` fill so an `animationDelay` holds the element hidden until its turn.
 
 ## Do NOT

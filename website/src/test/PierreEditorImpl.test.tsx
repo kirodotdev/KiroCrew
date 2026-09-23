@@ -202,7 +202,13 @@ describe('PierreEditorImpl surface selection', () => {
 
     expect(lastSurface().kind).toBe('file')
     expect(view.getByTestId('pierre-file')).toBeInTheDocument()
-    expect(lastSurface().props.file).toBe(FILE)
+    // The seam re-derives the cacheKey from live contents (Pierre's line-cache
+    // contract), so the surface carries the same name/contents with a
+    // content-derived key rather than the caller's raw object.
+    const rendered = lastSurface().props.file as FileContents
+    expect(rendered.name).toBe(FILE.name)
+    expect(rendered.contents).toBe(FILE.contents)
+    expect(rendered.cacheKey).toBe(contentCacheKey(FILE.name, FILE.contents))
     expect(lastSurface().props.edit).toBe(true)
   })
 
@@ -216,7 +222,9 @@ describe('PierreEditorImpl surface selection', () => {
 
     expect(lastSurface().kind).toBe('file')
     expect(view.getByTestId('pierre-file')).toBeInTheDocument()
-    expect(lastSurface().props.file).toBe(oversized)
+    const degraded = lastSurface().props.file as FileContents
+    expect(degraded.contents).toBe(oversized.contents)
+    expect(degraded.cacheKey).toBe(contentCacheKey(oversized.name, oversized.contents))
     expect(lastSurface().props.edit).toBe(true)
     expect(lastSurface().props.editorOptions).toBeTruthy()
   })
@@ -229,7 +237,9 @@ describe('PierreEditorImpl surface selection', () => {
     expect(lastSurface().kind).toBe('diff')
     expect(view.getByTestId('pierre-diff')).toBeInTheDocument()
     expect(lastSurface().props.oldFile).toBeNull()
-    expect(lastSurface().props.newFile).toBe(FILE)
+    const newFile = lastSurface().props.newFile as FileContents
+    expect(newFile.contents).toBe(FILE.contents)
+    expect(newFile.cacheKey).toBe(contentCacheKey(FILE.name, FILE.contents))
   })
 
   it('keys the baseline on its own contents, not the filename', () => {
@@ -336,6 +346,48 @@ describe('PierreEditorImpl surface selection', () => {
 
     expect(pierre.surfaces).toHaveLength(surfaceCount)
     expect(lastSurface().props.file).toBe(renderedFile)
+  })
+})
+
+describe('PierreEditorImpl cacheKey contract', () => {
+  // Pierre's `isLineCacheForFile` trusts `file.cacheKey` alone and never
+  // re-reads `contents`, so a caller that keeps a STABLE key across keystrokes
+  // (to hold the editing session and caret) would leave a grown buffer reusing a
+  // stale N-row highlight array — `processFileResult` then indexes past it and
+  // throws "Line doesnt exist" on Return. The seam owns that contract so every
+  // caller (CodeEditor, PapyrusEditor, any future one) is correct at once.
+  const seedFile = (contents: string): FileContents => ({
+    name: 'main.tex',
+    contents,
+    cacheKey: 'papyrus:main.tex:0', // a FROZEN session key, as callers now hand
+  })
+
+  it('derives a content-tracking cacheKey when the buffer grows a line', () => {
+    const { rerender } = mount({ file: seedFile('a\nb\nc\n') })
+    const before = (lastSurface().props.file as FileContents).cacheKey
+
+    // The caller hands the SAME frozen session key but longer contents (a new
+    // line typed). The pre-fix seam passed that frozen key straight to Pierre.
+    rerender({ file: seedFile('a\nb\nc\nd\n') })
+    const after = (lastSurface().props.file as FileContents).cacheKey
+
+    expect(after).not.toBe(before)
+    expect(after).toBe(contentCacheKey('main.tex', 'a\nb\nc\nd\n'))
+  })
+
+  it('moves the cacheKey on an in-line edit that keeps the line count', () => {
+    const { rerender } = mount({ file: seedFile('a\nb\nc\n') })
+    const before = (lastSurface().props.file as FileContents).cacheKey
+
+    rerender({ file: seedFile('a\nbb\nc\n') })
+    expect((lastSurface().props.file as FileContents).cacheKey).not.toBe(before)
+  })
+
+  it('never hands Pierre the caller’s frozen session key', () => {
+    mount({ file: seedFile('a\nb\nc\n') })
+    // The frozen key defines the React remount identity / caret session; it must
+    // NOT be what Pierre keys its line cache on.
+    expect((lastSurface().props.file as FileContents).cacheKey).not.toBe('papyrus:main.tex:0')
   })
 })
 
@@ -470,6 +522,8 @@ it('explains temporary recovery and terminal reload guidance in the UI', () => {
   pierre.poolState.current = { phase: 'unavailable', generation: 2 }
   mounted.rerender()
   expect(mounted.view.getByRole('alert')).toHaveTextContent('Syntax highlighting is unavailable. Save or copy your draft, then reload to restore syntax highlighting; editing remains available.')
+  expect(mounted.view.queryByRole('button', { name: 'Reload' })).toBeNull()
+  expect(mounted.view.queryByRole('button', { name: 'Ask the agent' })).toBeNull()
 })
 
 it('mounts Pierre optimistically while the first generation initializes', () => {

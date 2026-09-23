@@ -1006,6 +1006,17 @@ class TestArtifactGetCommentsEdgeCases:
         assert get.call_args.args[0] == "/api/artifacts/empty/comments"
         assert "No comments" in result
 
+    def test_exclude_resolved_is_opt_in(self) -> None:
+        """The default stays unfiltered; the flag is what adds the param."""
+        with patch(
+            "kiro_crew.mcp_core._get",
+            return_value={"comments": []},
+        ) as get:
+            _call_tool_inner(
+                "artifact_get_comments", {"slug": "empty", "exclude_resolved": True}
+            )
+        assert get.call_args.args[0] == "/api/artifacts/empty/comments?exclude_resolved=true"
+
     def test_error_response(self) -> None:
         with patch(
             "kiro_crew.mcp_core._get",

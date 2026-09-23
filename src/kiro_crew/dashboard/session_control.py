@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import (
@@ -43,10 +45,15 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
-from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    drained_to_thread,
+    effective_session_key,
+    slot_history_key,
+)
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
@@ -55,11 +62,20 @@ from kiro_crew.dashboard.state import (
     _safe_folder_tree,
 )
 from kiro_crew.dashboard.stop_retry import allow_escalation
+from kiro_crew.execution_context import (
+    ExecutionContext,
+    MemoryStoreRef,
+    bind_session_execution,
+    read_session_execution,
+    read_vouched_session_execution,
+    refresh_vouched_session_execution,
+    resolve_member_execution,
+)
 from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.memory_stores import named_store_or_empty
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
-from kiro_crew.validation import MAX_LONG_STRING
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_LONG_STRING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -117,23 +133,118 @@ CRON_LINK_PREFIX = "cron:"
 APP_CRON_OWNER_PREFIX = "app:"
 
 
-def _member_caller(caller_key: str) -> bool:
-    """Whether *caller_key* is a crew member's pinned DM slot.
+def _member_caller(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* is a crew member acting through one of its slots.
 
-    A member DM session dispatches its real work into worker sessions it
-    creates and patrols — that is the member operating model, not an optional
-    capability — so the surface authorizes it WITHOUT the global
-    ``agent.session_control`` opt-in. What bounds it instead is ownership:
-    :func:`authorize_target` restricts a member caller to slots it created
-    itself, so the automatic grant never reaches the user's own sessions.
+    A crew member runs in TWO kinds of slot, and both are the member operating
+    model rather than an optional capability, so the surface authorizes either
+    WITHOUT the global ``agent.session_control`` opt-in. What bounds them
+    instead is ownership: :func:`authorize_target` restricts a member caller to
+    slots it created itself, so the automatic grant never reaches the user's
+    own sessions.
 
-    Spelled through the members module's own prefix constant (imported
-    lazily — members imports validation which sits below this module in the
-    layering) rather than a restated literal, so the two cannot drift.
+    * (a) a pinned DM slot, keyed ``member-<slug>`` — recognised by the members
+      module's own prefix constant (imported lazily, since ``members`` imports
+      ``validation`` which sits below this module in the layering) rather than a
+      restated literal, so the two cannot drift; and
+    * (b) an ORDINARY dashboard chat slot (``chat-<n>-<ts>``) whose bound memory
+      store is that member's private V2 store — the same store a DM slot would
+      be bound to. A member's whole operating model (``session_create`` /
+      ``session_send`` / ``session_read_message`` / ``session_stop`` /
+      ``session_close``) also runs from such a chat slot, so refusing it there
+      would leave the member chat-only in the surface it exists to drive. The
+      store, not the key, is the member's identity here: it is what
+      :func:`_store_is_member_owned` reads off the config record.
+
+    Case (b) needs the caller's slot to read its bound store, hence *state*;
+    ``member_dispatch`` gates the bypass either way (:func:`_member_bypass`).
+
+    This predicate decides the switch BYPASS, re-read live at every gate so a
+    member the operator un-assigns loses it at once — a change that can only
+    tighten. It is not what keeps an admitted member creator-FENCED: the config
+    record case (b) reads is mutable, so the HTTP gate carries its verified
+    admission into :func:`authorize_target` (``precomputed_ownership_fenced``)
+    rather than letting the fence re-derive it here a beat later.
     """
     from kiro_crew.members import DM_SLOT_KEY_PREFIX
 
-    return caller_key.startswith(DM_SLOT_KEY_PREFIX)
+    if caller_key.startswith(DM_SLOT_KEY_PREFIX):
+        return True
+    slot = state.get_slot(caller_key)
+    if slot is None:
+        return False
+    return _store_is_member_owned(getattr(slot, "memory_store", "") or "")
+
+
+def _store_is_member_owned(store: str) -> bool:
+    """Whether *store* is a crew member's private V2 memory store, right now.
+
+    The ONE predicate that recognises a member store, shared by the HTTP gate
+    (``handlers/session_control.py``'s ``_private_caller_refusal``) and the inner
+    switch bypass here (:func:`_member_caller` case (b)), so the two layers cannot
+    disagree on what a member store is. It answers from the CONFIG RECORD, never
+    the on-disk ownership manifest: it runs at :func:`authorize_target`'s
+    synchronous gate, where a manifest ``stat`` / ``read`` would be blocking IO on
+    the event loop. ``KiroCrewConfig.load()`` is the cached read the switch gate
+    beside it already performs (warmed by :func:`prewarm_enabled_check`), and the
+    fields it reads are in-memory attributes of the loaded record.
+
+    ``True`` requires ALL of: a record for *store*; ``memory_version == 2``; a
+    non-empty ``owner_member``; and that owner still an ACTIVE agent bound to
+    exactly this store (the live-binding test ``active_member_memory_stores``
+    applies). A crew can be deleted while a chat slot bound to its store is still
+    live — the store record is retained with ``owner_member`` set but the agent is
+    gone from ``cfg.agents`` — and a retired owner must not keep the switch bypass
+    past a governance switch the operator turned off.
+
+    Everything else is ``False``, and every ``False`` is FAIL-CLOSED for what this
+    predicate decides — admission and the switch bypass: ``default``/empty, a
+    missing record, a non-V2 store, an ownerless V2 store, a retired or re-bound
+    owner, an unreadable config, or a degraded ``memory_stores`` section all
+    withhold member status, and a caller then falls back under the global switch
+    like any other. Withdrawing the case-(b) admission can never open the surface
+    wider than it is.
+
+    It is deliberately NOT the ownership FENCE's source of truth. The record is
+    mutable — an operator's own config writer can un-assign the member, drop
+    ``memory_version`` (the loader coerces a missing key to ``1``), or drop the
+    entry outright — and any of those can land between the HTTP gate's admission
+    and the inner authorization. The fence therefore does not re-derive member
+    status from this record: the gate carries its VERIFIED admission into
+    :func:`authorize_target` as ``precomputed_ownership_fenced`` (see
+    ``handlers/session_control.py``), so a member admitted as one stays
+    creator-fenced for the whole request whatever the record says a beat later.
+    """
+    if not store or store == "default":
+        return False
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        logger.warning(
+            "session_control: config read failed — store %r is not treated as a member store",
+            store,
+            exc_info=True,
+        )
+        return False
+    if cfg.degraded_sections & {DEGRADED_WHOLE_CONFIG, "memory_stores"}:
+        logger.warning(
+            "session_control: memory_stores config section degraded — store %r is not "
+            "treated as a member store",
+            store,
+        )
+        return False
+    record = cfg.memory_stores.get(store)
+    if record is None or getattr(record, "memory_version", 1) != 2:
+        return False
+    owner = getattr(record, "owner_member", "")
+    if not owner:
+        return False
+    owners_bound_here = [
+        member
+        for member, agent in cfg.agents.items()
+        if getattr(agent, "memory_store", None) == store
+    ]
+    return owners_bound_here == [owner]
 
 
 def _cron_caller(caller_key: str) -> bool:
@@ -192,7 +303,7 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
     this session", not "is a person at the keyboard", so a person working in an
     agent-created session keeps that session's reach rather than their own.
     """
-    if _member_caller(caller_key) or _cron_caller(caller_key):
+    if _member_caller(state, caller_key) or _cron_caller(caller_key):
         return True
     slot = state.get_slot(caller_key)
     if slot is None:
@@ -396,7 +507,82 @@ def member_dispatch_enabled() -> bool:
     return bool(cfg.agent.member_dispatch)
 
 
-def _member_bypass(caller_key: str) -> bool:
+def member_admitted_to_scoped_surface(session_key: str, store: str) -> bool:
+    """Whether a scoped caller is a crew member reaching a member-open surface.
+
+    The ONE predicate the two surface gates that admit member callers share --
+    the session-control HTTP gate (``handlers/session_control.py``'s
+    ``_private_caller_refusal``) and the chat folder/tag gate
+    (``handlers/_shared.py``'s ``private_chat_route_refusal``) -- so the two
+    cannot drift on who a member is or when the surface is reachable for it.
+
+    A caller is admitted when BOTH hold:
+
+    * it is a crew member -- either an ``member-*`` DM slot key
+      (:func:`is_member_session_key`) OR an ordinary chat slot bound to a crew
+      member's private V2 store (:func:`_store_is_member_owned`, reading the
+      VERIFIED scope the gate already resolved); AND
+    * the surface is reachable for a member -- its own ``agent.member_dispatch``
+      bypass OR the global ``agent.session_control`` switch it otherwise falls
+      back under, since ``member_dispatch`` is a bypass ON TOP of the switch.
+
+    This is the surface-level, caller-independent reachability only. It never
+    decides which folders or sessions the admitted member may touch -- that
+    ownership fence is per-resource and lives with each route
+    (``member_owns_slot`` for filing/tagging, ``owner_app``/``folder_principal``
+    for the tree). All reads run off the loop and fail closed on an unreadable
+    config, so this gate can never open wider than the two switches behind it.
+    """
+    from kiro_crew.members import is_member_session_key
+
+    is_member = is_member_session_key(session_key) or _store_is_member_owned(store)
+    return is_member and (member_dispatch_enabled() or session_control_enabled())
+
+
+def member_owns_slot(state: "DashboardState", slot: Any, caller_key: str) -> bool:
+    """Whether *caller_key* (a member) may FILE or TAG *slot*.
+
+    The member analogue of the app path's ``_app`` / ``app_owns_transcript``
+    ownership check, and the SAME fence :func:`_caller_is_ownership_fenced`
+    draws for session-control targets, so a member reaches through the chat
+    folder/tag routes exactly the sessions it reaches through session-control
+    and no others:
+
+    * (a) its OWN session -- the slot whose slot key is the caller's own; and
+    * (b) a session it CREATED -- ``_created_by == <caller's slot key>``, the
+      value :func:`create_session` stamps on every child a member mints.
+
+    ``caller_key`` is the VERIFIED ``X-Session-Key`` the gate authorized on --
+    a SESSION key (``effective_session_key``, e.g. ``dashboard:chat-20-...``),
+    never a body value. :func:`create_session` stamps ``_created_by`` with a
+    SLOT key (``caller_slot_key(state, ...)``, e.g. ``chat-20-...``), so the two
+    live in DIFFERENT key spaces: a raw ``_created_by == caller_key`` compare
+    never matches a created child, because it compares a slot key to a session
+    key. Resolve the caller to its slot key ONCE through :func:`caller_slot_key`
+    (the same map :func:`create_session` writes the field through) and compare in
+    that one space: ``_created_by`` and the slot's own ``key`` are both slot
+    keys.
+
+    The ``effective_session_key(slot) == caller_key`` arm stays as a
+    session-space fallback: a channel-born slot whose key the live slot map
+    cannot resolve (``caller_slot_key`` returns ``""``) is still owned when its
+    session key IS the caller. Everything else is refused: the person's own
+    sessions, an app's sessions, and another member's sessions all fail every
+    arm.
+    """
+    if not caller_key or slot is None:
+        return False
+    resolved_slot_key = caller_slot_key(state, caller_key)
+    if resolved_slot_key:
+        created_by = getattr(slot, "_created_by", "")
+        if created_by and created_by == resolved_slot_key:
+            return True
+        if getattr(slot, "key", "") == resolved_slot_key:
+            return True
+    return effective_session_key(slot) == caller_key
+
+
+def _member_bypass(state: "DashboardState", caller_key: str) -> bool:
     """Whether *caller_key* may skip the ``session_control`` switch as a member.
 
     The single expression both switch gates key on, extracted rather than
@@ -406,12 +592,13 @@ def _member_bypass(caller_key: str) -> bool:
     turned off, the member is no longer exempt and the switch gate applies to
     it like any other caller.
 
-    Keyed on the immutable slot-key prefix (via :func:`_member_caller`) AND the
-    config ceiling — the two together decide the bypass, and neither is a proxy
-    for it. ``member_dispatch_enabled`` is read at the gate, synchronously,
-    right before the act, exactly as ``session_control_enabled`` is beside it.
+    Keyed on :func:`_member_caller` (a ``member-`` DM slot OR a chat slot bound
+    to a member's V2 store — hence *state*) AND the config ceiling: the two
+    together decide the bypass, and neither is a proxy for it.
+    ``member_dispatch_enabled`` is read at the gate, synchronously, right before
+    the act, exactly as ``session_control_enabled`` is beside it.
     """
-    return _member_caller(caller_key) and member_dispatch_enabled()
+    return _member_caller(state, caller_key) and member_dispatch_enabled()
 
 
 async def prewarm_enabled_check() -> None:
@@ -892,6 +1079,7 @@ async def create_session(
     title: str = "",
     agent: str = "",
     folder_id: str = "",
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Open a new session in the caller's workspace, persisted at birth.
 
@@ -929,6 +1117,14 @@ async def create_session(
     every caller class the move path's app-ownership rule exists to stop is
     already refused above it -- an app-scoped caller cannot create a session at
     all (`app_scoped_caller`).
+
+    ``caller_fenced`` is the ownership-fence verdict the HTTP gate already settled
+    on the caller's VERIFIED scope, carried in for the same reason
+    ``authorize_target`` takes ``precomputed_ownership_fenced``: the inline
+    predicate re-derives member status from the MUTABLE config record, and this
+    coroutine suspends many times before it is consulted. ``None`` means "not
+    settled", and the fence is then evaluated inline. It is read by the
+    private-store authorization below and nothing else.
     """
     caller_key = caller_slot_key(state, caller_session_key)
     if not caller_key:
@@ -943,7 +1139,7 @@ async def create_session(
     # switch like any other caller. Every other caller still needs the switch.
     # The member's automatic grant is bounded by ownership in `authorize_target`,
     # not here: creation makes the caller the owner by construction.
-    if not session_control_enabled() and not _member_bypass(caller_key):
+    if not session_control_enabled() and not _member_bypass(state, caller_key):
         raise SessionControlError(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",
@@ -957,6 +1153,33 @@ async def create_session(
     if caller_slot is None:
         raise SessionControlError("caller session is not open", code="caller_not_open", status=404)
     _refuse_ineligible_creator(state, caller_slot)
+    caller_memory_identity = (
+        slot_history_key(caller_slot),
+        caller_slot.agent,
+        caller_slot.memory_store,
+    )
+
+    try:
+        caller_execution = await asyncio.to_thread(
+            read_session_execution, caller_memory_identity[0]
+        )
+    except (ValueError, OSError):
+        raise SessionControlError(
+            "caller execution context is unavailable", code="memory_unavailable"
+        ) from None
+
+    # This process's own word on the caller, snapshotted in the SAME breath as the
+    # record above so the two sources the own-store admission compares below are
+    # taken at one instant. Reading it down there instead would make a privacy
+    # change landing mid-resolution surface as a delegation refusal, when the
+    # re-gate further down exists precisely to name that case. A plain dict read
+    # under a lock, so it adds no suspension point here.
+    caller_vouched = read_vouched_session_execution(caller_memory_identity[0])
+
+    if caller_execution is not None and caller_execution.memory_mode != "persistent":
+        raise SessionControlError(
+            "incognito and temporary sessions cannot create sessions", code="ephemeral_caller"
+        )
 
     # The child is created in the CALLER'S workspace, not the default one.
     # Workspace is the memory boundary and `authorize_target` refuses a
@@ -1029,7 +1252,9 @@ async def create_session(
         # awaited HERE, still ahead of the caller re-resolve below, so the decisions
         # that authorize the allocation are all made after the last suspension.
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
-        bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, agent_name, project_dir)
+        bindings = await asyncio.to_thread(
+            resolve_agent_bindings, cfg, agent_name, project_dir, validate_memory_files=False
+        )
     except Exception:
         raise SessionControlError(
             "cannot verify the effective agent's workspace binding",
@@ -1061,6 +1286,153 @@ async def create_session(
             f"{agent_name!r} does not resolve to a configured agent",
             code="agent_unresolved",
         )
+
+    # Capture the child route once. Inherited member/store identity survives
+    # renamed aliases or changed config; an explicit member selection is resolved
+    # from the config snapshot admitted above.
+    try:
+        if agent.strip() and bindings.selection_kind == "member":
+            child_execution = resolve_member_execution(
+                cfg,
+                bindings.resolved_alias or agent_name,
+                memory_mode=getattr(caller_slot, "memory_mode", "persistent"),
+                validate_memory_files=False,
+            )
+            if caller_execution is not None:
+                child_execution = child_execution.with_mode(caller_execution.memory_mode)
+        elif caller_execution is not None:
+            child_execution = caller_execution.with_mode(
+                getattr(caller_slot, "memory_mode", "persistent")
+            )
+            if agent.strip():
+                child_execution = replace(child_execution, template_id=bindings.kiro_agent)
+        elif bindings.selection_kind == "member":
+            child_execution = resolve_member_execution(
+                cfg,
+                bindings.resolved_alias or agent_name,
+                memory_mode=getattr(caller_slot, "memory_mode", "persistent"),
+                validate_memory_files=False,
+            )
+        else:
+            child_execution = ExecutionContext(
+                None,
+                MemoryStoreRef(bindings.memory_store_name or "default"),
+                "template",
+                bindings.kiro_agent,
+                getattr(caller_slot, "memory_mode", "persistent"),
+                selection_name=agent_name,
+            )
+        bindings = replace(
+            bindings,
+            execution_context=child_execution,
+            memory_store_name=child_execution.store.legacy_name,
+            kiro_agent=child_execution.template_id,
+            selection_kind=child_execution.selection_kind,
+        )
+    except (ValueError, OSError):
+        raise SessionControlError(
+            "selected execution context is unavailable", code="memory_unavailable"
+        ) from None
+
+    # ONE authorization for the child's PRIVATE binding, at the single point where
+    # every branch above has already produced its final route. A per-branch check
+    # is not equivalent: the selected-member branch, the inherited-agent branch
+    # and the caller-agent fallback all reach a member store, so a check on any
+    # one of them leaves the others open.
+    #
+    # A private member store is reachable on exactly two authorities:
+    #
+    # * the store is the caller's OWN, read from its protected execution record --
+    #   the same-store worker that is a private caller's own model. The record is
+    #   the only admissible input: `slot.agent` and `slot.memory_store` are
+    #   metadata a later write can change, and the SELECTION itself is a
+    #   caller-supplied string, so deriving authority from either lets the request
+    #   authorize itself by naming a member's agent.
+    # * the caller is the owner's own dashboard session, which is what "not
+    #   ownership-fenced" means. That is a shipped capability: an owner reopening
+    #   member conversations and dispatching member workers. It is preserved here.
+    #
+    # Refused, therefore, is every population `_caller_is_ownership_fenced`
+    # already treats as untrusted for the sessions it may reach: a cron slot, a
+    # member's DM slot naming a PEER member's agent, and anything either of them
+    # created -- the fenced caller's unfenced deputy the fence exists to catch.
+    # An app-token caller never arrives (`_require_internal` refuses it) and an
+    # app-scoped one cannot create at all, so the fence is the whole population.
+    #
+    # Fail-closed in both directions. An unbound caller has no own-store
+    # admission, so it needs the unfenced one. A fence verdict is only ever read
+    # as a REFUSAL here, so the mutable-record window the carried verdict exists
+    # to close can widen nothing: a record that stops saying "member" between the
+    # gate and this line turns a refusal into an admission the owner already has,
+    # never the reverse.
+    #
+    # The own-store admission needs TWO sources to agree, and neither alone is
+    # enough. `caller_execution` can come from the caller's own transcript record
+    # when this process holds no carrier, and that record is written by the very
+    # session being judged -- so on its own it answers "whose store is this?" with
+    # the subject's own claim. `read_vouched_session_execution` answers with what
+    # this process committed, which no session can write, but it can fall behind:
+    # several modules publish an execution record without going through
+    # `bind_session_execution`, so a legitimate reassignment can leave the vouched
+    # entry stale.
+    #
+    # Requiring agreement fails closed against both. A forged record cannot match
+    # a vouched entry it did not write. A stale vouched entry cannot match a record
+    # that has moved on. Only an identity this process itself committed, and that
+    # the record still carries, admits -- and a caller refused here is not
+    # refused outright, it simply falls through to the fence below, which an owner
+    # passes.
+    if child_execution.member_id is not None:
+        own_store_agreed = (
+            caller_execution is not None
+            and caller_execution.member_id is not None
+            and caller_execution.store == child_execution.store
+            and caller_vouched is not None
+            and caller_vouched.store == caller_execution.store
+        )
+        if own_store_agreed:
+            # Recency follows USE, not birth, so a later overflow at the cap drops
+            # an idle key rather than the member session still dispatching through
+            # it. Grants nothing: an absent key is a no-op and the value is not
+            # touched, so the only thing it changes is which entry is dropped.
+            refresh_vouched_session_execution(caller_memory_identity[0])
+        else:
+            # Off-loop: the inline predicate reads the config record. Only reached
+            # when the carried verdict is absent, and only for a private selection,
+            # so an ordinary create pays nothing.
+            fenced = (
+                caller_fenced
+                if caller_fenced is not None
+                else await asyncio.to_thread(_caller_is_ownership_fenced, state, caller_key)
+            )
+            if fenced:
+                # Server-side ONLY, and it says the one thing the caller's refusal
+                # must not: WHICH source failed. An operator reading this can tell
+                # authority this process never held or has since dropped (a restart,
+                # or cap churn -- the session re-binds and recovers) from a record
+                # that disagrees with what this process committed, which is the
+                # forgery shape the agreement exists to refuse. Names neither the
+                # store nor the member, so the log is not a second disclosure
+                # channel for what the refusal withholds.
+                if caller_vouched is None:
+                    cause = "this process holds no vouched identity for the caller"
+                elif (
+                    caller_execution is not None and caller_vouched.store != caller_execution.store
+                ):
+                    cause = "the caller's record disagrees with this process's vouched identity"
+                else:
+                    cause = "the caller's record does not name the selected store"
+                logger.warning("memory delegation refused for %s: %s", caller_key, cause)
+                # The delegation refusal, in the words and under the code this
+                # surface already uses for it, so a caller sees one refusal for the
+                # whole class. Deliberately says nothing about the store, the
+                # member, or why this caller is fenced: a refusal must not confirm
+                # which member owns the agent the caller guessed at.
+                raise SessionControlError(
+                    "cannot verify delegation within the caller's memory assignment",
+                    code="memory_delegation_denied",
+                    status=403,
+                )
 
     # SlotOrigin.USER, not SYSTEM: the visibility semantics must match an
     # ordinary session, because the point of creating it here is that the user
@@ -1112,7 +1484,7 @@ async def create_session(
 
     # Re-resolved and re-gated HERE, adjacent to the allocation, because every
     # decision above was made before this coroutine suspended -- for the
-    # project directory, the config load, and the folder confirmation -- and the
+    # project directory, agent bindings, memory delegation and folder confirmation -- and the
     # inputs to those decisions are live state that can flip inside any of those
     # windows.
     #
@@ -1144,6 +1516,15 @@ async def create_session(
         raise SessionControlError(
             "caller session changed workspace while the session was being created",
             code="caller_workspace_changed",
+        )
+    if (
+        slot_history_key(live_caller),
+        live_caller.agent,
+        live_caller.memory_store,
+    ) != caller_memory_identity:
+        raise SessionControlError(
+            "caller session changed memory assignment while the session was being created",
+            code="caller_memory_changed",
         )
     _refuse_ineligible_creator(state, live_caller)
     # The child's origin tag, read off the caller that is live NOW -- see the
@@ -1212,6 +1593,31 @@ async def create_session(
         # unattributed, so ordinary human use never consumes an automated caller's
         # share.
         slot._created_by = caller_key
+        # Freeze the creator's ACP session id HERE, at mint, from the live caller
+        # handle we just authorized -- not later at the child's first turn. The
+        # creator slot can be closed and replaced between this mint and that turn,
+        # and a replacement is a distinct handle with its own session id; reading
+        # the id live at emit would then cite the replacement's crew log and corrupt
+        # the child's immutable `session/opened` lineage with no recovery path.
+        # `live_caller` is the same object the authorization gate above resolved,
+        # so this is the id that was live when the child was made. Empty when the
+        # caller's handle has no ACP session yet, which is recorded as absent.
+        # Bounded HERE, at retention, by the one constant every store of a
+        # backend-authored session id shares: an id past it is dropped, not
+        # truncated, so an oversize backend id can neither grow the slot's
+        # metadata nor make the child's ``session/opened`` entry too large to
+        # land -- the sid is optional, its absence is a legal record.
+        _creator_sid = crew_log_emit.session_id_of(getattr(live_caller, "_acp_client", None))
+        slot._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
+        # Witness that THIS process stamped the two fields above at mint. Neither
+        # the flag nor the sid is persisted: the transcript is a file an agent's
+        # file tools can edit, and the crew log is fenced from those tools exactly
+        # so nothing in it can be forged as gateway-authored -- so the child's
+        # first turn writes `session/opened.parent` only when this flag is set,
+        # never from `created_by` read back off disk. A restart between mint and
+        # the child's first turn therefore loses the link rather than trusting
+        # metadata for it.
+        slot._lineage_minted = True
         # The creator's interactive auto-approve grant follows the work it is
         # handing off. Without this a trusted operator dispatches a worker that
         # then blocks on an approval prompt nobody is watching -- the same failure
@@ -1271,6 +1677,7 @@ async def create_session(
         # slot-owned metadata, so a save that could not read it would drop the
         # key and silently return this session to the global store.
         slot.memory_store = bindings.memory_store_name
+        slot.memory_mode = child_execution.memory_mode
         # cwd must follow the workspace too, or file search and project-scoped agents
         # resolve against a directory the slot does not claim -- the same
         # authorization-vs-execution split as the agent binding, one layer down.
@@ -1301,10 +1708,37 @@ async def create_session(
         # behind is the worse of the two outcomes, because the caller sees an error and
         # the session exists anyway. Same retraction the fork path uses on a failed
         # build.
+        session_key = slot_history_key(slot)
+        native_context = state.sessions.get_provider(session_key) is not None or bool(
+            state.sessions.resumable_sid(session_key)
+        )
+        birth_persisted = False
+
+        def _persist_birth(metadata: dict[str, Any]) -> None:
+            nonlocal birth_persisted
+            if read_session_execution(caller_memory_identity[0]) != caller_execution:
+                raise SessionControlError(
+                    "caller execution context changed during creation",
+                    code="caller_memory_changed",
+                )
+            if (
+                child_execution.member_id is not None
+                and read_session_execution(session_key) is None
+            ):
+                if native_context or log.has_messages(session_key):
+                    from kiro_crew.memory_stores import UnknownMemoryStore
+
+                    raise UnknownMemoryStore("Existing session context requires a new conversation")
+            # Establishing: this child's store came from the authorization above,
+            # not from any record the child or its caller can write, so this is one
+            # of the few publications entitled to vouch.
+            bind_session_execution(session_key, child_execution, vouch=True)
+            log.update_metadata(session_key, metadata)
+            birth_persisted = True
+
         try:
-            await asyncio.to_thread(
-                log.update_metadata,
-                slot_history_key(slot),
+            await drained_to_thread(
+                _persist_birth,
                 {
                     "_type": "metadata",
                     # The slot's OWN durable identity, and its origin, both of which
@@ -1336,6 +1770,10 @@ async def create_session(
                     # losing it on restart would strand every worker a member
                     # dispatched — controllable in memory, orphaned after reboot.
                     **({"created_by": slot._created_by} if slot._created_by else {}),
+                    # `created_by_sid` is deliberately NOT written: the transcript
+                    # is agent-editable, so nothing read back from it may become
+                    # crew-log lineage. The sid lives on the slot for this process
+                    # only (see `_lineage_minted`).
                     # The agent's memory silo, recorded ONLY when it is not the
                     # default. This is what lets the consolidator write an agent's
                     # semantic, episodic and lesson rows into its own store
@@ -1353,7 +1791,7 @@ async def create_session(
                     ),
                 },
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             # Retract, but never at the cost of work already in flight. The slot is
             # addressable from the moment `get_or_create_slot` publishes it, which is
             # before this await, so a turn can have started on it while the write was
@@ -1361,7 +1799,16 @@ async def create_session(
             # with nothing pointing at it -- unreachable, unstoppable, and invisible to
             # the stop verb. A phantom session that vanishes on the next restart is the
             # lesser harm, so liveness wins over tidiness and the slot stays.
-            if not slot.running and not slot.messages:
+            # Drain before deciding: cancellation cannot leave a worker writing
+            # identity/history after this handler retracts its slot. A completed
+            # birth survives cancellation just as a turn already in flight does.
+            # A completed identity record remains available to a concurrent turn.
+            if (
+                not birth_persisted
+                and not slot.running
+                and not slot.messages
+                and state._slots.get(slot.key) is slot
+            ):
                 state._slots.pop(slot.key, None)
             state.push_slots_update()
             raise
@@ -1421,6 +1868,7 @@ def authorize_target(
     target: str,
     operation: str,
     skip_enabled_check: bool = False,
+    precomputed_ownership_fenced: bool | None = None,
 ) -> "_ChatSlot":
     """Resolve *target* and decide whether *caller* may act on it.
 
@@ -1435,6 +1883,29 @@ def authorize_target(
     session control got switched off mid-operation is not a containment boundary,
     and the config read is the one part of this function that can touch the disk
     on a cache miss. Every containment and identity refusal still runs.
+
+    ``precomputed_ownership_fenced`` is an ownership-fence verdict the caller of
+    this function already holds, honoured instead of re-deriving one here. Two
+    callers hold one:
+
+    * The HTTP gate (``handlers/session_control.py``'s ``_private_caller_refusal``)
+      admits a crew member on its VERIFIED private scope and passes ``True`` down
+      through every route. The inline fence (:func:`_caller_is_ownership_fenced`
+      → :func:`_member_caller` → :func:`_store_is_member_owned`) re-reads the
+      MUTABLE config record, and an operator's own writer can flip that record —
+      un-assign the member, drop ``memory_version`` (coerced to ``1`` by the
+      loader), drop the entry — in the awaits between the gate and this call. A
+      member admitted as one must stay bounded to what it created for the whole
+      request, so the verified decision travels with the request rather than
+      being recomputed from whatever the record says at the fence.
+    * ``close_target`` resolves the verdict ONCE up front (behind
+      ``prewarm_enabled_check``) and passes it to both its initial gate and its
+      SYNCHRONOUS point-of-no-return re-check, so no ``KiroCrewConfig.load()`` runs
+      on the loop inside ``close_slot``'s no-suspension window — the same
+      blocking-IO hazard ``skip_enabled_check`` closes for the switch read.
+
+    When ``None`` (an owner or agent-created caller the gate did not admit as a
+    member) the fence is evaluated inline as before.
     """
 
     def deny(reason: str, code: str, status: int = 403) -> SessionControlError:
@@ -1482,7 +1953,11 @@ def authorize_target(
     # (default true = today's behaviour) is on. Turn that ceiling off and the
     # member falls back under the switch. The member's reach stays bounded by
     # the ownership check below, which restricts it to slots it created itself.
-    if not skip_enabled_check and not session_control_enabled() and not _member_bypass(caller_key):
+    if (
+        not skip_enabled_check
+        and not session_control_enabled()
+        and not _member_bypass(state, caller_key)
+    ):
         raise deny(
             "session control is disabled in config (agent.session_control)",
             "session_control_disabled",
@@ -1593,10 +2068,17 @@ def authorize_target(
         # Workspaces are the memory boundary; reaching across one would let a
         # session act on work it cannot see.
         raise deny("target session belongs to a different workspace", "workspace_mismatch")
-    if (
+    # Resolve the fence verdict ONCE. A caller passing ``precomputed_ownership_fenced``
+    # already holds it — the HTTP gate's verified member admission, or
+    # ``close_target``'s up-front pass — so honour that value rather than
+    # re-deriving it from the config record here (see the docstring). Everyone
+    # else evaluates it inline.
+    ownership_fenced = (
         _caller_is_ownership_fenced(state, caller_key)
-        and getattr(slot, "_created_by", "") != caller_key
-    ):
+        if precomputed_ownership_fenced is None
+        else precomputed_ownership_fenced
+    )
+    if ownership_fenced and getattr(slot, "_created_by", "") != caller_key:
         # The fence every exempted caller class is bounded by, plus anything they
         # created. It reaches ONLY the sessions the caller made itself
         # (`created_by` is written at birth and rehydrated on restart). Always
@@ -1608,9 +2090,20 @@ def authorize_target(
         # refusal every other unattended caller gets: a scheduled job reaches the
         # sessions it dispatched and nothing else. Fail-closed on an unowned slot,
         # which is what an ownerless rehydrate looks like.
+        #
+        # The reason is cosmetic (the error string only). A carried verdict says
+        # WHETHER the caller is fenced, not WHY, and telling the member wording
+        # from the agent-created wording needs ``_member_caller``, which can read
+        # config — the ``close_target`` re-check runs in a no-suspension window and
+        # MUST NOT reach it. So on a carried verdict the text names the rule
+        # rather than a class it cannot see; the cron prefix is still readable
+        # without config, and the inline path keeps the three-way wording since
+        # it is already reading config anyway.
         if _cron_caller(caller_key):
             fence_reason = "a scheduled run can only control sessions it created itself"
-        elif _member_caller(caller_key):
+        elif precomputed_ownership_fenced is not None:
+            fence_reason = "this session can only control sessions it created itself"
+        elif _member_caller(state, caller_key):
             fence_reason = "a crew member can only control worker sessions it created itself"
         else:
             fence_reason = "an agent-created session can only control sessions it created itself"
@@ -1697,6 +2190,7 @@ async def stop_target(
     *,
     caller_session_key: str,
     target: str,
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Stop *target*'s in-flight turn, via the same path as the Stop button.
 
@@ -1716,6 +2210,14 @@ async def stop_target(
     Still no force flag: escalation is decided by the target's own stop state and
     the window above, never by anything the caller can ask for, so advertising one
     would promise a hard kill a first call cannot deliver.
+
+    ``caller_fenced`` is the ownership-fence verdict the HTTP gate carries for a
+    caller it admitted as a crew member (``True``); ``None`` for every other
+    caller. Forwarded to :func:`authorize_target` as
+    ``precomputed_ownership_fenced`` — see there for why the verified admission
+    travels with the request instead of being re-derived from config at the fence.
+    The same parameter, with the same meaning, is on :func:`close_target`,
+    :func:`send_to_target` and :func:`read_messages`.
     """
     # Prewarmed BEFORE `authorize_target`, and that ordering is load-bearing.
     # `stop_slot_turn`'s IDLE branch logs to the SEL with no await before it, so on
@@ -1754,6 +2256,7 @@ async def stop_target(
         caller_session_key=caller_session_key,
         target=target,
         operation="stop",
+        precomputed_ownership_fenced=caller_fenced,
     )
     # Both calls below are SYNCHRONOUS, which is what lets them sit here at all:
     # the rule the comment above states is that nothing may SUSPEND between the
@@ -1793,6 +2296,7 @@ async def close_target(
     *,
     caller_session_key: str,
     target: str,
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Close *target*, the same archival the tab ✕ performs.
 
@@ -1818,11 +2322,27 @@ async def close_target(
         logger.warning("session-control SEL prewarm failed", exc_info=True)
     await prewarm_enabled_check()
 
+    caller_key = caller_slot_key(state, caller_session_key)
+    # Resolve the ownership-fence verdict ONCE, up front, while the config cache
+    # is warm from ``prewarm_enabled_check`` above and we are not yet inside
+    # ``close_slot``'s no-suspension window. BOTH the initial gate and the
+    # synchronous re-check reuse it via ``precomputed_ownership_fenced`` rather
+    # than recomputing — the fence can read config on a cache miss
+    # (``_member_caller`` → ``_store_is_member_owned`` → ``KiroCrewConfig.load()``),
+    # which is exactly the blocking-IO-on-the-event-loop the close critical
+    # section must not do. A verdict the HTTP gate already carried (a caller it
+    # admitted as a crew member) is honoured as-is; otherwise it is computed here.
+    # An empty ``caller_key`` (unidentifiable caller) makes it ``False`` and the
+    # gate below still raises ``caller_unidentified`` before the fence is consulted.
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+
     slot = authorize_target(
         state,
         caller_session_key=caller_session_key,
         target=target,
         operation="close",
+        precomputed_ownership_fenced=caller_fenced,
     )
     slot_key = slot.key
     # Deferred for the same import cycle `stop_target` documents.
@@ -1845,6 +2365,11 @@ async def close_target(
         # this run with no await — an async prewarm-then-check would put an await
         # back before the pop and reopen the very window this closes. Every
         # containment and identity refusal still runs.
+        #
+        # `precomputed_ownership_fenced=caller_fenced` closes the SECOND disk
+        # touch: the ownership fence's own config read (member-store lookup),
+        # resolved once above and reused here so this callback never loads config
+        # on the loop.
         try:
             live = authorize_target(
                 state,
@@ -1852,6 +2377,7 @@ async def close_target(
                 target=slot_key,
                 operation="close",
                 skip_enabled_check=True,
+                precomputed_ownership_fenced=caller_fenced,
             )
         except SessionControlError as exc:
             # A stale-authorization refusal (mirrored/linked/workspace/caller-gone)
@@ -1916,6 +2442,8 @@ async def send_to_target(
     caller_session_key: str,
     target: str,
     message: str,
+    steer: bool = False,
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Deliver *message* to *target* as its next agent turn.
 
@@ -1928,6 +2456,38 @@ async def send_to_target(
     carries the containment that held here, and a constraint newly held at
     delivery time drops it with a visible notice instead of executing it under
     the weaker authorization that admitted it.
+
+    ``steer`` asks for a THIRD outcome on a busy target: the message cuts into
+    the turn already running (``steer_into_running_turn``) instead of waiting for
+    it, so a caller watching a worker go the wrong way can say so while the work
+    is still in flight rather than after it lands. Reported as ``steered``, its
+    own field, for the same reason ``started`` is one.
+
+    Two properties make that arm safe rather than a hole in the queued arm's
+    checks. The delivery happening NOW removes the queue's waiting window and
+    leaves a narrower one: the steer RPC suspends on ``stdin.drain()``.
+
+    * Containment is re-validated at the queue drain because a queued prompt runs
+      later than the moment it was authorized, so the target can gain a channel
+      link or an outbound mirror while it waits. Nothing suspends between
+      ``authorize_target`` and the steer call, so the text is committed against the
+      containment the gate cleared — but the RPC's own suspension is a window, and
+      each outcome closes it differently. The fallback re-runs the gate before
+      taking the queue arm and refuses a target that resolves to a different slot
+      OBJECT. A requeued steer becomes an ordinary queued entry and meets the drain
+      unexempted. A SUCCESSFUL steer cannot be recalled, so the admission
+      containment is compared against the post-RPC containment and the turn is
+      stopped when a constraint newly holds — the reply path resolves its mirror
+      live, so a mirror linked mid-turn is a real audience.
+    * Provenance is carried by the text, not by the delivery mode: both arms hand
+      over the same redacted, envelope-prefixed prompt, so neither the target
+      agent nor a person reading the transcript can read an injected message as
+      something the human typed. It also travels to the requeue as
+      ``user_origin=False``, so a peer's steer does not inherit the composer's
+      exemption from the drain's LINKED drop.
+
+    A steer that cannot be injected falls back to the queue — never dropped, and
+    the caller is told it queued rather than steered.
 
     The turn is NOT charged against the background-turn cap, and deliberately so:
     that cap only binds unattended (app-owned) slots, and every target this
@@ -1957,6 +2517,7 @@ async def send_to_target(
         caller_session_key=caller_session_key,
         target=target,
         operation="send",
+        precomputed_ownership_fenced=caller_fenced,
     )
 
     # A crew-bound target executes its turns on the peer, not here. The delivery
@@ -1987,16 +2548,225 @@ async def send_to_target(
     # limit and keeps the error keyed to what the caller actually sent.
     prompt = _SEND_PROVENANCE.format(caller=caller_key or "unknown") + sanitize_outbound(body)
 
-    # `_run_chat` is passed straight through, NOT wrapped in
-    # `state.run_background_turn`: that cap is structurally unreachable here.
-    # `run_background_turn` returns the coroutine untouched for an attended slot
-    # (`state.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
-    # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
-    # every `_app` target above (`app_scoped_target`) — so no target this
-    # function can reach is ever unattended, and a wrapper would only add a
-    # never-taken timeout arm. The composer's own queued path does the same
-    # (`server.py` passes `_run_chat` directly).
-    started = bool(slot.enqueue_or_run_prompt(prompt, _run_chat, state))
+    steered = False
+    requeued = False
+    # Containment names that newly held when a successful steer's turn was stopped;
+    # empty on every other path. Read by the audit below.
+    steer_audience_changed: list[str] = []
+    # True only when the containment stop below raised. The steer was already
+    # consumed by the turn at that point, so the failure travels in the audit trail
+    # and the caller still sees the delivery it got.
+    steer_containment_stop_failed = False
+    if steer and (slot.running or slot._in_stage_execution):
+        # The mid-turn arm. ONE text is handed to both arms, so what the target
+        # reads and what its transcript keeps are the same bytes either way:
+        # already redacted, already carrying the provenance envelope, so an
+        # injected steer can no more pose as human typing than a queued delivery
+        # can. ``chat_delivery`` runs its own ``sanitize_outbound`` before it
+        # appends the row, which is a second pass over text that already cleared
+        # the same guard.
+        #
+        # Gated on ``slot.running or slot._in_stage_execution`` because a steer
+        # needs a turn to cut into: the turn publishes the steer-capable client and
+        # clears it at teardown, so on an idle slot there is nothing to inject and
+        # the queue-or-run arm below is the whole delivery. The second half is the
+        # predicate every producer that must not start a concurrent turn reads --
+        # between a plan's stages ``slot.running`` reads False while the plan is
+        # still live. There is no steer client in that window, so this arm's own
+        # re-gate hands the text to the queue branch below rather than to a turn.
+        #
+        # Deferred import for the cycle `_run_chat` above documents.
+        from kiro_crew.dashboard.chat_delivery import (
+            STEER_REQUEUED,
+            STEER_STEERED,
+            steer_into_running_turn,
+        )
+
+        # Captured BEFORE the RPC and synchronous with the gate above -- no await
+        # separates `authorize_target` from here -- so this IS the containment the
+        # authorization cleared, recorded in the drain's own vocabulary so the
+        # comparison below is the same one queued prompts get.
+        admission = containment_meta(state, slot)
+
+        # Which turn this steer is going into. `_turn_generation` increments on every
+        # task assignment, so it identifies a turn even if a later task object reuses
+        # an address. Captured here, synchronously with the gate, because the stop
+        # below must not cancel a DIFFERENT turn: if the steered turn ends during the
+        # RPC and a queued prompt starts the next one, `slot` still reads as running
+        # and an unguarded stop would cancel work that never received this text.
+        steered_turn_generation = slot._turn_generation
+
+        # Set BEFORE the RPC, synchronously with the gate above, because this is the
+        # half the post-RPC stop cannot cover: `_deliver_cross_surface_reply` runs
+        # from the turn's own completion path and resolves the mirror live, so a turn
+        # that finishes while this coroutine is suspended would publish to the new
+        # audience before any check of ours resumes. Reacting cannot recall a sent
+        # reply; withholding until the check has run can.
+        audience_fence = uuid.uuid4().hex
+        slot._steer_audience_fences[audience_fence] = admission
+
+        # `user_origin=False`: this text was not typed into the target's own
+        # surface. The requeue reads it to decide `directive_user_origin`, and a
+        # peer must not inherit the composer's exemption from the LINKED drop.
+        outcome = await steer_into_running_turn(
+            state, slot, prompt, user_origin=False, admission=admission
+        )
+        steered = outcome == STEER_STEERED
+        # The turn ended while the steer RPC was suspended and its teardown moved
+        # the text onto the queue: it WILL run, and taking the queue arm below
+        # would deliver it a second time. Reported as a queued delivery, which is
+        # what it now is.
+        requeued = outcome == STEER_REQUEUED
+        if requeued and state._slots.get(slot.key) is not slot:
+            # The teardown queued this text on THIS slot object, and the key has
+            # since stopped resolving to it -- the target was closed and recreated
+            # while the RPC was suspended on `stdin.drain()`. The queue that now
+            # holds the prompt belongs to a detached object no drain will ever
+            # reach, so the text is gone. Refusing is the only honest answer: the
+            # `steered` arm already guards this same replacement (it records
+            # `slot_replaced` below) and the fallback arm re-runs the gate, so this
+            # was the one outcome that reported success for a prompt that had
+            # quietly stopped existing.
+            #
+            # Object identity, not `key != key`: a fresh object under the same key
+            # compares equal by key and would pass a key comparison.
+            raise SessionControlError(
+                "that target was replaced while the steer was in flight and the "
+                "message did not survive the hand-over; re-read the session list "
+                "and send again",
+                code="target_moved",
+                status=409,
+            )
+        if steered:
+            # The text is IN the running turn: `STEER_STEERED` means kiro-cli
+            # acknowledged consumption, so unlike the requeue arm there is nothing
+            # left to remove and unlike the fallback arm there is nothing left to
+            # refuse. What can still be prevented is the turn's remaining output
+            # reaching an audience this send was never authorized against -- a
+            # mirror linked, retargeted, or a channel link bound while the RPC was
+            # suspended on `stdin.drain()`. `_deliver_cross_surface_reply` resolves
+            # the mirror LIVE at reply-delivery time, so that audience is real and
+            # not fixed at turn start.
+            #
+            # So: compare, and stop the turn when a constraint newly holds. One
+            # cooperative cancel, the same thing the Stop button's first press does,
+            # with `escalate=False` because this is one automatic decision and not a
+            # person who watched a cancel fail to take.
+            #
+            # This comparison does NOT decide whether the reply may be published. The
+            # admission recorded before the RPC stays on the slot for the whole turn,
+            # and the publisher re-evaluates it at delivery -- a mirror bound between
+            # this moment and the reply would be just as unauthorized, and only the
+            # publisher's own moment can see it.
+            steer_audience_changed = newly_held_constraints(
+                containment_snapshot(state, slot, on_probe_failure=True), admission
+            )
+            if state._slots.get(slot.key) is not slot:
+                # The slot object was replaced under the same name while the RPC was
+                # in flight, so the turn holding this text belongs to a session that
+                # the name has stopped resolving to. Reported alongside the containment
+                # names rather than folded into them: it is an identity change, not
+                # a constraint that newly holds.
+                steer_audience_changed = [*steer_audience_changed, "slot_replaced"]
+            if steer_audience_changed:
+                # Deferred import for the cycle the steer import above documents.
+                from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+                if slot._turn_generation != steered_turn_generation:
+                    # The turn this text entered has already ended and another one
+                    # has started on the same slot. Stopping now would cancel work
+                    # that never received this steer, which is worse than the
+                    # exposure being narrowed: the steered turn is over, so whatever
+                    # it published is already published, and the fence recorded
+                    # before the RPC still withholds the cross-surface legs for the
+                    # remainder of the turn that holds it.
+                    steer_audience_changed = [
+                        *steer_audience_changed,
+                        "turn_rolled_over_stop_skipped",
+                    ]
+                else:
+                    # The text is already consumed by the turn at this point, so this
+                    # stop is a best-effort narrowing of what the turn goes on to
+                    # publish -- it is NOT part of delivering the message. Letting it
+                    # raise would abort before the success audit and the ok:True
+                    # return below, reporting a steer the turn has already taken as
+                    # failed; the caller's natural response is to send again, which
+                    # delivers the same text twice. The turn's own reply legs consult
+                    # the audience fence recorded before the RPC, so containment does
+                    # not depend on this stop succeeding.
+                    try:
+                        await stop_slot_turn(
+                            state,
+                            slot,
+                            source="session_send_steer_containment",
+                            escalate=False,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Containment stop failed after a steer was consumed "
+                            "(slot=%s, newly held=%s); the fence still withholds "
+                            "cross-surface publication",
+                            slot.key,
+                            steer_audience_changed,
+                        )
+                        steer_containment_stop_failed = True
+        else:
+            # Not steered: no text of ours is inside the running turn on this path, so
+            # there is nothing for the record to protect -- the requeue arm's entry
+            # faces the drain and the fallback arm re-runs the gate. Dropped by key so
+            # another peer's concurrent steer keeps its own.
+            slot._steer_audience_fences.pop(audience_fence, None)
+        if not steered and not requeued:
+            # STEER_UNAVAILABLE: no live steer-capable client, an RPC that lost the
+            # text, or an identical steer already in flight. The message falls back
+            # to the queue arm rather than being dropped — but that arm records the
+            # containment holding at APPEND time for the drain to re-assert, and
+            # the RPC above suspends, so the state it would record can differ from
+            # the state this send was authorized against. Re-run the gate so the
+            # snapshot cannot certify a link the authorization never saw.
+            # The prewarm before the gate at the top of this function predates the
+            # steer RPC, which suspends: a config edit during that suspension
+            # invalidates the cache, and `authorize_target` -> `session_control_enabled`
+            # would then run `KiroCrewConfig.load()` synchronously on the shared loop,
+            # stalling every other session while a file is read and validated. Warming
+            # again here is what `prewarm_enabled_check`'s own docstring prescribes for
+            # a gate that sits after an await.
+            await prewarm_enabled_check()
+            regated = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=target,
+                operation="send",
+                precomputed_ownership_fenced=caller_fenced,
+            )
+            if regated is not slot:
+                # Object identity, not ``regated.key != slot.key``. The delivery
+                # below uses THIS ``slot`` object, so a target closed and resumed
+                # under the same key during the RPC yields a fresh object whose key
+                # still compares equal: the guard would pass, the message would land
+                # on the detached object, and the caller would be told it succeeded.
+                raise SessionControlError(
+                    "that target resolved to a different session while the steer "
+                    "was in flight; re-read the session list and send again",
+                    code="target_moved",
+                    status=409,
+                )
+
+    if steered or requeued:
+        # Neither arm starts a turn: a steer runs inside one that is already going,
+        # and a requeued steer waits for the next like any queued message.
+        started = False
+    else:
+        # `_run_chat` is passed straight through, NOT wrapped in
+        # `state.run_background_turn`: that cap is structurally unreachable here.
+        # `run_background_turn` returns the coroutine untouched for an attended slot
+        # (`state.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
+        # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
+        # every `_app` target above (`app_scoped_target`) — so no target this
+        # function can reach is ever unattended, and a wrapper would only add a
+        # never-taken timeout arm. The composer's own queued path does the same
+        # (`server.py` passes `_run_chat` directly).
+        started = bool(slot.enqueue_or_run_prompt(prompt, _run_chat, state))
     try:
         state.push_slots_update()
     except Exception:  # pragma: no cover - sidebar refresh is best-effort
@@ -2007,9 +2777,29 @@ async def send_to_target(
         operation="send",
         slot_key=slot.key,
         outcome="allowed",
-        detail={"started": started, "chars": len(body)},
+        # `steer` is what the caller ASKED for and `steered` is what happened, so a
+        # fallback to the queue is readable in the trail rather than looking like a
+        # caller that never asked.
+        detail={
+            "started": started,
+            "steer_requested": bool(steer),
+            "steered": steered,
+            "chars": len(body),
+            # Only when a steer's turn was actually stopped, so the common shape is
+            # unchanged. Names the constraints that newly held, which is what a
+            # reader needs to tell this apart from an ordinary delivery: the message
+            # WAS delivered into the turn and the turn was then cancelled because
+            # its audience had changed under the RPC.
+            **({"steer_stopped_on": steer_audience_changed} if steer_audience_changed else {}),
+            # The stop raised. Present only in that case, so its absence is not a
+            # claim that a stop succeeded on a path where none was attempted. The
+            # delivery outcome above is unchanged: the turn had already taken the
+            # text, and the audience fence recorded before the RPC still withholds
+            # cross-surface publication whether or not the stop took.
+            **({"steer_containment_stop_failed": True} if steer_containment_stop_failed else {}),
+        },
     )
-    return {"ok": True, "target": slot.key, "started": started}
+    return {"ok": True, "target": slot.key, "started": started, "steered": steered}
 
 
 def read_messages(
@@ -2019,6 +2809,7 @@ def read_messages(
     target: str,
     limit: int = DEFAULT_READ_MESSAGES,
     since: int | None = None,
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Read *target*'s transcript tail plus enough state to poll it.
 
@@ -2037,6 +2828,7 @@ def read_messages(
         caller_session_key=caller_session_key,
         target=target,
         operation="read",
+        precomputed_ownership_fenced=caller_fenced,
     )
 
     # Indexes are ABSOLUTE positions in the session, not offsets into the live

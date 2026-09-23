@@ -270,6 +270,11 @@ class TestCapAlignment:
         "created_by",
         "session_key",
         "folder_id",
+        # The CHAT folder a job's runs are filed into. Same class as folder_id
+        # directly above: chosen from the Schedule page's own folder picker, so
+        # it is accepted on POST/PATCH /api/crons and has no CRON_ADD_SCHEMA
+        # (MCP) entry. General ID cap applies.
+        "chat_folder_id",
         # Dashboard-only provenance: only the Schedule-page template gallery
         # can stamp it, so it is accepted on POST /api/crons but has no
         # CRON_ADD_SCHEMA (MCP) entry. General ID cap applies.

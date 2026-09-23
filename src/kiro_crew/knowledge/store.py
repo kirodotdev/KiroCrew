@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,14 +16,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-try:
-    import pysqlite3 as sqlite3
-except ImportError:
-    import sqlite3
-
 from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
 
-from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index
+from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index, sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -1901,22 +1896,54 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
 
     def merge_source_properties(self, source_id: str, *, set_keys: dict | None = None,
                                 remove_keys: tuple[str, ...] = (),
-                                sync_status: str | None = None) -> dict | None:
+                                sync_status: str | None = None,
+                                last_synced: str | None = None) -> dict | None:
         """Apply a key delta to one source's ``properties``, in ONE write-locked take.
 
         Returns the properties as persisted, or None when the row is gone.
 
+        The delta is fixed up front; a caller whose new blob depends on what the
+        row reads (a counter increment) uses :meth:`revise_source_properties`,
+        which this is the fixed-delta form of. The transaction shape and its
+        reasons are documented there.
+        """
+        def revise(props: dict) -> str | None:
+            for key in remove_keys:
+                props.pop(key, None)
+            props.update(set_keys or {})
+            return sync_status
+
+        return self.revise_source_properties(source_id, revise, last_synced=last_synced)
+
+    def revise_source_properties(self, source_id: str,
+                                 revise: Callable[[dict], str | None], *,
+                                 last_synced: str | None = None) -> dict | None:
+        """Rewrite one source's ``properties`` from its CURRENT blob, in ONE
+        write-locked take.
+
+        *revise* is called with the row's parsed properties under the write lock
+        and mutates them in place; it returns the ``sync_status`` to stamp on
+        the COLUMN, or None to leave the column alone. *last_synced*, when
+        given, lands in the same statement. Returns the properties as
+        persisted, or None when the row is gone.
+
         ``properties`` is a whole-column rewrite, so a read-modify-write split
         across two statements loses a concurrent writer's change: whoever writes
-        last replaces the other's blob wholesale, and a dropped ``scan_paused``
-        means a folder the user paused keeps being walked. This takes the write
-        lock BEFORE reading (``BEGIN IMMEDIATE``, the shape
+        last replaces the other's blob wholesale. Every same-row writer that
+        derives its blob from a read -- the dashboard's pause/resume, the
+        watcher's scan stamps, the sync scheduler's outcome counter and the
+        ingest finalize's content-hash stamp -- comes through here, so the
+        database serializes them against each other: the write lock is taken
+        BEFORE the read (``BEGIN IMMEDIATE``, the shape
         :meth:`retire_auto_registered_folder` uses), so no other writer can land
-        between this read and this write, and guards the UPDATE with the blob it
-        read (``WHERE properties = ?``, the shape :meth:`_retire_one_in_txn`
-        uses). Under the lock that guard cannot fail, which is the point: it
-        states the invariant in SQL, so a future caller that drops the
-        transaction gets a no-op rather than a silent overwrite.
+        between this read and this write, and the UPDATE is guarded with the
+        blob it read (``WHERE properties = ?``, the shape
+        :meth:`_retire_one_in_txn` uses). Under the lock that guard cannot fail,
+        which is the point: it states the invariant in SQL, so a future caller
+        that drops the transaction gets a no-op rather than a silent overwrite.
+        A writer that works from a snapshot it took earlier and rewrites the
+        whole blob would resurrect that snapshot over everything committed since
+        -- which is why the finalize stamps a delta here instead.
 
         A failed ``BEGIN IMMEDIATE`` is NOT swallowed here, unlike in
         :meth:`retire_auto_registered_folder`: that sweep gets another pass, a
@@ -1942,19 +1969,19 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 props = {}
             if not isinstance(props, dict):
                 props = {}
-            for key in remove_keys:
-                props.pop(key, None)
-            props.update(set_keys or {})
+            sync_status = revise(props)
             text = _without_sync_status(json.dumps(props))
-            if sync_status is None:
-                cur = self.db.execute(
-                    "UPDATE sources SET properties = ? WHERE id = ? AND properties = ?",
-                    (text, source_id, row["properties"]))
-            else:
-                cur = self.db.execute(
-                    "UPDATE sources SET properties = ?, sync_status = ? "
-                    "WHERE id = ? AND properties = ?",
-                    (text, sync_status, source_id, row["properties"]))
+            sets = ["properties = ?", "updated_at = ?"]
+            params: list = [text, datetime.now().isoformat()]
+            if sync_status is not None:
+                sets.append("sync_status = ?")
+                params.append(sync_status)
+            if last_synced is not None:
+                sets.append("last_synced = ?")
+                params.append(last_synced)
+            cur = self.db.execute(
+                f"UPDATE sources SET {', '.join(sets)} WHERE id = ? AND properties = ?",  # noqa: S608
+                (*params, source_id, row["properties"]))
             self.db.execute("COMMIT")
             return props if cur.rowcount > 0 else None
         except Exception:

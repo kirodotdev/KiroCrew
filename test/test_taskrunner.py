@@ -36,6 +36,25 @@ _GENEROUS_DEADLINE = 30.0
 # ── Fixtures ──
 
 
+def _non_git_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Path:
+    """A directory ``init_workspace`` must treat as NOT a repository, on any host.
+
+    "Non-git dir" is not a property ``tmp_path`` has everywhere: a harness that
+    pins ``TMPDIR`` under the checkout gives it a real ``.git`` among its
+    ancestors, ``git rev-parse --is-inside-work-tree`` answers yes, and the run
+    then adds a REAL worktree and task branch to the enclosing repository -- the
+    very thing the non-git path exists to avoid. ``GIT_CEILING_DIRECTORIES`` is
+    git's own seam for that upward walk (discovery stops below the named
+    directory) and the spawn inherits ``os.environ``, so the state is constructed
+    here rather than assumed of the host. The directory is a CHILD of the ceiling
+    because git checks its starting directory before consulting the ceiling.
+    """
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    work = tmp_path / name
+    work.mkdir()
+    return work
+
+
 def _make_mock_sessions() -> MagicMock:
     """Create a mock SessionManager with the methods TaskRunner uses."""
     sessions = MagicMock()
@@ -212,9 +231,8 @@ class TestWorkflowRunIntegration:
     ) -> None:
         runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
 
-        with patch(
-            "kiro_crew.context.inherit_session_memory",
-            AsyncMock(side_effect=asyncio.CancelledError()),
+        with patch.object(
+            runner, "_bind_run_execution", AsyncMock(side_effect=asyncio.CancelledError())
         ):
             with pytest.raises(asyncio.CancelledError):
                 await runner.plan("cancel during inherited memory")
@@ -1207,7 +1225,7 @@ class TestRun:
             work_dir=tmp_path,
         )
 
-        with patch.object(runner, "self_review", return_value=True):
+        with patch("kiro_crew.task_executor.self_review", return_value=True):
             result = await runner.run(spec)
 
         assert result.status == "completed"
@@ -1439,7 +1457,7 @@ class TestResourceManagement:
         def track_release(key):
             call_order.append(f"release:{key}")
 
-        async def track_reset(key):
+        async def track_reset(key, **kwargs):
             call_order.append(f"reset:{key}")
 
         sessions.release = track_release
@@ -3612,7 +3630,7 @@ class TestParallelGroups:
 
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
-        with patch.object(runner, "self_review", return_value=True):
+        with patch("kiro_crew.task_executor.self_review", return_value=True):
             result = await runner.run(spec)
 
         assert result.status == "completed"
@@ -3654,12 +3672,11 @@ class TestGitCoord:
         )
 
     @pytest.mark.asyncio
-    async def test_init_workspace_no_repo(self, tmp_path: Path) -> None:
+    async def test_init_workspace_no_repo(self, tmp_path: Path, monkeypatch) -> None:
         """init_workspace in a non-git dir → run in place, no git init."""
         from kiro_crew import git_coord
 
-        work_dir = tmp_path / "work"
-        work_dir.mkdir()
+        work_dir = _non_git_dir(tmp_path, monkeypatch, "work")
         (work_dir / "hello.txt").write_text("hi")
 
         run = TaskRun(spec_path="/t.md", spec_content="s")
@@ -4724,12 +4741,11 @@ class TestGitCoord:
         await git_coord.finalize(run)
 
     @pytest.mark.asyncio
-    async def test_non_git_workspace_git_ops_are_noops(self, tmp_path: Path) -> None:
+    async def test_non_git_workspace_git_ops_are_noops(self, tmp_path: Path, monkeypatch) -> None:
         """A non-git workspace runs in place; all git helpers are safe no-ops."""
         from kiro_crew import git_coord
 
-        work_dir = tmp_path / "plain"
-        work_dir.mkdir()
+        work_dir = _non_git_dir(tmp_path, monkeypatch, "plain")
         (work_dir / "a.py").write_text("x = 1")
 
         run = TaskRun(spec_path="/t.md", spec_content="s")

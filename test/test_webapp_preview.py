@@ -18,6 +18,7 @@ from aiohttp import web
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard.handlers import webapp_preview as wp
+from kiro_crew.deploy import handlers as deploy_handlers
 from kiro_crew.deploy.webapp_types import webapp_metadata_from_dict
 
 
@@ -34,7 +35,11 @@ def env(tmp_path: Path, monkeypatch):
     (app_dir / "public" / ".kirocrew-deploy.json").write_text("{}")
     (app_dir / "api" / "secret").mkdir(parents=True)
     (app_dir / "api" / "secret" / "keys.py").write_text("SECRET = 1")
-    monkeypatch.setattr(wp, "_allowed_local_roots", lambda: [ws.resolve()])
+    # The web-root resolution (and its allow-list check) lives in
+    # deploy.handlers.resolve_webapp_public_dir, which the preview channel
+    # delegates to so the publish path and the preview cannot disagree about
+    # what is servable. Patch the roots where that check reads them.
+    monkeypatch.setattr(deploy_handlers, "_allowed_local_roots", lambda: [ws.resolve()])
     return store, app_dir
 
 

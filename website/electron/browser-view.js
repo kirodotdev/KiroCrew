@@ -5,8 +5,8 @@
 // real `WebContentsView` positioned over the side-panel rectangle. The view *is*
 // the panel: native paint, real events, downloads, video, no letterboxing.
 //
-// Two things about this are load-bearing and were confirmed empirically by the
-// design spike (docs/system-specs/modules/browser.md §10–§12):
+// Three things about this are load-bearing; the first two were confirmed
+// empirically by the design spike (docs/system-specs/modules/browser.md §10–§12):
 //
 //   1. A view does NOT have to fill the window. `setBounds()` honours an
 //      arbitrary rectangle, which is what makes an in-panel embed possible.
@@ -17,6 +17,14 @@
 //      rect (modal, dropdown, toast, drag preview) would be occluded, so the
 //      renderer tells us when an overlay is up and we hide the view for its
 //      duration. `computeVisible` is that decision, kept pure and tested.
+//   3. Keyboard focus in a `BaseWindow` belongs to exactly ONE child view, and
+//      hiding or detaching the focused view does not move it anywhere useful.
+//      Pointer events route by hit-test, so the dashboard keeps reacting to the
+//      mouse, but every keystroke goes to the view nobody can see: every text
+//      input in the dashboard (all chat composers, a modal's own field) looks
+//      alive and stays deaf. So whenever this view leaves the screen while it
+//      holds focus — overlay, inactive tab, collapsed panel, close — the
+//      manager hands focus back to the host view through `focusHost`.
 //
 // Security posture: this view renders arbitrary untrusted web content, so it is
 // deliberately the most locked-down webContents in the app.
@@ -177,6 +185,25 @@ function computeVisible(state) {
 }
 
 /**
+ * Does this view hold the host window's keyboard focus right now?
+ *
+ * Answered by the view's own webContents (`isFocused`), the one signal the page
+ * cannot forge. A view without that method (an older Electron) or one whose
+ * webContents is already gone answers `false`: the hand-back is then skipped,
+ * never guessed — focusing the host when the embedded page did NOT hold focus
+ * could yank focus off a modal prompt window the user is typing into.
+ */
+function viewHoldsFocus(view) {
+  const wc = view && view.webContents;
+  if (!wc || typeof wc.isFocused !== "function") return false;
+  try {
+    return wc.isFocused() === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Build the per-window manager for the embedded browser view.
  *
  * Dependencies are injected so the module stays unit-testable without a live
@@ -185,6 +212,8 @@ function computeVisible(state) {
  *   getContentBounds() -> { width, height } of the host window's content area
  *   addView(view) / removeView(view) -> attach/detach from the window
  *   onEvent(name, payload) -> notify the host (navigation state, denied popups)
+ *   focusHost()       -> give keyboard focus to the host (dashboard) view; called
+ *                        only when the embedded view held it as it left the screen
  */
 function createBrowserViewManager(deps) {
   const {
@@ -194,6 +223,7 @@ function createBrowserViewManager(deps) {
     removeView,
     onEvent = () => {},
     onCreate = () => {},
+    focusHost = () => {},
   } = deps || {};
 
   let view = null;
@@ -224,6 +254,16 @@ function createBrowserViewManager(deps) {
     }
   };
 
+  /** Hand keyboard focus to the host view. A courtesy that must never break
+   *  the visibility change it follows. */
+  function handBackFocus() {
+    try {
+      focusHost();
+    } catch {
+      /* host may be tearing down */
+    }
+  }
+
   function state() {
     return { open, overlayActive, inactive, bounds, url: currentUrl, visible: isVisible() };
   }
@@ -237,6 +277,11 @@ function createBrowserViewManager(deps) {
   function sync() {
     if (!view) return;
     const visible = isVisible();
+    // Decide the hand-back BEFORE the view goes away (header note 3): a hidden
+    // view may already report itself unfocused while keystrokes still reach no
+    // one. Asked on every hide, not only on the visible→hidden edge, so a view
+    // found hidden-yet-focused on a later bounds report is healed too.
+    const reclaim = !visible && viewHoldsFocus(view);
     // Prefer setVisible (present on the Electron versions we ship); fall back
     // to detaching the child view on anything older.
     if (typeof view.setVisible === "function") {
@@ -250,6 +295,8 @@ function createBrowserViewManager(deps) {
       view.setBounds(bounds);
       appliedBounds = bounds;
     }
+    // After the hide, so nothing below can take focus back off the host.
+    if (reclaim) handBackFocus();
   }
 
   function ensureView() {
@@ -363,6 +410,19 @@ function createBrowserViewManager(deps) {
       return state();
     },
 
+    /**
+     * Heal a hidden view that still holds keyboard focus — call when the host
+     * window regains focus, where the platform re-resolves which child view
+     * receives keystrokes and may pick the hidden one again. A visible view
+     * keeps its focus (the user is in the page); an unfocused one is left
+     * alone. Returns whether focus was handed back.
+     */
+    reclaimFocus() {
+      if (!view || isVisible() || !viewHoldsFocus(view)) return false;
+      handBackFocus();
+      return true;
+    },
+
     /** Close the panel and release the view entirely (the browser should not
      *  keep running once the user closes it). */
     close() {
@@ -376,12 +436,16 @@ function createBrowserViewManager(deps) {
       if (view) {
         const doomed = view;
         view = null;
+        // Same rule as sync(): ask while the view is still there, act after
+        // it is gone (header note 3).
+        const reclaim = viewHoldsFocus(doomed);
         try {
           removeView(doomed);
         } catch { /* window may be tearing down */ }
         try {
           if (doomed.webContents) doomed.webContents.close();
         } catch { /* already gone */ }
+        if (reclaim) handBackFocus();
       }
       return state();
     },
@@ -405,5 +469,6 @@ module.exports = {
   deriveScale,
   scaleRect,
   computeVisible,
+  viewHoldsFocus,
   createBrowserViewManager,
 };

@@ -78,8 +78,22 @@ def _install_policy(monkeypatch, doc: dict | None) -> None:
     monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
 
 
+#: Every governed scope ``GET /api/dashboard/config`` resolves, in the order the
+#: handler evaluates them. Named in full so the assertions below stay ENDPOINT-WIDE:
+#: filtering to one scope would discard the property that makes them a ratchet — a
+#: third probe added to this read without an audit row must fail here, and it cannot
+#: if the helper drops every row it does not recognise.
+_ENDPOINT_SCOPES = (_SCOPE, "capabilities.decisions")
+
+
 def _governance_rows(fake: MagicMock) -> list[dict]:
+    """EVERY row the endpoint wrote, unfiltered."""
     return [c[1] for c in fake.log_governance_decision.call_args_list]
+
+
+def _rows_for(fake: MagicMock, scope: str) -> list[dict]:
+    """One scope's rows, for a claim that is about that scope alone."""
+    return [r for r in _governance_rows(fake) if r.get("scope") == scope]
 
 
 # ── The catalog row ───────────────────────────────────────────────────────
@@ -191,7 +205,7 @@ class TestProbe:
 
         monkeypatch.setattr(social_share, "vet_and_audit", _boom)
         assert social_share.is_share_denied() is True
-        rows = _governance_rows(fake_sel)
+        rows = _rows_for(fake_sel, _SCOPE)
         assert len(rows) == 1
         assert rows[0]["scope"] == _SCOPE
         assert rows[0]["outcome"] == "denied"
@@ -253,18 +267,29 @@ class TestDashboardConfigEndpoint:
                 assert (await (await client.get("/api/dashboard/config")).json())[
                     "social_share_enabled"
                 ] is False
+            # ENDPOINT-WIDE first: every row this read wrote belongs to a scope this
+            # endpoint is known to resolve, and each resolved one wrote exactly one
+            # row per request. A probe added without an audit row fails the count; a
+            # probe added WITH one fails the scope set until it is named above.
             rows = _governance_rows(fake_sel)
-            assert [r["outcome"] for r in rows] == ["denied", "denied"]
-            assert {r["scope"] for r in rows} == {_SCOPE}
-            assert {r["tool_name"] for r in rows} == {social_share.AUDIT_TOOL}
+            assert {r["scope"] for r in rows} == set(_ENDPOINT_SCOPES)
+            assert len(rows) == 2 * len(_ENDPOINT_SCOPES)
             assert {r["session_key"] for r in rows} == {"dashboard:ui"}
+            # Then this scope's own trail.
+            share_rows = _rows_for(fake_sel, _SCOPE)
+            assert [r["outcome"] for r in share_rows] == ["denied", "denied"]
+            assert {r["tool_name"] for r in share_rows} == {social_share.AUDIT_TOOL}
 
             _install_policy(monkeypatch, None)
             assert (await (await client.get("/api/dashboard/config")).json())[
                 "social_share_enabled"
             ] is True
-            rows = _governance_rows(fake_sel)
-            assert [r["outcome"] for r in rows] == ["denied", "denied", "allowed"]
+            assert len(_governance_rows(fake_sel)) == 3 * len(_ENDPOINT_SCOPES)
+            assert [r["outcome"] for r in _rows_for(fake_sel, _SCOPE)] == [
+                "denied",
+                "denied",
+                "allowed",
+            ]
 
     @pytest.mark.asyncio
     async def test_round_tripped_field_does_not_reject_an_unrelated_save(

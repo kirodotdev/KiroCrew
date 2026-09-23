@@ -48,12 +48,12 @@ class TestSaveSlotToHistory:
         _save_slot_to_history(state, slot, force=True)
         return sorted((tmp_path / "history").rglob("*.jsonl"))
 
-    def test_temporary_slot_still_saved(self, tmp_path, monkeypatch):
-        """All modes write .jsonl for tab recovery — temporary included."""
+    def test_temporary_slot_is_not_saved(self, tmp_path, monkeypatch):
+        """Tab recovery must not retain a temporary session's body."""
         files = self._save_and_count_lines(
             tmp_path, monkeypatch, {"key": "tmp-1", "memory_mode": "temporary"}
         )
-        assert files, "temporary slot must still persist history for tab recovery"
+        assert files == []
 
     def test_normal_slot_not_skipped(self, tmp_path, monkeypatch):
         """Persistent slot should NOT early-return."""

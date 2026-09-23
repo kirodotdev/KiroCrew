@@ -202,7 +202,7 @@ class TestSeam2FinishQueueCycle:
             # has restored the data-home environment.
             patch.object(chat_runner, "generate_session_summary", new=AsyncMock()),
         ):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert any(m.get("role") == "done" for m in slot.messages), "no done row => wedge"
@@ -233,16 +233,27 @@ class TestSeam3StageLoopFinally:
         state.push_slots_update = MagicMock()
         state.subagents = MagicMock()
         state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents.has_pending_work_for_async = AsyncMock(return_value=False)
+        state.subagents.wait_for_parent_reports = AsyncMock(return_value=False)
 
         slot = _ChatSlot("stage-flush-guard", mode="orchestrator")
         slot._titled = True
         slot._stage_titles = ["A"]
         slot._orch_tracker = None
 
-        async def _noop(s, sl, msg, **kw):
-            return None
+        # Appends the assistant row a real turn leaves behind. Without it the
+        # stage captures nothing, which is a failed round that PAUSES the plan --
+        # and a paused loop deliberately emits no `done` row, so the wedge
+        # assertions below would fire on the pause rather than on a flush raise.
+        # The seam under test is the `finally`, which this reaches by letting the
+        # plan complete.
+        async def _one_stage(s, sl, msg, **kw):
+            callback = kw.get("_on_consumed")
+            if callable(callback):
+                callback(True)
+            sl.append("assistant", "stage output", "msg msg-a")
 
-        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _noop)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _one_stage)
 
         with patch.object(type(slot), "flush_deferred_notes", _raising_flush()):
             await _stage_loop(state, slot, auto_run=True)

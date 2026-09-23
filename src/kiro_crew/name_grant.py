@@ -70,15 +70,50 @@ child (:func:`env.augmented_path`), not this process's own ``PATH``: the child's
 is a superset with the version-manager directories PREPENDED, so resolving
 against ours would answer for a search order the command will not use.
 
+On Windows the shell is PowerShell -- kiro-cli's shell tool spawns
+``powershell -Command <text>`` there and offers no other shell
+(kirodotdev/Kiro#9537) -- so that is the lookup this module models, measured on
+Windows PowerShell 5.1 rather than read off cmd.exe's documentation:
+
+* A bare name never searches the working directory. PowerShell requires an
+  explicit ``.\\`` prefix for that, so cmd.exe's current-directory lookup does
+  not arise in the shell that actually runs the command.
+* Session ALIASES and FUNCTIONS resolve before anything on ``PATH``. The default
+  alias table is fixed by the PowerShell build (``ls``, ``cat``, ``where``,
+  ``sort``, ``curl``, ``sc`` ... all name cmdlets, whatever ``PATH`` holds), and a
+  per-user profile script can define any function it likes. So a default alias
+  is judged as the built-in it is (:data:`_WINDOWS_INERT_BUILTINS`, else
+  refused), and while a per-user profile exists every grant is refused -- the
+  same shape as ``BASH_ENV`` on POSIX.
+* A FULL cmdlet name of the modules that ship as PowerShell itself is refused
+  unless it is inert (:data:`_POWERSHELL_CORE_COMMANDS`). Whether such a name or
+  a same-named file on ``PATH`` runs is not a property of the name: measured,
+  ``Microsoft.PowerShell.Core`` is loaded always and beats any file, while
+  ``.Management``/``.Utility`` are auto-loaded by their first use, so one earlier
+  command in the same line flips every later name in that module.
+* ``PATH`` is walked directory-major; inside each directory ``.ps1`` is tried
+  first, then ``PATHEXT`` in order (:func:`_windows_which`). A hit whose
+  extension Windows runs through a registered file association (``.py``,
+  ``.js``, ``.vbs`` ...) is refused: the interpreter is chosen by a registry key
+  the user can write, not by the file this check can pin.
+* A backslash is a path separator, never an escape, and a path is absolute only
+  with a drive or UNC prefix -- ``\tool.exe`` and ``C:tool.exe`` are resolved
+  against a working directory the approval never saw.
+* Module auto-loading is not a shadowing vector BEYOND that cmdlet set: measured,
+  an application found on ``PATH`` wins over a command of an auto-loadable module
+  (a lone ``Get-NetAdapter`` runs the file), a module is auto-loaded only by one
+  of its own commands, and the only names this walk lets past without a refusal
+  are inert ones -- which are all Core/Management/Utility, so no permitted prefix
+  can load anything else. A name found nowhere is refused anyway.
+
 Cost is a ``which`` walk plus a handful of ``stat`` calls per decision, on the
 same order as ``trusted_system_bin``'s own lookup. The filesystem work runs on
 a worker thread via :func:`refusal_for_command_off_loop` — never on the event
-loop where the approval is decided; only the constant Windows decline is
-answered on-loop, because it needs no filesystem access at all. Building the
-search path is cheap wherever it runs because :func:`env.augmented_path` is
-string work over a glob that ``env._node_all_bin_dirs`` caches for the process
-lifetime, and that cache is already warm: the same call builds the ``PATH``
-handed to the agent process at session start, long before any tool approval.
+loop where the approval is decided. Building the search path is cheap wherever
+it runs because :func:`env.augmented_path` is string work over a glob that
+``env._node_all_bin_dirs`` caches for the process lifetime, and that cache is
+already warm: the same call builds the ``PATH`` handed to the agent process at
+session start, long before any tool approval.
 
 The verdict itself is deliberately uncached: a cached "trusted" answer is a
 substitution window, and this must reflect the filesystem as it is when the tier
@@ -90,7 +125,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import ntpath
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -155,6 +192,17 @@ _PUNCTUATION = "();<>|&"
 #: the only honest answer: the tier cannot vouch for a program it cannot see.
 _UNENUMERABLE = ("$(", "`", "<(", ">(")
 
+#: PowerShell's BLOCK-COMMENT delimiters, which the walk cannot model. ``shlex``
+#: has no notion of ``<# ... #>``, and turning ``commenters`` off does not help:
+#: it hands ``<`` and ``>`` back as REDIRECT operators, so each one consumes the
+#: token after it as a redirect target. ``echo ok; <# echo #> evil`` therefore
+#: reports ``['echo', 'echo']`` and ``<#c#>evil`` reports no names at all, while
+#: PowerShell discards the comment and runs ``evil`` -- a program the walk never
+#: saw. Windows only: in a POSIX shell ``<#`` opens stdin from a file named
+#: ``#`` and ``#> evil`` writes stdout into ``evil``, so nothing runs there that
+#: the walk missed, and the two characters keep their redirect meaning.
+_WINDOWS_COMMENT_DELIMITERS = ("<#", "#>")
+
 #: Characters that make a PROGRAM token something other than a literal name --
 #: the shell expands them, so what runs is decided after this check reads it.
 _EXPANDING_CHARS = ("$", "`", "*", "?", "[")
@@ -192,6 +240,8 @@ UNWITNESSED = "no_approval_identified_this_file"
 DISPATCHER = "program_dispatches_another"
 AMBIGUOUS_PATH = "search_path_has_a_relative_entry"
 WINDOWS_UNMODELLED = "windows_lookup_not_modelled"
+FILE_ASSOCIATION = "windows_file_association"
+BUILTIN_SHADOWS = "powershell_builtin_precedes_program"
 UNINSPECTABLE = "uninspectable"
 UNKNOWN_COMMAND = "unresolved_command_word"
 AMBIGUOUS_ENV = "inherited_env_can_redefine_programs"
@@ -208,7 +258,10 @@ _REFUSAL_LOG_TEXT = {
     UNWITNESSED: "a non-system program has no file identified by an approval",
     DISPATCHER: "a program runs another program named in its arguments",
     AMBIGUOUS_PATH: "the search path contains an empty or relative entry",
-    WINDOWS_UNMODELLED: "Windows tokenization and shell lookup are not modelled",
+    WINDOWS_UNMODELLED: "the Windows shell's lookup inputs could not be established",
+    FILE_ASSOCIATION: "a program resolves to a file Windows runs through a registered "
+    "file association",
+    BUILTIN_SHADOWS: "PowerShell resolves the name to a built-in command before the search path",
     UNINSPECTABLE: "a program could not be inspected",
     UNKNOWN_COMMAND: "a command word resolves to no program and is not a known inert builtin",
     AMBIGUOUS_ENV: "the inherited environment can redefine a program name as a shell function",
@@ -222,14 +275,257 @@ class Refusal:
     ``detail`` names the program and the paths involved and is meant for the
     person deciding at the approval card. ``log_text`` is the constant to log --
     see the note above on why the two are separate.
+
+    ``dedupe_key`` is an optional fingerprint of the ENVIRONMENT STATE this
+    refusal reads. When set, :func:`should_log_decline` collapses a repeated
+    line for the same session AND the same fingerprint down to one warning: a
+    profile that does not change between commands says the same thing about
+    every one of them, and burying real per-invocation refusals under that
+    repeated line is the noise :func:`should_log_decline` exists to prevent.
+    The fingerprint is part of the key, not the code, so a mid-session change
+    -- a profile is edited, or removed -- produces a fresh line rather than
+    silence. Never used by :func:`log_decline`: the SEL audit row is written
+    per invocation whatever the fingerprint says.
     """
 
     code: str
     detail: str
+    dedupe_key: str | None = None
 
     @property
     def log_text(self) -> str:
         return _REFUSAL_LOG_TEXT.get(self.code, "a program name could not be vouched for")
+
+
+#: Refusal codes that describe the PLATFORM rather than the command. Every other
+#: code is a fact about the line that was run -- this name shadows a system
+#: program, that file is not the one an approval identified -- so it is worth
+#: saying every time it happens. A platform-scope code says the same thing about
+#: every command a session will ever run, so repeating it per invocation buries
+#: the per-command refusals it sits among and reads like a misconfiguration the
+#: user could fix.
+#:
+#: Only ``WINDOWS_UNMODELLED`` qualifies today, and only in the one state that
+#: still produces it: Windows could not say where the user's Documents folder
+#: is, so whether a PowerShell profile runs before the command cannot be
+#: established (:func:`windows_environment_refusal`). ``AMBIGUOUS_PATH`` and
+#: ``AMBIGUOUS_ENV`` -- the latter also covering a PowerShell profile that
+#: EXISTS -- are near-misses that are deliberately NOT here: both are
+#: environment state a user can change mid-session, so a later invocation can
+#: legitimately answer differently and each line is a fresh fact.
+_PLATFORM_SCOPE_CODES = frozenset({WINDOWS_UNMODELLED})
+
+#: ``(session bucket, code) -> None`` for platform-scope declines already logged.
+#: Bounded like :data:`_PINS` so a long-lived gateway cannot accumulate an entry
+#: per session it has ever served. An eviction costs one extra log line for a
+#: session that comes back after 512 others, which is the right way to be wrong.
+#: Every variable-length element of the key is held as its :func:`_notice_digest`
+#: rather than verbatim, so the retained SIZE is bounded as well as the entry
+#: count.
+_DECLINE_NOTICES: "OrderedDict[tuple[str, str], None]" = OrderedDict()
+_DECLINE_NOTICE_LIMIT = 512
+
+#: Guards :data:`_DECLINE_NOTICES`. The tiers reach this from worker threads, so
+#: the read and the insert have to be one critical section or two concurrent
+#: invocations both read "not seen yet" and both log.
+_DECLINE_NOTICE_LOCK = threading.Lock()
+
+
+def _notice_digest(value: str) -> str:
+    """A fixed-size stand-in for a variable-length key element.
+
+    The ledger only tests membership -- every value is ``None`` and nothing reads
+    a key back out -- so a digest dedupes exactly as the value itself did while
+    making the retained bytes independent of how long that value is.
+
+    That independence is the point, because both variable-length elements are
+    chosen outside this module and neither has its length checked. The session
+    key comes from the agent webhook, which takes ``sessionKey`` from the request
+    body and validates its type and its PREFIX but caps no length, unlike the
+    ``message`` field beside it. The dedupe fingerprint is a filesystem path plus
+    an mtime, and a Documents folder redirected deep enough makes that path as
+    long as the filesystem allows. Bounding the ledger by entry COUNT alone
+    therefore bounds the wrong dimension: 512 entries of a caller's chosen size
+    is not a bound. A blank value still digests to its own stable value, so a
+    headless caller keeps the separate bucket it is documented to get.
+    """
+
+    digest = hashlib.blake2b(value.encode("utf-8", "surrogatepass"), digest_size=16)
+    return digest.hexdigest()
+
+
+def should_log_decline(session_key: str, refusal: Refusal) -> bool:
+    """Answer whether this decline's log LINE is worth writing again.
+
+    Governs the human-facing ``logger.warning`` only. It never governs
+    :func:`log_decline`, which writes the SEL audit row: declining is a security
+    decision and every one of them is audited, per invocation, whatever this
+    returns. Nothing observable is lost by suppressing a repeat -- the text of a
+    platform-scope refusal is a constant read out of :data:`_REFUSAL_LOG_TEXT`
+    and carries nothing about the command that met it.
+
+    True for every command-scope code by default: those differ per invocation.
+    A command-scope refusal MAY opt in to session-deduplication by carrying a
+    :attr:`Refusal.dedupe_key` -- the fingerprint of the environment state it
+    reads -- and then the same session-plus-fingerprint pair collapses to one
+    line, with a changed fingerprint (a profile edited or removed mid-session)
+    producing a fresh one. True the first time a :data:`_PLATFORM_SCOPE_CODES`
+    member is met in a session, then False for that same session and code.
+
+    A blank *session_key* is treated as its own bucket rather than shared, so a
+    surface that has no session (a headless caller) still gets its first notice.
+    """
+
+    if refusal.code in _PLATFORM_SCOPE_CODES:
+        key: tuple = (_notice_digest(session_key), refusal.code)
+    elif refusal.dedupe_key is not None:
+        key = (_notice_digest(session_key), refusal.code, _notice_digest(refusal.dedupe_key))
+    else:
+        return True
+    with _DECLINE_NOTICE_LOCK:
+        if key in _DECLINE_NOTICES:
+            return False
+        _DECLINE_NOTICES[key] = None
+        while len(_DECLINE_NOTICES) > _DECLINE_NOTICE_LIMIT:
+            _DECLINE_NOTICES.popitem(last=False)
+    return True
+
+
+def platform_scope_notice() -> str | None:
+    """Name the platform-scope limitation in force here, or None.
+
+    One spelling for the surfaces that report it away from an invocation --
+    ``kirocrew doctor`` today -- so the CLI cannot describe a posture this module
+    does not actually hold. Derived from the same helper
+    :func:`name_grant_refusal` consults, so the two cannot drift: the notice is
+    the one Windows refusal that is a property of the host rather than of its
+    current configuration.
+    """
+
+    refusal = windows_environment_refusal()
+    if refusal is not None and refusal.code in _PLATFORM_SCOPE_CODES:
+        return refusal.code
+    return None
+
+
+def windows_environment_refusal() -> Refusal | None:
+    """Why NO name on this Windows host can be vouched for right now, else None.
+
+    ``None`` on every other platform. Two states refuse:
+
+    * Windows cannot say where the user's Documents folder is
+      (``SHGetKnownFolderPath`` failed), so whether a profile script runs before
+      the command cannot be established. Platform scope: a property of the host.
+    * A per-user PowerShell profile EXISTS. kiro-cli starts the shell without
+      ``-NoProfile``, so that script runs before every command, and a function
+      it defines resolves ahead of any program on ``PATH`` -- measured, and the
+      same threat ``BASH_ENV`` poses on POSIX. Whatever writes as the user
+      writes Documents, so the profile is not a file this check can trust by
+      location; nor is it pinned, because a pin records what a human approved,
+      and no approval card ever shows the profile. Command scope: the user can
+      remove the file and the next invocation answers differently.
+
+    The all-users profiles under ``$PSHOME`` are deliberately not checked: they
+    live beside the system binaries this module already trusts by location.
+
+    Like every other answer this module gives, this one describes the filesystem
+    as it is when the tier decides: a profile created after the check and before
+    the shell starts is the same residual window as the resolved file's own
+    contents changing there, and narrowing it is not something this check can do
+    from inside -- the shell is spawned by kiro-cli, which offers no
+    ``-NoProfile``. What closes it is that writing the file needs an approved
+    command of its own.
+
+    Public because ``kirocrew doctor`` prints the same answer, so a user reading
+    "why does every hook still prompt" sees the file that is doing it.
+    """
+
+    if not platform_compat.IS_WINDOWS:
+        return None
+    profiles = platform_compat.windows_powershell_profile_paths()
+    if profiles is None:
+        return Refusal(
+            WINDOWS_UNMODELLED,
+            "Windows could not report the user's Documents folder, so whether a "
+            "PowerShell profile runs before the command cannot be established",
+        )
+    for profile in profiles:
+        if os.path.isfile(profile):
+            # Fingerprint the profile's state -- path plus mtime -- so the
+            # log-line ledger deduplicates ONE line per session per state and
+            # writes a fresh one when the user edits or removes the file. The
+            # audit row is unchanged; every invocation is still recorded. See
+            # :attr:`Refusal.dedupe_key` and :func:`should_log_decline`.
+            try:
+                mtime = os.stat(profile).st_mtime_ns
+            except OSError:
+                mtime = 0
+            return Refusal(
+                AMBIGUOUS_ENV,
+                f"a PowerShell profile at {profile} runs before every command and "
+                "can define a function that replaces any program this check resolves",
+                dedupe_key=f"{profile}|{mtime}",
+            )
+    return None
+
+
+def environment_refusal() -> Refusal | None:
+    """Why NO program name can be vouched for in this environment, or ``None``.
+
+    The refusals that are a property of the ENVIRONMENT rather than of any one
+    name: something outside the resolved file decides what a name runs, so
+    resolving it describes a file that is not necessarily the one that executes.
+
+    Two callers need exactly this set, which is why it is one helper rather than
+    an inline sequence:
+
+    * :func:`name_grant_refusal` returns it, so no grant is honoured while it
+      holds.
+    * :func:`pin_human_approval` DECLINES TO PIN while it holds. A pin records
+      that a human saw a command and said yes to the file behind each of its
+      names -- but while a profile function or ``BASH_ENV`` can define that name
+      ahead of the file, the thing they approved may not be the file at all.
+      Pinning there would bank an identity the approval never established, and
+      the pin outlives the environment state: the user removes the profile and a
+      name grant then auto-approves an executable no human ever approved.
+
+    ``kirocrew doctor`` reports it too, so the row cannot claim grants are
+    satisfiable on a host where every one of them is refused.
+    """
+
+    if platform_compat.IS_WINDOWS:
+        # PowerShell's lookup is modelled (see the module docstring), but only
+        # once the session that will run the command is known not to redefine
+        # names first: a per-user profile script runs ahead of the command and
+        # can define a function over any program name. Until Windows can say
+        # where that script would live, and while one exists, no name can be
+        # vouched for.
+        windows_refusal = windows_environment_refusal()
+        if windows_refusal is not None:
+            return windows_refusal
+    if _path_is_ambiguous():
+        return Refusal(
+            AMBIGUOUS_PATH,
+            "the agent's search path contains an empty or relative entry, so which "
+            "file a program name resolves to depends on a working directory this "
+            "check cannot see",
+        )
+    if not platform_compat.IS_WINDOWS:
+        preload = _inherited_preload()
+        if preload is not None:
+            # The environment this process passes to a child shell can redefine
+            # any program name as a shell function, so resolving the name says
+            # nothing about what will run. Refusing every name grant while that
+            # is set is the honest answer; it costs auto-approve for a session
+            # whose environment carries one of these, which is rare and already
+            # unusual. (Bash reads these; PowerShell does not, and its
+            # equivalent -- the profile -- is the Windows check above.)
+            return Refusal(
+                AMBIGUOUS_ENV,
+                f"{preload} is set in the inherited environment, so a shell function "
+                "can replace any program this check resolves",
+            )
+    return None
 
 
 #: Shell RESERVED WORDS and grouping tokens. This walk models one grammar --
@@ -267,6 +563,68 @@ _RESERVED_WORDS = frozenset(
         "]]",
     }
 )
+
+#: PowerShell KEYWORDS, the Windows counterpart of :data:`_RESERVED_WORDS`. Each
+#: either hides the real program behind a syntax word (``foreach ($x in $y) {
+#: evil }``, ``try { evil } catch {}``) or changes what runs (``function head {
+#: evil }``, ``param``, ``using``). PowerShell names are case-insensitive, so the
+#: Windows walk compares lower-cased. Only ever consulted together with
+#: :data:`_RESERVED_WORDS`, never instead of it.
+_POWERSHELL_KEYWORDS = frozenset(
+    {
+        "begin",
+        "break",
+        "catch",
+        "class",
+        "configuration",
+        "continue",
+        "data",
+        "define",
+        "do",
+        "dynamicparam",
+        "else",
+        "elseif",
+        "end",
+        "enum",
+        "exit",
+        "filter",
+        "finally",
+        "for",
+        "foreach",
+        "from",
+        "function",
+        "hidden",
+        "if",
+        "in",
+        "inlinescript",
+        "param",
+        "parallel",
+        "process",
+        "return",
+        "sequence",
+        "static",
+        "switch",
+        "throw",
+        "trap",
+        "try",
+        "until",
+        "using",
+        "var",
+        "while",
+        "workflow",
+    }
+)
+
+
+#: First characters that mark a PowerShell command position as EXPRESSION-shaped
+#: rather than a literal command name. What runs is not a token this walk can
+#: read: ``(...)`` and ``$var``/``$env:x`` produce a value the ``&`` operator
+#: invokes, and ``{...}`` is a scriptblock whose body runs. A grant naming any
+#: fixed name says nothing about the file/value the expression resolves to, so
+#: refuse the line rather than vouch for the token that HAPPENED to sit in the
+#: position. Consulted only on Windows; a POSIX ``(`` is a subshell whose first
+#: word genuinely IS the program that runs, and stays a command starter there.
+_POWERSHELL_EXPRESSION_HEADS = ("(", "{", "$")
 
 
 def _is_redirect(token: str) -> bool:
@@ -402,6 +760,26 @@ def _program_names_line(command: str) -> list[str] | None:
 
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    windows = platform_compat.IS_WINDOWS
+    if windows and any(delim in command for delim in _WINDOWS_COMMENT_DELIMITERS):
+        # A block comment has to be caught BEFORE tokenizing: `shlex` destroys
+        # the delimiters, handing back `<` and `>` as redirect operators that
+        # then swallow the real program as a redirect target. Refusing the line
+        # is what keeps the walk's output describing the command PowerShell
+        # runs, and it closes the pin path too -- `pin_human_approval` reads
+        # this same walk, so a name a comment merely mentions is never recorded
+        # as the file a human approved.
+        return None
+    if windows:
+        # PowerShell's escape character is the backtick, which `_UNENUMERABLE`
+        # refuses wholesale; a backslash is a PATH SEPARATOR. In POSIX mode the
+        # lexer would read `C:\workspace\tool.exe` as `C:workspacetool.exe` -- no
+        # longer a path, so the path-form branch never runs and a planted file
+        # is judged as a bare name. Turning the escape off is what keeps the
+        # token the shell will actually resolve. Quotes behave as PowerShell's
+        # do: both kinds delimit, and neither is escapable, so a `\"` inside a
+        # double-quoted operand ends the string exactly as PowerShell reads it.
+        lexer.escape = ""
     # `shlex` DISCARDS THE REST OF THE LINE AFTER `#` BY DEFAULT. Bash does not:
     # `#` only opens a comment at the start of a word, so `head file#x; cat secret`
     # runs BOTH commands, while the default lexer handed this walk `['head',
@@ -425,6 +803,22 @@ def _program_names_line(command: str) -> list[str] | None:
             continue
         if token in _COMMAND_STARTERS:
             expect_program = True
+            # PowerShell's call operator (`&`) reads the VALUE of the token that
+            # follows -- not its name -- as the program to run: `& (Get-Content
+            # .\prog.txt)` runs whatever the file names, `& {calc}` runs the
+            # scriptblock's body, and `& $env:COMSPEC` runs the variable's
+            # value. What actually runs is not any token this walk inspects, so
+            # refuse as grammar this tier does not model. A LITERAL name after
+            # `&` (`& git status`) is ordinary and stays fine, and on POSIX
+            # `( head file )` opens a subshell whose first word IS the program.
+            if (
+                windows
+                and token == "&"
+                and index < len(tokens)
+                and tokens[index]
+                and tokens[index][0] in _POWERSHELL_EXPRESSION_HEADS
+            ):
+                return None
             continue
         # A REDIRECT may appear anywhere in a simple command, INCLUDING BEFORE
         # the program: `2>/dev/null head x` runs `head`. So consume the operator
@@ -446,7 +840,32 @@ def _program_names_line(command: str) -> list[str] | None:
             return None
         if not expect_program:
             continue
-        if token in _RESERVED_WORDS:
+        # On Windows, PowerShell's dot-source operator invokes an expression's
+        # VALUE in the current scope, just as `&` invokes its value in a new
+        # scope: `. (Get-Content .\prog.txt)` reads the file and runs whatever
+        # it names. Its expression-shaped target is unmodelled for the same
+        # reason. A literal name after `.` (`. myscript.ps1`) is not vouched
+        # for here either -- it falls out as an unresolved command word below
+        # -- so this branch only closes the expression shapes.
+        if (
+            windows
+            and token == "."
+            and index < len(tokens)
+            and tokens[index]
+            and tokens[index][0] in _POWERSHELL_EXPRESSION_HEADS
+        ):
+            return None
+        # A bare scriptblock (`{...}`) or a variable reference (`$var`,
+        # `$env:x`) sitting in a command position dispatches through a VALUE,
+        # not a literal name -- PowerShell invokes the scriptblock body or the
+        # variable's contents. The single-character `{` also enters through
+        # `_RESERVED_WORDS` (which lists `{` and `}` themselves), so this
+        # closes the multi-character shapes the reserved-word branch misses --
+        # `{calc}`, `$env:COMSPEC`, `$prog` -- rather than being caught only
+        # incidentally when the token happens to name nothing that resolves.
+        if windows and token[:1] in ("{", "$"):
+            return None
+        if token in _RESERVED_WORDS or (windows and token.lower() in _POWERSHELL_KEYWORDS):
             # Grammar this walk does not model. The program is elsewhere in a
             # shape it cannot follow, so report "unknown" rather than the subset
             # it managed to see.
@@ -457,7 +876,13 @@ def _program_names_line(command: str) -> list[str] | None:
         # position -- `PATH+=:.`, `A[0]=x`, a quoted oddity -- is a state change
         # this walk cannot evaluate, and skipping it would leave the program that
         # follows unchecked, so the line is refused.
+        #
+        # PowerShell has no such prefix: `FOO=bar head x` is a command NAMED
+        # `FOO=bar`, which no grant identifies, so on Windows every `=` in a
+        # command position is refused rather than skipped.
         if "=" in token:
+            if windows:
+                return None
             head = token.split("=", 1)[0]
             if _decides_execution(head) or not _ASSIGN_NAME_RE.fullmatch(head):
                 return None
@@ -563,6 +988,45 @@ _DISPATCHERS = frozenset(
 )
 
 
+#: Windows programs and PowerShell built-ins whose whole job is to run a program
+#: named in their arguments -- the Windows shape of ``env`` and ``xargs``.
+#: ``start`` and ``saps`` are Start-Process; ``iex``/``icm`` evaluate a string or
+#: script block; ``ii`` opens a file with its association; the rest are system
+#: executables that spawn what they are told to. Held separately from
+#: :data:`_DISPATCHERS` and consulted only when :data:`platform_compat.IS_WINDOWS`
+#: is true, because the names collide with ordinary programs on POSIX -- ``iex``
+#: is Elixir's REPL, ``start`` is a program a user is free to install, and so on.
+#: Matched lower-cased and without extension on Windows (``_program_key``),
+#: because ``POWERSHELL.EXE`` runs the same program as ``powershell``.
+_WINDOWS_DISPATCHERS = frozenset(
+    {
+        "start",
+        "saps",
+        "start-process",
+        "iex",
+        "invoke-expression",
+        "icm",
+        "invoke-command",
+        "ii",
+        "invoke-item",
+        "call",
+        "forfiles",
+        "wmic",
+        "rundll32",
+        "mshta",
+        "cscript",
+        "wscript",
+        "msiexec",
+        "schtasks",
+        "wsl",
+        "runas",
+        "explorer",
+        "conhost",
+        "powershell_ise",
+    }
+)
+
+
 #: Environment variables that, when INHERITED (not written in the command line),
 #: make bash run code before the named program and can define a shell FUNCTION
 #: that shadows it. `BASH_ENV=/writable/rc` holding `head() { payload; }` means
@@ -631,6 +1095,479 @@ _INERT_BUILTINS = frozenset(
         "wait",
     }
 )
+
+# ── Windows: PowerShell's resolution order ──
+#
+# The shell kiro-cli spawns on Windows is PowerShell (`powershell -Command`), and
+# PowerShell resolves a command word in a fixed order: alias, function, cmdlet,
+# then the executables on `PATH`. The first three come from the session itself,
+# so a name in one of those tables runs a BUILT-IN whatever `PATH` holds --
+# `sort` is Sort-Object with `sort.exe` sitting right there in System32, and
+# `curl` is Invoke-WebRequest. Resolving such a name from `PATH` would vouch for
+# a file the shell never runs. The tables below are the default alias and
+# function names of Windows PowerShell 5.1 (`Get-Alias`, plus the functions a
+# `-NoProfile` session defines), so a name in them is judged as the built-in it
+# is: allowed when the built-in is inert, refused otherwise. Module auto-loading
+# does not enter into this: measured, an application found on `PATH` wins over
+# an auto-loadable module function, and a name found nowhere is refused anyway.
+
+#: The Windows shell whose built-in set the tables below mirror, as the argv of a
+#: session equivalent to the one the command will run in. ONE spelling, because
+#: two places have to mean the same shell: these tables, and the derivation check
+#: that enumerates a live session to prove they are not stale.
+#:
+#: ``-NoProfile`` is here and NOT in what kiro-cli spawns, deliberately. The
+#: tables record the shell's DEFAULT names, which is what a profile-free session
+#: reports; a profile's own functions are not table material because a profile
+#: existing refuses every grant outright (:func:`windows_environment_refusal`).
+#:
+#: This is also the module's single point of exposure to kiro-cli's choice of
+#: shell (kirodotdev/Kiro#9537). If that ever becomes pwsh 7, changing it here
+#: re-points the derivation check at the new shell, and the check then fails on
+#: every name whose behaviour the tables get wrong -- which is the loud failure a
+#: hand-written mirror of another program's state needs.
+MODELLED_WINDOWS_SHELL: tuple[str, ...] = ("powershell", "-NoProfile", "-NonInteractive")
+
+#: PowerShell default aliases and session functions that are INERT in this
+#: module's sense -- they neither run a program named in their arguments nor
+#: change how a later name resolves -- plus the cmdlets they stand for, so a
+#: grant written in PowerShell's own idiom (`Get-ChildItem *`) works too. This
+#: is the Windows counterpart of :data:`_INERT_BUILTINS`, held to the same
+#: standard: `where`/`foreach`/`%` take script blocks and are absent; `ri`,
+#: `rni`, `ni`, `si` reach the `alias:` and `function:` drives and are absent;
+#: `more`, `help` and `man` pipe through an external pager and are absent.
+#:
+#: Taking a script block in ANY parameter is disqualifying, not just in the
+#: pipeline position `where`/`foreach` use. A calculated property is a script
+#: block PowerShell evaluates once per input object, so `sort`, `select`,
+#: `group`, `compare` and the whole `format-*` family run whatever their
+#: `-Property` or `-GroupBy` argument contains and are absent for the same
+#: reason. Measured on 5.1 with object input (scalar input makes the format
+#: engine ignore `-Property`, which hides this): the block runs 2-3 times per
+#: two-object pipeline for each of them, while `measure-object` types
+#: `-Property` as `String[]`, so it coerces the block to its source text and
+#: never evaluates it -- it stays. A name is judged as a whole command, so
+#: `select` is absent even though its `-ExpandProperty` is `String`-typed: the
+#: same command's `-Property` evaluates, and the check sees the name, not which
+#: parameter a given line happens to use.
+_WINDOWS_INERT_BUILTINS = frozenset(
+    {
+        "cat",
+        "gc",
+        "type",
+        "get-content",
+        "ls",
+        "dir",
+        "gci",
+        "get-childitem",
+        "pwd",
+        "gl",
+        "get-location",
+        "cd",
+        "sl",
+        "chdir",
+        "cd..",
+        "set-location",
+        "pushd",
+        "popd",
+        "echo",
+        "write",
+        "write-output",
+        "write-host",
+        "measure",
+        "measure-object",
+        "gm",
+        "get-member",
+        "oh",
+        "out-host",
+        "out-string",
+        "gi",
+        "get-item",
+        "gp",
+        "get-itemproperty",
+        "gpv",
+        "get-itempropertyvalue",
+        "sls",
+        "select-string",
+        "gps",
+        "ps",
+        "get-process",
+        "gsv",
+        "get-service",
+        "gv",
+        "get-variable",
+        "gal",
+        "get-alias",
+        "gcm",
+        "get-command",
+        "ghy",
+        "history",
+        "h",
+        "get-history",
+        "gdr",
+        "get-psdrive",
+        "gu",
+        "get-unique",
+        "rvpa",
+        "resolve-path",
+        "cvpa",
+        "convert-path",
+        "test-path",
+        "get-date",
+        "join-path",
+        "split-path",
+        "cls",
+        "clear",
+        "clear-host",
+        "sleep",
+        "start-sleep",
+    }
+)
+
+#: Every default alias and session function of Windows PowerShell 5.1, lower-cased
+#: (`Get-Alias | % Name` plus `Get-ChildItem function: | % Name`, on 5.1.26100).
+#: An ALIAS and a FUNCTION both resolve ahead of an application in PowerShell's
+#: precedence, unconditionally and with no module to load first, which is why the
+#: two sets share one table. A name here that is not in
+#: :data:`_WINDOWS_INERT_BUILTINS` resolves to a built-in PowerShell runs INSTEAD
+#: of any same-named file on `PATH`, so it is refused rather than resolved:
+#: vouching for `sc.exe` when the shell runs Set-Content would be answering the
+#: wrong question. PowerShell 7 drops a few of these (`curl`, `wget`, `sc`);
+#: keeping them costs a prompt there, never a wrong answer. Spelling a program
+#: WITH its extension (`sort.exe`) bypasses the alias in PowerShell, and
+#: correspondingly bypasses this table.
+#:
+#: The set is not asserted, it is CHECKED: on a Windows host
+#: ``test_the_builtin_tables_cover_every_name_this_shell_resolves`` enumerates the
+#: live shell and fails if any name it resolves would reach the `PATH` walk
+#: unrefused. That test is what caught `cfs` (-> ConvertFrom-String) and the
+#: `get-verb` function, both of which an earlier hand-transcribed list had missed.
+_POWERSHELL_DEFAULT_ALIASES = frozenset("""
+    % ? ac asnp cat cd cfs chdir clc clear clhy cli clp cls clv cnsn compare copy
+    cp cpi cpp curl cvpa dbp del diff dir dnsn ebp echo epal epcsv epsn erase
+    etsn exsn fc fhx fl foreach ft fw gal gbp gc gci gcm gcs gdr get-verb ghy gi
+    gjb gl gm gmo gp gps gpv group gsn gsnp gsv gu gv gwmi h history icm iex ihy
+    ii ipal ipcsv ipmo ipsn irm ise iwmi iwr kill lp ls man md measure mi mount
+    move mp mv nal ndr ni nmo npssc nsn nv ogv oh popd ps pushd pwd r rbp rcjb
+    rcsn rd rdr ren ri rjb rm rmdir rmo rni rnp rp rsn rsnp rujb rv rvpa rwmi
+    sajb sal saps sasv sbp sc select set shcm si sl sleep sls sort sp spjb spps
+    spsv start sujb sv swmi tee trcm type wget where wjb write
+    cd.. help mkdir more oss pause prompt tabexpansion2 importsystemmodules
+    """.split())
+# `cd\` and the 26 drive functions `a:`..`z:` are 5.1 session functions too, but a
+# backslash or a colon makes each of them a PATH in this walk, and each is refused
+# as a relative one before any table is consulted (measured, and pinned by the
+# coverage test above, which accepts either a table hit or an earlier refusal).
+
+#: Every command exported by the three modules that ship AS PowerShell itself --
+#: `Microsoft.PowerShell.Core`, `.Management`, `.Utility` -- lower-cased
+#: (`Get-Command -Module <those three> -CommandType Cmdlet,Function`, 258 names on
+#: 5.1.26100). A name here that is not in :data:`_WINDOWS_INERT_BUILTINS` is
+#: refused, for a reason the alias table does not cover: these are FULL cmdlet
+#: names, not aliases, and whether one beats a same-named file on `PATH` depends
+#: on what is already loaded in the session, which is not a property of the
+#: command being judged.
+#:
+#: Measured on 5.1: a session `powershell -Command` starts with `Utility` loaded
+#: and `Management` NOT, and there a `Set-Content.cmd` on `PATH` DOES win -- an
+#: auto-loadable module loses to an application, as the module docstring says. But
+#: `Core` is always loaded, so `Where-Object` or `Invoke-Command` beats any file
+#: unconditionally; and one command from `Management` or `Utility` earlier in the
+#: same line auto-loads that whole module, after which every later name in it
+#: beats `PATH` too. Resolving such a name to a file would vouch for a file the
+#: shell may not run, so the whole class is refused instead.
+#:
+#: Exactly these three modules and no other shipped module (`NetAdapter`,
+#: `Defender`, `.Security`, `.Diagnostics` ...): a module is auto-loaded only by
+#: one of its OWN commands, and the only names this walk lets past without a
+#: refusal are the inert ones, which are all `Core`/`Management`/`Utility`. So no
+#: permitted prefix can load anything else, and a lone `Get-NetAdapter` runs the
+#: file on `PATH` (measured) and stays resolvable. Spelling the extension
+#: (`set-content.exe`) is not a cmdlet name in PowerShell and is not one here.
+_POWERSHELL_CORE_COMMANDS = frozenset("""
+    add-computer add-content add-history add-member add-pssnapin add-type
+    checkpoint-computer clear-content clear-eventlog clear-history clear-item
+    clear-itemproperty clear-recyclebin clear-variable compare-object
+    complete-transaction connect-pssession convertfrom-csv convertfrom-json
+    convertfrom-sddlstring convertfrom-string convertfrom-stringdata convert-path
+    convert-string convertto-csv convertto-html convertto-json convertto-xml
+    copy-item copy-itemproperty debug-job debug-process debug-runspace
+    disable-computerrestore disable-psbreakpoint disable-psremoting
+    disable-pssessionconfiguration disable-runspacedebug disconnect-pssession
+    enable-computerrestore enable-psbreakpoint enable-psremoting
+    enable-pssessionconfiguration enable-runspacedebug enter-pshostprocess
+    enter-pssession exit-pshostprocess exit-pssession export-alias export-clixml
+    export-console export-csv export-formatdata export-modulemember
+    export-pssession foreach-object format-custom format-hex format-list
+    format-table format-wide get-alias get-childitem get-clipboard get-command
+    get-computerinfo get-computerrestorepoint get-content get-controlpanelitem
+    get-culture get-date get-event get-eventlog get-eventsubscriber get-filehash
+    get-formatdata get-help get-history get-host get-hotfix get-item
+    get-itemproperty get-itempropertyvalue get-job get-location get-member
+    get-module get-process get-psbreakpoint get-pscallstack get-psdrive
+    get-pshostprocessinfo get-psprovider get-pssession get-pssessioncapability
+    get-pssessionconfiguration get-pssnapin get-random get-runspace
+    get-runspacedebug get-service get-timezone get-tracesource get-transaction
+    get-typedata get-uiculture get-unique get-variable get-wmiobject group-object
+    import-alias import-clixml import-csv import-localizeddata import-module
+    import-powershelldatafile import-pssession invoke-command invoke-expression
+    invoke-history invoke-item invoke-restmethod invoke-webrequest
+    invoke-wmimethod join-path limit-eventlog measure-command measure-object
+    move-item move-itemproperty new-alias new-event new-eventlog new-guid
+    new-item new-itemproperty new-module new-modulemanifest new-object new-psdrive
+    new-psrolecapabilityfile new-pssession new-pssessionconfigurationfile
+    new-pssessionoption new-pstransportoption new-service new-temporaryfile
+    new-timespan new-variable new-webserviceproxy out-default out-file
+    out-gridview out-host out-null out-printer out-string pop-location
+    push-location read-host receive-job receive-pssession
+    register-argumentcompleter register-engineevent register-objectevent
+    register-pssessionconfiguration register-wmievent remove-computer remove-event
+    remove-eventlog remove-item remove-itemproperty remove-job remove-module
+    remove-psbreakpoint remove-psdrive remove-pssession remove-pssnapin
+    remove-typedata remove-variable remove-wmiobject rename-computer rename-item
+    rename-itemproperty reset-computermachinepassword resolve-path restart-computer
+    restart-service restore-computer resume-job resume-service save-help
+    select-object select-string select-xml send-mailmessage set-alias set-clipboard
+    set-content set-date set-item set-itemproperty set-location set-psbreakpoint
+    set-psdebug set-pssessionconfiguration set-service set-strictmode set-timezone
+    set-tracesource set-variable set-wmiinstance show-command
+    show-controlpanelitem show-eventlog sort-object split-path start-job
+    start-process start-service start-sleep start-transaction stop-computer
+    stop-job stop-process stop-service suspend-job suspend-service tee-object
+    test-computersecurechannel test-connection test-modulemanifest test-path
+    test-pssessionconfigurationfile trace-command unblock-file undo-transaction
+    unregister-event unregister-pssessionconfiguration update-formatdata
+    update-help update-list update-typedata use-transaction wait-debugger
+    wait-event wait-job wait-process where-object write-debug write-error
+    write-eventlog write-host write-information write-output write-progress
+    write-verbose write-warning
+    """.split())
+
+#: Characters that make a PROGRAM token something other than a literal name on
+#: Windows: :data:`_EXPANDING_CHARS` plus cmd.exe's `%VAR%` and `^` escape --
+#: kept although PowerShell is the modelled shell, because a program named
+#: through either cannot be a literal name in any shell -- and PowerShell's `@`
+#: splatting / array prefix.
+_WINDOWS_EXPANDING_CHARS = _EXPANDING_CHARS + ("%", "^", "@")
+
+#: Extensions Windows runs DIRECTLY: an image the loader maps (`.exe`, `.com`),
+#: a batch file `COMSPEC` interprets, or a script the running PowerShell reads
+#: itself. Anything else that `PATHEXT` lets the shell resolve (`.py`, `.js`,
+#: `.vbs` ...) is launched through the program the REGISTRY associates with the
+#: extension, under `HKCU` as readily as `HKLM` -- so the interpreter is chosen
+#: by a key the user (and so the agent) can write, not by the file this check
+#: can pin. Such a hit is refused.
+_WINDOWS_RUNNABLE_EXTENSIONS = frozenset({".exe", ".com", ".bat", ".cmd", ".ps1"})
+
+#: The two of those that `COMSPEC` interprets, so the interpreter has to be the
+#: system `cmd.exe` for the pin on the script to mean anything.
+_COMSPEC_SCRIPT_EXTENSIONS = frozenset({".bat", ".cmd"})
+
+#: `PATHEXT` when the environment does not supply one -- Windows' own default.
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+
+
+def _windows_extensions() -> tuple[str, ...]:
+    """The extensions PowerShell appends to a bare name, in the order it tries them.
+
+    `.ps1` FIRST, then `PATHEXT` in order: measured on 5.1, a directory holding
+    `tool.ps1` and `tool.exe` runs the script. Read from the environment because
+    a host can extend `PATHEXT` (this one carries `.PY`), and the shell uses
+    what it was given.
+
+    Deduplicated, keeping first position: a host whose `PATHEXT` lists `.PS1`
+    itself would otherwise have `.ps1` appear twice, probing each directory for
+    the same file twice. The shell tries a spelling once, so this does too.
+    """
+
+    raw = os.environ.get("PATHEXT") or _DEFAULT_PATHEXT
+    ordered = (".ps1",) + tuple(ext.lower() for ext in raw.split(";") if ext.startswith("."))
+    return tuple(dict.fromkeys(ordered))
+
+
+def _windows_which(name: str, path: str) -> str | None:
+    """PowerShell's resolution of a bare *name* over *path*, or ``None``.
+
+    Directory-major: every candidate spelling is tried in the first directory
+    before the second is looked at, which is what lets a later directory's
+    `.exe` lose to an earlier one's `.ps1`. A name that already carries one of
+    the extensions is tried as written first (`whoami.EXE` runs). Existence is
+    the whole test -- Windows has no execute bit, and the shell runs any file
+    with the right extension -- so the POSIX ``shutil.which`` is not used here:
+    it neither knows `.ps1` nor puts it first.
+    """
+
+    extensions = _windows_extensions()
+    lowered = name.lower()
+    candidates = [name] if any(lowered.endswith(ext) for ext in extensions) else []
+    candidates.extend(name + ext for ext in extensions)
+    for directory in path.split(os.pathsep):
+        if not directory:
+            continue
+        for candidate in candidates:
+            hit = _windows_case_insensitive_file(directory, candidate)
+            if hit is not None:
+                return hit
+    return None
+
+
+def _windows_case_insensitive_file(directory: str, candidate: str) -> str | None:
+    """A file named *candidate* in *directory*, matched the way Windows matches.
+
+    Windows file names are case-insensitive, so `FIND.exe` runs `find.exe`. On a
+    case-sensitive host (a POSIX CI runner with the Windows model patched on) a
+    plain ``os.path.isfile`` would answer for the exact case only, so the Windows
+    model would fail to resolve a mixed-case spelling the shell resolves. The
+    fast path is the exact hit -- the only one that exists on a real Windows host
+    -- and only a miss falls back to a case-folded directory scan, so production
+    (where `os.path.isfile` already matches case-insensitively) never pays for
+    the scan.
+    """
+
+    full = os.path.join(directory, candidate)
+    if os.path.isfile(full):
+        return full
+    target = candidate.lower()
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.lower() == target:
+            hit = os.path.join(directory, entry)
+            if os.path.isfile(hit):
+                return hit
+    return None
+
+
+def _windows_extension_refusal(name: str, found: str) -> Refusal | None:
+    """Refuse a hit Windows would run through something this check cannot pin."""
+
+    ext = os.path.splitext(found)[1].lower()
+    if ext not in _WINDOWS_RUNNABLE_EXTENSIONS:
+        return Refusal(
+            FILE_ASSOCIATION,
+            f"{name} resolves to {found}, which Windows runs through the program "
+            f"registered for {ext or 'files without an extension'} -- a registry "
+            "choice this check cannot identify",
+        )
+    if ext in _COMSPEC_SCRIPT_EXTENSIONS:
+        comspec = os.environ.get("COMSPEC") or ""
+        try:
+            real = os.path.realpath(comspec) if comspec else ""
+        except (OSError, ValueError):
+            real = ""
+        if not real or not _is_trusted_system_file("cmd", real):
+            return Refusal(
+                AMBIGUOUS_ENV,
+                f"{name} resolves to the batch file {found}, which runs under COMSPEC, "
+                "and COMSPEC does not name the system cmd.exe",
+            )
+    return None
+
+
+def _program_key(name: str) -> str:
+    """The name a program is matched under in the dispatcher table.
+
+    The basename as written on POSIX. On Windows names are case-insensitive and
+    an extension is optional, so `POWERSHELL.EXE` and `powershell` must both meet
+    the `powershell` entry: lower-cased, with a `PATHEXT`/`.ps1` extension
+    removed. Alias tables are NOT consulted through this -- `sort.exe` written
+    with its extension bypasses PowerShell's alias, and must bypass ours.
+    """
+
+    base = _model_basename(name)
+    if not _model_is_windows():
+        return base
+    base = base.lower()
+    root, ext = os.path.splitext(base)
+    if ext in _windows_extensions():
+        return root
+    return base
+
+
+def _model_is_windows() -> bool:
+    """The path/name FLAVOUR the model reasons in, derived from the model flag.
+
+    The Windows model is selected by :data:`platform_compat.IS_WINDOWS`, which
+    the tests patch to exercise the Windows lexer, resolution order and refusal
+    codes on a POSIX runner. The host's own ``os.path`` module and ``os.sep`` do
+    NOT follow that flag -- on Linux they stay POSIX -- so a name-shape or
+    case-folding decision made through the host module silently answers with the
+    wrong flavour under the patched flag, passing on a real Windows host and
+    failing only on the POSIX CI shard. Every model decision about a NAME (its
+    separators, whether it is absolute, whether two names fold together) goes
+    through the helpers below so the answer depends on the model, not the host.
+    """
+
+    return platform_compat.IS_WINDOWS
+
+
+def _model_normcase(text: str) -> str:
+    """Case-fold *text* the way the MODEL compares names, not the host.
+
+    Windows file names are case-insensitive, so `Git` and `git` name one file;
+    POSIX names are case-sensitive, so they name two. ``os.path.normcase`` is
+    the host's rule (identity on POSIX, lower-case on Windows) and cannot be
+    patched by the model flag, so the model uses this instead.
+    """
+
+    return text.lower() if _model_is_windows() else text
+
+
+def _model_basename(path: str) -> str:
+    """The final component of *path*, split the way the MODEL splits paths.
+
+    ``ntpath.basename`` when the model is Windows -- so
+    ``C:\\Windows\\System32\\cmd.exe`` yields ``cmd.exe`` -- and
+    ``posixpath.basename`` otherwise. ``os.path.basename`` follows the HOST, not
+    the model flag, so on a POSIX runner with the Windows model patched on it
+    would return the whole backslash string and the name-shape decisions built on
+    it (the dispatcher key, the pin key, the trusted-system and inert-builtin
+    consults) would silently misfire. On a real Windows host ``os.path`` IS
+    ``ntpath``, so production behaviour is byte-identical.
+    """
+
+    return (ntpath if _model_is_windows() else posixpath).basename(path)
+
+
+def _model_sep_in(name: str) -> bool:
+    """Whether *name* carries a separator the MODEL treats as making it a path.
+
+    ``/`` is a separator in both flavours. A backslash is a separator ONLY in
+    the Windows model -- on POSIX it is an escape character (``grep '\\d'``), so
+    the model must not read a backslash as path-shaped there. Keyed on the model
+    flag rather than ``os.sep`` (which is a backslash only on a Windows host).
+    """
+
+    if "/" in name:
+        return True
+    return _model_is_windows() and "\\" in name
+
+
+def _is_absolute(name: str) -> bool:
+    """Whether *name* pins a location without reference to a working directory.
+
+    On Windows ``ntpath.isabs`` alone is not that: ``\\tool.exe`` is rooted on
+    the CURRENT drive and ``C:tool.exe`` is relative to C:'s current directory,
+    and both change meaning with a working directory the approval never saw.
+    Only a path with a drive or UNC prefix is absolute here.
+
+    The path flavour is chosen from the MODEL flag, not the host: ``os.path`` is
+    POSIX on a Linux runner even when the Windows model is patched on, so an
+    absolute Windows path would read as relative there. ``ntpath`` gives the
+    Windows answer on any host, and ``posixpath`` the POSIX answer, so the model
+    is deterministic per flag. On a real Windows host ``os.path`` IS ``ntpath``,
+    so production behaviour is byte-identical.
+    """
+
+    pathmod = ntpath if _model_is_windows() else posixpath
+    if not pathmod.isabs(name):
+        return False
+    if _model_is_windows() and not pathmod.splitdrive(name)[0]:
+        return False
+    return True
+
 
 #: A STRICT shell assignment name. Anything else carrying `=` in a command
 #: position is not a plain `NAME=value` prefix and is refused rather than skipped.
@@ -869,7 +1806,11 @@ def _identity(real: str) -> tuple | None:
         # to pin, and the caller turns this into a refusal.
         return None
     return (
-        real,
+        # Folded the way the model compares names: a case-insensitive model
+        # reaches one file through several spellings, and the resolver hands
+        # back whichever spelling the caller asked for, so the raw string
+        # would give one file as many identities as it has spellings.
+        _model_normcase(real),
         digest,
         st.st_mtime_ns,
         st.st_ctime_ns,
@@ -915,7 +1856,11 @@ def _pin_refusal(name: str, found: str, real: str, witness: bool) -> Refusal | N
     identity = _identity(real)
     if identity is None:
         return Refusal(UNINSPECTABLE, f"{name} could not be inspected")
-    key = (name, os.path.normcase(os.path.dirname(found)))
+    # On Windows `git`, `Git` and `git.exe` all run the same file, so they must
+    # share a pin: keying on the resolved file's own basename folds the optional
+    # extension and the case together. On POSIX the name IS the file's name.
+    pinned_name = _model_basename(found) if _model_is_windows() else name
+    key = (_model_normcase(pinned_name), _model_normcase(os.path.dirname(found)))
     # The read, the comparison and the LRU touch are one decision, and this runs
     # on a worker thread per approval -- several at once across sessions. Without
     # the lock a concurrent insert can evict the key between `get` and
@@ -975,18 +1920,33 @@ def _program_refusal(
     `#!/bin/sh` atop a script whose identity is pinned is not.
     """
 
-    if any(ch in name for ch in _EXPANDING_CHARS):
+    windows = platform_compat.IS_WINDOWS
+    expanding = _WINDOWS_EXPANDING_CHARS if windows else _EXPANDING_CHARS
+    if any(ch in name for ch in expanding):
         # `$CMD arg`, `./*.sh`: the shell decides what this names after this
         # check has read it, so no grant can identify the program.
         return Refusal(EXPANDED, f"{name} is expanded by the shell rather than naming a program")
-    if not as_interpreter and os.path.basename(name) in _DISPATCHERS:
+    if not as_interpreter and _program_key(name) in _DISPATCHERS:
         return Refusal(
             DISPATCHER,
             f"{name} runs a program named in its own arguments, which this check "
             "cannot identify from the command line",
         )
-    if "/" in name or (os.sep != "/" and os.sep in name) or (os.altsep and os.altsep in name):
-        if not os.path.isabs(name):
+    if not as_interpreter and windows and _program_key(name) in _WINDOWS_DISPATCHERS:
+        return Refusal(
+            DISPATCHER,
+            f"{name} runs a program named in its own arguments, which this check "
+            "cannot identify from the command line",
+        )
+    path_form = (
+        _model_sep_in(name)
+        # `C:tool.exe` has no separator and is still a path -- relative to the
+        # current directory of drive C:, which PowerShell will not resolve as a
+        # command and this check must not resolve as a bare name.
+        or (windows and ":" in name)
+    )
+    if path_form:
+        if not _is_absolute(name):
             # A relative program is resolved against the command's working
             # directory, which the approval never saw, so no name-based grant
             # can identify what it will run.
@@ -1001,7 +1961,11 @@ def _program_refusal(
         roots = _agent_writable_roots()
         if is_project_local(name) or _within(name, roots) or _within(real, roots):
             return Refusal(AGENT_TREE, f"{name} resolves inside a tree the agent can write")
-        if _is_trusted_system_file(os.path.basename(name), real):
+        if windows:
+            association = _windows_extension_refusal(name, real)
+            if association is not None:
+                return association
+        if _is_trusted_system_file(_model_basename(name), real):
             # Spelling the system program's own path out is still the system
             # program; it needs no witness.
             return _interpreter_refusal(name, real, witness, depth)
@@ -1013,7 +1977,40 @@ def _program_refusal(
             return pinned
         return _interpreter_refusal(name, real, witness, depth)
 
-    found = shutil.which(name, path=_agent_search_path())
+    if windows:
+        # PowerShell resolves aliases and session functions BEFORE `PATH`, so a
+        # default alias runs its cmdlet whatever file shares the name. Judge the
+        # built-in, not the file: inert ones need no witness (nothing on disk
+        # decides what they do), and any other built-in is refused rather than
+        # answered for by a file the shell will not run. Case-insensitive, as
+        # PowerShell's own lookup is; an explicit extension (`sort.exe`) is not
+        # an alias in PowerShell and is not one here.
+        alias = name.lower()
+        if alias in _WINDOWS_INERT_BUILTINS:
+            return None
+        if alias in _POWERSHELL_DEFAULT_ALIASES:
+            return Refusal(
+                BUILTIN_SHADOWS,
+                f"{name} is a PowerShell built-in that runs ahead of any program on "
+                "the search path, and it is not one this check treats as inert",
+            )
+        if alias in _POWERSHELL_CORE_COMMANDS:
+            # A FULL cmdlet name from the modules that ship as PowerShell itself.
+            # Whether it or a same-named file on `PATH` runs depends on what an
+            # earlier command in the same line already auto-loaded -- `Core` is
+            # loaded always, `Management`/`Utility` from first use -- so it is not
+            # decidable from this name alone. Resolving it to a file could vouch
+            # for a file the shell will not run, which is the one answer this
+            # check must never give.
+            return Refusal(
+                BUILTIN_SHADOWS,
+                f"{name} is a PowerShell cmdlet that can run ahead of any program on "
+                "the search path, depending on what the same command line has already "
+                "loaded, and it is not one this check treats as inert",
+            )
+        found = _windows_which(name, _agent_search_path())
+    else:
+        found = shutil.which(name, path=_agent_search_path())
     if not found:
         # NOTHING ON THE SEARCH PATH ANSWERS TO THIS NAME, SO IT IS A SHELL
         # BUILTIN (or a typo), AND IT IS REFUSED UNLESS PROVABLY INERT.
@@ -1031,8 +2028,10 @@ def _program_refusal(
         # The cost is that an unknown command word prompts instead of being
         # waved through: a shell function or alias from the user's rc file, and a
         # typo (which would have failed anyway). That is the correct direction for
-        # a check whose entire job is to say which file will run.
-        if os.path.basename(name) in _INERT_BUILTINS:
+        # a check whose entire job is to say which file will run. (On Windows the
+        # inert table was consulted above, before the search path, because there
+        # the built-in wins even when a file of that name exists.)
+        if not windows and _model_basename(name) in _INERT_BUILTINS:
             return None
         return Refusal(
             UNKNOWN_COMMAND,
@@ -1052,6 +2051,10 @@ def _program_refusal(
     roots = _agent_writable_roots()
     if is_project_local(found) or _within(found, roots) or _within(real, roots):
         return Refusal(AGENT_TREE, f"{name} resolves inside a tree the agent can write ({found})")
+    if windows:
+        association = _windows_extension_refusal(name, found)
+        if association is not None:
+            return association
     system = platform_compat.trusted_system_bin(name)
     if system is not None:
         if not _is_trusted_system_file(name, real):
@@ -1092,13 +2095,14 @@ def _dispatcher_target_refusal(name: str, real: str, as_interpreter: bool) -> Re
         # A shebang's interpreter runs the pinned script, not a program named in
         # a command line, which is the distinction the caller already draws.
         return None
-    if os.path.basename(real) not in _DISPATCHERS:
-        return None
-    return Refusal(
-        DISPATCHER,
-        f"{name} resolves to a program that runs whatever its arguments name, "
-        "which this check cannot identify from the command line",
-    )
+    key = _program_key(real)
+    if key in _DISPATCHERS or (_model_is_windows() and key in _WINDOWS_DISPATCHERS):
+        return Refusal(
+            DISPATCHER,
+            f"{name} resolves to a program that runs whatever its arguments name, "
+            "which this check cannot identify from the command line",
+        )
+    return None
 
 
 def _interpreter_refusal(name: str, real: str, witness: bool, depth: int) -> Refusal | None:
@@ -1110,6 +2114,14 @@ def _interpreter_refusal(name: str, real: str, witness: bool, depth: int) -> Ref
     witness.
     """
 
+    if platform_compat.IS_WINDOWS:
+        # Windows picks the interpreter from the EXTENSION, never from the
+        # file's first line: the loader maps an `.exe`, `COMSPEC` runs a `.cmd`
+        # (checked in `_windows_extension_refusal`), and PowerShell runs a `.ps1`
+        # itself. A `#!` there is a comment -- `npm.ps1` opens with
+        # `#!/usr/bin/env pwsh` and PowerShell never reads it -- so following it
+        # would judge a program that does not run and refuse one that does.
+        return None
     if depth >= _INTERPRETER_DEPTH:
         return Refusal(
             UNTOKENIZABLE,
@@ -1134,7 +2146,7 @@ def _is_trusted_system_file(name: str, real: str) -> bool:
     if system is None:
         return False
     try:
-        return os.path.normcase(os.path.realpath(system)) == os.path.normcase(real)
+        return _model_normcase(os.path.realpath(system)) == _model_normcase(real)
     except (OSError, ValueError):
         return False
 
@@ -1152,9 +2164,19 @@ def pin_human_approval(command: str) -> None:
     which is the very thing the pin exists to constrain. Failures are swallowed:
     a missing pin costs one prompt, and an approval must not fail because a
     program could not be stat-ed.
+
+    Records NOTHING while :func:`environment_refusal` holds. What the human
+    approved is then not established to be the file behind the name -- a profile
+    function or ``BASH_ENV`` can define that name ahead of it -- and a pin taken
+    there outlives the state that made it wrong, so removing the profile would
+    turn it into an auto-approve for an executable nobody approved. Costs one
+    prompt per program once the environment clears, which is the same price the
+    first approval always paid.
     """
 
     try:
+        if environment_refusal() is not None:
+            return
         for name in program_names(command) or []:
             _program_refusal(name, witness=True)
     except Exception:
@@ -1181,53 +2203,9 @@ def name_grant_refusal(command: str) -> Refusal | None:
 
     if not command.strip():
         return None
-    if platform_compat.IS_WINDOWS:
-        # FAIL CLOSED ON WINDOWS, for two reasons that compound.
-        #
-        # Tokenization: POSIX mode reads a backslash as an ESCAPE, so
-        # `C:\workspace\tool.exe` arrives as `C:workspacetool.exe`. That is no
-        # longer a path, so the path-form branch never runs; it is a bare name
-        # that resolves nowhere, and an unresolvable name is otherwise ALLOWED
-        # ("nothing to shadow" -- the branch that lets `cd /tmp && ls` work).
-        #
-        # Resolution: `cmd.exe` searches the CURRENT DIRECTORY before `PATH`,
-        # which POSIX shells do not. The directory it searches is the session's,
-        # while this check runs in the gateway's, so a planted `find.exe` in the
-        # session's work directory wins a lookup this code cannot even see. Add
-        # `PATHEXT` and the search order is a second set of semantics to model.
-        #
-        # Neither is a name the check can identify, so it identifies none of them:
-        # on Windows a name-based auto-approve is declined and the request goes to
-        # the approval card. That is a functional cost -- Windows users lose
-        # auto-approve for shell commands entirely -- and it is the honest state
-        # given that this module's own tests are POSIX-only. Modelling the child's
-        # working directory and the shell's search order is the fix, and it is its
-        # own change with its own tests.
-        return Refusal(
-            WINDOWS_UNMODELLED,
-            "on Windows this check cannot identify which file a program name "
-            "runs: the tokenizer cannot preserve a backslash path, and the shell "
-            "searches the command's own directory before the search path",
-        )
-    if _path_is_ambiguous():
-        return Refusal(
-            AMBIGUOUS_PATH,
-            "the agent's search path contains an empty or relative entry, so which "
-            "file a program name resolves to depends on a working directory this "
-            "check cannot see",
-        )
-    preload = _inherited_preload()
-    if preload is not None:
-        # The environment this process passes to a child shell can redefine any
-        # program name as a shell function, so resolving the name says nothing
-        # about what will run. Refusing every name grant while that is set is the
-        # honest answer; it costs auto-approve for a session whose environment
-        # carries one of these, which is rare and already unusual.
-        return Refusal(
-            AMBIGUOUS_ENV,
-            f"{preload} is set in the inherited environment, so a shell function "
-            "can replace any program this check resolves",
-        )
+    environment = environment_refusal()
+    if environment is not None:
+        return environment
     for construct in _UNENUMERABLE:
         if construct in command:
             # A substitution runs a program in a position the tokenizer cannot
@@ -1292,12 +2270,10 @@ async def refusal_for_command_off_loop(command: str) -> Refusal | None:
     guard lives HERE, at the chokepoint, so every tier inherits it — a guard
     per caller is two copies that drift.
 
-    Windows is answered ON the loop, because there the verdict needs no
-    filesystem access at all: the check declines every name-based grant outright
-    (neither ``cmd.exe`` search order nor POSIX-mode tokenization is modelled),
-    so the thread would do nothing but hand back a constant. Paying a hop for it
-    is not merely waste — the worker can outlive a caller's event loop, which is
-    what crashes an xdist worker rather than merely failing its test.
+    Windows takes the same thread as every other platform: it resolves names
+    and digests files exactly as POSIX does, so an on-loop answer would put that
+    I/O where it must never be. There is deliberately no on-loop shortcut for
+    any platform.
 
     An empty command answers ``None`` — the same deliberate contract as
     :func:`name_grant_refusal`: there is no name to vouch for, and every tier
@@ -1310,8 +2286,6 @@ async def refusal_for_command_off_loop(command: str) -> Refusal | None:
     try:
         if not command:
             return None
-        if platform_compat.IS_WINDOWS:
-            return name_grant_refusal(command)
         return await asyncio.to_thread(name_grant_refusal, command)
     except asyncio.CancelledError:
         raise

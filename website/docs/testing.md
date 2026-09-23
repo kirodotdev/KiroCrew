@@ -1,13 +1,14 @@
 # Frontend testing
 
-Three test layers cover the dashboard. Pick the cheapest one that can actually
-observe the thing you changed.
+Three automated test layers cover the dashboard. Component stories are a separate
+visual review surface. Pick the cheapest surface that can actually observe the thing
+you changed.
 
-| Layer | Runner | Environment | Lives in |
+| Surface | Runner | Environment | Lives in |
 |---|---|---|---|
-| Unit and integration | vitest | `happy-dom`, network mocked by MSW | `integration/**/*.test.tsx`, `src/**/*.test.tsx` |
+| Unit and integration | vitest | `happy-dom`, network mocked by MSW | `integration/**/*.test.{ts,tsx}`, `src/**/*.test.{ts,tsx}` |
 | Browser end-to-end | Playwright | real Chromium against a real gateway | `playwright/*.spec.ts` |
-| Desktop shell | node:test | Node, no DOM | `electron/test/` |
+| Desktop shell | node:test | Node, no DOM | `electron/test/`, `electron/mochi/test/`, `electron/crew-companion/test/` |
 | Component stories | Storybook | real Chromium, no gateway, every shipped theme | `src/**/*.stories.tsx`, config in `.storybook/` |
 
 ## Commands
@@ -108,12 +109,12 @@ making the same modules cheaper to parse buys nothing, which is why Vite's
 `json.stringify` (on by default above 10 KB) does not help. Count modules, not
 kilobytes, when you judge a setup import.
 
-The test path is also heavier than the production bundle: `en-XA.json` is 1.33 MiB
+The test path is also heavier than the production bundle: `en-XA.json` is 1.89 MiB
 and DEV-only, and `import.meta.env.DEV` is true under vitest, so it loads here and
 is dropped from a release build.
 
-That is why `src/i18n/index.ts` imports **English only** (726,947 bytes, 5.9% of the
-12,242,932 authored bytes), `src/i18n/catalogs.ts` owns every catalog import, and
+That is why `src/i18n/index.ts` imports **English only** (1,027,227 bytes, 5.9% of the
+17,508,449 authored bytes), `src/i18n/catalogs.ts` owns every catalog import, and
 `src/i18n/all.ts` is the entry that registers them. Three rules hold that split in
 place:
 

@@ -168,7 +168,7 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
         aria-expanded={open}
         aria-label={i18nT('components.micSourceMenu.change_input_source')}
         title={deviceLabel || undefined}
-        className={`flex items-center gap-1 min-w-0 max-w-full bg-transparent border-none font-inherit px-1 -ml-1 py-px rounded cursor-pointer hover:bg-bg-hover ${triggerClass}`}
+        className={`flex items-center gap-1 min-w-0 max-w-full bg-transparent border-none px-1 -ml-1 py-px rounded cursor-pointer hover:bg-bg-hover ${triggerClass}`}
       >
         <Mic size={12} className="shrink-0 opacity-70" aria-hidden="true" />
         <span className="truncate">{deviceLabel || i18nT('components.voiceStatusBar.default_microphone')}</span>

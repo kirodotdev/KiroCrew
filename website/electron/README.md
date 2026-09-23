@@ -1,8 +1,7 @@
-# KiroCrew Desktop (Electron)
+# Kiro Crew Desktop (Electron)
 
-Desktop shell for the Kiro Crew web dashboard on macOS, Linux, and Windows
-(Windows is in preview — see the build note below). It automatically starts
-`kirocrew gateway` and connects to `localhost:5476`.
+Desktop shell for the Kiro Crew web dashboard on macOS, Linux, and Windows. It
+automatically starts `kirocrew gateway` and connects to `localhost:5476`.
 
 ## Quick Start
 
@@ -131,9 +130,8 @@ APP_DIR=$([ "$(uname -m)" = "arm64" ] && echo "dist/mac-arm64" || echo "dist/mac
 sudo rm -rf /Applications/KiroCrew.app
 sudo cp -R "$APP_DIR/KiroCrew.app" /Applications/KiroCrew.app
 
-# Restart the gateway (if using Launch Agent)
-launchctl stop dev.kirocrew.gateway
-launchctl start dev.kirocrew.gateway
+# Restart the gateway (service-aware)
+kirocrew restart
 ```
 
 ## Uninstall
@@ -142,9 +140,8 @@ launchctl start dev.kirocrew.gateway
 # Remove the desktop app
 sudo rm -rf /Applications/KiroCrew.app
 
-# Remove the Launch Agent (if configured from main README)
-launchctl unload ~/Library/LaunchAgents/dev.kirocrew.gateway.plist 2>/dev/null
-rm -f ~/Library/LaunchAgents/dev.kirocrew.gateway.plist
+# Stop and remove the managed gateway service, if installed
+kirocrew service uninstall
 ```
 
 ## Remote Tunnel Mode (Headless CDE)
@@ -193,8 +190,9 @@ each launch to get a fresh JWT — no manual paste required.
 ### Token flow (per tab)
 
 ```
-1. Try local ~/.kiro/crew/.local_secret → /api/token/local on the tab's port
-   (with a temporary ~/.kirocrew read fallback during one-time migration)
+1. Read `$KIROCREW_HOME/.local_secret` when a valid override is set; otherwise read
+   `~/.kiro/crew/.local_secret`, then call `/api/token/local` on the tab's port.
+   Only the authoritative home is read; there is no legacy-directory fallback.
 2. If remote host configured for this port:
    SSH: export PATH=<remotePath> KIROCREW_PORT=<port>; <bin> token
 3. Fallback: show manual token prompt
@@ -217,8 +215,9 @@ automatically. Names are stored in `remoteHosts[port].defaultName`.
 
 ### Config file
 
-Settings are persisted via `electron-store` in
-`~/Library/Application Support/KiroCrew/config.json`:
+Settings are persisted via `electron-store`. On macOS the file is
+`~/Library/Application Support/KiroCrew/config.json`; on Linux and Windows, use
+**Open Config File** to reveal the platform-specific application-data path:
 
 ```json
 {
@@ -245,7 +244,7 @@ Open via **Tab menu → Open Config File** or tray menu.
 | "kirocrew binary not found in any of …" | Install Kiro Crew through a [supported install path](../../docs/guides/install.md#install-paths), or set a custom path |
 | "command not found: kiro-cli" | Set Remote PATH to include `~/.toolbox/bin` (default does this) |
 | "command not found: dirname" | Remote PATH missing `/usr/bin` — reset to default or add it |
-| Token fetched but 403 | Gateway may need restart — `ssh host systemctl --user restart kirocrew` |
+| Token fetched but 403 | Restart the remote gateway — `ssh host kirocrew restart` |
 | Wrong tab refreshed | Focus the target tab first (use Tab menu, not tray) |
 
 ## Notes
@@ -255,6 +254,16 @@ Open via **Tab menu → Open Config File** or tray menu.
   gateway and authentication origin, but does not copy the current session,
   project, draft, or context.
 - Closing the window hides to tray — right-click the tray icon or Cmd+Q to quit
+- **GPU rendering.** Hardware acceleration is on by default.
+  `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
+  (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard
+  has loaded, the app relaunches itself once with software rendering
+  (`--in-process-gpu --use-angle=swiftshader`, never `--no-sandbox`) and keeps
+  that setting for the current app version under `gpuSoftwareFallback` in
+  `config.json`; a new version tries hardware rendering again once
+  (`gpu-crash-fallback.js`). The software-mode boot drops the opt-in's
+  `--disable-software-rasterizer` so `KIROCREW_DISABLE_GPU=1` cannot veto
+  SwiftShader. Remove the key to retry hardware rendering sooner.
 - External links open in your default browser
 - Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
   service independently probes Kiro CLI's supported user-local, Homebrew,

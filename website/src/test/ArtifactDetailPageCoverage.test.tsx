@@ -266,6 +266,64 @@ describe('ArtifactDetailPage — mutation paths', () => {
     )
   })
 
+  it('Cmd+Shift+S with an uppercase key still snapshots', async () => {
+    // With Shift (or Caps Lock) held, the browser reports e.key as 'S', not
+    // 's'. An exact-case match would miss it and let AppKit's word-select fire;
+    // a case-insensitive match keeps the snapshot branch reachable.
+    await mount(mkArtifact())
+    await typeIntoEditor('# keyboard')
+    fireEvent.keyDown(document, { key: 'S', metaKey: true, shiftKey: true })
+    await waitFor(() =>
+      expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, {
+        content: '# keyboard',
+        snapshot: true,
+      }),
+    )
+  })
+
+  it('claims a clean-buffer Cmd+S instead of letting it fall through, without saving', async () => {
+    // Opening the editor without typing leaves the buffer clean. The chord must
+    // still be claimed (preventDefault) so AppKit does not select the word under
+    // the cursor, but no redundant write is issued.
+    await mount(mkArtifact())
+    fireEvent.click(screen.getByTitle('Edit content'))
+    await screen.findByLabelText('body editor')
+    const evt = new KeyboardEvent('keydown', {
+      key: 's',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    document.dispatchEvent(evt)
+    expect(evt.defaultPrevented).toBe(true)
+    expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
+  })
+
+  it('still saves when the chord was already defaultPrevented upstream', async () => {
+    // This editor wires no onSave into Pierre, but Pierre's capture handler
+    // still preventDefaults Cmd+S and then no-ops. So by the time the chord
+    // reaches this document handler it is already defaultPrevented yet carries
+    // no save. Gating on !e.defaultPrevented here would drop both the save and
+    // the snapshot; this handler is the only one that actually persists.
+    await mount(mkArtifact())
+    await typeIntoEditor('# keyboard')
+    const evt = new KeyboardEvent('keydown', {
+      key: 's',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    evt.preventDefault() // Pierre's capture handler already claimed it.
+    expect(evt.defaultPrevented).toBe(true)
+    document.dispatchEvent(evt)
+    await waitFor(() =>
+      expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, {
+        content: '# keyboard',
+        snapshot: false,
+      }),
+    )
+  })
+
   it('Escape and Cancel both gate a dirty discard behind a confirm', async () => {
     await mount(mkArtifact())
     await typeIntoEditor('# unsaved work')

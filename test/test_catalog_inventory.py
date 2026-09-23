@@ -59,6 +59,26 @@ class TestInventory:
         assert row["description"] == "Does the demo thing.", "summary lands on description"
         assert row["tags"] == ["dev"]
 
+    def test_session_approval_is_disclosed_in_both_catalog_rows(self, monkeypatch):
+        entry = catalog_git(permissions={"sessionApproval": True})
+        (install_row,) = oc.inventory([entry])
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [entry])
+        (display_row,) = oc.list_catalog_rows()
+
+        expected = {"permissions": {"sessionApproval": True}}
+        assert install_row["manifest"] == expected
+        assert display_row["manifest"] == expected
+
+    @pytest.mark.parametrize("raw", ["true", "yes", 1, False, {}, [], None])
+    def test_session_approval_disclosure_requires_json_true(self, monkeypatch, raw):
+        entry = catalog_git(permissions={"sessionApproval": raw})
+        (install_row,) = oc.inventory([entry])
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [entry])
+        (display_row,) = oc.list_catalog_rows()
+
+        assert "manifest" not in install_row
+        assert "manifest" not in display_row
+
     def test_no_author_is_emitted(self):
         """`list_registry` snapshots `_index_author = entry["author"]`
         unconditionally, and `_apply_trust_fields` derives the first-party badge

@@ -1,11 +1,11 @@
 # rich fixture
 
 Fully-populated `$KIROCREW_HOME`: everything `minimal` ships **plus**
-three extra chat sessions, a folder grouping two of them, and an
-archived session slice. Mirrors a heavily-used real user home without
-any personal data. Useful as the demo fixture for UX screenshots and
-as the e2e target for dashboard tests that need folder tree / History
-panel / archive retention paths to be non-empty.
+three extra chat sessions, a folder grouping two of them, an archived
+session slice, and a three-artifact library. Mirrors a heavily-used real
+user home without any personal data. Useful as the demo fixture for UX
+screenshots and as the e2e target for dashboard tests that need folder
+tree / History panel / archive retention paths to be non-empty.
 
 Running `kirocrew gateway --seed rich` against a fresh `$KIROCREW_HOME`
 lands you on a dashboard where:
@@ -17,6 +17,9 @@ lands you on a dashboard where:
   it as a slot but it remains visible in History.
 - **Memory** tab populated (workspace + workspace-extra).
 - **Crons** tab shows 1 active + 1 paused job.
+- **Artifacts** library holds three saved artifacts of three kinds (the
+  same set as the `artifacts-library` fixture): a widget on its second
+  version, a markdown note and an svg.
 
 ## Layout
 
@@ -28,6 +31,10 @@ rich/
 ├── crons.json
 ├── hooks.json
 ├── folders.json        # 1 folder ("Demos") grouping coder-demo + triage-demo
+├── artifacts/          # 3 saved artifacts (same set as artifacts-library)
+│   ├── release-checklist/   # widget, v2 (meta.json, current.html, versions/)
+│   ├── pagination-design/   # markdown, v1
+│   └── queue-badge/         # svg, v1
 ├── sessions/
 │   ├── dashboard_starter.jsonl        # pinned, default agent, 4 msg (from minimal)
 │   ├── dashboard_coder-demo.jsonl     # pinned, kirocrew agent, folder=demos, 8 msg

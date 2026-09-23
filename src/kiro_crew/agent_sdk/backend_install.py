@@ -37,6 +37,7 @@ have, and the remedy is a global npm install.
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import time
@@ -46,14 +47,14 @@ from typing import Callable, Dict, List, Tuple
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
-    ACP_BACKEND_DEEPSEEK,
-    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
-    ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_PROCESS_NAMES,
     ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_SELF_SERVED_ACP,
     POLICY_ID_BY_BACKEND,
+    launch_for,
 )
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
@@ -72,9 +73,14 @@ UNKNOWN = "unknown"
 # These reach the operator as "install this", so they are the names the thing is
 # actually called on disk, not the internal backend ids.
 
-COMPONENT_KIRO_CLI = "kiro-cli"
+# Each executable name is READ from the backend registry, never spelled again. The
+# reclaim sweep projects its marker set from the same table
+# (``session_pid._MANAGED_AGENT_MARKERS``), so a name written twice is a name that can
+# drift -- and a rename that missed one copy leaves the sweep unable to recognise a
+# process Crew spawns, which spares an orphan and then drops its tracking entry.
+COMPONENT_KIRO_CLI = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_KIRO]
 #: The ACP adapter Crew launches for the Claude backend.
-COMPONENT_CLAUDE_ACP_ADAPTER = "claude-agent-acp"
+COMPONENT_CLAUDE_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 #: The Claude CLI handed to that adapter as ``CLAUDE_CODE_EXECUTABLE``. A
 #: separate component because the adapter's SDK does NOT search PATH for it, so
 #: having one without the other is a real, distinguishable half-install.
@@ -82,22 +88,16 @@ COMPONENT_CLAUDE_CODE_CLI = "claude"
 
 #: The codex-acp adapter. ONE component, not two: the adapter ships its own
 #: compatible Codex binary, so there is no second executable Crew resolves.
-COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
+COMPONENT_CODEX_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CODEX]
 
-#: The OpenCode binary. ONE component, and here that is not a simplification: the
-#: harness serves ACP itself, so there is no adapter beside it to be half-installed.
-COMPONENT_OPENCODE = "opencode"
-COMPONENT_GOOSE = "goose"
+#: The component of a harness that serves ACP from its own binary is that binary, so
+#: it is read from ``ACP_BACKEND_LAUNCH`` rather than named a second time here. ONE
+#: component each, and for those harnesses that is not a simplification: there is no
+#: adapter beside them to be half-installed.
 #: The pi backend's TWO components: the ``pi-acp`` adapter Crew spawns, and the
 #: ``pi`` agent that adapter spawns in turn. Either can be absent on its own.
-COMPONENT_PI_ACP_ADAPTER = "pi-acp"
+COMPONENT_PI_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_PI]
 COMPONENT_PI_CLI = "pi"
-
-#: The DeepSeek Harness binary. ONE component, and naming the HOST rather than the
-#: ACP plugin is the substance of it: the plugin has no executable, and the profile
-#: it lives in is shipped inside this package's own dependency closure, so this
-#: binary resolving is the whole precondition.
-COMPONENT_DEEPSEEK = "dsh"
 
 #: How long a verdict is reused. The Claude driver shells out to mise and globs
 #: the filesystem, and the dashboard polls this endpoint, so an uncached probe
@@ -107,10 +107,39 @@ COMPONENT_DEEPSEEK = "dsh"
 CACHE_TTL_SECONDS: float = 30.0
 
 _cache: Dict[str, Tuple[float, "BackendInstallState"]] = {}
-# Guards the dict only. Deliberately NOT held across a probe: ``_probe_kas``
+#: Per-backend generation, bumped by every eviction. A probe runs with the lock
+#: RELEASED, so a verdict can be produced by a call that started before an
+#: eviction and finish after it -- and the dashboard polls this module while the
+#: re-check button evicts, which is exactly that race. The generation makes the
+#: write conditional on "nothing was dropped while I was resolving", so a stale
+#: answer can still be returned to its own caller but can never become the
+#: answer everyone else reads. Same shape as the resolution fence in
+#: ``acp.client``, for the same reason.
+_probe_epoch: Dict[str, int] = {}
+# Guards both dicts. Deliberately NOT held across a probe: ``_probe_kas``
 # re-enters :func:`probe_backend` for the kiro entry, which would deadlock on a
 # non-reentrant lock, and a duplicated concurrent probe costs nothing but work.
 _cache_lock = threading.Lock()
+
+
+def _epoch_locked(backend: str) -> int:
+    """This backend's generation, registering the id so a later clear covers it.
+
+    ``setdefault`` rather than ``get``: :func:`clear_probe_cache` bumps the ids it
+    can see, and a first-ever probe would otherwise be invisible to it -- leaving
+    the one case with no cached entry to drop as the one case a clear cannot fence.
+
+    Caller holds :data:`_cache_lock`.
+    """
+    return _probe_epoch.setdefault(backend, 0)
+
+
+def _bump_epoch_locked(backend: str) -> None:
+    """Retire every verdict for *backend* that is already being resolved.
+
+    Caller holds :data:`_cache_lock`.
+    """
+    _probe_epoch[backend] = _probe_epoch.get(backend, 0) + 1
 
 
 @dataclass(frozen=True)
@@ -229,91 +258,39 @@ def _probe_claude() -> BackendInstallState:
 #: Backend id → its probe. A registry rather than an ``if`` chain so an id with
 #: no probe is a lookup miss that degrades to ``UNKNOWN``, instead of falling
 #: through to whichever branch happened to be last.
-def _probe_opencode() -> BackendInstallState:
-    """The OpenCode backend needs one component, and names the installer for it.
+def _probe_self_served(backend: str) -> BackendInstallState:
+    """One component, named from *backend*'s launch record.
 
-    Unlike the two Node adapters there is no second thing to resolve: the binary
-    that would be missing is the same binary that serves ACP. So an absent verdict
-    names one component and one command, and there is no half-installed state to
-    distinguish.
+    Every harness in ``ACP_BACKEND_LAUNCH`` has the same install shape, and that is
+    why one function answers for all of them: the binary that would be missing is the
+    binary that serves ACP, so an absent verdict names ONE component and ONE command
+    and there is no half-installed state to distinguish. The two Node adapters and pi
+    each have two components and keep probes of their own.
 
-    ``restart_required`` is read from the spawn path's own cache, like the
-    adapters': the binary resolves NOW, but this process already cached its absence,
-    so a session started right now still fails until the gateway restarts.
-    """
-    policy_id = _policy_id(ACP_BACKEND_OPENCODE)
-    if acp_driver.opencode_resolves():
-        return BackendInstallState(
-            ACP_BACKEND_OPENCODE,
-            policy_id,
-            INSTALLED,
-            restart_required=acp_driver.opencode_cached_negative(),
-        )
-    return BackendInstallState(
-        ACP_BACKEND_OPENCODE,
-        policy_id,
-        MISSING,
-        (COMPONENT_OPENCODE,),
-        acp_driver.opencode_install_command(),
-    )
-
-
-def _probe_goose() -> BackendInstallState:
-    """The goose backend needs one component, and names the installer for it.
-
-    The same single-component shape as the opencode probe above and for the same
-    reason: the binary that would be missing is the binary that serves ACP, so an
-    absent verdict names one component and one command and there is no half-installed
-    state to distinguish.
-
-    ``restart_required`` is read from the spawn path's own cache, like every seam
-    here: the binary resolves NOW, but this process already cached its absence, so a
-    session started right now still fails until the gateway restarts.
-    """
-    policy_id = _policy_id(ACP_BACKEND_GOOSE)
-    if acp_driver.goose_resolves():
-        return BackendInstallState(
-            ACP_BACKEND_GOOSE,
-            policy_id,
-            INSTALLED,
-            restart_required=acp_driver.goose_cached_negative(),
-        )
-    return BackendInstallState(
-        ACP_BACKEND_GOOSE,
-        policy_id,
-        MISSING,
-        (COMPONENT_GOOSE,),
-        acp_driver.goose_install_command(),
-    )
-
-
-def _probe_deepseek() -> BackendInstallState:
-    """The DeepSeek backend needs one component, and names the installer for it.
-
-    Like the sibling harness there is no second thing to resolve, and here the reason
-    is worth stating: what an operator might expect to install is the ACP package,
-    and installing that alone would leave the backend unrunnable, because it is a
-    plugin rather than a server. So the component and the command both name the host
-    binary that boots the profile the plugin lives in.
+    The component and the command both come from the record, which is what stops an
+    operator being told to install something that is not what the ladder searches for
+    -- the live case being a harness whose ACP package is a PLUGIN rather than the
+    host that boots it.
 
     ``restart_required`` is read from the spawn path's own cache, like every sibling:
     the binary resolves NOW, but this process already cached its absence, so a session
     started right now still fails until the gateway restarts.
     """
-    policy_id = _policy_id(ACP_BACKEND_DEEPSEEK)
-    if acp_driver.deepseek_resolves():
+    launch = launch_for(backend)
+    policy_id = _policy_id(backend)
+    if acp_driver.self_served_resolves(backend):
         return BackendInstallState(
-            ACP_BACKEND_DEEPSEEK,
+            backend,
             policy_id,
             INSTALLED,
-            restart_required=acp_driver.deepseek_cached_negative(),
+            restart_required=acp_driver.self_served_cached_negative(backend),
         )
     return BackendInstallState(
-        ACP_BACKEND_DEEPSEEK,
+        backend,
         policy_id,
         MISSING,
-        (COMPONENT_DEEPSEEK,),
-        acp_driver.deepseek_install_command(),
+        (launch.binary,),
+        acp_driver.self_served_install_command(backend),
     )
 
 
@@ -385,16 +362,91 @@ def _probe_pi() -> BackendInstallState:
     )
 
 
+#: Backend id -> its probe. A probe that answers by calling :func:`probe_backend`
+#: for ANOTHER backend must also be named in :func:`forget_probe`, in BOTH
+#: directions: its own entry is a copy, so evicting the copy alone rebuilds it from
+#: the source, and evicting the source alone leaves the copy standing. ``_probe_kas``
+#: is the only one today. Nothing can detect the delegation automatically -- it is a
+#: call inside a function body -- so this note is the forcing function.
 _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_KIRO: _probe_kiro,
     ACP_BACKEND_KAS: _probe_kas,
     ACP_BACKEND_CLAUDE: _probe_claude,
     ACP_BACKEND_CODEX: _probe_codex,
-    ACP_BACKEND_OPENCODE: _probe_opencode,
-    ACP_BACKEND_GOOSE: _probe_goose,
     ACP_BACKEND_PI: _probe_pi,
-    ACP_BACKEND_DEEPSEEK: _probe_deepseek,
+    # Every harness that serves ACP from its own binary is probed by the one function
+    # above, bound to its id. Generated from the membership rather than listed, so
+    # onboarding a harness of that shape adds no row here at all -- and a harness with
+    # no row degrades to UNKNOWN rather than to another harness's verdict, which is
+    # what a registry buys over an ``if`` chain.
+    **{
+        backend: functools.partial(_probe_self_served, backend)
+        for backend in sorted(ACP_BACKENDS_SELF_SERVED_ACP)
+    },
 }
+
+
+def forget_probe(backend: str) -> None:
+    """Drop *backend*'s cached verdict, and every verdict coupled to it.
+
+    Narrower than :func:`clear_probe_cache` on purpose. Re-checking one harness
+    must not make the panel's next poll re-resolve all eight, and the Claude and
+    self-served probes each shell out or walk the filesystem, so a wholesale clear
+    would turn one button into that much work.
+
+    KAS and KIRO are one PAIR, and the coupling runs both ways because ``_probe_kas``
+    answers by calling :func:`probe_backend` for kiro -- kas's entry is a COPY of
+    kiro's. Dropping only kas rebuilds it from kiro's still-cached verdict and reports
+    the very answer it was asked to re-take. Dropping only kiro leaves kas holding the
+    copy, so a re-check on the kiro row reports the fresh install while the kas row
+    keeps saying missing, with a dead switch, for the rest of the TTL. Either
+    direction alone makes the button lie about a machine it just measured, so the
+    eviction travels both ways.
+
+    Stated as branches rather than held in a table: two conditions with one reader
+    each cost a reader a lookup to learn what a named condition says outright, and
+    nothing can check a table anyway -- the delegation is a call inside
+    ``_probe_kas``'s body. The note on :data:`_PROBES` is what tells the next author
+    to come here.
+    """
+    with _cache_lock:
+        _cache.pop(backend, None)
+        # The bump travels with the pop, under one lock hold: a probe already in
+        # flight for this id resolved a machine that predates whatever the caller
+        # just did, so its answer must not be stored on top of the fresh one.
+        _bump_epoch_locked(backend)
+        if backend == ACP_BACKEND_KAS:
+            # The copy's source: leaving it would rebuild the copy from it.
+            _cache.pop(ACP_BACKEND_KIRO, None)
+            _bump_epoch_locked(ACP_BACKEND_KIRO)
+        elif backend == ACP_BACKEND_KIRO:
+            # The copy: leaving it keeps a pre-install verdict on the kas row while
+            # the kiro row it was copied from already reads the fresh one.
+            _cache.pop(ACP_BACKEND_KAS, None)
+            _bump_epoch_locked(ACP_BACKEND_KAS)
+
+
+def forget_for_recheck(backend: str) -> None:
+    """Drop BOTH caches that can make a fresh install read as unusable.
+
+    This module's TTL verdict, and the running gateway's own resolve result that
+    ``restart_required`` is derived from. Together they are what stands between an
+    operator who just ran the install command and a working switch.
+
+    **Non-blocking, and it must be called ON THE EVENT LOOP.** It resolves nothing --
+    it only drops what is remembered -- so there is no reason to offload it, and one
+    strong reason not to: :func:`drivers.acp.forget_cached_resolution` is only
+    thread-safe on the loop, because every reader on the spawn path is loop-resident
+    code with no ``await`` between its check and its read. Its docstring has the
+    evidence.
+
+    Deliberately NOT paired with the probe in one function. An earlier shape did
+    exactly that, and bundling them is what pushed the clear into the worker thread
+    the probe needs -- so the pairing was the defect, not a convenience. The caller
+    clears here, then offloads :func:`probe_backend`.
+    """
+    acp_driver.forget_cached_resolution(backend)
+    forget_probe(backend)
 
 
 def _policy_id(backend: str) -> str:
@@ -409,9 +461,16 @@ def _policy_id(backend: str) -> str:
 
 
 def clear_probe_cache() -> None:
-    """Drop every cached verdict, so the next probe re-resolves."""
+    """Drop every cached verdict, so the next probe re-resolves.
+
+    Every generation moves with the clear, not only the ids that had an entry: an
+    in-flight probe holds no entry yet, and it is the one whose write would put a
+    pre-clear verdict back.
+    """
     with _cache_lock:
         _cache.clear()
+        for known in list(_probe_epoch):
+            _bump_epoch_locked(known)
 
 
 def _cached(backend: str) -> BackendInstallState | None:
@@ -434,10 +493,17 @@ def probe_backend(backend: str) -> BackendInstallState:
     Never raises. A resolver that fails -- including an id with no probe at all
     -- yields ``UNKNOWN``, because the alternative is telling an operator to
     reinstall a harness whose presence was never actually determined.
+
+    The verdict is CACHED only if nothing evicted this backend while the probe
+    ran; see :data:`_probe_epoch`. The caller always gets the answer its own call
+    resolved, whether or not it was stored.
     """
     cached = _cached(backend)
     if cached is not None:
         return cached
+
+    with _cache_lock:
+        epoch = _epoch_locked(backend)
 
     probe = _PROBES.get(backend)
     if probe is None:
@@ -455,7 +521,13 @@ def probe_backend(backend: str) -> BackendInstallState:
             state = BackendInstallState(backend, _policy_id(backend), UNKNOWN)
 
     with _cache_lock:
-        _cache[backend] = (time.monotonic(), state)
+        # Store only under the generation this call started in. A caller that
+        # raced an eviction still gets its own answer -- it is honest about the
+        # machine it looked at -- but the cache keeps the eviction's meaning, so
+        # the next reader re-resolves instead of being handed a verdict taken
+        # before the install the eviction was announcing.
+        if _probe_epoch.get(backend, 0) == epoch:
+            _cache[backend] = (time.monotonic(), state)
     return state
 
 
@@ -482,6 +554,8 @@ __all__ = [
     "UNKNOWN",
     "BackendInstallState",
     "clear_probe_cache",
+    "forget_probe",
     "probe_backend",
     "probe_backends",
+    "forget_for_recheck",
 ]

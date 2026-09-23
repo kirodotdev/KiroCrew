@@ -269,7 +269,7 @@ describe('ChatEmbed', () => {
       }))
     })
 
-    it('does not send on Shift+Enter', async () => {
+    it('keeps a Shift+Enter newline in the draft instead of sending', async () => {
       await act(async () => {
         renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       })
@@ -279,11 +279,88 @@ describe('ChatEmbed', () => {
         fireEvent.change(input, { target: { value: 'hello' } })
       })
 
+      const shiftEnter = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
       await act(async () => {
-        fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+        input.dispatchEvent(shiftEnter)
+        if (!shiftEnter.defaultPrevented) {
+          fireEvent.input(input, { target: { value: 'hello\n' } })
+        }
       })
 
+      expect(shiftEnter.defaultPrevented).toBe(false)
+      expect(input).toHaveValue('hello\n')
       expect(mockPost).not.toHaveBeenCalled()
+    })
+
+    it('does not send the Enter that commits an IME candidate', async () => {
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      })
+      const input = screen.getByLabelText('Chat message')
+
+      await act(async () => {
+        fireEvent.change(input, { target: { value: '你好' } })
+        fireEvent.compositionStart(input)
+        fireEvent.keyDown(input, { key: 'Enter' })
+      })
+
+      expect(input).toHaveValue('你好')
+      expect(mockPost).not.toHaveBeenCalled()
+    })
+
+    it('grows to the shared height cap, then keeps vertical scrolling', async () => {
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      })
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
+      Object.defineProperty(input, 'scrollHeight', { value: 9999, configurable: true })
+
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'a long multi-line draft' } })
+      })
+
+      expect(input).toBeInstanceOf(HTMLTextAreaElement)
+      expect(input.style.height).toBe('240px')
+      expect(input).toHaveClass('overflow-y-auto')
+    })
+
+    it('caps the auto-grow at composerMaxHeight when a fixed-height host passes one', async () => {
+      // A host that boxes the embed at a fixed height (IncidentChat's 420px
+      // panel) cannot afford the shared 240px cap: a maxed-out draft would take
+      // more than half the box. The prop is forwarded to the draft hook as its
+      // cap; the resting size is the element's own CSS floor and is not touched.
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" composerMaxHeight={160} />)
+      })
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
+      Object.defineProperty(input, 'scrollHeight', { value: 9999, configurable: true })
+
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'a long multi-line draft' } })
+      })
+
+      expect(input.style.height).toBe('160px')
+    })
+
+    it('lets a draft below composerMaxHeight grow to its own content height', async () => {
+      // The prop is a cap, not a fixed height: a short draft still sizes to its
+      // content, so the prop cannot be implemented as a constant height.
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" composerMaxHeight={160} />)
+      })
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
+      Object.defineProperty(input, 'scrollHeight', { value: 76, configurable: true })
+
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'three\nshort\nlines' } })
+      })
+
+      expect(input.style.height).toBe('76px')
     })
   })
 
@@ -546,7 +623,7 @@ describe('ChatEmbed follow-up options', () => {
     // Chip clicks are debounced 220ms (so a double-click can still fire the
     // distinct "send now" gesture) whenever onSend is supplied, as it is here.
     await act(async () => {
-      fireEvent.click(screen.getByText('Run tests'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run tests' }))
       vi.advanceTimersByTime(250)
     })
 
@@ -571,13 +648,13 @@ describe('ChatEmbed follow-up options', () => {
     // Chip clicks are debounced 220ms (so a double-click can still fire the
     // distinct "send now" gesture) whenever onSend is supplied, as it is here.
     await act(async () => {
-      fireEvent.click(screen.getByText('Run tests'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run tests' }))
       vi.advanceTimersByTime(250)
     })
     expect(input.value).toBe('Run tests')
 
     await act(async () => {
-      fireEvent.click(screen.getByText('Run tests'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run tests' }))
       vi.advanceTimersByTime(250)
     })
     expect(input.value).toBe('')

@@ -10,8 +10,11 @@ otherwise orphan a task from teardown.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import itertools
+import json
+import logging
 import threading
 import typing
 from typing import Callable
@@ -19,17 +22,38 @@ from typing import Callable
 import pytest
 
 from kiro_crew.cloud import fargate, fargate_engine
+from kiro_crew.cloud import launch_job as lj
+from kiro_crew.cloud import sizes
+from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.ec2 import MANAGED_TAG_KEY
+from kiro_crew.cloud.fargate import (
+    CREW_TAG_KEY,
+    Placement,
+    SecretRef,
+    TaskDefinitionSpec,
+    credential_recipient,
+    default_log_spec,
+    revision_fingerprint,
+    spec_binding,
+)
 from kiro_crew.cloud.fargate_engine import (
+    DEFAULT_MAX_RUNNING_TASKS,
+    DEFAULT_TASK_TTL_SECONDS,
     MANAGED_TAG_VALUE,
     FargateLaunchEngine,
+    FargateLaunchSpec,
     FargateSigninHandle,
     Ownership,
+    TaskBounds,
     TaskSighting,
     classify_task,
+    plan_bounds_sweep,
     plan_teardown,
 )
 from kiro_crew.cloud.launch_job import LaunchEngine, SigninHandle
+from kiro_crew.instances.validation import split_ecs_target
+from kiro_crew.platform.defaults import FARGATE_PROVISIONER_ID
+from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
 TAG = "kc-a1b2c3"
 ARN = "arn:aws:ecs:us-west-2:111122223333:task/crews/1111111111111111"
@@ -40,6 +64,90 @@ STARTED_BY = "kirocrew-cloud/kc-a1b2c3"
 #: module refuses to spell this key itself because the module that writes the tag
 #: owns it, so every test hands it over the same way production code must.
 LAUNCH_TAG_KEY = "kirocrew:launch"
+
+#: A task id and ARN the REGISTRY can address, which ``ARN`` above deliberately is
+#: not: an ECS target's task id is 32 hex characters and the shared fixture's is
+#: sixteen, so a target built from it is refused by ``split_ecs_target``. Kept
+#: separate rather than widening ``ARN``, because that short id is what
+#: :meth:`~TestAwaitingTheRegistrationTarget.test_coordinates_that_do_not_form_a_target_are_refused_here`
+#: uses to show the refusal, and the two facts would otherwise cancel out.
+TASK_ID = "0123456789abcdef0123456789abcdef"
+RUNTIME_ID = f"{'a' * 32}-1234567890"
+REGISTRABLE_ARN = f"arn:aws:ecs:us-west-2:111122223333:task/crews/{TASK_ID}"
+EXPECTED_TARGET = f"ecs:crews_{TASK_ID}_{RUNTIME_ID}"
+
+
+def _task(last_status: str, *, task_arn: str = REGISTRABLE_ARN, **over: object) -> dict:
+    """One ``DescribeTasks`` entry, as the API shapes it."""
+    entry: dict = {"taskArn": task_arn, "lastStatus": last_status}
+    entry.update(over)
+    return entry
+
+
+def _running_task(*, task_arn: str = REGISTRABLE_ARN) -> dict:
+    return _task(
+        "RUNNING",
+        task_arn=task_arn,
+        containers=[{"name": "crew", "runtimeId": RUNTIME_ID}],
+    )
+
+
+def _stopped_task(stopped_reason: str) -> dict:
+    return _task("STOPPED", stoppedReason=stopped_reason, containers=[])
+
+
+def _crashed_task(stopped_reason: str) -> dict:
+    """STOPPED, but its container ran long enough to be assigned a runtime id.
+
+    The startup-crash shape, and the one ``_stopped_task`` cannot express: ECS
+    keeps reporting ``runtimeId`` for a container that reached RUNNING and then
+    exited, so this is a task that answers every question needed to build a
+    target and is nonetheless unreachable.
+    """
+    return _task(
+        "STOPPED",
+        stoppedReason=stopped_reason,
+        containers=[{"name": fargate.CREW_CONTAINER_NAME, "runtimeId": RUNTIME_ID}],
+    )
+
+
+def _winding_down(last_status: str) -> dict:
+    """A task in one of the states between ``RUNNING`` and ``STOPPED``.
+
+    Billable, so a billing predicate calls it running; still carrying the
+    container's ``runtimeId``, so every field a target needs is readable; and
+    unreachable, because the ENI is being torn down. ``stoppedReason`` is set
+    because ECS records the cause once the stop begins, not once it completes.
+    """
+    return _task(
+        last_status,
+        desiredStatus="STOPPED",
+        stoppedReason="Task stopped by user",
+        containers=[{"name": fargate.CREW_CONTAINER_NAME, "runtimeId": RUNTIME_ID}],
+    )
+
+
+def _never_sleep(_seconds: object) -> None:
+    """A poll sleep that must not happen: these reads end on their first answer."""
+    raise AssertionError("the wait slept when the first read already settled it")
+
+
+def _patch_describe(monkeypatch, answers: list) -> None:
+    """Serve *answers* to successive ``describe_task`` calls, last one repeating.
+
+    Patched at the engine's own read rather than at the AWS chokepoint because
+    what is under test is the POLL -- how many reads it takes and when it stops --
+    and a scripted sequence is the only way to express a task that is
+    PROVISIONING and then RUNNING. ``None`` entries stand for the task ECS no
+    longer lists, which is what ``describe_task`` returns for it.
+    """
+    remaining = list(answers)
+
+    def _describe_task(self, *, task_arn: str, profile: str, region: str):
+        entry = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return None if entry is None else fargate_engine.sighting_from_task(entry)
+
+    monkeypatch.setattr(FargateLaunchEngine, "describe_task", _describe_task)
 
 
 def _marked(tag: str = TAG, **over: object) -> TaskSighting:
@@ -111,9 +219,10 @@ def test_engine_is_injectable_where_the_ec2_engine_is() -> None:
 def test_signin_handle_has_every_signin_handle_protocol_member() -> None:
     """The handle carries every member ``SigninHandle`` declares, attributes included.
 
-    ``SigninHandle`` declares four ATTRIBUTES (``already_logged_in``, ``url``,
-    ``code``, ``ports``) beside its two methods, and ``run_launch`` reads
-    ``handle.already_logged_in`` unconditionally before anything else. A check
+    ``SigninHandle`` declares five ATTRIBUTES (``already_logged_in``, ``url``,
+    ``code``, ``ports``, ``error``) beside its two methods, and ``run_launch``
+    reads ``handle.error`` and ``handle.already_logged_in`` unconditionally
+    before anything else. A check
     written against the Protocol's ``def`` lines alone would pass a handle with
     no attributes at all, and that handle raises ``AttributeError`` on every
     launch. So the member set is taken from the Protocol's annotations AND its
@@ -126,8 +235,8 @@ def test_signin_handle_has_every_signin_handle_protocol_member() -> None:
     handle = FargateSigninHandle(task_arn=ARN)
     attributes = set(typing.get_type_hints(SigninHandle))
     methods = {n for n, _ in inspect.getmembers(SigninHandle, inspect.isfunction) if n[0] != "_"}
-    assert attributes == {"already_logged_in", "url", "code", "ports"}
-    assert methods == {"wait", "close"}
+    assert attributes == {"already_logged_in", "url", "code", "ports", "error"}
+    assert methods == {"wait", "close", "abort"}
     for name in attributes | methods:
         assert hasattr(handle, name), f"FargateSigninHandle is missing {name}"
 
@@ -163,16 +272,571 @@ def test_signin_honours_a_cancel_already_set() -> None:
     assert handle.wait(cancelled) is False
 
 
-def test_register_is_a_silent_no_op() -> None:
-    """``register`` carries no exit criteria; registry visibility is out of scope.
+def test_signin_honours_the_default_login_target() -> None:
+    """The Builder ID target, explicit or omitted, is the already-signed-in path.
 
-    A raise would fail an otherwise-successful launch, because ``run_launch`` calls
-    the step unconditionally.
+    ``login_target`` is the keyword the ``LaunchEngine`` Protocol gained for
+    Identity Center. The empty target is what every managed launch carried
+    before it existed, so passing it must change nothing: no ``error``, and the
+    handle still reports the step done without a prompt.
     """
-    assert (
-        FargateLaunchEngine().register(instance_id=ARN, tag=TAG, profile="p", region="us-west-2")
-        is None
+    from kiro_crew.cloud.login_target import KiroLoginTarget
+
+    engine = FargateLaunchEngine()
+    for target in (None, KiroLoginTarget()):
+        handle = engine.begin_signin(
+            instance_id=ARN, profile="p", region="us-west-2", login_target=target
+        )
+        assert handle.error == ""
+        assert handle.already_logged_in is True
+
+
+def test_identity_center_target_is_refused_at_preflight_before_provision() -> None:
+    """A non-default identity fails the launch before anything is provisioned or billed.
+
+    The container is credentialed by its API key and never signs in, so an
+    Identity Center target has nothing to act on. The engine says so through
+    ``login_target_refusal``, which ``launch_job._check_signin_target_supported``
+    reads at PREFLIGHT: the job fails there, ``provision`` never runs, and no
+    task exists to strand. Refusing later, at the sign-in step, would land after
+    the task is billing, which is the shape this engine must never take.
+    """
+    from kiro_crew.cloud.login_target import KiroLoginTarget
+
+    target = KiroLoginTarget(
+        license="pro", start_url="https://example.awsapps.com/start", region="us-west-2"
     )
+    assert not target.is_default
+    engine = FargateLaunchEngine()
+    reason = engine.login_target_refusal(target)
+    assert reason
+    assert "API key" in reason
+    assert engine.login_target_refusal(KiroLoginTarget()) == ""
+
+    job = lj.LaunchJob(
+        id="j",
+        profile="p",
+        region="us-west-2",
+        size_key="balanced",
+        instance_id="",
+        login_target=target,
+    )
+    with pytest.raises(RuntimeError, match="API key"):
+        lj._check_signin_target_supported(engine, job)
+    # And the runner's preflight is the same call, so the launch never provisions.
+    job.login_target = KiroLoginTarget()
+    lj._check_signin_target_supported(engine, job)
+
+
+def test_signin_time_identity_center_target_is_a_programming_error_guard() -> None:
+    """``begin_signin`` with a non-default target raises: preflight was skipped.
+
+    Through ``run_launch`` this path is unreachable, because the preflight check
+    above fails the job first. The raise is the guard for a caller that bypassed
+    preflight, mirroring the never-taken branch in
+    ``launch_job._begin_signin_with_target``; it is not a refusal channel, so
+    the handle's ``error`` stays empty on every path that returns one.
+    """
+    from kiro_crew.cloud.login_target import KiroLoginTarget
+
+    target = KiroLoginTarget(
+        license="pro", start_url="https://example.awsapps.com/start", region="us-west-2"
+    )
+    with pytest.raises(RuntimeError, match="API key"):
+        FargateLaunchEngine().begin_signin(
+            instance_id=ARN, profile="p", region="us-west-2", login_target=target
+        )
+    handle = FargateLaunchEngine().begin_signin(instance_id=ARN, profile="p", region="us-west-2")
+    assert handle.error == ""
+
+
+def test_register_resolves_a_target_and_registers_the_fargate_crew(monkeypatch) -> None:
+    """A launched task lands in the registry, so the crew is switchable at once.
+
+    ``provision`` hands over a task ARN, which the registry cannot address. This
+    asserts the four things the record must carry -- the ECS target composed from
+    the DescribeTasks read, the ``fargate`` method, the port the task definition
+    publishes, and the Fargate provisioner id -- because each one wrong is its own
+    silent failure: a stale target connects to nothing, ``ssm`` is refused by the
+    registry, the EC2 lane's default port forwards to a port the container does
+    not listen on, and the EC2 provisioner id resolves the EC2 engine for a task.
+    """
+    calls: list[dict] = []
+
+    def _register_instance(target, **kw):
+        calls.append({"target": target, **kw})
+        return "inst-1"
+
+    monkeypatch.setattr(fargate_engine.connect, "register_instance", _register_instance)
+    _patch_describe(monkeypatch, [_running_task()])
+
+    FargateLaunchEngine(_spec()).register(
+        instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+    )
+
+    assert len(calls) == 1, calls
+    assert calls[0]["target"] == EXPECTED_TARGET
+    assert calls[0]["connection_method"] == "fargate"
+    assert calls[0]["remote_port"] == fargate.FRONT_PORT
+    assert calls[0]["provisioner_id"] == FARGATE_PROVISIONER_ID
+    # The id the platform resolves an engine from, so the EC2 default here would
+    # hand a task to the EC2 engine and label it an EC2 stack in the dashboard.
+    assert calls[0]["provisioner_id"] != BUILTIN_PROVISIONER_ID
+    assert TAG in calls[0]["name"]
+    # split_ecs_target is the registry's own reader: a target it rejects would be
+    # refused at reg.add as a traceback about a string nobody typed.
+    assert split_ecs_target(calls[0]["target"]) == (
+        "crews",
+        TASK_ID,
+        RUNTIME_ID,
+    )
+
+
+def test_register_raises_registration_unavailable_when_the_registry_declines(
+    monkeypatch,
+) -> None:
+    """``register_instance`` returns None for BOTH "feature absent" and "write
+    raised". Ignoring it would report the crew as added while it is absent."""
+    monkeypatch.setattr(fargate_engine.connect, "register_instance", lambda *a, **k: None)
+    _patch_describe(monkeypatch, [_running_task()])
+
+    with pytest.raises(lj.RegistrationUnavailable) as caught:
+        FargateLaunchEngine(_spec()).register(
+            instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+        )
+    # The message has to carry what a human needs to finish by hand.
+    assert REGISTRABLE_ARN in str(caught.value)
+    assert EXPECTED_TARGET in str(caught.value)
+
+
+def test_register_fails_the_launch_when_the_task_is_not_running(monkeypatch) -> None:
+    """A task that stopped has nothing to register and nothing to tear down.
+
+    The raise is a plain error and NOT :class:`RegistrationUnavailable`, which
+    means "the launch stands, only the row is missing". A stopped task has no
+    running crew behind it, so reporting the launch as launched would leave the
+    job DONE for something unreachable and unbillable.
+    """
+    reached: list[object] = []
+    monkeypatch.setattr(
+        fargate_engine.connect, "register_instance", lambda *a, **k: reached.append(a)
+    )
+    _patch_describe(monkeypatch, [_stopped_task("CannotPullContainerError: manifest unknown")])
+
+    with pytest.raises(RuntimeError) as caught:
+        FargateLaunchEngine(_spec()).register(
+            instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+        )
+    assert reached == []
+    assert not isinstance(caught.value, lj.RegistrationUnavailable)
+    assert "CannotPullContainerError" in str(caught.value)
+
+
+def test_register_fails_the_launch_for_a_task_that_crashed_after_starting(monkeypatch) -> None:
+    """The startup-crash path: a container that reached RUNNING keeps its runtime
+    id, so every field a target needs is readable for a task that is already
+    dead. This is the case a runtime-id-first read reports as a good launch."""
+    reached: list[object] = []
+    monkeypatch.setattr(
+        fargate_engine.connect, "register_instance", lambda *a, **k: reached.append(a)
+    )
+    _patch_describe(monkeypatch, [_crashed_task("Essential container in task exited")])
+
+    with pytest.raises(RuntimeError) as caught:
+        FargateLaunchEngine(_spec()).register(
+            instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+        )
+    assert reached == []
+    assert not isinstance(caught.value, lj.RegistrationUnavailable)
+    assert "Essential container in task exited" in str(caught.value)
+
+
+def test_register_keeps_a_live_but_unregistered_task_non_fatal(monkeypatch) -> None:
+    """A read that failed says nothing about the task, so the launch stands.
+
+    The counterpart to the two above: the task may be running and billing, and a
+    red card over the launch would hide the crew whose remedy is to add it by
+    hand or tear it down.
+    """
+    reached: list[object] = []
+    monkeypatch.setattr(
+        fargate_engine.connect, "register_instance", lambda *a, **k: reached.append(a)
+    )
+
+    def _raise(**_kw):
+        raise AWSError("AccessDeniedException: denied", action="ecs:DescribeTasks")
+
+    monkeypatch.setattr(FargateLaunchEngine, "describe_task", lambda self, **kw: _raise(**kw))
+
+    with pytest.raises(lj.RegistrationUnavailable) as caught:
+        FargateLaunchEngine(_spec()).register(
+            instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2"
+        )
+    assert reached == []
+    assert "AccessDeniedException" in str(caught.value)
+
+
+class TestTheRuntimeIdIsReadFromTheCrewContainer:
+    """``runtimeId`` is the one ECS target field ``RunTask`` does not answer with."""
+
+    def test_it_is_matched_by_container_name_not_position(self) -> None:
+        """A sidecar added to the task definition must not move the crew's channel.
+
+        Position is not identity: ``containers[0]`` would point every registration
+        at the sidecar's runtime id, and the tunnel would forward to whatever that
+        container listens on.
+        """
+        sighting = fargate_engine.sighting_from_task(
+            {
+                "taskArn": REGISTRABLE_ARN,
+                "lastStatus": "RUNNING",
+                "containers": [
+                    {"name": "log-router", "runtimeId": "f" * 32 + "-99"},
+                    {"name": fargate.CREW_CONTAINER_NAME, "runtimeId": RUNTIME_ID},
+                ],
+            }
+        )
+        assert sighting.runtime_id == RUNTIME_ID
+
+    def test_a_task_with_no_containers_yet_reports_no_runtime_id(self) -> None:
+        """PROVISIONING carries no containers, and absent is not an error."""
+        sighting = fargate_engine.sighting_from_task(
+            {"taskArn": REGISTRABLE_ARN, "lastStatus": "PROVISIONING"}
+        )
+        assert sighting.runtime_id == ""
+
+    def test_a_started_container_without_a_runtime_id_reports_none(self) -> None:
+        """Present-but-empty and absent are the same to the caller: no target."""
+        sighting = fargate_engine.sighting_from_task(
+            {
+                "taskArn": REGISTRABLE_ARN,
+                "lastStatus": "RUNNING",
+                "containers": [{"name": fargate.CREW_CONTAINER_NAME}],
+            }
+        )
+        assert sighting.runtime_id == ""
+
+
+class TestAwaitingTheRegistrationTarget:
+    """The bounded DescribeTasks poll, and a named reason for every way it ends."""
+
+    def test_it_polls_until_the_container_reports_a_runtime_id(self, monkeypatch) -> None:
+        """A Fargate task is PROVISIONING for tens of seconds. Reading once would
+        make registration fail for every launch that is not already warm."""
+        slept: list[int] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        _patch_describe(
+            monkeypatch,
+            [
+                _task("PROVISIONING", containers=[]),
+                _task("PENDING", containers=[{"name": fargate.CREW_CONTAINER_NAME}]),
+                _running_task(),
+            ],
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert (target, reason, alive) == (EXPECTED_TARGET, "", True)
+        # Two waits for three reads: it returns ON the answer, never after a
+        # further sleep, so a task that starts fast costs only the time it took.
+        assert slept == [
+            fargate_engine.REGISTER_TARGET_POLL_SECONDS,
+            fargate_engine.REGISTER_TARGET_POLL_SECONDS,
+        ]
+
+    def test_a_container_that_started_then_died_yields_no_target(self, monkeypatch) -> None:
+        """``runtimeId`` outlives the container that had it, so a crashed task
+        still carries one. Composing a target from it would hand the registry a
+        well-formed address for something dead and call the launch connectable."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        _patch_describe(monkeypatch, [_crashed_task("Essential container in task exited")])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is False
+        assert "Essential container in task exited" in reason
+        # The runtime id was READ -- the guard is what refuses it, not its absence.
+        assert fargate_engine.sighting_from_task(_crashed_task("x")).runtime_id == RUNTIME_ID
+
+    @pytest.mark.parametrize("status", ["DEACTIVATING", "STOPPING", "DEPROVISIONING"])
+    def test_a_task_on_its_way_down_is_refused_not_registered(self, monkeypatch, status) -> None:
+        """The states between ``RUNNING`` and ``STOPPED`` are billable, keep the
+        container's runtime id, and cannot be connected to: the ENI is being torn
+        down. Asking whether the task is billable admits all three, so the poll has
+        to ask whether it is serving."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        _patch_describe(monkeypatch, [_winding_down(status)])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is False
+        assert status in reason
+        # Billable and carrying a runtime id: neither fact makes it reachable.
+        sighting = fargate_engine.sighting_from_task(_winding_down(status))
+        assert sighting.is_running is True
+        assert sighting.runtime_id == RUNTIME_ID
+        assert sighting.is_serving is False
+
+    def test_a_task_told_to_stop_is_refused_while_still_reporting_running(
+        self, monkeypatch
+    ) -> None:
+        """``desiredStatus`` moves first. A task ECS has been told to stop is on its
+        way down even while ``lastStatus`` still says ``RUNNING``, and that stop does
+        not get reversed."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        doomed = _task(
+            "RUNNING",
+            desiredStatus="STOPPED",
+            containers=[{"name": fargate.CREW_CONTAINER_NAME, "runtimeId": RUNTIME_ID}],
+        )
+        _patch_describe(monkeypatch, [doomed])
+
+        target, _reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is False
+
+    @pytest.mark.parametrize("status", ["PROVISIONING", "PENDING", "ACTIVATING"])
+    def test_a_task_not_serving_yet_is_polled_rather_than_refused(
+        self, monkeypatch, status
+    ) -> None:
+        """The counterpart to the three above, and why one predicate cannot answer
+        both: these are also not serving, but they are worth waiting for. Refusing
+        them would fail a launch whose crew is seconds from coming up."""
+        slept: list[int] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        # The state persists, so the poll can only end on the budget.
+        monkeypatch.setattr(
+            FargateLaunchEngine,
+            "describe_task",
+            lambda self, **kw: fargate_engine.sighting_from_task(_task(status, containers=[])),
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is True
+        assert status in reason
+        assert sum(slept) == fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS
+
+    def test_a_stopped_task_ends_the_wait_and_quotes_ecs(self, monkeypatch) -> None:
+        """The cause lives in ``stoppedReason`` -- an image it could not pull, a
+        secret it could not read -- so it is carried, not summarised away."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        _patch_describe(monkeypatch, [_stopped_task("ResourceInitializationError: secret")])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is False
+        assert "ResourceInitializationError: secret" in reason
+
+    def test_a_stopped_task_with_no_reason_still_says_so(self, monkeypatch) -> None:
+        """ECS does not always give one, and an empty tail would read as truncated."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        _patch_describe(monkeypatch, [_stopped_task("")])
+
+        _target, reason, _alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+        assert "ECS gave no reason" in reason
+
+    def test_a_task_seen_and_then_gone_is_not_rounded_to_a_state(self, monkeypatch) -> None:
+        """``describe_task`` answers None for a task ECS has dropped. Once a read
+        has SEEN the task, that absence is a disappearance: there is no crew left
+        to register, and guessing 'running' would write a dead target."""
+        slept: list[float] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        _patch_describe(
+            monkeypatch,
+            [_task("PENDING", containers=[{"name": fargate.CREW_CONTAINER_NAME}]), None],
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+        assert target == ""
+        assert alive is False
+        assert "no longer lists" in reason
+        # One wait: the PENDING read was polled through, the absence ended it.
+        assert slept == [fargate_engine.REGISTER_TARGET_POLL_SECONDS]
+
+    def test_a_task_absent_from_the_first_reads_is_polled_not_called_gone(
+        self, monkeypatch
+    ) -> None:
+        """``RunTask`` and ``DescribeTasks`` are eventually consistent, so a task
+        accepted moments ago is legitimately missing from the first read. Calling
+        that gone fails the launch of a task that goes on to start and bill."""
+        slept: list[int] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        _patch_describe(monkeypatch, [None, None, _running_task()])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert (target, reason, alive) == (EXPECTED_TARGET, "", True)
+        # Two absences were waited through, not returned on.
+        assert slept == [
+            fargate_engine.REGISTER_TARGET_POLL_SECONDS,
+            fargate_engine.REGISTER_TARGET_POLL_SECONDS,
+        ]
+
+    def test_a_task_ecs_never_listed_expires_as_may_come_up(self, monkeypatch) -> None:
+        """A task no read ever saw is not a task that died. It ends on the budget,
+        with ``alive`` True, because the remedy is to look again rather than to
+        treat the launch as failed over a task that may be billing."""
+        slept: list[float] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        _patch_describe(monkeypatch, [None])
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+        assert target == ""
+        assert alive is True
+        assert "did not list this task" in reason
+        # Not the phrasing used for a task that WAS listed and stayed starting.
+        assert "no longer lists" not in reason
+        # It polled the whole budget rather than returning on the first absence.
+        assert sum(slept) >= fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS
+
+    def test_the_last_sleep_is_cut_to_the_remaining_budget(self, monkeypatch) -> None:
+        """The ceiling is elapsed time, so each ``DescribeTasks`` round trip spends
+        it. Sleeping a full poll interval regardless would push the documented
+        180s past itself by one round trip per poll."""
+        slept: list[float] = []
+        clock = {"now": 0.0}
+        read_cost = 1.0
+
+        def _advance(seconds: float) -> None:
+            slept.append(seconds)
+            clock["now"] += seconds
+
+        def _slow_read(_self, *, task_arn: str, profile: str, region: str):
+            # The latency the old per-iteration counter could not see.
+            clock["now"] += read_cost
+            return fargate_engine.sighting_from_task(
+                _task("PENDING", containers=[{"name": fargate.CREW_CONTAINER_NAME}])
+            )
+
+        monkeypatch.setattr(fargate_engine, "_sleep", _advance)
+        monkeypatch.setattr(fargate_engine, "_monotonic", lambda: clock["now"])
+        monkeypatch.setattr(FargateLaunchEngine, "describe_task", _slow_read)
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert (target, alive) == ("", True)
+        assert str(fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS) in reason
+        # Waiting never overspends the budget, and the final wait is the remainder
+        # rather than another whole interval.
+        budget = fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS
+        assert sum(slept) <= budget
+        assert slept[-1] < fargate_engine.REGISTER_TARGET_POLL_SECONDS
+        # The only overshoot is the read in flight when the budget ran out. A
+        # per-iteration counter would instead have slept a full interval per poll
+        # and overshot by one read latency for EVERY poll.
+        assert clock["now"] <= budget + read_cost
+        assert len(slept) * read_cost > read_cost, "the poll must have taken several reads"
+
+    def test_a_denied_read_is_reported_as_itself(self, monkeypatch) -> None:
+        """An AccessDenied on ecs:DescribeTasks is a permission to fix, not a
+        task state. The AWS error names the caller ARN, so it is carried."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+
+        def _raise(**_kw):
+            raise AWSError(
+                "AccessDeniedException: user arn:aws:iam::1:user/x", action="ecs:DescribeTasks"
+            )
+
+        monkeypatch.setattr(FargateLaunchEngine, "describe_task", lambda self, **kw: _raise(**kw))
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+        assert target == ""
+        assert "AccessDeniedException" in reason
+        # A read that did not happen says nothing about the task. Calling it dead
+        # here would fail a launch whose crew is running and billing.
+        assert alive is True
+
+    def test_the_budget_is_a_ceiling_and_its_expiry_is_named(self, monkeypatch) -> None:
+        """A task still starting at the budget is the one case where looking again
+        later works, so the reason says that instead of implying the task failed."""
+        slept: list[int] = []
+        monkeypatch.setattr(fargate_engine, "_sleep", slept.append)
+        # Always PROVISIONING: the poll can only end on the budget.
+        monkeypatch.setattr(
+            FargateLaunchEngine,
+            "describe_task",
+            lambda self, **kw: fargate_engine.sighting_from_task(
+                _task("PROVISIONING", containers=[])
+            ),
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=REGISTRABLE_ARN, profile="p", region="us-west-2"
+        )
+
+        assert target == ""
+        assert alive is True
+        assert str(fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS) in reason
+        assert "Remote crew" in reason
+        # Bounded, and bounded by the documented budget rather than by a count
+        # that happens to match it.
+        assert sum(slept) == fargate_engine.REGISTER_TARGET_TIMEOUT_SECONDS
+        assert set(slept) == {fargate_engine.REGISTER_TARGET_POLL_SECONDS}
+
+    def test_an_arn_naming_no_cluster_falls_back_to_the_spec(self, monkeypatch) -> None:
+        """The short ARN format carries no cluster. The spec's is the only other
+        source, and the read must still be attempted rather than refused."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        short = f"arn:aws:ecs:us-west-2:111122223333:task/{TASK_ID}"
+        monkeypatch.setattr(
+            FargateLaunchEngine,
+            "describe_task",
+            lambda self, **kw: fargate_engine.sighting_from_task(_running_task(task_arn=short)),
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=short, profile="p", region="us-west-2"
+        )
+        assert (target, reason, alive) == (EXPECTED_TARGET, "", True)
+
+    def test_coordinates_that_do_not_form_a_target_are_refused_here(self, monkeypatch) -> None:
+        """The registry requires a 32-hex task id. A cluster or id that cannot be
+        read back is refused where the reason can name the parts."""
+        monkeypatch.setattr(fargate_engine, "_sleep", _never_sleep)
+        # ARN with a SHORT task id: well-formed as an ARN, not as an ECS target.
+        stumpy = "arn:aws:ecs:us-west-2:111122223333:task/crews/1111111111111111"
+        monkeypatch.setattr(
+            FargateLaunchEngine,
+            "describe_task",
+            lambda self, **kw: fargate_engine.sighting_from_task(_running_task(task_arn=stumpy)),
+        )
+
+        target, reason, alive = FargateLaunchEngine(_spec()).await_registration_target(
+            task_arn=stumpy, profile="p", region="us-west-2"
+        )
+        assert target == ""
+        assert alive is True
+        assert "1111111111111111" in reason
 
 
 # ── Ownership: the marker gates, the identifier names ────────────────────────
@@ -575,7 +1239,7 @@ class _DecliningEngine:
     def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str:
         return ARN
 
-    def begin_signin(self, *, instance_id: str, profile: str, region: str):
+    def begin_signin(self, *, instance_id: str, profile: str, region: str, login_target=None):
         return FargateSigninHandle(task_arn=instance_id)
 
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
@@ -614,19 +1278,1438 @@ def test_unconfirmed_teardown_after_failed_provision_reaches_the_user(tmp_path) 
     assert TAG in job.error
 
 
-# ── The AWS-touching methods refuse with a reason, not silently ──────────────
+# ── The AWS-touching methods, driven against a monkeypatched chokepoint ──────
+#
+# Every AWS call goes through cloud/aws.py's checked / checked_json. These tests
+# replace that one chokepoint with a scripted double, so provision and teardown
+# are exercised end to end without a credential and without boto3 — the same
+# testability the fargate module's own tests rely on.
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda e: e.preflight("p", "us-west-2"),
-        lambda e: e.provision(tag=TAG, size_key="balanced", profile="p", region="us-west-2"),
-        lambda e: e.teardown(tag=TAG, profile="p", region="us-west-2"),
-    ],
-)
-def test_unwritten_methods_raise_with_a_stated_cause(call) -> None:
-    """A placeholder must say why it is one, so it cannot be mistaken for done."""
-    with pytest.raises(NotImplementedError) as excinfo:
-        call(FargateLaunchEngine())
-    assert "signatures are final" in str(excinfo.value)
+def _secret() -> SecretRef:
+    return SecretRef(
+        name="kirocrew/crew/demo/KIRO_API_KEY",
+        arn="arn:aws:secretsmanager:us-west-2:111122223333:secret:kirocrew/crew/demo/KIRO_API_KEY-AbCdEf",
+    )
+
+
+_IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/crew@sha256:" + "a" * 64
+
+
+def _spec(**over: object) -> FargateLaunchSpec:
+    """A launchable spec: every field set, INCLUDING the operator's confirmation.
+
+    ``confirmed_recipient`` is derived through the shipped renderer rather than written out,
+    so a change to how a recipient is rendered cannot leave this fixture confirming a string
+    the engine does not produce -- the fixture would then test the renderer's output against
+    itself, and every test through it would refuse for a reason none of them is about.
+    """
+    fields: dict = dict(
+        placement=Placement(
+            cluster="crews",
+            subnets=("subnet-aaaa",),
+            security_groups=("sg-bbbb",),
+        ),
+        image=_IMAGE,
+        secrets=(_secret(),),
+        cpu_architecture="X86_64",
+        confirmed_recipient=credential_recipient(_IMAGE, (_secret(),)),
+    )
+    fields.update(over)
+    return FargateLaunchSpec(**fields)
+
+
+class _EcsDouble:
+    """A scripted stand-in for the ``cloud/aws.py`` chokepoint.
+
+    ``checked_json`` answers each ECS operation from its second argv token, and
+    ``list_tasks`` is switchable so teardown can be driven over an empty cluster
+    (nothing of ours remains) or a cluster holding this launch's own task.
+    """
+
+    def __init__(self) -> None:
+        self.stops: list[str] = []
+        self.tasks_for_teardown: list[dict] = []
+        #: Tasks served only on the SECOND ListTasks page, so a reader that stops
+        #: at the first page can be told from one that paginates.
+        self.tasks_on_second_page: list[dict] = []
+        self.described_fingerprint: str | None = "USE_REAL"
+        self.run_requests: list[dict] = []
+        #: Every ECS operation reached, in order. A test that must show an operation did
+        #: NOT happen needs the whole sequence: asserting on `run_requests` alone would
+        #: pass for a launch that registered a durable task definition and then stopped.
+        self.ops: list[str] = []
+        #: Every ListTasks argv, so a test can assert the scope of a read.
+        self.list_calls: list[list[str]] = []
+        #: Every DescribeTasks batch, in order. The API caps its ``tasks`` list, so a
+        #: test needs the batches themselves rather than a call count to show a
+        #: cluster-wide read was split rather than sent whole.
+        self.describe_batches: list[list[str]] = []
+
+    def checked_json(self, args, profile="", region="", *, action, timeout=60):
+        op = args[1]
+        self.ops.append(op)
+        if op == "register-task-definition":
+            return {"taskDefinition": {"revision": 1}}
+        if op == "run-task":
+            self.run_requests.append(json.loads(args[args.index("--cli-input-json") + 1]))
+            return {"tasks": [{"taskArn": ARN}], "failures": []}
+        if op == "describe-task-definition":
+            fp = self.described_fingerprint
+            if fp == "USE_REAL":
+                fp = revision_fingerprint(_spec_taskdef(region))
+            return {"tags": [{"key": "kirocrew:revision-key", "value": fp}]}
+        if op == "list-tasks":
+            # ListTasks documents startedBy as exclusive: "When you specify
+            # startedBy as the filter, it must be the only filter that you use."
+            # The real API answers a violation with InvalidParameterException, so a
+            # double that accepted one would be no evidence that the request this
+            # engine builds is well formed. --cluster is excluded because it scopes
+            # the search rather than filtering it.
+            if "--started-by" in args:
+                clash = sorted(
+                    f
+                    for f in ("--desired-status", "--family", "--service-name", "--launch-type")
+                    if f in args
+                )
+                if clash:
+                    raise AssertionError(
+                        "ListTasks rejects --started-by combined with "
+                        f"{', '.join(clash)}: startedBy must be the only filter"
+                    )
+            self.list_calls.append(list(args))
+            if "--next-token" in args:
+                return {"taskArns": [t["taskArn"] for t in self.tasks_on_second_page]}
+            page: dict = {"taskArns": [t["taskArn"] for t in self.tasks_for_teardown]}
+            if self.tasks_on_second_page:
+                page["nextToken"] = "page-2"
+            return page
+        if op == "describe-tasks":
+            # Answer only what was asked for, the way DescribeTasks does, so a
+            # paginated read is observed one page at a time rather than seeing the
+            # whole pool on its first call.
+            wanted = list(args[args.index("--tasks") + 1 : args.index("--include")])
+            self.describe_batches.append(wanted)
+            # The real API refuses above its documented ceiling, so a double that
+            # accepted an over-sized batch would let the defect this guards pass as
+            # a green test. Refusing here is what makes the batch size observable.
+            if len(wanted) > fargate_engine.DESCRIBE_TASKS_MAX:
+                raise AssertionError(
+                    f"DescribeTasks was handed {len(wanted)} tasks, above the "
+                    f"{fargate_engine.DESCRIBE_TASKS_MAX} the API accepts"
+                )
+            pool = [*self.tasks_for_teardown, *self.tasks_on_second_page]
+            return {"tasks": [t for t in pool if t["taskArn"] in set(wanted)]}
+        raise AssertionError(f"unexpected checked_json op {op!r}")
+
+    def checked(self, args, profile="", region="", *, action, timeout=60):
+        if args[1] == "stop-task":
+            self.stops.append(args[args.index("--task") + 1])
+            return ""
+        raise AssertionError(f"unexpected checked op {args[1]!r}")
+
+
+def _spec_taskdef(region: str):
+    s = _spec()
+    return TaskDefinitionSpec(
+        image=s.image,
+        secrets=s.secrets,
+        cpu_architecture=s.cpu_architecture,
+        log=default_log_spec(region),
+    )
+
+
+def _patch_aws(monkeypatch, double: _EcsDouble) -> None:
+    from kiro_crew.cloud import aws as aws_mod
+
+    monkeypatch.setattr(aws_mod, "checked_json", double.checked_json)
+    monkeypatch.setattr(aws_mod, "checked", double.checked)
+
+
+def test_preflight_validates_region_and_refuses_without_a_spec() -> None:
+    """A refusal, not a probe: no ECS call, and it names the missing fields."""
+    from kiro_crew.cloud.fargate.identity import DocumentRefused
+
+    engine = FargateLaunchEngine(_spec())
+    engine.preflight("p", "us-west-2")  # a spec present: returns without an AWS call
+
+    with pytest.raises(ValueError, match="launch spec"):
+        FargateLaunchEngine().preflight("p", "us-west-2")
+    with pytest.raises(DocumentRefused, match="region"):
+        FargateLaunchEngine(_spec()).preflight("p", "not a region")
+
+
+def test_provision_registers_runs_and_returns_the_task_arn(monkeypatch) -> None:
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    arn = FargateLaunchEngine(_spec()).provision(
+        tag=TAG, size_key="1024/2048", profile="p", region="us-west-2"
+    )
+    assert arn == ARN
+
+
+def test_provision_refuses_a_tag_outside_the_charset(monkeypatch) -> None:
+    _patch_aws(monkeypatch, _EcsDouble())
+    with pytest.raises(ValueError, match="correlation value"):
+        FargateLaunchEngine(_spec()).provision(
+            tag="kc/slash", size_key="1024/2048", profile="p", region="us-west-2"
+        )
+
+
+def test_provision_refuses_an_unusable_size(monkeypatch) -> None:
+    _patch_aws(monkeypatch, _EcsDouble())
+    with pytest.raises(ValueError, match="Fargate"):
+        FargateLaunchEngine(_spec()).provision(
+            tag=TAG, size_key="999/999", profile="p", region="us-west-2"
+        )
+
+
+@pytest.mark.parametrize("tier_key", sizes.INTERACTIVE_TIER_KEYS)
+def test_an_interactive_tier_key_resolves_to_the_ladders_own_shape(tier_key: str) -> None:
+    """The three EC2 tier keys are accepted here, mapped from ``sizes.py``.
+
+    A caller who never asked for Fargate carries one of these, and
+    ``sizes.DEFAULT_TIER_KEY`` is one of them -- so the key refused by a lane that
+    did not map them is the one a caller gets by not choosing.
+
+    The expectation is DERIVED from the ladder, not written out: a raised ladder
+    must reach this lane, and a second table here would keep asserting the
+    retired shape while agreeing with itself.
+    """
+    tier = sizes.get_tier(tier_key)
+    parsed = fargate_engine._parse_size(tier_key)
+    assert parsed.cpu == str(tier.vcpu * 1024)
+    assert parsed.memory == str(tier.ram_gb * 1024)
+    assert parsed.ephemeral_storage_gib == tier.disk_gb
+
+
+@pytest.mark.parametrize("tier_key", sizes.INTERACTIVE_TIER_KEYS)
+def test_every_tier_shape_is_legal_on_fargates_own_table(tier_key: str) -> None:
+    """Derived numbers run through the same bounds check a hand-written pair does.
+
+    The mapping returns a KEY, so a tier whose shape leaves Fargate's cpu/memory
+    table is refused by name rather than handed to ``RunTask``. This asserts none
+    of the three does today, which is what makes the mapping usable rather than a
+    refusal in a new place.
+    """
+    respelled = fargate_engine._tier_as_pair(tier_key)
+    assert respelled is not None
+    cpu, memory, _gib = respelled.split(fargate_engine.FARGATE_SIZE_SEP)
+    low, high, step = fargate_engine.FARGATE_MEMORY_FOR_CPU[cpu]
+    assert low <= int(memory) <= high
+    assert (int(memory) - low) % step == 0
+
+
+def test_a_non_tier_key_is_left_alone() -> None:
+    """Only the three interactive keys are respelled.
+
+    ``light-x86`` is a real ladder key and deliberately NOT one of them: mapping it
+    would silently pick an architecture the caller did not ask this lane for.
+    """
+    assert fargate_engine._tier_as_pair("light-x86") is None
+    assert fargate_engine._tier_as_pair("1024/2048") is None
+    assert fargate_engine._tier_as_pair("nonsense") is None
+
+
+def test_a_refusal_names_the_key_the_caller_passed() -> None:
+    """Not its respelling, and it lists the tier keys as legal.
+
+    A message naming ``8192/32768/60`` for a caller who typed ``balanced`` sends
+    them looking for a value they never wrote.
+    """
+    with pytest.raises(ValueError) as raised:
+        fargate_engine._parse_size("nonsense")
+    message = str(raised.value)
+    assert "'nonsense'" in message
+    for tier_key in sizes.INTERACTIVE_TIER_KEYS:
+        assert tier_key in message, f"{tier_key} is accepted but not listed as legal"
+
+
+def test_a_refusal_for_a_tier_names_the_tier_the_caller_passed(monkeypatch) -> None:
+    """Not the pair it was respelled into.
+
+    A tier key cannot fail on today's ladder -- the test above asserts all three
+    are legal -- so the only way to exercise this is to move the ladder, which is
+    a thing that has happened. With a tier whose derived shape leaves Fargate's
+    table, the caller must read back the word they typed: a message naming
+    ``64000/256000/80`` for someone who wrote ``power`` sends them looking for a
+    value they never wrote.
+    """
+    real_get_tier = sizes.get_tier
+
+    def absurd(key: str):
+        tier = real_get_tier(key)
+        # A vCPU count no Fargate cpu size can match, so the respelling is refused.
+        return dataclasses.replace(tier, vcpu=tier.vcpu * 1000)
+
+    monkeypatch.setattr(sizes, "get_tier", absurd)
+
+    with pytest.raises(ValueError) as raised:
+        fargate_engine._parse_size("power")
+    message = str(raised.value)
+    assert "'power'" in message, f"the refusal must name the caller's key: {message}"
+    respelled = fargate_engine._tier_as_pair("power")
+    assert respelled is not None
+    assert (
+        respelled not in message
+    ), f"the refusal names the respelling {respelled!r}, which the caller never wrote"
+
+
+def test_a_storage_refusal_also_names_the_key_the_caller_passed(monkeypatch) -> None:
+    """Both ephemeral-storage branches, not only the cpu and memory ones.
+
+    The docstring's claim is universal, so every refusal has to carry it. A tier's
+    GiB arrives from the DERIVED respelling, so the out-of-range branch is reached
+    exactly the way the cpu branch is -- by moving the ladder -- and a caller who
+    typed ``power`` must not read back a GiB number they never wrote.
+    """
+    with pytest.raises(ValueError) as raised:
+        fargate_engine._parse_size("1024/2048/xx")
+    assert "'1024/2048/xx'" in str(raised.value)
+
+    real_get_tier = sizes.get_tier
+
+    def oversized_disk(key: str):
+        tier = real_get_tier(key)
+        # One GiB past Fargate's ceiling. vcpu and ram_gb stay legal, so the
+        # storage branch is the one this reaches.
+        return dataclasses.replace(tier, disk_gb=fargate_engine.EPHEMERAL_STORAGE_MAX_GIB + 1)
+
+    monkeypatch.setattr(sizes, "get_tier", oversized_disk)
+
+    with pytest.raises(ValueError) as raised:
+        fargate_engine._parse_size("power")
+    message = str(raised.value)
+    assert "ephemeral storage" in message, f"a different branch refused: {message}"
+    assert "'power'" in message, f"the refusal must name the caller's key: {message}"
+
+
+@pytest.mark.parametrize("size_key", ["1024/2048", "1024/2048/30"])
+def test_fargates_own_vocabulary_is_unchanged(size_key: str) -> None:
+    """The pair and triple spellings parse exactly as before the tier mapping."""
+    parsed = fargate_engine._parse_size(size_key)
+    parts = size_key.split(fargate_engine.FARGATE_SIZE_SEP)
+    assert parsed.cpu == parts[0]
+    assert parsed.memory == parts[1]
+    assert parsed.ephemeral_storage_gib == (int(parts[2]) if len(parts) == 3 else None)
+
+
+def test_provision_confirms_a_cached_revision_fingerprint(monkeypatch) -> None:
+    """A remembered revision number is launched only after DescribeTaskDefinition
+    confirms its fingerprint tag still equals the spec's."""
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec())
+    engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+    # Second launch is a cache hit; the double returns the real fingerprint, so it
+    # confirms and launches revision 1 again.
+    assert engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2") == ARN
+
+
+def test_provision_refuses_a_stale_cached_revision(monkeypatch) -> None:
+    """A cached number whose fingerprint tag differs from the spec's is a stale
+    cache, not a launch: it raises rather than running the wrong content."""
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec())
+    engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+    double.described_fingerprint = "0" * 64  # the account now reports a different key
+    with pytest.raises(AWSError, match="stale cache"):
+        engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+
+def _our_task(status: str = "RUNNING") -> dict:
+    return {
+        "taskArn": ARN,
+        "startedBy": fargate_engine._started_by_for(TAG),
+        "lastStatus": status,
+        "tags": [
+            {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+            {"key": LAUNCH_TAG_KEY, "value": TAG},
+        ],
+    }
+
+
+def test_the_stamp_the_writer_sends_is_the_one_teardown_classifies_by(monkeypatch) -> None:
+    """The value provision stamps is the value teardown hands the classifier, per launch.
+
+    The classifier's `started_by` must identify ONE launch. A launcher-wide value
+    would make two coexisting launches classify each other MISLABELLED, so every
+    teardown would refuse to confirm while a sibling launch is up. This reads the
+    `startedBy` actually sent to RunTask rather than restating the prefix, so a
+    writer that changed the format or dropped the tag from it fails here.
+    """
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec())
+    engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+    stamped = double.run_requests[-1]["startedBy"]
+    assert TAG in stamped, "a launcher-wide stamp cannot tell two launches apart"
+
+    other = "kc-zzzzzz"
+    engine.provision(tag=other, size_key="1024/2048", profile="p", region="us-west-2")
+    assert double.run_requests[-1]["startedBy"] != stamped, "the stamp must vary per launch"
+
+    # Teardown of TAG classifies a task carrying the stamp the writer really sent.
+    double.tasks_for_teardown = [
+        {
+            "taskArn": ARN,
+            "startedBy": stamped,
+            "lastStatus": "RUNNING",
+            "tags": [
+                {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+                {"key": LAUNCH_TAG_KEY, "value": TAG},
+            ],
+        }
+    ]
+    assert engine.teardown(tag=TAG, profile="p", region="us-west-2") is True
+    assert double.stops == [ARN]
+
+
+def test_teardown_stops_our_task_and_confirms(monkeypatch) -> None:
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_task()]
+    _patch_aws(monkeypatch, double)
+    confirmed = FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+    assert confirmed is True
+    assert double.stops == [ARN]
+
+
+def _our_registrable_task(status: str = "RUNNING") -> dict:
+    """``_our_task`` on the ARN whose task id the REGISTRY can address.
+
+    The shared ``ARN`` fixture's id is sixteen hex characters, so no ECS target
+    built from it survives ``split_ecs_target`` and no registry row can name it.
+    """
+    return {
+        "taskArn": REGISTRABLE_ARN,
+        "startedBy": fargate_engine._started_by_for(TAG),
+        "lastStatus": status,
+        "tags": [
+            {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+            {"key": LAUNCH_TAG_KEY, "value": TAG},
+        ],
+    }
+
+
+def test_teardown_removes_the_stopped_tasks_registry_row(monkeypatch, tmp_path) -> None:
+    """``register`` is this lane's last launch step, so a cancel observed just
+    after it unwinds through teardown with the row already written. Stopping the
+    task and leaving the row offers a crew whose target resolves to nothing, and
+    nothing else removes it."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    reg = InstancesRegistry(tmp_path / "instances.json")
+    reg.add(
+        name="Kiro Crew Cloud (kc-a1b2c3)",
+        ssm_target=EXPECTED_TARGET,
+        connection_method="fargate",
+        instance_id="doomed",
+    )
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_registrable_task()]
+    _patch_aws(monkeypatch, double)
+
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is True
+
+    assert double.stops == [REGISTRABLE_ARN]
+    assert [i.id for i in InstancesRegistry(tmp_path / "instances.json").list()] == []
+
+
+def test_teardown_leaves_another_tasks_row_alone(monkeypatch, tmp_path) -> None:
+    """The removal is keyed on the task it stopped, so a sibling crew in the same
+    cluster keeps its record."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    other_task_id = "f" * 32
+    reg = InstancesRegistry(tmp_path / "instances.json")
+    reg.add(
+        name="Doomed",
+        ssm_target=EXPECTED_TARGET,
+        connection_method="fargate",
+        instance_id="doomed",
+    )
+    reg.add(
+        name="Sibling",
+        ssm_target=f"ecs:crews_{other_task_id}_{RUNTIME_ID}",
+        connection_method="fargate",
+        instance_id="sibling",
+    )
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_registrable_task()]
+    _patch_aws(monkeypatch, double)
+
+    FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+
+    assert [i.id for i in InstancesRegistry(tmp_path / "instances.json").list()] == ["sibling"]
+
+
+def test_teardown_does_not_confirm_when_the_row_could_not_be_removed(monkeypatch, tmp_path) -> None:
+    """A confirmation says nothing of ours may remain, and a listed crew addressing
+    a stopped task is something of ours. The task did stop, so returning True would
+    tell the operator the cleanup is finished while a row they cannot see the cause
+    of is still there."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    from kiro_crew.cloud import connect as connect_mod
+
+    monkeypatch.setattr(
+        connect_mod, "unregister_ecs_task", lambda *_a, **_k: connect_mod.UNREGISTER_FAILED
+    )
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_registrable_task()]
+    _patch_aws(monkeypatch, double)
+
+    confirmed = FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+
+    # The stop still happened -- this is a narrower miss than an unstopped task.
+    assert double.stops == [REGISTRABLE_ARN]
+    assert confirmed is False
+
+
+def test_teardown_confirms_when_there_was_no_row_to_remove(monkeypatch, tmp_path) -> None:
+    """An absent row is not a failure: a task registered by nothing, or already
+    removed by hand, leaves nothing behind, so the confirmation stands."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_registrable_task()]
+    _patch_aws(monkeypatch, double)
+
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is True
+    assert double.stops == [REGISTRABLE_ARN]
+
+
+def test_teardown_over_an_empty_cluster_confirms_and_stops_nothing(monkeypatch) -> None:
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is True
+    assert double.stops == []
+
+
+def test_teardown_refuses_an_unmarked_task_we_started(monkeypatch) -> None:
+    """An unmarked task this launcher started returns unconfirmed and stops
+    nothing — the ownership rule refuses to delete on a startedBy guess."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        {
+            "taskArn": OTHER_ARN,
+            "startedBy": fargate_engine._started_by_for(TAG),
+            "lastStatus": "RUNNING",
+            "tags": [],
+        }
+    ]
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is False
+    assert double.stops == []
+
+
+def test_teardown_refuses_a_mislabelled_task_and_says_which_one(monkeypatch, caplog) -> None:
+    """A marked task this launcher started whose launch tag names another launch is
+    refused, and the refusal NAMES it.
+
+    ``LaunchEngine.teardown`` returns a bool, so the plan's warning has exactly one
+    way out of the engine. ``launch_job`` turns the False into "it may still be
+    running and billing", which tells the operator to look but not where, and an
+    operator who cannot tell an unclaimable task from one of their own that is
+    wrongly tagged cannot take either next step. This fails if the engine goes back
+    to discarding ``TeardownPlan.warning``.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        {
+            "taskArn": OTHER_ARN,
+            "startedBy": fargate_engine._started_by_for(TAG),
+            "lastStatus": "RUNNING",
+            "tags": [
+                {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+                {"key": LAUNCH_TAG_KEY, "value": "kc-zzzzzz"},  # another launch's tag
+            ],
+        }
+    ]
+    _patch_aws(monkeypatch, double)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.cloud.fargate_engine"):
+        confirmed = FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+    assert confirmed is False
+    assert double.stops == [], "a mislabelled task must not be stopped on a startedBy match"
+    emitted = "\n".join(r.getMessage() for r in caplog.records)
+    assert OTHER_ARN in emitted, "the refusal must name the task the operator has to look at"
+
+
+# ── Criterion 4: nothing above LaunchEngine branches on backend ──────────────
+
+
+class _Ec2ShapedEngine:
+    """A conforming engine standing in for the EC2 lane, for the comparison.
+
+    ``RealLaunchEngine`` needs AWS to provision, so a byte-comparison of the two
+    real engines is not what this asserts. The RFC's criterion is that nothing
+    ABOVE the ``LaunchEngine`` boundary branches on backend: the orchestrator and
+    the rollback path must treat any conforming engine identically. So the
+    comparison drives the SAME orchestrator over two engines and asserts the same
+    observable provision and teardown outcomes. Only provision and teardown, per
+    the amended RFC section 8: registry visibility is out of this phase and only
+    the EC2 engine produces a registry record, so register is deliberately not
+    compared.
+    """
+
+    def preflight(self, profile: str, region: str) -> None:
+        return None
+
+    def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str:
+        return ARN
+
+    def begin_signin(self, *, instance_id: str, profile: str, region: str, login_target=None):
+        return FargateSigninHandle(task_arn=instance_id)
+
+    def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
+        return None
+
+    def teardown(self, *, tag: str, profile: str, region: str) -> bool:
+        self.torn_down = True
+        return True
+
+
+def _run_through_engine(engine, store_root):
+    """Resolve one engine through the real ``_engine`` seam and drive provision +
+    teardown through it, returning the observable outcomes.
+
+    Provision and teardown ONLY, per the amended RFC section 8: signin and
+    register are out of this phase's comparison (only the EC2 engine produces a
+    registry record). The launch job is created through the real store so the
+    ``size_key`` and ``tag`` a provision reads come from the same orchestration
+    state both engines see.
+    """
+    from kiro_crew.dashboard import handlers_cloud
+
+    class _StubState:
+        def __init__(self, e) -> None:
+            self.cloud_launch_engine = e
+
+    # The engine resolves through the same seam segment 1 injects through.
+    resolved = handlers_cloud._engine(_StubState(engine))  # type: ignore[arg-type]
+    assert resolved is engine
+
+    store = lj.LaunchJobStore(root=store_root)
+    job = store.create(
+        profile="p",
+        region="us-west-2",
+        size_key="1024/2048",
+        provider_id="aws_fargate",
+    )
+    job.tag = TAG
+
+    identity = resolved.provision(
+        tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region
+    )
+    teardown_confirmed = resolved.teardown(tag=job.tag, profile=job.profile, region=job.region)
+    return {
+        "provision_identity_present": bool(identity),
+        "teardown_confirmed": teardown_confirmed,
+    }
+
+
+def test_both_engines_are_observably_identical_for_provision_and_teardown(
+    monkeypatch, tmp_path
+) -> None:
+    """The same seam, resolving the EC2-shaped engine and the real Fargate engine,
+    produces identical provision and teardown outcomes.
+
+    The Fargate engine's AWS chokepoint is scripted; the EC2-shaped one returns
+    directly. If anything above ``LaunchEngine`` branched on backend, one of these
+    two observations would differ. Register is not compared: only the EC2 engine
+    produces a registry record and registry visibility is out of this phase.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_task()]
+    _patch_aws(monkeypatch, double)
+
+    ec2_like = _run_through_engine(_Ec2ShapedEngine(), tmp_path / "ec2")
+    fargate = _run_through_engine(FargateLaunchEngine(_spec()), tmp_path / "fargate")
+
+    assert ec2_like == fargate
+    assert fargate["provision_identity_present"] is True
+    assert fargate["teardown_confirmed"] is True
+
+
+# ── Mutation anchors: the two claims that must be a test failure to break ─────
+
+
+def test_mutation_managed_gate_is_value_not_key_presence(monkeypatch) -> None:
+    """Loosening the managed-tag gate from ``== "true"`` to mere key presence must
+    turn a test red.
+
+    A task whose ``kirocrew:managed`` holds anything other than ``"true"`` — here
+    the launch tag written into the marker — is UNMARKED and is never stopped. If
+    the gate degraded to key presence, this task would classify OURS and teardown
+    would stop it, so this assertion fails, which is the point.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        {
+            "taskArn": ARN,
+            "startedBy": fargate_engine._started_by_for(TAG),
+            "lastStatus": "RUNNING",
+            "tags": [
+                {"key": MANAGED_TAG_KEY, "value": TAG},  # tag in the marker, not "true"
+                {"key": LAUNCH_TAG_KEY, "value": TAG},
+            ],
+        }
+    ]
+    _patch_aws(monkeypatch, double)
+    confirmed = FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+    assert double.stops == [], "an UNMARKED task must never be stopped"
+    assert confirmed is False, "a running task we started but cannot claim is unconfirmed"
+
+
+def test_mutation_teardown_returns_the_plan_confirmation(monkeypatch) -> None:
+    """Making ``teardown`` return ``True`` on an unconfirmed plan must turn a test
+    red.
+
+    An unmarked running task this launcher started yields ``confirmed=False``, and
+    teardown must return that unchanged. Hard-coding ``True`` here would report
+    billing stopped when a task may still be running; this assertion is what
+    catches that.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        {
+            "taskArn": OTHER_ARN,
+            "startedBy": fargate_engine._started_by_for(TAG),
+            "lastStatus": "RUNNING",
+            "tags": [],
+        }
+    ]
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is False
+
+
+class TestTheCredentialRecipientIsConfirmed:
+    """A launch delivers the model credential into a container ``cloud.json`` names, so the
+    operator confirms WHICH container before it is handed over.
+
+    This is what makes the file safe to leave as an ordinary file. Every alternative defends
+    the file itself -- a read-only seal, a hidden mount, an alias check -- and each of those
+    is a protection over a NAME that has to be complete across every platform and every way a
+    name can be aliased. The confirmation comes from the launch request instead, so no
+    filesystem property is load-bearing and rewriting the file produces a refusal that names
+    both values rather than a launch nobody was asked about.
+    """
+
+    def test_an_unconfirmed_launch_is_refused_and_shows_the_recipient(self, monkeypatch):
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+        engine = FargateLaunchEngine(_spec(confirmed_recipient=""))
+
+        with pytest.raises(ValueError) as exc:
+            engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+        # The refusal has to SHOW the recipient, or the operator cannot confirm it: the
+        # value they must supply is derived from a file they may not have written.
+        assert credential_recipient(_IMAGE, (_secret(),)) in str(exc.value)
+        # And it must be THIS refusal, not the mismatch one. An empty confirmation also
+        # fails the mismatch comparison, so the two checks overlap and nothing unconfirmed
+        # gets through either way -- but an operator who confirmed nothing needs to be told
+        # to confirm, not told that their confirmation disagrees with the file. Asserting
+        # only "some ValueError naming the recipient" cannot tell the two apart, and a
+        # mutation that deletes this branch then survives.
+        assert "nothing in the request confirmed" in str(exc.value), str(exc.value)
+        assert double.ops == [], "an unconfirmed launch reached AWS"
+
+    def test_a_recipient_that_changed_since_it_was_confirmed_is_refused(self, monkeypatch):
+        """The tampering case, which is the whole point.
+
+        The operator confirms the image they chose; the block then names another. Both values
+        appear in the refusal, because "does not match" without them leaves an operator
+        unable to see WHAT was substituted.
+        """
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+        theirs = credential_recipient(_IMAGE, (_secret(),))
+        substituted = "public.ecr.aws/attacker/x@sha256:" + "b" * 64
+        engine = FargateLaunchEngine(_spec(image=substituted, confirmed_recipient=theirs))
+
+        with pytest.raises(ValueError) as exc:
+            engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+        message = str(exc.value)
+        assert theirs in message and substituted in message, message
+        assert double.ops == [], "a substituted recipient reached AWS"
+
+    def test_a_confirmed_launch_proceeds(self, monkeypatch):
+        """The complement, so neither test above can be satisfied by refusing everything."""
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+
+        engine = FargateLaunchEngine(_spec())
+        engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+        assert "run-task" in double.ops, double.ops
+
+    def test_nothing_is_registered_before_the_recipient_is_confirmed(self, monkeypatch):
+        """Refused before ``RegisterTaskDefinition``, not only before ``RunTask``.
+
+        A revision is DURABLE in the account and carries the secret ARNs, so a confirmation
+        checked only at run time would already have written the recipient down where a later
+        launch could name the revision number directly.
+        """
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+        engine = FargateLaunchEngine(_spec(confirmed_recipient="something else entirely"))
+
+        with pytest.raises(ValueError):
+            engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+        assert "register-task-definition" not in double.ops, double.ops
+
+    def test_the_check_runs_before_every_other_refusal_provision_makes(self):
+        """Ordered FIRST, pinned structurally.
+
+        The tag and architecture checks refuse too, and a recipient check sitting after them
+        would let a launch with a malformed tag report the tag and never mention that its
+        credential recipient was also unconfirmed -- so an operator fixing the tag would meet
+        the real refusal only on the second attempt.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        source = textwrap.dedent(inspect.getsource(FargateLaunchEngine.provision))
+        body = ast.parse(source).body[0].body
+        raising = [
+            n
+            for n in body
+            if isinstance(n, ast.If) and any(isinstance(x, ast.Raise) for x in ast.walk(n))
+        ]
+        assert raising, "provision refuses nothing, so this pin measures nothing"
+        first = ast.dump(raising[0])
+        assert "confirmed_recipient" in first, ast.unparse(raising[0])
+
+
+# ── What bounds a launched task ──────────────────────────────────────────────
+#
+# The executor for plan_teardown exists above. These cover the other half of
+# what bounds a task: a task nobody tears down by hand still ends, and a launcher
+# cannot accumulate tasks without limit. Every case here is keyed on the tag a
+# read reports rather than on an ARN a test captured, so it covers the property
+# and not one instance.
+
+NOW = 1_800_000_000.0
+
+
+def _crew() -> str:
+    """The crew this fixture's spec binds to, DERIVED the way the engine derives it.
+
+    Through ``spec_binding`` over the spec's own secret ARNs, not written out, for
+    the same reason ``_spec`` derives its confirmed recipient through the shipped
+    renderer: a hardcoded name would let the fixture agree with itself while the
+    engine matched on something else, and every attribution test would then pass
+    without attributing anything.
+    """
+    return spec_binding(_spec_taskdef("us-west-2")).crew
+
+
+def _other_crew() -> str:
+    """A crew name that is not this spec's, for the colleague on a shared cluster."""
+    return _crew() + "-colleague"
+
+
+def _bounded(
+    *,
+    tag: str = TAG,
+    arn: str = ARN,
+    age: float | None = 0.0,
+    status: str = "RUNNING",
+    tags: dict | None = None,
+    started_by: str | None = None,
+    crew: str | None = None,
+) -> TaskSighting:
+    """One sighting of a task this launcher started, *age* seconds ago.
+
+    ``started_by`` is DERIVED from the tag by default, because the sweep checks
+    that a task's stamp agrees with the task's own tag. That check is NOT a
+    launcher or host discriminator -- the stamp is a fixed prefix plus that same
+    tag, so a genuine task of any crew satisfies it -- which is why the default
+    tags also carry the crew tag the sweep actually attributes by. ``age=None`` is
+    the read that reports no start time at all.
+    """
+    return TaskSighting(
+        task_arn=arn,
+        tags=(
+            {
+                MANAGED_TAG_KEY: MANAGED_TAG_VALUE,
+                LAUNCH_TAG_KEY: tag,
+                CREW_TAG_KEY: _crew() if crew is None else crew,
+            }
+            if tags is None
+            else tags
+        ),
+        started_by=fargate_engine._started_by_for(tag) if started_by is None else started_by,
+        last_status=status,
+        started_at=None if age is None else NOW - age,
+    )
+
+
+def _sweep(sightings: list[TaskSighting], *, crew: str | None = None, **over):
+    bounds = TaskBounds(**over) if over else TaskBounds()
+    return plan_bounds_sweep(
+        sightings, bounds=bounds, crew=_crew() if crew is None else crew, now=NOW
+    )
+
+
+def test_the_default_lifetime_is_the_only_session_length_the_cloud_lane_states() -> None:
+    """The TTL is READ from ``cloud/connect.py``, not chosen here.
+
+    ``_safe_ttl`` falls back to ``"6h"`` for anything it cannot parse, which is the
+    window this package already treats as one working session. If either number
+    moves without the other, two answers to one question are live at once with
+    nothing comparing them, which is what this pins.
+    """
+    from kiro_crew.cloud import connect
+
+    assert connect._safe_ttl("nonsense") == "6h"
+    assert DEFAULT_TASK_TTL_SECONDS == 6 * 60 * 60
+
+
+def test_a_task_past_its_lifetime_is_stopped_and_named() -> None:
+    plan = _sweep([_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1)])
+    assert plan.stop == (ARN,)
+    assert plan.running == ()
+    assert ARN in plan.warning, "the sweep must name what it stopped"
+
+
+def test_a_task_inside_its_lifetime_is_left_alone() -> None:
+    plan = _sweep([_bounded(age=DEFAULT_TASK_TTL_SECONDS - 1)])
+    assert plan.stop == ()
+    assert plan.running == (ARN,)
+
+
+def test_the_lifetime_bound_spans_launch_tags() -> None:
+    """A TTL must reach a leftover whose tag nobody remembers.
+
+    ``launch_job._new_tag`` mints a fresh random tag per launch, so a sweep scoped
+    to one tag would bound the task that is certainly fine and never the
+    leftovers. Two expired tasks under two different tags must both be stopped.
+    """
+    plan = _sweep(
+        [
+            _bounded(tag=TAG, arn=ARN, age=DEFAULT_TASK_TTL_SECONDS + 5),
+            _bounded(tag="kc-zzzzzz", arn=OTHER_ARN, age=DEFAULT_TASK_TTL_SECONDS + 5),
+        ]
+    )
+    assert sorted(plan.stop) == sorted([ARN, OTHER_ARN])
+
+
+def test_an_unmarked_task_is_never_stopped_for_age() -> None:
+    """The managed gate holds for the sweep exactly as it holds for teardown.
+
+    Here the launch tag is written into the marker, which is the mistake that
+    would otherwise cost a task: it classifies UNMARKED, so it is not ours to
+    stop however old it is.
+    """
+    plan = _sweep(
+        [
+            _bounded(
+                age=DEFAULT_TASK_TTL_SECONDS * 10,
+                tags={MANAGED_TAG_KEY: TAG, LAUNCH_TAG_KEY: TAG},
+            )
+        ]
+    )
+    assert plan.stop == ()
+
+
+def test_a_task_whose_stamp_disagrees_with_its_own_tag_is_left_alone() -> None:
+    """A managed task whose ``startedBy`` is not the stamp its own launch tag
+    derives is refused.
+
+    This is what the stamp check buys, and it is worth stating narrowly because it
+    is easy to read as more: the stamp is a fixed prefix plus the task's own tag,
+    so it carries no host or crew component and a genuine task of ANY crew passes
+    it. What fails here is a DISAGREEMENT between the two labels -- a task marked
+    and tagged by this product but stamped with something else, which no launch of
+    this product produces. Attribution to a crew is a separate rule, pinned by the
+    colleague tests below.
+    """
+    plan = _sweep(
+        [_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1, started_by="kirocrew-cloud-kc-someoneelse")]
+    )
+    assert plan.stop == ()
+    assert plan.running == ()
+
+
+def test_a_colleagues_expired_task_on_a_shared_cluster_is_left_alone() -> None:
+    """The case a cluster-wide sweep exists to get right.
+
+    A colleague's crew in the same cluster is the same product with the same tag
+    KEYS and a stamp that agrees with its own tag, because that is what every
+    genuine launch produces. So every check except the crew tag passes on it, and
+    it is past the TTL. Stopping it would irreversibly end a running crew this
+    launcher does not own, which is the guess teardown refuses to make.
+    """
+    plan = _sweep([_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1, crew=_other_crew())])
+    assert plan.stop == ()
+    assert plan.running == ()
+
+
+def test_a_colleagues_task_is_not_counted_against_this_crews_cap() -> None:
+    """The cap measures this crew's population, not the cluster's.
+
+    Counting a colleague's tasks would refuse this crew's launches for someone
+    else's spend, which is a bound on the wrong thing.
+    """
+    plan = _sweep([_bounded(age=1.0, crew=_other_crew())])
+    assert plan.running == ()
+    assert plan.stop == ()
+
+
+def test_only_this_crews_expired_task_is_stopped_when_both_are_present() -> None:
+    """Both in one read, which is the shape a shared cluster actually returns:
+    the sweep must separate them rather than take the whole cluster or none of it."""
+    plan = _sweep(
+        [
+            _bounded(age=DEFAULT_TASK_TTL_SECONDS + 1),
+            _bounded(arn=OTHER_ARN, age=DEFAULT_TASK_TTL_SECONDS + 1, crew=_other_crew()),
+        ]
+    )
+    assert plan.stop == (ARN,)
+
+
+def test_a_managed_task_with_no_crew_tag_is_not_stopped_but_is_counted_and_named() -> None:
+    """A task that cannot be attributed is never stopped, and never silent either.
+
+    It may be this crew's from a launcher too old to have written the tag, or a
+    colleague's from the same, and nothing in the read decides which. So it takes
+    the safe direction on stopping and the conservative one on spend: left
+    running, counted against the cap, and named in the warning. Counting it can
+    refuse a launch, and this module prefers that -- a refusal costs a launch, a
+    wrong stop costs a running crew.
+    """
+    plan = _sweep(
+        [
+            _bounded(
+                age=DEFAULT_TASK_TTL_SECONDS + 1,
+                tags={MANAGED_TAG_KEY: MANAGED_TAG_VALUE, LAUNCH_TAG_KEY: TAG},
+            )
+        ]
+    )
+    assert plan.stop == ()
+    assert plan.running == (ARN,)
+    assert CREW_TAG_KEY in plan.warning
+    assert ARN in plan.warning
+
+
+def test_the_sweep_refuses_an_empty_crew_rather_than_matching_everything() -> None:
+    """An empty crew is the value that would look like a wildcard to a reader.
+
+    Left unchecked it matches no task's crew tag, so a caller who passed one by
+    mistake would get a sweep that quietly stopped nothing -- or, if the check
+    were written the other way round, one that swept the whole cluster. Refusing
+    is the only answer that cannot be misread.
+    """
+    with pytest.raises(ValueError, match="crew name is required"):
+        _sweep([_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1)], crew="")
+
+
+def test_a_task_carrying_no_launch_tag_is_left_alone() -> None:
+    plan = _sweep(
+        [_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1, tags={MANAGED_TAG_KEY: MANAGED_TAG_VALUE})]
+    )
+    assert plan.stop == ()
+
+
+def test_a_stopped_task_is_neither_stopped_again_nor_counted() -> None:
+    """STOPPED is the one ECS state that costs nothing, so it is outside both
+    bounds: nothing to stop, and nothing to count against the cap."""
+    plan = _sweep([_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1, status="STOPPED")])
+    assert plan.stop == ()
+    assert plan.running == ()
+
+
+def test_a_task_with_no_start_time_is_not_stopped_and_is_named() -> None:
+    """An age that cannot be established is not an age of zero and not an age of
+    forever. The task is left running -- stopping on an unknown age could stop one
+    that started a second ago -- it still presses on the cap, and it is NAMED, so
+    the case a bound cannot decide is auditable rather than silent."""
+    plan = _sweep([_bounded(age=None)])
+    assert plan.stop == ()
+    assert plan.running == (ARN,)
+    assert ARN in plan.warning
+
+
+def test_a_lifetime_or_cap_of_zero_is_refused() -> None:
+    """There is no spelling here for an unbounded task, and none for a cap that
+    refuses every launch."""
+    with pytest.raises(ValueError, match="ttl_seconds"):
+        TaskBounds(ttl_seconds=0)
+    with pytest.raises(ValueError, match="max_running"):
+        TaskBounds(max_running=0)
+
+
+def test_the_default_cap_is_the_fan_out_width_the_rfc_names() -> None:
+    assert DEFAULT_MAX_RUNNING_TASKS == 10
+    assert TaskBounds().max_running == DEFAULT_MAX_RUNNING_TASKS
+
+
+# ── The bound executor, against the scripted chokepoint ──────────────────────
+
+
+def _aged_task(
+    arn: str = ARN,
+    *,
+    tag: str = TAG,
+    started_at: object = "2020-01-01T00:00:00Z",
+    crew: str | None = None,
+):
+    """An ECS-shaped task this launcher started, as a read returns it.
+
+    Carries the crew tag because ``run_task_request`` writes one onto every task
+    it starts; a fixture without it would be a task no launch produces.
+    """
+    task: dict = {
+        "taskArn": arn,
+        "startedBy": fargate_engine._started_by_for(tag),
+        "lastStatus": "RUNNING",
+        "tags": [
+            {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+            {"key": LAUNCH_TAG_KEY, "value": tag},
+            {"key": CREW_TAG_KEY, "value": _crew() if crew is None else crew},
+        ],
+    }
+    if started_at is not None:
+        task["startedAt"] = started_at
+    return task
+
+
+def test_reap_removes_the_expired_tasks_registry_row(monkeypatch, tmp_path) -> None:
+    """This sweep is the path that reaches a REGISTERED task in ordinary operation:
+    it runs on every provision, so a crew that outlives the default TTL is stopped
+    by the next launch. Leaving its row puts a dead crew in the list, and the TTL
+    sweep is not a teardown, so nothing else comes along to prune it."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    reg = InstancesRegistry(tmp_path / "instances.json")
+    reg.add(
+        name="Expired",
+        ssm_target=EXPECTED_TARGET,
+        connection_method="fargate",
+        instance_id="expired",
+    )
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(REGISTRABLE_ARN)]
+    _patch_aws(monkeypatch, double)
+
+    plan = FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+
+    assert plan.stop == (REGISTRABLE_ARN,)
+    assert double.stops == [REGISTRABLE_ARN]
+    assert [i.id for i in InstancesRegistry(tmp_path / "instances.json").list()] == []
+
+
+def test_reap_stops_an_expired_task_through_the_stop_channel(monkeypatch) -> None:
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task()]
+    _patch_aws(monkeypatch, double)
+    plan = FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+    assert plan.stop == (ARN,)
+    assert double.stops == [ARN]
+
+
+def test_reap_reads_the_whole_cluster_rather_than_one_launch(monkeypatch) -> None:
+    """The read must NOT filter by startedBy: a lifetime has to reach a task whose
+    tag the caller has forgotten, and a startedBy filter is built from a tag."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task()]
+    _patch_aws(monkeypatch, double)
+    FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+    assert double.list_calls, "reap must read the cluster"
+    for args in double.list_calls:
+        assert "--started-by" not in args
+
+
+def test_reap_over_an_empty_cluster_stops_nothing(monkeypatch) -> None:
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    plan = FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+    assert plan.stop == ()
+    assert double.stops == []
+
+
+def test_reap_without_a_spec_stops_nothing(monkeypatch) -> None:
+    """No spec means no cluster to read, so there is nothing to claim. It reports
+    that rather than raising, because provision calls it before its own refusals
+    would have run."""
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    plan = FargateLaunchEngine().reap(profile="p", region="us-west-2")
+    assert plan == fargate_engine.BoundsSweepPlan(stop=(), running=())
+    assert double.list_calls == []
+
+
+def test_the_reader_paginates_so_a_task_past_the_first_page_is_bounded(monkeypatch) -> None:
+    """A cluster-wide read that stopped at the first page would leave every task
+    past it unbounded, which is the state the sweep exists to end."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(ARN)]
+    double.tasks_on_second_page = [_aged_task(OTHER_ARN, tag="kc-zzzzzz")]
+    _patch_aws(monkeypatch, double)
+    plan = FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+    assert sorted(plan.stop) == sorted([ARN, OTHER_ARN])
+    assert sorted(double.stops) == sorted([ARN, OTHER_ARN])
+
+
+def test_a_cli_rendered_timestamp_is_read_as_an_age(monkeypatch) -> None:
+    """The ``aws`` CLI renders an ECS timestamp as an ISO string with an offset. A
+    reader that could not parse it would see every task as ageless and stop
+    nothing, which looks exactly like a healthy cluster."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(started_at="2020-01-01T00:00:00.123000+00:00")]
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2").stop == (ARN,)
+
+
+def test_the_describe_batch_is_capped_when_the_cli_merges_every_page(monkeypatch) -> None:
+    """A cluster-wide read must split its DescribeTasks calls, not send the lot.
+
+    This is the shape the REAL CLI produces and the earlier fixture could not
+    express. The CLI auto-paginates ``ListTasks`` and merges every page into one
+    response with no ``nextToken`` -- the same behaviour ``ec2.list_instances``
+    relies on for ``get-resources``, with no token loop at all -- so the token
+    loop runs ONCE and holds the whole cluster. Sizing the describe batch by "one
+    page" therefore sizes it by nothing, and above the API's ceiling every
+    ``DescribeTasks`` fails, which propagates through ``reap`` and fails every
+    launch on exactly the busy cluster this sweep is for.
+
+    Driven through ``reap`` rather than ``_sightings`` so the assertion covers the
+    path a launch actually takes.
+    """
+    count = fargate_engine.DESCRIBE_TASKS_MAX * 2 + 7
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        _aged_task(f"{ARN}{index:04d}", tag=f"kc-b{index:04d}") for index in range(count)
+    ]
+    _patch_aws(monkeypatch, double)
+
+    plan = FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+
+    assert double.list_calls, "reap must read the cluster"
+    assert len(double.list_calls) == 1, "the merged response carries no token to follow"
+    assert double.describe_batches, "the read must describe what it listed"
+    for batch in double.describe_batches:
+        assert 0 < len(batch) <= fargate_engine.DESCRIBE_TASKS_MAX
+    # Every ARN described exactly once: a cap that dropped or duplicated tasks
+    # would bound the batch and lose the sweep.
+    described = [arn for batch in double.describe_batches for arn in batch]
+    assert sorted(described) == sorted(t["taskArn"] for t in double.tasks_for_teardown)
+    assert len(described) == len(set(described))
+    # And the sweep still reached its verdict on all of them.
+    assert len(plan.stop) == count
+
+
+def test_an_empty_cluster_describes_nothing(monkeypatch) -> None:
+    """No ARNs means no DescribeTasks call at all, which the chunking must preserve:
+    ``range`` over an empty list is what makes that true without a guard."""
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+    assert double.describe_batches == []
+    assert "describe-tasks" not in double.ops
+
+
+def test_provision_sweeps_an_expired_task_before_it_launches(monkeypatch) -> None:
+    """The bound arrives WITH the launch path, not after it. Sequencing is the
+    whole point: between a launch that works and a bound that
+    does not exist yet, a bug bills real money."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(OTHER_ARN, tag="kc-zzzzzz")]
+    _patch_aws(monkeypatch, double)
+    arn = FargateLaunchEngine(_spec()).provision(
+        tag=TAG, size_key="1024/2048", profile="p", region="us-west-2"
+    )
+    assert arn == ARN
+    assert double.stops == [OTHER_ARN], "the leftover must be stopped by the launch that follows it"
+    assert double.run_requests, "the launch itself must still happen"
+
+
+def test_provision_refuses_when_the_running_cap_is_reached(monkeypatch) -> None:
+    """The cap is a REFUSAL, never a stop. Which of several running tasks is the
+    leak is not knowable from a read, so stopping one on that guess is the error
+    the ownership rule exists to avoid: a refusal costs a launch, a wrong stop
+    costs a running crew."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(OTHER_ARN, started_at=None)]
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec(), bounds=TaskBounds(max_running=1))
+    with pytest.raises(RuntimeError, match="cap of 1"):
+        engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+    assert double.run_requests == [], "a refused launch must not reach RunTask"
+    assert double.stops == [], "the cap must not stop anything"
+
+
+def test_the_cap_is_measured_after_the_sweep(monkeypatch) -> None:
+    """A task that should already be gone must not fill the cap. With a cap of one
+    and one EXPIRED task present, the sweep stops it and the launch proceeds."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(OTHER_ARN)]
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec(), bounds=TaskBounds(max_running=1))
+    arn = engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+    assert arn == ARN
+    assert double.stops == [OTHER_ARN]
+
+
+def test_a_free_refusal_still_costs_no_aws_call(monkeypatch) -> None:
+    """The sweep sits after every refusal that needs no AWS call, so a launch that
+    was going to be refused for its tag or its size is still free."""
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec())
+    with pytest.raises(ValueError):
+        engine.provision(tag="not a tag", size_key="1024/2048", profile="p", region="us-west-2")
+    with pytest.raises(ValueError):
+        engine.provision(tag=TAG, size_key="nonsense", profile="p", region="us-west-2")
+    assert double.list_calls == []
+
+
+def test_an_engine_given_no_bounds_is_still_bounded() -> None:
+    """A caller who supplies nothing must still get a bounded task. An optional
+    bound that defaulted to absent would be the unbounded launch this engine is
+    not allowed to make."""
+    assert FargateLaunchEngine(_spec())._bounds == TaskBounds()
+
+
+def test_a_task_that_never_started_is_aged_from_when_it_was_created(monkeypatch) -> None:
+    """ECS reports no ``startedAt`` until a task starts, so a task stuck in
+    PROVISIONING would be ageless forever and never bounded. ``createdAt`` is the
+    fallback, which is why such a task still has an age."""
+    double = _EcsDouble()
+    task = _aged_task(started_at=None)
+    task["createdAt"] = "2020-01-01T00:00:00Z"
+    double.tasks_for_teardown = [task]
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2").stop == (ARN,)
+
+
+def test_the_first_moment_present_wins_and_epoch_zero_is_a_moment() -> None:
+    """The fallback is an explicit None check, not an ``or`` chain.
+
+    ``0.0`` is a moment and a falsy one, so an ``or`` would discard a startedAt of
+    exactly the Unix epoch and read createdAt in its place -- a different task's
+    age. Only when NOTHING carries a moment is the answer None.
+    """
+    assert fargate_engine._first_moment("1970-01-01T00:00:00Z", "2020-01-01T00:00:00Z") == 0.0
+    assert fargate_engine._first_moment(None, "2020-01-01T00:00:00Z") is not None
+    assert fargate_engine._first_moment(None, "") is None
+
+
+# ── Mutation anchors for the bounds ──────────────────────────────────────────
+
+
+def test_mutation_the_sweep_is_reached_from_the_launch_path(monkeypatch) -> None:
+    """Removing the ``reap`` call from ``provision`` must turn a test red.
+
+    Without it the sweep is another pure producer with no caller, which is the
+    state a planner must never ship in. The expired task below is
+    stopped only because a launch drove the sweep.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(OTHER_ARN, tag="kc-zzzzzz")]
+    _patch_aws(monkeypatch, double)
+    FargateLaunchEngine(_spec()).provision(
+        tag=TAG, size_key="1024/2048", profile="p", region="us-west-2"
+    )
+    assert double.stops == [OTHER_ARN]
+
+
+def test_mutation_the_age_comparison_is_against_the_bound(monkeypatch) -> None:
+    """Widening the lifetime comparison so a fresh task is stopped must turn a test
+    red, and narrowing it so an expired one survives must too. Both directions are
+    asserted on the same shape, one second either side of the bound."""
+    assert _sweep([_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1)]).stop == (ARN,)
+    assert _sweep([_bounded(age=DEFAULT_TASK_TTL_SECONDS - 1)]).stop == ()
+
+
+def test_mutation_the_stamp_must_still_agree_with_the_tag(monkeypatch) -> None:
+    """Dropping the ``startedBy`` equality from the sweep must turn a test red.
+
+    What it protects is narrower than it looks: a managed, tagged task whose stamp
+    is not the one its own tag derives, which no launch of this product produces.
+    Attribution to a crew is the separate rule below, and this test deliberately
+    does not stand in for it -- that conflation is what left the crew case open.
+    """
+    foreign = _aged_task()
+    foreign["startedBy"] = "kirocrew-cloud-kc-someoneelse"
+    double = _EcsDouble()
+    double.tasks_for_teardown = [foreign]
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2").stop == ()
+    assert double.stops == []
+
+
+def test_mutation_the_crew_tag_decides_what_the_sweep_may_stop(monkeypatch) -> None:
+    """Dropping the crew equality must turn this red, through the real stop channel.
+
+    The read is cluster-wide and unfiltered by ``startedBy``, so it returns a
+    colleague's crew whole: managed, launch-tagged, and stamped in agreement with
+    its own tag. Every other check passes on it. If the crew tag stops deciding,
+    ``ecs:StopTask`` is called on a colleague's running crew, and there is no
+    undoing that.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_aged_task(crew=_other_crew())]
+    _patch_aws(monkeypatch, double)
+    plan = FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+    assert plan.stop == ()
+    assert plan.running == ()
+    assert double.stops == []
+
+
+def test_reap_matches_on_the_crew_the_spec_itself_binds_to(monkeypatch) -> None:
+    """The name the sweep matches on is derived from the spec, not supplied beside it.
+
+    Same read, two tasks differing only in their crew tag: the spec's own crew is
+    stopped and the other is not. That pins the derivation as well as the check --
+    a sweep matching on some other crew name would stop neither.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        _aged_task(),
+        _aged_task(OTHER_ARN, crew=_other_crew()),
+    ]
+    _patch_aws(monkeypatch, double)
+    plan = FargateLaunchEngine(_spec()).reap(profile="p", region="us-west-2")
+    assert plan.stop == (ARN,)
+    assert double.stops == [ARN]
+
+
+def test_the_cap_does_not_count_a_colleagues_tasks(monkeypatch) -> None:
+    """A cluster full of a colleague's live tasks must not refuse this crew's launch.
+
+    The cap exists to catch this crew leaking tasks. Measured over the cluster
+    instead, a busy shared cluster would refuse every launch here while nothing of
+    this crew's was running at all.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        _aged_task(f"{ARN}{index}", tag=f"kc-other{index}", started_at=None, crew=_other_crew())
+        for index in range(DEFAULT_MAX_RUNNING_TASKS + 2)
+    ]
+    _patch_aws(monkeypatch, double)
+    arn = FargateLaunchEngine(_spec()).provision(
+        tag=TAG, size_key="1024/2048", profile="p", region="us-west-2"
+    )
+    assert arn
+    assert double.stops == []
+
+
+def test_no_idle_bound_is_claimed_anywhere(monkeypatch) -> None:
+    """The bound set is a TTL and a cap, and it says so.
+
+    An idle-stop needs a last-activity signal, and no read available to a stopper
+    reports one: DescribeTasks carries lifecycle timestamps and no use, and
+    reaching into a task is deferred by RFC section 6. This pins the ABSENCE so a
+    later reader does not take a bound that is not here for one that is: if an
+    idle field appears on TaskBounds, it must arrive with a signal and with this
+    test rewritten.
+    """
+    assert {f.name for f in dataclasses.fields(TaskBounds)} == {"ttl_seconds", "max_running"}

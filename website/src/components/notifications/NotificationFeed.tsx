@@ -8,13 +8,16 @@ import { deleteNotification, clearNotifications, ackAllNotifications } from '../
 import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
+import MarkdownRenderer from '../MarkdownRenderer'
+import MessageErrorBoundary from '../MessageErrorBoundary'
 import { disintegrate } from '../../lib/disintegrate'
-// Aliased: this file defines its own minute-granularity `fmtRelative` wrapper.
-import { fmtRelative as fmtRelativeLocalized } from '../../i18n/format'
 import type { Notification } from '../../types'
 import {
   parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, safeInternalUrl,
+  MAC_CARD_TINT_CLASS, MAC_CARD_BLUR_CLASS, MAC_CARD_SHADOW_CLASS, MAC_CARD_BORDER_CLASS, MAC_ACTION_BTN_CLASS,
 } from './notifMeta'
+import NotificationPermissionHint from './NotificationPermissionHint'
+import NotificationCard, { type NotificationCardAction } from './NotificationCard'
 
 import { i18nT } from '../../i18n/t'
 /** localStorage key for app channels the user has already decided on (keep or
@@ -27,21 +30,6 @@ function loadSeenChannels(): Set<string> {
     if (Array.isArray(arr)) return new Set(arr.filter((c): c is string => typeof c === 'string'))
   } catch { /* fall through */ }
   return new Set()
-}
-
-/** macOS Notification Center-style relative timestamp ("now", "35m ago", "2h ago").
- *
- * Delegated to the locale-aware seam so relative times render in the app
- * language for all 10 locales, with the "yesterday" literal from CLDR.
- *
- * Minute granularity is preserved deliberately — a notification feed that
- * counted seconds would rewrite every row on every tick. Anything under a
- * minute is collapsed to the locale's "now" rather than "45s ago". */
-function fmtRelative(ts: string): string {
-  const at = parseTs(ts)
-  const now = Date.now()
-  if (now - at.getTime() < 60_000) return fmtRelativeLocalized(now, { now })
-  return fmtRelativeLocalized(at, { now })
 }
 
 /**
@@ -260,7 +248,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           floating card (search above the disclosure); panel mode puts the
           disclosure first, directly on the popover surface. */}
       {mac ? (
-        <div className="notif-material rounded-2xl bg-[color-mix(in_srgb,var(--card)_72%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] border border-[color-mix(in_srgb,var(--border)_55%,transparent)] px-2.5 pt-2 pb-1 mb-2 shrink-0">
+        <div className={`notif-material rounded-2xl ${MAC_CARD_TINT_CLASS} ${MAC_CARD_BLUR_CLASS} ${MAC_CARD_SHADOW_CLASS} ${MAC_CARD_BORDER_CLASS} px-2.5 pt-2 pb-1 mb-2 shrink-0`}>
           <div className="flex items-center gap-1.5">
             <div className="flex-1 min-w-0">{header}</div>
             {unread > 0 && (
@@ -282,6 +270,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           </div>
           {searchRow}
           {mutedRow}
+          {/* One-time nudge toward OS notifications, shown only while the
+              browser has not been asked yet and there is something to be
+              alerted about. Lives in the controls card so it reads as part
+              of the inbox's own settings, not as a notification row. */}
+          <NotificationPermissionHint hasNotes={items.length > 0} />
           {footer}
         </div>
       ) : (
@@ -299,23 +292,22 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           Array.from(stackedGroups.entries()).map(([group, rows]) => (
             <div key={group} className="mb-3">
               <div className={mac
-                ? 'text-[11px] font-bold text-text-strong/80 uppercase tracking-[.06em] mb-1.5 px-1 drop-shadow-sm'
+                ? 'text-[11px] font-bold text-text-strong/80 uppercase tracking-[.06em] mb-1.5 px-1 drop-shadow-xs'
                 : 'text-[11px] font-semibold text-muted uppercase tracking-[.04em] mb-1.5 px-1'}>{group}</div>
               {rows.map(({ n, stackKey, stackCount, stackExpanded, isStackChild }) => {
                 const km = KIND_META[n.kind] || DEFAULT_META
                 const active = selectedTs === n.ts
                 const prio = notePriority(n)
                 const silenced = !!n.silenced
-                // Priority tiers: critical gets a danger edge, passive dims,
-                // silenced renders as a dashed-border ghost.
-                // The row div below also carries `notif-material`: index.css solidifies
-                // these cards to var(--card) where backdrop-filter is unsupported
-                // (#1817). Keep the hook on every translucent mac-variant surface.
+                // Priority tiers: passive dims, silenced renders as a
+                // dashed-border ghost; critical is signalled by its danger dot
+                // alone. The shared card carries `notif-material`: index.css
+                // solidifies these surfaces to var(--card) where backdrop-filter
+                // is unsupported (#1817).
                 const macCard = silenced
                   ? 'bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-xl border border-dashed border-[color-mix(in_srgb,var(--border)_70%,transparent)]'
-                  : `bg-[color-mix(in_srgb,var(--card)_72%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] ${active ? 'border border-accent bg-accent-subtle' : 'border border-[color-mix(in_srgb,var(--border)_55%,transparent)] hover:bg-[color-mix(in_srgb,var(--card)_82%,transparent)]'}`
+                  : `${MAC_CARD_TINT_CLASS} ${MAC_CARD_BLUR_CLASS} ${MAC_CARD_SHADOW_CLASS} ${active ? 'border border-accent bg-accent-subtle' : `${MAC_CARD_BORDER_CLASS} hover:bg-[color-mix(in_srgb,var(--card)_82%,transparent)]`}`
                 const panelBorder = silenced ? 'border-l-muted' : prio === 'critical' ? 'border-l-danger' : km.borderColor
-                const contentDim = silenced ? 'opacity-50' : (n.acked && !active) || prio === 'passive' ? (mac ? 'opacity-55' : '') : ''
                 const promptChannel = promptTs === n.ts && n.channel && n.source
                   ? { channel: n.channel, label: `${n.source} / ${n.channel.startsWith(`${n.source}.`) ? n.channel.slice(n.source.length + 1) : n.channel}` }
                   : null
@@ -323,6 +315,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // actions that render only with a safe dashboard-internal url
                 // (never executable content).
                 const isApproval = n.kind === 'approval' && !n.acked
+                // A persisted row is untrusted: a truthy non-string body must
+                // not reach the renderer, its raw fallback, or the flattener.
+                const bodyText = typeof n.body === 'string' ? n.body : ''
                 // Defense-in-depth for legacy/corrupted persisted rows: the
                 // actions field must be a real array (a truthy non-array like
                 // `{}` would throw on .filter), and only string fields render
@@ -332,56 +327,108 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                   .map(a => ({ ...a, safeUrl: safeInternalUrl(a.url) }))
                   .filter(a => a.safeUrl)
                 const hasActions = isApproval || urlActions.length > 0
+                // A row whose controls authorize a command shows the whole
+                // command: a clamped excerpt turns `echo safe` + `rm -rf target`
+                // into one harmless-looking line. Gated on the KIND, not on
+                // unread: reading the row acks it, and a pending command must
+                // not collapse back into that line while the detail panel
+                // still offers Approve/Reject. A resolved approval leaves the
+                // feed, so an approval row here is undecided. Same renderer
+                // and boundary as the detail panel; the producer's fence tag
+                // makes the lines wrap, so nothing is clipped, clamped or
+                // hidden. One definition for both variants: the mac card's
+                // own excerpt is a two-line clamp, so it takes this instead.
+                const approvalBody = n.kind === 'approval' ? (
+                  <div className={`msg-content text-[12px] text-muted break-words ${mac ? 'mt-1 leading-snug' : 'mt-1'}`} data-testid="approval-body">
+                    <MessageErrorBoundary rawContent={bodyText}>
+                      <MarkdownRenderer content={bodyText} readOnlyCode />
+                    </MessageErrorBoundary>
+                  </div>
+                ) : undefined
                 const collapsedStack = !!(stackKey && stackCount && stackCount > 1 && !stackExpanded)
-                // macOS NC action buttons: quiet translucent capsules, text-only,
-                // semantic tint on the LABEL (never a solid colored fill).
-                const actionBtn = 'px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'
+                const actionBtn = MAC_ACTION_BTN_CLASS
+                // The mac row IS the shared card (one rendering with the
+                // banner); the feed adds only what it owns — the reveal anchor,
+                // spacing against the deck/prompt below, selection, the stack
+                // controls and the ghost/selected material.
+                const macActions: NotificationCardAction[] = [
+                  ...(isApproval ? [
+                    { id: 'approve', label: i18nT('components.notifications.notificationFeed.approve'), tone: 'ok' as const, onClick: () => resolveApprovalNote(n, 'approve') },
+                    { id: 'reject', label: i18nT('components.notifications.notificationFeed.reject'), tone: 'danger' as const, onClick: () => resolveApprovalNote(n, 'reject') },
+                  ] : []),
+                  ...urlActions.map(a => ({ id: a.id, label: a.label, tone: 'text' as const, onClick: () => leave(() => navigate(a.safeUrl!), a.safeUrl!) })),
+                  // Only the quiet "Show less" when expanded; collapse-by-click
+                  // lives on the deck.
+                  ...(stackKey && stackCount && stackCount > 1 && stackExpanded ? [
+                    { id: 'stack', label: i18nT('components.notifications.notificationFeed.show_less'), tone: 'muted' as const, trailing: true, 'aria-expanded': true, onClick: () => toggleStack(stackKey) },
+                  ] : []),
+                ]
+                const dismissRow = async (e?: React.MouseEvent | React.KeyboardEvent) => {
+                  const row = (e?.currentTarget as HTMLElement | undefined)?.closest('[data-notif-row]') as HTMLElement | null
+                  await disintegrate(row)
+                  dispatch(deleteNotification(n.ts))
+                }
                 return (
                   <div key={n.ts} className={isStackChild && !mac ? 'ml-4' : ''}>
                     {/* data-ts is the reveal effect's DOM anchor for
                         scroll-into-view, scoped under listRef. */}
-                    <div data-notif-row data-ts={n.ts}
-                      className={mac
-                        ? `notif-material group flex flex-col px-3 py-2.5 rounded-2xl ${promptChannel || collapsedStack ? 'mb-0' : 'mb-2'} ${promptChannel ? 'rounded-b-none' : ''} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''} transition-all ${macCard}`
-                        : `group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
-                    >
-                      <div className={`flex ${mac ? 'items-start' : 'items-center'} gap-2.5`}>
-                      <Clickable
-                        onClick={() => { if (mac && collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
-                        aria-label={mac && collapsedStack
+                    {mac ? (
+                      <NotificationCard
+                        data-notif-row data-ts={n.ts}
+                        n={n}
+                        elevation="popover"
+                        material={macCard}
+                        className={`${promptChannel || collapsedStack ? 'mb-0' : 'mb-2'} ${promptChannel ? 'rounded-b-none' : ''} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''}`}
+                        active={active}
+                        muted={silenced}
+                        onOpen={() => { if (collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
+                        openLabel={collapsedStack
                           ? i18nT('components.notifications.notificationFeed.expand_grouped_notifications', { count: stackCount, title: n.title })
                           : i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
-                        className={`flex ${mac ? 'items-start' : 'items-center'} gap-2 flex-1 min-w-0 text-left cursor-pointer ${mac ? contentDim : ''}`}
+                        onDismiss={dismissRow}
+                        dismissLabel={i18nT('components.notifications.notificationFeed.dismiss_notification')}
+                        actions={macActions}
+                        body={approvalBody}
+                        trailing={silenced ? (
+                          <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_2')}</span>
+                        ) : collapsedStack ? (
+                          <span className="text-[10px] font-medium text-muted px-1.5 py-px rounded-full bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)]">{stackCount}</span>
+                        ) : undefined}
+                      />
+                    ) : (
+                    <div data-notif-row data-ts={n.ts}
+                      className={`group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                      <Clickable
+                        onClick={() => onSelect(n)}
+                        aria-label={i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
+                        className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
                       >
-                        {mac ? (
-                          <span className={`w-8 h-8 rounded-[9px] flex items-center justify-center shrink-0 text-[14px] ${km.color}`}>{km.icon}</span>
-                        ) : (
-                          <span className="text-[13px] shrink-0">{km.icon}</span>
-                        )}
+                        <span className="text-[13px] shrink-0">{km.icon}</span>
                         <div className="flex-1 min-w-0">
                           <div className={`text-[13px] font-semibold truncate leading-tight ${silenced ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
-                          <div className={`text-[12px] text-muted mt-0.5 ${mac ? 'line-clamp-2 leading-snug' : 'truncate'}`}>{stripMd(n.body || '').slice(0, mac ? 140 : 80)}</div>
+                          {approvalBody ?? (
+                            <div className="text-[12px] text-muted mt-0.5 truncate">{stripMd(bodyText).slice(0, 80)}</div>
+                          )}
                         </div>
                         <div className="flex flex-col items-end gap-0.5 shrink-0">
-                          <span className={`text-[11px] text-muted ${mac ? '' : 'font-mono'}`}>{mac ? fmtRelative(n.ts) : fmtTime(n.ts)}</span>
+                          <span className="text-[11px] text-muted font-mono">{fmtTime(n.ts)}</span>
                           {silenced ? (
                             <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_2')}</span>
                           ) : !n.acked ? (
                             <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
                           ) : null}
-                          {mac && collapsedStack && (
-                            <span className="text-[10px] font-medium text-muted px-1.5 py-px rounded-full bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)]">{stackCount}</span>
-                          )}
                         </div>
                       </Clickable>
                       <Clickable
                         aria-label={i18nT('components.notifications.notificationFeed.dismiss_notification')}
                         className="opacity-0 group-hover:opacity-40 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0"
-                        onClick={async e => { e?.stopPropagation(); const row = (e?.currentTarget as HTMLElement | undefined)?.closest('[data-notif-row]') as HTMLElement | null; await disintegrate(row); dispatch(deleteNotification(n.ts)) }}
+                        onClick={dismissRow}
                       ><X className="lucide-inline" /></Clickable>
                       </div>
-                      {(hasActions || (!mac && stackCount && stackCount > 1) || (mac && stackExpanded)) && (
-                        <div className={`flex items-center gap-1.5 mt-1.5 flex-wrap ${mac ? 'pl-[42px]' : 'pl-6'}`}>
+                      {(hasActions || (stackCount && stackCount > 1)) && (
+                        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap pl-6">
                           {isApproval && (
                             <>
                               <button
@@ -405,22 +452,19 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                             >{a.label}</button>
                           ))}
                           <span className="flex-1" />
-                          {/* Stack toggle: mac shows only the quiet "Show less"
-                              when expanded (collapse-by-click lives on the deck);
-                              panel keeps an explicit pill both ways. */}
-                          {stackKey && stackCount && stackCount > 1 && (mac ? stackExpanded : true) && (
+                          {/* Panel keeps an explicit stack pill both ways. */}
+                          {stackKey && stackCount && stackCount > 1 && (
                             <button
                               type="button"
                               aria-expanded={!!stackExpanded}
-                              className={mac
-                                ? `${actionBtn} text-muted`
-                                : 'px-2 py-0.5 rounded-full text-[11px] font-medium cursor-pointer bg-bg-hover text-muted border border-border hover:text-text hover:border-border-strong transition-colors font-body whitespace-nowrap'}
+                              className="px-2 py-0.5 rounded-full text-[11px] font-medium cursor-pointer bg-bg-hover text-muted border border-border hover:text-text hover:border-border-strong transition-colors font-body whitespace-nowrap"
                               onClick={e => { e.stopPropagation(); toggleStack(stackKey) }}
-                            >{mac ? i18nT('components.notifications.notificationFeed.show_less') : <><Layers className="lucide-inline" /> {stackExpanded ? i18nT('components.notifications.notificationFeed.show_less') : `${stackCount - 1} more`}</>}</button>
+                            ><Layers className="lucide-inline" /> {stackExpanded ? i18nT('components.notifications.notificationFeed.show_less') : `${stackCount - 1} more`}</button>
                           )}
                         </div>
                       )}
                     </div>
+                    )}
                     {/* macOS NC deck: two card edges peeking below a collapsed
                         stack -- click anywhere on the head to expand. */}
                     {mac && collapsedStack && (

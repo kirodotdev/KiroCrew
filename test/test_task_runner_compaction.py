@@ -722,3 +722,137 @@ class TestGateLadderParity:
         ladder_src = executable_source(CompactionCoordinator._compaction_gate_decision)
         for needle in gate_state_reads:
             assert needle in ladder_src, f"ladder lost its own rung read: {needle}"
+
+
+class TestCriticalResetFloorGuard:
+    """A reset frees at most the distance down to the session's floor.
+
+    The floor is the first confirmed reading of a session that started with no
+    conversation -- the one whose cold start consumed the replay suppression a
+    critical reset armed. When the still-critical reading after compaction is
+    within the compaction effect bar of that floor, resetting would destroy the
+    conversation and land critical again, so the escalation is declined and the
+    cooldown alone damps. A floor far below still escalates.
+    """
+
+    @pytest.mark.asyncio
+    async def test_critical_reset_arms_the_successor_and_its_first_reading_is_the_floor(self, cfg):
+        factory = _compacting_provider_factory(
+            pct_before=100.0, pct_after=96.0, unknown_after=False
+        )
+        async with _managed(cfg, factory) as mgr:
+            await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            assert await mgr.compact_if_needed(KEY) == "reset"
+
+            # The successor's cold start skips replay -- and that consumption is
+            # what marks it as starting with no history.
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            successor = mgr._sessions[KEY]
+            assert successor.floor_pending is False
+            assert mgr.consume_replay_suppression(KEY) is True
+            assert successor.floor_pending is True
+            assert successor.floor_pct is None
+
+            provider.context_usage_pct = lambda: 88.0
+            provider.context_usage_unknown = lambda: False
+            mgr.check_context_usage(KEY, provider)
+
+            assert successor.floor_pct == 88.0
+            assert successor.floor_pending is False
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_first_reading_waits_for_telemetry(self, cfg):
+        factory = _compacting_provider_factory(pct_before=10.0)
+        async with _managed(cfg, factory) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            session = mgr._sessions[KEY]
+            session.floor_pending = True
+
+            provider.context_usage_pct = lambda: 0.0
+            provider.context_usage_unknown = lambda: True
+            mgr.check_context_usage(KEY, provider)
+            assert session.floor_pct is None
+            assert session.floor_pending is True
+
+            provider.context_usage_pct = lambda: 87.0
+            provider.context_usage_unknown = lambda: False
+            mgr.check_context_usage(KEY, provider)
+            assert session.floor_pct == 87.0
+            assert session.floor_pending is False
+
+    @pytest.mark.asyncio
+    async def test_a_replaying_cold_start_records_no_floor(self, cfg):
+        """Only a session that skipped replay measures a floor: a plain cold
+        start replays history, so its first reading is history plus fixed
+        context -- and nothing armed the flag."""
+        factory = _compacting_provider_factory(pct_before=60.0)
+        async with _managed(cfg, factory) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            assert mgr.consume_replay_suppression(KEY) is False
+            provider.context_usage_unknown = lambda: False
+            mgr.check_context_usage(KEY, provider)
+            assert mgr._sessions[KEY].floor_pending is False
+            assert mgr._sessions[KEY].floor_pct is None
+
+    @pytest.mark.asyncio
+    async def test_a_manual_history_discard_also_marks_the_successor(self, cfg):
+        """``discard_conversation(replay=False)`` arms the same suppression, so
+        its successor is measured the same way -- one mechanism, not two."""
+        factory = _compacting_provider_factory(pct_before=10.0)
+        async with _managed(cfg, factory) as mgr:
+            await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            await mgr.discard_conversation(KEY, replay=False)
+            await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            assert mgr.consume_replay_suppression(KEY) is True
+            assert mgr._sessions[KEY].floor_pending is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("floor", "outcome"),
+        [(93.0, "ok"), (91.5, "ok"), (91.0, "reset"), (40.0, "reset"), (None, "reset")],
+        ids=(
+            "floor-within-bar-declines",
+            "floor-just-inside-bar-declines",
+            "floor-at-bar-resets",
+            "floor-far-below-resets",
+            "no-floor-resets",
+        ),
+    )
+    async def test_still_critical_resets_only_when_the_floor_leaves_room(self, cfg, floor, outcome):
+        """100% -> 96% after compaction (ineffective AND critical). With the
+        effect bar at 5 points, a floor above 91% means a reset cannot free 5
+        points either: the conversation is kept and only the cooldown arms."""
+        factory = _compacting_provider_factory(
+            pct_before=100.0, pct_after=96.0, unknown_after=False
+        )
+        async with _managed(cfg, factory) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            mgr._sessions[KEY].floor_pct = floor
+
+            assert await mgr.compact_if_needed(KEY) == outcome
+            await _drain_background(mgr)
+
+            if outcome == "reset":
+                provider.shutdown.assert_awaited_once()
+                assert KEY not in mgr._sessions
+            else:
+                provider.shutdown.assert_not_awaited()
+                assert KEY in mgr._sessions, "the conversation survives a hopeless reset"
+                assert KEY in mgr._compact_cooldown_until, "damping still arms"
+
+    def test_adopting_a_fresh_provider_forgets_the_old_floor(self):
+        from kiro_crew.session import _Session
+
+        session = _Session(provider=MagicMock())
+        session.floor_pct = 88.0
+        session.floor_pending = True
+        session.adopt_provider(MagicMock())
+        assert session.floor_pct is None
+        assert session.floor_pending is False

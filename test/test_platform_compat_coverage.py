@@ -459,7 +459,9 @@ def _bsdinfo(ppid: int = 0, sec: int = 0, usec: int = 0) -> bytes:
     """A synthetic ``struct proc_bsdinfo`` with the three fields we read."""
 
     buf = bytearray(pc._DARWIN_BSDINFO_SIZE)
-    buf[16:20] = ppid.to_bytes(4, "little")
+    buf[
+        pc._DARWIN_PBI_PPID_OFFSET : pc._DARWIN_PBI_PPID_OFFSET + 4
+    ] = ppid.to_bytes(4, "little")
     buf[pc._DARWIN_OFF_START_TVSEC : pc._DARWIN_OFF_START_TVSEC + 8] = sec.to_bytes(8, "little")
     buf[pc._DARWIN_OFF_START_TVUSEC : pc._DARWIN_OFF_START_TVUSEC + 8] = usec.to_bytes(
         8, "little"
@@ -485,6 +487,8 @@ def _fake_libproc(
         return ret
 
     lib = types.SimpleNamespace(proc_pidinfo=_Fn(_proc_pidinfo))
+    monkeypatch.setattr(pc, "_darwin_libproc", None)
+    monkeypatch.setattr(pc, "_darwin_libproc_loaded", False)
     monkeypatch.setattr(pc.ctypes, "CDLL", lambda _p: lib)
 
 
@@ -565,6 +569,17 @@ class TestGetPpid:
 
 
 class TestGetProcessStartId:
+    def test_macos_reads_start_id_and_ppid_atomically(self, monkeypatch):
+        _fake_libproc(
+            monkeypatch,
+            payload=_bsdinfo(ppid=4321, sec=1700000000, usec=42),
+            ret=136,
+        )
+
+        assert pc.get_process_start_identity(5) == pc.ProcessStartIdentity(
+            "1700000000.000042", 4321
+        )
+
     def test_macos_formats_seconds_and_microseconds(self, monkeypatch):
         _fake_libproc(monkeypatch, payload=_bsdinfo(sec=1700000000, usec=42), ret=136)
         # Microsecond resolution is the point: two processes started in the same
@@ -810,16 +825,24 @@ def _identity_kernel32(
     exit_code: int = 259,
     times_ok: list[bool] | None = None,
     exit_code_ok: bool = True,
+    wait: int | None = None,
 ) -> Any:
     """kernel32 fake for ``_windows_process_handle_identity``.
 
     ``exit_times`` is replayed one entry per ``GetProcessTimes`` call, so a test
     can script the exited-but-exit-FILETIME-unpublished window; ``times_ok``
     scripts per-call success of the same function.
+
+    ``wait`` is what ``WaitForSingleObject`` answers, which is what decides
+    liveness: a signalled process object has terminated. It defaults to agreeing
+    with ``exit_code`` -- WAIT_TIMEOUT for a live process, WAIT_OBJECT_0 for an
+    exited one -- so a test scripts liveness in one place. Pass it explicitly to
+    script a handle that cannot be waited on (WAIT_FAILED).
     """
 
     times = list(exit_times or [0])
     oks = list(times_ok or [])
+    waited = (0x00000102 if exit_code == 259 else 0x00000000) if wait is None else wait
 
     def _get_times(_handle: Any, creation_out: Any, exit_out: Any, _k: Any, _u: Any) -> int:
         if oks and not oks.pop(0):
@@ -839,6 +862,7 @@ def _identity_kernel32(
         GetProcessId=_const(pid),
         GetProcessTimes=_Fn(_get_times),
         GetExitCodeProcess=_Fn(_get_exit_code),
+        WaitForSingleObject=_Fn(lambda _handle, _millis: waited),
     )
 
 
@@ -854,6 +878,29 @@ class TestWindowsHandleIdentity:
 
     def test_a_live_process_has_no_exit_bound(self, monkeypatch):
         _fake_windows(monkeypatch, kernel32=_identity_kernel32())
+        assert pc._windows_process_handle_identity(5) == (4242, 100, None)
+
+    def test_an_exit_status_of_259_is_read_as_exited_when_the_wait_says_so(self, monkeypatch):
+        # 259 is both STILL_ACTIVE and an ordinary exit code, so the exit code
+        # alone cannot decide liveness: a child that picks it would read back as
+        # running for as long as a handle is held, and a drain waiting for its
+        # exit would never finish. The signalled process object is authoritative.
+        _fake_windows(
+            monkeypatch,
+            kernel32=_identity_kernel32(
+                exit_code=259, wait=0x00000000, exit_times=[777, 777]
+            ),
+        )
+        assert pc._windows_process_handle_identity(5) == (4242, 100, 777)
+
+    def test_a_handle_that_cannot_be_waited_on_falls_back_to_the_exit_code(self, monkeypatch):
+        # A query-only handle carries no SYNCHRONIZE right, so the wait fails.
+        # Those callers read identity without draining anything, so they keep the
+        # exit-code answer rather than losing the identity altogether.
+        _fake_windows(
+            monkeypatch,
+            kernel32=_identity_kernel32(exit_code=259, wait=0xFFFFFFFF),
+        )
         assert pc._windows_process_handle_identity(5) == (4242, 100, None)
 
     def test_an_exited_process_reports_its_exit_filetime(self, monkeypatch):

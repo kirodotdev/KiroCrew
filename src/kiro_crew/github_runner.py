@@ -182,7 +182,14 @@ _AMBIENT_CREDENTIAL_ENV_KEYS = frozenset(
 
 
 def path_parents(path: Path) -> list[Path]:
-    """Return every parent through the filesystem root."""
+    """Return every parent through the filesystem root, LEXICALLY.
+
+    Names each ancestor spelling and never a symlink hop, so it serves the
+    Windows ACL chain in :func:`validate_provider_executable` only; the POSIX
+    provenance walk there enumerates with
+    :func:`kiro_crew.platform_compat.traversed_components`, which visits every
+    directory the walk actually reads.
+    """
     parents: list[Path] = []
     current = path.parent
     while True:
@@ -434,11 +441,30 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
                 raise ValueError(f"executable is inside the agent-writable tree {root}")
 
     _check(resolved, label="executable")
-    # A symlink's own directory chain is part of the provenance too (relaxed
-    # mode allows symlinks, so /opt/homebrew/bin gets checked as well).
-    parents = list(path_parents(resolved))
-    if not strict and not same_path:
-        parents += [p for p in path_parents(original) if p not in parents]
+    if windows:
+        # The ACL walk asks its question of lexical spellings, and the
+        # component-by-component walker below is POSIX-shaped (``os.sep``-rooted),
+        # so Windows keeps the two chains: the resolved path's parents plus, in
+        # relaxed mode, the original spelling's.
+        parents = list(path_parents(resolved))
+        if not strict and not same_path:
+            parents += [p for p in path_parents(original) if p not in parents]
+    else:
+        # Every directory the walk to the target actually reads: the original
+        # spelling's side, each symlink hop's side and the target's side. Two
+        # lexical chains over the endpoints never name a hop in the middle
+        # (``gh -> /tmp/link -> /usr/bin/gh`` visits ``/usr/bin`` and the entry's
+        # own directory, never ``/tmp``), which is why the enumeration is the
+        # walker's and not ``Path.parents``. The set is a superset of both chains:
+        # every lexical ancestor of ``resolved`` is walked, and a symlinked
+        # directory component's lexical spelling stats the same inode as the
+        # target-side directory the walk records in its place.
+        components = platform_compat.traversed_components(original)
+        if components is None:
+            raise ValueError("executable hierarchy is not accessible")
+        if components[-1] != resolved:
+            raise ValueError("executable path did not resolve consistently")
+        parents = components[:-1]
     for parent in parents:
         try:
             if not stat.S_ISDIR(parent.stat().st_mode):

@@ -1,6 +1,6 @@
 ---
 name: security-conductor
-description: Use when a security conductor session is being seeded, or when inspecting/debugging one. Operating procedure for the kirocrew-security-conductor agent - run proactive vulnerability discovery on one target as a supervised fleet. Decompose the target into attack surfaces, dispatch one auditor per surface behind the rules of engagement, dispatch an independent verifier per finding whose job is rejecting false positives, adjudicate severity, hold the two human gates, run a retrospective that proposes lessons, and report upward.
+description: Operating procedure for the kirocrew-security-conductor agent. Use when a security conductor session is seeded, inspected or debugged. Run vulnerability discovery on one target as a supervised fleet — one auditor per attack surface, an independent verifier per finding, two human gates.
 ---
 
 # Security Conductor
@@ -41,14 +41,23 @@ than permission.
   golden paths, rules-of-engagement export, list. It is also the human's editing
   surface.
 - `scripts/verify_fix.py` — the fixer lane's acceptance gate. Given a finding and
-  a worktree it asserts BOTH halves: the finding's proof of concept no longer
-  reproduces, AND every `shell` row of the committed `golden-paths.json` beside
-  it whose platform matches this host is still permitted. `0` both hold, `10` the
-  proof still reproduces so the fix did not land, `30` a golden path is refused
-  and the rows are printed, `20` something the script owns could not be settled
-  (an absent verifier, an unreadable deny composite, a corpus that is missing,
-  will not load, or holds no row). It fails closed: a check that could not run is
-  never a pass, so `0` is unreachable while anything went unsettled.
+  a worktree it asserts THREE things: the fix stayed inside the blast radius the
+  conductor declared for it, the finding's proof of concept no longer reproduces,
+  AND every checkable row of the committed `golden-paths.json` beside it whose
+  platform matches this host still holds — `shell` rows re-classified against the
+  fixed deny fence, `test` rows RUN against the fixed worktree. `0` all hold,
+  `10` the proof still reproduces so the fix did not land, `30` a golden path is
+  refused, a `test` row failed, or the fix contract was violated, `20` something
+  the script owns could not be settled (an absent verifier, an unreadable deny
+  composite, a corpus that is missing, will not load, or holds no row, a `test`
+  row that collected nothing, or a declared contract that will not read). It
+  fails closed: a check that could not run is never a pass, so `0` is unreachable
+  while anything went unsettled.
+- `scripts/check_fix_contract.py` — the pre-fix scope gate, run by `verify_fix.py`
+  and runnable on its own. Reads `fix-contract.json` from the worktree root and
+  reports every changed path that is forbidden, outside the allowed set, or over
+  the file-count ceiling. `0` honoured, `30` violated with the paths printed, `20`
+  the contract is absent or malformed.
 
 ## The rules of engagement
 
@@ -85,7 +94,7 @@ as missing, never inferred as ready, and is a stop condition for the first round
 |---|---|---|
 | Active rules of engagement | `scripts/ledger.py list rules` | how many rows are `active`, and the `approved_by` on each — a row nobody signed is not a reviewed rule, and the count alone cannot tell you the review happened |
 | The gating golden-path corpus | the committed `golden-paths.json` beside the skill | the rows `scripts/verify_fix.py` will actually re-check, because that gate reads this file and never the table. `scripts/ledger.py list golden-paths` reports the table, which is import and dedupe state — a count there is not a corpus a fix is judged against |
-| The five scripts | the skill's `scripts/` directory | all five present and readable; an absent one is `UNKNOWN` and never permission |
+| The six scripts | the skill's `scripts/` directory | all six present and readable; an absent one is `UNKNOWN` and never permission |
 | Scope answered from the ledger | one `scripts/scope_check.py` call | NO fallback warning on stderr, AND a verdict that is not `UNKNOWN`. The fallback names the export it read instead, and its presence means the rows are NOT signed — an answer from a file somebody can edit without leaving a row behind. Silence alone is not the ready reading: an unreadable database, and a ledger whose every rule has been revoked, both answer `UNKNOWN` with no warning at all |
 
 Report the four as four readings, each with the number or the name you read. An
@@ -128,8 +137,47 @@ rules yourself.
    checks alone. Checks green proves the repository still builds; it does not
    prove the product still works, because no existing test asserts that a
    legitimate command is *not* refused. Exit 10 means the fix did not land, exit
-   30 means it broke a golden path, exit 20 means the question was not settled,
-   and none of the three is acceptance.
+   30 means it broke a golden path or left its declared scope, exit 20 means the
+   question was not settled, and none of the three is acceptance.
+
+### Declare the fix contract before you dispatch a fixer
+
+Write `fix-contract.json` into the fixer's worktree root as part of the dispatch,
+with every path relative to the target's own root:
+
+```json
+{
+  "finding_ids": [16],
+  "allowed_paths": ["<the module the fix belongs in>", "<that module's test dir>"],
+  "forbidden_paths": ["<the module last round's over-reach touched>"],
+  "max_changed_files": 3,
+  "no_new_refusal_statement": "<one sentence the fixer must keep true>"
+}
+```
+
+**Keep your own copy outside that worktree and judge against yours.** Always run
+`verify_fix.py --contract <your copy>`. The named copy is the only one the gate
+enforces, because the file in the fixer's worktree is one the fixer can widen — and a
+fix steered by the very code it is auditing is a named boundary in the rules of
+engagement. Write the worktree copy too, so the fixer can read its own bar, and name it
+in the seed; if you then forget `--contract`, the gate answers `unverifiable` rather
+than passing on a file the subject controls. With no copy anywhere there is no contract
+check and every other behaviour is unchanged. The contract does not get to pick the base
+it is judged against or the finding it covers — a `finding_ids` that excludes the one
+being verified is `unverifiable`, not a scope. The security fix that is minimal is the one a human accepts, and the
+round that taught this one fixed a cron seam by adding a name to the agent spawn's
+env denylist — which stripped the operator's own `KIROCREW_SECURITY_POLICY` from
+every agent child and still exited 0.
+
+A golden path may also be a BEHAVIOUR rather than a command: a `test` row's
+`command_or_flow` is a pytest selector, a test file or one node of it
+(`<path>/test_module.py::test_case`), which `verify_fix.py` RUNS against the fixed
+worktree — so "the operator's own env var still reaches the child" is a row the
+gate can check instead of a sentence in a review comment. A failing row is
+`broken`; one that collects nothing is `unverifiable`, never a pass. **Exit 0 now
+also means the contract was honoured and every behaviour row is green.** There is no
+flag that skips a behaviour row: one would let the fixer choose which half of the
+corpus applies to it.
 
 A gate is held by not dispatching. Never dispatch on an assumed yes, never treat
 silence as approval, and never re-scope a blocked step into something that looks

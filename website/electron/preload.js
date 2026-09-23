@@ -23,7 +23,11 @@ contextBridge.exposeInMainWorld("kirocrew", {
   // Caption controls for the frameless Linux window. macOS keeps its traffic
   // lights and Windows its titleBarOverlay when frameless; Linux gets neither,
   // so main.js injects header buttons that round-trip through this channel.
-  // The action vocabulary is validated in main.js (applyWindowControl).
+  // The splash (loading.html) also sends `close` through it on every
+  // platform, since it can be painted into a window whose native close
+  // control is hidden. The action vocabulary and the per-platform admission
+  // are validated in the main process (handleWindowControl /
+  // applyWindowControl).
   windowControl: (action) => ipcRenderer.send("window-control", String(action || "")),
 });
 

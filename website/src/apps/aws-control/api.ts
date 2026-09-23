@@ -358,6 +358,23 @@ export const awsControlApi = {
   },
 
   /**
+   * Enable/disable the nightly SESSIONS archive -- a separate grant.
+   *
+   * Its own endpoint rather than a second field on the snapshot call, so one
+   * request can never carry both grants: saying yes to uploading transcripts is
+   * meant to be its own act.
+   */
+  backupNightlySessions(
+    account: string,
+    enabled: boolean,
+  ): Promise<{ nightlySessions: boolean }> {
+    return postJson<{ nightlySessions: boolean }>(
+      `/backup/${enc(account)}/nightly-sessions`,
+      { enabled },
+    )
+  },
+
+  /**
    * Restore one archived key into a local staging folder (nothing is hot-swapped).
    *
    * `foreignOk` overrides the backend's refusal to restore any archive it cannot

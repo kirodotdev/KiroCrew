@@ -45,7 +45,7 @@ export default function RunList({
           className={
             'inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border '
             + 'bg-card px-3 py-2 text-[13px] font-medium text-text transition-colors hover:bg-bg-hover '
-            + 'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer'
+            + 'focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 cursor-pointer'
           }
         >
           <Plus size={14} aria-hidden="true" />

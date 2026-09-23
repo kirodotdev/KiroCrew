@@ -317,6 +317,29 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # directories. Called from a worker thread, never the event loop --
         # ``test/test_acp_pi_backend.py`` pins that.
         "acp/client.py::_verify_pi_gate",
+        # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -S <leaf
+        # script>``, where the script is a module-relative constant (tests pass their
+        # own stub). No agent value reaches the command, the args or the cwd -- the
+        # path to resolve travels over stdin as a length-prefixed frame, never as an
+        # argument, and no shell is involved. It is listed rather than routed because
+        # this child exists to ``lstat``/``readlink`` the very paths the
+        # sensitive-path gate is checking, sensitive ones included: under the agent
+        # sandbox it would be denied exactly those reads, and a resolver answering
+        # "cannot resolve" where the true answer is a credential symlink's target
+        # would weaken the gate rather than harden it. The env is inherited
+        # deliberately, so a path resolves in the child to what it resolves to in
+        # the parent.
+        "subprocess_pool/executor.py::_spawn",
+        # The PDF extractor child: ONE fixed argv, ``sys.executable -P -m
+        # kiro_crew.pdf_extract_child --max-chars=N --max-pages=M`` with both
+        # numbers module constants of the two callers (file-grep, knowledge
+        # ingest). The untrusted input -- the document -- travels on stdin, never
+        # on argv, cwd or env, and the env is ``scrub_env()``. It is spawned
+        # through ``popen_limited`` under ``RLIMIT_PROFILE_EXTRACTOR``, whose
+        # fixed ``RLIMIT_AS`` is the containment this spawn exists to add:
+        # ``pdfplumber`` commits a page's whole character list before any caller
+        # can measure it, so the memory bound has to sit one process down.
+        "pdf_extract.py::extract_pdf_segments",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent
@@ -370,11 +393,22 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py::_git",
         "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py::setUp",
         # Diagnostics support-bundle version probe: fixed argv
-        # ``["kiro-cli", "--version"]`` with a 5s timeout, no shell, no cwd, and
+        # ``[<kiro-cli>, "--version"]`` with a 5s timeout, no shell, no cwd, and
         # no agent-influenced args — it only stamps the collected kiro-cli
-        # version into versions.txt. The binary name is a module constant; a
-        # resource ceiling / sandbox adds nothing to a `--version` call.
+        # version into versions.txt. The binary is the absolute path
+        # ``kiro_cli.pin_kiro_cli`` returns from the known install directories
+        # with the inherited PATH excluded (no pin, no spawn), so nothing an
+        # agent can write to names the executable; a resource ceiling / sandbox
+        # adds nothing to a `--version` call.
         "diagnostics.py::_kiro_cli_version",
+        # The spec-permissions version gate: the same fixed argv
+        # ``[<kiro-cli>, "--version"]`` as the diagnostics probe above, 5s timeout,
+        # no shell, no cwd, pinned through ``pin_kiro_cli`` (no pin, no spawn), and
+        # cached per binary identity so it runs once per install rather than once
+        # per spec rebuild. Its answer decides whether ``agent.py`` writes the KAS
+        # ``permissions`` block a pre-2.23 kiro-cli refuses; nothing an agent says
+        # in a turn reaches the argv, and a sandbox adds nothing to ``--version``.
+        "kiro_cli.py::installed_kiro_cli_version",
         # Tailnet origin derivation + forwarded-peer whois (RFC:
         # rfc-tailnet-dashboard-access): one fixed argv — ``["<tailscale>",
         # "status", "--json"]`` or ``["<tailscale>", "whois", "--json",
@@ -410,14 +444,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``capabilities.tailnet_origin`` ceiling at the enforcement call, and
         # never reached from a tool dispatch path.
         "dashboard/tailnet_serve.py::_run",
-        # PID-reuse guard for the app-backend reap, moved out of
-        # ``apps/backend.py::_proc_start_time`` so Windows gets a real answer
-        # instead of a blanket None. Only the macOS/other-POSIX arm spawns, and
-        # it is the same fixed ``ps -o lstart= -p <pid>`` argv the backend used
-        # before: no shell, the binary comes from ``trusted_system_bin`` rather
-        # than PATH, and the sole interpolated value is a pid the gateway itself
-        # recorded, rendered through ``str()``. Nothing here is agent-influenced.
-        "platform_compat.py::process_start_time",
+        # PID-reuse guard for app-backend reap and source-stable Browser
+        # descendant checks. Only the macOS/other-POSIX arm spawns, and it uses
+        # the fixed ``ps -o lstart= -p <pid>`` argv: no shell, the binary comes
+        # from ``trusted_system_bin`` rather than PATH, and the sole interpolated
+        # value is a pid the gateway itself recorded, rendered through ``str()``.
+        # Nothing here is agent-influenced.
+        "platform_compat.py::_process_lstart",
         "apps/backend.py::_resolve_nvm_path",
         # py-spy attach for `kirocrew perf sample --pid`: fixed list-argv (no
         # shell=True), binary resolved via shutil.which rather than from input,
@@ -509,6 +542,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # it, and it runs once per process (lru_cache) to name the code revision the
         # MCP gateway daemon and its owner compare.
         "code_fingerprint.py::_git_fingerprint",
+        # Fixed `git log -1 --format=%ct` argv (shell=False), run against the same
+        # `code_fingerprint._PACKAGE_ROOT` the entry above uses, and derived from
+        # `__file__` rather than from any request. No agent-influenced input reaches
+        # the command, the args or the cwd: `debug_gateway` takes no parameters at
+        # all. It answers HEAD's commit time so the route can say whether the running
+        # gateway predates the caller's fix, and it is bounded by a 5s timeout with
+        # every failure answering None.
+        "dashboard/handlers/debug.py::_head_commit_time",
         # Fixed `git rev-parse --verify` argv (shell=False) against the OPERATOR-chosen
         # clone, asking whether the operator's `scopeDiffBase` resolves. The ref comes from
         # config (`_CONFIG_WRITABLE`), not from the agent, and it is passed as one argv
@@ -940,6 +981,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/dev_fleet/npm_preflight.py::_extract",
         "apps/builtins/dev_fleet/npm_preflight.py::_install_already_proven",
         "apps/builtins/dev_fleet/npm_preflight.py::probe",
+        # _scratch_name_is_ignored decides WHERE the probe's scratch may live, and
+        # is the fourth spawn of the same probe -- so it is already inside the
+        # sandbox server.py applied to the sync step, exactly as the three above.
+        # It spawns `<git> -C <repo> check-ignore -q --no-index <name>` from the
+        # same sources: the binary is the sync's _trusted_bin git (never a PATH
+        # search), the repo is the operator-configured checkout, the four flags are
+        # literals, and <name> is `_SCRATCH_PREFIX` plus a fixed literal suffix --
+        # a module-level constant, not a path any caller supplies and not a path
+        # that exists. It only READS: `check-ignore` resolves the ignore rules and
+        # answers in its exit code, writing nothing. An unanswerable exit is read
+        # as "not ignored", so a blocked or failing spawn can only make the probe
+        # fall back to TMPDIR, never widen what it may touch.
+        "apps/builtins/dev_fleet/npm_preflight.py::_scratch_name_is_ignored",
         # _frontend_build_already_current is the STRONGER build-skip predicate
         # that wraps _install_already_proven (listed directly above) and adds one
         # read-only spawn: `<git> -C <repo> rev-parse <ref>:website`. Same three
@@ -1207,6 +1261,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cloud/source.py::_git_tracked_files",
         "cloud/source.py::_tracked_tree_is_dirty",
         "cloud/source.py::_use_git_archive",
+        # Release-tag probe before a packaged install's cloud launch: `<trusted
+        # git> ls-remote --exit-code --tags -- <repo> refs/tags/<ref>`, a fixed
+        # argv with no shell. The binary comes from
+        # `platform_compat.trusted_git_bin` (never PATH); `ref` is built by
+        # `release_channel.release_refs` from this build's own `__version__`
+        # through a `\d+\.\d+\.\d+` regex, and `repo` is the template's public
+        # URL or a caller argument `ec2.deploy` charset-validates -- neither is
+        # agent-reachable. Env drops every inherited `GIT_*` and pins global /
+        # system config off; stdin is DEVNULL; the exit code is the only thing
+        # read. Same classification as the `cloud/source.py` git probes above.
+        "cloud/ec2.py::release_tag_exists",
         # Windows tunnel teardown: `taskkill /T /F /PID <pid>`, a fixed argv whose
         # only variable is the pid of a child THIS process created (the Popen handed
         # to kill_port_forward) -- never agent-supplied, no shell, no PATH shim
@@ -1219,6 +1284,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cloud/ssm.py::_kill_tree_windows",
         "cloud/ssm.py::_run_install_command",
         "cloud/ssm.py::open_port_forward",
+        # Local identity probe: `<resolved kiro-cli> whoami --format json`, a
+        # fixed argv with no shell and no agent-reachable input — the binary
+        # comes from `kiro_cli.resolve_kiro_cli` (the same resolution every
+        # other kiro-cli spawn uses), stdin is DEVNULL and the output is only
+        # parsed, never executed. Same classification as the whoami probes
+        # in `cloud/ssm.py` above.
+        "cloud/login_target.py::discover_local_identity",
         "dashboard/chat_voice.py::api_voice_voices",
         # Computer-use permission probe: `<our own kirocrew binary> computer
         # doctor --json`, a fixed argv (module constants) with no shell and no
@@ -1320,6 +1392,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "imessage/rpc.py::start",
         "mcp_core.py::_get_ppid",
         "mcp_gateway/backend.py::spawn_backend",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``), used here only to drive the one-shot
+        # ``_ping_async`` coroutine from a synchronous CLI path -- ``kirocrew
+        # doctor`` and ``kirocrew stop`` have no event loop of their own. The
+        # coroutine opens a local endpoint (``AF_UNIX`` socket or named pipe) and
+        # exchanges two frames with a daemon that is already running; no child
+        # process is created and there is no argv to sandbox. Same classification
+        # as the other ``asyncio.run`` sites in this list.
+        "mcp_gateway/daemon_control.py::_ping",
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
@@ -1380,8 +1461,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # only caller-supplied element is the path being revealed — which is
         # passed as a later argv element, never as the command.
         "platform_compat.py::open_with_default_app",
-        "platform_compat.py::_posix_process_parent_map",
-        "platform_compat.py::find_port_listeners",
+        # Read-only process-table snapshot through the trusted absolute ``ps``
+        # binary. It uses fixed argv, no shell or cwd, and accepts no agent input.
+        # It cannot route through sandbox because sandbox imports this module.
+        "platform_compat.py::_posix_process_snapshot",
+        "platform_compat.py::probe_port_listeners",
         # Read-only kernel socket attribution: trusted absolute lsof binary,
         # fixed flags and a validated numeric port, no shell/user command.
         "platform_compat.py::_macos_tcp_peer_pid",
@@ -1486,6 +1570,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "session_pid.py::_our_orphan_pids",
         "session_pid.py::find_orphan_mcp_candidates",
         "session_pid.py::kill_orphan_mcps",
+        # The abandoned-agent-scope reaper's two systemctl calls are gateway
+        # maintenance against this install's own units, not agent work. The binary
+        # comes only from platform_compat.trusted_system_bin("systemctl")'s fixed
+        # system directories; a miss returns without spawning, so PATH and agent
+        # input cannot choose it. Argv is fixed `--user show` / `--user stop`
+        # apart from a unit name enumerated from this install's own per-instance
+        # `kirocrew-agents-<token>.slice` cgroup tree. The unit is one separate
+        # list-argv element, shell is never enabled, and no cwd is passed.
+        "session_scope_reap.py::_scope_active_enter_us",
+        "session_scope_reap.py::_systemctl_stop",
         "slack/gateway.py::_auto_apply_update",
         # Wheel/cli.sh auto-update: runs the signed installer command
         # (composed locally from a validated channel name and https-pinned
@@ -2420,8 +2514,9 @@ def test_harness_preflight_seed_is_fixed_argv():
     ]
     assert len(calls) == 1
     expected = ast.parse(
-        "subprocess.run([sys.executable, '-c', "
-        "'from kiro_crew.seed import seed; import sys; seed(sys.argv[1])', fixture], "
+        "subprocess.run(platform_compat.isolated_python_argv('-c', "
+        "'from kiro_crew.seed import seed; import sys; seed(sys.argv[1])', fixture, "
+        "force_isolation=True), "
         "cwd=str(spawn_cwd), env=env, capture_output=True, text=True, "
         "encoding='utf-8', errors='replace', timeout=30)",
         mode="eval",

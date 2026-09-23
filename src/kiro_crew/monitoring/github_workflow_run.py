@@ -27,6 +27,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -34,6 +35,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 from kiro_crew.github_runner import SetupError, resolve_gh, run_gh
+from kiro_crew.monitoring.github_provider_errors import (
+    PROVIDER_REASON_BY_KIND,
+    REASON_SHARED_COOLDOWN,
+    classify_cli_error,
+    shared_cooldown,
+    shared_cooldown_summary,
+)
 from kiro_crew.monitoring.models import (
     MonitorObservation,
     MonitorObservationStatus,
@@ -159,6 +167,9 @@ class GitHubWorkflowRunProvider:
         """Return one canonical run-completion observation."""
         try:
             target = parse_github_workflow_run_target(raw_target)
+            cooldown = _shared_cooldown(time.time())
+            if cooldown is not None:
+                return _shared_cooldown_result(cooldown)
             gh = self._resolver()
             proc = self._runner(
                 [
@@ -343,52 +354,22 @@ def _process_failure(
     if proc.returncode == 0:
         return None
     kind = _classify_cli_error(proc.stderr if isinstance(proc.stderr, str) else "")
-    reasons = {
-        ProviderErrorKind.RATE_LIMITED: "provider_rate_limited",
-        ProviderErrorKind.AUTHENTICATION: "provider_authentication",
-        ProviderErrorKind.AUTHORIZATION: "provider_authorization",
-        ProviderErrorKind.NOT_FOUND: "provider_not_found",
-        ProviderErrorKind.TRANSIENT: "provider_transient",
-    }
-    return _provider_error(kind, reasons[kind])
+    return _provider_error(kind, PROVIDER_REASON_BY_KIND[kind])
 
 
-def _classify_cli_error(raw: str) -> ProviderErrorKind:
-    lowered = raw.lower()
-    if any(marker in lowered for marker in ("rate limit", "abuse detection", "too many requests")):
-        return ProviderErrorKind.RATE_LIMITED
-    status_match = _HTTP_STATUS_RE.search(raw)
-    if status_match is not None:
-        status = int(status_match.group(1), 10)
-        if status == 429:
-            return ProviderErrorKind.RATE_LIMITED
-        if status == 401:
-            return ProviderErrorKind.AUTHENTICATION
-        if status == 403:
-            return ProviderErrorKind.AUTHORIZATION
-        if status == 404:
-            return ProviderErrorKind.NOT_FOUND
-        if status >= 500:
-            return ProviderErrorKind.TRANSIENT
-    if "could not resolve host" in lowered:
-        return ProviderErrorKind.TRANSIENT
-    if "http 429" in lowered:
-        return ProviderErrorKind.RATE_LIMITED
-    if any(
-        marker in lowered
-        for marker in ("bad credentials", "authentication", "not logged into", "gh auth login")
-    ):
-        return ProviderErrorKind.AUTHENTICATION
-    if any(
-        marker in lowered for marker in ("not found", "could not resolve to a", "no runs found")
-    ):
-        return ProviderErrorKind.NOT_FOUND
-    if any(
-        marker in lowered
-        for marker in ("forbidden", "permission", "resource not accessible", "saml")
-    ):
-        return ProviderErrorKind.AUTHORIZATION
-    return ProviderErrorKind.TRANSIENT
+# ``gh`` stderr classification and the process-wide ``github:api`` cooldown are
+# shared with the sibling monitor (``monitoring.github_provider_errors``); the
+# module-level names stay so tests and callers address them per monitor.
+_classify_cli_error = classify_cli_error
+_shared_cooldown = shared_cooldown
+
+
+def _shared_cooldown_result(retry_at: float) -> GitHubWorkflowRunProbeResult:
+    return _provider_error(
+        ProviderErrorKind.RATE_LIMITED,
+        REASON_SHARED_COOLDOWN,
+        summary=shared_cooldown_summary(retry_at),
+    )
 
 
 def _transient_os_error(error: BaseException | None) -> bool:
@@ -425,7 +406,9 @@ def _provider_exception_error(error: BaseException) -> GitHubWorkflowRunProbeRes
     return _provider_error(kind, reason)
 
 
-def _provider_error(kind: ProviderErrorKind, reason_code: str) -> GitHubWorkflowRunProbeResult:
+def _provider_error(
+    kind: ProviderErrorKind, reason_code: str, *, summary: str = ""
+) -> GitHubWorkflowRunProbeResult:
     return GitHubWorkflowRunProbeResult(
         response=None,
         canonical={},
@@ -434,5 +417,6 @@ def _provider_error(kind: ProviderErrorKind, reason_code: str) -> GitHubWorkflow
             MonitorObservationStatus.PROVIDER_ERROR,
             provider_error=kind,
             reason_code=reason_code,
+            summary=summary,
         ),
     )

@@ -62,7 +62,7 @@ function SlotPicker({ prompt, onClose }: { prompt: Prompt; onClose: () => void }
       <div role="button" tabIndex={0} className="px-2 py-1 mx-1 rounded-md cursor-pointer text-[13px] text-accent font-medium hover:bg-bg-hover transition-colors" onClick={() => send()} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); send() } }}>{i18nT('pages.overview.promptsTab.new_chat')}</div>
       {slots.map(s => (
         <div key={s.key} role="button" tabIndex={0} className="px-2 py-1.5 mx-1 rounded-md cursor-pointer text-[13px] hover:bg-bg-hover transition-colors flex items-center gap-2" onClick={() => send(s.key)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); send(s.key) } }}>
-          {s.running && <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />}
+          {s.running && <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />}
           <span className="truncate">{s.title && s.title !== s.key ? s.title : s.agent || s.key}</span>
         </div>
       ))}

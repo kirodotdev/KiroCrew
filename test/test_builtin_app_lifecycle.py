@@ -363,6 +363,8 @@ class TestBuiltinConfigSyncHoldsBothConfigLocks:
         request = AsyncMock()
         request.match_info = {"name": name}
         request.app = {"state": state} if state is not None else {}
+        # No app identity: the enable route refuses app tokens outright.
+        request.get = lambda key, default=None: default
         return request
 
     @staticmethod

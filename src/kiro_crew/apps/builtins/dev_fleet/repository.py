@@ -212,6 +212,25 @@ def _configured_main_repo() -> str:
     return configured.strip() if isinstance(configured, str) else ""
 
 
+def _configured_main_repo_checked() -> tuple[str, bool]:
+    """``_configured_main_repo``'s answer, and whether the config read was whole.
+
+    An env-set path is read off this process's own environment, which no other
+    writer can be observed half-way through, so that route always reports a whole
+    read. For the config route the flag is ``_load_dev_fleet_cfg_checked``'s own,
+    because an unreadable ``config.json`` and one naming no path both resolve to
+    ``""`` here -- the verbatim contract above cannot express "the file did not
+    parse", and a caller comparing this value against a previous one must not read
+    that as the operator having cleared the path.
+    """
+    explicit = os.environ.get("KIROCREW_DEVFLEET_REPO", "").strip()
+    if explicit:
+        return explicit, True
+    section, whole = _load_dev_fleet_cfg_checked()
+    configured = section.get("repo_path")
+    return (configured.strip() if isinstance(configured, str) else ""), whole
+
+
 def _repo_source_hint() -> str:
     """Where the current MAIN_REPO came from, phrased as the remedy to apply.
 
@@ -231,7 +250,7 @@ def _repo_source_hint() -> str:
     )
 
 
-def _discover_main_repo() -> str:
+def _discover_main_repo(configured: str | None = None) -> str:
     """Resolve the main checkout, or ``""`` when there is none to find.
 
     Blocking (config read + stats) — executor only; ``dev_fleet_startup`` calls
@@ -243,8 +262,16 @@ def _discover_main_repo() -> str:
     ``""`` means "no checkout found" and is deliberately not a path: inventing
     one made the out-of-the-box dashboard report a checkout as missing that the
     user had never asked for, hiding the real question of where theirs lives.
+
+    ``configured`` lets a caller that has already read tier 2 hand its snapshot in
+    rather than paying a second read. That is not only cheaper, it closes a window:
+    two reads of one file can disagree, and a caller that acted on the first while
+    this function acted on the second could latch an INFERRED checkout on the
+    strength of a configured path the first read had seen. Passing ``None`` reads it
+    here, which is what a caller holding no snapshot wants.
     """
-    configured = _configured_main_repo()
+    if configured is None:
+        configured = _configured_main_repo()
     if configured:
         return configured
     for candidate in (
@@ -287,36 +314,138 @@ def _default_main_repo_state() -> tuple[str, bool]:
 MAIN_REPO, MAIN_REPO_INFERRED = _default_main_repo_state()
 BASE_BRANCH = "main"
 
-# --- full discovery, once per process ---
+# --- full discovery: once per process, or once per attempt while unresolved ---
 _DISCOVERY_DONE = False
 _DISCOVERY_LOCK: asyncio.Lock | None = None
+# The configured string the latching attempt read. `_invalid_resolution_is_stale`
+# compares against THIS rather than against `MAIN_REPO`, because `MAIN_REPO` is
+# `_resolve_primary_checkout` OF it and that rewrites a linked worktree to its
+# primary -- so an operator whose path needs rewriting would differ on every poll
+# and pay a re-resolution for a config nobody touched.
+_LATCHED_CONFIGURED = ""
+
+
+def _invalid_resolution_is_stale() -> bool:
+    """True when a latched INVALID path differs from the operator's current config.
+
+    A found-but-invalid path is truthy, so it latches like any other resolution and
+    ``_repo()`` raises ``RepoUnreadable`` against it. The config tier re-reads
+    ``config.json`` on every call, so an operator who corrects a typo changes the
+    answer this process resolves to, and holding the old verdict freezes a state the
+    operator can still change -- the one shape this chain exists to remove. Reopening
+    on a changed string alone keeps the resolved-and-valid case at its single guard
+    and costs no git and no stats.
+
+    Blocking (reads the config files) -- executor ONLY, matching every other reader
+    of ``config.json`` here. An env-set path cannot change inside one process, so
+    this answers False for it and no retry fires.
+
+    A read that did not parse answers False as well. An unreadable ``config.json``
+    yields the same ``""`` as one naming no path, so treating that as a change would
+    reopen the latch on evidence nobody read: the reopened discovery would find no
+    configured path, fall through to the INFERRED tiers, and latch a checkout the
+    operator never named while their own setting sat in a file this process merely
+    failed to read. Only a whole read can say the operator's answer changed.
+    """
+    if not (_DISCOVERY_DONE and _REPO_INVALID_MSG and MAIN_REPO):
+        return False
+    configured, whole = _configured_main_repo_checked()
+    if not whole:
+        return False
+    return configured != _LATCHED_CONFIGURED
 
 
 async def ensure_main_repo_discovered() -> None:
-    """Run the complete main-checkout discovery chain exactly once in this process.
+    """Resolve the main checkout, and keep trying while there is none to find.
 
     The backend runs it from ``server.dev_fleet_startup``; the GATEWAY runs it lazily
     from its in-gateway cutover route (``gateway_routes._ensure_repo``), because
     ``_make_live`` validates its target against the discovered worktree set and the
-    gateway never ran the backend's startup hook. Idempotent and single-flight, so
-    two first requests do not race the globals below.
+    gateway never ran the backend's startup hook; and ``/api/fleet`` runs it per poll
+    while nothing is resolved, so a user who answers the setup card stops seeing that
+    card without restarting the gateway. Single-flight, so several concurrent first
+    requests run discovery once between them rather than racing the globals below.
 
-    Discovery runs on a local so the global is written exactly once — this keeps the
-    function out of the ``MAIN_REPO`` AST ratchet's allowlist: nothing here reads the
-    bare global, so a git call added to discovery (where it is most often still
-    unresolved) cannot consume it unnoticed.
+    Latched only once a checkout RESOLVED. An unresolved process has no answer worth
+    keeping — there is no fleet to serve, and the answer changes the moment the
+    operator writes ``dev_fleet.repo_path`` — so trying again is the point. Only that
+    half self-heals: ``_load_dev_fleet_cfg`` re-reads ``config.json`` on every call,
+    whereas ``KIROCREW_DEVFLEET_REPO`` is read off THIS process's environment, which
+    no outside shell can change, so setting the variable still requires a restart and
+    always will. A resolved path that FAILS the marker test latches
+    too, and renders its own banner naming the path and the remedy rather than asking
+    for a restart. That latch is reopened by ``_invalid_resolution_is_stale`` once the
+    configured string changes: the config tier is re-read per call, so an operator who
+    corrects a typo would otherwise meet exactly the frozen banner this chain removes
+    for the not-found case. An env-set path cannot change inside one process, so the
+    reopening never fires for it.
+
+    Every global written here is a function of THIS attempt alone, including
+    ``_REPO_INVALID_MSG``, which an unresolved attempt clears instead of inheriting.
+    That is what makes a second attempt safe to run at all: the shape to avoid is a
+    later attempt assigning ``MAIN_REPO`` while an earlier attempt's validation
+    verdict survives beside it, because then ``_repo()`` hands out a path whose
+    markers were never checked — and ``worktree remove``, ``update-ref -d``,
+    ``pull --ff-only`` and ``pip install -e`` run inside whatever that is.
+
+    Discovery runs on a local so the global is written exactly once per attempt —
+    this keeps the function out of the ``MAIN_REPO`` AST ratchet's allowlist: nothing
+    here reads the bare global, so a git call added to discovery (where it is most
+    often still unresolved) cannot consume it unnoticed.
     """
     global _DISCOVERY_DONE, _DISCOVERY_LOCK, MAIN_REPO, MAIN_REPO_INFERRED, _REPO_INVALID_MSG
-    if _DISCOVERY_DONE:
+    global _LATCHED_CONFIGURED
+    # A latched VALID resolution is final and returns here with no await at all, so an
+    # install that has a fleet to serve pays nothing for the per-poll retry. Only the
+    # latched-INVALID state falls through, and it settles under the lock so concurrent
+    # polls share one config read rather than each taking their own.
+    if _DISCOVERY_DONE and not (_REPO_INVALID_MSG and MAIN_REPO):
         return
     if _DISCOVERY_LOCK is None:
         _DISCOVERY_LOCK = asyncio.Lock()
     async with _DISCOVERY_LOCK:
-        if _DISCOVERY_DONE:
-            return
         loop = asyncio.get_running_loop()
-        configured = await loop.run_in_executor(subprocess_executor(), _configured_main_repo)
-        discovered = await loop.run_in_executor(subprocess_executor(), _discover_main_repo)
+        if _DISCOVERY_DONE:
+            if not (_REPO_INVALID_MSG and MAIN_REPO):
+                return
+            if not await loop.run_in_executor(subprocess_executor(), _invalid_resolution_is_stale):
+                return
+        # ONE checked read, handed to discovery below rather than read again there.
+        # Two reads of one file can disagree, and the pair is what a torn write is
+        # visible through: the staleness test above could see a whole, corrected path
+        # and reopen, while a second read returned "" and sent discovery to the
+        # INFERRED tiers. That latch is VALID, so it is final -- nothing re-resolves
+        # it and only a restart clears it, with `Pull + Build` meanwhile mutating a
+        # checkout the operator never named. A partial read therefore publishes
+        # nothing: the attempt returns, and the next poll retries against a settled
+        # file.
+        configured, configured_whole = await loop.run_in_executor(
+            subprocess_executor(), _configured_main_repo_checked
+        )
+        if not configured_whole:
+            # Publish the UNRESOLVED state rather than leaving the import-time hint
+            # standing. `_repo()` gates on `MAIN_REPO` alone and never consults
+            # `_DISCOVERY_DONE`, so returning with that hint in place lets every
+            # consumer operate on a checkout this attempt could not confirm: the
+            # provisional value `_default_main_repo_state` picks before any config is
+            # read, which `dev_fleet_startup` exists to replace and normalize. An
+            # attempt that cannot read tier 2 has no basis for endorsing it, and the
+            # alternative is `Pull + Build` running inside a checkout the operator may
+            # not have chosen. Cleared, `_repo()` raises `RepoNotConfigured`, the page
+            # shows the setup card, and the next poll retries against a settled file.
+            # `_DISCOVERY_DONE` is part of that clearing. The reopen path arrives here
+            # holding it True, and the gate above returns early once the pair is empty,
+            # so leaving it set strands the very poll this branch promises and freezes
+            # the page until a restart -- the failure this whole attempt exists to end.
+            MAIN_REPO = ""
+            MAIN_REPO_INFERRED = False
+            _REPO_INVALID_MSG = None
+            _DISCOVERY_DONE = False
+            return
+        discovered = await loop.run_in_executor(
+            subprocess_executor(), _discover_main_repo, configured
+        )
+        invalid_msg: str | None = None
         if discovered:
             discovered = await loop.run_in_executor(
                 subprocess_executor(), _resolve_primary_checkout, discovered
@@ -334,7 +463,7 @@ async def ensure_main_repo_discovered() -> None:
                 subprocess_executor(),
                 lambda: (_is_kirocrew_checkout(discovered), _repo_source_hint()),
             )
-            _REPO_INVALID_MSG = (
+            invalid_msg = (
                 None
                 if valid
                 else (
@@ -344,10 +473,27 @@ async def ensure_main_repo_discovered() -> None:
             )
         MAIN_REPO = discovered
         MAIN_REPO_INFERRED = bool(discovered and not configured)
-        await _load_trusted_credential_helpers()
+        # Assigned on BOTH branches. An attempt that found nothing must not inherit
+        # an earlier attempt's invalid-path message, or `_repo()` would raise
+        # RepoUnreadable against a path this process does not hold.
+        _REPO_INVALID_MSG = invalid_msg
+        # Written with the rest of this attempt's state, so the staleness test compares
+        # against the string THIS attempt read. `MAIN_REPO` is the resolved form of it
+        # and is the wrong side of that comparison.
+        _LATCHED_CONFIGURED = configured
+        if runtime._GIT_TRUSTED_HELPERS is None:
+            # Two `git config` subprocesses, and repo-INDEPENDENT (--system and
+            # --global scope only, never repo-local), so this is a once-per-process
+            # warm rather than something a re-resolution attempt repeats. `None` is
+            # the not-yet-loaded sentinel; the loader always assigns a dict, so an
+            # operator with no helpers configured still latches at `{}`.
+            await _load_trusted_credential_helpers()
+        # Both decline to cache when `_repo()` raises and cost no subprocess in that
+        # case, so an unresolved attempt leaves them to the attempt that resolves.
         await _load_fallback_repos()
         await _upstream_remote()
-        _DISCOVERY_DONE = True
+        # The local, not the global: see the ratchet note in the docstring.
+        _DISCOVERY_DONE = bool(discovered)
 
 
 # --- upstream remote resolution (replaces hardcoded 'origin') ---
@@ -574,19 +720,31 @@ async def _load_trusted_credential_helpers() -> None:
     runtime._GIT_TRUSTED_HELPERS = extra
 
 
-def _load_dev_fleet_cfg() -> dict:
-    """Read the ``dev_fleet`` config section (config.json + local overlay),
-    lazily and best-effort. Never raises; a missing file/section -> {}. Read
-    directly rather than through KiroCrewConfig (a separate process owns the
-    validated loader) so a purely cosmetic template needs no schema dependency
-    and can never break the fleet payload."""
+def _load_dev_fleet_cfg_checked() -> tuple[dict, bool]:
+    """The ``dev_fleet`` config section, and whether every file present parsed.
+
+    Read lazily and best-effort from ``config.json`` plus its local overlay, and
+    never raising: a missing file or section gives ``{}``. Read directly rather
+    than through KiroCrewConfig (a separate process owns the validated loader) so
+    a purely cosmetic template needs no schema dependency and can never break the
+    fleet payload.
+
+    The second element is the one thing a caller cannot recover from the first. A
+    file that is present but unreadable or unparseable contributes no keys, so it
+    is indistinguishable from a file that simply carries none -- and a caller that
+    decides something on a CHANGE in a value needs those two apart, because a read
+    that failed is not evidence the operator cleared the setting. ``False`` means
+    at least one file that is present could not be read, so the section is a
+    partial view rather than the operator's answer.
+    """
     section: dict = {}
     try:
         from kiro_crew.config.loader import config_dir
 
         base = config_dir()
     except Exception:  # noqa: BLE001
-        return section
+        return section, False
+    whole = True
     for fname in ("config.json", "config.local.json"):
         p = base / fname
         try:
@@ -594,10 +752,20 @@ def _load_dev_fleet_cfg() -> dict:
                 continue
             raw = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            whole = False
             continue
         if isinstance(raw, dict) and isinstance(raw.get("dev_fleet"), dict):
             section.update(raw["dev_fleet"])
-    return section
+    return section, whole
+
+
+def _load_dev_fleet_cfg() -> dict:
+    """The ``dev_fleet`` config section alone, for callers that read one setting.
+
+    A caller fetching a single value wants the best-effort section and has no use
+    for whether the read was whole, so this keeps the plain signature.
+    """
+    return _load_dev_fleet_cfg_checked()[0]
 
 
 # --- worktree discovery via git worktree list --porcelain ---
@@ -637,8 +805,8 @@ def _parse_worktree_porcelain(raw: str) -> list[dict]:
     return entries
 
 
-async def _discover_worktrees() -> list[dict]:
-    """List git worktrees of MAIN_REPO."""
+async def _worktree_porcelain_entries() -> list[dict]:
+    """List all git worktree records of MAIN_REPO, including prunable entries."""
     # Nothing to discover when no checkout resolved; _repo() raises
     # RepoNotConfigured and the setup state is the caller's job.
     repo = _repo()
@@ -705,6 +873,12 @@ async def _discover_worktrees() -> list[dict]:
     # repository discovery hint).
     for i, e in enumerate(entries):
         e["is_main"] = i == 0
+    return entries
+
+
+async def _discover_worktrees() -> list[dict]:
+    """List usable git worktrees of MAIN_REPO."""
+    entries = await _worktree_porcelain_entries()
     # A `prunable` entry has no checkout on disk, so every git call against its
     # path fails and it renders as a ghost row with no branch, behind count or
     # timestamp — and no refresh ever clears it, because git keeps reporting the
@@ -1073,6 +1247,21 @@ async def _find_worktree(name: str) -> tuple[dict | None, str | None]:
     return _find_worktree_sync(wts, name)
 
 
+async def _find_retained_worktree_path(name: str) -> tuple[str | None, str | None]:
+    """Find a non-main worktree record, including a prunable checkout."""
+    matches = [
+        worktree
+        for worktree in await _worktree_porcelain_entries()
+        if not worktree.get("is_main") and Path(worktree["path"]).name == name
+    ]
+    if not matches:
+        return None, f"worktree not found: {name}"
+    if len(matches) > 1:
+        paths = ", ".join(worktree["path"] for worktree in matches)
+        return None, f"ambiguous worktree name {name!r} matches multiple checkouts: {paths}"
+    return matches[0]["path"], None
+
+
 async def _valid_worktree_names() -> set[str]:
     return {
         Path(w["path"]).name if not w.get("is_main") else BASE_BRANCH
@@ -1127,11 +1316,13 @@ __all__ = (
     "_CHECKOUT_PARENT_DIRS",
     "_DIRTY_PATH_SAMPLE",
     "_FALLBACK_REPOS",
+    "_LATCHED_CONFIGURED",
     "_REPO_INVALID_MSG",
     "_REPO_PATH_RE",
     "_UPSTREAM_REMOTE",
     "_candidate_checkouts",
     "_configured_main_repo",
+    "_configured_main_repo_checked",
     "_default_main_repo",
     "_default_main_repo_state",
     "_dirt_detail",
@@ -1142,14 +1333,17 @@ __all__ = (
     "_discover_main_repo",
     "ensure_main_repo_discovered",
     "_discover_worktrees",
+    "_find_retained_worktree_path",
     "_find_worktree",
     "_find_worktree_by_path",
     "_find_worktree_sync",
     "_git",
     "_git_ahead",
     "_git_info",
+    "_invalid_resolution_is_stale",
     "_is_kirocrew_checkout",
     "_load_dev_fleet_cfg",
+    "_load_dev_fleet_cfg_checked",
     "_load_fallback_repos",
     "_load_trusted_credential_helpers",
     "_matching_child_dirs",

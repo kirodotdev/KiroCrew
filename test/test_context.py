@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import re
+from unittest.mock import Mock, patch
 
 import pytest
 from hypothesis import given, settings
@@ -268,13 +269,13 @@ class TestContextBuilder:
         # does not perform, so the nudge has to say the card does not block, that
         # the agent ends its turn, and that [OPTIONS:] is the end-of-turn choice.
         assert "END YOUR TURN" in dash
-        assert "does not block" in dash
+        assert "NON-BLOCKING" in dash
         assert "[OPTIONS:]" in dash
         # A card is an interruption, so the nudge must also carry the restraint
         # contract: silence is the default and only a human-only decision that
         # actually blocks the work earns the interruption.
         assert "DEFAULT TO SILENCE" in dash
-        assert "human alone can make" in dash
+        assert "human-only decision" in dash
         assert "suggest_followup" in dash, "dashboard session must get the follow-up nudge"
 
         for sk in (None, "cron:job-1", "subagent:abc", "slack:C123"):
@@ -478,14 +479,17 @@ class TestContextBuilder:
             skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
         )
 
-    def test_reinjection_adds_the_skills_index_after_compaction(self, tmp_path):
-        """With the flag set on a continuing session, the index comes back
-        wrapped in the marker so the model can still discover skills."""
+    def test_reinjection_restores_skill_discovery_after_compaction(self, tmp_path):
+        """A continuing session regains default discovery, not a full catalog."""
         builder = self._reinject_builder(tmp_path)
         msg, _ = builder.build_message("carry on", is_new_session=False, needs_reinjection=True)
         assert "[REINJECTED AFTER COMPACTION" in msg
         assert "[END REINJECTED]" in msg
-        assert "widget-maker" in msg, "the re-injected block must carry the skill index"
+        assert "## Available Skills" in msg
+        assert "widget-maker" in msg
+        assert any(
+            s["name"] == "widget-maker" for s in builder.skills.search_skills("widget-maker")
+        )
 
     def test_no_reinjection_when_the_flag_is_absent(self, tmp_path):
         """The default path is unchanged — no marker, no index re-injection."""
@@ -528,6 +532,7 @@ class TestContextBuilder:
             agent="kirocrew",
         )
         assert "[REINJECTED AFTER COMPACTION" in msg
+        assert "## Available Skills" in msg
         assert "widget-maker" in msg
 
     def test_build_message_new_session(self, tmp_path):
@@ -752,7 +757,7 @@ class TestGetMemoryForVectorStore:
         try:
             default_store = MemoryStore(workspace=tmp_path / "default")
             default_store.init()
-            mock_vs = object()  # sentinel
+            mock_vs = Mock(spec=[])  # sentinel; no store operations allowed
             default_store.vector_store = mock_vs
             ctx_mod._memory_stores["default"] = default_store
 
@@ -890,7 +895,7 @@ class TestCompressThreadHistory:
 
         conv_log = ConversationLog(base_dir=tmp_path / "sessions")
         conv_log.init()
-        sessions = object()  # unused — no messages to compress
+        sessions = Mock(spec=[])  # unused — no messages to compress
         result = await compress_thread_history(conv_log, "no-thread", "hi", sessions)
         assert result is None
 
@@ -903,7 +908,7 @@ class TestCompressThreadHistory:
         conv_log.init()
         conv_log.append("t1", "user", "hello")
         conv_log.append("t1", "assistant", "hi there")
-        sessions = object()  # unused — transcript is short
+        sessions = Mock(spec=[])  # unused — transcript is short
         result = await compress_thread_history(conv_log, "t1", "hello", sessions)
         assert result is not None
         assert "hello" in result
@@ -985,6 +990,34 @@ class TestCompressThreadHistory:
             "t1", compressed_history="COMPRESSED: user asked about color, answer was blue"
         )
         assert "COMPRESSED: user asked about color" in ctx
+
+    def test_compressed_history_keeps_its_verbatim_head_up_to_its_own_cap(self, tmp_path):
+        """The compressed variant is sized to ``compressed_history``, not the
+        smaller fallback cap, so its opening verbatim head survives admission."""
+        from kiro_crew import context as ctx_mod
+        from kiro_crew.history import ConversationLog
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        conv_log.append("t1", "user", "what color?")
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            conversation_log=conv_log,
+        )
+        caps = ctx_mod._resolve_caps(200_000)
+        assert caps.compressed_history > caps.history_fallback
+        head = "## Thread start (verbatim)\nOPENING CONTEXT LINE\n"
+        filler = "compressed summary line\n"
+        body = filler * ((caps.history_fallback + 800) // len(filler))
+        assert len(head) + len(body) < caps.compressed_history
+
+        ctx = builder.build_session_context(
+            "t1", compressed_history=head + body, model_window=200_000
+        )
+
+        assert "OPENING CONTEXT LINE" in ctx
+        assert "[Older thread history omitted]" not in ctx
 
     @pytest.mark.asyncio
     async def test_compressed_output_redacts_credentials(self, tmp_path, monkeypatch):
@@ -1200,7 +1233,7 @@ class TestMultibyteSanitization:
         conv_log.init()
         conv_log.append("t1", "user", "what\u2019s the status \u2014 any update?")
         conv_log.append("t1", "assistant", "All good \u2026 no issues.")
-        sessions = object()
+        sessions = Mock(spec=[])
         result = await compress_thread_history(conv_log, "t1", "hello", sessions)
         assert result is not None
         assert "\u2019" not in result
@@ -1328,14 +1361,18 @@ class TestLoadSteeringResources:
 
 
 class TestLessonsCap:
-    def test_over_cap_injects_error_block(self, tmp_path):
-        from kiro_crew.context import _LESSONS_CAP
+    def test_over_cap_preserves_complete_explicit_rules(self, tmp_path):
+        from kiro_crew.context import _LESSONS_STARTUP_CAP
         from kiro_crew.learn import Lesson
 
         lessons = LessonStore(base_dir=tmp_path)
         # Save enough long lessons that the formatted context exceeds the cap.
+        # The budget that BINDS the startup rule tier is ``_LESSONS_STARTUP_CAP``
+        # (the window-independent authored-tier allowance passed as the startup
+        # renderers' ``directive_budget``), not the ordinary ``_LESSONS_CAP``, so
+        # the fixture is sized to overflow that one.
         rule = "x" * 1000
-        for i in range(_LESSONS_CAP // 1000 + 5):
+        for i in range(_LESSONS_STARTUP_CAP // 1000 + 5):
             lessons.save(Lesson(ts=str(i), rule=f"{i}-{rule}", category="knowledge"))
 
         builder = ContextBuilder(
@@ -1345,10 +1382,37 @@ class TestLessonsCap:
         )
         ctx = builder.build_session_context()
 
-        assert "CRITICAL ERROR — LESSONS FILE TOO LARGE" in ctx
-        assert "remain in effect" in ctx
-        assert "[lessons truncated]" in ctx
-        assert "x" * 500 in ctx  # part of the kept lessons content is still present in ctx
+        assert "CRITICAL ERROR — LESSONS FILE TOO LARGE" not in ctx
+        assert "[lessons truncated]" not in ctx
+        # The rule budget BINDS on the startup path. What it must never do is emit
+        # a partial rule: trimming is by whole entry, so every rule that appears
+        # appears in full, and the ones that did not fit are reported with exact
+        # counts instead of vanishing.
+        total = _LESSONS_STARTUP_CAP // 1000 + 5
+        # Match the whole rendered entry, not the rule text: these fixture rules
+        # are prefix-ambiguous ("0-xxx…" is a substring of "10-xxx…"), so a bare
+        # ``in`` reports a rule as present that was never emitted. Anchoring on the
+        # "- " bullet and the terminating newline both disambiguates the index AND
+        # proves the entry is complete rather than a truncated prefix.
+        entries = {i: f"- {i}-{rule}\n" for i in range(total)}
+        present = [i for i, entry in entries.items() if entry in ctx]
+        assert present, "the rule budget must still admit rules"
+        assert len(present) < total, "this fixture is sized to overflow the rule budget"
+        # FULL ACCOUNTING, which is the invariant a subset check does not carry: a
+        # subset assertion holds even if rules vanish, so the count the prompt
+        # reports as omitted must exactly equal the count missing from the prompt.
+        # Every rule is then either rendered in full or named in the notice, and a
+        # rule cannot disappear unaccounted for.
+        notice = re.search(r"omitted (\d+) of (\d+) retained rules", ctx)
+        assert notice, "an overflow must report itself"
+        omitted, reported_total = int(notice.group(1)), int(notice.group(2))
+        assert reported_total == total
+        assert len(present) + omitted == total
+        assert "read them with learn_list" in ctx
+        # And the block stays inside the budget it names.
+        start = ctx.index("[Learned corrections")
+        end = ctx.index("[End of learned corrections]", start)
+        assert end - start <= _LESSONS_STARTUP_CAP
 
     def test_under_cap_no_error_block(self, tmp_path):
         from kiro_crew.learn import Lesson
@@ -1396,6 +1460,7 @@ class TestBuildMessageOffloadedAtCallSites:
         fake_memory = MagicMock()
         fake_memory.vector_store = vector_store
         fake_memory.get_context.return_value = ""
+        fake_memory.activity_index.return_value = ""
         vector_store.get_lessons.return_value = []
 
         with patch.object(ContextBuilder, "get_memory_for", return_value=fake_memory):
@@ -1411,6 +1476,7 @@ class TestBuildMessageOffloadedAtCallSites:
         fake_memory = MagicMock()
         fake_memory.vector_store = vector_store
         fake_memory.get_context.return_value = ""
+        fake_memory.activity_index.return_value = ""
         vector_store.get_lessons.return_value = []
         vector_store.get_semantic_context.return_value = ""
 
@@ -1488,14 +1554,7 @@ class TestAsyncCallSitesUseToThread:
 
 
 class TestMemoryGetContextQueryWiring:
-    """build_session_context passes the user's message as the memory query.
-
-    Wiring ``query=query_text`` into the single ``memory.get_context()`` call
-    is what makes semantic retrieval take the ranked branch instead of recency,
-    and what lets episodic retrieval (query-gated inside ``get_context``) fire.
-    Episodic must be injected exactly once — the old sibling injection in
-    ``build_message`` is gone.
-    """
+    """Startup passes the request but disables activity; explicit readers retain it."""
 
     def _builder(self, tmp_path):
         return ContextBuilder(
@@ -1510,6 +1569,7 @@ class TestMemoryGetContextQueryWiring:
         builder = self._builder(tmp_path)
         fake_memory = MagicMock()
         fake_memory.get_context.return_value = ""
+        fake_memory.activity_index.return_value = ""
         fake_memory.vector_store = None
 
         with patch.object(ContextBuilder, "get_memory_for", return_value=fake_memory):
@@ -1518,6 +1578,7 @@ class TestMemoryGetContextQueryWiring:
         assert fake_memory.get_context.call_count == 1
         kwargs = fake_memory.get_context.call_args.kwargs
         assert kwargs["query"] == "what did we decide about paris"
+        assert kwargs["include_activity"] is False
 
     def test_an_empty_scoped_lesson_result_does_not_fall_back_to_jsonl(self, tmp_path):
         # A POPULATED vector store whose rows are all out of scope has already
@@ -1532,7 +1593,8 @@ class TestMemoryGetContextQueryWiring:
         store._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None: "",
+            get_preferences_context=lambda: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: True,
         )
         builder.lessons.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
@@ -1552,7 +1614,8 @@ class TestMemoryGetContextQueryWiring:
         store._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None: "",
+            get_preferences_context=lambda: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: False,
         )
         builder.lessons.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
@@ -1588,7 +1651,7 @@ class TestMemoryGetContextQueryWiring:
         finally:
             vector_store.close()
 
-    def test_episodic_injected_exactly_once(self, tmp_path):
+    def test_episodic_is_only_included_by_explicit_memory_reader(self, tmp_path):
         from types import SimpleNamespace
 
         builder = self._builder(tmp_path)
@@ -1596,11 +1659,13 @@ class TestMemoryGetContextQueryWiring:
         store._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "[EPISODIC-SENTINEL]",
             get_semantic_context=lambda query_text, cap: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None: "",
+            get_preferences_context=lambda: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: True,
         )
         msg, _ = builder.build_message("q", True, "s1")
-        assert msg.count("[EPISODIC-SENTINEL]") == 1
+        assert "[EPISODIC-SENTINEL]" not in msg
+        assert store.get_context(query="q").count("[EPISODIC-SENTINEL]") == 1
 
     def test_episodic_query_is_the_user_message(self, tmp_path):
         from types import SimpleNamespace
@@ -1616,10 +1681,13 @@ class TestMemoryGetContextQueryWiring:
         store._vector_store = SimpleNamespace(
             get_episodic_context=_episodic,
             get_semantic_context=lambda query_text, cap: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None: "",
+            get_preferences_context=lambda: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: True,
         )
         builder.build_message("find my tokyo notes", True, "s2")
+        assert seen == []
+        store.get_context(query="find my tokyo notes")
         assert seen == ["find my tokyo notes"]
 
 
@@ -1661,7 +1729,8 @@ class TestDurableModelVersionLessonContext:
         memory._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None: "",
+            get_preferences_context=lambda: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: False,
         )
         assert builder.lessons.save(Lesson(ts="t", rule=self.RULE, category="tool")) == "inserted"

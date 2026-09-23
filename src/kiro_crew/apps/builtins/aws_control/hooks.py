@@ -2,10 +2,17 @@
 
 One background task, started on enable, that wakes every half hour and runs
 the snapshot backup when it is due (nightly toggle on AND >23 h since the
-last run — see ``backup.due_for_nightly``). Every AWS-reaching step keeps
+last run AND not inside the retry backoff a run of failed attempts earns --
+see ``backup.due_for_nightly``). Every AWS-reaching step keeps
 the same guards the HTTP path has: consent fails closed (a silent skip plus
 a log line, never an unconfirmed charge), and the drive is tag-discovered
 per run rather than trusted from memory.
+
+The wake interval is a due-CHECK interval and never a retry interval. A failed
+attempt is recorded, by ``_failed_attempt``, so the due-check can tell a fault it
+has already met from a first one; without that record the loop re-attempted a
+deterministic failure on every wake forever, because recording only successes left
+the state file with nothing to distinguish "never ran" from "keeps breaking".
 
 The loop runs against the REGISTRY DEFAULT account only — the same account
 the consent card confirms, resolved through the same healthy-first policy, so
@@ -142,28 +149,156 @@ async def _run_once() -> None:
         logger.info("aws-control nightly: account unresolved; skipping")
         return
     account = identity.account
-    if not await asyncio.to_thread(backup_mod.due_for_nightly, account):
+    # Two independent grants, each read on its own. A wake proceeds when EITHER
+    # is due, so a snapshot that already ran today cannot swallow the window the
+    # transcripts were authorized for -- and neither bit is ever inferred from
+    # the other.
+    snapshot_due = await asyncio.to_thread(backup_mod.due_for_nightly, account)
+    sessions_due = await asyncio.to_thread(backup_mod.due_for_sessions_nightly, account)
+    if not snapshot_due and not sessions_due:
+        # Say why when the grant is on and something else is withholding the run.
+        # Without this the operator who turned transcripts on, and then turned
+        # outbound redaction on, sees a nightly that silently never runs and no
+        # statement anywhere of which of their two settings withheld it.
+        if await asyncio.to_thread(backup_mod.nightly_sessions_enabled, account):
+            gap = await asyncio.to_thread(backup_mod._unattended_sessions_redaction_gap)
+            if gap:
+                logger.info("aws-control nightly: transcripts withheld -- %s", gap)
         return
     allowed = await aws_consent.refuse_and_log(
         aws_consent.SERVICE_S3, profile=profile, region=region
     )
     if not allowed:
         return  # refuse_and_log already logged + audited
+    # The kinds this wake is actually for, derived once. The shared setup below
+    # can fail before any push, and a failure there must name the kinds that were
+    # due rather than one fixed kind: a transcripts-only wake reaches the same
+    # block, so a hardcoded `backup/snapshots` would record a snapshot that was
+    # never due, and the SEL trail is append-only. Deriving the list here also
+    # means the subjects a failure is audited against and the kinds actually
+    # pushed below cannot drift apart -- they are the same list.
+    due_kinds = [
+        kind
+        for kind, is_due in (
+            (backup_mod.KIND_SNAPSHOT, snapshot_due),
+            (backup_mod.KIND_SESSIONS, sessions_due),
+        )
+        if is_due
+    ]
+    # The run slot's identity per due kind, read BEFORE anything is attempted. This is
+    # the window a failure write has to be judged against: a run recorded inside it is
+    # positive evidence that backups are reaching the drive, and the recorder refuses to
+    # write a failure over it. Captured here rather than inside the handler because by
+    # then the window has closed.
+    witnesses = {
+        kind: await asyncio.to_thread(backup_mod.nightly_run_witness, account, kind)
+        for kind in due_kinds
+    }
     try:
         bucket = await asyncio.to_thread(storage_mod.find_drive, profile, region, account=account)
         if not bucket:
             logger.info("aws-control nightly: no drive bucket yet; skipping")
             return
         await _note_shared_drive(profile, region, bucket, account)
+    except asyncio.CancelledError:
+        for kind in due_kinds:
+            _audit("backup_nightly", _audit_subject(kind), "cancelled")
+        raise
+    except Exception as exc:
+        for kind in due_kinds:
+            await _failed_attempt(kind, account, exc, witnesses[kind])
+        logger.warning("aws-control nightly backup failed", exc_info=True)
+        return
+    for kind in due_kinds:
+        await _push_nightly(kind, account, profile, region, bucket)
+
+
+def _audit_subject(kind: str) -> str:
+    """The SEL subject for one backup kind.
+
+    One spelling, used by the shared setup's failure handlers and by
+    :func:`_push_nightly` alike. Two copies of this expression is how a run's
+    setup failure and its push end up filed under different subjects for the
+    same kind, which is exactly the misattribution this exists to prevent.
+    """
+    return f"backup/{backup_mod.KIND_SUBPATHS[kind]}"
+
+
+async def _failed_attempt(
+    kind: str,
+    account: str,
+    exc: BaseException,
+    run_witness: Any,
+) -> None:
+    """Audit one kind's failed unattended attempt AND record it. One spelling.
+
+    The two live together because they are two halves of the same fact, and they had
+    different fates before this existed: the audit went to SEL, where a human reads
+    it after the event, and nothing at all went to state, where the loop reads it on
+    the next wake. So a nightly failing deterministically produced a growing pile of
+    ``failed`` audit records and a due-check that could not see any of them, and
+    re-attempted every half hour indefinitely -- staging the whole data home into a
+    fresh temporary directory each time, and burying every other warning in the
+    gateway log at that cadence.
+
+    ONE helper rather than the same pair written at each site, for the reason
+    :func:`_audit_subject` itself gives: this module has two places a nightly attempt
+    can fail -- the shared setup, and each kind's own push -- and two copies is how
+    one of them ends up auditing a failure it never counted, or counting one it never
+    audited. The backoff would then depend on WHICH way the run broke.
+
+    ``run_witness`` is ``backup.nightly_run_witness`` read BEFORE the attempt began, and
+    the recorder refuses to write when the run slot has moved since. Every caller reads
+    it at the top of its own attempt rather than here, because by the time this helper
+    runs the attempt is already over and the window it has to witness has closed.
+
+    Cancellation deliberately does NOT come here. A cancelled attempt is teardown,
+    not a fault: the owner disabled the app or the gateway is stopping, and counting
+    that as a failed attempt would have a clean shutdown push the next night out.
+    Those branches keep their own audit call and record nothing.
+    """
+    _audit("backup_nightly", _audit_subject(kind), "failed", error=str(exc))
+    # Off the loop, like every other state read in this module: the recorder takes
+    # the sidecar lock and rewrites the document, which is real blocking file I/O.
+    await asyncio.to_thread(
+        functools.partial(
+            backup_mod.record_nightly_failure,
+            account,
+            kind,
+            str(exc),
+            run_witness=run_witness,
+        )
+    )
+
+
+async def _push_nightly(kind: str, account: str, profile: str, region: str, bucket: str) -> None:
+    """Push one due nightly kind, audited around the call.
+
+    Each kind gets its OWN try/except rather than sharing one. The two payloads
+    have nothing in common but the drive they land in, so a snapshot that fails
+    must not cost the transcripts their window, and the reverse. A shared handler
+    would turn one failure into two skipped nights.
+    """
+    subject = _audit_subject(kind)
+    # Read before the attempt, for the reason `_run_once` gives at its own capture:
+    # the window this witnesses is the attempt's whole duration, so it cannot be
+    # read from the handler after the attempt has ended.
+    run_witness = await asyncio.to_thread(backup_mod.nightly_run_witness, account, kind)
+    runner = (
+        backup_mod.run_snapshot_backup
+        if kind == backup_mod.KIND_SNAPSHOT
+        else backup_mod.run_sessions_backup
+    )
+    try:
         # The nightly path never touches an HTTP handler, so the audit the
         # dashboard layer adds to every owner-driven mutation is simply absent
         # here -- an unattended export would leave no SEL trace of having run,
         # succeeded or failed. Emit the same three-part record the handlers do,
         # around the call, so the trail does not depend on who triggered it.
-        _audit("backup_nightly", "backup/snapshots", "invoked")
+        _audit("backup_nightly", subject, "invoked")
         record = await asyncio.to_thread(
             functools.partial(
-                backup_mod.run_snapshot_backup,
+                runner,
                 account,
                 profile,
                 region,
@@ -174,14 +309,26 @@ async def _run_once() -> None:
                 caller=backup_mod.CALLER_SCHEDULED,
             )
         )
-        _audit("backup_nightly", str(record.get("key", "")), "succeeded")
-        logger.info("aws-control nightly backup pushed: %s", record.get("key", ""))
+        if record.get("uploaded") is False:
+            # A run that found the tree unchanged sent nothing, so recording it as a
+            # push would put a SEL entry and a log line against a key no bytes reached
+            # tonight -- indistinguishable, to whoever reads the audit trail, from an
+            # ordinary upload. The key is still named because it is the archive this
+            # run stood on: it is what the drive still holds for this kind.
+            _audit("backup_nightly", str(record.get("key", "")), "unchanged")
+            logger.info(
+                "aws-control nightly backup: tree unchanged since %s, nothing uploaded",
+                record.get("key", ""),
+            )
+        else:
+            _audit("backup_nightly", str(record.get("key", "")), "succeeded")
+            logger.info("aws-control nightly backup pushed: %s", record.get("key", ""))
     except asyncio.CancelledError:
-        _audit("backup_nightly", "backup/snapshots", "cancelled")
+        _audit("backup_nightly", subject, "cancelled")
         raise
     except Exception as exc:
-        _audit("backup_nightly", "backup/snapshots", "failed", error=str(exc))
-        logger.warning("aws-control nightly backup failed", exc_info=True)
+        await _failed_attempt(kind, account, exc, run_witness)
+        logger.warning("aws-control nightly backup failed: %s", kind, exc_info=True)
 
 
 async def _loop() -> None:

@@ -20,18 +20,25 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_LAUNCH,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_CONTEXT_RECYCLE,
+    ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
+    ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
+    ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_DISPATCH,
@@ -40,13 +47,18 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
-    acp_runtime_backends,
+    ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
+    ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
     effort_config_option_id,
+    effort_config_option_value,
     model_registry_namespace,
+    overlay_project_scope,
     selectable_backends,
 )
 
@@ -57,6 +69,9 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
 # docstring for why neither module is a legal home for the set form.
 from kiro_crew.agent_sdk.host_auth import (  # noqa: E402,F401 - re-exported for importers
     backends_retired_by_host_logout,
+)
+from kiro_crew.recovery.ladder import (  # noqa: E402 - see the re-export note above
+    SESSION_RECOVERY_MAX_ATTEMPTS,
 )
 
 # ── ACP Event Kinds ──
@@ -91,6 +106,12 @@ EVENT_SUBAGENT_ACTIVITY = "subagent_activity"
 EVENT_STEER_QUEUED = "steer_queued"
 EVENT_STEER_CONSUMED = "steer_consumed"
 EVENT_STEER_CLEARED = "steer_cleared"
+#: A typed :class:`StructuredStatus` from the EXECUTION LAYER (the versioned
+#: ``kirocrew/status`` extension on a routed ``session/update`` frame, or the
+#: watchdog's own post-stall classification). Never derived from model text —
+#: see :meth:`StructuredStatus.from_meta` and the origin rule in
+#: ``AcpSessionHandle._handle_update``.
+EVENT_STRUCTURED_STATUS = "structured_status"
 
 # ── ACP Protocol Methods ──
 
@@ -123,12 +144,25 @@ METHOD_SESSION_TERMINATE = "_kiro.dev/session/terminate"
 #: ``terminate`` exists for, and the record is what would otherwise accumulate.
 #: Takes the same ``{"sessionId": ...}`` params and is idempotent.
 METHOD_KAS_SESSION_DELETE = "_kiro/session/delete"
+#: The STANDARD ACP evict verb, for a host that implements it. codex-acp does: it
+#: drops the session from its local map and unsubscribes the Codex thread, so the
+#: sessionId stops answering while the thread's own record survives on the Codex
+#: side -- the same evict-not-delete shape as kiro-cli's ``terminate``. A REQUEST,
+#: answered with ``{}``; sent as a notification the adapter ignores it and the
+#: session stays resident, which is the leak this verb exists to close. Also
+#: idempotent: closing an already-closed id answers ``{}`` again. Measured live
+#: against codex-acp 1.11.0; the gated test
+#: ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts`` re-runs
+#: that measurement on every install that has the adapter.
+METHOD_SESSION_CLOSE = "session/close"
 METHOD_COMPACTION_STATUS = "_kiro.dev/compaction/status"
 METHOD_CLEAR_STATUS = "_kiro.dev/clear/status"
 METHOD_AGENT_SWITCHED = "_kiro.dev/agent/switched"
 METHOD_MCP_OAUTH_REQUEST = "_kiro.dev/mcp/oauth_request"
 METHOD_MCP_SERVER_INITIALIZED = "_kiro.dev/mcp/server_initialized"
 METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
+METHOD_KAS_MCP_STATUS = "_kiro/mcp/status"
+METHOD_KAS_TOOLS_CHANGED = "_kiro/tools/didChange"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
@@ -159,21 +193,32 @@ TODO_TEXT_MAX = 500
 
 # Capabilities we advertise during `initialize`.
 #
-# `elicitation` is a deliberate forward-bet: kiro-cli 2.14.0 compiles the
-# `elicitation/create` schema (form + url modes) and gates it on this
-# capability, but does NOT yet route an MCP server's `elicitation/create` out
-# over ACP — a stub MCP server issuing one gets back
-# `-32601 method not found`. Declaring support costs nothing today and means
-# the agent can start using the richer prompt the moment kiro-cli ships the
-# bridge.
+# Nothing is advertised that has no inbound handler. Kiro Crew serves exactly one
+# server-initiated request, `session/request_permission`; everything else reaches
+# `_reject_unknown_server_request` and comes back `-32601 method not found`.
 #
-# `fs` and `terminal` stay false: KiroCrew does not serve the agent's file or
-# terminal requests over ACP — the agent uses its own tools for that, and
-# advertising them would invite requests we have no handler for.
+# `elicitation` was declared here as a forward-bet on kiro-cli routing an MCP
+# server's `elicitation/create` out over ACP. It is withdrawn because the bet is
+# not free, which is what the bet assumed. A client that sees the capability
+# routes its human-in-the-loop prompts through `elicitation/create` INSTEAD of
+# falling back to `session/request_permission` -- codex-acp gates exactly that
+# way on `clientCapabilities.elicitation.form` -- so declaring a capability we do
+# not serve does not sit inert waiting for a handler. It replaces a path that
+# works with one that returns an error, and the client reads that error as a
+# cancellation of the tool call the human was approving.
+#
+# So the declaration goes back to honest, and every affected client returns to the
+# fallback that already works. Re-add the key in the same change that registers a
+# handler for it, never before: `test_acp_client_capabilities.py` fails if the two
+# drift apart again.
+#
+# `fs` and `terminal` stay false for the same reason, and always have: Kiro Crew
+# does not serve the agent's file or terminal requests over ACP -- the agent uses
+# its own tools for that, and advertising them would invite requests we have no
+# handler for.
 ACP_CLIENT_CAPABILITIES: dict = {
     "fs": {"readTextFile": False, "writeTextFile": False},
     "terminal": False,
-    "elicitation": {"form": {}, "url": {}},
 }
 
 # ── ACP Backend Identifiers ──
@@ -216,6 +261,26 @@ PROVIDER_LABEL_OPENCODE = "opencode"
 PROVIDER_LABEL_PI = "pi"
 PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
+
+#: Backend id -> its label. The mapping is what ``provider_label`` resolves
+#: through, so a harness's label and the answer a session persists under are one
+#: fact rather than a constant here and a branch in ``providers.acp``. Closed on
+#: purpose: an id absent from it persists as a kiro session, which is why
+#: ``test_harness_parity`` asserts the keys are exactly ``ACP_BACKENDS_KNOWN``.
+#:
+#: kiro-cli's own id is the empty string and its label is the DEFAULT, so it is a
+#: row here like every other harness rather than the value a missing row falls
+#: back to -- the fallback exists for an id this build does not know at all.
+PROVIDER_LABEL_BY_BACKEND: dict = {
+    ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
+    ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
+    ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
+    ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
+    ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
+    ACP_BACKEND_PI: PROVIDER_LABEL_PI,
+    ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
+    ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
+}
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under
@@ -333,6 +398,115 @@ STOP_REASON_TOOL_STALL = "error: tool stall"
 # it deliberately triggers NO retry — the user-visible compaction notice
 # already explains what happened, and this only releases the slot.
 STOP_REASON_COMPACTION_FAILED = "error: compaction failed"
+
+# ── Stop-reason classes ──
+#
+# ``EVENT_COMPLETE`` only says a stream/turn ENDED; it is not proof the work
+# succeeded. Every entry that consumes a completion (main chat, sub-agent run,
+# nested child, task runner) maps the raw ``stop_reason`` onto ONE of these
+# classes through :func:`classify_stop_reason`, so the terminal/wait state a
+# task lands in cannot drift between entries. The classes are the task-level
+# vocabulary of ``docs/system-specs/modules/subagent.md`` ("Stop reason →
+# state"): ``succeeded`` is a normal end of turn; ``stalled`` and
+# ``recovering`` are RECOVERABLE (bounded continue-nudge budget, then
+# ``failed``); ``cancelled`` and ``failed`` are terminal.
+STOP_CLASS_SUCCEEDED = "succeeded"
+STOP_CLASS_STALLED = "stalled"
+STOP_CLASS_RECOVERING = "recovering"
+STOP_CLASS_CANCELLED = "cancelled"
+STOP_CLASS_FAILED = "failed"
+
+#: Bounded continue-nudge budget shared by every entry that recovers a
+#: ``stalled`` / ``recovering`` completion. The main chat's
+#: ``slot._tool_stall_retries`` and the sub-agent run's ``_stop_recovery_used``
+#: both count against this same number, so a wedged turn is retried the same
+#: number of times whichever surface it runs on. The number itself is the
+#: recovery ladder's L3 in-place budget (``recovery.ladder``), the one place
+#: every session-level retry count is defined; this name is its re-export for
+#: the stop-reason consumers.
+STOP_RECOVERY_MAX_RETRIES = SESSION_RECOVERY_MAX_ATTEMPTS
+
+#: Prefix of the "error:" family (transport / process failures the ACP layer
+#: synthesises a completion for). Kept as one literal so no consumer spells
+#: ``startswith("error:")`` on its own.
+_STOP_REASON_ERROR_PREFIX = "error:"
+
+
+@dataclass(frozen=True)
+class StopClass:
+    """Classification of one ``EVENT_COMPLETE.stop_reason``.
+
+    ``name`` is one of the ``STOP_CLASS_*`` constants. ``recoverable`` is True
+    exactly for ``stalled`` and ``recovering``: the turn may be continued IN
+    PLACE (a continue-nudge on the same session, never a verbatim re-run of
+    the original task) within :data:`STOP_RECOVERY_MAX_RETRIES`, after which
+    the run is ``failed``. ``retryable`` is True for the generic ``error:``
+    family — an infrastructure failure the caller may re-queue the ORIGINAL
+    message for (pipe death, process exit) — and False for a refusal, a
+    non-transient compaction failure and an unknown reason, which repeat
+    identically. ``known`` is False for a reason this table does not
+    recognise; such a reason is still classified ``failed`` so it can never be
+    mistaken for success, and callers may log it as unexpected.
+    """
+
+    name: str
+    stop_reason: str
+    recoverable: bool = False
+    retryable: bool = False
+    known: bool = True
+
+    @property
+    def is_success(self) -> bool:
+        return self.name == STOP_CLASS_SUCCEEDED
+
+    @property
+    def is_terminal_failure(self) -> bool:
+        return self.name == STOP_CLASS_FAILED
+
+
+def classify_stop_reason(
+    stop_reason: str | None,
+    *,
+    compaction_transient: bool = False,
+) -> StopClass:
+    """Map a raw ACP ``stop_reason`` onto its :class:`StopClass`.
+
+    The single mapping every completion consumer uses (see the table in
+    ``docs/system-specs/modules/subagent.md``):
+
+    - ``end_turn`` / absent → ``succeeded``
+    - ``error: tool stall`` → ``stalled`` (recoverable)
+    - ``stale_recover`` → ``recovering`` (recoverable)
+    - ``cancelled`` → ``cancelled``
+    - ``error: compaction failed`` → ``failed``, or ``recovering`` when the
+      ACP layer recorded the compaction failure as transient
+      (*compaction_transient*)
+    - ``refusal`` → ``failed`` (never retried: the same prompt refuses again)
+    - any other ``error:*`` → ``failed`` (retryable: transport / process death)
+    - anything else → ``failed``, ``known=False``
+
+    An absent reason (``""``/``None``) is a normal end of turn: providers that
+    never populate the field would otherwise fail every run.
+    """
+    reason = stop_reason or ""
+    if reason in ("", STOP_REASON_END_TURN):
+        return StopClass(STOP_CLASS_SUCCEEDED, reason)
+    if reason == STOP_REASON_TOOL_STALL:
+        return StopClass(STOP_CLASS_STALLED, reason, recoverable=True)
+    if reason == STOP_REASON_STALE_RECOVER:
+        return StopClass(STOP_CLASS_RECOVERING, reason, recoverable=True)
+    if reason == STOP_REASON_CANCELLED:
+        return StopClass(STOP_CLASS_CANCELLED, reason)
+    if reason == STOP_REASON_COMPACTION_FAILED:
+        if compaction_transient:
+            return StopClass(STOP_CLASS_RECOVERING, reason, recoverable=True)
+        return StopClass(STOP_CLASS_FAILED, reason)
+    if reason == STOP_REASON_REFUSAL:
+        return StopClass(STOP_CLASS_FAILED, reason)
+    if reason.startswith(_STOP_REASON_ERROR_PREFIX):
+        return StopClass(STOP_CLASS_FAILED, reason, retryable=True)
+    return StopClass(STOP_CLASS_FAILED, reason, known=False)
+
 
 # ── Approval Modes ──
 
@@ -661,6 +835,10 @@ class AcpEvent:
     #: classification (cache hit), not the miss-default False.
     raw_params_trusted: bool = False
     shell_classified: bool = False
+    #: tool_identity_trusted: tool_name below came from a provenance-verified
+    #: adapter-authored identity channel, never a title or inline fallback.
+    #: Security gates must require this flag in addition to a recognized name.
+    tool_identity_trusted: bool = False
     #: mcp_identity_trusted: mcp_server_name/tool_name below were populated
     #: from a provenance-verified source — the origin-scoped tool_call caches
     #: (permission path) or ``_meta.kiro`` on the tool_call frame itself —
@@ -670,14 +848,15 @@ class AcpEvent:
     #: fails CLOSED (identity not counted as verified) instead of silently
     #: passing on non-emptiness alone.
     mcp_identity_trusted: bool = False
-    # Canonical, NON-model-authored tool identity from ``_meta.kiro`` (see
-    # ``_dispatch._kiro_tool_name``). ``title`` is LLM-authored prose — for shell
-    # tools ``select_tool_title`` even prefers the model's ``description`` — so a
-    # security gate MUST key on these, never on ``title``. ``mcp_server_name`` is
-    # populated ONLY for MCP-served tools (empty for built-ins/shell), so a
-    # non-empty value is the trusted signal "a real MCP tool call" rather than a
-    # forged shell result. Empty when the backend does not emit ``_meta.kiro``
-    # (fail-closed: callers that gate on these get no match).
+    # Canonical, NON-model-authored tool identity from adapter-authored
+    # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
+    # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``
+    # even prefers the model's ``description`` — so a security gate MUST key on
+    # these, never on ``title``. ``mcp_server_name`` is populated ONLY for
+    # MCP-served tools (empty for built-ins/shell), so a non-empty value is the
+    # trusted signal "a real MCP tool call" rather than a forged shell result.
+    # Empty when the backend emits neither trusted harness channel (fail-closed:
+    # callers that gate on these get no match).
     tool_name: str = ""
     mcp_server_name: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
@@ -688,6 +867,13 @@ class AcpEvent:
     # (no previous content). ``diff_path`` is the path from the content block.
     diff_old_text: str | None = None
     diff_path: str = ""
+    #: The typed status carried by an ``EVENT_STRUCTURED_STATUS`` event, and
+    #: attached to a tool-stall ``EVENT_COMPLETE`` when the watchdog classified
+    #: the stall (``wait_reason=waiting_input``, ``safe_retry``). ``None`` on
+    #: every other event. Populated ONLY by the execution layer — never from a
+    #: text chunk — so a consumer may trust ``wait_reason`` without re-checking
+    #: provenance.
+    status: "StructuredStatus | None" = None
 
     @property
     def shell_command(self) -> str | None:
@@ -1156,3 +1342,194 @@ class AcpPromptStats:
         else:
             self.context_window_tokens = 0
             self.context_pct = 0.0
+
+
+# ── Structured status protocol (``kirocrew/status`` extension, version 1) ──
+#
+# ACP ``session/update`` carries tool-call start/complete and agent text;
+# ``_kiro.dev/metadata`` carries the harness ``stopReason``; MCP
+# ``notifications/progress`` is routed per request. None of them carries a WAIT
+# REASON or a resume condition, so one versioned extension is added. It rides
+# under ``params._meta[STATUS_EXTENSION_KEY]`` on a ``session/update`` frame and
+# is TRUSTED ONLY FROM THE EXECUTION LAYER: the runtime accepts it from a frame
+# routed to the session it names, never from a fanned-out frame and never from
+# agent text (``AcpSessionHandle._handle_update`` enforces the origin rule; this
+# module only owns the shape and the version gate). The MCP side — the same
+# object under ``_meta.kirocrew_status`` on a ``notifications/progress``
+# sibling — is documented in ``docs/system-specs/modules/acp-client.md`` and is
+# NOT parsed here yet (the gateway stub is frozen for this PR).
+
+STATUS_EXTENSION_KEY = "kirocrew/status"
+STATUS_EXTENSION_VERSION = 1
+
+STATUS_PHASE_STARTING = "starting"
+STATUS_PHASE_RUNNING = "running"
+STATUS_PHASE_WAITING = "waiting"
+STATUS_PHASE_RECOVERING = "recovering"
+STATUS_PHASES: frozenset[str] = frozenset(
+    {STATUS_PHASE_STARTING, STATUS_PHASE_RUNNING, STATUS_PHASE_WAITING, STATUS_PHASE_RECOVERING}
+)
+
+#: Wait reasons — the taskq wait-state vocabulary (SPEC-ADDENDUM §1). A
+#: ``waiting`` phase names exactly one of these; any other phase leaves it "".
+WAIT_REASON_INPUT = "waiting_input"
+WAIT_REASON_PERMISSION = "waiting_permission"
+WAIT_REASON_DEPENDENCY = "waiting_dependency"
+WAIT_REASON_CHILDREN = "waiting_children"
+WAIT_REASON_RETRY = "retry_wait"
+WAIT_REASONS: frozenset[str] = frozenset(
+    {
+        WAIT_REASON_INPUT,
+        WAIT_REASON_PERMISSION,
+        WAIT_REASON_DEPENDENCY,
+        WAIT_REASON_CHILDREN,
+        WAIT_REASON_RETRY,
+    }
+)
+
+#: ``StructuredStatus.origin`` values. ``execution_layer`` is the only origin a
+#: consumer may act on for a wait; ``liveness_oracle`` marks the watchdog's own
+#: post-stall classification (evidence-based, no harness cooperation).
+STATUS_ORIGIN_EXECUTION_LAYER = "execution_layer"
+STATUS_ORIGIN_LIVENESS_ORACLE = "liveness_oracle"
+
+#: ``StructuredStatus.progress_source`` values.
+PROGRESS_SOURCE_TOOL_OUTPUT = "tool_output"
+PROGRESS_SOURCE_STREAM_EVENT = "stream_event"
+PROGRESS_SOURCE_CHECKPOINT = "checkpoint"
+PROGRESS_SOURCE_PROCESS_EVIDENCE = "process_evidence"
+
+_STATUS_STR_FIELDS = (
+    "task_id",
+    "session_id",
+    "parent_id",
+    "tool_call_id",
+    "phase",
+    "wait_reason",
+    "dependency_scope",
+    "progress_source",
+    "checkpoint_ref",
+)
+_STATUS_BOOL_FIELDS = ("cancellable", "resumable", "safe_retry")
+_STATUS_STR_MAX = 512
+
+
+@dataclass(frozen=True)
+class StructuredStatus:
+    """One ``kirocrew/status`` (version 1) record.
+
+    Identity: ``task_id`` / ``session_id`` / ``parent_id`` / ``tool_call_id`` /
+    ``generation``. Lifecycle: ``phase`` (one of ``STATUS_PHASES``) and, when
+    waiting, ``wait_reason`` (one of ``WAIT_REASONS``), ``dependency_scope`` and
+    ``retry_at`` (epoch seconds, or None). Progress provenance:
+    ``progress_source``. Capabilities the SCHEDULER may rely on:
+    ``cancellable`` / ``resumable`` / ``safe_retry`` — each defaults to False so
+    an emitter that says nothing grants nothing (a status that is uncertain
+    must not invent a recoverable capability). ``checkpoint_ref`` names a
+    checkpoint / partial result. ``origin`` is stamped by the consumer that
+    validated the frame, never read from the wire.
+    """
+
+    version: int = STATUS_EXTENSION_VERSION
+    task_id: str = ""
+    session_id: str = ""
+    parent_id: str = ""
+    tool_call_id: str = ""
+    generation: int = 0
+    phase: str = STATUS_PHASE_RUNNING
+    wait_reason: str = ""
+    dependency_scope: str = ""
+    retry_at: float | None = None
+    progress_source: str = ""
+    cancellable: bool = False
+    resumable: bool = False
+    safe_retry: bool = False
+    checkpoint_ref: str = ""
+    origin: str = STATUS_ORIGIN_EXECUTION_LAYER
+    #: Free-text evidence for a ``liveness_oracle``-origin status (the oracle's
+    #: evidence string). Empty for a wire-parsed status: the wire carries no
+    #: prose field, on purpose.
+    evidence: str = ""
+
+    @property
+    def is_waiting(self) -> bool:
+        return self.phase == STATUS_PHASE_WAITING and bool(self.wait_reason)
+
+    @classmethod
+    def from_meta(cls, meta: object) -> "tuple[StructuredStatus | None, str]":
+        """Parse ``params._meta`` into a status, or explain why not.
+
+        Returns ``(status, "")`` on success and ``(None, reason)`` otherwise.
+        ``reason`` is a closed set of short tokens: ``absent`` (no extension
+        key — the ordinary case, never logged), ``not_object``,
+        ``version_unsupported``, ``phase_invalid``, ``wait_reason_invalid``.
+        Pure shape + version gate; it does NOT decide provenance (the caller
+        knows which frame the meta came from — see the origin rule in
+        ``AcpSessionHandle._handle_update``).
+
+        Field handling is fail-closed: unknown fields are ignored, a string
+        field that is not a string is dropped (""), a capability that is not a
+        bool is False, ``generation`` that is not an int is 0, ``retry_at`` that
+        is not a finite number is None. An unsupported version is rejected
+        WHOLE — a consumer must not act on half of a newer schema.
+        """
+        if not isinstance(meta, dict):
+            return None, "absent"
+        raw = meta.get(STATUS_EXTENSION_KEY)
+        if raw is None:
+            return None, "absent"
+        if not isinstance(raw, dict):
+            return None, "not_object"
+        version = raw.get("version")
+        if not isinstance(version, int) or isinstance(version, bool):
+            return None, "version_unsupported"
+        if version != STATUS_EXTENSION_VERSION:
+            return None, "version_unsupported"
+        strs: dict[str, str] = {}
+        for name in _STATUS_STR_FIELDS:
+            value = raw.get(name)
+            strs[name] = value[:_STATUS_STR_MAX] if isinstance(value, str) else ""
+        phase = strs["phase"] or STATUS_PHASE_RUNNING
+        if phase not in STATUS_PHASES:
+            return None, "phase_invalid"
+        wait_reason = strs["wait_reason"]
+        if phase == STATUS_PHASE_WAITING:
+            if wait_reason not in WAIT_REASONS:
+                return None, "wait_reason_invalid"
+        else:
+            # A wait reason outside the waiting phase is noise, not a wait.
+            wait_reason = ""
+        generation_raw = raw.get("generation")
+        generation = (
+            generation_raw
+            if isinstance(generation_raw, int) and not isinstance(generation_raw, bool)
+            else 0
+        )
+        retry_raw = raw.get("retry_at")
+        retry_at: float | None = None
+        if isinstance(retry_raw, (int, float)) and not isinstance(retry_raw, bool):
+            retry_f = float(retry_raw)
+            if retry_f == retry_f and retry_f not in (float("inf"), float("-inf")):
+                retry_at = retry_f
+        bools = {name: raw.get(name) is True for name in _STATUS_BOOL_FIELDS}
+        return (
+            cls(
+                version=version,
+                task_id=strs["task_id"],
+                session_id=strs["session_id"],
+                parent_id=strs["parent_id"],
+                tool_call_id=strs["tool_call_id"],
+                generation=generation,
+                phase=phase,
+                wait_reason=wait_reason,
+                dependency_scope=strs["dependency_scope"],
+                retry_at=retry_at,
+                progress_source=strs["progress_source"],
+                cancellable=bools["cancellable"],
+                resumable=bools["resumable"],
+                safe_retry=bools["safe_retry"],
+                checkpoint_ref=strs["checkpoint_ref"],
+                origin=STATUS_ORIGIN_EXECUTION_LAYER,
+            ),
+            "",
+        )

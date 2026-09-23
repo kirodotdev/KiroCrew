@@ -24,26 +24,33 @@ env = _member_env
 
 
 @pytest.mark.asyncio
-async def test_private_snapshot_validates_once_but_rechecks_each_opened_file(env, monkeypatch):
+async def test_member_snapshot_combines_guarded_manual_files_and_database_history(env, monkeypatch):
     import kiro_crew.memory as module
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
-    for day in ("2026-09-01", "2026-09-02"):
-        (memory._history_dir / f"{day}.md").write_text(f"Decision on {day}", encoding="utf-8")
+    memory._memory_dir.mkdir(exist_ok=True)
+    memory._preferences_file.write_text("Prefer concise replies", encoding="utf-8")
+    memory._projects_file.write_text("Project Atlas", encoding="utf-8")
+    memory.append_history("Decision from the member database")
     validate = MagicMock(wraps=memory_stores.require_memory_store)
     opened = MagicMock(wraps=module.fd_real_path)
     monkeypatch.setattr(memory_stores, "require_memory_store", validate)
     monkeypatch.setattr(module, "fd_real_path", opened)
     snapshot = memory.markdown_snapshot()
-    assert len(snapshot["history"]) == 2
-    validate.assert_called_once_with("member-alice")
+    assert len(snapshot["history"]) == 1
+    assert "Decision from the member database" in snapshot["history"][0]["content"]
+    assert not memory._history_dir.exists()
+    assert snapshot["preferences"]["content"] == "Prefer concise replies"
+    assert snapshot["projects"]["content"] == "Project Atlas"
+    validate.assert_not_called()
     assert opened.call_count >= 2
-    config = KiroCrewConfig.load()
-    del config.agents["alice"]
-    config.save()
-    with pytest.raises(memory_stores.UnknownMemoryStore, match="exclusively"):
-        memory.read_history_entries()
-    assert validate.call_count == 2  # no admission survives into another request
+    unavailable = MagicMock(side_effect=AssertionError("manual profile read consulted database"))
+    monkeypatch.setattr(module, "require_memory_ready", unavailable)
+    monkeypatch.setattr(memory_stores, "require_memory_store", unavailable)
+    memory.vector_store = None
+    assert memory.read_preferences() == "Prefer concise replies"
+    assert memory.read_projects() == "Project Atlas"
+    unavailable.assert_not_called()
 
 
 def test_eviction_releases_private_resident_data_without_touching_peer_or_disk(env, monkeypatch):
@@ -73,12 +80,12 @@ async def test_late_named_store_construction_cannot_republish_after_eviction(env
     loop = asyncio.get_running_loop()
     store = MagicMock()
 
-    def initialize():
+    def initialize(*args, **kwargs):
         loop.call_soon_threadsafe(entered.set)
         assert release.wait(5)
+        return store
 
-    store.init.side_effect = initialize
-    monkeypatch.setattr("kiro_crew.vector_memory.VectorMemoryStore", lambda **kwargs: store)
+    monkeypatch.setattr("kiro_crew.vector_memory.open_member_database", initialize)
     monkeypatch.setattr("kiro_crew.embeddings.model_file_present", lambda: False)
     monkeypatch.setattr("kiro_crew.embeddings.reconcile_store_embedding_space", lambda store: 0)
     monkeypatch.setattr(context, "_vector_stores", {})
@@ -98,7 +105,7 @@ async def test_late_named_store_construction_cannot_republish_after_eviction(env
         await asyncio.gather(task, return_exceptions=True)
 
 
-def test_archived_private_store_stays_visible_but_is_not_a_routine_backup_target(env):
+def test_unreferenced_member_store_is_retained_but_not_a_routine_backup_target(env):
     config = KiroCrewConfig.load()
     del config.agents["alice"]
     config.save()
@@ -130,7 +137,13 @@ def test_stopping_after_an_atomic_backup_never_prunes_or_starts_another_store(en
     prune.assert_not_called()
 
 
-def test_automatic_backups_preserve_v1_and_archived_backups_while_manual_v1_still_works(env):
+def test_automatic_backups_cover_default_and_named_v1_and_preserve_archived_backups(env):
+    """The unattended sweep copies the default store, not only member silos.
+
+    The default store is the one every install has and the one that cannot be
+    rebuilt from anywhere else; a sweep that enumerated it and then skipped it
+    left the largest store with no copy. Archived member backups stay untouched.
+    """
     config = KiroCrewConfig.load()
     config.memory_stores["legacy-team"] = MemoryStoreConfig(memory_version=1)
     config.save()
@@ -151,36 +164,20 @@ def test_automatic_backups_preserve_v1_and_archived_backups_while_manual_v1_stil
     config = KiroCrewConfig.load()
     del config.agents["bob"]
     config.save()
-    preserved_dirs = [memory_backup.backup_dir_for(path) for path in v1_paths]
-    preserved_dirs.append(archived_backup.parent)
+    archived_dir = archived_backup.parent
 
-    def preserved_inventory():
-        return {
-            directory: (
-                directory.stat().st_mtime_ns,
-                {path.name: path.read_bytes() for path in directory.iterdir()},
-            )
-            for directory in preserved_dirs
-        }
+    def archived_inventory():
+        return {path.name: path.read_bytes() for path in archived_dir.iterdir()}
 
-    before = preserved_inventory()
+    before = archived_inventory()
     active_path = env.tiers["member-alice"]._db_path
     preferences = active_path.parent / "memory" / "preferences.md"
     preferences.parent.mkdir(exist_ok=True)
     preferences.write_text("Alice keeps private deployment notes", encoding="utf-8")
-    result = memory_backup.back_up_all_stores(keep=1, now=now, private_only=True)
-    assert result == {"backed_up": 1, "skipped": 2, "pruned": 0, "failed": 0}
-    assert preserved_inventory() == before
-    [active_backup] = memory_backup.list_backups(active_path)
-    with zipfile.ZipFile(active_backup) as archive:
-        manifest = json.loads(archive.read("snapshot-manifest.json"))
-        assert manifest["store"] == "member-alice" and manifest["owner_member"] == "alice"
-        assert archive.read("memory/preferences.md") == preferences.read_bytes()
-        assert "memory.db" in archive.namelist()
-
-    # The explicit all-store helper retains V1 copying and its requested retention.
-    result = memory_backup.back_up_all_stores(keep=1, now=now)
-    assert result == {"backed_up": 2, "skipped": 1, "pruned": 4, "failed": 0}
+    # The heartbeat's call shape: retention plus a stop flag, nothing narrowing the set.
+    result = memory_backup.back_up_all_stores(keep=1, now=now, should_stop=lambda: False)
+    assert result == {"backed_up": 3, "skipped": 0, "pruned": 4, "failed": 0}
+    assert archived_inventory() == before
     for path, expected in zip(v1_paths, ("Global", "Legacy team"), strict=True):
         [backup] = memory_backup.list_backups(path)
         assert backup.name.startswith("memory.20260908T000000000000Z-")
@@ -190,7 +187,37 @@ def test_automatic_backups_preserve_v1_and_archived_backups_while_manual_v1_stil
                 "SELECT value_json FROM semantic_memory WHERE key='project.backup_scope'"
             ).fetchone()
             assert json.loads(value) == expected
-    assert preserved_inventory()[archived_backup.parent] == before[archived_backup.parent]
+    [active_backup] = memory_backup.list_backups(active_path)
+    with zipfile.ZipFile(active_backup) as archive:
+        manifest = json.loads(archive.read("snapshot-manifest.json"))
+        assert manifest["store"] == "member-alice" and manifest["member_id"] == "alice"
+        assert archive.read("memory/preferences.md") == preferences.read_bytes()
+        assert "memory.db" in archive.namelist()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_backup_pass_copies_the_default_store(env):
+    """The heartbeat's own pass leaves a restorable copy of the default store.
+
+    Regression pin for the sweep that enumerated the default store and then
+    skipped it: an install with no member had no automatic memory backup at all.
+    """
+    default_path = env.tiers[""]._db_path
+    env.tiers[""].set_semantic("project.backup_scope", "Global", 1.0, "user_explicit")
+    assert memory_backup.list_backups(default_path) == []
+    service = HeartbeatService(MagicMock())
+    try:
+        await service._back_up_memory()
+    finally:
+        service.stop()
+    [backup] = memory_backup.list_backups(default_path)
+    assert backup.parent == memory_backup.backup_dir_for(default_path)
+    with closing(sqlite3.connect(backup.as_uri() + "?mode=ro", uri=True)) as db:
+        [value] = db.execute(
+            "SELECT value_json FROM semantic_memory WHERE key='project.backup_scope'"
+        ).fetchone()
+    assert json.loads(value) == "Global"
+    assert memory_backup.list_backups(env.tiers["member-alice"]._db_path)
 
 
 @pytest.mark.asyncio
@@ -198,10 +225,13 @@ async def test_first_eligible_heartbeat_schedules_one_backup_without_blocking_ti
     started, release, finished = asyncio.Event(), threading.Event(), threading.Event()
     loop = asyncio.get_running_loop()
     observed_stop = []
-    observed_private_only = []
+    observed_kwargs = []
 
-    def copy(keep, *, should_stop, private_only):
-        observed_private_only.append(private_only)
+    def copy(keep, **kwargs):
+        # The scheduled call carries retention and a stop flag only: no keyword
+        # that narrows the set, so the default store is in the sweep.
+        observed_kwargs.append(sorted(kwargs))
+        should_stop = kwargs["should_stop"]
         loop.call_soon_threadsafe(started.set)
         try:
             assert release.wait(5)
@@ -222,7 +252,7 @@ async def test_first_eligible_heartbeat_schedules_one_backup_without_blocking_ti
     try:
         await service._beat()
         await asyncio.wait_for(started.wait(), 5)
-        assert observed_private_only == [True]
+        assert observed_kwargs == [["should_stop"]]
         task = service._memory_backup_task
         service._tick = 30
         await service._beat()

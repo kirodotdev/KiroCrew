@@ -6,10 +6,27 @@ import type { WorkerPoolManager } from '@pierre/diffs/worker'
  *  so surfaces stay in app-owned plain text until reload. */
 export type WorkerPoolPhase = 'unsupported' | 'unavailable' | 'starting' | 'ready' | 'recovering'
 
+export type WorkerPoolFailureClassification =
+  | 'error'
+  | 'messageerror'
+  | 'postMessage throw'
+  | 'init timeout'
+
+export interface WorkerPoolFailureCause {
+  classification: WorkerPoolFailureClassification
+  message: string
+}
+
+export interface WorkerPoolFailure extends WorkerPoolFailureCause {
+  generation: number
+  attempt: number
+}
+
 export interface WorkerPoolSnapshot {
   phase: WorkerPoolPhase
   generation: number
   pool?: WorkerPoolManager
+  failure?: WorkerPoolFailure
 }
 
 export interface WorkerPoolHandle {
@@ -23,7 +40,40 @@ export interface WorkerPoolLifecycleOptions {
   retryDelaysMs: readonly number[]
   cooldownMs: number
   stableAfterMs: number
-  warn?: (reason?: unknown) => void
+  onUnavailable?: (failure: WorkerPoolFailure) => void
+}
+
+const FAILURE_MESSAGE_MAX = 300
+
+function isFailureClassification(value: unknown): value is WorkerPoolFailureClassification {
+  return value === 'error'
+    || value === 'messageerror'
+    || value === 'postMessage throw'
+    || value === 'init timeout'
+}
+
+function failureMessage(reason: unknown): string {
+  let message = ''
+  if (reason instanceof Error) message = reason.message
+  else if (typeof reason === 'string') message = reason
+  else if (reason !== undefined && reason !== null) {
+    try {
+      message = JSON.stringify(reason) ?? String(reason)
+    } catch {
+      message = String(reason)
+    }
+  }
+  return message.replace(/\s+/g, ' ').trim().slice(0, FAILURE_MESSAGE_MAX)
+}
+
+function normalizeFailure(reason: unknown): WorkerPoolFailureCause {
+  if (reason && typeof reason === 'object') {
+    const candidate = reason as Partial<WorkerPoolFailureCause>
+    if (isFailureClassification(candidate.classification)) {
+      return { classification: candidate.classification, message: failureMessage(candidate.message) }
+    }
+  }
+  return { classification: 'error', message: failureMessage(reason) }
 }
 
 /**
@@ -36,9 +86,9 @@ export interface WorkerPoolLifecycleOptions {
  * `ready` only after the complete generation initializes. That readable boundary
  * is why recovery owns replaceable manager generations instead of restoring the
  * simpler sticky `disableWorkerPool` latch, which cannot rebind mounted renderers.
- * Late events carry
- * their generation and cannot retire a newer pool. Repeated startup failures use short retries followed by a cooldown so
- * a broken worker bundle cannot churn indefinitely.
+ * Late events carry their generation and cannot retire a newer pool. Repeated
+ * startup failures use short retries followed by a cooldown so a broken worker
+ * bundle cannot churn indefinitely.
  */
 export class WorkerPoolLifecycle {
   private readonly listeners = new Set<() => void>()
@@ -47,7 +97,6 @@ export class WorkerPoolLifecycle {
   private timer: ReturnType<typeof setTimeout> | undefined
   private stabilityTimer: ReturnType<typeof setTimeout> | undefined
   private consecutiveFailures = 0
-  private warned = false
   private attemptingGeneration: number | undefined
 
   constructor(private readonly options: WorkerPoolLifecycleOptions) {
@@ -77,17 +126,19 @@ export class WorkerPoolLifecycle {
     }
 
     this.consecutiveFailures += 1
+    const failure: WorkerPoolFailure = {
+      ...normalizeFailure(reason),
+      generation,
+      attempt: this.consecutiveFailures,
+    }
     const retryIndex = this.consecutiveFailures - 1
     const inCooldown = retryIndex === this.options.retryDelaysMs.length
     const exhausted = retryIndex > this.options.retryDelaysMs.length
 
-    if (!this.warned) {
-      this.warned = true
-      this.options.warn?.(reason)
-    }
     this.publish({
       phase: exhausted ? 'unavailable' : 'recovering',
       generation,
+      failure,
     })
 
     // Publishing first makes mounted imperative Pierre instances unmount into
@@ -101,7 +152,14 @@ export class WorkerPoolLifecycle {
 
     // One half-open attempt follows the cooldown. If it also fails, remain in
     // app-owned plain text until reload instead of spawning workers forever.
-    if (exhausted) return
+    if (exhausted) {
+      try {
+        this.options.onUnavailable?.(failure)
+      } catch {
+        // Diagnostics must never keep the lifecycle from settling terminal.
+      }
+      return
+    }
     const delayMs = inCooldown
       ? this.options.cooldownMs
       : this.options.retryDelaysMs[retryIndex]
@@ -143,7 +201,6 @@ export class WorkerPoolLifecycle {
           this.stabilityTimer = undefined
           if (generation === this.snapshot.generation && this.snapshot.phase === 'ready') {
             this.consecutiveFailures = 0
-            this.warned = false
           }
         }, this.options.stableAfterMs)
       }

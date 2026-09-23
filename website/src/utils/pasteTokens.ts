@@ -1,4 +1,5 @@
 import { safeSetItem } from './safeStorage'
+import { mergeRecoveredDraft } from './chatDrafts'
 /**
  * Paste-token utilities.
  *
@@ -102,6 +103,64 @@ export function remapCarriedBlocks(
     out = out.slice(0, start) + formatToken({ ...block, seq: mapped }) + out.slice(end)
   }
   return { text: out, blocks }
+}
+
+/**
+ * Bring the blocks behind a payload being handed back (`carried`, the ones its
+ * tokens in `text` point at) into a composer that already holds `kept` blocks.
+ *
+ * The one owner of the recovery rule every composer host applies: a carried
+ * block the composer already holds (same id — the clear had not flushed when
+ * the payload was captured, or an undo put it back) is not added twice AND its
+ * token is dropped from the payload text, since the composer already shows
+ * that token — appending a second one would make the retry send the paste
+ * twice. The rest go through {@link remapCarriedBlocks} so a colliding `seq`
+ * gets a fresh number and its token in `text` is rewritten. Returns the text to
+ * merge (`text`, held tokens stripped), the same payload with every token still
+ * in place (`full`, for the exact-duplicate test — see {@link mergeCarriedDraft})
+ * and the full block list to install (kept first, then the carried ones).
+ */
+export interface CarriedPastes { text: string; full: string; pastes: PasteBlock[] }
+
+export function carryPastes(text: string, carried: PasteBlock[], kept: PasteBlock[]): CarriedPastes {
+  if (!carried.length) return { text, full: text, pastes: kept }
+  const keptIds = new Set(kept.map(b => b.id))
+  const fresh = carried.filter(b => !keptIds.has(b.id))
+  let payload = text
+  // A token resolves by seq, so only a seq no fresh carried block also claims
+  // can be attributed to a held block with certainty.
+  const freshSeqs = new Set(fresh.map(b => b.seq))
+  const held = carried.filter(b => keptIds.has(b.id) && !freshSeqs.has(b.seq))
+  if (held.length) {
+    // Right-to-left, so each splice leaves the earlier ranges' offsets valid.
+    const ranges = findTokenRanges(payload, held)
+    for (let i = ranges.length - 1; i >= 0; i--) {
+      const { start, end } = ranges[i]
+      // Take the token's own line break with it, so no blank line is left behind.
+      const eatNewline = payload[end] === '\n' ? 1 : 0
+      payload = payload.slice(0, start) + payload.slice(end + eatNewline)
+    }
+  }
+  // `remapCarriedBlocks` mutates the seq set it is given, so each pass gets its
+  // own copy and both assign the same numbers.
+  const keptSeqs = kept.map(b => b.seq)
+  const { text: remapped, blocks } = remapCarriedBlocks(payload, fresh, new Set(keptSeqs))
+  const full = payload === text ? remapped : remapCarriedBlocks(text, fresh, new Set(keptSeqs)).text
+  return { text: remapped, full, pastes: [...kept, ...blocks] }
+}
+
+/**
+ * Put a carried payload back into a composer's text under the shared recovery
+ * rule. The exact-duplicate test runs against the payload WITH its tokens
+ * (`full`): an undo that put the whole payload back — tokens included — is the
+ * case the equality exists for, and the stripped text alone would never equal
+ * it. Anything else appends the stripped text, so a held block's token is not
+ * shown twice and a retry cannot send the paste twice.
+ */
+export function mergeCarriedDraft(keep: string | null | undefined, carried: CarriedPastes): string {
+  const existing = keep ?? ''
+  if (existing.trim() && existing.trim() === carried.full.trim()) return existing
+  return mergeRecoveredDraft(existing, carried.text)
 }
 
 /** Ranges for each token whose seq is present in `blocks`, in document order. */

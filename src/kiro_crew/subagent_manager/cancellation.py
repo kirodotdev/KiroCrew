@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from ._component import ManagerComponent
 
@@ -14,9 +14,12 @@ if TYPE_CHECKING:
         _RESET_TIMEOUT,
         Stats,
         SubagentInfo,
+        _audit_ids,
         asyncio,
         clear_tombstone,
+        delivery_is_parked,
         logger,
+        stage_boundary_owner_for_run,
         time,
     )
 
@@ -197,18 +200,69 @@ class CancellationCoordinator(ManagerComponent):
         self._manager._tasks[recovery_key] = _t
         _t.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
-    def _unqueue_impl(self, agent_id: str) -> dict | None:
+    def _unqueue_impl(
+        self, agent_id: str, *, stored: dict | None = None, store_cancelled: bool = False
+    ) -> dict | None:
         """Remove and return a not-yet-started spawn from the stagger queue.
 
         The queue is the only record of a waiting run — ``spawn`` returns its
         queued ``SubagentInfo`` without registering it in ``_agents``. Returning
         the entry lets cancellation publish the same neutral stopped terminal
         outcome as a run that had already started, including batch accounting.
+
+        A ``_resume_id`` entry is NOT such a spawn and is never matched here.
+        ``request_resume`` files one for a run that is already RESIDENT (runtime
+        alive, lane slot yielded) under the run's own ``_preassigned_id``, so an
+        id match alone cannot tell the two apart — and treating a resume entry as
+        an unstarted spawn hands a live run to ``_report_queued_stop``, whose
+        synthetic ``queued=True`` record replaces the real ``_agents`` row: the
+        coroutine keeps executing, the parent is told the work never started, and
+        the record ``resume_grant`` needs to hand the slot back is gone. Skipping
+        it leaves the run to the paths that own a live one — ``cancel``'s reap
+        for a resident record, the store row for a claimable one, which
+        ``taskq_cancel_queued`` above already returned.
         """
+        # The persisted row is cancelled BEFORE the window entry is dropped, so a
+        # drain racing this cannot claim it; a cancel that did not LAND is
+        # handled below rather than assumed. A row outside the window is cancelled here as well and its
+        # params come back from the store so the queued-stop report is whole.
+        admission = self._manager._admission
+        # ``store_cancelled`` says the caller already cancelled the row through
+        # the ASYNC seam, which is how a coroutine avoids the synchronous store
+        # call below. A boolean rather than a sentinel default because a default
+        # is evaluated in this module's namespace while the body runs in the one
+        # ``bind_component_globals`` rebinds it onto, and no single module-level
+        # name is visible to both.
+        if not store_cancelled:
+            stored = admission.taskq_cancel_queued(agent_id)
         for index, params in enumerate(self._manager._queue):
-            if str(params.get("_preassigned_id") or "") != agent_id:
+            if params.get("_resume_id") or str(params.get("_preassigned_id") or "") != agent_id:
                 continue
             dropped = self._manager._queue.pop(index)
+            store = admission.taskq_store()
+            if stored is None and store is not None:
+                # A window entry always HAS a row while a store is attached -- a
+                # spawn whose accept the store refused is never queued -- so
+                # nothing cancelled here means the cancel did not LAND: the store
+                # was unreachable, or the row left the unstarted states between
+                # the read and the write. The caller publishes a stop either way,
+                # and a row left `queued` is dispatchable by the next
+                # incarnation, which would run work the user was told had
+                # stopped. So the refusal is audible (the shape `taskq_settle`
+                # uses for a refused `finish`) and re-posted to the writer
+                # thread, where a store that answers again cancels the row;
+                # `taskq_cancel_queued` re-reads the state under its own
+                # transaction, so a row that legitimately started is left alone.
+                logger.warning(
+                    "Queued stop for %s: no store row was cancelled — re-posting the cancel",
+                    agent_id,
+                )
+                admission._post_store_write(
+                    store,
+                    f"queued cancel retry {agent_id}",
+                    admission.taskq_cancel_queued,
+                    agent_id,
+                )
             try:
                 self._manager._emit_queue_depth(
                     str(dropped.get("parent_session_key", "")),
@@ -217,7 +271,7 @@ class CancellationCoordinator(ManagerComponent):
             except Exception:
                 logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
             return dropped
-        return None
+        return stored
 
     def _report_queued_stop_impl(self, params: dict) -> None:
         """Publish a neutral terminal record for work stopped before startup."""
@@ -225,6 +279,7 @@ class CancellationCoordinator(ManagerComponent):
             id=str(params.get("_preassigned_id") or ""),
             task=str(params.get("task") or "(stopped before start)"),
             parent_session_key=str(params.get("parent_session_key") or ""),
+            _stage_boundary_owner=str(params.get("_stage_boundary_owner") or ""),
             agent=str(params.get("agent") or ""),
             user_stopped=True,
             queued=True,
@@ -250,6 +305,302 @@ class CancellationCoordinator(ManagerComponent):
             settle_digest=True,
         )
 
+    def snapshot_teardown_children_impl(self, parent_session_key: str) -> tuple[str, ...]:
+        """The run ids belonging to *parent_session_key*, read with no await.
+
+        The selection half of a parent-end teardown, split out so it can be taken
+        while the session registry lock is still held — before the retired key is
+        exposed for reuse. Selecting later, which is where the teardown's own
+        awaits are, matches on a key string that a cold start may by then have
+        registered a SUCCESSOR under, and the retired generation's teardown would
+        cancel the successor's runs.
+
+        Synchronous for that reason and not by preference: an ``await`` anywhere in
+        here would reopen the window it exists to close. Both the live and the
+        QUEUED runs are taken, because a queued run's stagger timer would otherwise
+        start work for a parent that is gone.
+        """
+        if not parent_session_key:
+            return ()
+        mine = [
+            info
+            for info in self._manager._agents.values()
+            if info.parent_session_key == parent_session_key
+        ]
+
+        # Parked on a spawn-approval prompt and never started: NOT this teardown's to
+        # stop, which is the rule ``cancel_for_parent_impl`` already applies one method
+        # down ("that prompt has its own explicit reject action"). The approval is a
+        # decision a person has been asked for, and cancelling the run answers it for
+        # them -- the request then reads as "not found or expired", which is
+        # indistinguishable from having taken too long to reply.
+        #
+        # This is the same statement ``taskq_cancel_queued(allow_admitted=False)`` makes
+        # by refusing a claimed row, reached on the in-memory side: the id lives in
+        # ``_agents`` here rather than in the store, so the store's state gate never saw
+        # it. ``_exec_started is None`` is
+        # part of the test for the same reason it is there: a run that has begun
+        # executing and is parked on a LATER approval is live work, and a parent end does
+        # stop that.
+        def _parked_on_an_unanswered_approval(info: "SubagentInfo") -> bool:
+            return bool(getattr(info, "_awaiting_approval", False)) and (
+                getattr(info, "_exec_started", None) is None
+            )
+
+        live = [
+            info.id
+            for info in mine
+            if not info.done and not _parked_on_an_unanswered_approval(info)
+        ]
+        # Parked on a spawn approval and never started: not CANCELLED, but not ignored
+        # either. Two things are true at once and they want different halves of the
+        # teardown.
+        #
+        # Not cancelled, because the approval is a decision a person was asked for and
+        # cancelling answers it for them: the reply then reads "not found or expired",
+        # which is what having taken too long to answer also looks like. This is the rule
+        # ``cancel_for_parent_impl`` already applies for Stop-all, and the
+        # private-workflow E2E is the case that shows it -- a pooled worker's ``destroy``
+        # cancelled such a child and the approval POST answered 404.
+        #
+        # But its delivery is still gated, because the conversation it would report into
+        # has ended. If the person approves later the run proceeds and its result goes to
+        # its own file and tombstone rather than into whatever session that key serves by
+        # then. So it keeps its own decision and loses only the injection, which is the
+        # same split the finished-but-undelivered children get.
+        approval_parked = [
+            info.id for info in mine if not info.done and _parked_on_an_unanswered_approval(info)
+        ]
+        # Finished, but its outcome has not reached the parent. The question is asked
+        # through ``delivery_is_parked``, which reads the classification in
+        # ``DELIVERY_ROUTING_FIELDS`` -- enumerated from the four modules that WRITE
+        # delivery routing state rather than assembled from whichever representation a
+        # failure happened to expose. Naming fields inline here is what let a parked
+        # representation through repeatedly: ``_reported_to_parent`` is set the moment
+        # ``_on_done`` RETURNS, and several routes return having only parked the work.
+        #
+        # There is nothing left to CANCEL in any of these -- which is why the ids are not
+        # returned -- but the delivery is exactly what must not land, since the injector
+        # resolves the parent key through the session registry and CREATES a session when
+        # none is live. Selecting only the not-done runs left this whole class of child
+        # free to rebuild the conversation the teardown had just taken down.
+        undelivered = [info.id for info in mine if info.done and delivery_is_parked(info)]
+        queued = [
+            str(params.get("_preassigned_id") or "")
+            for params in self._manager._queue
+            if params.get("parent_session_key", "") == parent_session_key
+            and not params.get("_resume_id")
+        ]
+        selected = tuple(agent_id for agent_id in [*live, *queued] if agent_id)
+        # Armed HERE, not in the cancel: this method is the last synchronous point
+        # before the teardown's awaits, and a run that completes during those awaits
+        # would otherwise report into the retired parent before anything marked it.
+        # The marked set is WIDER than the returned one, deliberately: the gate is about
+        # delivery and the return value is about cancellation, and the finished-but-
+        # undelivered runs need the first without the second.
+        self._manager._teardown_cancelled_ids.update(selected)
+        self._manager._teardown_cancelled_ids.update(
+            agent_id for agent_id in undelivered if agent_id
+        )
+        self._manager._teardown_cancelled_ids.update(
+            agent_id for agent_id in approval_parked if agent_id
+        )
+        # A follow-up watcher is a SECOND announce path for the same run, and the id gate
+        # cannot see it: when a queued follow-up cannot be delivered the watcher announces a
+        # SYNTHETIC failure built with a fresh id, so it walks past a gate keyed on the run
+        # that produced it -- the same shape as the wave digest's flush record. Disarm it at
+        # the source for the same reason. The accepted continuation is cancelled rather than
+        # announced: its parent has ended, so an announcement would itself recreate the
+        # retired conversation.
+        #
+        # Include watcher-held records as well as ``_agents``. A watcher deliberately
+        # outlives its completed run and can therefore be the only remaining owner record
+        # after completed-state eviction.
+        followup_infos = {
+            id(info): info
+            for info in (
+                *mine,
+                *getattr(self._manager, "_followup_watcher_infos", {}).values(),
+            )
+            if info.parent_session_key == parent_session_key
+        }
+        for info in followup_infos.values():
+            if getattr(info, "pending_followups", None):
+                info.pending_followups = []
+                self._manager._audit_followup(info, "followup_suppressed")
+            followup_watcher = self._manager._followup_watchers.get(info.id)
+            if followup_watcher is not None and not followup_watcher.done():
+                self._manager._cancel_task_intentionally(
+                    followup_watcher,
+                    info,
+                    reason="parent teardown cancelled owned follow-up",
+                )
+            self._manager._followup_watchers.pop(info.id, None)
+            getattr(self._manager, "_followup_watcher_parents", {}).pop(info.id, None)
+            getattr(self._manager, "_followup_watcher_infos", {}).pop(info.id, None)
+        return selected
+
+    async def cancel_for_teardown_impl(
+        self,
+        agent_ids: "Sequence[str]",
+        *,
+        parent_session_key: str,
+        verb: str = "",
+    ) -> int:
+        """Stop exactly the runs in *agent_ids*, reporting none of them home.
+
+        The cancellation half. It takes IDS rather than a parent key so that what
+        is stopped was decided by :meth:`snapshot_teardown_children_impl` at a
+        point where the answer could not be contaminated — a key would be
+        re-resolved here, which is the whole defect.
+
+        Distinct from :meth:`cancel_for_parent_impl`, which is the user pressing
+        Stop all: that verb's terminal report goes back to a parent the user is
+        still looking at, and is the point of it. At a parent end the parent is
+        gone, so each run is marked and the delivery gate in
+        ``_report_terminal_impl`` drops the injection. The kill itself is the same
+        machinery — no second reap path exists, and one would drift.
+        """
+        selected = {a for a in agent_ids if a}
+        snapshot_ids = sorted(selected)
+        agent_ids = sorted(selected)
+
+        # ONE audit line for the whole teardown, emitted where every field is known: the
+        # verb that ended the conversation, the key, and what the snapshot selected. A
+        # parent end cancels work a user may be waiting on, and the ids it took are
+        # otherwise only inferable from the absence of a result -- which is how a
+        # cancelled-too-early row reads from the outside. Kept at INFO rather than DEBUG
+        # for that reason: it is the record of an action, not a trace.
+        #
+        # RESIDUAL, in TWO halves, and this line is where both are visible -- by what it
+        # does not name. The teardown arms its mark and takes its snapshot at the one
+        # synchronous point available, inside the registry lock hold that retires the key,
+        # and anything ALREADY IN FLIGHT at that instant does not see either:
+        #
+        #   * ADMITTED LATE MAY START. A spawn between its row write and its registration
+        #     is in neither the queue nor ``_agents``, so no snapshot can name it, and it
+        #     starts into whatever the key serves next. Same for a durable row that has
+        #     spilled out of the in-memory window.
+        #   * REPORTING LATE MAY DELIVER. A report that has already passed the delivery
+        #     gate and is suspended inside ``_on_done`` is not stopped by marking its id
+        #     afterwards: the injector resolves the parent through ``get_or_create``,
+        #     which CREATES a session when none is live, and never re-reads the mark. So
+        #     the gate is not a backstop for this half -- the earlier claim that a missed
+        #     run's report is dropped holds only for a run the snapshot did name.
+        #
+        # Both are bounded by the run's own timeout. Neither is closed by another recheck:
+        # the two halves are the same defect at opposite ends of the same window, and a
+        # recheck added at either end leaves the other open. Selecting or re-testing needs
+        # an await, and an await here cannot tell work belonging to the retired
+        # conversation from work a successor under the same key has just started -- which
+        # needs a conversation-incarnation counter the session layer does not have.
+        # Tracked as a follow-up.
+        logger.info(
+            "parent-end teardown: verb=%s key=%s snapshot=%d total=%d snapshot_ids=%s",
+            verb or "unnamed",
+            parent_session_key or "-",
+            len(snapshot_ids),
+            len(agent_ids),
+            _audit_ids(snapshot_ids),
+        )
+
+        # Marked BEFORE anything is stopped, and by id: a queued run has no
+        # ``_agents`` row, so its synthetic terminal is built fresh by
+        # ``_report_queued_stop`` and would default the flag to False. The delivery
+        # gate reads this set, which is why marking here covers the live runs, the
+        # queued ones and any follow-up synthetic alike.
+        self._manager._teardown_cancelled_ids.update(agent_ids)
+
+        stopped = 0
+        for agent_id in agent_ids:
+            if not agent_id:
+                continue
+            info = self._manager._agents.get(agent_id)
+            if info is not None and not info.done:
+                # A LIVE run goes through the ordinary reap, which does no store
+                # work of its own.
+                try:
+                    if await self._manager.cancel(agent_id):
+                        stopped += 1
+                except Exception:
+                    logger.warning(
+                        "Teardown: cancelling subagent %s failed", agent_id, exc_info=True
+                    )
+                continue
+            # A QUEUED run is unqueued here rather than through ``cancel``, whose
+            # ``_unqueue`` reaches the SYNCHRONOUS ``taskq_cancel_queued``. This
+            # method is a coroutine on the gateway loop, so that call would stall it
+            # for as long as the task store is contended. The store phase is awaited
+            # through the writer thread and the result handed to ``_unqueue``, which
+            # then skips its own call and keeps the rest of its behaviour — the
+            # cancel-did-not-land retry and the queue-depth re-emit.
+            try:
+                params = await self._manager._admission.taskq_cancel_queued_async(
+                    # A teardown may not cancel a CLAIMED-but-unstarted row. Its claimer
+                    # sits between the claim and the registration, so cancelling here
+                    # leaves that claimer to register and run work this teardown believed
+                    # it had stopped -- and the claimer's own state re-read before
+                    # registering has nothing to catch, because the row is gone rather
+                    # than claimable. A row in that window may also be carrying a person's
+                    # decision (a spawn approval is the visible case), which a teardown has
+                    # no standing to revoke for them. Stop-all keeps the wider behaviour:
+                    # there the user asked for exactly that.
+                    agent_id,
+                    allow_admitted=False,
+                )
+                entry = self._manager._unqueue(agent_id, stored=params, store_cancelled=True)
+                if entry is not None:
+                    self._manager._report_queued_stop(entry)
+                    stopped += 1
+                    continue
+                # Nothing was unqueued, and a refusal is not a commit -- but WHY the store
+                # refused decides what happens next, and the two reasons want opposite
+                # things. A row a drain has STARTED is a live run, and the live reap is
+                # what stops it. A row merely CLAIMED is owned by a claimer that has not
+                # registered yet: reaping it here is the same act the store just refused,
+                # reached through a different door. So the live path is taken only for a
+                # row that is actually executing, and a claimed one is left to the
+                # incarnation that owns it.
+                claimed_unstarted = (
+                    await self._manager._admission.taskq_row_is_claimed_unstarted_async(agent_id)
+                )
+                if claimed_unstarted:
+                    logger.info(
+                        "Teardown: leaving %s to its claimer -- the row is claimed and "
+                        "not started, so stopping it here would strand a registration",
+                        agent_id,
+                    )
+                elif (late := self._manager._agents.get(agent_id)) is not None and not late.done:
+                    # ``cancel`` only for a CONFIRMED live record. It reaches ``_unqueue``,
+                    # whose store call is the SYNCHRONOUS one, and this method is a
+                    # coroutine on the gateway loop -- so calling it blind stalls the loop
+                    # for the SQLite busy timeout whenever the store is contended
+                    # (``no-sync-store-call-from-a-coroutine``).
+                    #
+                    # ``not done`` as well as present, matching the live branch at the top of
+                    # this loop. A PRESENT record is not a running one: a child that was live
+                    # when the snapshot named it can finish during this loop's own awaits, and
+                    # ``_force_reap`` marks such a record done and drops its task without
+                    # popping it from ``_agents`` -- so the record lingers, terminal. Reading
+                    # presence alone routed exactly that record into the synchronous
+                    # ``_unqueue`` this comment exists to avoid, and the row is already
+                    # terminal so there was nothing for it to do there either.
+                    if await self._manager.cancel(agent_id):
+                        stopped += 1
+                else:
+                    # No record and no claim: the store is the only thing that knew about
+                    # this row, it refused, and there is nothing here to reap. Retrying the
+                    # store is the next sweep's job, not this one's -- and doing it on this
+                    # loop is what the rule above forbids.
+                    logger.info(
+                        "Teardown: %s has no live record and the store declined it; "
+                        "leaving it for the next sweep",
+                        agent_id,
+                    )
+            except Exception:
+                logger.warning("Teardown: unqueueing subagent %s failed", agent_id, exc_info=True)
+        return stopped
+
     async def cancel_for_parent_impl(self, parent_session_key: str) -> tuple[int, int]:
         """Stop one parent's running and queued agents.
 
@@ -260,20 +611,35 @@ class CancellationCoordinator(ManagerComponent):
         """
         if not parent_session_key:
             return (0, 0)
-        queued_ids = [
-            str(params.get("_preassigned_id") or "")
-            for params in self._manager._queue
-            if params.get("parent_session_key", "") == parent_session_key
-        ]
-        queued_stopped = 0
-        for agent_id in queued_ids:
-            if not agent_id:
-                continue
-            queued = self._manager._unqueue(agent_id)
-            if queued is None:
-                continue
-            self._manager._report_queued_stop(queued)
-            queued_stopped += 1
+        # UNSTARTED entries only, the same class every other ``_queue`` scan
+        # separates out (the pump's grant loop, the refill's lane census, the
+        # eviction, the reserve): a ``_resume_id`` entry is a RESIDENT run asking
+        # for its lane slot back, filed under its own ``_preassigned_id`` and
+        # carrying its own ``parent_session_key``, so both terms of this match
+        # hit it. It is stopped by the running sweep below — where its intact
+        # ``_agents`` record still is — instead of through the queued-stop path,
+        # which would publish a synthetic "never started" terminal over a live
+        # run. Leaving the entry in the window does not weaken the pre-await
+        # drain this method promises: a resume STARTS nothing (the run is already
+        # resident), so a pump pass during the store read below can only hand a
+        # slot back to a coroutine the running sweep then reaps, and a pass after
+        # the sweep meets a ``user_stopped`` run that ``resume_reserve`` refuses.
+        queued_stopped = self._stop_queued(
+            [
+                str(params.get("_preassigned_id") or "")
+                for params in self._manager._queue
+                if params.get("parent_session_key", "") == parent_session_key
+                and not params.get("_resume_id")
+            ]
+        )
+        # This parent's rows waiting outside the in-memory window. The read is
+        # a store read, so it comes AFTER the in-memory queue is drained: its
+        # await is the first suspension point this method has, and one taken
+        # before the drain would let a stagger timer start a queued agent. A row
+        # started from disk during it is caught by the running sweep below.
+        queued_stopped += self._stop_queued(
+            await self._manager._admission.taskq_pending_ids_for_async(parent_session_key)
+        )
 
         running_ids = [
             info.id
@@ -289,6 +655,276 @@ class CancellationCoordinator(ManagerComponent):
         )
         running_stopped = sum(result is True for result in results)
         return (running_stopped, queued_stopped)
+
+    def _boundary_scope_matches_impl(
+        self,
+        params: Mapping[str, object],
+        parent_session_key: str,
+        boundary_owner: str,
+    ) -> bool:
+        return (
+            str(params.get("parent_session_key") or "") == parent_session_key
+            and str(params.get("_stage_boundary_owner") or "") == boundary_owner
+        )
+
+    def _boundary_cancellation_pending_impl(self, params: Mapping[str, object]) -> bool:
+        """Whether exact cancellation authority forbids dispatch of *params*."""
+        parent = str(params.get("parent_session_key") or "")
+        owner = str(params.get("_stage_boundary_owner") or "")
+        return bool(
+            parent
+            and owner
+            and (
+                (parent, owner) in self._manager._pending_boundary_cancellations
+                or self._manager.boundary_cancellation_refused(parent, owner)
+            )
+        )
+
+    def boundary_cancellation_pending_reason_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+    ) -> str:
+        """Latest settlement failure or cap refusal for one exact scope."""
+        retained = self._manager._pending_boundary_cancellations.get(
+            (parent_session_key, boundary_owner),
+            "",
+        )
+        return retained or self._manager._boundary_cancellation_refusal(
+            parent_session_key,
+            boundary_owner,
+        )
+
+    def _schedule_boundary_cancel_retry_impl(self) -> None:
+        """Arm one later pump pass for unresolved durable cancellations."""
+        if not self._manager._pending_boundary_cancellations:
+            return
+        pending = self._manager._boundary_cancel_retry_handle
+        if pending is not None and not pending.cancelled():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        def _retry() -> None:
+            self._manager._boundary_cancel_retry_handle = None
+            self._manager._drain_queue()
+
+        delay = max(0.05, self._manager._admission.taskq_admit_wait_secs())
+        self._manager._boundary_cancel_retry_handle = loop.call_later(delay, _retry)
+
+    def _apply_boundary_cancelled_rows_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+        cancelled: list[dict],
+        *,
+        settled: bool,
+    ) -> int:
+        """Apply confirmed store cancels to loop-owned queue state and reports."""
+        by_id = {
+            str(params.get("_preassigned_id") or ""): params
+            for params in cancelled
+            if params.get("_preassigned_id")
+        }
+        stopped = 0
+        dropped_rows: list[dict] = []
+        for index in range(len(self._manager._queue) - 1, -1, -1):
+            params = self._manager._queue[index]
+            if params.get("_resume_id") or not self._manager._boundary_scope_matches(
+                params,
+                parent_session_key,
+                boundary_owner,
+            ):
+                continue
+            agent_id = str(params.get("_preassigned_id") or "")
+            if not settled and agent_id not in by_id:
+                continue
+            dropped_rows.append(self._manager._queue.pop(index))
+            by_id.pop(agent_id, None)
+        for dropped in reversed(dropped_rows):
+            self._manager._report_queued_stop(dropped)
+            self._manager._emit_queue_depth(
+                str(dropped.get("parent_session_key") or ""),
+                str(dropped.get("batch_id") or ""),
+            )
+            stopped += 1
+        for agent_id, params in by_id.items():
+            if agent_id in self._manager._agents:
+                continue
+            self._manager._report_queued_stop(params)
+            self._manager._emit_queue_depth(
+                str(params.get("parent_session_key") or ""),
+                str(params.get("batch_id") or ""),
+            )
+            stopped += 1
+        if settled:
+            self._manager._pending_boundary_cancellations.pop(
+                (parent_session_key, boundary_owner),
+                None,
+            )
+        return stopped
+
+    async def _settle_boundary_queue_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+    ) -> int:
+        """Cancel one scope's durable queued rows without blocking the loop."""
+        cancelled: list[dict] = []
+        failure = ""
+        try:
+            cancelled, failure = await self._manager._admission.taskq_cancel_boundary_async(
+                parent_session_key,
+                boundary_owner,
+            )
+        except Exception as exc:
+            failure = str(exc).strip() or type(exc).__name__
+            logger.warning(
+                "Stage-boundary queued cancellation failed for parent=%s owner=%s",
+                parent_session_key,
+                boundary_owner,
+                exc_info=True,
+            )
+        if failure:
+            failure = self._manager._bounded_boundary_cancellation_failure(failure)
+        settled = not failure
+        stopped = self._manager._apply_boundary_cancelled_rows(
+            parent_session_key,
+            boundary_owner,
+            cancelled,
+            settled=settled,
+        )
+        if failure:
+            self._manager._pending_boundary_cancellations[(parent_session_key, boundary_owner)] = (
+                failure
+            )
+            logger.warning(
+                "Stage-boundary queued cancellation remains pending for " "parent=%s owner=%s: %s",
+                parent_session_key,
+                boundary_owner,
+                failure,
+            )
+            self._manager._schedule_boundary_cancel_retry()
+        elif not self._manager._pending_boundary_cancellations:
+            pending = self._manager._boundary_cancel_retry_handle
+            if pending is not None and not pending.cancelled():
+                self._manager._cancel_task_intentionally(
+                    pending,
+                    reason="boundary cancellation settled",
+                )
+            self._manager._boundary_cancel_retry_handle = None
+        return stopped
+
+    async def retry_pending_boundary_cancellations_impl(self) -> None:
+        """Retry exact durable cancels before the pump may dispatch a row."""
+        for parent_session_key, boundary_owner in tuple(
+            self._manager._pending_boundary_cancellations
+        ):
+            await self._manager._settle_boundary_queue(
+                parent_session_key,
+                boundary_owner,
+            )
+
+    def _revoke_boundary_owners_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+    ) -> tuple[SubagentInfo, ...]:
+        """Revoke every in-process record owned by one exact boundary."""
+        candidates = (
+            *self._manager._agents.values(),
+            *self._manager._report_owners.values(),
+            *getattr(self._manager, "_followup_watcher_infos", {}).values(),
+        )
+        matching: list[SubagentInfo] = []
+        seen: set[int] = set()
+        for info in candidates:
+            identity = id(info)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if (
+                info.parent_session_key != parent_session_key
+                or stage_boundary_owner_for_run(info) != boundary_owner
+            ):
+                continue
+            matching.append(info)
+            info.user_stopped = True
+            info._stage_boundary_cancelled = True
+            if info.pending_followups:
+                info.pending_followups = []
+                self._manager._audit_followup(info, "followup_suppressed")
+            watcher = self._manager._followup_watchers.get(info.id)
+            if watcher is not None and not watcher.done():
+                self._manager._cancel_task_intentionally(
+                    watcher,
+                    info,
+                    reason="stage boundary cancelled",
+                )
+        self._manager.discard_report_failures(parent_session_key, boundary_owner)
+        return tuple(info for info in matching if not info.done and not info.queued)
+
+    async def cancel_for_boundary_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+        *,
+        retain_scope: bool = True,
+    ) -> tuple[int, int]:
+        """Stop work owned by one exact stage boundary, including approval waits."""
+        if not parent_session_key or not boundary_owner:
+            return (0, 0)
+        refusal = (
+            self._manager._hold_boundary_cancellation(
+                parent_session_key,
+                boundary_owner,
+            )
+            if retain_scope
+            else self._manager._boundary_cancellation_refusal(
+                parent_session_key,
+                boundary_owner,
+            )
+        )
+        # The scope decision is synchronous. Revoke live work, completed reports,
+        # and watcher-owned follow-ups before any durable writer can suspend.
+        live_infos = self._manager._revoke_boundary_owners(
+            parent_session_key,
+            boundary_owner,
+        )
+        if refusal:
+            results = await asyncio.gather(
+                *(self._manager.cancel(info.id) for info in live_infos),
+                return_exceptions=True,
+            )
+            return (sum(result is True for result in results), 0)
+        queued_stopped = await self._manager._settle_boundary_queue(
+            parent_session_key,
+            boundary_owner,
+        )
+        results = await asyncio.gather(
+            *(self._manager.cancel(info.id) for info in live_infos),
+            return_exceptions=True,
+        )
+        return (sum(result is True for result in results), queued_stopped)
+
+    def _stop_queued(self, agent_ids: Sequence[str]) -> int:
+        """Unqueue each id that is still waiting and report it stopped; count them.
+
+        A SEQUENCE, not an iterable: ``_unqueue`` mutates ``_queue``, so a lazy
+        generator over it would stop short of the ids it was asked to remove.
+        """
+        stopped = 0
+        for agent_id in agent_ids:
+            if not agent_id:
+                continue
+            queued = self._manager._unqueue(agent_id)
+            if queued is None:
+                continue
+            self._manager._report_queued_stop(queued)
+            stopped += 1
+        return stopped
 
     async def cancel_impl(self, agent_id: str) -> bool:
         """Cancel a single running subagent. Returns True if found and cancelled.
@@ -332,6 +968,24 @@ class CancellationCoordinator(ManagerComponent):
         # Shutdown-driven cancellations must never trigger the one-shot
         # unexpected-cancel auto-continue (the loop is going away).
         self._manager._shutting_down = True
+        boundary_retry = self._manager._boundary_cancel_retry_handle
+        if boundary_retry is not None and not boundary_retry.cancelled():
+            self._manager._cancel_task_intentionally(
+                boundary_retry,
+                reason="shutdown boundary cancellation retry",
+            )
+        self._manager._boundary_cancel_retry_handle = None
+        self._manager._pending_boundary_cancellations.clear()
+        retained_retry = self._manager._retained_claim_retry_handle
+        if retained_retry is not None and not retained_retry.cancelled():
+            self._manager._cancel_task_intentionally(
+                retained_retry,
+                reason="shutdown retained claim retry",
+            )
+        self._manager._retained_claim_retry_handle = None
+        # Do not clear or release retained claims here. Their durable rows are
+        # still ADMITTED, so process teardown ends the in-memory reservation and
+        # the next boot reconciles them to QUEUED as one atomic ownership change.
         if self._manager._reaper_task and not self._manager._reaper_task.done():
             self._manager._reaper_task.cancel()
             self._manager._reaper_task = None
@@ -350,14 +1004,17 @@ class CancellationCoordinator(ManagerComponent):
         # from the dict as the gather completes it, so a post-gather snapshot
         # is already empty.
         watcher_ids = list(self._manager._followup_watchers)
+        watcher_infos = dict(self._manager._followup_watcher_infos)
         followup_watchers = [t for t in self._manager._followup_watchers.values() if not t.done()]
         for followup_watcher in followup_watchers:
             followup_watcher.cancel()
         if followup_watchers:
             await asyncio.gather(*followup_watchers, return_exceptions=True)
         self._manager._followup_watchers.clear()
+        self._manager._followup_watcher_parents.clear()
+        self._manager._followup_watcher_infos.clear()
         for agent_id in watcher_ids:
-            watcher_info = self._manager._agents.get(agent_id)
+            watcher_info = watcher_infos.get(agent_id) or self._manager._agents.get(agent_id)
             if watcher_info is not None and watcher_info.pending_followups:
                 dropped = list(watcher_info.pending_followups)
                 watcher_info.pending_followups = []

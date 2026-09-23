@@ -70,10 +70,15 @@ vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: 
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))
+// Absent from the mock on purpose in every other case (so a dispatched ack
+// rejects, the shape of a gateway that is unreachable); the once-per-selection
+// case below installs a rejecting spy to count the requests.
+const mockAckNotification = vi.fn()
 vi.mock('../api/client', () => ({
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
+    ackNotification: (...args: unknown[]) => mockAckNotification(...args),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),
     sessionsUsage: vi.fn().mockResolvedValue({ usage: { credits_used: 0, credits_covered: 0, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER', cost_usd: 0, overage_rate: '0.04' } }),
     listApps: vi.fn().mockResolvedValue([]),
@@ -193,6 +198,28 @@ describe('notification panel navigation leave guard', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^Open$/ }))
     await waitFor(() => expect(screen.getByTestId('schedule-page')).toBeInTheDocument())
   })
+  it('asks the gateway to mark an opened note read ONCE, even when the ack is refused', async () => {
+    // A refused ack flips the row back to unread (`ackNotification.rejected`).
+    // The popover's open-a-note effect must not read that flip as a fresh
+    // reason to ask again, or it loops the request for as long as the panel
+    // is open; the detail panel's own "Mark read" is the retry.
+    mockAckNotification.mockReset().mockRejectedValue(new Error('network'))
+    const store = createTestStore({
+      notifications: { items: [{ ...NOTE, acked: false }], clearSeq: 0, ackSeq: 0, ackSeqByTs: {} },
+    })
+    renderDashboard(store)
+    await paneReady()
+    openBell()
+    fireEvent.click(await screen.findByText('Backup finished'))
+    await waitFor(() => expect(mockAckNotification).toHaveBeenCalledTimes(1))
+    // Let the rejection land and any re-render settle.
+    await waitFor(() => expect(store.getState().notifications.items[0].acked).toBe(false))
+    await new Promise(r => setTimeout(r, 50))
+    expect(mockAckNotification).toHaveBeenCalledTimes(1)
+    // Still selected: the detail panel is up and offers the manual retry.
+    expect(screen.getByRole('button', { name: /Mark read/ })).toBeInTheDocument()
+  })
+
   it('leaves the active slot alone when a slot jump is declined', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const store = createTestStore({

@@ -2,13 +2,13 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Eye, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
-import { sanitizeCssValue } from '../lib/cssSanitize'
-import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
+import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import {
   widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight,
   clampFrameHeight,
@@ -60,16 +60,6 @@ const NO_DOCUMENT_BOX_HEIGHT = 480
  * rather than the `failed` state's failure claim. */
 const DOC_REPORT_GRACE_MS = 3000
 
-function readThemeVars(): Record<string, string> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
-  const computed = getComputedStyle(document.documentElement)
-  const out: Record<string, string> = {}
-  for (const name of THEME_VAR_NAMES) {
-    const v = sanitizeCssValue(computed.getPropertyValue(name))
-    if (v) out[name] = v
-  }
-  return out
-}
 
 /** Map an artifact `kind` to the FileType the ContentRenderer expects.
  * Only used for non-iframe kinds (widget/html still go through the iframe). */
@@ -304,6 +294,15 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   // See hooks/useSandboxDoc.ts for why each rule
   // exists.
   const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
+  // ArtifactBody has always carried `docSilent`, but it covers a DIFFERENT
+  // silent condition: a frame that loaded and then never reported its height
+  // (its timer arms only once `loadedUrlRef.current === blobUrl`, i.e. after
+  // `load` has fired). The case where `load` NEVER fires — the mint succeeded
+  // but the document never loaded at all — leaves that timer un-armed and
+  // `everLoaded` false, so the frame stays invisible with no notice. That is
+  // the same never-load trap the three sibling frames had, so ArtifactBody
+  // uses the same shared watch for it rather than a fourth private timer.
+  const { silent: loadSilent, onLoaded: onFrameLoaded } = useSilentLoadWatch(blobUrl)
   // A new document starts the observation over. Declared before the arming
   // effect below so a url change clears the previous document's verdict in the
   // same commit that re-arms.
@@ -369,7 +368,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
           for the user (bring the artifact back), not as a "retry" of an error
           they may not have had. `failed` wins when both are set: a known failed
           mint is the more specific diagnosis. */}
-      {(failed || docSilent) && (
+      {(failed || docSilent || loadSilent) && (
         <div
           className={
             blobUrl
@@ -452,6 +451,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
               setDocSilent(false)
               setLoadNonce(n => n + 1)
               setEverLoaded(true)
+              onFrameLoaded()
               onIframeLoad?.()
             }}
             sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"

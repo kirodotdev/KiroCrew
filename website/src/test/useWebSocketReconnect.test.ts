@@ -8,6 +8,7 @@ import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import chatReducer, { PANE_HYDRATE_LIMIT, refreshSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentDone } from '../store/chatSlice'
 import type { RootState } from '../store'
+import { setViewedThreadSlot, _resetViewedThreadForTests } from '../lib/viewedThread'
 
 // Track markSlotUnread dispatches (normalized to the slot key: the payload
 // widened to `{slot, ts}` for the read-watermark, and these specs pin WHICH
@@ -330,6 +331,92 @@ describe('unread fires on chat_done not chat_chunk', () => {
       ws.simulateMessage({ type: 'chat_done', data: { slot: 'chat-active' } })
     })
     expect(markSlotUnreadCalls).toEqual([])
+    unmount()
+  })
+})
+
+describe('unread-marker honours the thread a non-chat surface is showing', () => {
+  // The Crew Members page mounts a member thread without moving
+  // `chat.activeSlot`; it registers the thread in `viewedThread` instead. A
+  // message landing there is being watched, so it must not be flagged --
+  // flagging it lit the parent dashboard's crew-tab badge for one render on
+  // every message (the page's read effect then cleared it): a flicker.
+  let testStore: ReturnType<typeof createTestStore>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    markSlotUnreadCalls.length = 0
+    WS_INSTANCES.length = 0
+    _resetViewedThreadForTests()
+    testStore = createTestStore({
+      chat: { activeSlot: 'chat-active', slotMessages: {}, slotRun: {}, slotHydrated: {}, slotActivity: {} } as RootState['chat'],
+    })
+    vi.stubGlobal('WebSocket', MockWebSocket)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetViewedThreadForTests()
+  })
+
+  function wrapper({ children }: { children: React.ReactNode }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return createElement(Provider, { store: testStore },
+      createElement(QueryClientProvider, { client: qc }, children)
+    )
+  }
+
+  it('chat_message in the registered thread does NOT mark unread', () => {
+    setViewedThreadSlot('member-oncall')
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_message', data: { slot: 'member-oncall', role: 'assistant', content: 'hi', ts: '1' } })
+    })
+    expect(markSlotUnreadCalls).toEqual([])
+    unmount()
+  })
+
+  it('chat_done in the registered thread does NOT mark unread', () => {
+    setViewedThreadSlot('member-oncall')
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_done', data: { slot: 'member-oncall' } })
+    })
+    expect(markSlotUnreadCalls).toEqual([])
+    unmount()
+  })
+
+  it('the registration is per slot: other slots still mark unread, and chat.activeSlot still counts', () => {
+    setViewedThreadSlot('member-oncall')
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_message', data: { slot: 'member-research', role: 'assistant', content: 'hi', ts: '1' } })
+      ws.simulateMessage({ type: 'chat_message', data: { slot: 'chat-active', role: 'assistant', content: 'hi', ts: '2' } })
+    })
+    expect(markSlotUnreadCalls).toEqual(['member-research'])
+    unmount()
+  })
+
+  it('once the registration is retired the thread marks unread again', () => {
+    setViewedThreadSlot('member-oncall')
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    _resetViewedThreadForTests()
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_message', data: { slot: 'member-oncall', role: 'assistant', content: 'hi', ts: '1' } })
+    })
+    expect(markSlotUnreadCalls).toEqual(['member-oncall'])
     unmount()
   })
 })

@@ -4,3 +4,23 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+
+  # The adapters the Real Adapter Contract Tests lane drives (codex-acp, opencode).
+  # A bump arrives as its own PR, and that PR's run of the lane is where adapter
+  # drift shows up: the assertions in test_codex_session_mcp.py and
+  # test_opencode_session_mcp.py were measured against the pinned release, so a
+  # red there is a contract that moved, to be re-measured -- never relaxed. This
+  # manifest is not the product's: the frontend and build lanes never read it.
+  #
+  # The cooldown waits a week after a release before proposing it. These are
+  # executables the lane runs, so a just-published version that turns out to be
+  # malicious or broken should have had its week in the open first.
+  - package-ecosystem: "npm"
+    directory: "/test/real_adapters"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    labels:
+      - "area: ci"
+      - "area: tests"

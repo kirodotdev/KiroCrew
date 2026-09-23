@@ -180,6 +180,81 @@ class TestPinSpellingResolver:
         got = resolve_pin_spelling("openrouter::z-ai/glm-5.3-flash", qualified)
         assert got == "openrouter::z-ai/glm-5.3-flash"
 
+    # What kiro-cli advertises, in ITS spelling: bare, dotted, no prefix.
+    _KIRO = ["auto", "claude-opus-4.8", "claude-sonnet-4.6", "gpt-5.6-terra"]
+
+    def test_foreign_provider_id_spelling_folds_onto_the_advertised_id(self):
+        # `namespace_vocabulary` judges this pin native to kiro through
+        # `catalog_key` (prefix and [1m] folded). The spelling fold must reach
+        # the same model with the same function, or the cold start reports an
+        # entitlement problem for what is a spelling one.
+        got = resolve_pin_spelling("global.anthropic.claude-opus-4-8[1m]", self._KIRO)
+        assert got == "claude-opus-4.8"
+
+    def test_fold_answers_with_the_advertised_spelling_not_the_pin(self):
+        # Mutation guard: returning the folded KEY or the caller's spelling
+        # would hand session/set_model an id kiro never advertised.
+        got = resolve_pin_spelling("global.anthropic.claude-sonnet-4-6", ["Claude-Sonnet-4.6"])
+        assert got == "Claude-Sonnet-4.6"
+
+    def test_a_genuinely_unserved_id_still_resolves_nothing(self):
+        # The fold widens spelling, never entitlement: a model kiro does not
+        # list stays "" under the prefixed, the bracketed and the bare spelling.
+        assert resolve_pin_spelling("global.anthropic.claude-haiku-9[1m]", self._KIRO) == ""
+        assert resolve_pin_spelling("claude-haiku-9", self._KIRO) == ""
+
+    def test_fold_does_not_rescue_a_multi_level_qualifier(self):
+        # `catalog_key` keeps the `::` qualifier, so the one-level peel rule
+        # above still holds after the fold was added.
+        assert resolve_pin_spelling("a::b::z-ai/glm-5.3-flash", self._BARE) == ""
+        assert resolve_pin_spelling("::z-ai/glm-5.3-flash", self._BARE) == ""
+
+    def test_fold_prefers_the_window_variant_like_the_wire_fold(self):
+        # Several advertised spellings of one model fold to one key; the
+        # tie-break is the one `resolve_wire_model_id` applies ([1m] first,
+        # then shortest), so the display fold and the wire fold cannot prefer
+        # different spellings.
+        both = ["claude-opus-4.8", "claude-opus-4.8-1m"]
+        assert (
+            resolve_pin_spelling("global.anthropic.claude-opus-4-8[1m]", both)
+            == "claude-opus-4.8-1m"
+        )
+        # A literal match still wins outright: no fold runs for a pin that is
+        # already an advertised spelling.
+        assert resolve_pin_spelling("claude-opus-4.8", both) == "claude-opus-4.8"
+
+    def test_fold_never_conflates_two_registered_models(self):
+        # `catalog_key` folds the window marker away, so the 200K
+        # `claude-opus-4-8` and kiro's 1M `claude-opus-4.8` share a key -- but
+        # the registry lists them as two canonical models. A spelling fold that
+        # let one stand in for the other would send a pin's neighbour with a
+        # different context window; the fold refuses, and the pin takes the
+        # withhold path instead of a silent capacity change.
+        assert resolve_pin_spelling("claude-opus-4.8", ["claude-opus-4-8"]) == ""
+        assert resolve_pin_spelling("global.anthropic.claude-opus-4-8", ["claude-opus-4.8"]) == ""
+        # The guard reads the pin case-insensitively, like the literal match does.
+        assert resolve_pin_spelling("CLAUDE-OPUS-4-8", ["claude-opus-4.8"]) == ""
+        # The same model under two spellings still folds.
+        assert (
+            resolve_pin_spelling("global.anthropic.claude-opus-4-8[1m]", ["claude-opus-4.8"])
+            == "claude-opus-4.8"
+        )
+
+    def test_fold_keeps_its_answer_for_ids_the_registry_does_not_know(self):
+        # Unknown is not different: a model newer than the shipped registry
+        # folds on spelling alone, which is the case the fold exists for.
+        assert (
+            resolve_pin_spelling("us.anthropic.claude-zeta-9[1m]", ["claude-zeta-9"])
+            == "claude-zeta-9"
+        )
+
+    def test_the_auto_sentinel_names_no_model_to_fold(self):
+        # `catalog_key("auto")` is "", so the fold cannot match `auto` to an
+        # advertised id whose key happens to be empty; `auto` resolves only
+        # when advertised verbatim.
+        assert resolve_pin_spelling("auto", ["claude-opus-4.8"]) == ""
+        assert resolve_pin_spelling("auto", self._KIRO) == "auto"
+
 
 class TestExplicitPickRefusal:
     """An EXPLICIT user pick that the account can't run RAISES — it is never

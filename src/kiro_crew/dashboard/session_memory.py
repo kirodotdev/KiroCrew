@@ -7,7 +7,9 @@ measurement primitives already existed but were never surfaced:
   only the runtime pid misses everything: that pid is the sandbox launcher parent
   (small, parked in ``waitpid``) while the kiro-cli that accumulates GBs is a
   child. It was called only to decide runtime recycling, and only for the shared
-  ``_bg`` runtime — chat-session runtimes were never measured at all.
+  ``_bg`` runtime — chat-session runtimes were never measured at all. This module
+  hands it the descendant set it has already walked, so the tree is not walked a
+  second time for the total.
 * ``subagent.SubagentManager`` samples per-task RSS/CPU on its reaper sweep for
   learned sizing, and nothing read those numbers back out.
 
@@ -30,6 +32,7 @@ import logging
 import sys
 import time
 from collections import deque
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Callable, Optional
 
 from kiro_crew.acp.runtime import _get_rss_tree_mb, _iter_descendant_pids
@@ -38,11 +41,13 @@ from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.platform_compat import proc_child_map
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.subagent import _CLK_TCK, _subtree_cpu_jiffies
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
+    from kiro_crew.crew_log.session_tree import SessionTree, TreeNode
     from kiro_crew.session import SessionManager
     from kiro_crew.subagent import SubagentManager
 
@@ -113,6 +118,93 @@ def _spend_for_session(
     return aliased if isinstance(aliased, dict) else None
 
 
+def _bare_slot_key(key: str) -> str:
+    """The slot key a crew log records for session *key*.
+
+    A dashboard session's key is ``dashboard:{slot.key}`` (see
+    :func:`session_title`), and its crew log -- and any child's ``parent.slot``
+    citing it -- carries the bare ``slot.key``. Every other session key is its
+    own slot spelling.
+    """
+    if key.startswith("dashboard:"):
+        return key[len("dashboard:") :]
+    return key
+
+
+def live_sids(rows: Iterable[dict[str, object]]) -> list[str]:
+    """The ACP session ids of *rows*, for the scan's ``preferred`` list.
+
+    The rows on screen are what a lineage scan is folded for, so their own logs
+    are admitted before the store's order (see :class:`SessionTree`). A row
+    carrying no ``sid`` contributes nothing rather than an empty string, which
+    would address no unit.
+    """
+    return [sid for sid in (row.get("sid") for row in rows) if isinstance(sid, str) and sid]
+
+
+def lineage_parents(
+    rows: list[dict[str, object]],
+    nodes: "Mapping[str, TreeNode]",
+    spend_slot_by_session: Optional[dict[str, str]] = None,
+) -> dict[str, Optional[dict[str, object]]]:
+    """Per live row, the ``parent`` it carries on the wire -- ``{slot, key}`` or ``None``.
+
+    ONE implementation of the join, used by both the Sessions table's memory payload
+    and the dashboard slot payload the chat sidebar's conductor lane nests on
+    (``state._attach_slot_parents``). Two implementations would let the two views nest
+    the same gateway differently, which is the one thing a reader comparing them cannot
+    recover from: neither view says which is right.
+
+    The join is by SLOT, never by pid or title, and a row is reachable under
+    three spellings of its slot because three writers spell it differently. A
+    crew log names a slot the way ``session_create`` attributed it -- the bare
+    ``slot.key`` for a dashboard session -- while the row's key is the full
+    ``dashboard:`` session key. A slot bound to a channel or cron conversation
+    runs its turns under ``linked_session_key`` while its log still carries the
+    dashboard slot key, so *spend_slot_by_session* (the alias
+    :func:`_spend_for_session` already bridges for credits) is the third.
+
+    *nodes* is the projection's fold, and each caller passes the one it reads: the
+    memory payload takes :meth:`SessionMemorySampler._lineage` (whose companion flag
+    is specifically ``over_cap``), and the slot payload takes
+    ``projection().nodes()`` directly. The join itself needs no completeness flag, so
+    it takes the nodes alone rather than a whole reading -- which is also what keeps it
+    from deciding a question that belongs to its caller.
+
+    An empty *nodes* means no row has a creator (the crew log is off, or nothing
+    on disk cites one), and the storage package stays UNIMPORTED on that path:
+    ``parent_payload`` is imported below the early return, so a flag-off boot
+    never loads it. Existing tests pin that.
+    """
+    if not nodes:
+        return {}
+    from kiro_crew.crew_log.session_tree import parent_payload
+
+    def slot_spellings(row_key: str) -> list[str]:
+        spellings = [row_key, _bare_slot_key(row_key)]
+        if isinstance(spend_slot_by_session, dict):
+            aliased = spend_slot_by_session.get(row_key)
+            if isinstance(aliased, str) and aliased:
+                spellings.append(aliased)
+        return spellings
+
+    live_key_of: dict[str, str] = {}
+    for row in rows:
+        row_key = row.get("key")
+        if isinstance(row_key, str) and row_key:
+            for spelling in slot_spellings(row_key):
+                live_key_of.setdefault(spelling, row_key)
+
+    out: dict[str, Optional[dict[str, object]]] = {}
+    for row in rows:
+        key = row.get("key")
+        if not isinstance(key, str) or not key:
+            continue
+        node = next((nodes[s] for s in slot_spellings(key) if s in nodes), None)
+        out[key] = parent_payload(node, live_key_of, key)
+    return out
+
+
 def session_title(key: str, get_slot: Callable[[str], object]) -> dict[str, object]:
     """Resolve a session key to a human title for display.
 
@@ -161,6 +253,50 @@ class SessionMemorySampler:
         # observations; the first sample per pid can only seed the baseline.
         self._cpu_prev: dict[int, tuple[int, float]] = {}
         self._history: deque[tuple[float, float]] = deque(maxlen=history_len)
+        # The session tree's scanner and its head cache, built on the first scan
+        # that is allowed to run (see ``_lineage``). Owned here so the cache lives
+        # as long as the sampler does, one per gateway.
+        self._tree: Optional["SessionTree"] = None
+
+    def _lineage(self, rows: list[dict[str, object]]) -> "tuple[dict[str, TreeNode], bool, int]":
+        """Who opened whom; whether the store held more session logs than a scan
+        admits; and that cap (``TREE_UNIT_CAP``), so the payload can say "N+"
+        without this module importing the storage package on a flag-off boot.
+        ``({}, False, 0)`` with the crew log off.
+
+        Reads the session-tree PROJECTION, which is folded in memory and advanced by
+        the emitter at commit time. So this is a dictionary lookup rather than a scan,
+        and it costs the same on a store of four thousand session logs as on one --
+        which is what the ``lineage`` entry in ``timings_ms`` reports.
+
+        Blocking only ONCE per process, on the projection's cold start -- a
+        checkpoint load plus a tail replay proportional to the delta. It is still
+        called from :meth:`_blocking_sample` rather than the coroutine for exactly
+        that reason: the first call in a process can touch the disk.
+
+        Reports ``over_cap`` specifically, not the projection's broader
+        ``incomplete``: the payload's field is named ``lineage_over_cap`` and a page
+        saying "the store is larger than the cap" must not also light up for a
+        transient read fault.
+
+        The crew log is optional behind ``KIROCREW_CREW_LOG`` and this module is on
+        the dashboard's boot path, so the projection is imported here, lazily, and
+        only once the flag says there is a store to read -- the same split the
+        emitter and the crew-log routes keep, pinned by the tests that launch with
+        the flag unset and assert the package never loaded. Asking the emitter is
+        the one import that is safe: it is pure glue and loads nothing until a write
+        or a read reaches storage.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        if not crew_log_emit.enabled():
+            return {}, False, 0
+        from kiro_crew.crew_log.session_tree import TREE_UNIT_CAP
+        from kiro_crew.crew_log.session_tree_projection import projection
+
+        tree = projection()
+        tree.ensure_seeded(tuple(live_sids(rows)))
+        return tree.nodes(), tree.over_cap, TREE_UNIT_CAP
 
     # ── history ────────────────────────────────────────────────────────────
     def record_total(self, total_mb: float, *, now: Optional[float] = None) -> None:
@@ -172,12 +308,19 @@ class SessionMemorySampler:
         return [{"t": ts, "mb": round(mb, 1)} for ts, mb in self._history]
 
     # ── sampling ───────────────────────────────────────────────────────────
-    def _cpu_cores(self, pid: int, now: float) -> Optional[float]:
+    def _cpu_cores(
+        self, pid: int, now: float, *, pids: Optional[list[int]] = None
+    ) -> Optional[float]:
         """Cores used since the previous sample for this pid, or None with no
-        baseline yet (first observation) — reported as unknown, never as 0.0."""
+        baseline yet (first observation) -- reported as unknown, never as 0.0.
+
+        ``pids`` is the subtree the caller has already walked, handed on so the
+        CPU total is summed over it rather than reached by enumerating the tree
+        again. Every figure on the row then describes the same set of processes.
+        """
         if sys.platform != "linux":
             return None
-        jiffies = _subtree_cpu_jiffies(pid)
+        jiffies = _subtree_cpu_jiffies(pid, pids=pids)
         prev = self._cpu_prev.get(pid)
         self._cpu_prev[pid] = (jiffies, now)
         if prev is None:
@@ -188,54 +331,126 @@ class SessionMemorySampler:
             return None
         return (jiffies - prev_jiffies) / (_CLK_TCK * dt)
 
-    def _sample_pid(self, pid: int, now: float) -> dict[str, object]:
+    def _sample_pid(
+        self, pid: int, now: float, *, children: Optional[dict[int, list[int]]] = None
+    ) -> dict[str, object]:
         """Blocking per-pid sample. MUST run off the event loop — a session tree
-        can be dozens of processes, i.e. dozens of ``/proc`` reads."""
-        rss_mb = _get_rss_tree_mb(pid)
+        can be dozens of processes, i.e. dozens of ``/proc`` reads.
+
+        ONE enumeration of the subtree, and every figure on the row is totalled
+        over the set it returns: the RSS sum, the process count, the stub count
+        and the CPU jiffies. Any of the four could reach its own answer by
+        enumerating the tree for itself, and none of them does.
+
+        ``children`` is the host's parent map, built once for the whole poll, and
+        it is where the enumeration cost went. Asking the kernel per root reads
+        one ``children`` file per THREAD of every process visited: measured on a
+        1713-process host sampling 40 session trees of 734 processes, that is
+        11296 reads taking 432ms, and the CPU reading's own walk took another
+        452ms, against 1717 ``stat`` reads taking 70ms for the map that answers
+        every root. Both routes returned the same 40 trees. Without the map (off
+        Linux, or ``/proc`` unlistable) the kernel route is walked as before.
+
+        Each process is still READ exactly as it was -- ``VmRSS`` from
+        ``status``, utime+stime from ``stat`` -- so no figure on the page changes
+        its meaning. What changes is that they now describe one set of processes
+        observed once, which is what the shared walker's own docstring says a
+        single frontier is for.
+        """
         procs: Optional[int] = None
         stubs: Optional[int] = None
         if sys.platform == "linux":
-            tree = _iter_descendant_pids(pid)
+            tree = _iter_descendant_pids(pid, children=children)
+            rss_mb = _get_rss_tree_mb(pid, pids=tree)
             procs = len(tree)
             stubs = sum(1 for p in tree if _STUB_MARKER in _read_cmdline(p))
+            cpu = self._cpu_cores(pid, now, pids=tree)
+        else:
+            # No descendant set to reuse: the other platforms reach the total
+            # through their own snapshot or validated walk, not a pid list.
+            rss_mb = _get_rss_tree_mb(pid)
+            cpu = self._cpu_cores(pid, now)
         return {
             "rss_mb": round(rss_mb, 1) if rss_mb is not None else None,
             "procs": procs,
             "mcp": stubs,
-            "cpu_cores": self._cpu_cores(pid, now),
+            "cpu_cores": cpu,
         }
 
     def _blocking_sample(self, rows: list[dict[str, object]]) -> dict[str, object]:
-        """Sample every distinct pid once, then the machine-wide extras.
+        """Sample every distinct pid ONCE, then the machine-wide extras.
 
-        Co-tenants of a multiplexed runtime share a pid, so sampling per row would
-        read the same tree N times. The orphan scan and the credits window join
-        this offloaded call rather than the async one: both touch the filesystem
-        (a full ``/proc`` walk, and the shard window) and would stall the event
-        loop from the coroutine.
+        One descendant pass per distinct pid, for the RSS total and the process
+        metadata, is the cost bound this function exists to keep, and it can be
+        lost in three ways. Per ROW: co-tenants of a
+        multiplexed runtime share a pid, so a walk per row reads the same process
+        tree N times. Per SAMPLE: the RSS total and the process metadata both come
+        off the same set, so reaching them through two helpers walks the tree
+        twice — ``_sample_pid`` walks once and hands the set over for exactly this
+        reason. Per ROOT: asking the kernel for a tree costs one read per THREAD
+        of every process in it, so the host's parent map is built ONCE here and
+        every row's tree is derived from it -- one read per host process against
+        11296 reads for 40 roots on the measured host. One session's tree is
+        dozens of ``/proc`` reads and this whole call
+        runs on a browser poll, so another pass over the same pids is the most
+        expensive thing that can be added here and the easiest one to add by
+        accident: a reader that wants the descendant set must take it from the
+        sample, never walk again.
+
+        The credits window and the lineage scan join this offloaded call rather
+        than the async one: both touch the filesystem (the shard window, and a
+        stat of every session log's directory) and would stall the event loop
+        from the coroutine.
         """
         now = time.monotonic()
         out: dict[int, dict[str, object]] = {}
-        owned: set[int] = set()
+        # One pass over /proc for the whole poll; None off Linux and when /proc
+        # cannot be listed, which each row then walks for itself as before.
+        proc_started = time.perf_counter()
+        children = proc_child_map()
         for row in rows:
             pid = row.get("pid")
             if not isinstance(pid, int):
                 continue
-            owned.update(_iter_descendant_pids(pid))
             if pid in out:
                 continue
             try:
-                out[pid] = self._sample_pid(pid, now)
+                out[pid] = self._sample_pid(pid, now, children=children)
             except Exception:  # pragma: no cover — a dying pid must not fail the page
                 logger.debug("session memory sample failed for pid %s", pid, exc_info=True)
         self._prune_cpu_baselines({r.get("pid") for r in rows})
+        proc_ms = (time.perf_counter() - proc_started) * 1000.0
         # circular import: handlers/__init__ imports handlers.sessions,
         # which imports this module
         from kiro_crew.dashboard.handlers.usage import slot_spend
 
+        spend_started = time.perf_counter()
+        spend = slot_spend()
+        spend_ms = (time.perf_counter() - spend_started) * 1000.0
+        lineage_started = time.perf_counter()
+        lineage = self._lineage(rows)
+        lineage_ms = (time.perf_counter() - lineage_started) * 1000.0
+
         return {
             "per_pid": out,
-            "spend": slot_spend(),
+            "spend": spend,
+            # Who opened whom, folded from the crew logs, and the count of logs
+            # the scan left unread past its cap. Here rather than in the coroutine
+            # for the same reason as the two above: it lists and stats every
+            # session log's directory.
+            "lineage": lineage,
+            # Where this call's wall time went, per phase, so a latency complaint
+            # about this page can be attributed instead of guessed at. Measured
+            # around the three blocking phases individually because they have
+            # different costs and different fixes: a /proc walk per session tree, a
+            # shard-window read, and a directory listing plus a stat per session
+            # log. ``perf_counter`` rather than ``monotonic``: this measures short
+            # durations, which is the counter's stated purpose.
+            "timings_ms": {
+                "proc": round(proc_ms, 1),
+                "spend": round(spend_ms, 1),
+                "lineage": round(lineage_ms, 1),
+            },
         }
 
     def _prune_cpu_baselines(self, live_pids: set[object]) -> None:
@@ -271,6 +486,7 @@ class SessionMemorySampler:
         dashboard slot key — without it those rows report credits as unknown even
         though the spend exists. Omitting it degrades to the direct join.
         """
+        total_started = time.perf_counter()
         rows = sessions.runtime_pids()
         samples = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), self._blocking_sample, rows
@@ -279,7 +495,22 @@ class SessionMemorySampler:
         assert isinstance(per_pid, dict)
         spend = samples["spend"]
         assert isinstance(spend, dict)
+        phase_ms = samples.get("timings_ms")
+        if not isinstance(phase_ms, dict):  # pragma: no cover — defensive
+            phase_ms = {}
+        lineage_sample = samples["lineage"]
+        assert isinstance(lineage_sample, tuple)
+        lineage, lineage_over_cap, lineage_cap = lineage_sample
+        assert isinstance(lineage, dict)
+        assert isinstance(lineage_over_cap, bool)
+        assert isinstance(lineage_cap, int)
         now_wall = time.time()
+
+        # Which LIVE row a creator citation lands on, per row. The join lives in
+        # ``lineage_parents`` because the dashboard slot payload needs the same
+        # answer, and two implementations of it would let the Sessions table and
+        # the sidebar's conductor lane nest the same gateway differently.
+        parents = lineage_parents(rows, lineage, spend_slot_by_session)
 
         sessions_out: list[dict[str, object]] = []
         total_mb = 0.0
@@ -337,13 +568,16 @@ class SessionMemorySampler:
                     # Cumulative over the credits window, not a rate: credits are
                     # only known per completed turn. null means this slot has no
                     # measured turn in the window, which is not the same as zero.
-                    "credits": (
-                        round(float(spend_row["credits"]), 3) if spend_row else None
-                    ),
+                    "credits": (round(float(spend_row["credits"]), 3) if spend_row else None),
                     "turns": (int(spend_row["turns"]) if spend_row else None),
                     "uptime_s": (
                         round(now_wall - created, 1) if isinstance(created, float) else None
                     ),
+                    # The session that opened this one through session_create, as
+                    # its own crew log records it; null for a session nobody
+                    # created. ``key`` is the creator's live row when there is
+                    # one, which is the edge the Sessions table nests on.
+                    "parent": parents.get(key) if isinstance(key, str) else None,
                 }
             )
             # Count each runtime ONCE, at its UNDIVIDED size. The split above is
@@ -369,6 +603,29 @@ class SessionMemorySampler:
                 # Surfaced so the UI can label the number as a ceiling rather
                 # than implying exact attribution.
                 "rss_is_upper_bound": True,
+                # Whether the store held more session logs than the lineage
+                # scan admits (TREE_UNIT_CAP, sent beside it so the page can
+                # say "N+"). Live rows' logs are admitted first, so what went
+                # unread is closed sessions' logs; a live row loses its edge
+                # only when it was restarted since it was opened (its parent
+                # lives in its older, closed log) or the live rows alone exceed
+                # the cap. Said on every payload because a store that large is
+                # worth knowing about.
+                # False within the cap or with the crew log off (cap 0 then).
+                "lineage_over_cap": lineage_over_cap,
+                "lineage_cap": lineage_cap,
             },
             "history": self.series(),
+            # Per-phase wall time for THIS sample, additive to the payload so an
+            # older client ignores it. ``total`` is measured on the coroutine and
+            # so includes the executor hop and the row assembly, which the three
+            # phase figures do not -- a gap between ``total`` and their sum is the
+            # queueing this page shares with every other request, and is itself
+            # the answer to a latency question the phases alone cannot settle.
+            "timings_ms": {
+                "proc": phase_ms.get("proc", 0.0),
+                "spend": phase_ms.get("spend", 0.0),
+                "lineage": phase_ms.get("lineage", 0.0),
+                "total": round((time.perf_counter() - total_started) * 1000.0, 1),
+            },
         }

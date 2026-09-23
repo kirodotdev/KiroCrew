@@ -75,8 +75,8 @@ class SpawnContext:
     home: Path
     """One snapshot of the home directory, for the same reason."""
 
-    private_memory: bool = field(default=False, kw_only=True)
-    """Trusted private execution flag; never supplied by an agent-controlled spec."""
+    member_context: bool = field(default=False, kw_only=True)
+    """Capture native member context sources for session delivery deduplication."""
 
     sandbox_mode: str = "auto"
     """The sandbox tier this spawn will use, as configured.
@@ -104,6 +104,14 @@ class SpawnPlan:
     """The argv to spawn, plus what the spawn decided about itself."""
 
     argv: list[str]
+
+    rss_depth: int | None = field(default=None, kw_only=True)
+    """Resolved RSS generations below the pid Crew launches.
+
+    ``None`` measures the whole descendant subtree. A bounded value is already
+    relative to the launched pid, including any resident sandbox launcher, so the
+    shared spawn path only copies it and performs no host-specific probe.
+    """
 
     native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
     """Admitted sources owned by this exact native launch configuration."""
@@ -194,6 +202,10 @@ class NotificationAliases:
     """Methods that arrive while a session is initializing and must be staged
     until the session exists, rather than dropped as ownerless."""
 
+    mcp_readiness: bool = False
+    """Opt into the session-scoped status/catalog barrier. Hosts without these
+    snapshots keep their existing best-effort initialization drain."""
+
 
 # ── Seam 6: teardown ──
 
@@ -237,8 +249,10 @@ class TeardownPolicy:
 class ReclaimPolicy:
     """When a warm process is recycled.
 
-    Both numbers are already per-instance on the runtime, so a host with a
-    different memory profile needs no branch -- only different values.
+    The two numbers are already per-instance on the runtime, so a host with a
+    different memory profile needs no branch -- only different values. The process
+    scope belongs to :class:`SpawnPlan`, where the harness can resolve it against
+    the exact spawn configuration before this threshold is applied.
     """
 
     max_age_secs: float
@@ -294,11 +308,38 @@ class HarnessAdapter(abc.ABC):
 
     @property
     @abc.abstractmethod
+    def client_meta_settings(self) -> bool:
+        """The host reads feature settings from ``initialize``'s ``_meta.kiro.settings``.
+
+        When true the runtime fills that channel at spawn (today: MCP Tool
+        Search, gated on the spawn agent's loader grant). When false the host
+        takes its settings elsewhere -- kiro-cli reads the workspace ``cli.json``
+        overlay -- and the handshake is sent exactly as :attr:`client_capabilities`
+        declares it.
+        """
+
+    @property
+    @abc.abstractmethod
     def verifies_agent_activation(self) -> bool:
         """After session start, confirm the requested agent is the active mode.
 
         Only meaningful on a host that selects the agent at spawn: elsewhere the
         activation is an explicit ``set_mode`` whose response already answers it.
+        """
+
+    @property
+    @abc.abstractmethod
+    def reads_markdown_agent_specs(self) -> bool:
+        """The host loads an agent defined as one markdown file (``<name>.md``).
+
+        Crew's roster offers that form to every backend. A host that answers
+        False (kiro-cli discovers ``*.json`` alone) is not gated on it before the
+        spawn: a markdown-only agent selected there fails the existing
+        post-``session/new`` activation guard exactly as a missing JSON spec does,
+        and the runtime reads this answer ONLY on that refusal branch, to explain
+        the markdown file and name the hosts that can run it. Answered from
+        ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS`` by the membership base, so a host
+        that reads markdown joins the set rather than growing a branch here.
         """
 
     # ── Seam 2: initialize ──
@@ -328,6 +369,7 @@ class HarnessAdapter(abc.ABC):
         work_dir: str | Path | None,
         mcp_gateway_overlay: Any = None,
         member_dispatch: bool = False,
+        session_key: str = "",
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -415,4 +457,8 @@ class HarnessAdapter(abc.ABC):
         The runtime's values are passed in so an operator's configuration still
         wins; a harness narrows them for a host that is known to leak faster,
         and otherwise passes them straight through.
+
+        A host that measures a different process scope may return a ceiling in
+        that scope's unit rather than narrow the input. The resolved scope travels
+        separately on :class:`SpawnPlan`.
         """

@@ -1,7 +1,7 @@
 # Mochi — architecture map
 
 Mochi is a desktop pet companion, migrated from a standalone Electron app into a
-KiroCrew builtin. This file is the map: where everything lives, why the layout
+Kiro Crew built-in. This file is the map: where everything lives, why the layout
 looks the way it does, and where the seams are. Read it before moving files or
 adding cross-boundary calls.
 
@@ -11,14 +11,16 @@ adding cross-boundary calls.
 |---|---|
 | `website/src/apps/mochi/` (here) | All frontend: window entry HTML + React, bridges, vendored original renderer |
 | `src/kiro_crew/apps/builtins/mochi/` | Python backend: runtime (`hooks.py`), services, MCP server, routes, agents/skills |
-| `website/electron/mochi/` | Electron shell layer: pet overlay windows, preload, instance resolution |
+| `website/electron/mochi/` + `website/electron/mochi-session-token.js` | Electron shell layer: windows, preload, instance resolution, session-token borrowing |
 | `test/test_mochi_*.py` | Backend tests (flat `test/`, prefix-contained — see "Test placement") |
 
-Dependency direction is one-way: mochi imports core, **core never imports
-mochi**. Core names mochi in exactly two registry lines
-(`apps/builtins/__init__.py`, `apps/builtinRegistry.ts`) plus one `require` in
-`electron/main.js`. Removing the app = delete the four roots + those lines +
-the `apps.mochi` i18n subtree.
+Reusable core modules do not depend on Mochi internals; composition roots and
+first-party registries name the app at explicit integration points. Those currently
+include `apps/builtins/__init__.py`, `security_posture.py`,
+`apps/builtinRegistry.ts`, `components/appstore/appManifest.ts`, and the Electron
+`main.js`, `package.json`, and `mochi-session-token.js` surfaces. Removing the app
+also removes the `apps.mochi` i18n subtree. Search `src/kiro_crew`, `website/src`,
+`website/electron`, and `test` for `mochi` rather than relying on a fixed count.
 
 ## Why the double `src` (`src/apps/mochi/src/renderer/...`)
 
@@ -43,11 +45,13 @@ ported line-for-line. It is intentional, not a nesting mistake.
   file imports. Original IPC calls resolve here to HTTP routes, WS events, or
   Electron preload channels. Spread order matters (web transports win over
   shell channels so a browser tab works).
-- `pet/`, `panel/` — entry wiring + bridges for the standalone windows
+- `pet/`, `panel/` — entry wiring + bridges for the two stateful standalone windows
   (`petBridge.ts`, `panelBridge.ts`): subscribe gateway WS events and forward
   them into the vendored components.
-- `*.html` — Vite multi-page window entries. They live in-app; the gateway
-  serves them at `/mochi-<name>.html` via the generic app-window-entries
+- `avatar/`, `settings/`, `snip/` — focused entry wiring for the gallery, settings,
+  and screen-crop windows.
+- `*.html` — five Vite multi-page window entries. They live in-app; the gateway
+  serves them at `/app-windows/mochi/<name>.html` via the generic app-window-entries
   discovery (`dashboard/server.py`), so the URL contract is independent of
   file location.
 - `test/` — frontend tests (vitest picks up `src/**/*.test.*` with zero
@@ -71,8 +75,9 @@ The pet needs real OS windows (transparent, click-through, multi-monitor), so
 this layer runs in the Electron **main process** — a deliberate first-party
 exception, not a generic extension point (arbitrary app JS in the main process
 would bypass sandboxing). `main.js` touches it through exactly two calls
-(`initMochi` / `shutdownMochi` in `index.js`); injected context is origin +
-token fetcher + logger, nothing else. Shell tests live in `test/` here.
+(`initMochi` / `shutdownMochi` in `index.js`); injected context is the gateway
+origin, token fetcher, logger, and dashboard-window accessor. Shell tests live in
+`test/` here.
 
 ## Test placement
 

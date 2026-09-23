@@ -17,6 +17,10 @@ from kiro_crew.config.loader import (
     coerce_role_models,
 )
 
+# Post-split coercers are not re-exported by the frozen loader facade
+# (test_config_module_boundaries pins that import block) — reach the module.
+from kiro_crew.config.sections import coerce_refusal_fallback_model
+
 
 # ── coercion ────────────────────────────────────────────────────────────────
 class TestCoerceFallbackModel:
@@ -53,6 +57,42 @@ class TestCoerceFallbackModel:
     def test_agent_config_default_is_auto(self) -> None:
         # DEFAULT PIN: the code default is "auto"; "" is the opt-out.
         assert AgentConfig().fallback_model == "auto"
+
+
+class TestCoerceRefusalFallbackModel:
+    """agent.refusal_fallback_model normalization (content-filter retry)."""
+
+    def test_absent_or_junk_collapses_to_disabled(self) -> None:
+        # DEFAULT PIN: absent/junk means "" (OFF) — the opposite of the
+        # throttle fallback's junk default. A malformed value must never
+        # silently ENABLE a retry the user did not configure.
+        assert coerce_refusal_fallback_model(None) == ""
+        assert coerce_refusal_fallback_model(["claude-opus-5"]) == ""
+        assert coerce_refusal_fallback_model({"a": 1}) == ""
+
+    def test_explicit_empty_disables(self) -> None:
+        assert coerce_refusal_fallback_model("") == ""
+        assert coerce_refusal_fallback_model("   ") == ""
+
+    def test_auto_is_case_insensitive(self) -> None:
+        # "auto" = defer to the refusal envelope's recommended_model.
+        assert coerce_refusal_fallback_model("auto") == "auto"
+        assert coerce_refusal_fallback_model("AUTO") == "auto"
+        assert coerce_refusal_fallback_model("  Auto  ") == "auto"
+
+    def test_normalizes_registry_keys_to_acp_ids(self) -> None:
+        assert coerce_refusal_fallback_model("opus-4.8-1m") == "claude-opus-4.8"
+
+    def test_unregistered_ids_pass_through(self) -> None:
+        assert coerce_refusal_fallback_model("totally-unknown-model") == "totally-unknown-model"
+
+    def test_agent_config_coerces_on_construction(self) -> None:
+        cfg = AgentConfig(refusal_fallback_model="opus-4.8-1m")
+        assert cfg.refusal_fallback_model == "claude-opus-4.8"
+
+    def test_agent_config_default_is_disabled(self) -> None:
+        # DEFAULT PIN: the feature ships OFF — refusals surface as before.
+        assert AgentConfig().refusal_fallback_model == ""
 
 
 class TestCoerceRoleModels:

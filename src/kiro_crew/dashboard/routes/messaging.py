@@ -41,6 +41,12 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/teams/config", handlers.api_teams_config_get)
     app.router.add_put("/api/teams/config", handlers.api_teams_config_save)
 
+    # Cross-channel: file a channel's already-existing conversations into its
+    # configured session folder. One literal path shared by every channel panel,
+    # with the namespace in the body -- deliberately NOT under "/api/channels/",
+    # which the connections routes already own for a different kind of channel.
+    app.router.add_post("/api/channel-folders/backfill", handlers.api_channel_folder_backfill)
+
     # Script Hooks
     app.router.add_get("/api/hooks", handlers.api_hooks)
     app.router.add_get("/api/kiro-hooks", handlers.api_kiro_hooks)

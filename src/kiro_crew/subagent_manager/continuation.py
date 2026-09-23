@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         logger,
         read_state,
         sel,
+        stage_boundary_owner_for_run,
         time,
         update_state,
         uuid,
@@ -37,6 +38,72 @@ class ContinuationCoordinator(ManagerComponent):
 
     _persistence = persistence
     __slots__ = ()
+
+    def _record_crew_log_steer(self, info: SubagentInfo, mode: str) -> None:
+        """Record a correction sent into *info*'s run, in the PARENT's crew log.
+
+        Called only where the steer SUCCEEDED -- after the provider accepted an
+        interrupt, or after a follow-up was queued and its watcher armed. A refused
+        steer sent nothing and is not a fact about the run.
+
+        ``mode`` separates the two, because they are different events: an interrupt
+        lands inside the running turn, a follow-up is delivered as a continuation
+        after it ends.
+
+        The parent is read from the origin pinned at the dispatch rather than
+        resolved again -- the parent has almost certainly moved on to another turn,
+        and this entry belongs to the session, not to whatever it is doing now. An
+        unrecorded dispatch yields an empty session id and the emitter writes
+        nothing, so a steer cannot appear without the spawn that preceded it.
+
+        Every name is imported inside the body: this method does not end in
+        ``_impl``, so it keeps this module's globals, where the facade's imports
+        exist only under ``TYPE_CHECKING``.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.subagent import logger as _logger
+
+        try:
+            if not crew_log_emit.enabled():
+                return
+            sid, _asking_turn = crew_log_emit.child_origin(info.id)
+            if not sid:
+                return
+            crew_log_emit.on_subagent_steered(sid, agent_id=info.id, mode=mode)
+        except Exception:
+            _logger.debug("crew log: recording a subagent steer failed", exc_info=True)
+
+    def _pin_followup_crew_log_origin(self, info: SubagentInfo) -> None:
+        """Remember which parent turn asked for *info*'s queued follow-up.
+
+        A follow-up is DISPATCHED by the watcher, after the run it continues has
+        finished. By then the parent's turn has ended and it may well be running a
+        different one, so the dispatch site cannot read the asking turn -- reading
+        it there would file the continuation under a turn that did not ask for it.
+        This site can: ``spawn_steer`` arrives as a tool call inside the asking
+        turn, so the ordinal is live right here.
+
+        Carried on the record rather than in the emitter's origin map because the
+        continuation is a DIFFERENT child with an id that does not exist yet; the
+        watcher reads it back off ``info`` and hands it to the dispatch, the same
+        way ``_preassigned_id`` and the context triple already ride that call.
+
+        Best-effort: an absent pin makes the continuation's dispatch record nothing,
+        which is the honest outcome rather than a guessed turn.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.crew_log.resolve import unit_for_session_key
+        from kiro_crew.subagent import logger as _logger
+
+        try:
+            if not crew_log_emit.enabled():
+                return
+            sid = unit_for_session_key(self._manager._sessions, info.parent_session_key)
+            if not sid:
+                return
+            setattr(info, "_crew_log_followup_asked", (sid, crew_log_emit.live_turn(sid)))
+        except Exception:
+            _logger.debug("crew log: pinning a follow-up origin failed", exc_info=True)
 
     def _conversation_busy_impl(self, conv_key: str) -> SubagentInfo | None:
         """Return the live or QUEUED run on *conv_key*, or None.
@@ -61,6 +128,24 @@ class ContinuationCoordinator(ManagerComponent):
             if not a.done and (a.conversation_key or f"subagent:{a.id}") == conv_key:
                 return a
         for p in self._manager._queue:
+            # UNSTARTED entries only, the class every other ``_queue`` scan
+            # separates out (the pump's grant loop, the refill census, the
+            # eviction, the child reserve). A ``_resume_id`` entry is a RESIDENT
+            # run asking for the lane slot it yielded: it carries no
+            # ``conversation_key``, so the synthetic key below is its RUN id --
+            # which IS the conversation id of a first-generation continuable
+            # run. A live parked run is answered by the ``_agents`` loop above,
+            # so what this skips is a leftover entry whose run has ENDED: only
+            # ``_withdraw_resume``'s give-up arm drops one, and the queued-stop
+            # path deliberately leaves it alone rather than publishing a "never
+            # started" terminal over a live run. Counting it here answers "run X
+            # is in flight — use spawn_steer" (which then says ``not_running``)
+            # for as long as the pool stays full, because the pump returns above
+            # its resume loop with no free slot -- and it also refuses
+            # ``release_conversation`` and makes the TTL sweep keep refreshing a
+            # conversation nothing holds.
+            if p.get("_resume_id"):
+                continue
             pkey = str(p.get("conversation_key") or "") or (
                 f"subagent:{p.get('_preassigned_id', '')}"
             )
@@ -206,8 +291,7 @@ class ContinuationCoordinator(ManagerComponent):
         ``close_all``, so touching it from a worker thread races restart
         cold-starts (lost mappings / dict-changed-size errors). Per-entry
         work is small and bounded by the keep-run count, and the loop
-        yields between entries so a large batch cannot stall chat turns
-        (the round-2 event-loop concern).
+        yields between entries so a large batch cannot stall chat turns.
         """
         loop = asyncio.get_running_loop()
         found = await loop.run_in_executor(None, self._manager._scan_keep_states)
@@ -219,7 +303,7 @@ class ContinuationCoordinator(ManagerComponent):
         # conversation whose real last-use is recent.
         found.sort(key=lambda t: t[5], reverse=True)
         seeded = 0
-        for conv_id, conv_key, sid, provider, cwd, last_used in found:
+        for _conv_id, conv_key, sid, provider, cwd, last_used in found:
             if conv_key in self._manager._conversations:
                 continue  # live registration wins over the disk snapshot
             # Same on-demand seeding as continue_conversation (also on-loop):
@@ -243,6 +327,31 @@ class ContinuationCoordinator(ManagerComponent):
         if seeded:
             logger.info("Rebuilt conversation TTL registry from disk: %d conversation(s)", seeded)
 
+    def native_child_resume_refusal(self, conversation_id: str) -> str | None:
+        """The typed ``native_child_not_resumable`` reason when *conversation_id*
+        is a harness-native child of a LIVE session, else None.
+
+        Asks every live ``AcpSessionHandle`` (the provider's ``client`` on the
+        runtime path); a handle that is not one, or a session manager without
+        a registry, answers nothing. Read-only: no session is created.
+        """
+        sessions = getattr(self._manager._sessions, "_sessions", None)
+        if not isinstance(sessions, dict):
+            return None
+        for sess in list(sessions.values()):
+            provider = getattr(sess, "provider", None)
+            handle = getattr(provider, "client", None) or provider
+            probe = getattr(handle, "native_child_resume_refusal", None)
+            if not callable(probe):
+                continue
+            try:
+                reason = probe(conversation_id)
+            except Exception:  # noqa: BLE001 - a broken handle is not a child
+                continue
+            if reason:
+                return str(reason)
+        return None
+
     def continue_conversation_impl(
         self,
         conv_id: str,
@@ -254,7 +363,154 @@ class ContinuationCoordinator(ManagerComponent):
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        _crew_log_asked: "tuple[str, int] | None" = None,
+        _stage_boundary_owner: str = "",
     ) -> SubagentInfo | None:
+        """Dispatch a follow-up *task* into conversation *conv_id* (sync callers).
+
+        Every check and every bookkeeping step lives in
+        :meth:`_continue_prelude_impl`; this wrapper only hands the resolved
+        spawn arguments to the sync ``spawn``. Event-loop callers use
+        ``continue_conversation_async`` so the durable row is written off-loop.
+
+        That is a hard requirement, not a preference. The prelude itself takes
+        no store call at all, but the sync ``spawn`` takes TWO ``BEGIN
+        IMMEDIATE`` transactions on the CALLING thread -- ``taskq_accept``'s row
+        write and ``taskq_claim`` -- and each of them waits on
+        ``TaskStore._lock``, which the store's own writer thread holds across a
+        query. Measured on this path against a 1s hold: a coroutine caller's
+        loop serves 0 of the ~95 10ms heartbeat ticks due in that window, where
+        ``continue_conversation_async`` serves 91. Neither write can be posted
+        instead (``_post_store_write``): the accept's error is what REFUSES the
+        spawn, so its value has to be awaited -- which is exactly what the async
+        entry does.
+        """
+        prelude = self._manager._continue_prelude(
+            conv_id,
+            task,
+            parent_session_key,
+            agent,
+            model,
+            max_turns,
+            cwd,
+            _preassigned_id,
+            _memory_mode,
+            _crew_log_asked,
+            _stage_boundary_owner=_stage_boundary_owner,
+        )
+        if not isinstance(prelude, dict):
+            return prelude
+        return self._manager.spawn(**prelude)
+
+    async def continue_conversation_async_impl(
+        self,
+        conv_id: str,
+        task: str,
+        parent_session_key: str = "",
+        agent: str = "",
+        model: str | None = None,
+        max_turns: int = 0,
+        cwd: str = "",
+        _preassigned_id: str = "",
+        _memory_mode: str | None = None,
+        _crew_log_asked: "tuple[str, int] | None" = None,
+        _stage_boundary_owner: str = "",
+    ) -> SubagentInfo | None:
+        """:meth:`continue_conversation_impl` for event-loop callers: the same
+        prelude, then ``spawn_async`` (write-before-ack with the store write on
+        its writer thread)."""
+        # Keep map/busy/promotion mutations on-loop. Only the missing owner's
+        # immutable record is read by the worker, then the prelude rechecks busy.
+        from kiro_crew.execution_context import stricter_memory_mode
+
+        conv_key = f"subagent:{conv_id}"
+        if self._manager._conversation_busy(conv_key) is not None:
+            busy_result = self._manager._continue_prelude(
+                conv_id,
+                task,
+                parent_session_key,
+                agent,
+                model,
+                max_turns,
+                cwd,
+                _preassigned_id,
+                _memory_mode,
+            )
+            assert not isinstance(busy_result, dict)
+            return busy_result
+        original = self._manager._agents.get(conv_id)
+        execution = original.execution_context if original is not None else None
+        state = ...
+        try:
+            if _memory_mode is None:
+                resolver = self._manager._memory_mode_for_session
+                _memory_mode = (
+                    resolver(parent_session_key) if resolver is not None else "persistent"
+                )
+            if execution is None or not self._manager._sessions.resumable_sid(conv_key):
+
+                def read_snapshot():
+                    row = self._persistence.read_state(conv_id)
+                    captured = (
+                        self._persistence.read_run_execution(conv_id, state=row)
+                        if row is not None
+                        else None
+                    )
+                    return row or {}, captured
+
+                state, restored = await asyncio.to_thread(read_snapshot)
+                execution = execution or restored
+            if execution is not None:
+                execution = self._manager._admission.resolve_spawn_execution(
+                    conversation_key=conv_key,
+                    agent=agent,
+                    _memory_mode=stricter_memory_mode(execution.memory_mode, _memory_mode),
+                    _record=execution,
+                )
+        except (OSError, ValueError) as exc:
+            return SubagentInfo(
+                id=_preassigned_id or uuid.uuid4().hex[:8],
+                task=_redact(task),
+                done=True,
+                parent_session_key=parent_session_key,
+                error=f"memory_unavailable: {exc}",
+            )
+        prelude = self._manager._continue_prelude(
+            conv_id,
+            task,
+            parent_session_key,
+            agent,
+            model,
+            max_turns,
+            cwd,
+            _preassigned_id,
+            _memory_mode,
+            _crew_log_asked,
+            _execution_context=execution,
+            _captured_state=state,
+            _stage_boundary_owner=_stage_boundary_owner,
+        )
+        if not isinstance(prelude, dict):
+            return prelude
+        return await self._manager.spawn_async(**prelude)
+
+    def _continue_prelude_impl(
+        self,
+        conv_id: str,
+        task: str,
+        parent_session_key: str = "",
+        agent: str = "",
+        model: str | None = None,
+        max_turns: int = 0,
+        cwd: str = "",
+        _preassigned_id: str = "",
+        _memory_mode: str | None = None,
+        _crew_log_asked: "tuple[str, int] | None" = None,
+        *,
+        _execution_context=None,
+        _captured_state=...,
+        _stage_boundary_owner: str = "",
+    ) -> "SubagentInfo | dict[str, Any] | None":
         """Dispatch a follow-up *task* into conversation *conv_id*.
 
         ``_preassigned_id`` mirrors ``spawn``: a caller that must persist the
@@ -279,16 +535,6 @@ class ContinuationCoordinator(ManagerComponent):
         - ``conversation_gone`` — no resumable session files remain.
         """
         conv_key = f"subagent:{conv_id}"
-        try:
-            memory_store = self._manager._inherited_memory_store(conv_id)
-        except (OSError, ValueError) as exc:
-            return SubagentInfo(
-                id=_preassigned_id or uuid.uuid4().hex[:8],
-                task=_redact(task),
-                done=True,
-                parent_session_key=parent_session_key,
-                error=f"memory_unavailable: {exc}",
-            )
         busy = self._manager._conversation_busy(conv_key)
         if busy is not None:
             info = SubagentInfo(
@@ -296,6 +542,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
                 error=(
                     f"conversation_busy: run {busy.id} is still settling a state "
                     "write on this conversation — retry shortly"
@@ -312,7 +559,7 @@ class ContinuationCoordinator(ManagerComponent):
         # exists yet (default runs never write one at spawn; the map is also
         # in-memory-lost across gateway restarts while state.json persists).
         if not self._manager._sessions.resumable_sid(conv_key):
-            state = read_state(conv_id) or {}
+            state = (read_state(conv_id) or {}) if _captured_state is ... else _captured_state
             sid = str(state.get("session_id") or "")
             if sid:
                 self._manager._sessions.seed_conversation(
@@ -324,6 +571,19 @@ class ContinuationCoordinator(ManagerComponent):
         # Re-check: SessionMap.get self-prunes entries whose session files
         # are missing, so a surviving mapping == resumable files on disk.
         if not self._manager._sessions.resumable_sid(conv_key):
+            # A harness-native child (kiro-cli ``use_subagent``, a KAS
+            # subtask) has no conversation of its own: the typed refusal
+            # names the parent instead of the generic lookup miss.
+            native_refusal = self.native_child_resume_refusal(conv_id)
+            if native_refusal is not None:
+                return SubagentInfo(
+                    id=uuid.uuid4().hex[:8],
+                    task=_redact(task),
+                    done=True,
+                    parent_session_key=parent_session_key,
+                    _stage_boundary_owner=_stage_boundary_owner,
+                    error=native_refusal,
+                )
             # Point the caller at the prior result if the run folder survives
             # (result.txt outlives the session under the tombstone TTL).
             result_hint = ""
@@ -338,6 +598,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
                 error=(
                     "conversation_gone: no resumable session remains for "
                     f"{conv_id} (expired, released, or files pruned)."
@@ -346,6 +607,45 @@ class ContinuationCoordinator(ManagerComponent):
                 ),
             )
             return info
+        try:
+            if _execution_context is not None:
+                memory_store = _execution_context.store.legacy_name
+            elif _captured_state is not ...:
+                raise ValueError("run record is unavailable")
+            else:
+                memory_store = self._manager._inherited_memory_store(conv_id)
+        except (OSError, ValueError) as exc:
+            return SubagentInfo(
+                id=_preassigned_id or uuid.uuid4().hex[:8],
+                task=_redact(task),
+                done=True,
+                parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
+                error=f"memory_unavailable: {exc}",
+            )
+        # The old registry record can disappear after eviction or restart. A
+        # follow-up must retain its app profile before admission and before it
+        # can establish the canonical HTTP caller. Writable state is not proof
+        # that a legacy run belonged to the dashboard user.
+        try:
+            original = self._manager._agents.get(conv_id)
+            if _execution_context is not None:
+                app = _execution_context.app
+            elif original is not None:
+                app = original.app
+            else:
+                app = self._persistence.read_run_app(conv_id)
+            if not isinstance(app, str):
+                raise ValueError("protected app ownership unavailable; start a new conversation")
+        except (OSError, ValueError) as exc:
+            return SubagentInfo(
+                id=_preassigned_id or uuid.uuid4().hex[:8],
+                task=_redact(task),
+                done=True,
+                parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
+                error=f"resume_failed: {exc}",
+            )
         # Promote the run's retention through the single choke point:
         # state.json keep=True (tombstone pruner skips deletion),
         # the SessionManager continuable cache, and the TTL registry entry.
@@ -373,12 +673,24 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
                 error=(
                     "conversation_busy: retention promotion is temporarily "
                     f"unavailable for {conv_id}; retry the continuation"
                 ),
             )
-        inc_memory, inc_lessons, inc_project = self._manager._inherited_context_groups(conv_id)
+        inc_memory, inc_lessons, inc_project = (
+            self._manager._inherited_context_groups(conv_id)
+            if _captured_state is ...
+            else self._inherited_context_groups_impl(conv_id, state=_captured_state)
+        )
+        delegation = (
+            original.delegation
+            if original is not None
+            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
+                "delegation", {}
+            )
+        )
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
         # spawned against a project-local agent (defined under that project's
@@ -392,9 +704,10 @@ class ContinuationCoordinator(ManagerComponent):
         # network mount takes to answer. Async callers resolve it off-loop instead:
         # crew passes its slot project, and `recorded_cwd()` gives the others the
         # run's own recorded path to hand back in.
-        return self._manager.spawn(
-            task,
+        return dict(
+            task=task,
             _preassigned_id=_preassigned_id,
+            _crew_log_asked=_crew_log_asked,
             parent_session_key=parent_session_key,
             agent=agent,
             model=model,
@@ -402,6 +715,7 @@ class ContinuationCoordinator(ManagerComponent):
             keep=True,
             cwd=cwd,
             conversation_key=conv_key,
+            delegation=dict(delegation or {}),
             include_memory=inc_memory,
             include_lessons=inc_lessons,
             include_project=inc_project,
@@ -411,6 +725,13 @@ class ContinuationCoordinator(ManagerComponent):
             # follow-up reads the global store -- a split nothing reports.
             memory_store=memory_store,
             _memory_mode=_memory_mode,
+            _stage_boundary_owner=_stage_boundary_owner,
+            app=app,
+            **(
+                {"_execution_context": _execution_context.to_record()}
+                if _execution_context is not None
+                else {}
+            ),
         )
 
     def _inherited_memory_store_impl(self, conv_id: str) -> str:
@@ -436,12 +757,23 @@ class ContinuationCoordinator(ManagerComponent):
         an empty cwd resolves to the POOL project, so a follow-up
         whose task names relative files would have edited an unrelated project's
         working tree. A loud refusal is recoverable; a silent write to the wrong
-        repository is not. Only a run that never recorded a cwd returns "" — for it
-        the pool default is correct, because there is no project to miss.
+        repository is not. A recorded directory matching the current pool default
+        returns "" too: omitting the override selects that exact directory without
+        requesting an override-policy exception. A changed pool keeps the recorded
+        path explicit, so current directory policy still applies.
         """
-        return str((read_state(conv_id) or {}).get("cwd") or "")
+        import os
 
-    def _inherited_context_groups_impl(self, conv_id: str) -> tuple[bool, bool, bool]:
+        recorded = str((read_state(conv_id) or {}).get("cwd") or "")
+        pool_cwd = getattr(self._manager._sessions, "_pool_cwd", "")
+        if recorded and isinstance(pool_cwd, str) and pool_cwd:
+            if os.path.realpath(recorded) == os.path.realpath(pool_cwd):
+                # This is the directory an omitted override already selects.
+                # Keep that path rather than subjecting it to override policy.
+                return ""
+        return recorded
+
+    def _inherited_context_groups_impl(self, conv_id: str, *, state=...) -> tuple[bool, bool, bool]:
         """Recover the context scope of the run being continued.
 
         A continuation DOES rebuild session context: ``get_or_create`` reports
@@ -459,7 +791,7 @@ class ContinuationCoordinator(ManagerComponent):
         live = self._manager._agents.get(conv_id)
         if live is not None:
             return live.include_memory, live.include_lessons, live.include_project
-        raw = (read_state(conv_id) or {}).get("context_groups")
+        raw = ((read_state(conv_id) or {}) if state is ... else state).get("context_groups")
         if raw is None:
             return True, True, True
         groups = {g for g in str(raw).split(",") if g}
@@ -521,6 +853,7 @@ class ContinuationCoordinator(ManagerComponent):
             logger.warning("steer_run %s failed", agent_id, exc_info=True)
             return False, f"steer failed: {exc}"
         if ok:
+            self._record_crew_log_steer(info, "interrupt")
             try:
                 sel().log_tool_invocation(
                     session_key=info.parent_session_key or "",
@@ -556,6 +889,8 @@ class ContinuationCoordinator(ManagerComponent):
         info = self._manager._agents.get(agent_id)
         if info is None:
             return False, "not_found"
+        if info._stage_boundary_cancelled:
+            return False, "not_running: owning stage was cancelled"
         if info.done:
             return False, "not_running: run finished — use spawn_continue"
         if self._manager._shutting_down:
@@ -566,6 +901,8 @@ class ContinuationCoordinator(ManagerComponent):
         info.pending_followups.append(message)
         if not info._followup_watcher:
             self._manager._arm_followup_watcher(info)
+        self._record_crew_log_steer(info, "follow_up")
+        self._pin_followup_crew_log_origin(info)
         try:
             sel().log_tool_invocation(
                 session_key=info.parent_session_key or "",
@@ -594,9 +931,13 @@ class ContinuationCoordinator(ManagerComponent):
         run_info = info  # narrowed local: mypy loses the None-narrow in closure defaults
         task = asyncio.create_task(self._manager._deliver_followups(info))
         self._manager._followup_watchers[run_id] = task
+        self._manager._followup_watcher_parents[run_id] = info.parent_session_key
+        self._manager._followup_watcher_infos[run_id] = info
 
         def _done(t: "asyncio.Task", _id: str = run_id, _info: SubagentInfo = run_info) -> None:
             self._manager._followup_watchers.pop(_id, None)
+            self._manager._followup_watcher_parents.pop(_id, None)
+            self._manager._followup_watcher_infos.pop(_id, None)
             _info._followup_watcher = False
             if not t.cancelled() and t.exception() is not None:
                 logger.warning("follow_up watcher for %s failed", _id, exc_info=t.exception())
@@ -604,6 +945,7 @@ class ContinuationCoordinator(ManagerComponent):
             if (
                 not t.cancelled()
                 and _info.pending_followups
+                and not _info._stage_boundary_cancelled
                 and not self._manager._shutting_down
                 and _id in self._manager._agents
             ):
@@ -684,6 +1026,14 @@ class ContinuationCoordinator(ManagerComponent):
         def _settle() -> None:
             info.pending_followups = info.pending_followups[len(messages) :]
 
+        if info._stage_boundary_cancelled:
+            logger.info(
+                "follow_up for %s suppressed — its stage boundary was cancelled",
+                info.id,
+            )
+            self._manager._audit_followup(info, "followup_suppressed")
+            _settle()
+            return
         if info.user_stopped:
             logger.info("follow_up for %s suppressed — the user stopped the run", info.id)
             self._manager._audit_followup(info, "followup_suppressed")
@@ -703,11 +1053,23 @@ class ContinuationCoordinator(ManagerComponent):
         # Finalization may hold the conversation for a beat after the task is
         # popped (shielded report); retry a bounded number of times.
         for _attempt in range(self._manager._FOLLOWUP_BUSY_RETRIES):
-            child = self._manager.continue_conversation(
+            if info._stage_boundary_cancelled:
+                self._manager._audit_followup(info, "followup_suppressed")
+                _settle()
+                return
+            child = await self._manager.continue_conversation_async(
                 info.id,
                 task,
                 parent_session_key=info.parent_session_key,
                 agent=info.agent,
+                # The turn that asked for this follow-up, pinned when it was
+                # queued. This dispatch runs after the continued run finished, so
+                # the asking ordinal is not readable here. Several queued messages
+                # merge into one continuation, and the pin holds one turn, so for a
+                # merged dispatch this is the turn that asked LAST; each individual
+                # ask is recorded at its own turn as `subagent/steered`.
+                _crew_log_asked=getattr(info, "_crew_log_followup_asked", None),
+                _stage_boundary_owner=stage_boundary_owner_for_run(info),
             )
             err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
             if not err.startswith("conversation_busy"):
@@ -764,6 +1126,7 @@ class ContinuationCoordinator(ManagerComponent):
             parent_session_key=info.parent_session_key,
             error=reason,
         )
+        synthetic._stage_boundary_owner = stage_boundary_owner_for_run(info)
         try:
             await self._manager._on_done(synthetic)
         except Exception:
@@ -809,6 +1172,16 @@ class ContinuationCoordinator(ManagerComponent):
             update_state(conv_id, keep=False)
         except Exception:
             logger.debug("release: failed to demote state for %s", conv_id, exc_info=True)
+        original = self._manager._agents.get(conv_id)
+        if original is None:
+            original = next(
+                (info for info in self._manager._report_owners.values() if info.id == conv_id),
+                None,
+            )
+        if original is not None:
+            self._manager._run_events._forget_finished_live_state(original)
+        else:
+            self._persistence.forget_live_run_state(conv_id)
         if not sid:
             return False, "conversation_gone: nothing to release"
         try:
@@ -830,7 +1203,7 @@ class ContinuationCoordinator(ManagerComponent):
                 logger.warning("Dropping malformed conversation registry key %r", conv_key)
                 self._manager._conversations.pop(conv_key, None)
                 continue
-            ok, detail = self._manager.release_conversation(conv_id)
+            _ok, detail = self._manager.release_conversation(conv_id)
             logger.info(
                 "Conversation %s expired after %ds idle: %s",
                 conv_id,

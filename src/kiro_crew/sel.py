@@ -69,15 +69,6 @@ def _default_dir() -> Path:
     import first loads this module. Resolving on each call is cheap: the first
     ``config_dir()`` of the process caches the resolved home.
     """
-    from kiro_crew.config.paths import private_runtime_log_dir
-
-    private_logs = private_runtime_log_dir()
-    if private_logs is not None:
-        # A separate process-local diagnostic chain never appends to, nor
-        # supplies authority for, the gateway's global audit chain.
-        directory = private_logs / f"audit-{os.getpid()}"
-        platform_compat.make_owner_only_dir(directory)
-        return directory
     return config_dir()
 
 
@@ -762,14 +753,14 @@ class SecurityEventLog:
                 raise OSError(
                     f"SEL chain-lock sidecar {lock_path} is hard-linked; refusing to lock it"
                 )
-            # Windows locks a byte RANGE (msvcrt.locking on byte 0), so a fresh
-            # empty sidecar has nothing to lock — same shape as the rotation
-            # lock, which primes itself with one NUL byte. Prime only the
-            # sidecar we created: the legacy-key fallback path never writes
-            # through this fd (the key file is never empty — init rejects a
-            # short key — and its bytes must not be touched).
-            if lock_path != self._hmac_key_file and os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
+            # Nothing is written through this descriptor, including to prime a
+            # fresh sidecar. A Windows byte-range lock covers byte 0 of a
+            # zero-length file and still excludes every other descriptor and
+            # process, and it makes byte 0 unwritable while it is held: a write
+            # here races a sibling's acquire and fails with EACCES, which
+            # ``_flush_batch`` reports as an unavailable chain lock and drops the
+            # batch for. The legacy-key fallback path must not be written
+            # through either -- its bytes are the HMAC key.
             if _on_event_loop():
                 if _acquire_chain_lock_on_loop(fd):
                     unlock = functools.partial(platform_compat.release_lock, fd)
@@ -1524,25 +1515,18 @@ class SecurityEventLog:
                 )
                 return None
         try:
-            # "a+b": msvcrt.locking needs a writable fd and locks a byte range,
-            # so the file must be non-empty (same shape as metrics retention).
+            # "a+b": msvcrt.locking needs a writable fd. The file stays empty --
+            # a byte-range lock covers byte 0 of a zero-length file, and writing
+            # one here would fail with EACCES against a sibling that acquired
+            # first, which declines a rotation for a lock that is working.
             lock_fh = open(lock_path, "a+b")
         except OSError:
             logger.warning("SEL rotation lock %s could not be opened", lock_path, exc_info=True)
             return None
         try:
-            lock_fh.seek(0, os.SEEK_END)
-            if lock_fh.tell() == 0:
-                lock_fh.write(b"\0")
-                lock_fh.flush()
-            try:
-                os.chmod(lock_path, 0o600)  # lockdown-ok: the rotation lock holds no data (a single NUL byte), so there is no payload to expose
-            except OSError:
-                pass  # perms are hygiene here; the file holds no data
+            os.chmod(lock_path, 0o600)  # lockdown-ok: the rotation lock holds no data, so there is no payload to expose
         except OSError:
-            lock_fh.close()
-            logger.warning("SEL rotation lock %s could not be primed", lock_path, exc_info=True)
-            return None
+            pass  # perms are hygiene here; the file holds no data
         return lock_fh
 
     def _may_rotate(self) -> bool:
@@ -3298,6 +3282,12 @@ def _infer_source(session_key: str) -> str:
     # (``governance_profiles.resolve_active_scope``) binds a side turn exactly as
     # it binds the parent slot, and the ``slack`` fallback below never claims it.
     if session_key.startswith("side:"):
+        return "dashboard"
+    # A reply thread on a crewmate chat message (``dashboard/chat_threads.py``)
+    # runs its isolated turn under ``thread:<slot>:<mid>`` -- the same dashboard
+    # surface as the side chat, keyed apart from the parent slot for the same
+    # reason, and classified here for the same reason.
+    if session_key.startswith("thread:"):
         return "dashboard"
     if session_key.startswith("cron:"):
         return "cron"

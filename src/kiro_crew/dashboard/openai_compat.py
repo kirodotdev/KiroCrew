@@ -348,8 +348,12 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
-        # Busy check — prevent concurrent writes to same slot
-        if slot.task is not None and not slot.task.done():
+        # Busy check — prevent concurrent writes to the same slot. ``running``
+        # includes the outer Autopilot controller while no child turn occupies
+        # ``slot.task``; the pending marker keeps the same isolation after an
+        # authentication pause has ended that controller but before Stage N is
+        # settled and captured.
+        if slot.running is True:
             sel().log_api_access(
                 caller=request.remote or "",
                 operation="openai_compat.chat",
@@ -358,8 +362,34 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 resources=f"slot={slot_id}",
                 error="slot busy",
             )
+            if (
+                slot.stage_boundary.stage is not None
+                and not slot.turn_running
+                and not slot._plan_cancelled
+            ):
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": (
+                                f"slot {slot_id!r} is paused at an Autopilot stage gate; "
+                                "continue from the dashboard (Go)"
+                            ),
+                            "type": "slot_busy",
+                            "code": "stage_gate_paused",
+                        },
+                        "code": "stage_gate_paused",
+                    },
+                    status=409,
+                )
             return web.json_response(
-                {"error": {"message": f"slot {slot_id!r} is busy", "type": "slot_busy"}},
+                {
+                    "error": {
+                        "message": f"slot {slot_id!r} is busy",
+                        "type": "slot_busy",
+                        "code": "slot_busy",
+                    },
+                    "code": "slot_busy",
+                },
                 status=409,
             )
         # Member DM threads are pinned to their crew — the specific refusal
@@ -581,6 +611,14 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     slot,
                     prompt,
                     _directive_user_origin=is_dashboard_caller,
+                    # Named for the same reason ``api_chat`` names it: the actor
+                    # resolver's fallback is ``user``, so a dispatch that OBSERVED
+                    # an app and stayed silent records a person who never typed
+                    # anything -- and every consumer that asks "is a human
+                    # watching this turn" then gets the wrong answer. ``""`` is the
+                    # parameter's own default and reads as "not named", so a
+                    # dashboard caller is unchanged.
+                    _turn_actor="app" if request_app else "",
                 ),
                 timeout=chat_turn_timeout_secs(),
             )

@@ -16,8 +16,11 @@ from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.controller import MonitorController, format_monitor_wake
 from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
 from kiro_crew.monitoring.models import (
+    DEFAULT_MONITOR_CADENCE_SECS,
     DEFAULT_MONITOR_REALERT_SECS,
+    DEFAULT_MONITOR_STALL_TICKS,
     MONITOR_STOP_COMPLETION_UNAVAILABLE,
+    MONITOR_STOP_VERDICT_STALL,
     MonitorActionCompletion,
     MonitorActionDisposition,
     MonitorBudgets,
@@ -841,6 +844,70 @@ async def test_probe_persistence_failure_leaves_live_claim_and_timer_unchanged(
     service.stop()
 
 
+@pytest.mark.asyncio
+async def test_a_shared_cooldown_skip_does_not_retire_a_healthy_watch(tmp_path):
+    """The PRODUCTION counting site owes the third outcome the same answer as shadow.
+
+    A probe the monitor declined itself -- the shared ``github:api`` schedule was
+    still ahead of now -- borrows a refusal's SHAPE, so charging it spends a budget
+    that exists to count refusals the HOST gave THIS watch. Unrelated work opening
+    that cooldown then retires a healthy watch on its own cadence, with no request
+    ever sent. Clearing the streak is the opposite error, so the skip must move
+    neither counter.
+    """
+    from kiro_crew.monitoring.github_provider_errors import REASON_SHARED_COOLDOWN
+
+    service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    loop = await service.add_monitor(
+        slot_key="chat-1",
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(max_runtime_secs=600, max_provider_errors=2),
+        now=100.0,
+    )
+    assert loop.monitor is not None
+    skip = GitHubPullRequestProbeResult(
+        response=None,
+        canonical={},
+        observation=MonitorObservation(
+            "",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=ProviderErrorKind.RATE_LIMITED,
+            reason_code=REASON_SHARED_COOLDOWN,
+            summary="Shared GitHub cooldown; no request sent.",
+        ),
+    )
+
+    budget = loop.monitor.budgets.max_provider_errors
+    for tick in range(budget + 1):
+        verdict = await service.apply_monitor_probe(
+            loop.id,
+            skip,
+            now=120.0 + tick,
+            config_generation=loop.monitor.config_generation,
+        )
+        assert verdict.decision is MonitorDecision.RETRY_PROVIDER, tick
+
+    assert loop.monitor.outcome is None and loop.monitor.stopped_reason == ""
+    assert loop.monitor.provider_error_count == 0
+    assert loop.monitor.consecutive_provider_errors == 0
+    assert loop.monitor.last_observation_reason_code == REASON_SHARED_COOLDOWN
+
+    # A refusal the HOST gave still spends the budget, so the skip did not make a
+    # real outage survivable.
+    real = _result(MonitorObservationStatus.PROVIDER_ERROR)
+    for _ in range(budget):
+        verdict = await service.apply_monitor_probe(
+            loop.id, real, now=200.0, config_generation=loop.monitor.config_generation
+        )
+    assert verdict.decision is MonitorDecision.STOP_BLOCKED
+    assert loop.monitor.provider_error_count == budget
+    service.stop()
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_supplemental_provider_failures_advance_the_bounded_error_streak(tmp_path):
     """Readable canonical facts do not make an incomplete provider read free to retry."""
@@ -2099,10 +2166,9 @@ async def test_a_retarget_clears_the_coalescing_window(tmp_path):
     """Changing the target resets every per-subject field, the window included.
 
     A retarget is a new subject, so a window opened on the old subject describes
-    nothing on the new one. The reset block clears the window fingerprint, its
-    open time and the re-alert map alongside the other per-subject state, so a
-    re-assert decision on the new subject reads none of the old subject's alert
-    times.
+    nothing on the new one. The reset block clears the per-condition window and
+    the re-alert map alongside the other per-subject state, so a re-assert
+    decision on the new subject reads none of the old subject's alert times.
     """
     service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
     try:
@@ -2123,7 +2189,7 @@ async def test_a_retarget_clears_the_coalescing_window(tmp_path):
             now=10.0,
             config_generation=loop.monitor.config_generation,
         )
-        assert loop.monitor.coalesce_fingerprint == "red-old"
+        assert loop.monitor.coalesce_windows != {}
         assert loop.monitor.coalesce_alerted != {}
 
         await service.record_monitor_turn_completion(
@@ -2134,12 +2200,206 @@ async def test_a_retarget_clears_the_coalescing_window(tmp_path):
                 completed_ts=10.0,
             )
         )
+        # One more probe of the same unresolved state is a counted tick, so the
+        # stall streak now carries the OLD subject -- which is what the retarget
+        # has to clear. A wake alone would not: acting on a subject zeroes it.
+        await service.apply_monitor_probe(
+            loop.id,
+            _result(MonitorObservationStatus.ACTIONABLE, fingerprint="red-old"),
+            now=20.0,
+            config_generation=loop.monitor.config_generation,
+        )
+        assert loop.monitor.stall_digest != ""
+        assert loop.monitor.stall_streak == 1
+        assert loop.monitor.stall_started_at > 0
+
         updated = await service.update_monitor(
             loop.id, target="https://github.com/acme/widgets/pull/9"
         )
         assert updated is not None and updated.monitor is not None
-        assert updated.monitor.coalesce_fingerprint == ""
-        assert updated.monitor.coalesce_opened_at == 0.0
+        assert updated.monitor.coalesce_windows == {}
         assert updated.monitor.coalesce_alerted == {}
+        # A streak counted on the old subject describes nothing on the new one,
+        # so carrying it over would retire a fresh watch early.
+        assert updated.monitor.stall_digest == ""
+        assert updated.monitor.stall_streak == 0
+        assert updated.monitor.stall_started_at == 0.0
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_watch_is_recorded_as_a_stall_not_as_the_subject(tmp_path):
+    """The production writer files a stall under its own reason.
+
+    ``apply_monitor_probe`` otherwise takes ``stopped_reason`` from the
+    observation, so a watch retired for repeating itself would land as
+    ``checks_failed`` -- indistinguishable from a pull request that really is
+    red, and from the convergence and spent-budget stops the same field carries.
+    This drives the composed path the isolated decision tests cannot: the real
+    wake writer, the real completion writer and the real reason writer.
+    """
+    service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    try:
+        loop = await service.add_monitor(
+            slot_key="chat-1",
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            # The DEFAULT cadence, so the stall ceiling is the tick count rather
+            # than the wall-clock floor -- this test is about the recorded reason,
+            # and the floor has its own case in test_monitor_decision.
+            cadence_secs=DEFAULT_MONITOR_CADENCE_SECS,
+            budgets=MonitorBudgets(max_runtime_secs=10_000_000),
+            now=0.0,
+        )
+        assert loop.monitor is not None
+        gen = loop.monitor.config_generation
+        base = _result(MonitorObservationStatus.ACTIONABLE, fingerprint="red-1")
+        red = GitHubPullRequestProbeResult(
+            response=base.response,
+            canonical=base.canonical,
+            observation=MonitorObservation(
+                "red-1",
+                MonitorObservationStatus.ACTIONABLE,
+                reason_code="checks_failed",
+                summary="One check is failing.",
+            ),
+        )
+
+        async def _probe_and_complete(now: float) -> MonitorDecision:
+            verdict = await service.apply_monitor_probe(
+                loop.id, red, now=now, config_generation=gen
+            )
+            if verdict.decision is MonitorDecision.WAKE_ACTIONABLE:
+                await service.record_monitor_turn_completion(
+                    MonitorActionCompletion(
+                        monitor_id=loop.id,
+                        fingerprint="red-1",
+                        disposition=MonitorActionDisposition.SUCCESS,
+                        completed_ts=now,
+                    )
+                )
+            return verdict.decision
+
+        decisions: list[MonitorDecision] = []
+        # Ticks advance by the watch's own cadence, because the trip needs elapsed
+        # wall-clock as well as a count. Every probe still sits well inside the
+        # re-alert period, so the subject keeps deciding NO_CHANGE.
+        for tick in range(DEFAULT_MONITOR_STALL_TICKS + 2):
+            decision = await _probe_and_complete(DEFAULT_MONITOR_CADENCE_SECS * (tick + 1))
+            decisions.append(decision)
+            if decision is MonitorDecision.STOP_BLOCKED:
+                break
+
+        assert decisions[0] is MonitorDecision.WAKE_ACTIONABLE
+        assert set(decisions[1:-1]) == {MonitorDecision.NO_CHANGE}
+        assert decisions[-1] is MonitorDecision.STOP_BLOCKED
+        assert loop.monitor.stall_streak == DEFAULT_MONITOR_STALL_TICKS
+        assert loop.monitor.outcome is MonitorOutcome.BLOCKED
+        assert loop.monitor.stopped_reason == MONITOR_STOP_VERDICT_STALL
+        assert loop.monitor.stopped_reason != "checks_failed"
+        assert not loop.active
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_stall_condition_cannot_outlive_the_tick_that_tripped_it(tmp_path):
+    """The invariant that lets ``monitor_stall_reason`` ignore the decision.
+
+    Both writers of ``stopped_reason`` compose it in an arm they also reach for
+    ``STOP_SUCCESS``, and the reason function reads the streak alone. So a
+    ceiling streak surviving onto a later tick would file a MERGED subject as
+    ``SUCCESS`` carrying ``verdict_stall`` -- a conclusion wearing a stall's
+    reason. This pins the three clauses that make that unreachable, instead of
+    guarding the consequence: a guard on a condition nothing can construct is
+    the unexercised branch that got a hard cap deleted in this package before.
+
+    Clause 1 is pinned in ``test_monitor_decision``: the call that reaches the
+    ceiling returns the stop, so no later tick starts above ``ceiling - 1``.
+    """
+    service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    try:
+        loop = await service.add_monitor(
+            slot_key="chat-1",
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            # The DEFAULT cadence, so the stall ceiling is the tick count rather
+            # than the wall-clock floor -- this test is about the recorded reason,
+            # and the floor has its own case in test_monitor_decision.
+            cadence_secs=DEFAULT_MONITOR_CADENCE_SECS,
+            budgets=MonitorBudgets(max_runtime_secs=10_000_000),
+            now=0.0,
+        )
+        assert loop.monitor is not None
+        gen = loop.monitor.config_generation
+        base = _result(MonitorObservationStatus.ACTIONABLE, fingerprint="red-1")
+        red = GitHubPullRequestProbeResult(
+            response=base.response,
+            canonical=base.canonical,
+            observation=MonitorObservation(
+                "red-1",
+                MonitorObservationStatus.ACTIONABLE,
+                reason_code="checks_failed",
+                summary="One check is failing.",
+            ),
+        )
+        for tick in range(DEFAULT_MONITOR_STALL_TICKS + 2):
+            verdict = await service.apply_monitor_probe(
+                loop.id,
+                red,
+                now=DEFAULT_MONITOR_CADENCE_SECS * (tick + 1),
+                config_generation=gen,
+            )
+            if verdict.decision is MonitorDecision.WAKE_ACTIONABLE:
+                await service.record_monitor_turn_completion(
+                    MonitorActionCompletion(
+                        monitor_id=loop.id,
+                        fingerprint="red-1",
+                        disposition=MonitorActionDisposition.SUCCESS,
+                        completed_ts=DEFAULT_MONITOR_CADENCE_SECS * (tick + 1),
+                    )
+                )
+            if verdict.decision is MonitorDecision.STOP_BLOCKED:
+                break
+        assert loop.monitor.stall_streak == DEFAULT_MONITOR_STALL_TICKS
+
+        # CLAUSE 2 -- the stop's outcome was staged onto the same state as the
+        # ceiling streak and applied as one unit, so the pair cannot come apart.
+        assert loop.monitor.outcome is MonitorOutcome.BLOCKED
+        assert loop.monitor.stopped_reason == MONITOR_STOP_VERDICT_STALL
+
+        # CLAUSE 3a -- with an outcome recorded, a later probe never reaches the
+        # decision engine, so the ceiling is never read again. A MERGED subject
+        # arriving now is refused rather than composed, which is what keeps it
+        # from being filed as SUCCESS with the stall's reason.
+        merged = GitHubPullRequestProbeResult(
+            response=base.response,
+            canonical=base.canonical,
+            observation=MonitorObservation(
+                "green-1",
+                MonitorObservationStatus.SUCCESS,
+                reason_code="pull_request_merged",
+                summary="Pull request merged.",
+            ),
+        )
+        after = await service.apply_monitor_probe(
+            loop.id, merged, now=9_000.0, config_generation=gen
+        )
+        assert after.decision is MonitorDecision.STOP_BLOCKED
+        assert after.entries == ()
+        assert loop.monitor.outcome is MonitorOutcome.BLOCKED
+        assert loop.monitor.stopped_reason == MONITOR_STOP_VERDICT_STALL
+        assert loop.monitor.stall_streak == DEFAULT_MONITOR_STALL_TICKS
+
+        # CLAUSE 3b -- the one path that clears an outcome is fenced to
+        # SESSION_CLOSE, which a stall never records, so it cannot resurrect a
+        # watch carrying a ceiling streak.
+        assert await service.restore_monitor_after_failed_session_close(loop.id) is None
+        assert loop.monitor.outcome is MonitorOutcome.BLOCKED
+        assert loop.monitor.stopped_reason == MONITOR_STOP_VERDICT_STALL
+        assert not loop.active
     finally:
         service.stop()

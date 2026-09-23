@@ -90,6 +90,58 @@ def runtime_env(tmp_path, monkeypatch):
     return {"model": str(model), "config": str(config), "sample_rate": 22050, "length_scale": 1.0}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bundled,user_site_enabled,expected_isolated",
+    [
+        (True, True, True),
+        (False, False, True),
+        (False, True, False),
+    ],
+    ids=["bundled", "nonbundled-disabled", "nonbundled-enabled"],
+)
+async def test_worker_argv_follows_shared_user_site_policy(
+    runtime_env,
+    monkeypatch,
+    bundled,
+    user_site_enabled,
+    expected_isolated,
+):
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: bundled)
+    monkeypatch.setattr(platform_compat.site, "ENABLE_USER_SITE", user_site_enabled)
+    monkeypatch.setattr(
+        runtime,
+        "sys",
+        SimpleNamespace(
+            executable=sys.executable,
+            flags=SimpleNamespace(no_user_site=not user_site_enabled),
+        ),
+    )
+    proc = FakeWorker()
+    monkeypatch.setattr(runtime, "create_subprocess_limited", AsyncMock(return_value=proc))
+    engine = runtime.PiperRuntime()
+    try:
+        await collect(engine, runtime_env)
+        argv = runtime.wrap_argv_async.await_args.args[0]
+        assert argv[0] == sys.executable
+        assert argv.count("-s") == int(expected_isolated)
+        assert [token for token in argv[1:] if token != "-s"] == [
+            "-E",
+            "-P",
+            "-u",
+            "-m",
+            "kiro_crew.piper_worker",
+            "--model",
+            runtime_env["model"],
+            "--config",
+            runtime_env["config"],
+        ]
+    finally:
+        await engine.close()
+
+
 async def collect(engine, settings, identity="request"):
     stream = engine.stream(["你好。"], request_id=identity, **settings)
     async with contextlib.aclosing(stream):

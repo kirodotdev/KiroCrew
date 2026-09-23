@@ -96,7 +96,7 @@ export default function RefSheet() {
         // rather than as a card that happens to sit low.
         <div className="absolute inset-0 z-50 flex items-end justify-center px-3 pt-3 sm:px-5 sm:pt-5">
           <Clickable
-            className="absolute inset-0 bg-bg/50 backdrop-blur-sm"
+            className="absolute inset-0 bg-bg/50 backdrop-blur-xs"
             onClick={closeRefs}
             aria-label={i18nT('apps.issueRadar.components.refSheet.close_reference')}
           />
@@ -116,7 +116,7 @@ export default function RefSheet() {
             // the edges is what tells you this is a detour, not a navigation.
             // The px caps only bite on a very large display, where 94% would be
             // wider than any line worth reading.
-            className="relative w-[min(1800px,94%)] h-[min(1500px,93%)] min-w-0 min-h-0 flex flex-col overflow-hidden rounded-t-2xl border border-border border-b-0 bg-bg shadow-2xl outline-none"
+            className="relative w-[min(1800px,94%)] h-[min(1500px,93%)] min-w-0 min-h-0 flex flex-col overflow-hidden rounded-t-2xl border border-border border-b-0 bg-bg shadow-2xl outline-hidden"
             // The workspace's own shortcuts (list navigation, `/` to search)
             // must not fire while the sheet has focus.
             onKeyDown={(e) => e.stopPropagation()}

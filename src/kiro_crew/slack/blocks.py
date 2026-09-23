@@ -46,6 +46,11 @@ def session_task_card(
         emoji, card_status = "🟢", "in_progress"
     elif status == "paused":
         emoji, card_status = "⏸️", "complete"
+    elif status == "ended":
+        # Only reachable when a caller asked for dismissed rows, so the glyph
+        # has to separate "you ended this one" from a merely idle row —
+        # otherwise the opt-in shows the two as the same thing.
+        emoji, card_status = "🛑", "complete"
     else:
         emoji, card_status = "⚫", "complete"
 

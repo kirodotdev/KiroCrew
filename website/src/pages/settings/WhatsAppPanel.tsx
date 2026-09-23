@@ -19,6 +19,7 @@ import { parseErrorCode } from '../../utils/errorReport'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
+import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "WhatsApp"
 const SETUP_GUIDE =
@@ -1051,6 +1052,14 @@ export function WhatsAppPanel() {
               </p>
             )}
           </div>
+        )}
+        {!!data?.session_folder && (
+          <ChannelFolderBackfill
+            namespace="whatsapp"
+            folderName={data.session_folder}
+            disabled={readOnly}
+            testId="session-folder-backfill"
+          />
         )}
         {/* Outside the `folderOn` block on purpose: when an ENABLE is rejected
             the revert returns the switch to the server's value — off, since the

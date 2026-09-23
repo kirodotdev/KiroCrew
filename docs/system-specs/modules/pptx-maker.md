@@ -12,7 +12,7 @@ Slide composition and `.pptx` writing are NOT implemented here. They are done by
 [spec-driven-presentation-maker](https://github.com/aws-samples/sample-spec-driven-presentation-maker)
 (AWS Samples, MIT-0), a public open-source engine that is **fetched as a
 sha256-pinned tarball into the app's data dir on first use and never modified**.
-This app supplies the KiroCrew integration: the agents that drive the engine over
+This app supplies the Kiro Crew integration: the agents that drive the engine over
 MCP, the studio page, and the deck / style / template API.
 
 **Nothing has to be installed by hand.** `pip install kirocrew` is the only
@@ -23,13 +23,14 @@ Provisioning.
 Attribution: the app was originally written by **sktok** as a standalone app and
 ported here. See `src/kiro_crew/apps/builtins/pptx_maker/ATTRIBUTION.md`.
 
-Platform: `macos` + `linux` (the engine's toolchain assumes a POSIX venv layout).
-The Python imports cleanly on Windows — the manifest gate is what withholds it.
+Platform: `macos`, `linux`, and `windows`. The manifest exposes all three, and
+provisioning resolves the engine interpreter through the platform-specific POSIX
+or Windows venv layout.
 
 ## Architecture
 
 ```
-chat session (sdpm-spec / sdpm-vibe / sdpm-style)
+chat session (pptx-maker-spec / pptx-maker-vibe / pptx-maker-style)
   └─ @sdpm/* MCP tools ──► vendored engine (uv venv, pinned tag)
                               └─ writes decks to the deck root
                                     ▲
@@ -214,7 +215,7 @@ disagree about state.
   app.json, installed.json          # platform-written
   data/vendor/sdpm/                 # the pinned engine tree + its uv venv
     .kirocrew-engine.json           #   tag/commit/digest of the verified install
-  data/vendor/preview-tools/bin/    # managed preview tools; prepended to the
+  data/vendor/preview-tools/bin/    # managed preview tools; appended to the
     pdftoppm (or pdftoppm.cmd)      #   engine child's PATH, never the gateway's
   agents/*.json                     # rendered from the shipped templates
   prompts/                          # staged from the package at provision time
@@ -380,9 +381,9 @@ test run refuse before touching the network.
 `tarfile.extractall` writes wherever a member name points, which makes any
 downloaded archive a path-traversal sink. Every member is validated before it is
 written, using stdlib's own `filter=` hook so the check runs INSIDE `extractall`
-(no TOCTOU gap between validating a member list and writing it). Python 3.10 —
-still supported — has no `filter` keyword, so the `TypeError` fallback applies the
-same callable to every member and restricts the extraction to the validated list.
+(no TOCTOU gap between validating a member list and writing it). Supported
+installs require Python 3.12+, while the `TypeError` fallback retains the same
+callable-per-member validation for runtimes with an older `tarfile` API.
 Refused: absolute POSIX and Windows/UNC names, any `..` segment, NUL bytes, empty
 names, anything that is not a regular file or a directory (a symlink or hardlink
 can escape even when its own name looks innocent), oversized members, and an
@@ -409,8 +410,10 @@ as the wire name the dashboard already reads; what it now reports is
 ## Agents
 
 Four agent templates ship with the app, rendered at provision time
-(`{ENGINE_ROOT}` / `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` placeholders) and
-namespaced by the platform as `pptx-maker/<name>`:
+(`{ENGINE_ROOT}` / `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` placeholders). Each
+config's declared `name` is the dispatchable identifier; the platform writes the
+FILE under a namespaced `pptx-maker--<name>.json` filename, but that stem (like
+the `pptx-maker/<name>` display namespace) is not a name dispatch can resolve:
 
 Every substituted value is **JSON-escaped** (`provision._json_escape`) because the
 placeholders sit inside JSON string literals. This is not cosmetic: each value is
@@ -423,17 +426,17 @@ path (and a quote) on every platform rather than only on Windows.
 
 | Agent | Role |
 |-------|------|
-| `sdpm-spec` | Briefing → outline → art direction with the user, then delegates composition |
-| `sdpm-vibe` | Fast deck from a URL / pasted text / short brief |
-| `sdpm-composer` | Autonomous slide composition; a sub-agent of the two above |
-| `sdpm-style` | Creates a reusable style guide through conversation |
+| `pptx-maker-spec` | Briefing → outline → art direction with the user, then delegates composition |
+| `pptx-maker-vibe` | Fast deck from a URL / pasted text / short brief |
+| `pptx-maker-composer` | Autonomous slide composition; a sub-agent of the two above |
+| `pptx-maker-style` | Creates a reusable style guide through conversation |
 
 **App-owned prompt guidance lives in `prompts/spec-studio.md`**, loaded as an
 agent `resource`. The upstream app patched the vendored engine prompt in place on
 every install, which meant an engine upgrade silently reverted the customization.
 Keeping it in a separate file is what lets the engine stay an unmodified,
 replaceable dependency. The file covers: reply in the user's language, how to open
-a session, KiroCrew's `[OPTIONS: …]` question affordance in place of the engine's
+a session, Kiro Crew's `[OPTIONS: …]` question affordance in place of the engine's
 web-only `hearing` tool, and writing each deliverable incrementally so the studio
 can show it.
 
@@ -847,9 +850,10 @@ state immediately.
 
 ## Tests
 
-Backend, in the repo-level `test/` tree as `test_pptx_maker_*.py` (457 tests —
-`setup.cfg` sets `testpaths = test transfer`, so a test under
-`src/kiro_crew/apps/builtins/...` would never be collected by CI):
+Backend coverage spans the repo-level `test/test_pptx_maker_*.py` files and the
+package-local `src/kiro_crew/apps/builtins/pptx_maker/tests/` suite.
+`setup.cfg` sets `testpaths = test src/kiro_crew/apps/builtins`, so both locations
+are collected by CI:
 `..._paths.py` (segment grammar, traversal, symlink escape, deck-root
 resolution), `..._decks.py` (in-progress decks listed, newest compose epoch wins,
 outline-driven slide order, relative URLs only), `..._library.py` (validation
@@ -869,13 +873,14 @@ source-marker honesty, previous-tree preservation), and `..._preview_tools.py`
 its refuse-rather-than-mis-render behavior, and the launcher's install —
 executable, not group-writable, idempotent, refused before the engine venv exists,
 and runnable from a data-home path containing `$`/backtick/quote/space, which
-plain double-quoting corrupted). No real subprocess is ever spawned against the
-engine and no test reaches the network.
+plain double-quoting corrupted). Package-local tests additionally pin Windows/POSIX
+venv paths and Windows LibreOffice discovery plus rendered-`PATH` precedence. No
+real subprocess is ever spawned against the engine and no test reaches the network.
 
-Frontend: `website/src/test/PptxMakerPage.test.tsx` (46 tests) — the pure helpers
+Frontend: `website/src/test/PptxMakerPage.test.tsx` — the pure helpers
 plus the page against a mocked API (layout contract, engine banner states, deck
-selection, library and settings views). `SlidePreviewSanitize.test.tsx` (21 tests)
-is deliberately a SECOND file — `PptxMakerPage.test.tsx` mocks both
+selection, library and settings views). `SlidePreviewSanitize.test.tsx` is
+deliberately a SECOND file — `PptxMakerPage.test.tsx` mocks both
 `pptx-maker/api` and `SlidePreview`'s default export, so importing the real
 `setSvgFragment` there re-enters the hoisted api mock. It covers the XSS boundary
 (script / `on*` / `foreignObject` / `javascript:`), the off-origin reference

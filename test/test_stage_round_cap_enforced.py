@@ -44,12 +44,22 @@ def _isolate_config_dir(tmp_path, monkeypatch):
         monkeypatch.setattr(f"kiro_crew.dashboard.{module}.config_dir", lambda: tmp_path)
 
 
+class _StageManager:
+    def running_agents_for(self, _parent: str) -> list[dict]:
+        return []
+
+    async def has_pending_work_for_async(self, _parent: str) -> bool:
+        return False
+
+    async def wait_for_parent_reports(self, _parent: str, _owner: str = "") -> bool:
+        return False
+
+
 def _make_state():
     state = MagicMock()
     state.broadcast_ws = MagicMock()
     state.push_slots_update = MagicMock()
-    state.subagents = MagicMock()
-    state.subagents.running_agents_for = MagicMock(return_value=[])
+    state.subagents = _StageManager()
     return state
 
 
@@ -74,6 +84,9 @@ def _stage_turns(monkeypatch, *, extra_rounds_per_stage=0, texts=None):
     box = {"n": 0}
 
     async def _mock_run_chat(state, slot, message, **kwargs):
+        callback = kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         idx = box["n"]
         box["n"] += 1
         body = (texts or [])[idx] if texts and idx < len(texts) else f"stage {idx + 1} output"

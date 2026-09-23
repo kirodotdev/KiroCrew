@@ -23,6 +23,7 @@ import { safeHttpUrl } from '../lib/safeUrl'
 import type { DiscoveredMcpServer, McpDiscoverDetail, McpInstallPlan } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 import { useImeGuard } from '../hooks/useImeGuard'
 interface Props {
   open: boolean
@@ -46,6 +47,42 @@ function installReadyFor(
 ): boolean {
   if (!detail) return false
   return server.provider !== 'official' || detail.install_plan != null
+}
+
+function ProviderFailureNotice({
+  failed,
+  total,
+  allFailed,
+  busy,
+  onRetry,
+}: {
+  failed: number
+  total: number
+  allFailed: boolean
+  busy: boolean
+  onRetry: () => void
+}) {
+  const message = i18nT('components.mcpBrowserModal.provider_results_incomplete', {
+    failed: fmtNumber(failed),
+    total: fmtNumber(total),
+  })
+  return (
+    <div className={allFailed
+      ? 'py-6 px-4 flex flex-col items-start gap-3'
+      : 'mb-3 flex items-center justify-between gap-3'}>
+      <ErrorNotice
+        variant={allFailed ? 'block' : 'inline'}
+        className={allFailed ? 'w-full' : 'min-w-0 flex-1'}
+        message={message}
+        askAgent
+        testId={allFailed ? 'mcp-browser-provider-error' : 'mcp-browser-provider-warning'}
+      />
+      <Btn onClick={onRetry} disabled={busy}>
+        <RefreshCw size={14} className={busy ? 'animate-spin' : ''} aria-hidden="true" />
+        {i18nT('components.mcpBrowserModal.retry')}
+      </Btn>
+    </div>
+  )
 }
 
 export default function McpBrowserModal({ open, onClose }: Props) {
@@ -99,7 +136,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
     inputRef.current?.focus()
   }, [])
 
-  const { data, isLoading, isFetching, error: discoverError } = useQuery({
+  const { data, isLoading, isFetching, error: discoverError, refetch } = useQuery({
     queryKey: ['mcp-discover', debouncedQuery],
     queryFn: () => api.mcpDiscover(debouncedQuery),
     enabled: open && debouncedQuery.length >= 2,
@@ -109,6 +146,9 @@ export default function McpBrowserModal({ open, onClose }: Props) {
 
   const results = useMemo(() => data?.results ?? [], [data])
   const providers = data?.providers ?? []
+  const providerOutcomes = data?.provider_outcomes ?? []
+  const failedProviderCount = providerOutcomes.filter(outcome => outcome.status !== 'ok').length
+  const allProvidersFailed = providerOutcomes.length > 0 && failedProviderCount === providerOutcomes.length
 
   const serverKey = (s: DiscoveredMcpServer) => `${s.provider}:${s.id}`
   const selectedServer = results.find(s => serverKey(s) === selectedKey) ?? null
@@ -236,8 +276,27 @@ export default function McpBrowserModal({ open, onClose }: Props) {
               testId="mcp-browser-search-error"
             />
           </div>
+        ) : allProvidersFailed ? (
+          <ProviderFailureNotice
+            failed={failedProviderCount}
+            total={providerOutcomes.length}
+            allFailed
+            busy={isFetching}
+            onRetry={() => { void refetch() }}
+          />
         ) : (
-          <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="servers" />
+          <>
+            {failedProviderCount > 0 && (
+              <ProviderFailureNotice
+                failed={failedProviderCount}
+                total={providerOutcomes.length}
+                allFailed={false}
+                busy={isFetching}
+                onRetry={() => { void refetch() }}
+              />
+            )}
+            <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="servers" />
+          </>
         )}
 
         {/* Two-pane on md+: results list (left) + detail preview (right).
@@ -388,12 +447,12 @@ function InstallStatus({
     // A disabled install (required env unset) is surfaced distinctly: the
     // user still has a config step before the server can run.
     return phase.enabled ? (
-      <span className="flex items-center gap-1 text-xs text-green-400" role="status">
+      <span className="flex items-center gap-1 text-xs text-ok" role="status">
         <Check size={iconSize} aria-hidden="true" />
         {i18nT('components.mcpBrowserModal.installed')}
       </span>
     ) : (
-      <span className="flex items-center gap-1 text-xs text-amber-400" role="status">
+      <span className="flex items-center gap-1 text-xs text-warn" role="status">
         <Check size={iconSize} aria-hidden="true" />
         {i18nT('components.mcpBrowserModal.installed_disabled')}
       </span>
@@ -417,7 +476,7 @@ function InstallStatus({
   }
   if (installed) {
     return (
-      <span className="flex items-center gap-1 text-xs text-green-400">
+      <span className="flex items-center gap-1 text-xs text-ok">
         <Check size={iconSize} aria-hidden="true" /> {i18nT('components.mcpBrowserModal.installed')}
       </span>
     )

@@ -20,11 +20,12 @@ from typing import Any
 
 from aiohttp import BodyPartReader, web
 
-from kiro_crew import agent_state, model_registry
+from kiro_crew import agent_state, model_registry, model_scope
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_KIRO,
     model_registry_namespace,
     selectable_backend_values,
 )
@@ -50,9 +51,14 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
-from kiro_crew.agent_sdk.capabilities import capabilities_of
+from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_spec_format import (
+    agent_spec_candidates,
+    is_markdown_spec,
+    iter_agent_spec_files,
+)
 from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
 from kiro_crew.apps.bridges import _registration_source
 from kiro_crew.apps.manager import (
@@ -110,27 +116,30 @@ from kiro_crew.dashboard.handlers._shared import (
     apply_skill_mapping,
     read_bounded_json,
 )
+from kiro_crew.dashboard.handlers.agent_templates import (
+    TEMPLATE_DEFINITION_KEYS,
+    apply_definition_patch,
+    read_only_reason_for_path,
+    validate_definition_patch,
+)
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.member_memory_auth import require_member_memory_creation
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     MemberAlreadyExists,
     UnknownMemoryStore,
-    archive_member_memory_store,
     memory_store_binding_defect,
     memory_store_namespace_lock,
     persist_member_config,
     provision_member_memory,
-    require_member_memory_not_archived,
-    retire_unpublished_member_memory_store,
-    rollback_member_memory_archive_if_active,
+    retire_unpublished_allocation,
 )
 from kiro_crew.platform.governance import sanitize_agent_config_governance
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -144,6 +153,16 @@ from kiro_crew.validation import _AGENT_NAME_RE
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
 logger = logging.getLogger(__name__)
+
+
+def _spec_stem_on_disk(agents_dir: Path, name: str) -> bool:
+    """True when ``<name>.json`` OR ``<name>.md`` exists in *agents_dir*.
+
+    Every writer that mints a new ``<name>.json`` asks this rather than testing
+    the JSON path alone: a markdown spec with the same stem is the same agent,
+    and writing a JSON twin beside it would list one name twice.
+    """
+    return any(p.exists() for p in agent_spec_candidates(agents_dir, name))
 
 
 def _namespaced_agent_file_exists(agent_name: str) -> bool:
@@ -669,21 +688,69 @@ def _app_declared_server_names() -> frozenset[str]:
         # then be skipped as "not an app", making the absent bridges of the app
         # under that name deletable. Only a resolved stat may exclude a child, and
         # only by PROVING it is not a directory.
+        #
+        # ``lstat`` FIRST, and that ordering is the whole screen rather than a
+        # refinement of it. ``stat`` FOLLOWS the link, so a single ``stat`` reports
+        # ``FileNotFoundError`` for two opposite states: a name nothing occupies,
+        # and a name a DANGLING link or junction still occupies. ``lstat`` inspects
+        # the entry itself, so it succeeds for the link and fails only for the empty
+        # name -- the rule :func:`_require_present_shape` states for this same
+        # hazard one position out ("a dangling symlink counts as present"), applied
+        # here, where the entry being screened is the app ROOT.
         try:
-            st = child.stat()  # follows symlinks, exactly as ``is_dir()`` does
+            link_st = os.lstat(child)
         except FileNotFoundError:
             # Absence, and only absence, is a skip: an uninstall completing
-            # between the listing and this stat leaves precisely this state, and a
-            # DANGLING link lands here too -- unlike the metadata screen below,
-            # that is a definite answer rather than an unreadable one, because no
-            # app directory exists under the name at all.
+            # between the listing and this lstat leaves precisely this state, and
+            # refusing it would turn a routine PUT into a 500.
             continue
         except OSError as exc:
             raise AppOwnershipUnreadable(
                 f"installed-apps entry {child.name!r} present but unstattable: {exc}"
             ) from exc
+        try:
+            st = child.stat()  # follows symlinks, exactly as ``is_dir()`` does
+        except OSError as exc:
+            # The name IS occupied -- the ``lstat`` above proved it -- and does not
+            # resolve: a dangling link or junction, a symlink loop, or a fault on
+            # the target. Whatever this app declares is therefore UNKNOWN, never
+            # empty, and empty is what deletes its live bridges. So this is the
+            # cannot-read case the metadata screen below already refuses for
+            # ``installed.json``, reached one directory level up.
+            #
+            # It is also the answer ``apps.manager`` gives the same shape:
+            # ``_entry_stands_for_a_dropped_app`` counts a link-ish non-directory
+            # entry as an app the listing dropped, so ``list_apps_with_skips``
+            # reports INCOMPLETE rather than vouching for the name being free.
+            # Skipping here would make this walk the one reader that treats that
+            # shape as a definite absence.
+            raise AppOwnershipUnreadable(
+                f"installed-apps entry {child.name!r} present but unresolvable: {exc}"
+            ) from exc
         if stat.S_ISDIR(st.st_mode):
             entries.append(child)
+            continue
+        # A non-directory that RESOLVED cleanly. ``apps.manager`` splits this same
+        # shape in two and this walk has to split it the same way, because the two
+        # halves carry opposite answers.
+        #
+        # LINK-ISH (symlink or junction) whose target is not a directory: the
+        # resolving predicates disagree about it, since ``is_dir()`` says no while
+        # the name is plainly occupied, and
+        # ``_entry_stands_for_a_dropped_app`` returns ``entry.is_symlink() or
+        # is_link_or_junction(entry)`` for exactly this, counting it as an app the
+        # listing dropped. So what this app declares is UNKNOWN, and unknown is the
+        # one answer that must not be spelled as the empty set, because empty is
+        # what deletes its live bridges.
+        #
+        # A PLAIN non-directory is the opposite answer, and skipping it is
+        # deliberate: ``_entry_stands_for_a_dropped_app`` does not count one either,
+        # because a file BESIDE the app directories is an ordinary member of a
+        # healthy apps root, and refusing it would turn every such file into a 500.
+        if stat.S_ISLNK(link_st.st_mode) or is_link_or_junction(child):
+            raise AppOwnershipUnreadable(
+                f"installed-apps entry {child.name!r} is a link to a non-directory"
+            )
     declared: set[str] = set()
     for entry in entries:
         # SHAPE before CONTENT. ``app_enabled_state`` reaches the metadata through
@@ -1899,11 +1966,18 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     session already resolved", so it stays selectable even on a backend that does
     not advertise it by name.
 
-    Fails open in every unknowable case — no live session, a backend that
-    advertises nothing, or an advertised set that does not intersect the catalog
-    at all (a namespace mismatch rather than an entitlement, e.g. the claude
-    backend's bare ids). Filtering on any of those would empty the picker, which
-    is worse than listing one model too many.
+    Only a session whose ids live in the catalog's own namespace can narrow it
+    (``capabilities_of(provider).model_id_namespace``, the same gate
+    :func:`_advertised_cc_models` applies). A live claude session advertises
+    ``global.anthropic.…[1m]`` ids; ``resolve_pin_spelling`` folds those onto the
+    catalog's bare ids because they name the same models, so without the gate a
+    claude list would rewrite kiro's picker rows into claude's spelling and narrow
+    them to claude's entitlements. Namespace is the question here, not spelling.
+
+    Fails open in every unknowable case — no live session in this namespace, a
+    backend that advertises nothing, or an advertised set that does not intersect
+    the catalog at all under any spelling. Filtering on any of those would empty
+    the picker, which is worse than listing one model too many.
     """
     try:
         state: DashboardState = request.app["state"]
@@ -1918,6 +1992,10 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     # entitlements, i.e. keep offering exactly the models this narrowing exists to
     # hide. The most recently started session carries the most recent snapshot.
     for provider in reversed(providers):
+        if capabilities_of(provider).model_id_namespace != model_registry_namespace(
+            ACP_BACKEND_KIRO
+        ):
+            continue
         getter = getattr(provider, "available_models", None)
         if not callable(getter):
             continue
@@ -2169,6 +2247,27 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
+def _scoped_default(cfg: Any, backend: str) -> str:
+    """The stored pin, but only when *backend*'s own harness can claim it.
+
+    A pin chosen in another harness is not a default here: marking it as one puts
+    an id the returned list does not even contain into the picker's selected slot,
+    while every turn runs the harness default. Same rule the provider factory
+    sends by, so the marker and the wire agree.
+
+    Called from the two branches that read the pin rather than once above them:
+    the kiro branch does not consult ``agent.model`` at all, and pulling the read
+    up would make it pay for a value it never uses (harness-parity H13 -- the
+    test is whether the kiro path changed, not whether it still works).
+    """
+    return model_scope.scoped_pin(
+        getattr(cfg.agent, "model", "") or "",
+        capabilities_for(backend).model_id_namespace,
+        source="api_models",
+        log_level=logging.DEBUG,
+    )
+
+
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — the model list for the configured backend.
 
@@ -2179,9 +2278,13 @@ async def api_models(request: web.Request) -> web.Response:
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
     if backend == ACP_BACKEND_CLAUDE:
-        return web.json_response(_cc_models(request, configured_default=cfg.agent.model))
+        return web.json_response(
+            _cc_models(request, configured_default=_scoped_default(cfg, backend))
+        )
     if backend == ACP_BACKEND_CODEX:
-        return web.json_response(_codex_models(request, configured_default=cfg.agent.model))
+        return web.json_response(
+            _codex_models(request, configured_default=_scoped_default(cfg, backend))
+        )
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -2330,9 +2433,33 @@ async def api_models(request: web.Request) -> web.Response:
         # seeding above uses kiro's authoritative context_window_tokens to give
         # the backfill real GPT/DeepSeek/Qwen windows, independent of the
         # wire-format choice.
-        if model_registry.refresh_kiro_windows(models):
+        #
+        # The same rows also warm the ``acp`` advertised-model cache, kiro's
+        # VOCABULARY: which ids are kiro's own, so model_scope can tell a pin
+        # chosen for another harness from one chosen here before any session
+        # exists (the chip and the provider factory judge from the cache; the
+        # wire holds the live list). ONE admission feeds both caches
+        # (refresh_kiro_catalog), so an id the bound refuses gets no row in
+        # either. Fed from the UNFILTERED catalog on purpose: a deprecated or
+        # unentitled row is still a kiro id, and dropping it here would make
+        # model_scope call a native pin foreign. Entitlement stays with the
+        # live ``session/new`` list downstream (_entitled_kiro_models,
+        # model_is_unusable) -- ``--list-models`` is a catalog and no reader
+        # of this cache treats it as more. Sourced here rather than from any
+        # ``session/new`` payload because the registry attributes that payload
+        # to claude-agent-acp and a kiro session's list is scoped to the agent
+        # that session started. In-memory updates on the loop, disk persists
+        # off it.
+        windows_changed, advertised_changed = model_registry.refresh_kiro_catalog(
+            models, model_registry_namespace(ACP_BACKEND_KIRO)
+        )
+        if windows_changed:
             await asyncio.get_running_loop().run_in_executor(
                 maintenance_executor(), model_registry.persist_kiro_windows
+            )
+        if advertised_changed:
+            await asyncio.get_running_loop().run_in_executor(
+                maintenance_executor(), model_registry.persist_advertised_models
             )
         models = [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
         models = _entitled_kiro_models(request, models)
@@ -2513,7 +2640,7 @@ def _load_template_specs(
     source_path: Path | None = None
     taken: set[str] = set()
     matches: list[Path] = []
-    for f in sorted(agents_dir.glob("*.json")):
+    for f in iter_agent_spec_files(agents_dir):
         # An unreadable spec still occupies its filename.
         taken.add(f.stem.lower())
         spec = _read_agent_spec(f, operation=operation, source="dashboard")
@@ -2902,7 +3029,7 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                         or copy_name.lower() in bound
                         or copy_name.lower() in managed_stems
                         or _is_reserved_basename(copy_name)
-                        or (agents_dir / f"{copy_name}.json").exists()
+                        or _spec_stem_on_disk(agents_dir, copy_name)
                     ):
                         copy_name = f"{base}-{suffix}"
                         suffix += 1
@@ -3131,7 +3258,7 @@ async def api_agent_publish(request: web.Request) -> web.Response:
                     data = dict(fresh_source)
                     data["name"] = new_name
                     dest = agents_dir / f"{new_name}.json"
-                    if dest.exists():
+                    if _spec_stem_on_disk(agents_dir, new_name):
                         raise FileExistsError(dest)
                     # Lineage BEFORE the file exists: from its first byte on
                     # disk the destination is this crew's private copy, so no
@@ -3333,6 +3460,27 @@ async def api_agent_publish(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _agent_detail_candidates(name: str) -> list[tuple[Path, dict[str, Any]]]:
+    """The user-level specs claiming *name* by declared name or stem, in scan order.
+
+    A thread-side read for :func:`api_agent_detail`: the walk and the hardened
+    per-file parse are filesystem work, and the handler only ever acts on the
+    files that match.
+    """
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
+        spec = _read_agent_spec(
+            f,
+            operation="api_agent_detail",
+            source="dashboard",
+        )
+        if spec is None:
+            continue
+        if spec.get("name") == name or f.stem == name:
+            matches.append((f, spec))
+    return matches
+
+
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/PATCH /api/agents/detail/{name} — view or update agent config."""
     name = request.match_info["name"]
@@ -3355,14 +3503,27 @@ async def api_agent_detail(request: web.Request) -> web.Response:
             return web.json_response({"error": "body must be a JSON object"}, status=400)
 
     state: DashboardState = request.app["state"]
-    for f in kiro_agents_dir_path().glob("*.json"):
-        spec = _read_agent_spec(
-            f,
-            operation="api_agent_detail",
-            source="dashboard",
+    # The directory walk and the per-file parse run in a thread: a large agents
+    # directory must not stall every other request on the loop. Only the specs
+    # that claim *name* come back, in scan order, so the body below keeps its
+    # skip-to-next-file shape over exactly the files it would have acted on.
+    candidates = await asyncio.to_thread(_agent_detail_candidates, name)
+    if request.method == "PATCH" and patch_body is not None and len(candidates) > 1:
+        # A PATCH rewrites ONE file -- model, skills, prompt, tools alike. Two
+        # files claiming the name (``atlas.json`` beside ``SomePkg-atlas.json``,
+        # or a hand-edited declared name colliding with another file's stem)
+        # would be resolved by unordered scan order, so the file the roster
+        # showed and the file overwritten could differ. Refused for every key,
+        # like the fork/publish resolvers refuse ``_AmbiguousTemplateName``;
+        # the same check runs again under the write lock below.
+        return web.json_response(
+            {
+                "error": f"'{name}' matches more than one template file; rename one first.",
+                "code": "ambiguous_template_name",
+            },
+            status=409,
         )
-        if spec is None:
-            continue
+    for f, spec in candidates:
         # Two-step so ``data`` stays typed ``dict`` for the PATCH branch's
         # re-read below, which reassigns it from a raw ``json.loads``.
         data = spec
@@ -3371,208 +3532,259 @@ async def api_agent_detail(request: web.Request) -> web.Response:
         # under the config lock, unlink), and those were -- and remain --
         # skip-to-next-file.
         try:
-            if data.get("name") == name or f.stem == name:
-                if request.method == "PATCH" and patch_body is not None:
+            if request.method != "GET" and is_markdown_spec(f):
+                # A markdown spec is one hand-authored document. Serializing
+                # a JSON object over it would drop the prompt body and every
+                # field this handler does not model, so it is read-only here.
+                return web.json_response(
+                    {
+                        "error": (
+                            f"agent '{name}' is defined in markdown ({f.name}); "
+                            "edit the file directly"
+                        ),
+                        "code": "markdown_spec_readonly",
+                    },
+                    status=409,
+                )
+            if request.method == "PATCH" and patch_body is not None:
+                try:
+                    # Either lookup spelling can resolve this same file; a
+                    # hand-edited name cannot hide its enrolled stem.
+                    for identity in dict.fromkeys((f.stem, spec_str(data, "name") or f.stem)):
+                        await asyncio.to_thread(require_unmanaged_template, identity)
+                except CapabilityError as exc:
+                    return web.json_response(
+                        {"error": exc.code, "code": exc.code}, status=exc.status
+                    )
+                if "skills" in patch_body:
+                    raw_skills = patch_body["skills"]
+                    if not isinstance(raw_skills, list) or not all(
+                        isinstance(s, str) for s in raw_skills
+                    ):
+                        return web.json_response(
+                            {"error": "skills must be a list of strings"}, status=400
+                        )
+                    if len(raw_skills) > MAX_AGENT_SKILLS:
+                        return web.json_response(
+                            {"error": f"at most {MAX_AGENT_SKILLS} skills per agent"},
+                            status=400,
+                        )
+                if TEMPLATE_DEFINITION_KEYS & patch_body.keys():
+                    # The templates tab's definition edit (prompt, description,
+                    # tools). Shape-checked here; refused for a spec the tab
+                    # cannot own -- a package or runtime file would be reverted
+                    # on its next install, a private copy belongs to its crew's
+                    # pane. ``model`` / ``skills`` keep their existing reach: the
+                    # crew pane writes those onto private copies.
+                    problem = validate_definition_patch(patch_body)
+                    if problem is not None:
+                        return web.json_response(
+                            {"error": problem, "code": "invalid_definition"}, status=400
+                        )
+                    read_only = await asyncio.to_thread(read_only_reason_for_path, f)
+                    if read_only is not None:
+                        return web.json_response(
+                            {
+                                "error": f"Template '{name}' is read-only ({read_only})",
+                                "code": "template_read_only",
+                                "reason": read_only,
+                            },
+                            status=409,
+                        )
+                mapped: list[str] = []
+                loop = asyncio.get_running_loop()
+                async with _get_config_lock():
+                    # Re-read under the lock: the copy above was read before
+                    # the lock and a concurrent PATCH may have superseded it.
+                    # The branch writes this data back, so bind the same
+                    # agents directory and apply the stricter no-symlink /
+                    # no-escape fence before the hardened read.  Keep the
+                    # filesystem work off the event loop while the shared
+                    # config lock is held.
+                    agents_dir = kiro_agents_dir_path()
+
+                    def _reread_under_lock(
+                        spec_file: Path = f,
+                        root: Path = agents_dir,
+                    ) -> dict[str, Any] | None:
+                        if not _spec_path_is_safe(spec_file, root):
+                            return None
+                        return _read_agent_spec(
+                            spec_file,
+                            operation="api_agent_detail",
+                            source="dashboard",
+                        )
+
+                    reread_data = await asyncio.to_thread(_reread_under_lock)
+                    if reread_data is None:
+                        return web.json_response(
+                            {
+                                "error": f"'{name}' changed on disk during update; retry.",
+                                "code": "agent_changed",
+                            },
+                            status=409,
+                        )
+                    data = reread_data
+                    # Pristine snapshot: the locked write below re-reads the
+                    # CURRENT disk state and re-applies only the keys this
+                    # PATCH changed relative to this snapshot, so it cannot
+                    # clobber a concurrent refresh's writes with stale data.
+                    before_patch = copy.deepcopy(reread_data)
+                    # `spec_str` for the same reason as `declared` above: a
+                    # hand-edited spec can carry a structured (non-string)
+                    # "name", which would crash the sidecar helper's dict
+                    # lookup with an unhashable key.
+                    agent_name = spec_str(data, "name") or name
+                    # Skills FIRST, before any state mutation. The mapping can
+                    # reject the request (unknown key -> 400) and the model
+                    # branch below writes the agent_state sidecar; doing model
+                    # first meant a rejected combined PATCH still froze the
+                    # model against future shipped-default bumps.
+                    #
+                    # Offloaded to the discovery pool: the mapping enumerates
+                    # the skill roots (see enumerate_skill_catalog), which on a
+                    # large or network-backed catalog is enough filesystem work
+                    # to stall the event loop — the same reason /api/skills and
+                    # /api/agents/installed run off the loop.
+                    if "skills" in patch_body:
+                        mapped, unknown = await loop.run_in_executor(
+                            discovery_executor(),
+                            apply_skill_mapping,
+                            data,
+                            f,
+                            state,
+                            list(patch_body["skills"]),
+                            _read_session_key(request),
+                        )
+                        if unknown:
+                            return web.json_response(
+                                {"error": "unknown skills", "skills": unknown[:20]},
+                                status=400,
+                            )
+                    else:
+                        mapped = await loop.run_in_executor(
+                            discovery_executor(),
+                            agent_skill_keys,
+                            data,
+                            f,
+                            state,
+                            _read_session_key(request),
+                        )
+
+                    def _locked_overwrite() -> None:
+                        # Same spec lock as fork/publish and the background
+                        # fork refresh — and a full read-merge-write inside
+                        # it: our `data` snapshot was taken before the lock,
+                        # so a concurrent refresh may have sanitized away a
+                        # ceiling-rejected grant since; writing the snapshot
+                        # verbatim would restore it. Merge only the keys THIS
+                        # patch changed onto the fresh read, then run the
+                        # mandated whole-config governance funnel immediately
+                        # before persisting (same contract as
+                        # _write_spec_file and the PUT handler).
+                        with agents_spec_lock(f.parent):
+                            # The pre-lock ambiguity check re-run where it
+                            # decides: a second claimant that landed after the
+                            # scan (a package install) must refuse, not let
+                            # the stale single match be overwritten.
+                            if [c for c, _spec in _agent_detail_candidates(name)] != [f]:
+                                raise _AmbiguousTemplateName(name)
+                            fresh = _read_agent_spec(
+                                f, operation="api_agent_detail", source="dashboard"
+                            )
+                            if fresh is None:
+                                raise FileNotFoundError(f)
+                            # Check the file stem AND its fresh declared name
+                            # before ALL bookkeeping; the earlier name can be
+                            # stale. Keep the spec -> sidecar lock order.
+                            for identity in dict.fromkeys(
+                                (f.stem, spec_str(fresh, "name") or f.stem)
+                            ):
+                                require_unmanaged_template(identity)
+                            if "model" in patch_body:
+                                data["model"] = patch_body["model"] or None
+                                if data["model"] is None:
+                                    clear_model_pin(data, agent_name)
+                                else:
+                                    agent_state.set_model_managed(agent_name, False)
+                            apply_definition_patch(data, patch_body)
+                            agent_state.lift_and_strip_bookkeeping(data, agent_name)
+                            for key, value in data.items():
+                                if key not in before_patch or before_patch[key] != value:
+                                    fresh[key] = value
+                            for key in before_patch:
+                                if key not in data:
+                                    fresh.pop(key, None)
+                            sanitize_agent_config_governance(fresh)
+                            # Atomic replace: a direct write truncates first,
+                            # so ENOSPC mid-write would destroy the existing
+                            # template. Same tmp+rename helper as the fork
+                            # refresh and install paths.
+                            _atomic_json_write(f, fresh)
+
                     try:
-                        # Either lookup spelling can resolve this same file; a
-                        # hand-edited name cannot hide its enrolled stem.
-                        for identity in dict.fromkeys((f.stem, spec_str(data, "name") or f.stem)):
-                            await asyncio.to_thread(require_unmanaged_template, identity)
+                        await asyncio.to_thread(_locked_overwrite)
                     except CapabilityError as exc:
                         return web.json_response(
                             {"error": exc.code, "code": exc.code}, status=exc.status
                         )
-                    if "skills" in patch_body:
-                        raw_skills = patch_body["skills"]
-                        if not isinstance(raw_skills, list) or not all(
-                            isinstance(s, str) for s in raw_skills
-                        ):
-                            return web.json_response(
-                                {"error": "skills must be a list of strings"}, status=400
-                            )
-                        if len(raw_skills) > MAX_AGENT_SKILLS:
-                            return web.json_response(
-                                {"error": f"at most {MAX_AGENT_SKILLS} skills per agent"},
-                                status=400,
-                            )
-                    mapped: list[str] = []
-                    loop = asyncio.get_running_loop()
-                    async with _get_config_lock():
-                        # Re-read under the lock: the copy above was read before
-                        # the lock and a concurrent PATCH may have superseded it.
-                        # The branch writes this data back, so bind the same
-                        # agents directory and apply the stricter no-symlink /
-                        # no-escape fence before the hardened read.  Keep the
-                        # filesystem work off the event loop while the shared
-                        # config lock is held.
-                        agents_dir = kiro_agents_dir_path()
-
-                        def _reread_under_lock(
-                            spec_file: Path = f,
-                            root: Path = agents_dir,
-                        ) -> dict[str, Any] | None:
-                            if not _spec_path_is_safe(spec_file, root):
-                                return None
-                            return _read_agent_spec(
-                                spec_file,
-                                operation="api_agent_detail",
-                                source="dashboard",
-                            )
-
-                        reread_data = await asyncio.to_thread(_reread_under_lock)
-                        if reread_data is None:
-                            return web.json_response(
-                                {
-                                    "error": f"'{name}' changed on disk during update; retry.",
-                                    "code": "agent_changed",
-                                },
-                                status=409,
-                            )
-                        data = reread_data
-                        # Pristine snapshot: the locked write below re-reads the
-                        # CURRENT disk state and re-applies only the keys this
-                        # PATCH changed relative to this snapshot, so it cannot
-                        # clobber a concurrent refresh's writes with stale data.
-                        before_patch = copy.deepcopy(reread_data)
-                        # `spec_str` for the same reason as `declared` above: a
-                        # hand-edited spec can carry a structured (non-string)
-                        # "name", which would crash the sidecar helper's dict
-                        # lookup with an unhashable key.
-                        agent_name = spec_str(data, "name") or name
-                        # Skills FIRST, before any state mutation. The mapping can
-                        # reject the request (unknown key -> 400) and the model
-                        # branch below writes the agent_state sidecar; doing model
-                        # first meant a rejected combined PATCH still froze the
-                        # model against future shipped-default bumps.
-                        #
-                        # Offloaded to the discovery pool: the mapping enumerates
-                        # the skill roots (see enumerate_skill_catalog), which on a
-                        # large or network-backed catalog is enough filesystem work
-                        # to stall the event loop — the same reason /api/skills and
-                        # /api/agents/installed run off the loop.
-                        if "skills" in patch_body:
-                            mapped, unknown = await loop.run_in_executor(
-                                discovery_executor(),
-                                apply_skill_mapping,
-                                data,
-                                f,
-                                state,
-                                list(patch_body["skills"]),
-                                _read_session_key(request),
-                            )
-                            if unknown:
-                                return web.json_response(
-                                    {"error": "unknown skills", "skills": unknown[:20]},
-                                    status=400,
-                                )
-                        else:
-                            mapped = await loop.run_in_executor(
-                                discovery_executor(),
-                                agent_skill_keys,
-                                data,
-                                f,
-                                state,
-                                _read_session_key(request),
-                            )
-
-                        def _locked_overwrite() -> None:
-                            # Same spec lock as fork/publish and the background
-                            # fork refresh — and a full read-merge-write inside
-                            # it: our `data` snapshot was taken before the lock,
-                            # so a concurrent refresh may have sanitized away a
-                            # ceiling-rejected grant since; writing the snapshot
-                            # verbatim would restore it. Merge only the keys THIS
-                            # patch changed onto the fresh read, then run the
-                            # mandated whole-config governance funnel immediately
-                            # before persisting (same contract as
-                            # _write_spec_file and the PUT handler).
-                            with agents_spec_lock(f.parent):
-                                fresh = _read_agent_spec(
-                                    f, operation="api_agent_detail", source="dashboard"
-                                )
-                                if fresh is None:
-                                    raise FileNotFoundError(f)
-                                # Check the file stem AND its fresh declared name
-                                # before ALL bookkeeping; the earlier name can be
-                                # stale. Keep the spec -> sidecar lock order.
-                                for identity in dict.fromkeys(
-                                    (f.stem, spec_str(fresh, "name") or f.stem)
-                                ):
-                                    require_unmanaged_template(identity)
-                                if "model" in patch_body:
-                                    data["model"] = patch_body["model"] or None
-                                    if data["model"] is None:
-                                        clear_model_pin(data, agent_name)
-                                    else:
-                                        agent_state.set_model_managed(agent_name, False)
-                                agent_state.lift_and_strip_bookkeeping(data, agent_name)
-                                for key, value in data.items():
-                                    if key not in before_patch or before_patch[key] != value:
-                                        fresh[key] = value
-                                for key in before_patch:
-                                    if key not in data:
-                                        fresh.pop(key, None)
-                                sanitize_agent_config_governance(fresh)
-                                # Atomic replace: a direct write truncates first,
-                                # so ENOSPC mid-write would destroy the existing
-                                # template. Same tmp+rename helper as the fork
-                                # refresh and install paths.
-                                _atomic_json_write(f, fresh)
-
-                        try:
-                            await asyncio.to_thread(_locked_overwrite)
-                        except CapabilityError as exc:
-                            return web.json_response(
-                                {"error": exc.code, "code": exc.code}, status=exc.status
-                            )
-                        except FileNotFoundError:
-                            return web.json_response(
-                                {
-                                    "error": f"'{name}' changed on disk during update; retry.",
-                                    "code": "agent_changed",
-                                },
-                                status=409,
-                            )
-                    # The list_agents() cache keys on a (count, newest-mtime-ns)
-                    # signature; two writes inside the same mtime granularity
-                    # would otherwise serve a stale skill list.
-                    clear_list_agents_cache()
-                    state.push_refresh("agents")
-                    return web.json_response(
-                        {"ok": True, "model": data.get("model", ""), "skills": mapped}
-                    )
-                # ``skills`` / ``unmanaged_skills`` are computed, response-only
-                # views of ``resources`` — never written back into the spec
-                # (kiro-cli rejects unknown fields and drops the agent). One
-                # catalog walk for both, off the event loop (filesystem-heavy).
-                keys, unmanaged_uris = await asyncio.get_running_loop().run_in_executor(
-                    discovery_executor(),
-                    agent_skill_views,
-                    data,
-                    f,
-                    state,
-                    _read_session_key(request),
-                )
-                # The spec is otherwise passed through verbatim, so mask the one
-                # value in it that is a credential (a pre-registered Connections
-                # client's projected secret); this read is not owner-gated.
-                from kiro_crew.mcp_utils import redact_oauth_client_secrets
-
+                    except _AmbiguousTemplateName:
+                        return web.json_response(
+                            {
+                                "error": f"'{name}' matches more than one template file; "
+                                "rename one first.",
+                                "code": "ambiguous_template_name",
+                            },
+                            status=409,
+                        )
+                    except FileNotFoundError:
+                        return web.json_response(
+                            {
+                                "error": f"'{name}' changed on disk during update; retry.",
+                                "code": "agent_changed",
+                            },
+                            status=409,
+                        )
+                # The list_agents() cache keys on a (count, newest-mtime-ns)
+                # signature; two writes inside the same mtime granularity
+                # would otherwise serve a stale skill list.
+                clear_list_agents_cache()
+                state.push_refresh("agents")
                 return web.json_response(
-                    {
-                        **redact_oauth_client_secrets(data),
-                        # The rest of the spec is passed through verbatim, but
-                        # these two are CONSUMED as display text by the detail
-                        # panel. A foreign spec's structured value rendered as a
-                        # React child throws error #31 and blanks the whole tab,
-                        # so both are coerced on the same "non-string means
-                        # absent" rule list_agents() uses.
-                        "description": spec_str(data, "description"),
-                        "model": spec_model(data),
-                        "skills": keys,
-                        "unmanaged_skills": unmanaged_uris,
-                    }
+                    {"ok": True, "model": data.get("model", ""), "skills": mapped}
                 )
+            # ``skills`` / ``unmanaged_skills`` are computed, response-only
+            # views of ``resources`` — never written back into the spec
+            # (kiro-cli rejects unknown fields and drops the agent). One
+            # catalog walk for both, off the event loop (filesystem-heavy).
+            keys, unmanaged_uris = await asyncio.get_running_loop().run_in_executor(
+                discovery_executor(),
+                agent_skill_views,
+                data,
+                f,
+                state,
+                _read_session_key(request),
+            )
+            # The spec is otherwise passed through verbatim, so mask the one
+            # value in it that is a credential (a pre-registered Connections
+            # client's projected secret); this read is not owner-gated.
+            from kiro_crew.mcp_utils import redact_oauth_client_secrets
+
+            return web.json_response(
+                {
+                    **redact_oauth_client_secrets(data),
+                    # The rest of the spec is passed through verbatim, but
+                    # these two are CONSUMED as display text by the detail
+                    # panel. A foreign spec's structured value rendered as a
+                    # React child throws error #31 and blanks the whole tab,
+                    # so both are coerced on the same "non-string means
+                    # absent" rule list_agents() uses.
+                    "description": spec_str(data, "description"),
+                    "model": spec_model(data),
+                    "skills": keys,
+                    "unmanaged_skills": unmanaged_uris,
+                }
+            )
         except (json.JSONDecodeError, OSError):
             continue
     # "default" is the built-in agent with no config file
@@ -4019,7 +4231,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     synced: list[str] = []
     pruned: list[str] = []
     prune_candidates: dict[str, dict] = {}
-    prior_stores: dict[str, str] = {}
     try:
         discovered_agents = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), lambda: list(list_agents())
@@ -4077,9 +4288,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                         getattr(disc, "source", "?"),
                     )
                     continue
-                await _drained_to_thread(require_member_memory_creation, disc.name)
                 _has_on_disk = await asyncio.to_thread(
-                    lambda: (kiro_agents_dir_path() / f"{_dn}.json").exists()
+                    lambda: _spec_stem_on_disk(kiro_agents_dir_path(), _dn)
                     or _namespaced_agent_file_exists(_dn)
                 )
                 if not _has_on_disk:
@@ -4097,8 +4307,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     description=disc.description,
                     source=disc.source,
                 )
-                prior_stores[disc.name] = cfg.agents[disc.name].memory_store
-                await _drained_to_thread(provision_member_memory, cfg, disc.name)
+                # Discovery registers a template; member creation initializes memory.
+                # The owner can opt in through the existing member update action.
                 synced.append(disc.name)
 
         # Prune agents whose kiro_agent file no longer exists on disk.
@@ -4125,17 +4335,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     del cfg.agents[name]
                     pruned.append(name)
     except BaseException as exc:
-        await _retire_failed_member_allocations(cfg, prior_stores)
-        if isinstance(exc, UnknownMemoryStore):
-            return web.json_response(
-                {
-                    "ok": False,
-                    "error": str(exc),
-                    "code": "member_memory_unavailable",
-                    "synced": [],
-                },
-                status=409,
-            )
         if not isinstance(exc, Exception):
             raise
         logger.warning("Failed to scan installed agents", exc_info=True)
@@ -4161,18 +4360,9 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
             # them. _drained_to_thread so a cancellation cannot release the
             # asyncio lock while the worker is mid-write.
             to_add = {n: cfg.agents[n] for n in synced if n in cfg.agents}
-            to_add_stores = {
-                n: (
-                    cfg.agents[n].memory_store,
-                    dataclasses.asdict(cfg.memory_stores[cfg.agents[n].memory_store]),
-                )
-                for n in to_add
-            }
 
             def _write_sync() -> list[str]:
                 retired_stores: list[str] = []
-                created_archives: list[tuple[str, str]] = []
-                skipped_allocations: list[tuple[str, str]] = []
 
                 def _mutate(doc: dict) -> dict | None:
                     agents = coerce_dict_section(doc, "agents")
@@ -4180,18 +4370,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     changed = False
                     for aname, acfg in to_add.items():
                         if aname not in agents:
-                            store_name, store_record = to_add_stores[aname]
-                            existing = stores.get(store_name)
-                            if existing is not None and existing != store_record:
-                                raise UnknownMemoryStore(
-                                    f"memory store {store_name!r} ownership changed concurrently"
-                                )
-                            require_member_memory_not_archived(store_name, expected_owner=aname)
-                            stores[store_name] = store_record
                             agents[aname] = dataclasses.asdict(acfg)
                             changed = True
-                        else:
-                            skipped_allocations.append((to_add_stores[aname][0], aname))
                     # Prune ONLY this sync's snapshot candidates, and only
                     # while the in-lock entry still equals the snapshot entry:
                     # an agent (re)added or edited between the discovery
@@ -4207,31 +4387,15 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                                     raise UnknownMemoryStore(
                                         f"memory store {store_name!r} ownership changed concurrently"
                                     )
-                                if archive_member_memory_store(store_name, aname):
-                                    created_archives.append((store_name, aname))
                                 retired_stores.append(store_name)
                             del agents[aname]
                             changed = True
                     return doc if changed else None
 
                 with memory_store_namespace_lock():
-                    try:
-                        update_config_locked(mutate=_mutate)
-                    except BaseException:
-                        for store_name, owner in reversed(created_archives):
-                            try:
-                                rollback_member_memory_archive_if_active(store_name, owner)
-                            except Exception:
-                                logger.error(
-                                    "failed to roll back member memory retirement for %s",
-                                    store_name,
-                                    exc_info=True,
-                                )
-                        raise
+                    update_config_locked(mutate=_mutate)
                 from kiro_crew.context import release_cached_memory_store
 
-                for store_name, owner in skipped_allocations:
-                    retire_unpublished_member_memory_store(store_name, owner)
                 for store_name in retired_stores:
                     release_cached_memory_store(store_name)
                 return retired_stores
@@ -4243,7 +4407,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 for store_name in retired_stores:
                     await release_markdown_memory_store(state, store_name)
         except BaseException as exc:
-            await _retire_failed_member_allocations(cfg, prior_stores)
             if not isinstance(exc, Exception):
                 raise
             logger.warning("Failed to save config after agent sync", exc_info=True)
@@ -4284,22 +4447,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         logger.info("Pruned %d stale package agents: %s", len(pruned), ", ".join(pruned))
 
     return web.json_response({"ok": True, "synced": synced, "pruned": pruned})
-
-
-async def _retire_failed_member_allocations(
-    config: KiroCrewConfig, prior_stores: dict[str, str]
-) -> None:
-    """Preserve the primary failure while retiring only this operation's new keys."""
-    for owner, prior in prior_stores.items():
-        try:
-            store = config.agents[owner].memory_store
-            if store == prior:
-                continue
-            await _drained_to_thread(retire_unpublished_member_memory_store, store, owner)
-        except BaseException:
-            logger.warning(
-                "Could not retire unpublished memory for member %s", owner, exc_info=True
-            )
 
 
 async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Response:
@@ -4648,15 +4795,17 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     if memory_store not in ("", DEFAULT_MEMORY_STORE):
         return web.json_response(
             {
-                "error": "A new Crew Member receives its own empty private memory automatically",
-                "code": "private_memory_required",
+                "error": "A new Crew Member receives its own empty member memory automatically",
+                "code": "member_memory_required",
             },
             status=400,
         )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name in cfg.agents:
-            return web.json_response({"error": f"Agent '{name}' already exists"}, status=409)
+            return web.json_response(
+                {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
+            )
         model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
         if model_reason:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
@@ -4697,14 +4846,28 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         )
         # Provision against this snapshot; publish the agent and owned store
         # together through persist_member_config's flocked delta and create guard.
+        # A fresh allocation that never reached config.json is removed on the way
+        # out (retire_unpublished_allocation re-reads the disk under the config
+        # lock first, so a publication that did land is kept).
         cfg.agents[name] = new_agent
+        previous_store = new_agent.memory_store
+        previous_member_id = new_agent.member_id
         try:
             try:
-                await _drained_to_thread(require_member_memory_creation, name)
                 await _drained_to_thread(provision_member_memory, cfg, name)
                 await _drained_to_thread(lambda: persist_member_config(cfg, name, create=True))
             except BaseException:
-                await _retire_failed_member_allocations(cfg, {name: memory_store})
+                allocated = cfg.agents[name].memory_store
+                if allocated != previous_store:
+                    await _drained_to_thread(
+                        lambda: retire_unpublished_allocation(
+                            cfg,
+                            name,
+                            allocated,
+                            previous_store=previous_store,
+                            previous_member_id=previous_member_id,
+                        )
+                    )
                 raise
         except MemberAlreadyExists:
             return web.json_response(
@@ -4730,61 +4893,6 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     return web.json_response(
         {"ok": True, "name": name, "memory_store": cfg.agents[name].memory_store}
     )
-
-
-async def _retire_legacy_member_contexts(
-    request: web.Request, cfg: KiroCrewConfig, name: str, prior_store: str
-) -> web.Response | None:
-    """Retire idle V1 providers while retaining their original conversation identity."""
-    from kiro_crew.dashboard.chat_utils import effective_session_key, subagents_attached
-
-    state = request.app.get("state")
-    if state is None:
-        return None
-    slots = [
-        slot
-        for slot in list(state._slots.values())
-        if slot.agent == name or (not slot.agent and cfg.default_agent == name)
-    ]
-    for slot in slots:
-        async with slot._lock:
-            key = effective_session_key(slot)
-            if state._slots.get(slot.key) is not slot:
-                continue
-            if slot.agent != name and not (not slot.agent and cfg.default_agent == name):
-                continue
-            provider = state.sessions.get_provider(key)
-            if (
-                slot.running
-                or slot._in_stage_execution
-                or (provider is not None and provider.has_active_turn())
-                or subagents_attached(state, slot, key, "member_memory_opt_in")
-            ):
-                return web.json_response(
-                    {
-                        "error": "Finish or stop this member's work before creating private memory",
-                        "code": "member_memory_busy",
-                    },
-                    status=409,
-                )
-            # This V1 context must remain V1 even if publication is cancelled,
-            # or another request starts while later slots are being retired.
-            slot.memory_store = prior_store
-            slot._memory_assignment_from_history = True
-            eager = slot._eager_spawn_task
-            if eager is not None and not eager.done():
-                eager.cancel()
-                await asyncio.gather(eager, return_exceptions=True)
-            reset = await state.sessions.reset(key, skip_if_busy=True)
-            if not reset and state.sessions.get_provider(key) is not None:
-                return web.json_response(
-                    {
-                        "error": "A member turn started during memory setup; retry after it stops",
-                        "code": "member_memory_busy",
-                    },
-                    status=409,
-                )
-    return None
 
 
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
@@ -4926,9 +5034,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": memory_store_reason, "code": "invalid_memory_store"}, status=400
             )
-    if "provision_memory" in body and not isinstance(body["provision_memory"], bool):
+    if "provision_memory" in body:
         return web.json_response(
-            {"error": "provision_memory must be a boolean", "code": "invalid_provision_memory"},
+            {
+                "error": "Memory is initialized only when creating a new member. Restore missing member memory from backup.",
+                "code": "member_memory_creation_only",
+            },
             status=400,
         )
     async with _get_config_lock():
@@ -4950,26 +5061,33 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             except CapabilityError as exc:
                 return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         prior_memory_store = agent.memory_store
+        # A binding is immutable in both directions -- a private store is never
+        # shared or rebound, and a live V1 binding is kept until the owner opts in
+        # -- with one exception: a V1 binding whose name no resolver composes
+        # (``unusable_legacy_binding``) may move to the global store. Nothing is
+        # protected on it: the name resolves no directory, so the member cannot
+        # run a turn on it, and the same name is what refused every repair.
         if "memory_store" in body and body["memory_store"] != prior_memory_store:
             return web.json_response(
                 {
-                    "error": "A member's private memory cannot be rebound or shared",
-                    "code": "private_memory_immutable",
+                    "error": "A member's memory identity cannot be rebound",
+                    "code": "member_memory_immutable",
                 },
                 status=409,
             )
-        prior_record = cfg.memory_stores.get(prior_memory_store)
-        if body.get("provision_memory") and (
-            prior_record is None or prior_record.memory_version != 2
-        ):
-            try:
-                await _drained_to_thread(require_member_memory_creation, name)
-            except UnknownMemoryStore as exc:
-                return web.json_response(
-                    {"error": str(exc), "code": "member_memory_unavailable"}, status=409
-                )
         # Captured BEFORE any mutation: what the effort chain reads today.
         effort_inputs_before = _effort_inputs(agent)
+        # Best-effort per-member event log: snapshot the config-derived roster
+        # fields before mutation so member/config can report which changed.
+        _ev_before = {
+            "kiro_agent": agent.kiro_agent,
+            "workspace": agent.workspace,
+            "memory_store": agent.memory_store,
+            "model": agent.model,
+            "source": agent.source,
+            "starred": bool(agent.starred),
+            "avatar": agent.avatar,
+        }
         changed: list[str] = []
         if "kiro_agent" in body:
             try:
@@ -5137,36 +5255,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.starred = body["starred"]
             changed.append("starred")
-        # Validate every supplied field before allocating private ownership.
-        # A rejected edit must not leave private evidence behind an unchanged
-        # V1 binding. Avatar publication is reversible until config is saved.
-        setup_refusal = None
-        try:
-            try:
-                if body.get("provision_memory"):
-                    prior_record = cfg.memory_stores.get(prior_memory_store)
-                    if prior_record is None or prior_record.memory_version != 2:
-                        from kiro_crew.memory_stores import require_member_memory_store
-
-                        await _drained_to_thread(require_member_memory_store, cfg, name)
-                        setup_refusal = await _retire_legacy_member_contexts(
-                            request, cfg, name, prior_memory_store
-                        )
-                    if setup_refusal is None:
-                        await _drained_to_thread(provision_member_memory, cfg, name)
-            except BaseException:
-                await _retire_failed_member_allocations(cfg, {name: prior_memory_store})
-                raise
-        except (OSError, UnknownMemoryStore) as exc:
-            setup_refusal = web.json_response(
-                {"error": str(exc), "code": "member_memory_unavailable"}, status=409
-            )
-        if setup_refusal is not None:
-            if _avatar_promoted:
-                await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
-            return setup_refusal
-        if agent.memory_store != prior_memory_store:
-            changed.append("memory_store")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store
@@ -5179,7 +5267,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 )
             )
         except BaseException as exc:
-            await _retire_failed_member_allocations(cfg, {name: prior_memory_store})
             if isinstance(exc, Exception) and _avatar_promoted:
                 await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
             raise
@@ -5187,6 +5274,50 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             await _drained_to_thread(_commit_promoted_avatar, name, _avatar_pin)
         if _remove_files_after_save:
             await _drained_to_thread(_remove_avatar_files, name)
+        # Best-effort per-member event log: the save succeeded, so emit a
+        # config snapshot with the list of fields that actually changed.
+        try:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.dashboard.handlers.members import normalize_member_source
+            from kiro_crew.eventlog.types import MEMBER_CONFIG
+            from kiro_crew.members import member_slug
+
+            _ev_after = {
+                "kiro_agent": agent.kiro_agent,
+                "workspace": agent.workspace,
+                "memory_store": agent.memory_store,
+                "model": agent.model,
+                # Bounded to the roster vocabulary, matching the roster row and
+                # ``_config_snapshot_for_agent`` — ``source`` is agent-writable
+                # free text, so a credential- or URL-shaped value must not reach
+                # the durable projection (which the drawer and WS ship) raw.
+                "source": normalize_member_source(agent.source),
+                "starred": bool(agent.starred),
+                "avatar": agent.avatar,
+            }
+            _ev_changed = [k for k, v in _ev_after.items() if v != _ev_before.get(k)]
+            # A save that touched none of the roster fields is not a fact worth
+            # recording: the projection would fold to the same value and emit
+            # nothing, leaving only a no-op line in the log.
+            if _ev_changed:
+                # Off the event loop: ``emit`` opens the member log and does a
+                # synchronous ``os.fsync`` append, which would otherwise stall
+                # every gateway task on this async handler.
+                await asyncio.to_thread(
+                    eventlog_hooks.emit,
+                    # member_slug, not the bare fold: a member may carry an explicit
+                    # `member_id`, and the roster keys their log by it. Folding the
+                    # name here would write this event to a DIFFERENT log than the
+                    # roster reads, so the change would never appear. `cfg` is the
+                    # config this handler already loaded, so the resolve costs no
+                    # I/O on the loop -- member_slug would otherwise load it here.
+                    member_slug(name, cfg),
+                    name,
+                    MEMBER_CONFIG,
+                    {**_ev_after, "changed": _ev_changed},
+                )
+        except Exception:
+            logger.debug("member/config event-log hook failed", exc_info=True)
     # Compared, not merely "the body carried the field": the crew form sends
     # reasoning_effort on every save (that is what makes clearing a pin possible)
     # and refresh_defaults drains the warm pool, so refreshing on presence would
@@ -5203,8 +5334,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         resources=f"{name} ({','.join(changed)})",
     )
     result = {"ok": True, "name": name, "memory_store": agent.memory_store}
-    if agent.memory_store != prior_memory_store:
-        result["new_conversation_required"] = True
     return web.json_response(result)
 
 
@@ -5293,16 +5422,15 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 {"error": f"Cannot delete default agent '{name}'. Change default_agent first."},
                 status=409,
             )
-        created_archive = False
         retired_store = ""
         bound_template = ""
 
         @memory_store_namespace_lock()
-        def _delete_member() -> tuple[str, bool]:
-            nonlocal created_archive, retired_store, bound_template
+        def _delete_member() -> str:
+            nonlocal retired_store, bound_template
 
             def mutate(doc: dict) -> dict:
-                nonlocal created_archive, retired_store, bound_template
+                nonlocal retired_store, bound_template
                 agents = coerce_dict_section(doc, "agents")
                 if name not in agents:
                     raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
@@ -5320,7 +5448,6 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                         raise UnknownMemoryStore(
                             f"memory store {store_name!r} ownership changed concurrently"
                         )
-                    created_archive = archive_member_memory_store(store_name, name)
                     retired_store = store_name
                 # The PERSISTED binding at delete time, read inside the
                 # critical section: it is one half of the corroboration the
@@ -5330,22 +5457,10 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 del agents[name]
                 return doc
 
-            try:
-                update_config_locked(mutate=mutate)
-            except BaseException:
-                if created_archive:
-                    try:
-                        rollback_member_memory_archive_if_active(retired_store, name)
-                    except Exception:
-                        logger.error(
-                            "failed to roll back member memory retirement for %s",
-                            retired_store,
-                            exc_info=True,
-                        )
-                raise
-            return retired_store, created_archive
+            update_config_locked(mutate=mutate)
+            return retired_store
 
-        retired_store, _created_archive = await _drained_to_thread(_delete_member)
+        retired_store = await _drained_to_thread(_delete_member)
         if retired_store:
             from kiro_crew.context import release_cached_memory_store
 

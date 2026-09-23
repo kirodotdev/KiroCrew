@@ -45,9 +45,13 @@ WINDOW_SECS = 300.0
 
 #: Creates allowed per window, per caller, per verb. Sessions get the larger budget
 #: because a dispatch round opens one per work item; a goal needs exactly one folder,
-#: so that budget only has to absorb retries and a nested tree.
+#: so that budget only has to absorb retries and a nested tree. A tag vocabulary is
+#: a handful of workflow states, so tags share the folder budget: enough to seed
+#: a board in one turn, far below what an unattended loop would need to grow
+#: ``tags.json`` without bound.
 MAX_SESSION_CREATES_PER_WINDOW = 20
 MAX_FOLDER_CREATES_PER_WINDOW = 10
+MAX_TAG_CREATES_PER_WINDOW = 10
 
 #: How often stale buckets are swept, so the map cannot grow without bound across
 #: the many distinct session keys a long-lived gateway sees.
@@ -59,10 +63,12 @@ _last_sweep = 0.0
 
 SESSION_CREATE = "session_create"
 FOLDER_CREATE = "folder_create"
+TAG_CREATE = "tag_create"
 
 _BUDGETS = {
     SESSION_CREATE: MAX_SESSION_CREATES_PER_WINDOW,
     FOLDER_CREATE: MAX_FOLDER_CREATES_PER_WINDOW,
+    TAG_CREATE: MAX_TAG_CREATES_PER_WINDOW,
 }
 
 

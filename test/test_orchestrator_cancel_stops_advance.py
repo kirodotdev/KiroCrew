@@ -19,7 +19,7 @@ a plan cancel means.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -49,6 +49,8 @@ def _make_orchestrator_state(tmp_path, slot_key, titles):
     state = _make_state(tmp_path)
     state.subagents = MagicMock()
     state.subagents.running_agents_for = MagicMock(return_value=[])
+    state.subagents.has_pending_work_for_async = AsyncMock(return_value=False)
+    state.subagents.wait_for_parent_reports = AsyncMock(return_value=False)
     state.subagents._tasks = {}
     slot = state.get_or_create_slot(slot_key, mode="orchestrator")
     slot._stage_titles = list(titles)
@@ -57,28 +59,16 @@ def _make_orchestrator_state(tmp_path, slot_key, titles):
     return state, slot
 
 
-class _AsyncioFastSleep:
-    """The real ``asyncio`` module with only ``sleep`` substituted.
-
-    Replacing ``asyncio.sleep`` itself would reach every coroutine in the process
-    for the duration of the test -- including the aiohttp client the cancel is
-    issued through, which the substitute itself awaits. Rebinding the module
-    reference ``chat_orchestrator`` holds keeps the substitution to the one call
-    site under test; every other attribute (``to_thread``, ``create_task``)
-    resolves to the real module.
-    """
-
-    def __init__(self, sleep):
-        self.sleep = sleep
-
-    def __getattr__(self, name):
-        return getattr(asyncio, name)
-
-
 async def _cancel(client, slot_key):
     resp = await client.post(f"/api/chat/slots/{slot_key}/plan-action", json={"action": "cancel"})
     assert resp.status == 200
     assert (await resp.json())["cancelled"] is True
+
+
+def _mark_consumed(kwargs: dict) -> None:
+    callback = kwargs.get("_on_consumed")
+    if callable(callback):
+        callback(True)
 
 
 @pytest.mark.asyncio
@@ -93,6 +83,7 @@ async def test_cancel_during_run_chat_does_not_advance(tmp_path, monkeypatch):
     stages_run: list[int] = []
 
     async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+        _mark_consumed(_kwargs)
         stages_run.append(len(stages_run) + 1)
         _slot.append("assistant", f"stage {len(stages_run)} body", "msg msg-a")
         if len(stages_run) == 1:
@@ -140,6 +131,7 @@ async def test_cancel_between_stages_blocks_reentry(tmp_path, monkeypatch):
     stages_run: list[int] = []
 
     async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+        _mark_consumed(_kwargs)
         stages_run.append(len(stages_run) + 1)
         _slot.append("assistant", f"stage {len(stages_run)} body", "msg msg-a")
 
@@ -162,15 +154,23 @@ async def test_cancel_between_stages_blocks_reentry(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cancel_during_subagent_wait_does_not_advance(tmp_path, monkeypatch):
-    """Cancel while the loop polls for pending subagents -- stage 2 must not run.
+    """Cancel while the loop waits for pending subagents -- stage 2 must not run.
 
-    The poll is the loop's other long await. Its sleep is replaced so the poll
-    turns over immediately, and the cancel is issued from inside that sleep --
-    i.e. exactly between two evaluations of the poll's own stop condition, which
-    is what makes the timing deterministic rather than a race against a 2s tick.
+    The wave wait is the loop's other long await. It is event-driven now, so the
+    timing is pinned at the event rather than at a substituted sleep: the fixture
+    hands the loop a real ``asyncio.Event``, issues the HTTP cancel the moment the
+    loop asks for it -- one tick before it starts waiting -- and lets the handler's
+    own ``signal_completion`` be what wakes it. That is the same ordering
+    production has, and it needs no fast-forwarded clock.
+
+    The fallback interval is raised well past the test's own budget on purpose: if
+    the cancel path stopped waking the wait, this would fail on the outer
+    ``wait_for`` rather than quietly passing a few seconds later.
     """
     from kiro_crew.dashboard import chat_orchestrator
     from kiro_crew.dashboard.chat import _stage_loop
+
+    monkeypatch.setattr(chat_orchestrator, "_SA_FALLBACK_SECS", 30.0)
 
     state, slot = _make_orchestrator_state(tmp_path, "cancel-subagent", ["First", "Second"])
     # Never drains on its own: only the cancel can end this wait.
@@ -179,27 +179,33 @@ async def test_cancel_during_subagent_wait_does_not_advance(tmp_path, monkeypatc
     stages_run: list[int] = []
 
     async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+        _mark_consumed(_kwargs)
         stages_run.append(len(stages_run) + 1)
         _slot.append("assistant", f"stage {len(stages_run)} body", "msg msg-a")
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
 
     async with TestClient(TestServer(_make_app(state))) as client:
-        polls = {"n": 0}
-        real_sleep = asyncio.sleep
+        wave_event = asyncio.Event()
+        cancels = {"n": 0}
 
-        async def _fast_sleep(_delay, *args, **kwargs):
-            polls["n"] += 1
-            if polls["n"] == 1:
-                await _cancel(client, "cancel-subagent")
-            elif polls["n"] > 10:
-                raise AssertionError("subagent poll kept spinning after the plan was cancelled")
-            await real_sleep(0)
+        def _completion_event(_key):
+            # Fires once, a tick after the loop has asked for the event and
+            # therefore just before it suspends on it.
+            if cancels["n"] == 0:
+                cancels["n"] += 1
+                asyncio.get_running_loop().call_soon(
+                    lambda: asyncio.ensure_future(_cancel(client, "cancel-subagent"))
+                )
+            return wave_event
 
-        monkeypatch.setattr(
-            chat_orchestrator, "asyncio", _AsyncioFastSleep(_fast_sleep), raising=True
-        )
+        state.subagents.completion_event = _completion_event
+        # What the real manager does for the handler's pulse: set the event a
+        # waiter is holding.
+        state.subagents.signal_completion = MagicMock(side_effect=lambda _key: wave_event.set())
+
         await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), timeout=5)
 
     assert slot._stopping is False
+    assert cancels["n"] == 1, "the cancel never fired, so this proves nothing"
     assert stages_run == [1], f"cancel landed in the subagent wait but the loop ran {stages_run}"

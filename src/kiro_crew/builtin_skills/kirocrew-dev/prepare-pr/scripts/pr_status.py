@@ -71,20 +71,23 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
         return None
 
 
-def _load_review_contract():
-    """Load the sibling contract without cwd, sys.path, or bytecode side effects."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_review_contract.py")
-    name = "_prepare_pr_review_contract"
+def _load_sibling(filename, name):
+    """Load a sibling script without cwd, sys.path, or bytecode side effects."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
     loader = _NoBytecodeSourceLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
     if spec is None:  # pragma: no cover - defensive
-        raise RuntimeError("cannot import prepare-pr review contract: " + path)
+        raise RuntimeError("cannot import prepare-pr sibling script: " + path)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
 
 
-_review_contract = _load_review_contract()
+_review_contract = _load_sibling("_review_contract.py", "_prepare_pr_review_contract")
+# Imported, never shelled out to: a subprocess would give this script a second
+# way to fail (PATH, interpreter, quoting) for information it already has the
+# code for, and the exit-code contract belongs to green_age.py's own CLI.
+_green_age = _load_sibling("green_age.py", "_prepare_pr_green_age")
 REVIEWED_STAMP_RE = _review_contract.REVIEWED_STAMP_RE
 BLOCK_MERGE_RE = _review_contract.BLOCK_MERGE_RE
 DEFAULT_MARKER_AUTHORS = _review_contract.DEFAULT_MARKER_AUTHORS
@@ -106,6 +109,7 @@ design_lane_verdicts = _review_contract.design_lane_verdicts
 unanswered_concern_lanes = _review_contract.unanswered_concern_lanes
 unanswered_concerns_reason = _review_contract.unanswered_concerns_reason
 parse_disposition_record = _review_contract.parse_disposition_record
+human_override_actors = _review_contract.human_override_actors
 
 
 # Strip ANSI escape sequences and C0/C1 control chars from untrusted printed
@@ -998,7 +1002,7 @@ def fetch_bot_comments(repo, number, trusted_authors):
     return None
 
 
-def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
+def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=None):
     """Evaluate reviewer stamps and blocking markers against the current head.
 
     Returns a dict:
@@ -1006,6 +1010,8 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
       stale     -- sorted reviewer names with no fresh stamp for the head
       blocking  -- sorted reviewer names with [BLOCK-MERGE] <current head>
       findings  -- {name: advisory FINDING-line count} for fresh comments
+      overridden -- {name: actor} for lanes a repository writer adjudicated at
+                   this head instead of the model (see human_override_actors)
       pinned    -- whether ``only`` named the fleet. Empty ``stale`` means
                    "every REQUIRED lane stamped this head" only when pinned;
                    in discovery mode it means "every lane that POSTED is
@@ -1026,6 +1032,16 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
     reads as stale, so emitter drift cannot silently un-gate), else every
     BOUND reviewer that posted a comment (discovery mode; a lane that never
     posted is not required, its CI gate covers absence).
+
+    TWO KINDS OF PROOF, and a lane is answered by either. A fresh stamp proves
+    a MODEL produced a verdict for this commit. An accepted human-override
+    record proves a repository WRITER adjudicated it, on a path where the model
+    is deliberately not re-run, so no stamp exists to find. The stamp is
+    reported as ``fresh`` and the record as ``overridden``, never folded
+    together: a reader auditing the head later must be able to tell "a model
+    reviewed this" from "a human cleared this". ``authors`` is the comment-author
+    allowlist the record's authority rests on -- checked here as well as by the
+    caller's fetch, so the function alone refuses a forged record.
     """
     if comments is None or not head_sha:
         return {
@@ -1034,6 +1050,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
             "blocking": [],
             "findings": {},
             "elided": [],
+            "overridden": {},
             "verdicts": {},
             "pinned": only is not None,
         }
@@ -1077,13 +1094,37 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
         for sha in BLOCK_MERGE_RE.findall(body):
             if sha_matches(sha, head_sha):
                 blocking.add(name or "(unattributed)")
-    stale = sorted(n for n, fresh in fresh_by_name.items() if not fresh)
+    # Accepted human overrides for THIS head. A record naming one lane enrols
+    # it, so that lane's presence in the set rests on the record itself rather
+    # than on a stale duplicate comment; a `target=all` record answers for the
+    # lanes already under evaluation without enrolling any.
+    named_overrides, blanket_actor = human_override_actors(
+        comments,
+        head_sha,
+        bindings,
+        DEFAULT_MARKER_AUTHORS if authors is None else authors,
+    )
+    for name, actor in named_overrides.items():
+        if only is None or name in only:
+            fresh_by_name.setdefault(name, False)
+    overridden = {}
+    for name, fresh in fresh_by_name.items():
+        # A fresh stamp is the stronger statement and stays the reported one:
+        # the model DID run for this commit, so calling the lane overridden
+        # would understate the evidence on the PR.
+        if fresh:
+            continue
+        actor = named_overrides.get(name) or blanket_actor
+        if actor:
+            overridden[name] = actor
+    stale = sorted(n for n, fresh in fresh_by_name.items() if not fresh and n not in overridden)
     return {
         "ok": True,
         "stale": stale,
         "blocking": sorted(blocking),
         "findings": findings,
         "elided": sorted(elided),
+        "overridden": dict(sorted(overridden.items())),
         "verdicts": verdicts,
         "pinned": only is not None,
     }
@@ -1093,8 +1134,9 @@ def reviewer_round_settled(marker_eval):
     """Whether AI review for this head is decided, regardless of the other checks.
 
     True only when the fleet was PINNED (``--reviewers`` / the loop's own
-    profile names), the comments were readable, every pinned lane carries a
-    fresh ``[<NAME>-REVIEWED]`` stamp for this head, and at least one posted
+    profile names), the comments were readable, every pinned lane is answered
+    for this head -- a fresh ``[<NAME>-REVIEWED]`` stamp, or an accepted human
+    override record naming this head -- and at least one posted
     ``[BLOCK-MERGE]``. That combination is terminal for the head: the diff has
     to change, so the tests, packaging and lint runs still in flight are
     running on a commit that is already condemned.
@@ -1159,6 +1201,34 @@ def head_run_exists(repo, head_sha):
     return False
 
 
+def probe_green_age(base, head_sha, pr):
+    """One line on whether this head's green still describes today's base.
+
+    INFORMATION, NEVER A GATE. The verdict is not passed to :func:`decide`, no
+    exit code depends on it, and any failure inside ``green_age`` degrades to an
+    "unavailable" line. A merger who is about to merge a ten-hour-old green needs
+    to know the base moved underneath it; a poll cycle that could not measure
+    that must not therefore call a red PR green, or a green one red.
+
+    The base defaults to ``main`` when the host did not report one, because the
+    line is advisory and a wrong default costs a wrong line, not a wrong verdict.
+    """
+    try:
+        return _green_age.summarize(
+            base=base or "main",
+            head=head_sha or "HEAD",
+            pr=str(pr or ""),
+            runner=run,
+        )
+    except Exception as exc:  # noqa: BLE001 - an advisory line may never raise
+        return {"ok": False, "reason": "probe failed ({})".format(type(exc).__name__)}
+
+
+def green_age_line(summary):
+    """The printed form of :func:`probe_green_age`, indented like its siblings."""
+    return "  " + _green_age.format_line(summary)
+
+
 def build_report(
     *,
     number,
@@ -1171,6 +1241,7 @@ def build_report(
     marker_eval,
     code,
     status,
+    green_age=None,
 ):
     """Build the --json report.
 
@@ -1222,6 +1293,18 @@ def build_report(
             "bot_comments_readable": bool(marker_eval.get("ok")),
             "elided_stamp_reviewers": sorted(marker_eval.get("elided") or []),
             "findings": dict(marker_eval.get("findings") or {}),
+            # Advisory, and deliberately OUTSIDE progress_key: the base moving is
+            # not this PR making progress, and on a repo that merges every couple
+            # of minutes a commit count in the key would reset the stall streak
+            # forever. The babysit trigger reads this field; the tripwire does not.
+            "green_age": dict(green_age or {"ok": False, "reason": "not measured"}),
+            # {lane: actor} a repository writer adjudicated at this head instead
+            # of the model. Advisory and OUTSIDE progress_key for the same
+            # reason the finding counts are: it is state about the head, not a
+            # thing that moves when the PR makes progress. Separate from
+            # stale_reviewers rather than merged into it -- a reader auditing
+            # this head has to be able to tell a model verdict from a human one.
+            "overridden_reviewers": dict(sorted((marker_eval.get("overridden") or {}).items())),
             "stale_reviewers": sorted(marker_eval.get("stale") or []),
             "unresolved_threads": n_unresolved,
         },
@@ -1554,7 +1637,7 @@ def main(argv):
 
     fields = (
         "number,title,state,isDraft,mergeable,mergeStateStatus,"
-        "reviewDecision,url,headRefName,headRefOid,"
+        "reviewDecision,url,headRefName,headRefOid,baseRefName,"
         "body,closingIssuesReferences"
     )
     rc, out, _ = run(["gh", "pr", "view", pr, "--json", fields])
@@ -1641,11 +1724,16 @@ def main(argv):
         head_sha,
         marker_bindings,
         only=reviewers_filter,
+        authors=marker_authors,
     )
     print("-- Reviewer markers (head {}) ".format(sanitize(head_sha[:12]) or "?") + "-" * 20)
     if not marker_eval["ok"]:
         print("  ERROR: bot comments could not be read (fail-closed)")
-    elif not marker_eval["findings"] and not marker_eval["stale"]:
+    elif (
+        not marker_eval["findings"]
+        and not marker_eval["stale"]
+        and not marker_eval.get("overridden")
+    ):
         if reviewers_filter:
             print(
                 "  (no [<NAME>-REVIEWED] stamps found for filter: "
@@ -1688,6 +1776,14 @@ def main(argv):
             )
         for name in marker_eval["stale"]:
             print("  - {}: STALE (stamp names an older head)".format(sanitize(name)))
+        # Named distinctly from `fresh`, because the two are different
+        # evidence: no model verdict exists for this head, and the row must not
+        # read as though one does.
+        for name, actor in sorted((marker_eval.get("overridden") or {}).items()):
+            print(
+                "  - {}: OVERRIDDEN by @{} (human judgment recorded for this head; "
+                "the model was not re-run)".format(sanitize(name), sanitize(actor))
+            )
 
     # Disposition-rule gate: a repository writer's disposition
     # comment must claim exactly one span= finding identity from its own
@@ -1794,6 +1890,11 @@ def main(argv):
         else:
             run_shown = "? (could not confirm)"
         print("  pull_request run for current head: " + run_shown)
+    # Whether that run's verdict still describes today's base. Printed beside the
+    # rollup because it qualifies the rollup: a green measured on a base that has
+    # since moved in this PR's own files is a green about a tree nobody has.
+    green_age = probe_green_age(d.get("baseRefName") or "", head_sha, d.get("number"))
+    print(green_age_line(green_age))
     print("=" * 54)
 
     code, status = decide(
@@ -1831,6 +1932,7 @@ def main(argv):
                     marker_eval=marker_eval,
                     code=code,
                     status=status,
+                    green_age=green_age,
                 ),
                 sort_keys=True,
                 separators=(",", ":"),

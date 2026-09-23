@@ -16,7 +16,7 @@ const { SELF_INSTANCE } = require("./machineStore");
  * settings panel silently showed nothing until the route was pinned down.
  *
  * @returns {boolean|null} null = the payload could not be understood at all
- *   (which is NOT the same as "disabled" — see `enabledOrTrust`)
+ *   (which is NOT the same as "disabled" — see `remoteEnabledState`)
  */
 function parseMochiEnabled(payload) {
   const apps = Array.isArray(payload) ? payload : payload && payload.apps;
@@ -37,16 +37,23 @@ function parseMochiEnabled(payload) {
  * and because appearance and chat history follow the instance, the user would
  * watch their pet turn into a different pet over a hiccup.
  *
- * Fail-OPEN is safe here precisely because it is not a security decision: if we
- * guess wrong the remote's own `_require_enabled` still refuses every call. The
- * cost of guessing wrong in this direction is an inert pet; the cost in the other
- * direction is the pet moving on its own for no reason.
+ * It must not read as "enabled" either. That was the previous rule ("fail-open
+ * is safe, the worst case is an inert pet"), and its worst case was not inert:
+ * a host with Mochi switched off, a stored pointer at a remote, and a tunnel
+ * that had just come back up produced a non-answer, the non-answer was trusted
+ * as "enabled", and the reconcile tick CREATED a full-display, screen-saver-level
+ * overlay for an app the user had disabled everywhere — which then failed to
+ * load and blanketed every display with an error document nothing could dismiss.
+ *
+ * So a non-answer stays a non-answer. The caller treats it like every other
+ * non-answer in the resolve: keep whatever is on screen, create nothing.
  *
  * @param {boolean|null} probe
- * @returns {boolean}
+ * @returns {"enabled"|"disabled"|"unknown"}
  */
-function enabledOrTrust(probe) {
-  return probe === null ? true : probe;
+function remoteEnabledState(probe) {
+  if (probe === null) return "unknown";
+  return probe ? "enabled" : "disabled";
 }
 
 /**
@@ -70,7 +77,9 @@ function enabledOrTrust(probe) {
  * @param {string} shownInstanceId what the pet is currently showing
  * @param {boolean} remoteStillUsable did this tick resolve that instance as live
  *   AND Mochi-enabled? A definite no falls back to self, which is disabled — so
- *   there is genuinely no pet to keep.
+ *   there is genuinely no pet to keep. On a non-answer the caller passes whether
+ *   a pet window actually EXISTS: keeping is only meaningful for a window that
+ *   is already there, and not-knowing must never create one.
  * @returns {boolean}
  */
 function hostDisabledMeansTeardown(shownInstanceId, remoteStillUsable) {
@@ -79,4 +88,4 @@ function hostDisabledMeansTeardown(shownInstanceId, remoteStillUsable) {
   return !remoteStillUsable;
 }
 
-module.exports = { parseMochiEnabled, enabledOrTrust, hostDisabledMeansTeardown };
+module.exports = { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown };

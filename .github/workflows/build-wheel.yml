@@ -22,7 +22,9 @@ permissions:
 jobs:
   build-wheel:
     name: Build Wheel (CLI)
-    runs-on: ubuntu-latest
+    # Reusable workflows inherit the caller's event and actor. Only admitted
+    # same-repository pushes use the fleet; scheduled and manual callers stay hosted.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

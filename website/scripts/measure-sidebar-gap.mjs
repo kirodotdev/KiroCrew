@@ -7,7 +7,7 @@
  *   - one COLLAPSED folder holding 152 sessions (renders as a single row),
  *   - one fresh ungrouped session (the only visible session row),
  *   - six DORMANT ungrouped sessions (last activity > 2 days => collapsed
- *     behind the "Dormant sessions (6)" expander).
+ *     behind the "6 dormant sessions hidden" expander).
  *
  * A screenshot cannot distinguish the two candidate causes, so this prints
  * geometry instead: for every container between the sidebar root and the last

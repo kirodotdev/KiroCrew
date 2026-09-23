@@ -775,7 +775,7 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
                 role="region"
                 aria-label={i18nT('pages.chat.sessionSummary.project_notes')}
                 tabIndex={0}
-                className="flex-1 min-h-0 overflow-y-auto overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+                className="flex-1 min-h-0 overflow-y-auto overscroll-contain focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
               >
                 <ul className="pl-7 pr-3 pb-2.5 list-disc">
                   {data?.constraints.map((note, i) => (

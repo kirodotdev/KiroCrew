@@ -41,7 +41,12 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("surface", r"\[RUNTIME\]"),
     ("workspace_identity", r"\[WORKSPACE IDENTITY\]"),
     ("docs_pointer", r"\[DOCUMENTATION\]"),
-    ("memory", r"\[Memory\b"),
+    ("memory", r"\[Memory\b(?! tools\])"),
+    ("memory_tools", r"\[Memory tools\]"),
+    ("steering", r"\[Steering resources\]"),
+    ("thread_history", r"\[THREAD CONVERSATION HISTORY"),
+    ("context_scope", r"\[CONTEXT SCOPE\]"),
+    ("recovery", r"\[(?:SESSION RESUMED|REINJECTED AFTER COMPACTION)"),
     ("semantic_memory", r"\[Semantic Memory"),
     ("skill_index", r"\[Skills:\]"),
     ("lessons", r"\[Learned corrections"),
@@ -101,7 +106,11 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("session_wrapper", r"\[END OF SESSION CONTEXT\]"),
         ("workspace_identity", r"\[End of workspace identity\]"),
         ("docs_pointer", r"\[END DOCUMENTATION\]"),
-        ("memory", r"\[End of memory\]"),
+        ("memory", r"\[End of memory(?: activity index)?\]"),
+        ("memory_tools", r"\[End of memory tools\]"),
+        ("steering", r"\[End of steering resources\]"),
+        ("thread_history", r"\[End of thread history\]"),
+        ("recovery", r"\[END REINJECTED\]"),
         ("semantic_memory", r"\[End of semantic memory\]"),
         ("skill_index", r"\[End of skills\]"),
         ("lessons", r"\[End of learned corrections\]"),
@@ -172,6 +181,7 @@ def split_blocks(
     user_chars: int = 0,
     user_offset: int = 0,
     user_span: tuple[int, int] | None = None,
+    utf8_bytes: bool = False,
 ) -> dict[str, int]:
     """Attribute ``prompt``'s characters to the block that produced them.
 
@@ -194,11 +204,15 @@ def split_blocks(
     so the user span starts ``user_offset`` chars in rather than flush against
     the header; the prepended context keeps its own attribution.
 
-    Returns a label -> characters mapping. Zero-length blocks are omitted.
-    Every character of ``prompt`` is accounted for exactly once, so the values
+    Returns a label -> characters mapping (UTF-8 bytes with ``utf8_bytes=True``).
+    Span coordinates always remain characters; use an authoritative ``user_span``
+    for exact byte attribution. No tokenizer or provider serialization is involved.
+    Zero-length blocks are omitted. Every character of ``prompt`` is accounted for exactly once, so the values
     sum to ``len(prompt)`` — a property the tests assert, and the reason
     ``unclassified`` exists rather than a silent drop.
     """
+    if utf8_bytes and user_span is None:
+        raise ValueError("UTF-8 attribution requires an authoritative user_span")
     if not prompt:
         return {}
 
@@ -250,19 +264,24 @@ def split_blocks(
     if user_start >= 0:
         hits = [(pos, label) for pos, label in hits if not (user_start <= pos < user_end)]
 
+    # Keep marker/span coordinates in characters in both modes. Only the
+    # measured extents change; native serialization is outside this boundary.
+    def size(start: int, end: int) -> int:
+        return len(prompt[start:end].encode("utf-8")) if utf8_bytes else end - start
+
     out: dict[str, int] = {}
     if not hits:
-        # No markers at all: a bare prompt (minimal-context cron runs reach
-        # here). Attribute what the caller told us and leave the rest visible.
-        if user_chars:
-            out[USER_LABEL] = min(user_chars, len(prompt))
-        remainder = len(prompt) - out.get(USER_LABEL, 0)
+        start = user_start if user_start >= 0 else 0
+        end = user_end if user_start >= 0 else min(user_chars, len(prompt))
+        if end > start:
+            out[USER_LABEL] = size(start, end)
+        remainder = size(0, len(prompt)) - out.get(USER_LABEL, 0)
         if remainder > 0:
             out[UNCLASSIFIED_LABEL] = remainder
         return out
 
     if hits[0][0] > 0:
-        out[UNCLASSIFIED_LABEL] = hits[0][0]
+        out[UNCLASSIFIED_LABEL] = size(0, hits[0][0])
 
     # Accumulate each block's span, carving out any overlap with the user span
     # so the user's bytes are credited to USER_LABEL EXACTLY where they sit.
@@ -274,6 +293,10 @@ def split_blocks(
     # count would leave the user's bytes mis-credited to memory and strip
     # unrelated header bytes instead.
     user_taken = 0
+    if user_start >= 0 and hits[0][0] > user_start:
+        right = min(hits[0][0], user_end)
+        user_taken = size(user_start, right)
+        out[UNCLASSIFIED_LABEL] -= user_taken
     for index, (start, label) in enumerate(hits):
         next_start = hits[index + 1][0] if index + 1 < len(hits) else len(prompt)
         # A block owns up to its own closer when it has one IN RANGE, otherwise up
@@ -302,9 +325,10 @@ def split_blocks(
                 # of `unclassified` after every single closed block.
                 while end < next_start and prompt[end] in " \t\r\n":
                     end += 1
-        seg = end - start
+        seg = size(start, end)
         if user_start >= 0:
-            overlap = max(0, min(end, user_end) - max(start, user_start))
+            left, right = max(start, user_start), min(end, user_end)
+            overlap = size(left, right) if right > left else 0
             seg -= overlap
             user_taken += overlap
         if seg > 0:
@@ -314,9 +338,10 @@ def split_blocks(
         # whichever block happens to precede them would read as a confident
         # measurement of something nobody measured.
         if end < next_start:
-            gap = next_start - end
+            gap = size(end, next_start)
             if user_start >= 0:
-                overlap = max(0, min(next_start, user_end) - max(end, user_start))
+                left, right = max(end, user_start), min(next_start, user_end)
+                overlap = size(left, right) if right > left else 0
                 gap -= overlap
                 user_taken += overlap
             if gap > 0:
@@ -337,3 +362,46 @@ def split_blocks(
                 del out[host]
 
     return {label: size for label, size in out.items() if size > 0}
+
+
+def measure_prompt(prompt: str, *, user_span: tuple[int, int], lifecycle: str) -> dict:
+    """Exact Crew-assembled extents, not provider input or token estimates.
+
+    A lifecycle describes this assembly (fresh, warm, resume, reinjection or
+    minimal), not how long the provider retains a block. No bodies are recorded.
+    Native prompts/history/resources and external MCP serialization are unknown.
+    """
+    chars = split_blocks(prompt, user_span=user_span)
+    byte_counts = split_blocks(prompt, user_span=user_span, utf8_bytes=True)
+    return {
+        "boundary": "crew_assembly",
+        "lifecycle": lifecycle,
+        "chars": len(prompt),
+        "bytes": len(prompt.encode("utf-8")),
+        "blocks": {
+            label: {
+                "chars": count,
+                "bytes": byte_counts[label],
+                "domain": (
+                    "request"
+                    if label == USER_LABEL
+                    else (
+                        "contract"
+                        if label in {"agent_instructions", "critical_rules"}
+                        else (
+                            "replay"
+                            if label in {"conversation_replay", "thread_history", "history_prefix"}
+                            else (
+                                "following_interaction"
+                                if label == REPLY_FORMAT_LABEL
+                                else "background"
+                            )
+                        )
+                    )
+                ),
+            }
+            for label, count in chars.items()
+        },
+        "native": "UNKNOWN",
+        "external_mcp": "UNKNOWN",
+    }

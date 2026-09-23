@@ -138,7 +138,10 @@ def test_linux_branch_spawns_nothing(monkeypatch):
     bug, and routing it through ps would import the problem."""
     monkeypatch.setattr(rt.sys, "platform", "linux")
     calls = _counting_ps(monkeypatch)
-    monkeypatch.setattr(rt, "_iter_descendant_pids", lambda pid: [pid])
+    # Accepts the depth bound the real signature carries: the Linux branch passes
+    # it through, so a one-argument fake raises TypeError instead of exercising
+    # the branch this test is about.
+    monkeypatch.setattr(rt, "_iter_descendant_pids", lambda pid, max_depth=None: [pid])
     monkeypatch.setattr(rt, "_get_rss_mb", lambda pid: 5.0)
 
     assert rt._get_rss_tree_mb(100) == 5.0

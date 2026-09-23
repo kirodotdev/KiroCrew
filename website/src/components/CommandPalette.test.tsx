@@ -34,7 +34,7 @@ const H = vi.hoisted(() => {
     chat: {
       slotStatusDetail: {} as Record<
         string,
-        { kind: string; text: string; ts: number; toolName?: string }
+        { kind: string; purpose?: string; label?: string; ts: number; toolName?: string }
       >,
     },
   }
@@ -442,8 +442,67 @@ describe('CommandPalette — render', () => {
     expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
 
     H.storeState.chat.slotStatusDetail = {
-      'chat-1': { kind: 'tool', text: 'Running: read /workspace/src/app.ts', ts: 1 },
+      'chat-1': { kind: 'tool', purpose: 'Running: read /workspace/src/app.ts', ts: 1 },
     }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
+  })
+
+  it('refreshes recents when only the status string changes under a stable kind and ts', async () => {
+    // The live fingerprint has to read the field each phase actually carries: a
+    // tool phase's `purpose`, any other phase's `label`. A refinement that
+    // rewrites the purpose (same kind, same tick) must still re-run the search.
+    H.storeState.dashboard.slots = [
+      { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
+    ]
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'tool', purpose: 'Terminal', ts: 1 },
+    }
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
+
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'tool', purpose: 'List the temp dir', ts: 1 },
+    }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
+
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'thinking', label: 'Compacting…', ts: 1 },
+    }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(3))
+
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'thinking', ts: 1 },
+    }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(4))
+  })
+
+  it('refreshes recents when last_ts advances beyond a nonempty activity timestamp', async () => {
+    H.storeState.dashboard.slots = [
+      {
+        key: 'chat-1',
+        title: 'Live session',
+        running: false,
+        messages: 2,
+        last_activity_ts: '2026-07-19T10:00:00Z',
+        last_ts: '2026-07-21T10:00:00Z',
+      },
+    ]
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
+
+    H.storeState.dashboard.slots = [
+      {
+        ...H.storeState.dashboard.slots[0],
+        last_ts: '2026-07-22T10:00:00Z',
+      },
+    ]
     rerender(<CommandPalette open onClose={vi.fn()} />)
 
     await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
@@ -457,7 +516,7 @@ describe('CommandPalette — render', () => {
       { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
     ]
     H.storeState.chat.slotStatusDetail = {
-      'chat-1': { kind: 'tool', text: 'Reading the app entrypoint', ts: 1 },
+      'chat-1': { kind: 'tool', purpose: 'Reading the app entrypoint', ts: 1 },
     }
     const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
     await screen.findByText('Recent Session')
@@ -517,6 +576,28 @@ describe('CommandPalette — keyboard & activation', () => {
     // Scope chip adopted: placeholder narrows and the sessions provider serves.
     expect(await screen.findByPlaceholderText('Search sessions…')).toBeInTheDocument()
     expect(await screen.findByText('Session Result')).toBeInTheDocument()
+  })
+
+  it('offers NO folders scope — reaching a folder by name belongs to the Command Bar app', async () => {
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    // "fold" uniquely prefixes nothing here. If a Folders provider is ever put
+    // back into this host, the hint label appears and Tab adopts the scope — and
+    // this assertion is the thing that says so, because the feature would then
+    // have two implementations (this one and `apps/command-bar/foldersProvider`)
+    // free to disagree about ranking and about what a reveal does.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'fold' } })
+    await waitFor(() => expect(H.allProvider.search).toHaveBeenCalled())
+    expect(screen.queryByText('Folders')).toBeNull()
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+
+    // No scope was adopted: the query still reads as an unscoped search.
+    expect(screen.queryByPlaceholderText('Search folders…')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Search everywhere' })).toHaveValue('fold')
   })
 
   it('a Tab the IME guard declines does not adopt the scope or clear the query', async () => {

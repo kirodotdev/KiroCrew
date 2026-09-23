@@ -85,7 +85,7 @@ CREW_SCHEMA_VERSION: Final = 1001
 
 #: ``memory_meta`` key recording the lineage, for observability only. Structure
 #: is authoritative for lineage: a lost or hand-edited stamp cannot misclassify
-#: a file. The separate private marker below has a fail-closed authorization role.
+#: a file. Member identity is recorded separately in member_database.
 LINEAGE_META_KEY: Final = "schema_lineage"
 
 #: ``memory_meta`` key recording the store this file belongs to, written once at
@@ -94,16 +94,32 @@ LINEAGE_META_KEY: Final = "schema_lineage"
 #: STORE, not a crew: several crews may bind one store.
 STORE_NAME_META_KEY: Final = "store_name"
 
-#: Durable proof that a crew-lineage file was provisioned as private V2. Unlike
-#: ``schema_lineage``, this is authorization-significant: once present, losing
-#: or changing the external ownership manifest must fail closed rather than
-#: reopening the same physical database as an unowned legacy V1 store.
-PRIVATE_MEMORY_VERSION_META_KEY: Final = "private_memory_version"
-
-#: Private owner's identity at the time the durable V2 marker is written.
-#: Paired with :data:`STORE_NAME_META_KEY` so both halves of the external
-#: manifest can be checked on every later raw database open.
-OWNER_MEMBER_META_KEY: Final = "owner_member"
+# Private stores are provisioned explicitly. This format has no upgrade path:
+# opening validates the identity and schema without changing either.
+MEMBER_DATABASE_FORMAT: Final = 1
+MEMBER_SCHEMA_SQL: Final = """
+CREATE TABLE member_database (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    format_version INTEGER NOT NULL,
+    member_id TEXT NOT NULL,
+    store_id TEXT NOT NULL
+);
+CREATE TABLE memory_history (
+    day TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE memory_consolidations (
+    source_id TEXT PRIMARY KEY,
+    source_total INTEGER NOT NULL,
+    source_count INTEGER NOT NULL,
+    source_digest TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE memory_fts USING fts5(path UNINDEXED, content);
+"""
 
 #: The three kinds the design collapses six memory types onto. ``directive`` is
 #: behavioural preferences plus lessons, ``fact`` is projects/semantic/user

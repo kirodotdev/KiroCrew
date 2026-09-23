@@ -821,9 +821,25 @@ class Decision:
 # A control that can answer "is this item permitted?" for ONE level.  Both
 # ``ScopedRuleset`` and the composed ``_AndRuleset`` satisfy it — the evaluator
 # only ever calls ``permits``, so it stays archetype-shape-agnostic.
+#
+# The two projection queries exist because a consumer cannot answer them with
+# ``permits``: a per-tool rule (``@srv/delete``) matches only itself, so a
+# sentinel probe sails past it, and a force-pin is a pattern to union rather than
+# a question to ask. Reading ``.allow`` / ``.deny`` attributes off the control is
+# not an option either — a composed fold is an ``_AndRuleset``, which holds its
+# patterns in its halves. So the control answers for every tier it carries, and
+# ``_AndRuleset`` answers by delegating to both halves.
 @runtime_checkable
 class RulesetLike(Protocol):
     def permits(self, item: str) -> Decision:  # pragma: no cover - protocol stub
+        raise NotImplementedError
+
+    def declared_patterns(self) -> Tuple[str, ...]:  # pragma: no cover - protocol stub
+        """Every pattern this control names, in any list, at any tier."""
+        raise NotImplementedError
+
+    def force_deny_patterns(self) -> Tuple[str, ...]:  # pragma: no cover - protocol stub
+        """Patterns this control denies outright, at any tier."""
         raise NotImplementedError
 
 
@@ -887,6 +903,24 @@ class ScopedRuleset:
             return Decision(False, f"{item!r} matches deny pattern {hit!r}", rule="rule1-deny")
         return Decision(True, f"{item!r} not denied", rule="rule1-deny")
 
+    def declared_patterns(self) -> Tuple[str, ...]:
+        """Every pattern this ruleset names, in either list.
+
+        Both lists, because either one is an opinion about the items it names: an
+        allow-mode set that lists some of a server's tools says as much about that
+        server as a deny-mode set that excludes one.
+        """
+        return self.allow + self.deny
+
+    def force_deny_patterns(self) -> Tuple[str, ...]:
+        """The patterns this ruleset denies outright.
+
+        Only a deny-mode set has any: an allow-mode set is an allowlist whose own
+        ``deny`` is ignored (Rule 1), and ``gate_decision`` enforces it as the
+        closed set it is, so it projects no pattern to union anywhere.
+        """
+        return self.deny if self.mode == MODE_DENY else ()
+
     def compose(self, narrower: "RulesetLike") -> "RulesetLike":
         """Rule 2 / inheritance — intersect this (ceiling) with a *narrower* set.
 
@@ -941,6 +975,19 @@ class _AndRuleset:
                 return Decision(False, i.reason, rule="rule2-intersect", layer=i.layer)
             return Decision(False, f"profile: {i.reason}", rule="rule2-intersect", layer="profile")
         return Decision(True, "permitted by both levels", rule="rule2-intersect", layer="both")
+
+    def declared_patterns(self) -> Tuple[str, ...]:
+        """Every pattern either half names — a half may be a nested pair."""
+        return _dedup(self.outer.declared_patterns() + self.inner.declared_patterns())
+
+    def force_deny_patterns(self) -> Tuple[str, ...]:
+        """Every outright denial either half carries, unioned.
+
+        A fold of an authority with a subordinate tier is this shape whenever the
+        two modes differ, and the authority's denials bind through it: composition
+        may only tighten, so a half's deny survives the fold it is folded into.
+        """
+        return _dedup(self.outer.force_deny_patterns() + self.inner.force_deny_patterns())
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1468,6 +1515,28 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # social_share).
     "capabilities.feature_videos_download": ScopeSpec(CAPABILITY, capability_default=True),
+    # The Jev decision seam: an enabled, sampled session sends message excerpts and
+    # skill descriptions to an external, PAID provider endpoint and spends the
+    # operator's account to do it. The keystone ``decisions_consent.json`` is the
+    # OWNER's switch -- it is not a ceiling, and an owner who consented on a managed
+    # machine has still consented to something a fleet may not permit at all. So
+    # this row is the fleet's side of the same question, and it sits in the egress
+    # family with ``capabilities.telemetry`` / ``publish`` /
+    # ``feature_videos_download`` rather than with the advisory probes.
+    #
+    # Default True: naming the row without ``enabled`` keeps the documented
+    # behaviour for the standalone user, whose consent keystone is still the thing
+    # that turns the seam on. A governing ceiling -- policy or a profile bound to the
+    # dashboard surface -- withdraws it at TWO chokepoints
+    # (``decisions/capability.py``: evaluated on the pinned ``dashboard:ui``
+    # surface through ``vet_and_audit``, fail-closed, mirroring social_share): the
+    # consent PUT refuses to enable, and the gate's own consent read reports NOT
+    # consented, so a keystone that already says ``true`` is inert rather than
+    # carried over. ``GET /api/dashboard/config`` reports the answer as
+    # ``decisions_enabled`` so the Feature Previews card is not drawn at all.
+    # Data row only -- CONTRACT_VERSION and the evaluator are untouched (mirrors
+    # social_share).
+    "capabilities.decisions": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 
@@ -2148,15 +2217,23 @@ def _dedup(items: Tuple[str, ...]) -> Tuple[str, ...]:
 def _command_deny_patterns(control: object) -> Tuple[str, ...]:
     """Extract force-deny command patterns from a parsed ``commands`` control.
 
-    A DENY-mode ScopedRuleset's ``deny`` tuple IS the set of force-pins: patterns
-    that must remain denied regardless of user opt-out. An ALLOW-mode ruleset is
-    an allowlist (deny-by-default) enforced by ``gate_decision`` and CANNOT be
-    projected as a deny-pattern union, so it returns ``()`` (with a debug log).
-    Any non-ScopedRuleset control (e.g. an ``_AndRuleset`` that can only arise
-    from an allow-mode combination) also returns ``()``.
+    A DENY-mode set's ``deny`` tuple IS the set of force-pins: patterns that must
+    remain denied regardless of user opt-out. An ALLOW-mode set is an allowlist
+    (deny-by-default) enforced by ``gate_decision`` and projects no pattern to
+    union. Ask the control (``force_deny_patterns``) rather than reading its
+    attributes: a fold of two tiers is an ``_AndRuleset``, which holds its
+    patterns in its halves, and an authority's pins bind through such a fold.
+
+    The test is :class:`RulesetLike` conformance, not a list of the two shapes
+    that satisfy it today: naming them would make any later archetype in this
+    scope project no pin at all, which is the same empty projection this asks
+    about. A control of another archetype (a capability gate, a scoped map)
+    carries no pins to union and yields ``()`` with a debug log.
     """
-    if isinstance(control, ScopedRuleset) and control.mode == MODE_DENY:
-        return control.deny
+    if isinstance(control, RulesetLike):
+        pins = control.force_deny_patterns()
+        if pins:
+            return pins
     if control is not None:
         logger.debug("commands control %r yields no force-deny pins", type(control))
     return ()
@@ -4006,6 +4083,15 @@ def _ceiling_mentions_mcp_server(ceiling: Optional[GovernanceCeiling], server: s
     some of a server's tools is also an opinion, and auto-approving the whole
     server would grant the rest.
 
+    Asks the control for its patterns (``declared_patterns``) instead of reading
+    ``.allow`` / ``.deny`` off it: a ceiling folded from two policy tiers is an
+    ``_AndRuleset``, which carries neither attribute, and an attribute read there
+    reports "no rule about this server" for a fold whose halves both name it —
+    handing out the one grant that never reaches the gate. The question asked of
+    the control is :class:`RulesetLike` conformance rather than "are you one of
+    the two shapes that exist today", so an archetype added to this scope later
+    is asked rather than silently read as empty.
+
     A pattern scan deliberately does NOT answer "is this scope governed" — it
     answers "is THIS SERVER named". The empty-allowlist case (allow-mode with no
     patterns = deny-all) produces no patterns to match and is caught by the
@@ -4017,13 +4103,10 @@ def _ceiling_mentions_mcp_server(ceiling: Optional[GovernanceCeiling], server: s
     if ceiling is None:
         return False
     ruleset = ceiling.get("mcp")
-    if ruleset is None:
+    if not isinstance(ruleset, RulesetLike):
         return False
     prefix = f"@{server}".casefold()
-    patterns = tuple(getattr(ruleset, "allow", ()) or ()) + tuple(
-        getattr(ruleset, "deny", ()) or ()
-    )
-    for pattern in patterns:
+    for pattern in ruleset.declared_patterns():
         candidate = str(pattern).strip().casefold()
         if candidate == prefix or candidate.startswith(prefix + "/"):
             return True
@@ -4152,6 +4235,36 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
         return False
 
 
+def _declared_auto_approve(emitted: Mapping[str, object]) -> Mapping[str, tuple[str, ...]]:
+    """Per server, the ``autoApprove`` verbs its own spec declares.
+
+    Fail-closed the useful way round: an unreadable owner declares nothing, so the
+    floor applies to everything rather than exempting everything.
+    """
+    try:
+        from kiro_crew.agent import declared_auto_approve
+
+        return declared_auto_approve(emitted)
+    except Exception:  # noqa: BLE001 — a lookup failure must not grant an exemption
+        logger.warning("could not read the declared autoApprove verbs", exc_info=True)
+        return {}
+
+
+def _auto_approve_is_honoured() -> bool:
+    """Whether the operator opted in to keeping an undeclared ``autoApprove``.
+
+    Fail-closed: unreadable config withholds it; the value decides whether a gate runs.
+    """
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return bool((live.snapshot() or KiroCrewConfig.load()).mcp.honour_auto_approve)
+    except Exception:  # noqa: BLE001 — an unreadable config must not grant a bypass
+        logger.warning("could not read mcp.honour_auto_approve; withholding", exc_info=True)
+        return False
+
+
 def strip_ungoverned_auto_approve(
     servers: Mapping[str, object], *, audit: bool = True
 ) -> Dict[str, object]:
@@ -4174,25 +4287,47 @@ def strip_ungoverned_auto_approve(
 
     Only the key is dropped, never the server: the tools stay available and go
     through the approval gate, which is where a per-tool ceiling rule is applied.
-    Unchanged on an ungoverned host.
+
+    An ungoverned host is a FLOOR, not a pass: ``may_skip_gate_now`` is always true
+    there, so a verb NO spec declares is dropped there too unless
+    ``mcp.honour_auto_approve`` is on; what a spec declares is our own emission and
+    is kept. A governed ref keeps nothing — tightest-wins. The declarations are
+    resolved here, not taken from the caller: of the six write paths reaching this
+    helper only one could name them, and the other five would erase them.
     """
+    seeded = _declared_auto_approve(servers)
+    honoured = _auto_approve_is_honoured()
     out: Dict[str, object] = {}
     for name, spec in servers.items():
         if not isinstance(spec, dict) or "autoApprove" not in spec:
             out[name] = spec
             continue
-        if may_skip_gate_now(f"@{name}"):
+        kept: list = []
+        if not may_skip_gate_now(f"@{name}"):
+            pass  # governed: nothing survives, and the enterprise path is unchanged
+        elif honoured:
             out[name] = spec
             continue
+        else:
+            asked = spec["autoApprove"]
+            declared = seeded.get(name) or ()
+            kept = [v for v in asked if v in declared] if isinstance(asked, list) else []
+            if kept == asked:
+                out[name] = spec
+                continue
         trimmed = dict(spec)
-        trimmed.pop("autoApprove", None)
+        if kept:
+            trimmed["autoApprove"] = kept
+        else:
+            trimmed.pop("autoApprove", None)
         if not audit:
             out[name] = trimmed
             continue
         logger.info(
-            "Dropped autoApprove from MCP server %s: the governance ceiling "
-            "constrains it, so its tools go through the approval gate",
+            "Withheld autoApprove verbs on MCP server %s (kept %r): the ceiling "
+            "constrains it, or no spec declared them and the opt-in is off",
             name,
+            kept,
         )
         # Revoking a gate exemption is a permission DECISION — the allowedTools
         # writers emit this same SEL event, so a silent pop here would be the one
@@ -4204,8 +4339,8 @@ def strip_ungoverned_auto_approve(
                 outcome="ok",
                 source="strip_ungoverned_auto_approve",
                 resources=(
-                    f"@{name} autoApprove removed (governance ceiling); "
-                    "calls go through the approval gate"
+                    f"@{name} autoApprove narrowed to {kept} (governance ceiling or "
+                    "the undeclared-grant floor); the rest go through the gate"
                 ),
             )
         except Exception:  # noqa: BLE001 — audit must not break the filter

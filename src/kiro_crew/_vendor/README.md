@@ -111,8 +111,31 @@ To upgrade: download the four wheels for the new version (plus rebuild
 `macos_x86_64/` from the new sdist with the CMAKE_ARGS above), re-extract the
 same closure (`libllama` + `libggml*` + vendored `libgomp` on Linux; top-level
 dylibs on macOS), replace `llama_cpp/` with the new wheel's Python code (minus
-`lib/` and `server/`), and re-run the embedding smoke test in
-`test/test_embeddings.py`.
+`lib/` and `server/`), re-mirror the cache-less architecture set (below), and
+re-run the embedding smoke test in `test/test_embeddings.py`.
+
+### Re-mirror `_ENCODER_ARCHITECTURES` on every upgrade
+
+`embeddings._ENCODER_ARCHITECTURES` names the architectures llama.cpp runs
+without a KV cache: the `res = nullptr` cases of `llama_model::create_memory`
+in the new version's `src/llama-model.cpp` (llama.cpp source, pinned by the
+`llama-cpp-python` tag), plus `t5encoder`. Those architectures go through
+`encode()`, which aborts the process unless one micro-batch holds every input
+token, so a name missing from the set is an uncatchable SIGABRT in an
+operator's gateway. On every bump:
+
+1. Open the new `llama_model::create_memory` and copy every `case LLM_ARCH_*`
+   that sets `res = nullptr`, spelled as its `LLM_ARCH_NAMES` string, into the
+   set (plus `t5encoder`). ADDITIONS are found only by this read — no test can
+   tell which switch case a name in the binary belongs to.
+2. Run `test/test_encoder_architecture_mirror.py`: it opens every vendored
+   `libllama` binary and requires each name in the set as a NUL-terminated
+   string, so a REMOVED or RENAMED architecture fails there — except a name
+   that is the suffix of another listed name (`bert` inside `modern-bert`):
+   GNU ld tail-merges such strings, so only the terminating NUL can be
+   required and the longer name still satisfies the check. Confirm those
+   names in the `create_memory` read of step 1. Keep the parametrized list
+   in `test/test_embeddings.py` in step with the set.
 
 ### Local divergences from upstream (re-apply on every upgrade)
 

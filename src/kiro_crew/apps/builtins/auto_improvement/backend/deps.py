@@ -17,9 +17,9 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-import sys
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -105,7 +105,7 @@ def install_deps() -> dict[str, Any]:
     """
     if _which("ruff"):
         return {"ok": True, "installed": [], "detail": "ruff already present"}
-    cmd = [sys.executable, "-m", "pip", "install", "--quiet", "ruff"]
+    cmd = platform_compat.isolated_python_argv("-m", "pip", "install", "--quiet", "ruff")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300.0)
     except (OSError, subprocess.SubprocessError) as exc:

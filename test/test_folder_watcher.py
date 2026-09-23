@@ -6,8 +6,10 @@ import asyncio
 import concurrent.futures
 import contextlib
 import json
+import os
 import sqlite3
 import threading
+from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -165,6 +167,76 @@ class TestFolderWatcherWalk:
         text, meta = reader.read(str(org_file))
         assert "Body text" in text
         assert meta["extension"] == ".org"
+
+
+class TestIgnorePatternsAreHostIndependent:
+    """A persisted ``ignore_patterns`` must select the same files on every host.
+
+    ``fnmatch.fnmatch`` runs both operands through ``os.path.normcase``, which
+    folds case on Windows and is the identity on POSIX. A source's patterns are
+    *configuration* that outlives the machine which wrote it, so a
+    case-folding match makes one stored property mean two different things:
+    root-anchored ``SECURITY.md`` would also swallow a root ``security.md``, but
+    only on a Windows scan -- silently dropping a Library document, or billing
+    an extraction for an extra file.
+
+    These tests substitute Windows' ``normcase`` on any host, so the trap is
+    reproducible on the POSIX shards too; a ``skipif(os.name != "nt")`` guard
+    would hide it from every reviewer not on Windows.
+    """
+
+    @staticmethod
+    def _windows_normcase(value: str) -> str:
+        """What ``ntpath.normcase`` does: lowercase, and "/" folded to "\\"."""
+        return value.replace("/", "\\").lower()
+
+    @pytest.fixture()
+    def windows_host(self, monkeypatch):
+        monkeypatch.setattr(os.path, "normcase", self._windows_normcase)
+
+    @pytest.fixture()
+    def tree(self, tmp_path):
+        """Two ordinary documents: one at the root, one a directory down.
+
+        Only ONE casing of the name is created: a same-directory ``security.md``
+        AND ``SECURITY.md`` cannot coexist on a case-insensitive filesystem, so a
+        two-file fixture would not survive the Windows or macOS shards.
+        """
+        root = tmp_path / "vault"
+        (root / "docs").mkdir(parents=True)
+        (root / "security.md").write_text("# Threat model")
+        (root / "docs" / "design.md").write_text("# Design")
+        return root
+
+    def _walked(self, root, patterns):
+        fw = FolderWatcher(store=None, pipeline=None)
+        return {
+            Path(p).relative_to(root).as_posix()
+            for p, _ in fw._walk(str(root), patterns, set())
+        }
+
+    def test_the_trap_is_armed(self, windows_host) -> None:
+        """Guard the guard: if this stops folding, the tests below are vacuous."""
+        assert fnmatch("security.md", "SECURITY.md") is True
+        assert fnmatchcase("security.md", "SECURITY.md") is False
+
+    def test_a_differently_cased_name_is_kept_on_a_windows_style_host(
+        self, windows_host, tree
+    ) -> None:
+        # `SECURITY.md` is root-anchored boilerplate; a root `security.md` is a
+        # different document and is taken, on Windows exactly as on POSIX.
+        assert self._walked(tree, ["SECURITY.md"]) == {"security.md", "docs/design.md"}
+
+    def test_an_exact_case_match_is_still_dropped(self, windows_host, tree) -> None:
+        """The pattern still excludes -- case sensitivity is not "match nothing"."""
+        assert self._walked(tree, ["security.md"]) == {"docs/design.md"}
+
+    def test_separator_patterns_still_match_on_a_windows_style_host(
+        self, windows_host, tree
+    ) -> None:
+        # The `os.sep` normalisation above the match is what carries separator
+        # patterns, since `fnmatchcase` folds neither operand.
+        assert self._walked(tree, ["docs/*"]) == {"security.md"}
 
 
 #: Real-world capitalisation, so the case-insensitive basename match is exercised.

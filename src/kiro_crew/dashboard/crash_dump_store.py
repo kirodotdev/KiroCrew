@@ -618,6 +618,71 @@ def newest_dump_with_stacks(dumps_dir: Path | None = None) -> Path | None:
     return None
 
 
+def dumps_with_stacks(dumps_dir: Path | None = None) -> int:
+    """How many retained dumps carry thread stacks, i.e. how many stalls are on record.
+
+    Two or more inside the retention window is a gateway wedging repeatedly rather
+    than once, which no amount of successful restarting makes historical.
+    Unreadable files are not counted: a count is only evidence when it is of
+    files confirmed to hold stacks.
+    """
+    total = 0
+    for path in _list_dumps(dumps_dir):
+        try:
+            if not _is_header_only(path):
+                total += 1
+        except OSError:
+            continue
+    return total
+
+
+def dump_superseded(dump_path: Path, dumps_dir: Path | None = None) -> bool:
+    """True iff a later LOCAL session's own pre-created file sits after *dump_path*.
+
+    Every gateway start pre-creates a dump file so faulthandler has a stable fd, so
+    such a file is the footprint of a session that began after *dump_path* was
+    written — and while it is still header-only, that session has not wedged. A
+    superseded dump describes a past incident rather than the state of the gateway
+    running now, which is the difference between "this is why the gateway is broken"
+    and "this is what happened on Tuesday".
+
+    A successor only counts as that evidence when all three hold:
+
+    * it is **header-only** — a newer file that itself carries stacks is a second
+      stall, not a session that survived;
+    * its header names **this** PID domain — a data home shared with another host
+      or PID namespace (the case ``sweep_stale_dumps`` and ``rotate_dumps``
+      already model) collects files whose existence says nothing about a local
+      restart; and
+    * it is **readable** — an unreadable file is not evidence of anything.
+
+    Anything short of that returns ``False`` and keeps the stall visible, because
+    every caller acts on ``True`` by downgrading what it reports, and silently
+    reclassifying a real stall as history is the expensive direction.
+    """
+    try:
+        anchor = dump_path.stat().st_mtime
+    except OSError:
+        return False
+    for path in reversed(_list_dumps(dumps_dir)):
+        if path == dump_path:
+            continue
+        try:
+            if path.stat().st_mtime <= anchor:
+                break  # sorted oldest-first, so nothing later remains
+        except OSError:
+            continue
+        owner = _dump_owner(path)
+        if owner is None or owner[1] != _pid_domain():
+            continue  # unattributable, or another host's file
+        try:
+            if _is_header_only(path):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def claim_dump_notification(dump_path: Path, dumps_dir: Path | None = None) -> bool:
     """Claim the right to notify about *dump_path*, once per dump.
 

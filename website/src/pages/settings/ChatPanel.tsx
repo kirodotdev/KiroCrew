@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField, SettingsMultiSelect } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
 import { Btn, Input } from '../../components/ui'
 import { Plus, Trash2 } from 'lucide-react'
 import { configPatternRefused, configUrlTemplateOk } from '../../utils/autolinkRules'
@@ -11,7 +11,7 @@ export interface LinkPatternRule {
   pattern: string
   url: string
 }
-import { loadChatConfig, saveChatConfig, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
+import { loadChatConfig, saveChatConfig, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
 import { api, type FeatureVideoStatus } from '../../api/client'
 import { useAppSelector } from '../../store'
 import { serializeDefaultMemoryModeUpdate } from '../../api/queryClient'
@@ -149,6 +149,7 @@ type KirocrewConfigShape = {
     completion_keep?: CompletionKeepMode
     completion_keep_chars?: number
     fallback_model?: string
+    refusal_fallback_model?: string
   }
   dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean }
 }
@@ -741,6 +742,31 @@ export function ChatPanel() {
           : m,
     )
 
+  // ── Content-filter (refusal) fallback model (agent.refusal_fallback_model) ──
+  // Same advertised-model dropdown as the throttle fallback above. "" =
+  // disabled (default — a refusal surfaces exactly as before), "auto" = retry
+  // on the model the provider's refusal envelope recommends (when it names
+  // one), concrete id = retry the declined message once on it; the primary
+  // model is restored on the next message either way.
+  const refusalFallbackModel = mcCfg?.agent?.refusal_fallback_model ?? ''
+  const shownRefusalFallbackModel = overlay.shown('agent.refusal_fallback_model', refusalFallbackModel)
+  const refusalFallbackMut = useMutation(
+    optimisticConfigOpts('agent.refusal_fallback_model', (err: unknown) => {
+      // Surface the backend's actual deny reason (e.g. an unentitled id)
+      // next to the generic failure line.
+      const reason = err instanceof Error && err.message ? `: ${err.message}` : ''
+      return i18nT('pages.settings.chatPanel.failed_to_save_refusal_fallback_model') + reason
+    })
+  )
+  const refusalFallbackModelLabels = (opts: string[]): string[] =>
+    opts.map(m =>
+      m === ''
+        ? i18nT('pages.settings.chatPanel.fallback_disabled')
+        : m === 'auto'
+          ? i18nT('pages.settings.chatPanel.refusal_fallback_auto')
+          : m,
+    )
+
   const [localKeepChars, setLocalKeepChars] = useState('')
   const keepCharsInitRef = useRef(false)
   useEffect(() => {
@@ -908,6 +934,7 @@ export function ChatPanel() {
   const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel)
   const subagentModelOpts = roleModelOptions(shownSubagentModel, subagentModel)
   const fallbackOpts = fallbackModelOptions(shownFallbackModel, fallbackModel)
+  const refusalFallbackOpts = fallbackModelOptions(shownRefusalFallbackModel, refusalFallbackModel)
   const backgroundModelMut = useMutation(
     optimisticConfigOpts('agent.role_models.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
   )
@@ -1127,6 +1154,21 @@ export function ChatPanel() {
             configKey="agent.fallback_model"
           />
         </SettingsCard>
+
+        <SettingsCard>
+          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</div>
+          <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.refusal_fallback_desc')}</div>
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.refusal_fallback_model')}
+            hint={i18nT('pages.settings.chatPanel.refusal_fallback_auto_hint')}
+            value={shownRefusalFallbackModel}
+            options={refusalFallbackOpts}
+            optionLabels={refusalFallbackModelLabels(refusalFallbackOpts)}
+            onChange={v => refusalFallbackMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+            configKey="agent.refusal_fallback_model"
+          />
+        </SettingsCard>
       </SettingsSection>
 
       <SettingsSection title={i18nT('pages.settings.chatPanel.about_you')}>
@@ -1199,6 +1241,7 @@ export function ChatPanel() {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.quick_send')} description={i18nT('pages.settings.chatPanel.click_a_suggested_reply_to_send_it_instantly', { mod: isMac ? '⇧' : 'Shift' })} checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.merge_queued_messages')} description={i18nT('pages.settings.chatPanel.combine_follow_up_messages_into_a_single_labeled')} checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.spellcheck_input')} description={i18nT('pages.settings.chatPanel.spellcheck_input_desc')} checked={chatCfg.spellcheck} onChange={v => setChat('spellcheck', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.show_pasted_text_in_full')} description={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc', { chord: platformShortcut('Cmd+Shift+V') })} checked={chatCfg.showFullPastes} onChange={v => setChat('showFullPastes', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.follow_up_bar_layout')} description={i18nT('pages.settings.chatPanel.multiline_wraps_suggestions_onto_multiple_rows_s')} value={chatCfg.followUpLayout} options={[{ value: "multiline", label: i18nT('pages.settings.chatPanel.multiline') }, { value: "scroll", label: i18nT('pages.settings.chatPanel.single_line') }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
           <SettingsInput
             label={i18nT('pages.settings.chatPanel.soft_stop_budget_seconds')}
@@ -1234,6 +1277,13 @@ export function ChatPanel() {
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_timestamps')} description={i18nT('pages.settings.chatPanel.display_time_on_each_message')} checked={chatCfg.showTimestamps} onChange={v => setChat('showTimestamps', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.content_width')} description={i18nT('pages.settings.chatPanel.compact_is_the_original_view_comfortable_and_ful')} value={chatCfg.contentWidth} options={[{ value: "compact", label: i18nT('pages.settings.chatPanel.compact') }, { value: "comfortable", label: i18nT('pages.settings.chatPanel.comfortable') }, { value: "full", label: i18nT('pages.settings.chatPanel.full') }]} onChange={v => setChat('contentWidth', v as ContentWidth)} />
+          <SettingsStepper
+            label={i18nT('pages.settings.chatPanel.message_font_size')}
+            description={i18nT('pages.settings.chatPanel.message_font_size_desc')}
+            value={chatCfg.messageFontSize}
+            onIncrement={() => setChat('messageFontSize', Math.min(MAX_MESSAGE_FONT_SIZE, chatCfg.messageFontSize + 1))}
+            onDecrement={() => setChat('messageFontSize', Math.max(MIN_MESSAGE_FONT_SIZE, chatCfg.messageFontSize - 1))}
+          />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_thinking_inline')} description={i18nT('pages.settings.chatPanel.show_intermediate_reasoning_text_between_tool_ca')} checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_last_prompt')} description={i18nT('pages.settings.chatPanel.pin_last_prompt_desc')} checked={chatCfg.pinLastPrompt} onChange={v => setChat('pinLastPrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} description={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
@@ -1331,6 +1381,12 @@ export function ChatPanel() {
             }
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={i18nT('pages.settings.chatPanel.minimap')}>
+        <SettingsCard>
+          <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.minimap_location')} description={i18nT('pages.settings.chatPanel.minimap_location_desc')} value={chatCfg.minimapSide} options={[{ value: "left", label: i18nT('pages.settings.chatPanel.minimap_side_left') }, { value: "right", label: i18nT('pages.settings.chatPanel.minimap_side_right') }]} onChange={v => setChat('minimapSide', v as ChatConfig['minimapSide'])} />
         </SettingsCard>
       </SettingsSection>
 

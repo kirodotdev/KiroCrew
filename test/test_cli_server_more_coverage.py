@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import cli_server, platform_compat
+from kiro_crew import cli_server, kiro_cli, platform_compat
 from kiro_crew.config.loader import _DEFAULT_PORT
 from kiro_crew.dashboard.handlers.core import DASHBOARD_HTML_NOT_FOUND_MARKER
 from kiro_crew.gateway_lock import LockHolder, LockProbeError
@@ -132,6 +132,55 @@ class TestProbeDashboardHealth:
         monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
         cli_server._probe_dashboard_health(5476)  # must not raise
         assert capsys.readouterr().err == ""
+
+
+# --------------------------------------------------------------------------
+# _token
+# --------------------------------------------------------------------------
+
+
+class TestTokenRefusal:
+    """A gateway that ANSWERS with an error is not a gateway that could not be
+    reached: the operator needs the reason the gateway gave, not a network hint."""
+
+    def test_403_prints_the_gateway_reason(self, monkeypatch, capsys) -> None:
+        import io
+        import json
+
+        reason = (
+            "The gateway could not verify this process as the local owner. "
+            "Open the dashboard using its CLI login link."
+        )
+        body = json.dumps({"error": reason, "code": "member_owner_token_refused"}).encode()
+
+        def refused(*a, **k):
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
+            )
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port: "s3cr3t")
+        monkeypatch.setattr(cli_server, "loopback_urlopen", refused)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "HTTP 403" in err and "could not verify this process as the local owner" in err
+        assert "Could not reach gateway" not in err
+
+    def test_connection_refused_still_reports_unreachable(self, monkeypatch, capsys) -> None:
+        def boom(*a, **k):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port: "s3cr3t")
+        monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        assert "Could not reach gateway on port 5476" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
@@ -1249,7 +1298,8 @@ class _GitStub:
             return subprocess.CompletedProcess(argv, 0, self.show_out, b"")
         if argv[:2] == ["git", "reset"]:
             return subprocess.CompletedProcess(argv, self.rc.get("reset", 0), "", "dirty")
-        if argv[0] == "kiro-cli":
+        if Path(argv[0]).name == "kiro-cli":
+            # The pinned absolute path is argv0, never the bare name.
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[1:] == ["-I", "-X", "utf8", "-c", "import kiro_crew"]:
             # The full-reinstall success contract probes the target interpreter
@@ -1287,6 +1337,11 @@ def git_checkout(monkeypatch, tmp_path):
         "kiro_crew.platform.update_governance.update_blocked_reason", lambda url: ""
     )
     monkeypatch.setattr(cli_server.shutil, "which", lambda name: None)
+    # The optional kiro-cli step spawns only a PINNED install (resolved with the
+    # inherited PATH excluded); none by default, so the host's own install
+    # cannot leak into these tests. Tests that want the step reachable resolve
+    # one explicitly.
+    monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
     monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: None)
     monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *a: None)
     # Pin the install ROUTE. The real probe reads the test interpreter's own
@@ -1559,7 +1614,7 @@ class TestUpdateGitPath:
     ) -> None:
         stub = _GitStub()
         monkeypatch.setattr(subprocess, "run", stub)
-        monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         built: list[Path] = []
         monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: built.append(p))
         cli_server._update()
@@ -1567,7 +1622,7 @@ class TestUpdateGitPath:
         assert "Kiro Crew updated!" in out
         assert "Agent config refreshed" in out
         assert built == [git_checkout]
-        assert ["kiro-cli", "update"] in stub.calls
+        assert ["/usr/bin/kiro-cli", "update"] in stub.calls
         assert any("setup" in c for c in stub.calls)
 
     def test_agent_config_refresh_failure_only_warns(
@@ -1611,8 +1666,8 @@ class TestUpdateSubprocessHardening:
             return stub(argv, **kw)
 
         monkeypatch.setattr(subprocess, "run", _run)
-        # A findable kiro-cli makes the sixth (best-effort) site reachable.
-        monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
+        # A pinned kiro-cli makes the sixth (best-effort) site reachable.
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         cli_server._update()
         assert "Kiro Crew updated!" in capsys.readouterr().out
 
@@ -1622,7 +1677,7 @@ class TestUpdateSubprocessHardening:
             ["git", "diff"],
             ["git", "status"],
             ["git", "reset"],
-            ["kiro-cli", "update"],
+            ["/usr/bin/kiro-cli", "update"],
         ]
         for prefix in six:
             matching = [kw for argv, kw in recorded if argv[: len(prefix)] == prefix]
@@ -1677,8 +1732,10 @@ class TestUpdateSubprocessHardening:
         """The backend update's result is not inspected today, so its timeout
         warns and the update continues."""
         stub = _GitStub()
-        monkeypatch.setattr(subprocess, "run", self._timeout_on(["kiro-cli", "update"], stub))
-        monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
+        monkeypatch.setattr(
+            subprocess, "run", self._timeout_on(["/usr/bin/kiro-cli", "update"], stub)
+        )
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         cli_server._update()
         out = capsys.readouterr().out
         assert "kiro-cli update timed out" in out
@@ -1988,6 +2045,49 @@ class TestUpdateWheelInstaller:
         monkeypatch.setattr(subprocess, "run", unreachable)
         cli_server._update_wheel(_LAYOUT)
         assert "Already on the latest version" in capsys.readouterr().out
+
+
+class TestStatusCountLines:
+    """`kirocrew status` renders the two cached counts `/api/status` publishes,
+    and an unknown count (``null`` while the shared cache has not refreshed)
+    as a dash rather than ``None`` or a fabricated zero."""
+
+    def test_known_counts_print_as_numbers(self) -> None:
+        data = {"cron_jobs": 3, "lessons": 42}
+        assert cli_server._format_count(data, "cron_jobs") == "3"
+        assert cli_server._format_count(data, "lessons") == "42"
+
+    def test_null_count_prints_a_dash_not_none(self) -> None:
+        # Fails on the previous head, which printed ``Lessons: None`` for a
+        # payload whose count was still unknown.
+        data = {"cron_jobs": None, "lessons": None}
+        assert cli_server._format_count(data, "cron_jobs") == "—"
+        assert cli_server._format_count(data, "lessons") == "—"
+
+    def test_missing_key_prints_a_dash_not_zero(self) -> None:
+        assert cli_server._format_count({"uptime": "1h"}, "lessons") == "—"
+
+    def test_status_reads_the_cron_jobs_key(self, monkeypatch, capsys) -> None:
+        # Fails on the previous head, which read a ``crons`` key the snapshot
+        # never emits and so always printed ``Cron jobs: 0``.
+        import io
+        import json
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        payload = {"uptime": "1h", "cron_jobs": 7, "lessons": None}
+
+        @contextmanager
+        def _urlopen(url, timeout):
+            yield io.BytesIO(json.dumps(payload).encode())
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+        cli_server._status(SimpleNamespace(port=None))
+        out = capsys.readouterr().out
+        assert "Cron jobs:   7" in out
+        assert "Lessons:     —" in out
+        assert "None" not in out
 
 
 class TestStatusMemoryLine:

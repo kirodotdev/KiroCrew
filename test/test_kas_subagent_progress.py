@@ -19,6 +19,7 @@ from kiro_crew.acp.types import (
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
     EVENT_TEXT_CHUNK,
+    EVENT_TODO_UPDATE,
     JsonRpcMessage,
 )
 
@@ -162,6 +163,93 @@ def test_child_nested_tool_call_emits_activity() -> None:
         "_meta": {"kiro": {"agentSubtaskId": "sa-1"}},
     })
     assert handle._tool_call_is_shell.get("sB|child-tc-2") is True
+
+
+def test_child_todo_result_cannot_replace_parent_todo() -> None:
+    """An untagged child result is not the parent's plan; the parent's still flows."""
+    handle = _handle(ACP_BACKEND_KAS)
+    child_tasks = [{"id": "child-1", "task_description": "child work", "completed": False}]
+    child_call_id = "child-todo-1"
+    child_call = {
+        "sessionUpdate": "tool_call",
+        "toolCallId": child_call_id,
+        "title": "Creating child task list",
+        "kind": "other",
+        "rawInput": {"command": "create", "tasks": child_tasks},
+        "_meta": {"kiro": {"agentSubtaskId": "sa-1", "toolName": "todo_list"}},
+    }
+    child_result = {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": child_call_id,
+        "title": "Creating child task list",
+        "kind": "other",
+        "status": "completed",
+        "rawOutput": {
+            "items": [
+                {
+                    "Json": {
+                        "tasks": child_tasks,
+                        "description": "Child plan",
+                        "context": [],
+                    }
+                }
+            ]
+        },
+    }
+
+    assert [e.kind for e in _update(handle, child_call)] == [EVENT_SUBAGENT_ACTIVITY]
+    child_events = _update(handle, child_result)
+
+    assert [e for e in child_events if e.kind == EVENT_TODO_UPDATE] == []
+
+    # One tool_call can be followed by several tool_call_update frames, so the
+    # ownership record must answer for every one of them. A guard that consumed
+    # its entry on the first snapshot would let this second frame through.
+    repeat_events = _update(handle, child_result)
+
+    assert [e for e in repeat_events if e.kind == EVENT_TODO_UPDATE] == []
+
+    parent_tasks = [{"id": "parent-1", "task_description": "parent work", "completed": False}]
+    parent_call_id = "parent-todo-1"
+    _update(
+        handle,
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": parent_call_id,
+            "title": "Creating parent task list",
+            "kind": "other",
+            "rawInput": {"command": "create", "tasks": parent_tasks},
+            "_meta": {"kiro": {"toolName": "todo_list"}},
+        },
+    )
+    parent_events = _update(
+        handle,
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": parent_call_id,
+            "title": "Creating parent task list",
+            "kind": "other",
+            "status": "completed",
+            "rawOutput": {
+                "items": [
+                    {
+                        "Json": {
+                            "tasks": parent_tasks,
+                            "description": "Parent plan",
+                            "context": [],
+                        }
+                    }
+                ]
+            },
+        },
+    )
+    parent_todo_events = [e for e in parent_events if e.kind == EVENT_TODO_UPDATE]
+
+    assert len(parent_todo_events) == 1
+    assert parent_todo_events[0].todo is not None
+    assert parent_todo_events[0].todo["tasks"] == [
+        {"id": "parent-1", "text": "parent work", "completed": False}
+    ]
 
 
 # ── Child agent_message_chunk → EVENT_SUBAGENT_ACTIVITY w/ redacted text ─────

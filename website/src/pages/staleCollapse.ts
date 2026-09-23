@@ -2,7 +2,7 @@
  * Pure helpers for the ChatSidebar stale-session collapse.
  *
  * Sessions whose last settled activity is older than a user-selectable
- * threshold collapse behind a per-container "Dormant sessions (N)" expander row,
+ * threshold collapse behind a per-container "N dormant sessions hidden" expander row,
  * independently at every tree level (each folder body plus the ungrouped
  * root). The threshold is stored as a single millisecond count (0 = feature
  * off); these functions own the preset table and the split predicate so the

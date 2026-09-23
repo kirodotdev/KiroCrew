@@ -21,10 +21,10 @@ from kiro_crew import platform_compat as pc
 @pytest.fixture
 def provenance(tmp_path, monkeypatch):
     parent = {42: 1, 45: 42}
-    namespaces = {os.getpid(): "host", 42: "runtime", 45: "runtime"}
+    namespaces = {100: "host", 42: "runtime", 45: "runtime"}
+    # The owner belongs to the synthetic process tree, independent of pytest's PID.
+    monkeypatch.setattr(auth, "os", SimpleNamespace(**{**vars(os), "getpid": lambda: 100}))
     monkeypatch.setattr(auth, "sys", SimpleNamespace(platform="linux"))
-    monkeypatch.setattr(auth, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(auth, "private_memory_boundaries_active", lambda: True)
     monkeypatch.setattr(auth, "_request_peer_pid", lambda request: 45)
     monkeypatch.setattr(pc, "get_ppid", lambda pid: parent.get(pid, 1))
     monkeypatch.setattr(pc, "get_process_start_id", lambda pid: f"start-{pid}")
@@ -36,27 +36,9 @@ def provenance(tmp_path, monkeypatch):
     return SimpleNamespace(parent=parent, namespaces=namespaces, request=request, home=tmp_path)
 
 
-def test_private_descendant_losing_ancestry_remains_unverified(provenance):
-    auth.publish_member_session_pid(42, "member:alice", memory_store="member-alice")
-    assert auth.memory_request_identity(provenance.request) == ("member:alice", True)
-    assert not auth.local_owner_bootstrap_allowed(provenance.request)
-
-    provenance.parent[45] = 1
-    assert auth.protected_member_session_for_pid(45) is None
-    assert auth.memory_request_identity(provenance.request) == (None, False)
-    assert not auth.local_owner_bootstrap_allowed(provenance.request)
-    assert auth.issue_member_session_proof("member:alice", 45) == ""
-
-    # No in-process ancestry cache or surviving launcher is needed for refusal.
-    auth._binding_path(42, provenance.home).unlink()
-    assert auth.memory_request_identity(provenance.request) == (None, False)
-    assert not auth.local_owner_bootstrap_allowed(provenance.request)
-
-
 def test_unowned_host_keeps_v1_and_owner_bootstrap(provenance):
     provenance.parent[45] = 1
     provenance.namespaces[45] = "host"
-    assert auth.memory_request_identity(provenance.request) == (None, True)
     assert auth.local_owner_bootstrap_allowed(provenance.request)
 
 
@@ -82,14 +64,6 @@ def test_a_sandboxed_app_backend_still_bootstraps_the_owner(provenance, monkeypa
     assert auth.local_owner_bootstrap_allowed(provenance.request)
 
 
-def test_a_backend_record_cannot_promote_a_private_member(provenance, monkeypatch):
-    """The private-member leg outranks app-backend provenance."""
-    auth.publish_member_session_pid(42, "member:alice", memory_store="member-alice")
-    _register_spawned_backend(monkeypatch, 45)
-    assert auth.protected_member_session_for_pid(45) == "member:alice"
-    assert not auth.local_owner_bootstrap_allowed(provenance.request)
-
-
 def test_an_adopted_backend_is_not_owner_provenance(provenance, monkeypatch):
     """We hold no handle, so that pid is another supervisor's to vouch for."""
     _register_spawned_backend(monkeypatch, 45, adopted=True)
@@ -102,30 +76,8 @@ def test_an_exited_backend_is_not_owner_provenance(provenance, monkeypatch):
     assert not auth.local_owner_bootstrap_allowed(provenance.request)
 
 
-def test_published_v1_runtime_keeps_v1_without_owner_authority(provenance):
-    auth.publish_member_session_pid(42, "dashboard:one", memory_store="")
-    assert auth.protected_member_session_for_pid(45) is None
-    assert auth.memory_request_identity(provenance.request) == (None, True)
-    assert not auth.local_owner_bootstrap_allowed(provenance.request)
-    assert auth.issue_member_session_proof("dashboard:one", 45) == ""
-
-    auth.publish_member_session_pid(42, "dashboard:two", memory_store="")
-    assert auth.memory_request_identity(provenance.request) == (None, True)
-
-
-def test_nested_namespace_cannot_borrow_a_v1_ancestor(provenance):
-    auth.publish_member_session_pid(42, "dashboard:one", memory_store="")
-    provenance.namespaces[45] = "different-runtime"
-    assert auth.memory_request_identity(provenance.request) == ("", False)
-    assert not auth.local_owner_bootstrap_allowed(provenance.request)
-
-
-@pytest.mark.parametrize("published", [False, True])
-def test_unknown_namespace_identity_never_means_global(provenance, monkeypatch, published):
-    if published:
-        auth.publish_member_session_pid(42, "dashboard:one", memory_store="")
+def test_unknown_namespace_identity_never_grants_owner(provenance, monkeypatch):
     monkeypatch.setattr(pc, "process_namespaces_match", lambda *args: None)
-    assert auth.memory_request_identity(provenance.request)[1] is False
     assert not auth.local_owner_bootstrap_allowed(provenance.request)
 
 
@@ -136,45 +88,7 @@ def test_macos_unknown_ancestry_needs_positive_unsandboxed_state(
     monkeypatch.setattr(auth, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(pc, "process_is_sandboxed", lambda pid: sandboxed)
     provenance.parent[45] = 1
-    assert auth.memory_request_identity(provenance.request) == (None, expected)
     assert auth.local_owner_bootstrap_allowed(provenance.request) is expected
-
-
-@pytest.mark.parametrize("allowed", [True, False, None])
-def test_macos_global_ancestor_requires_current_peer_global_permission(
-    provenance, monkeypatch, allowed
-):
-    monkeypatch.setattr(auth, "sys", SimpleNamespace(platform="darwin"))
-    # V1 and private peers are both sandboxed. Sandbox presence cannot be used
-    # as either a Global grant or a blanket refusal of an ordinary V1 runtime.
-    monkeypatch.setattr(pc, "process_is_sandboxed", lambda pid: True)
-    permission = Mock(return_value=allowed)
-    monkeypatch.setattr(pc, "process_can_read_under_sandbox", permission)
-    auth.publish_member_session_pid(42, "dashboard:global", memory_store="")
-
-    expected = (None, True) if allowed else ("", False)
-    assert auth.memory_request_identity(provenance.request) == expected
-    assert permission.call_args.args == (45, provenance.home.resolve() / "memory.db")
-    assert not auth.local_owner_bootstrap_allowed(provenance.request)
-    assert not auth.issue_member_session_proof("dashboard:global", 45)
-
-
-def test_macos_private_binding_precedes_global_permission_and_lost_record_refuses(
-    provenance, monkeypatch
-):
-    monkeypatch.setattr(auth, "sys", SimpleNamespace(platform="darwin"))
-    monkeypatch.setattr(pc, "process_is_sandboxed", lambda pid: True)
-    permission = Mock(return_value=False)
-    monkeypatch.setattr(pc, "process_can_read_under_sandbox", permission)
-    provenance.parent[42] = 46
-    auth.publish_member_session_pid(46, "dashboard:global", memory_store="")
-    auth.publish_member_session_pid(42, "member:alice", memory_store="member-alice")
-
-    assert auth.memory_request_identity(provenance.request) == ("member:alice", True)
-    permission.assert_not_called()
-    auth._binding_path(42, provenance.home).unlink()
-    assert auth.memory_request_identity(provenance.request) == ("", False)
-    assert not auth.local_owner_bootstrap_allowed(provenance.request)
 
 
 @pytest.mark.parametrize("platform,expected", [("win32", True), ("unsupported", False)])
@@ -183,10 +97,7 @@ def test_native_windows_v1_and_unknown_platform_contract(
 ):
     monkeypatch.setattr(auth, "sys", SimpleNamespace(platform=platform))
     provenance.parent[45] = 1
-    assert auth.memory_request_identity(provenance.request) == (None, expected)
     assert auth.local_owner_bootstrap_allowed(provenance.request) is expected
-    if platform == "win32":
-        assert not auth.private_memory_execution_supported()
 
 
 @pytest.mark.parametrize("different", [None, "user", "mnt"])

@@ -30,6 +30,8 @@ The grammar is `spawn <task>` (or `bg <task>`) — there is no `run` subcommand;
 The `spawn_run` tool accepts:
 - `task` — single task description
 - `tasks` — array of tasks for parallel execution
+- `solo_reason` — `parent_parallel`, `bulk_data`, `fresh_context`, `specialist`, or `user_requested` (see below)
+- `solo_details` — concrete benefit and ownership; required for `parent_parallel`, `specialist`, and `user_requested`
 - `agent` / `agents` — optional agent name(s) for each task
 - `include_memory` / `include_lessons` / `include_project` — booleans (default `true`) switching off a context group the sub-agent would otherwise inherit
 - `max_turns` — per-spawn tool-call budget override (0 = unset, max 1000)
@@ -40,6 +42,47 @@ The `spawn_run` tool accepts:
 
 Setting `model` or `reasoning_effort`, or `keep: true`, forces the
 dedicated-process path instead of session sharing.
+
+#### The solo gate
+
+Do focused work directly. Delegate when separate ready work can progress in
+parallel, a large input needs distillation, independent verification adds value,
+a specialist capability is needed, or the user explicitly asks. A long task,
+empty slots or a different model name alone is not a reason to delegate.
+
+One child is valid when the parent owns a separate useful workstream. For example:
+
+```python
+spawn_run(task="Update docs to the finalized API in api-v2.json; own docs/api.md; return the diff and link checks",
+          solo_reason="parent_parallel",
+          solo_details="I implement backend validation in server.py; docs inputs are finalized and disjoint")
+```
+
+`parent_parallel` needs asynchronous `spawn_run` and a dashboard-owned parent
+turn. Its receipt says whether bounded parent work is supported. When supported,
+finish at most one minute of ready non-overlapping work, then end the turn so
+queued results can arrive. Otherwise yield immediately. This guidance is not a
+timer enforced by the runtime. Blocking `spawn_sub_agents` cannot support
+parent-child parallel work; `spawn_continue` still requires immediate yield.
+
+For one child without separate parent work, use `bulk_data` for substantial
+inputs, `fresh_context` for blind review/clean reproduction, `specialist` with a
+concrete capability, or `user_requested` with the user's request quoted in
+`solo_details`. The last two require details; existing bulk/fresh payloads keep
+working. `fresh_context` alone does not turn off memory or project context.
+
+An unexplained equivalent-worker solo call is refused without spawning. Do it
+directly or give the real benefit; do not invent tasks or swap models to bypass
+the gate. Reasons/details are retained in the run record as model claims, not
+verified authorization. Existing direct SDK/API calls without the model solo
+marker remain compatible.
+
+Wait through completion events when no useful independent work remains. Do not
+repeat a child's task to stay busy. Collect all outcomes in the batch, including
+failures, then check artifacts and actual test results before reporting success.
+Cancellation and late results must not restart an old task. Inspect side effects
+before retrying. Parallel writers need separate ownership; a worktree does not
+isolate shared databases, ports or external services.
 
 The other spawn tools:
 - `spawn_sub_agents` — same fan-out as `spawn_run`, but BLOCKS and returns the collected results; takes `agents` (array of `{agent_or_mode, prompt}`), `cwd`, and the same `include_*` switches
@@ -61,9 +104,9 @@ The other spawn tools:
 
 - **Max concurrent**: auto-sized at startup by default (`agent.max_subagents = 0`; floor 3, ceiling `agent.subagent_auto_max` = 32); set a positive integer to pin a fixed cap
 - **Timeout**: 3 hours per subagent task (`agent.subagent_timeout_secs`, clamped to 60s..86400s at load; 0 means "use the default"), 20 minutes delivery (semaphore wait + injection), 15 minutes per injection attempt (`KIROCREW_INJECTION_TIMEOUT`, clamped to the delivery cap). A **blocking** `spawn_sub_agents` call collects for at most 2 hours regardless of that setting (`KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT`, itself capped at 7200s), so use `spawn_run` for work longer than 2 hours and read the results from its completion events
-- **Turn limit**: 100 turns per subagent (configurable via `agent.subagent_max_turns`, UI max 1000)
-- **Memory guard**: spawns are refused when available memory drops below 4 GB (configurable via `agent.spawn_min_memory_gb`, set to 0 to disable)
-- **No nesting**: subagents cannot spawn their own subagents
+- **Turn limit**: 1000 tool calls per subagent by default (configurable via `agent.subagent_max_turns`, maximum 1000). A stored value, including 100, is preserved on upgrade; an unset key automatically uses the current default. Run `kirocrew config defaults` to inspect an older stored default, then use `kirocrew config defaults --adopt agent.subagent_max_turns` only if you want to replace that pin with the current default.
+- **Memory guard**: admission preserves a 4 GB available-memory floor plus estimated startup memory for the next worker and dedicated workers still warming up. Observed RSS replaces the startup reservation; confirmed shared sessions add no dedicated-process cost. Work waits in the durable queue when headroom is insufficient (legacy spawns are refused). Configure the floor with `agent.spawn_min_memory_gb`; set it to 0 to disable this guard.
+- **Nesting**: a subagent can spawn its own subagents. A nested spawn is tracked apart from the parent's wave, so its children are not counted against that wave's completion total
 - **Redaction**: task strings in SubagentInfo are redacted (credentials + exfiltration URLs) before surfacing to Slack/dashboard
 
 ## Named Agents

@@ -99,4 +99,259 @@ Dashboard-user settings routes expose the union of registered channels and store
 
 `NotificationPayload.validate` accepts action entries with non-empty `id` and `label`, and validates each optional action URL at the persistence trust root. `test_notification_bus.py::test_action_count_capped` and `::test_action_field_lengths_capped` pin action bounds. URL-less actions persist but do not render; `test_action_without_url_accepted` pins that contract.
 
-`website/src/components/notifications/NotificationDetailPanel.tsx` and `NotificationFeed.tsx` render navigation actions only after `safeInternalUrl` rechecks a dashboard-internal URL. Unacknowledged approval notes render Approve and Reject controls that use the approval API. `NotificationFeed` collapses notes sharing a `group_key` within a date group to the newest row and expands the stack on demand. `NotificationsBellButton` sends the unread attention count through `badge:set`; `electron/badge.js` clamps it before `app.setBadgeCount`.
+`website/src/components/notifications/NotificationDetailPanel.tsx` and `NotificationFeed.tsx` render navigation actions only after `safeInternalUrl` rechecks a dashboard-internal URL. Unacknowledged approval feed rows render inline Approve and Reject that resolve through the approvals endpoint (the one-click path `rfc-local-notification-bus.md` Phase 4 shipped). Every approval row -- read or unread, because reading a pending request must not shrink it -- renders the notification body in full through the same markdown renderer and per-item error boundary as the detail panel: no slice, clamp or hidden overflow, because a control that authorizes a command must sit next to the whole command, and a truncated excerpt turns two lines into one harmless-looking line. The producer tags the command fence `approval-command` (`lib/approvalNotificationBody.ts`), a dashboard-own tag `CodeBlock` soft-wraps like `error-report`, so a line wider than the feed column wraps instead of scrolling off the edge. Both surfaces render the body with `readOnlyCode`, so the command carries a copy control but no edit affordance: `EditableCodeBlock`'s scratch editor changes only a local copy, and a pencil beside Approve would let a reader authorize the original command while looking at their edit. Every other row keeps the flattened one-line excerpt. This contract applies to the full page and bell popover, including the mac feed variant. `NotificationFeed` collapses notes sharing a `group_key` within a date group to the newest row and expands the stack on demand. `NotificationsBellButton` sends the unread attention count through `badge:set`; `electron/badge.js` clamps it before `app.setBadgeCount`.
+
+## Plain-text previews
+
+The native notification body, feed-row preview and transcript turn minimap share
+`website/src/components/notifications/notifMeta.tsx::stripMd`. It unwraps paired
+emphasis and code delimiters, keeps code contents literal, and preserves unpaired
+markers and intraword underscores. Heading, blockquote and list prefixes (`-`,
+`+`, `*`, ordered) are removed only at line starts and only when whitespace
+follows the marker, so `*emphasis*` and `**bold**` at a line start are unwrapped
+as emphasis rather than deleted as bullets; links/images retain labels/alt text,
+and fenced code loses its language tag. A single prose newline collapses to a space; a
+paragraph break (two or more newlines, blank lines may hold whitespace) in prose
+becomes ` · ` — the detail panel's own separator idiom — so an approval reads
+`Source: agent · <command> · <purpose>` and a skill note's paragraphs stay
+distinct instead of running together. Empty paragraphs are dropped, so the
+separator never leads, trails or doubles. Whitespace inside code regions stays
+literal, including indentation, repeated spaces, tabs and blank lines; only the
+fence wrapper's final line ending is removed. A multiline command remains a
+multiline string in the preview. Backtick fences
+close only on a standalone run at least as long as their opening run; shorter
+runs inside code remain literal. An inline span pairs runs of EQUAL length, so a
+longer or shorter run inside one stays literal content. One deliberate deviation
+from CommonMark: a newline ends an unclosed inline span rather than continuing
+it, because in a preview a stray backtick would otherwise pair with another far
+below and hold every line between as code, suppressing flattening for that whole
+region — the deviation costs only multi-line inline spans, which no producer
+writes. Approval bodies use
+`website/src/lib/approvalNotificationBody.ts::approvalNotificationBody` to combine
+a formatted source label with a literal command in a fence longer than any
+backtick run in that command (minimum three). Empty input adds no fence. The
+live WebSocket event appends its optional purpose; reconciliation keeps its
+source-and-command-only content. This preserves balanced globs, home paths,
+redirects and command backticks in both previews. The feed slices the flattened
+text to 80/140 characters, so wrapper fences do not consume its excerpt budget;
+the detail panel renders the fenced input as one code block. That body is the
+only surface naming the requesting system: the detail panel's metadata row
+prints the note's kind (`KIND_META[...].label`) under the `pages.artifactsPage.kind`
+label, so its label and the body's `Source:` label are distinct fields.
+
+The shared contracts live in `website/src/test/notifMeta.stripMd.test.ts` (with
+the code-region scan in `website/src/test/notifMeta.codeScan.test.ts`) and
+`website/src/test/approvalNotificationBody.test.tsx`; native banner formatting is
+pinned in `website/integration/AppNotification.integration.test.tsx`. WebSocket
+producer coverage pins the differing purpose policies, and the feed tests pin
+both excerpt lengths.
+
+## Notification sound (client)
+
+Notification sound is produced entirely on the client and is independent of the
+notification feed, the bell badge, and OS notification-center toasts. The
+WebAudio layer is the **single source of sound**: `website/src/hooks/useNotificationSound.ts`
+synthesizes tones through the Web Audio API (no audio files) and is the only
+component that emits sound. The feed toast's page-context `Notification`
+constructor (`website/src/hooks/useNativeNotification.ts`, see "OS toast"
+below) passes `silent: true`, so the OS toast never adds its own system chime
+on top of the WebAudio tone. A browser that
+ignores `silent` degrades to the prior double-sound behavior and no worse.
+
+### Sound events
+
+Two sound kinds are synthesized by the websocket layer. `TURN_DONE_KIND`
+(`'turn'`, on `chat_done`) is sound-only: it never appears in the feed (no Redux
+entry, no toast, no badge). `APPROVAL_KIND` (`'approval'`, on an `approval`
+frame) is synthesized for sound, but the same approval frame *separately* adds an
+approval notification to the feed — so approval both chimes and shows a feed
+entry, and the two are independent (the feed entry is also what carries the
+approval to the OS toast). Both chimes are suppressed during reconnect
+catch-up replay, and `shouldChimeOnTurnDone` also suppresses slot-less turn
+completions. A real feed `notification` frame fires `MC_NOTIFICATION_EVENT` with
+its own `kind`, except when the note is muted-channel (`silenced`) or `passive`.
+
+### Settings and resolution
+
+Settings persist in `localStorage` under `mc-notification-sound`
+(`{ enabled, volume, perCategory }`). `presetForKind(kind, settings)` resolves
+the preset for a kind, in order:
+
+1. `enabled === false` → `'none'` (primary switch; WebAudio never plays).
+2. An explicit per-category override in `perCategory[kind]`.
+3. Global `perCategory.all === 'none'` → `'none'`. An explicit global silence
+   wins over any built-in category default, so `all='none'` truly silences every
+   category that has no explicit override — **including** approval.
+4. A built-in, non-persisted category default (`BUILTIN_CATEGORY_DEFAULTS`,
+   currently `approval → pulse`). Reached only when the global fallback is
+   audible. Not written to `localStorage`, so a "Use default" reset cannot clear
+   it.
+5. The global fallback `perCategory.all ?? 'chime'`.
+
+`NotificationsPanel.tsx` previews the effective per-category preset by calling
+`presetForKind` (not a naive `perCategory[cat] ?? fallback`), so the settings
+row, its Test button, and runtime playback always agree — notably for approval,
+whose built-in `pulse` default the naive form did not show.
+
+### Persistence and cross-surface sync
+
+`saveSoundSettings` writes through `safeSetItem` (quota-defensive) and returns a
+boolean. It fires the same-window `MC_SOUND_SETTINGS_CHANGED_EVENT` **only on a
+successful persist**; a quota-dropped write returns `false` and stays silent, so
+no mounted `useNotificationSound` reloads and reads the old value.
+`NotificationsPanel` adopts a change into local state only when the save returns
+`true`, leaving the UI showing the persisted truth on failure.
+
+`useNotificationSound` stays in sync three ways: the same-window
+`MC_SOUND_SETTINGS_CHANGED_EVENT`, and a cross-tab DOM `storage` listener that
+filters by `storageArea === localStorage` and by the `mc-notification-sound`
+key (a `null` key, i.e. `clear()`, is also honored) then reloads through
+`loadSoundSettings` so validation and clamping are reused. Notification playback
+is debounced to one tone per 300 ms.
+
+## OS toast (client)
+
+`website/src/hooks/useNativeNotification.ts` is the **single constructor** of a
+page-context `Notification` for a feed note. It watches the count of unacked,
+unsilenced notes in the Redux store and, when the count grows, posts one toast
+carrying the newest note's title and flattened body, tagged with its
+`approval_id` / `job_id` / `task_id` (or `kirocrew-notif`) so a burst about
+one subject replaces rather than stacks. An `approval` frame reaches the OS
+through the feed entry `useWebSocket` dispatches for it; the socket layer
+constructs no toast of its own. One event, one constructor, one tag: the OS
+collapses only equal tags, so a second constructor with its own tag is two
+banners for one approval.
+
+The toast fires **only while the user is away from the window**:
+`isWindowAway()` (`hooks/windowAway.ts`) is `document.hidden ||
+!document.hasFocus()`, both axes because Page Visibility reports an occluded or
+unfocused window as visible. While the window is visible and focused the in-app
+banner and the bell badge already show the note, and the toast stays quiet; a
+note that arrived while focused is not re-announced when focus later leaves.
+The same predicate is the in-app banner's `windowFocused` (its complement) and
+the chat-complete toast's away check, so a live note lands on exactly one of
+the two surfaces. The gate sits inside the permission-granted branch: the
+best-effort `requestPermission()` on an undecided permission runs regardless
+of focus.
+
+The opt-in "a background chat finished" toast (`hooks/chatCompleteNotify.ts`,
+constructed in `useWebSocket` on `chat_done`) is a separate, default-OFF
+surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
+predicate.
+
+## In-app banner (client)
+
+`website/src/components/notifications/NotificationBanner.tsx`, mounted once by
+the bell button in `App.tsx` and portalled beside the bell's sheet, shows a
+macOS Notification Center-style card under the top bar for a **live**
+notification. The card body is `NotificationCard.tsx`, the ONE rendering the
+bell popover's mac rows and the banner both use (kind-tinted 26 px icon square,
+one-line title, two-line body, relative time with the unread dot, hover-reveal
+close, quiet capsule actions); its `elevation` prop is the only difference —
+`popover` (72 % card tint, the theme's `--shadow-md`) versus `banner` (88 %
+tint, `--shadow-lg`); shadows are theme tokens, never literal alphas. The
+card's `body` prop replaces the two-line clamp: the feed passes the full
+read-only approval render for every approval row, because the popover card
+keeps one-click Approve/Reject and a clamped excerpt hides the tail of the
+command they authorize. The banner, which offers only Review, keeps the
+excerpt. A critical note is signalled only by its danger dot and the approval
+icon tint, never an edge or a label. Nothing about the banner is persisted
+server-side.
+
+### Trigger
+
+The banner listens to `MC_LIVE_NOTIFICATION_EVENT` (`hooks/notificationEvent.ts`),
+which `useWebSocket` fires for a `notification` frame received on a live
+connection and for the feed note it synthesizes from an `approval` frame (the
+note carries the owning `slot`, so `targetsCurrentView` skips it while that
+chat is on screen and its inline permission card is visible; an approval with
+no slot banners on every surface). It never reads the Redux list: the boot `fetchNotifications`
+snapshot and reconnect refetches fill the store with history, and history is
+never bannered. `useWebSocket` withholds the event during a reconnect catch-up
+(`reconnectingRef`) for both frames, the same window that mutes the turn-done
+chime.
+
+### Priorities
+
+| Priority | Banner |
+|---|---|
+| `critical` | stays until clicked, dismissed, or acted on; the live region is `role="alert"` while one is pending |
+| `default` | auto-hides after `BANNER_AUTO_HIDE_MS` (6 s). Every pending default card shares ONE timer, restarted by each default arrival and paused while the stack is hovered or holds focus. The pointer and keyboard are tracked as two separate holds and the clock resumes only when BOTH have let go. A card's removal destroys ownership without firing the release event, so the holds are re-read after every change to the deck: FOCUS is owned by an element (held while the stack still contains the active one, released when its holder unmounts), the POINTER by the container (a removal does not move that boundary, so only a real pointer-leave — or an empty deck — releases it) |
+| `passive`, or `silenced` (`isSilencedNote`) | never |
+
+Auto-hide does **not** acknowledge: the note stays unread in the bell, and the
+unread dot is the visible continuation of the card. A body click or a url
+action acknowledges (the popover's selection effect for the former,
+`ackNotification` for the latter). A url action runs entirely inside the
+navigation leave guard and awaits the ack: a user who answers "stay" keeps an
+unread note and the card; a rejected ack (`ackNotification.rejected` flips
+`acked` back in the slice) keeps the card and shows an `ErrorNotice` under its
+actions, the action itself being the retry. The rollback is held to the same
+per-write stamp rule as the confirmation: a rejection carrying a stamp a newer
+ack has since moved (a second press that succeeded) changes nothing. The bell
+popover's own open-a-note auto-ack asks once per selection so that flip cannot
+loop it.
+
+### Suppression (never banner)
+
+`shouldBannerNote` in `hooks/notificationBanner.ts`, in order: the preference is
+off; the note is passive or silenced; the bell popover is open (or closing); the
+route is `/notifications`; the note describes what is already on screen —
+`targetsCurrentView`: while the window is focused, a note whose `slot` is the
+active chat on a chat route, or whose `url` path is the current route. Opening
+the popover, landing on the inbox page, or switching the preference off also
+retires every pending card.
+
+### Stack
+
+Newest on top. Beyond the top card, up to `BANNER_DECK_DEPTH` (2) older cards
+peek as a deck of BLANK shells (card material only, no text, icon or time;
+4/8 px offset, .98/.96 scale, .8/.55 opacity), so nothing prints through the
+translucent top card. Each shell and the "Show N more" pill on the top card's
+corner are the same control (`Show N more notifications`) that expands to a
+vertical list of at most `BANNER_EXPANDED_MAX` (4) cards plus a "+N more in your
+inbox" line that goes to `/notifications` (through the navigation leave guard) —
+the same place the popover's "Open inbox" goes, so "inbox" names one place. On the mobile breakpoint only the newest card renders,
+full width, with its close visible at rest (no hover on touch).
+
+### Motion
+
+Enter: slide in from the right with a fade (~220 ms). Exit, for auto-hide and
+dismiss alike: the card shrinks about its top-right corner and travels to the
+bell (`computeExitDelta` measures the vector from the card's own rect to
+`bellRef`'s) while fading (~260 ms) — the relocation animates the same element
+into its new home rather than swapping it out. Under `prefers-reduced-motion`
+(`useReducedMotion`) enter and exit are plain fades and the deck/list switch
+does no layout animation. Escape dismisses the topmost card; arrival never moves
+focus.
+
+### Setting
+
+Settings › Notifications › Desktop alerts › "Show a banner for new
+notifications", default ON, `localStorage` key `mc-notification-banner`
+(`loadBannerEnabled` / `saveBannerEnabled`). A flip is announced same-window via
+`MC_BANNER_SETTING_CHANGED_EVENT` and cross-tab via the DOM `storage` event, so
+a mounted banner honours it immediately.
+
+### System-notification permission surfaces
+
+`hooks/useNotificationPermission.ts` exposes `Notification.permission` as state
+(`unsupported | default | granted | denied`), re-read on window focus and after
+its own `request()` settles. Two user-gesture surfaces call `request()`:
+
+- **Settings › Notifications › Desktop alerts › System notifications**
+  (`SystemNotificationsRow`): `granted` shows "Allowed" with a check and no
+  button; `default` offers "Allow system notifications"; `denied` states in
+  plain language that the browser blocked it and where to turn it back on.
+  Absent entirely when `Notification` is undefined.
+- **Bell popover hint** (`NotificationPermissionHint`, in the mac controls
+  card): one row — bell-ring icon, "Get alerted when you're away", "Allow",
+  "Not now" — shown only while permission is `default`, the store holds at
+  least one notification, and the user has not pressed "Not now"
+  (`mc-notification-permission-hint-dismissed`). Any verdict after "Allow"
+  retires it too. The row leaves only once the dismissal is on disk; a failed
+  write keeps it with an `ErrorNotice`, the buttons being the retry.
+
+`useNativeNotification`'s effect-time `requestPermission()` on a first unacked
+arrival is left in place as best effort; browsers refuse a prompt with no
+gesture behind it, which is why the two surfaces above exist.

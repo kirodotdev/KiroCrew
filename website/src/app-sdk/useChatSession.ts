@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppApi, useNavigate } from './index'
+import { type ChatFolderRow, ensureChatFolder } from '../utils/ensureChatFolder'
 
 export function hashStr(s: string): string {
   let h = 0
@@ -35,12 +36,6 @@ export interface ChatSessionState {
   openChat: () => void
   createSession: () => Promise<void>
   resetSession: () => void
-}
-
-/** Minimal shape of a chat folder returned by /api/chat/folders. */
-interface ChatFolder {
-  id: string
-  name: string
 }
 
 /** Minimal shape of a chat slot returned by /api/chat/slots. */
@@ -70,15 +65,16 @@ export function useChatSession(opts: ChatSessionOptions): ChatSessionState {
   // Best-effort folder assignment — extracted to avoid running on every refetch
   const assignFolder = useCallback(async (slotKey: string) => {
     try {
-      const folders = await api.get<ChatFolder[]>('/api/chat/folders')
-      const folderList = Array.isArray(folders) ? folders : []
       const folderName = appName.charAt(0).toUpperCase() + appName.slice(1)
-      let folder = folderList.find((f: ChatFolder) => f.name === folderName)
-      if (!folder) {
-        folder = await api.post<ChatFolder>('/api/chat/folders', { name: folderName })
-      }
-      if (folder?.id) {
-        await api.patch('/api/chat/slots/' + encodeURIComponent(slotKey) + '/folder', { folder_id: folder.id })
+      // Through the app's permission-scoped client: the shared helper takes the
+      // transport as parameters precisely so the SDK never imports the host `api`.
+      const folderId = await ensureChatFolder({
+        list: () => api.get<ChatFolderRow[]>('/api/chat/folders'),
+        create: name => api.post<ChatFolderRow>('/api/chat/folders', { name }),
+        name: folderName,
+      })
+      if (folderId) {
+        await api.patch('/api/chat/slots/' + encodeURIComponent(slotKey) + '/folder', { folder_id: folderId })
       }
     } catch {} // Folder assignment is best-effort — session works without it
   }, [api, appName])

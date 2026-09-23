@@ -7,8 +7,15 @@ Companion to test_search_chat_history.py — same seeding/dispatch conventions
 
 from __future__ import annotations
 
+import pytest
+
 from kiro_crew import mcp_core
 from kiro_crew.history import ConversationLog
+
+
+@pytest.fixture(autouse=True)
+def established_session(monkeypatch):
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:global-v1")
 
 
 def _seed_sessions(home):
@@ -63,8 +70,9 @@ class TestListSessionsTool:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         _seed_sessions(tmp_path)
 
-        def _fake_post(path, body=None, *, timeout=30):
+        def _fake_post(path, body=None, *, timeout=30, session_key=None):
             assert path == "/api/sessions/summarize"
+            assert session_key == "dashboard:global-v1"
             # Return a summary only for chat-1 to prove per-key attach + fallback.
             return {"summaries": {"dashboard_chat-1": "Configuring the redis timeout"}}
 
@@ -78,7 +86,8 @@ class TestListSessionsTool:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         _seed_sessions(tmp_path)
 
-        def _fake_post(path, body=None, *, timeout=30):
+        def _fake_post(path, body=None, *, timeout=30, session_key=None):
+            assert session_key == "dashboard:global-v1"
             return {"error": "backend unavailable"}
 
         monkeypatch.setattr(mcp_core, "_post", _fake_post)

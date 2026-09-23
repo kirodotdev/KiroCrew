@@ -164,31 +164,94 @@ async def _head_contained_in_pr(path: str, branch_oid: str, pr_head_oid: str) ->
     return rc == 0
 
 
+#: How many PRs one head may carry before the reused-head decision refuses to
+#: rule. The head is normally unique, so this ceiling is only ever approached by
+#: a reused branch name -- an old MERGED PR plus a newer OPEN one on the same
+#: head -- and it exists so that decision reads EVERY PR on the head rather than
+#: trusting a sort position (see _fetch_pr_head_oid). The lookup asks gh for one
+#: row MORE than this (the saturation sentinel), so a head that carries more
+#: than the ceiling is DETECTED as possibly-truncated and fails closed instead
+#: of being ruled on from a partial view.
+_PR_HEAD_LOOKUP_LIMIT = 10
+
+
 async def _fetch_pr_head_oid(branch: str, repo: str | None = None) -> str | None:
-    """Fetch the headRefOid of the PR for *branch* — FRESH and MERGED-gated.
+    """Fetch the headRefOid of the PR for *branch* -- FRESH and MERGED-gated.
 
     Destructive callers (prune/removal) rely on this as the authoritative
-    check: the state and head OID come from the SAME live response, and a
-    non-MERGED state returns None. A stale cached MERGED verdict for a
-    reused branch name can therefore never authorize removing the new
-    branch's worktree — the fresh state here is OPEN and we refuse.
+    check, so three properties must hold:
+
+      (a) FRESH -- this runs ``gh`` every call and reads no cache, so a stale
+          cached MERGED verdict cannot leak in here.
+      (b) STATE AND HEAD OID FROM THE SAME RESPONSE -- both come out of the one
+          ``gh pr list`` JSON row, so the OID always describes the PR whose
+          state was checked, never a different fetch.
+      (c) NON-MERGED RETURNS None -- a branch name reused for new work resolves
+          to an OPEN PR, so its worktree is never authorized for removal on the
+          strength of a stale MERGED verdict.
+
+    ``gh pr list --head <branch> --state all`` is the query because it still
+    finds a merged PR and its head OID after the head branch is deleted (the
+    default on merge here); a name-keyed ``gh pr view <branch>`` cannot, and
+    returns nothing for a merged-and-branch-deleted worktree. The product's own
+    ``_pr_query_one`` uses the same list shape.
+
+    Reused-head safety (property (c), the hard case): a single head can carry
+    BOTH a MERGED PR and an OPEN one. ``gh pr list`` sorts by ``createdAt``
+    descending and is not configurable, so a sort position is not trusted:
+    the whole batch is read and a MERGED head OID is returned ONLY when NO
+    OPEN PR appears on the head. To keep that "no OPEN PR" conclusion PROVABLE
+    rather than probable at the edge, the query asks for ``_PR_HEAD_LOOKUP_LIMIT
+    + 1`` rows -- one saturation sentinel beyond the ceiling. A response with
+    more than ``_PR_HEAD_LOOKUP_LIMIT`` rows means the head carries more PRs
+    than can be examined here, so an OPEN one could sit past the ceiling: the
+    lookup refuses rather than rule on a possibly-truncated view. A head with
+    that many PRs does not occur in practice.
     """
     owner_repo = repo or await _get_owner_repo()
     if not owner_repo or not branch:
         return None
     rc, stdout, _ = await runtime._run_cmd(
-        ["gh", "pr", "view", branch, "--repo", owner_repo, "--json", "headRefOid,state"],
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            owner_repo,
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--json",
+            "state,headRefOid",
+            # One row beyond the ceiling: the saturation sentinel below.
+            "--limit",
+            str(_PR_HEAD_LOOKUP_LIMIT + 1),
+        ],
         timeout=15,
     )
     if rc != 0:
         return None
     try:
-        data = json.loads(stdout)
-        if data.get("state") != "MERGED":
-            return None
-        return data.get("headRefOid")
+        prs = json.loads(stdout)
     except ValueError:
         return None
+    if not isinstance(prs, list):
+        return None
+    # Saturation: more rows than the ceiling means the batch may be truncated,
+    # so an OPEN PR could sit past what was fetched. Fail closed rather than
+    # rule on a partial view (withholding costs a manual removal; a wrong
+    # ancestry-contained removal would destroy active work).
+    if len(prs) > _PR_HEAD_LOOKUP_LIMIT:
+        return None
+    # A reused head carrying any OPEN (non-terminal) PR is work a MERGED verdict
+    # does not describe -- refuse rather than authorize removal.
+    if any(pr.get("state") == "OPEN" for pr in prs):
+        return None
+    for pr in prs:
+        if pr.get("state") == "MERGED":
+            return pr.get("headRefOid")
+    return None
 
 
 async def _pr_status_cached(branch: str, head_oid: str | None = None) -> dict | None:

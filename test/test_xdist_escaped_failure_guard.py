@@ -176,11 +176,29 @@ def _run_inner_pytest(tmp_path, env, *args):
     # as an ``(rm_rf) error removing`` warning. An explicit basetemp under the outer
     # test's tmp_path is used verbatim (no ``gettempdir()`` lookup, no sibling
     # pruning), so the inner output only ever describes the inner run.
+    #
+    # The inner session also gets its OWN, empty config file. Without one pytest
+    # walks up from ``tmp_path`` looking for an ini, and whenever the outer TMPDIR
+    # sits inside the checkout (a pinned ``TMPDIR=<repo>/hygiene/tmp``, a worktree
+    # under the source tree) it finds the repository's ``setup.cfg``: the rootdir
+    # becomes the repo, every nodeid and pytest-split durations key grows a
+    # ``<relative tmp_path>/`` prefix, and the repo ``addopts`` (``--color=yes``,
+    # ``--verbose``, ``--timeout``) reshape the very summary lines asserted below.
+    # ``-c`` pins the inifile and therefore the rootdir to ``tmp_path`` regardless
+    # of where the host put it; ``--color=no`` keeps the captured output plain even
+    # when the host exports ``PY_COLORS``/``FORCE_COLOR`` into the inherited env.
+    inifile = tmp_path / "pytest.ini"
+    if not inifile.exists():
+        inifile.write_text("[pytest]\n", encoding="utf-8")
     return subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
+            "-c",
+            str(inifile),
+            f"--rootdir={tmp_path}",
+            "--color=no",
             "-p",
             "no:cacheprovider",
             f"--basetemp={tmp_path / 'inner-basetemp'}",

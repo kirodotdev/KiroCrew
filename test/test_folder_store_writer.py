@@ -194,6 +194,39 @@ class TestMutateFolders:
         assert asyncio.run(_run()) == ["a"]
         assert observed == [["a"]]
 
+    def test_hold_excludes_a_mutation_until_the_section_returns(self, dashboard_state: Any) -> None:
+        """``hold_folders`` keeps the lock across an awaitable section (a thread
+        hop included), sees a snapshot rather than the live list, and a
+        mutation queued meanwhile commits only after the section returns."""
+        section_entered = asyncio.Event()
+        release_section = asyncio.Event()
+        seen: list[list[str]] = []
+
+        async def _section(folders: list[dict[str, Any]]) -> str:
+            section_entered.set()
+            seen.append([f["id"] for f in folders])
+            await asyncio.to_thread(lambda: None)
+            await release_section.wait()
+            folders.append({"id": "leak", "name": "leak", "order": 9})  # a snapshot: never lands
+            return "held"
+
+        async def _run() -> str:
+            await dashboard_state.mutate_folders(_append("a"))
+            hold = asyncio.create_task(dashboard_state.hold_folders(_section))
+            await section_entered.wait()
+            mutation = asyncio.create_task(dashboard_state.mutate_folders(_append("b")))
+            for _ in range(50):
+                await asyncio.sleep(0)
+            assert [f["id"] for f in dashboard_state._folders] == ["a"]
+            release_section.set()
+            value = await hold
+            await mutation
+            return value
+
+        assert asyncio.run(_run()) == "held"
+        assert seen == [["a"]]
+        assert [f["id"] for f in dashboard_state._folders] == ["a", "b"]
+
     def test_a_mutation_seen_by_the_next_transaction(self, dashboard_state: Any) -> None:
         """Each transaction reads the live list, so ``order`` keeps counting up."""
 
@@ -236,9 +269,9 @@ class TestMutateFolders:
         with pytest.raises(OSError):
             asyncio.run(dashboard_state.mutate_folders(_rename))
 
-        assert dashboard_state._folders[0]["name"] == "Before", (
-            "the in-memory folder kept a rename that never reached disk"
-        )
+        assert (
+            dashboard_state._folders[0]["name"] == "Before"
+        ), "the in-memory folder kept a rename that never reached disk"
         assert _on_disk(dashboard_state)[0]["name"] == "Before"
 
     def test_a_failed_write_rolls_back_the_in_memory_list(self, dashboard_state: Any) -> None:
@@ -311,9 +344,7 @@ class TestPlacementRacesTheStore:
 
         app = _make_folder_app(state)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch(
-                "/api/chat/slots/myslot/folder", json={"folder_id": "f1"}
-            )
+            resp = await client.patch("/api/chat/slots/myslot/folder", json={"folder_id": "f1"})
             assert resp.status == 400
         assert slot.folder_id == ""
 
@@ -358,9 +389,7 @@ class TestPlacementRacesTheStore:
 class TestGuardedMetadataMerge:
     """update_metadata_if re-decides under the lock, not before taking it."""
 
-    def test_merge_is_skipped_when_the_guard_no_longer_holds(
-        self, tmp_path: Any
-    ) -> None:
+    def test_merge_is_skipped_when_the_guard_no_longer_holds(self, tmp_path: Any) -> None:
         from kiro_crew.dashboard.channel_slots import needs_default_filing
         from kiro_crew.history import ConversationLog
 
@@ -378,9 +407,7 @@ class TestGuardedMetadataMerge:
         assert log.get_metadata("k")["folder_id"] == "user-picked"
         assert "channel_folder_filed" not in log.get_metadata("k")
 
-    def test_merge_applies_when_the_record_is_still_unplaced(
-        self, tmp_path: Any
-    ) -> None:
+    def test_merge_applies_when_the_record_is_still_unplaced(self, tmp_path: Any) -> None:
         from kiro_crew.dashboard.channel_slots import needs_default_filing
         from kiro_crew.history import ConversationLog
 
@@ -493,9 +520,7 @@ class TestSlotCreateFolderAssignment:
         app["state"] = state
         app.router.add_post("/api/chat/slots", chat_handlers.api_chat_slot_create)
         async with TestClient(TestServer(app)) as client:
-            await client.post(
-                "/api/chat/slots", json={"name": "myslot", "folder_id": "target"}
-            )
+            await client.post("/api/chat/slots", json={"name": "myslot", "folder_id": "target"})
 
         # The failed move must not have unfiled the conversation.
         assert state._slots["myslot"].folder_id == "home"

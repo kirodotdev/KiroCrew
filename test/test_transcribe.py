@@ -1043,8 +1043,13 @@ class TestTranscribeFiles:
             },
         ]
 
-        with patch(
-            "kiro_crew.slack.events.transcribe_audio", new_callable=AsyncMock, return_value="Hello"
+        with (
+            patch("kiro_crew.slack.events.batch_duration_cap_secs", return_value=None),
+            patch(
+                "kiro_crew.slack.events.transcribe_audio",
+                new_callable=AsyncMock,
+                return_value="Hello",
+            ),
         ):
             result = await _transcribe_files(mock_orch, files)
         assert result == ["Hello"]
@@ -1097,8 +1102,13 @@ class TestTranscribeFiles:
         # module global. Patching the definition left the REAL transcriber running --
         # the assertion passed for the wrong reason and the test was the 3rd slowest in
         # the suite. Matches the sibling test above.
-        with patch(
-            "kiro_crew.slack.events.transcribe_audio", new_callable=AsyncMock, return_value=None
+        with (
+            patch("kiro_crew.slack.events.batch_duration_cap_secs", return_value=None),
+            patch(
+                "kiro_crew.slack.events.transcribe_audio",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
             result = await _transcribe_files(mock_orch, files)
         assert result == []

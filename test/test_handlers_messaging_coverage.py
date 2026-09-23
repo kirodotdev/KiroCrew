@@ -16,6 +16,7 @@ subprocesses, no real Slack/HTTP, and every filesystem write lands in
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import threading
@@ -118,6 +119,7 @@ def _info(**kw: Any) -> Any:
         # The retry path reuses this alongside the context triple: a retry must
         # not widen a delegated run to the global store.
         "memory_store": "",
+        "crew": "",
         "user_stopped": False,
         "outcome": "",
         "max_turns": 0,
@@ -126,6 +128,7 @@ def _info(**kw: Any) -> Any:
         "reasoning_effort": "",
         "approval_mode": "",
         "silent": False,
+        "delegation": {},
         "_raw_task": "",
         "include_memory": True,
         "include_lessons": True,
@@ -141,6 +144,8 @@ def _mgr(**kw: Any) -> Any:
     mgr.all_agents = []
     mgr._agents = {}
     mgr._tasks = {}
+    mgr.get.return_value = None
+    mgr.settle_before_delete = AsyncMock(return_value="delivered")
     for key, val in kw.items():
         setattr(mgr, key, val)
     return mgr
@@ -241,6 +246,7 @@ class TestApiSpawn:
             "task": "build it",
             "status": "spawned",
             "conversation": "a9",
+            "parent_work_supported": False,
         }
         kwargs = mgr.spawn.call_args.kwargs
         assert kwargs["silent"] is True
@@ -256,11 +262,12 @@ class TestApiSpawn:
 
     @pytest.mark.parametrize("source", ["crew", "subagent"])
     @pytest.mark.parametrize("unavailable", [False, True])
-    def test_private_binding_lookup_runs_off_loop_before_spawn(
+    def test_execution_record_lookup_runs_off_loop_before_spawn(
         self, monkeypatch, source: str, unavailable: bool
     ) -> None:
+        from kiro_crew.execution_context import read_session_execution
         from kiro_crew.memory_stores import UnknownMemoryStore, provision_member_memory
-        from kiro_crew.subagent_persistence import create_agent_folder, read_run_memory_store
+        from kiro_crew.subagent_persistence import create_agent_folder
 
         cfg = loader.KiroCrewConfig.load()
         cfg.agents["worker"] = loader.KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="work")
@@ -275,42 +282,56 @@ class TestApiSpawn:
 
         if source == "crew":
             body["crew"] = "worker"
-            real_resolve = loader.resolve_agent_bindings
 
-            def resolve(*args, **kwargs):
+            def load_config():
                 lookup_threads.append(threading.get_ident())
                 if unavailable:
                     raise UnknownMemoryStore("member memory cannot be read")
-                return real_resolve(*args, **kwargs)
+                return cfg
 
-            monkeypatch.setattr(loader, "resolve_agent_bindings", resolve)
+            monkeypatch.setattr(loader.KiroCrewConfig, "load", load_config)
         else:
             run_id = "offloop-parent"
             create_agent_folder(run_id, memory_store=store)
             body["parent_session"] = f"subagent:{run_id}"
 
-            def inherited(agent_id):
+            def inherited(session_key):
                 lookup_threads.append(threading.get_ident())
-                assert agent_id == run_id
+                assert session_key == f"subagent:{run_id}"
                 if unavailable:
                     raise UnknownMemoryStore("member memory cannot be read")
-                return read_run_memory_store(agent_id)
+                return read_session_execution(session_key)
 
-            mgr._inherited_memory_store = MagicMock(side_effect=inherited)
+            monkeypatch.setattr("kiro_crew.execution_context.read_session_execution", inherited)
 
         response = _run(mod.api_spawn, _Req(state, body))
 
-        assert len(lookup_threads) == 1
-        assert lookup_threads[0] != loop_thread
+        # A parent's privacy admission reads its execution before spawn derives
+        # the child's identity. An unreadable parent stops at that first gate.
+        expected_lookups = 2 if source == "subagent" and not unavailable else 1
+        assert len(lookup_threads) == expected_lookups
+        assert all(thread != loop_thread for thread in lookup_threads)
         if unavailable:
             assert response.status == 409
-            assert _payload(response)["code"] == "memory_unavailable"
-            assert "member memory cannot be read" in _payload(response)["error"]
+            if source == "subagent":
+                assert _payload(response) == {
+                    "code": "memory_unavailable",
+                    "error": "The originating session's memory mode is unavailable.",
+                }
+            else:
+                assert _payload(response) == {
+                    "code": "member_identity_unavailable",
+                    "error": "member memory cannot be read",
+                }
             mgr.spawn.assert_not_called()
         else:
             assert response.status == 200
             mgr.spawn.assert_called_once()
             assert mgr.spawn.call_args.kwargs["memory_store"] == store
+            assert (
+                mgr.spawn.call_args.kwargs["_execution_context"]["member_id"]
+                == cfg.agents["worker"].member_id
+            )
             assert mgr.spawn.call_args.kwargs["parent_session_key"] == body.get(
                 "parent_session", ""
             )
@@ -718,6 +739,13 @@ class TestApiSpawnList:
 
 class TestApiSpawnRetry:
     def _req(self, mgr: Any, agent_id: str = "a1") -> _Req:
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+        old = mgr.get.return_value
+        if isinstance(old, SimpleNamespace):
+            old.execution_context = ExecutionContext(
+                None, MemoryStoreRef("default"), "template", "kirocrew"
+            )
         return _Req(_state(subagents=mgr), None, match_info={"agent_id": agent_id})
 
     def test_503_without_manager(self) -> None:
@@ -789,6 +817,7 @@ class TestApiSpawnRetry:
             _raw_task="t",
             include_memory=False,
             include_project=False,
+            crew="coding",
         )
         mgr.spawn.return_value = _info(id="new")
         _run(mod.api_spawn_retry, self._req(mgr))
@@ -796,6 +825,90 @@ class TestApiSpawnRetry:
         assert kwargs["include_memory"] is False
         assert kwargs["include_lessons"] is True
         assert kwargs["include_project"] is False
+        assert kwargs["crew"] == "coding"
+
+    def test_retry_after_parent_advances_is_owned_by_active_stage_boundary(self) -> None:
+        """A stage-1 failure retried during stage 2 joins stage 2's barrier."""
+        from kiro_crew.dashboard.state import StageBoundary
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+        parent = "dashboard:chat-1"
+        boundary = StageBoundary(stage=2, generation="stage-2-owner")
+        mgr = _mgr()
+        old = _info(
+            done=True,
+            outcome="failed",
+            parent_session_key=parent,
+            _stage_boundary_owner="stage-1-owner",
+        )
+        old.execution_context = ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew"
+        )
+        mgr.get.return_value = old
+        mgr.spawn.return_value = _info(id="new")
+        state = _state(subagents=mgr)
+        state._slots = {
+            "chat-1": SimpleNamespace(stage_boundary=boundary),
+        }
+
+        response = _run(
+            mod.api_spawn_retry,
+            _Req(state, None, match_info={"agent_id": "a1"}),
+        )
+
+        assert response.status == 200
+        retry_owner = mgr.spawn.call_args.kwargs["_stage_boundary_owner"]
+        assert retry_owner == "stage-2-owner"
+        completion = {"meta": boundary.tag_meta({}, owner=retry_owner)}
+        assert boundary.owns_entry(completion)
+
+    def test_stage_boundary_owner_prefers_active_alias_over_inactive_canonical(self) -> None:
+        """An active same-parent alias owns retries before the canonical slot."""
+        from kiro_crew.dashboard.state import StageBoundary
+
+        parent = "dashboard:chat-1"
+        canonical = SimpleNamespace(
+            key="chat-1",
+            linked_session_key="",
+            stage_boundary=StageBoundary(),
+        )
+        alias = SimpleNamespace(
+            key="chat-1-alias",
+            linked_session_key=parent,
+            stage_boundary=StageBoundary(stage=2, generation="alias-owner"),
+        )
+        state = _state()
+        state._slots = {canonical.key: canonical, alias.key: alias}
+
+        assert mod._stage_boundary_owner_for_parent(state, parent) == "alias-owner"
+        assert (
+            mod._stage_boundary_slot_for_parent(
+                state,
+                parent,
+                boundary_owner="missing-owner",
+            )
+            is None
+        )
+
+    def test_stage_boundary_slot_falls_back_to_canonical_without_active_owner(self) -> None:
+        """With no active owner, lookup retains canonical-slot precedence."""
+        from kiro_crew.dashboard.state import StageBoundary
+
+        parent = "dashboard:chat-1"
+        canonical = SimpleNamespace(
+            key="chat-1",
+            linked_session_key="",
+            stage_boundary=StageBoundary(),
+        )
+        alias = SimpleNamespace(
+            key="chat-1-alias",
+            linked_session_key=parent,
+            stage_boundary=StageBoundary(),
+        )
+        state = _state()
+        state._slots = {canonical.key: canonical, alias.key: alias}
+
+        assert mod._stage_boundary_slot_for_parent(state, parent) is canonical
 
 
 class TestApiSpawnDelete:
@@ -825,21 +938,169 @@ class TestApiSpawnDelete:
         req = _Req(state, None, match_info={"agent_id": "native:c1"})
         assert _payload(_run(mod.api_spawn_delete, req))["ok"] is True
 
+    def test_managed_delete_settlement_uses_one_public_manager_seam(self) -> None:
+        """The HTTP handler does not own manager report or registry internals."""
+        source = inspect.getsource(mod.api_spawn_delete)
+
+        assert ".settle_before_delete(" in source
+        for private in (
+            "._agents",
+            "._tasks",
+            "._run_terminal_report",
+            "._clear_report_failure",
+        ):
+            assert private not in source
+
     def test_404_when_managed_agent_is_unknown(self) -> None:
         req = _Req(_state(subagents=_mgr()), None, match_info={"agent_id": "a1"})
         assert _run(mod.api_spawn_delete, req).status == 404
 
     def test_cancels_a_running_agent(self) -> None:
-        mgr = _mgr(_agents={"a1": _info()}, cancel=AsyncMock(return_value=True))
+        info = _info()
+        mgr = _mgr(_agents={"a1": info}, cancel=AsyncMock(return_value=True))
+        mgr.get.return_value = info
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         assert _payload(_run(mod.api_spawn_delete, req)) == {"ok": True, "cancelled": True}
 
     def test_removes_an_already_finished_agent(self) -> None:
-        mgr = _mgr(_agents={"a1": _info()}, cancel=AsyncMock(return_value=False))
-        mgr._tasks = {"a1": object()}
+        info = _info()
+        mgr = _mgr(_agents={"a1": info}, cancel=AsyncMock(return_value=False))
+        mgr.get.return_value = info
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+
         assert _payload(_run(mod.api_spawn_delete, req))["cancelled"] is False
-        assert mgr._agents == {} and mgr._tasks == {}
+        mgr.settle_before_delete.assert_awaited_once_with("a1", "")
+
+    def test_preserves_finished_agent_when_boundary_redelivery_fails(self) -> None:
+        from kiro_crew.dashboard.state import StageBoundary
+
+        info = _info(
+            parent_session_key="dashboard:chat-1",
+            _stage_boundary_owner="owner",
+            _report_failure_latched=True,
+        )
+        mgr = _mgr(
+            _agents={"a1": info},
+            cancel=AsyncMock(return_value=False),
+            settle_before_delete=AsyncMock(return_value="pending"),
+        )
+        mgr.get.return_value = info
+        state = _state(subagents=mgr)
+        state._slots = {
+            "chat-1": SimpleNamespace(stage_boundary=StageBoundary(stage=1, generation="owner"))
+        }
+        req = _Req(state, None, match_info={"agent_id": "a1"})
+
+        response = _run(mod.api_spawn_delete, req)
+
+        assert response.status == 409
+        assert _payload(response)["code"] == "completion_delivery_pending"
+        mgr.settle_before_delete.assert_awaited_once_with("a1", "owner")
+
+    def test_delete_scopes_settlement_to_the_deleted_runs_owner(self, monkeypatch) -> None:
+        """Deleting alias A cannot settle or discard active alias B's debt."""
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew.dashboard.state import StageBoundary
+        from kiro_crew.subagent import (
+            SubagentInfo,
+            SubagentManager,
+            SubagentReportDeliveryError,
+        )
+
+        monkeypatch.setattr(subagent_mod, "_REPORT_FAILURES_PER_PARENT_CAP", 2)
+        parent = "dashboard:chat-1"
+        owner_a, owner_b = "owner-a", "owner-b"
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        boundary_a = StageBoundary(stage=1, generation=owner_a)
+        boundary_a.armed_at = 1
+        boundary_a.parent_session_keys.add(parent)
+        boundary_b = StageBoundary(stage=1, generation=owner_b)
+        boundary_b.armed_at = 2
+        boundary_b.parent_session_keys.add(parent)
+        boundaries = {(parent, owner_a): boundary_a, (parent, owner_b): boundary_b}
+        manager._stage_boundary_for_scope = lambda scope_parent, scope_owner: boundaries.get(
+            (scope_parent, scope_owner)
+        )
+        info_a = SubagentInfo(
+            id="delete-a",
+            task="alias A",
+            done=True,
+            parent_session_key=parent,
+        )
+        info_a._stage_boundary_owner = owner_a
+        info_b = SubagentInfo(
+            id="keep-b",
+            task="alias B",
+            done=True,
+            parent_session_key=parent,
+        )
+        info_b._stage_boundary_owner = owner_b
+        sibling_debt = [
+            SubagentInfo(
+                id=f"keep-b-{index}",
+                task="alias B debt",
+                done=True,
+                parent_session_key=parent,
+                _stage_boundary_owner=owner_b,
+            )
+            for index in range(2, 4)
+        ]
+        manager._agents = {info_a.id: info_a, info_b.id: info_b}
+        manager._latch_report_failure(info_a)
+        for sibling in (info_b, *sibling_debt):
+            manager._latch_report_failure(sibling)
+        manager.cancel = AsyncMock(return_value=False)
+        real_settle = manager.settle_before_delete
+        manager.settle_before_delete = AsyncMock(wraps=real_settle)
+        manager._run_terminal_report = AsyncMock(return_value=False)
+
+        state = _state(subagents=manager)
+        state._slots = {
+            "alias-a": SimpleNamespace(
+                key="alias-a",
+                linked_session_key=parent,
+                stage_boundary=boundary_a,
+            ),
+            "alias-b": SimpleNamespace(
+                key="alias-b",
+                linked_session_key=parent,
+                stage_boundary=boundary_b,
+            ),
+        }
+        assert mod._stage_boundary_owner_for_parent(state, parent) == owner_b
+
+        response = _run(
+            mod.api_spawn_delete,
+            _Req(state, None, match_info={"agent_id": info_a.id}),
+        )
+
+        assert response.status == 409
+        assert _payload(response)["code"] == "completion_delivery_pending"
+        assert (parent, owner_a) in manager._boundary_report_payloads
+        sibling_bucket = manager._boundary_report_payloads[(parent, owner_b)]
+        assert set(sibling_bucket) == {info_b.id, sibling_debt[0].id}
+        assert boundary_b.report_retention_refused == "row_cap"
+        assert info_b._report_failure_latched is True
+        with pytest.raises(SubagentReportDeliveryError):
+            asyncio.run(manager.wait_for_parent_reports(parent, owner_b))
+        manager.settle_before_delete.assert_awaited_once_with(info_a.id, owner_a)
+
+    def test_discards_finished_agent_debt_with_a_gone_boundary(self) -> None:
+        info = _info(
+            parent_session_key="dashboard:chat-1",
+            _stage_boundary_owner="owner",
+            _report_failure_latched=True,
+        )
+        mgr = _mgr(_agents={"a1": info}, cancel=AsyncMock(return_value=False))
+        mgr.get.return_value = info
+        state = _state(subagents=mgr)
+        state._slots = {}
+        req = _Req(state, None, match_info={"agent_id": "a1"})
+
+        response = _run(mod.api_spawn_delete, req)
+
+        assert response.status == 200
+        mgr.settle_before_delete.assert_awaited_once_with("a1", "")
 
 
 class TestApiSpawnStopAll:
@@ -1549,12 +1810,12 @@ class TestTeamsConfigSave:
         monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
         monkeypatch.setenv("MICROSOFT_APP_PASSWORD", "")
 
-        import kiro_crew.agent as _agent
-
         def _boom(*_a, **_k):
             raise OSError("disk full during config write")
 
-        monkeypatch.setattr(_agent, "_atomic_json_write", _boom)
+        # The save writes through ``update_config_locked``, whose file write is
+        # the loader's ``write_config_atomically``; failing THAT is the disk-full.
+        monkeypatch.setattr(loader, "write_config_atomically", _boom)
         try:
             _run(mod.api_teams_config_save, _Req(_state(), {"app_password_clear": True}))
         except Exception:

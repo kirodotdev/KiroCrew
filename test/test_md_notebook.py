@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -2501,6 +2502,100 @@ async def test_probe_detects_a_checkout_filter_driver(fixtures) -> None:
         root = Path(vault["localPath"])
         _git("config", "--local", "filter.evil.smudge", "touch /tmp/pwned", cwd=root)
         assert "filter.evil.smudge" in await git_ops.repo_supplied_driver(str(root))
+
+
+@pytest.mark.asyncio
+async def test_probe_allows_worktree_extension_without_config_file(fixtures) -> None:
+    """`extensions.worktreeConfig=true` with no `config.worktree` on disk is a
+    healthy EMPTY scope (git creates the file lazily). Probing it anyway exits
+    128 with a non-empty stderr, which reads as "unprobeable config" for a
+    filter-free vault."""
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        _git("config", "--local", "extensions.worktreeConfig", "true", cwd=root)
+        assert not (root / ".git" / "config.worktree").exists()
+        assert await git_ops.repo_supplied_driver(str(root)) == ""
+
+
+@pytest.mark.asyncio
+async def test_probe_still_refuses_worktree_scoped_driver(fixtures) -> None:
+    """The gate narrows WHEN the `--worktree` scope is probed, never what a
+    probed scope may declare: writing a worktree-scoped key creates the file,
+    and a driver in it must still refuse."""
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        _git("config", "--local", "extensions.worktreeConfig", "true", cwd=root)
+        _git("config", "--worktree", "filter.evil.smudge", "sh -c ':'", cwd=root)
+        assert "filter.evil.smudge" in await git_ops.repo_supplied_driver(str(root))
+
+
+@pytest.mark.asyncio
+async def test_probe_refuses_worktree_driver_under_valueless_extension(
+    fixtures,
+) -> None:
+    """git treats a valueless `[extensions] worktreeConfig` as TRUE and honors
+    `config.worktree` under it, but a raw `--get` returns an EMPTY string for
+    that form — a literal `== "true"` compare reads the extension as off and
+    never probes the scope a driver hides in. `--bool` folds every git-true
+    spelling to `true`."""
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        with open(root / ".git" / "config", "a") as fh:
+            fh.write("[extensions]\n\tworktreeConfig\n")
+        _git("config", "--worktree", "filter.evil.smudge", "sh -c ':'", cwd=root)
+        assert "filter.evil.smudge" in await git_ops.repo_supplied_driver(str(root))
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.name == "nt" or sys.platform == "darwin",
+    reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+)
+async def test_run_git_surrogateescape_round_trips_a_non_utf8_path(tmp_path) -> None:
+    """`errors="surrogateescape"` is the decode the gitdir probe passes: a
+    path byte that is not valid UTF-8 must survive as a PEP 383 surrogate the
+    `os` layer restores byte-exactly, or the empty-scope classifier's lstat
+    inspects a U+FFFD path that names nothing and an EXISTING
+    `config.worktree` reads as the empty scope (see
+    kiro_crew.git_worktree_scope)."""
+    repo = tmp_path / os.fsdecode(b"v-\xff")
+    repo.mkdir()
+    _git("init", "-q", "--template=", ".", cwd=repo)
+    code, out, _ = await git_ops.run_git(
+        ["rev-parse", "--absolute-git-dir"],
+        str(repo),
+        check=False,
+        errors="surrogateescape",
+    )
+    assert code == 0
+    gitdir = out[:-1] if out.endswith("\n") else out
+    assert "\udcff" in gitdir, "the non-UTF-8 byte was rewritten by the decode"
+    assert os.path.isdir(gitdir)
+
+
+@pytest.mark.asyncio
+async def test_git_dir_probe_requests_byte_faithful_decoding(monkeypatch, tmp_path) -> None:
+    """The canonical-gitdir probe decodes with ``errors="surrogateescape"``: its
+    answer is fed to ``os.path.realpath`` and compared against the persisted
+    trusted git dir, so a non-UTF-8 path byte has to round-trip through
+    ``os.fsencode`` instead of collapsing to a U+FFFD that names no real path."""
+    seen: dict[str, Any] = {}
+
+    async def fake_run_git(args, cwd=None, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return 0, f"{tmp_path}\n", ""
+
+    monkeypatch.setattr(git_ops, "run_git", fake_run_git)
+    assert await git_ops._git_dir(str(tmp_path)) == os.path.realpath(tmp_path)
+    assert seen["args"] == ["rev-parse", "--absolute-git-dir"]
+    assert seen["kwargs"]["errors"] == "surrogateescape"
 
 
 @pytest.mark.asyncio

@@ -53,7 +53,7 @@ function Sheet({ onClose, label, header, headerActions, footer, width, paused, c
       {/* Backdrop is a SIBLING of the dialog, never a wrapper — wrapping would
           put the dialog's own controls inside a role="button". */}
       <Clickable
-        className="absolute inset-0 bg-bg/50 backdrop-blur-sm"
+        className="absolute inset-0 bg-bg/50 backdrop-blur-xs"
         onClick={onClose}
         aria-label={i18nT('components.sideSheet.close_panel')}
       />
@@ -69,7 +69,7 @@ function Sheet({ onClose, label, header, headerActions, footer, width, paused, c
         transition={{ duration: 0.24, ease: 'easeOut' }}
         style={{ maxWidth: width }}
         className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden border-l
-                   border-border bg-bg shadow-lg outline-none"
+                   border-border bg-bg shadow-lg outline-hidden"
         // The page's own keyboard shortcuts must not fire while typing in here.
         onKeyDown={(e) => e.stopPropagation()}
       >

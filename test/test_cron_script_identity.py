@@ -40,7 +40,9 @@ def _handshake_proc() -> MagicMock:
     return proc
 
 
-def _capture_launcher_env(job_id: str) -> dict[str, str]:
+def _capture_launcher_env(
+    job_id: str, *, during_spawn=None, expected_result: dict[str, str] | None = None
+) -> dict[str, str]:
     """Return the env ``run_script_sandboxed`` hands its child.
 
     Stops at the spawn so no interpreter is launched: ``popen_limited`` is the
@@ -50,6 +52,8 @@ def _capture_launcher_env(job_id: str) -> dict[str, str]:
 
     def fake_popen(argv, **kwargs):
         captured["env"] = dict(kwargs["env"])
+        if during_spawn is not None:
+            during_spawn(captured["env"])
         proc = MagicMock()
         proc.returncode = 0
         proc.communicate.return_value = ('{"status": "ok"}', "")
@@ -63,20 +67,38 @@ def _capture_launcher_env(job_id: str) -> dict[str, str]:
     ):
         result = run_script_sandboxed("/f.py:run", job_id, "", timeout=30)
 
-    assert result == {"status": "ok"}
+    # Whole-dict equality, not one key: an unexpected field in a launcher result is
+    # exactly the malformation this helper is the only reader of.
+    wanted = {"status": "ok"} if expected_result is None else expected_result
+    assert result == wanted
+    if wanted["status"] != "ok":
+        return captured.get("env", {})
     assert "env" in captured, "popen_limited was never reached"
     return captured["env"]
 
 
 @pytest.fixture(autouse=True)
-def _no_ambient_identity(monkeypatch):
+def _no_ambient_identity(monkeypatch, tmp_path):
     """The test process must not already look like an identified session.
 
     Otherwise a launcher that merely INHERITED the parent's key would pass the
     presence assertions below without ever setting one of its own.
+
+    The signed mapping directory is redirected into the test's own tmp dir for a
+    separate reason: the launcher PUBLISHES one, and a unit test must not write
+    into the real crew home. Tests that need the mapping to verify layer their
+    own trust root over this (see ``signing_root``).
     """
-    for key in ("KIROCREW_SESSION_KEY", "KIROCREW_HOST_PID", "KIROCREW_CLI"):
+    from kiro_crew import session_token_sig
+
+    for key in (
+        "KIROCREW_SESSION_KEY",
+        "KIROCREW_HOST_PID",
+        "KIROCREW_CLI",
+        "KIROCREW_STUB_SESSION_TOKEN",
+    ):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(session_token_sig, "config_dir", lambda: tmp_path)
 
 
 class TestLauncherInjectsIdentity:
@@ -120,6 +142,108 @@ class TestLauncherInjectsIdentity:
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:someone-else")
         env = _capture_launcher_env(JOB_ID)
         assert env["KIROCREW_SESSION_KEY"] == EXPECTED_KEY
+
+
+class TestLauncherPublishesAVerifiableToken:
+    """The key is the caller's own word; the signed token is what a reader verifies.
+
+    ``member_request_scope`` and ``memory_request_identity`` accept a declared
+    ``X-Session-Key`` only behind a transport attestation. A script cron cannot be
+    attested by the unix-socket peer walk -- no signed pid mapping names the
+    sandbox launcher's pid -- so the token is its channel, and it has to map back
+    to the job's own key rather than to any other session.
+    """
+
+    @pytest.fixture
+    def signing_root(self, tmp_path):
+        """An isolated mapping directory over a valid SEL trust-root key.
+
+        Four patches for the same reason ``test_session_token_sig`` needs four:
+        the protocol SHARES its key loader with ``session_pid_sig``, so patching
+        one module's view of the trust root leaves the loader reading the real one.
+        """
+        from kiro_crew import session_pid_sig, session_token_sig
+
+        key_path = tmp_path / "sel_hmac.key"
+        key_path.write_bytes(b"\x02" * 32)
+        with (
+            patch.object(session_token_sig, "config_dir", return_value=tmp_path),
+            patch.object(session_pid_sig, "sel_hmac_key_path", return_value=key_path),
+            patch.object(session_token_sig, "sel_hmac_key_path", return_value=key_path),
+            patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None),
+        ):
+            yield tmp_path
+
+    def _capture_verified_env(self, signing_root, job_id):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+        from kiro_crew.session_token_sig import verify_session_token
+
+        def verify_during_run(env):
+            token = env[STUB_SESSION_TOKEN_ENV]
+            assert token
+            assert verify_session_token(token) == f"cron:{job_id}"
+            assert len(list(signing_root.glob("session_token_*.sig"))) == 1
+
+        env = _capture_launcher_env(job_id, during_spawn=verify_during_run)
+        assert not list(signing_root.glob("session_token_*.sig"))
+        assert verify_session_token(env[STUB_SESSION_TOKEN_ENV]) == ""
+        return env
+
+    def test_child_env_carries_a_token_that_maps_to_the_jobs_key(self, signing_root):
+        self._capture_verified_env(signing_root, JOB_ID)
+
+    def test_the_token_names_this_job_and_not_a_neighbour(self, signing_root):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        mine = self._capture_verified_env(signing_root, JOB_ID)[STUB_SESSION_TOKEN_ENV]
+        theirs = self._capture_verified_env(signing_root, "job-other")[STUB_SESSION_TOKEN_ENV]
+
+        assert mine != theirs
+
+    def test_two_runs_have_different_tokens_and_leave_no_mappings(self, signing_root):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        first = self._capture_verified_env(signing_root, JOB_ID)[STUB_SESSION_TOKEN_ENV]
+        second = self._capture_verified_env(signing_root, JOB_ID)[STUB_SESSION_TOKEN_ENV]
+
+        assert second != first
+
+    def test_spawn_exception_retracts_the_mapping(self, signing_root):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+        from kiro_crew.session_token_sig import verify_session_token
+
+        def fail_spawn(env):
+            assert verify_session_token(env[STUB_SESSION_TOKEN_ENV]) == EXPECTED_KEY
+            raise RuntimeError("spawn failed")
+
+        with pytest.raises(RuntimeError, match="spawn failed"):
+            _capture_launcher_env(JOB_ID, during_spawn=fail_spawn)
+        assert not list(signing_root.glob("session_token_*.sig"))
+
+    def test_early_overlap_return_retracts_the_mapping(self, signing_root):
+        def refuse_spawn(job_id):
+            assert job_id == JOB_ID
+            assert len(list(signing_root.glob("session_token_*.sig"))) == 1
+            return False
+
+        with patch("kiro_crew.cron_script._begin_spawn", side_effect=refuse_spawn):
+            _capture_launcher_env(
+                JOB_ID,
+                expected_result={
+                    "status": "skipped",
+                    "error": "Another run of this job is already starting or running",
+                },
+            )
+        assert not list(signing_root.glob("session_token_*.sig"))
+
+    def test_an_inherited_token_is_overwritten_not_kept(self, signing_root, monkeypatch):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, "f" * 64)
+
+        token = self._capture_verified_env(signing_root, JOB_ID)[STUB_SESSION_TOKEN_ENV]
+
+        assert token != "f" * 64
 
 
 class TestBridgePinsIdentityOnTheServerSpawn:
@@ -198,10 +322,17 @@ class TestTheRealConsumerAcceptsIt:
             assert _authz_session_key() == EXPECTED_KEY
 
     def test_without_the_injection_the_gate_refuses(self):
-        """Baseline: the same env minus the key is exactly the reported failure."""
+        """Baseline: the same env minus the injection is exactly the reported failure.
+
+        The launcher injects TWO names for one identity, and the strict resolver
+        reads either, so the baseline has to strip both. Dropping only the env key
+        would leave the signed token answering and measure nothing.
+        """
         from kiro_crew.mcp_core import _resolve_session_key_strict
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
         env = _capture_launcher_env(JOB_ID)
         env.pop("KIROCREW_SESSION_KEY")
+        env.pop(STUB_SESSION_TOKEN_ENV, None)
         with patch.dict(os.environ, env, clear=True):
             assert _resolve_session_key_strict() == ""

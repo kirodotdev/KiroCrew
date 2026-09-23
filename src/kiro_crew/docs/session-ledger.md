@@ -30,6 +30,10 @@ It is also only for genuinely long-horizon work — a babysit loop, a multi-wake
 task, a goal that spans hours. A single-turn request does not get one, and
 nothing is lost by that.
 
+And it is **not the work ledger**. This record is one session's own state; the
+[work ledger](work-ledger.md) is the separate record a conductor shares with the
+worker sessions it dispatched, keyed by work item rather than by session.
+
 ## Finishing
 
 A ledger is marked finished when its work is done or abandoned, which stops it
@@ -39,5 +43,6 @@ that has moved on is the failure this avoids.
 ## Related docs
 
 - [Monitor loops](monitor-loops.md): the repeated-wake work a ledger most often backs
+- [Work ledger](work-ledger.md): the *other* ledger — a conductor's items and its workers' reports
 - [Task runner](task-runner.md): autonomous multi-step execution from a spec file
 - [Memory and learning](memory-and-learning.md): what persists across *different* sessions

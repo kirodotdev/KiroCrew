@@ -24,8 +24,9 @@ same self-test, so a broken regex also fails a local test run.
 ## The six rules
 
 Each names the invariant it closes. All six are line-shape rules on added lines;
-none of them needs to resolve an import, which is why the job needs no
-`setup-python` and no dependency install.
+none of them needs to resolve an import. The scanner itself uses only the Python
+standard library; the workflow selects Python 3.12 with `setup-python` but performs
+no dependency install.
 
 | Rule | Invariant | Fails on |
 |---|---|---|

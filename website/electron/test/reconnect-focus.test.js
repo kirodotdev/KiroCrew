@@ -22,7 +22,14 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const { revealWindowForConnect } = require("../gateway-recovery");
+const {
+  hideToTray,
+  cancelPendingTrayHide,
+  POST_LEAVE_SETTLE_MS,
+  HIDE_REASSERT_MS,
+} = require("../hide-to-tray");
 
 function fakeWin() {
   const calls = [];
@@ -166,13 +173,17 @@ describe("gateway supervisor wiring (source pins)", () => {
   });
 
   // The escalation reveal must follow the repo's full show idiom
-  // (hide-to-tray.js contract): cancel the deferred hide, un-minimize, show,
-  // focus, and steal macOS app activation (a background app's window rises
-  // without keyboard focus otherwise — same as the global-hotkey summon).
+  // (hide-to-tray.js contract): cancel the deferred hide, unhide the app,
+  // un-minimize, show, focus, and steal macOS app activation (a background
+  // app's window rises without keyboard focus otherwise — same as the
+  // global-hotkey summon). The unhide sits before window.show() because a
+  // fullscreen tray-close hides the whole app and a hidden app ignores
+  // window.show(); the same ordering showMainWindow uses.
   it("revealForUserDecision performs the full reveal idiom", () => {
     const body = fnBody("revealForUserDecision");
     const order = [
       "cancelTrayHide(window)",
+      'if (IS_MAC && typeof app.show === "function") app.show()',
       "if (window.isMinimized()) window.restore()",
       "window.show()",
       "window.focus()",
@@ -195,6 +206,188 @@ describe("gateway supervisor wiring (source pins)", () => {
       /isQuitting: \(\) => isQuitting,[\s\S]*?cancelPendingTrayHide,[\s\S]*?exitImmersiveModes,/,
       "main.js must inject quit state and both full-reveal helpers",
     );
+  });
+
+  // revealForUserDecision evaluated as written, with its closure names
+  // (cancelTrayHide, mainWindow, quitting, IS_MAC, app) supplied, so the
+  // assertion is about behaviour on a fake hidden app rather than source text.
+  function revealFn({
+    mac,
+    app,
+    getMainWindow = () => null,
+    cancelTrayHide = () => {},
+  }) {
+    const body = fnBody("revealForUserDecision");
+    const context = {
+      cancelTrayHide,
+      mainWindow: getMainWindow,
+      quitting: () => false,
+      IS_MAC: mac,
+      app,
+    };
+    vm.runInNewContext(`${body}; this.reveal = revealForUserDecision;`, context);
+    return context.reveal;
+  }
+
+  function hiddenWindow() {
+    const calls = [];
+    return {
+      calls,
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      restore: () => calls.push("window.restore"),
+      show: () => calls.push("window.show"),
+      focus: () => calls.push("window.focus"),
+    };
+  }
+
+  function fullScreenTrayWindow() {
+    let fullScreen = true;
+    const listeners = new Map();
+    return {
+      isDestroyed: () => false,
+      isFullScreen: () => fullScreen,
+      setFullScreen: (value) => { fullScreen = value; },
+      once: (event, listener) => listeners.set(event, listener),
+      off: (event, listener) => {
+        if (listeners.get(event) === listener) listeners.delete(event);
+      },
+      emitLeaveFullScreen: () => listeners.get("leave-full-screen")?.(),
+    };
+  }
+
+  function controlledTimers() {
+    const scheduled = [];
+    return {
+      scheduled,
+      setTimeoutFn: (fn, ms) => {
+        const handle = {
+          fn,
+          ms,
+          cleared: false,
+          unref() { return this; },
+        };
+        scheduled.push(handle);
+        return handle;
+      },
+      clearTimeoutFn: (handle) => { handle.cleared = true; },
+      fire: (ms) => {
+        const handle = scheduled.find((timer) => timer.ms === ms && !timer.cleared);
+        assert.ok(handle, `expected a live ${ms}ms timer`);
+        handle.cleared = true;
+        handle.fn();
+      },
+      fireAll: () => {
+        for (;;) {
+          const handle = scheduled.find((timer) => !timer.cleared);
+          if (!handle) return;
+          handle.cleared = true;
+          handle.fn();
+        }
+      },
+    };
+  }
+
+  it("cancels a main-window reassert before revealing a connection window", () => {
+    const timers = controlledTimers();
+    const primaryWindow = fullScreenTrayWindow();
+    const connectionWindow = hiddenWindow();
+    const appCalls = [];
+    let appHidden = false;
+    const app = {
+      show: () => { appHidden = false; appCalls.push("app.show"); },
+      focus: () => appCalls.push("app.focus"),
+    };
+
+    hideToTray(primaryWindow, {
+      isMac: true,
+      ...timers,
+      hideAppFn: () => { appHidden = true; appCalls.push("app.hide"); },
+    });
+    primaryWindow.emitLeaveFullScreen();
+    timers.fire(POST_LEAVE_SETTLE_MS);
+    assert.equal(appHidden, true, "the main window's fullscreen close hid the app");
+    assert.ok(
+      timers.scheduled.some((timer) => timer.ms === HIDE_REASSERT_MS && !timer.cleared),
+      "the main window owns a pending app-hide reassertion",
+    );
+
+    revealFn({
+      mac: true,
+      app,
+      getMainWindow: () => primaryWindow,
+      cancelTrayHide: cancelPendingTrayHide,
+    })(connectionWindow);
+    assert.equal(appHidden, false, "the needs-user connection window unhides the app");
+
+    timers.fireAll();
+    assert.equal(appHidden, false, "no pending main-window timer may hide the dialog again");
+    assert.deepEqual(appCalls, ["app.hide", "app.show", "app.focus"]);
+  });
+
+  it("keeps same-window cancellation first and exactly once", () => {
+    const win = hiddenWindow();
+    const app = {
+      show: () => win.calls.push("app.show"),
+      focus: () => win.calls.push("app.focus"),
+    };
+    revealFn({
+      mac: true,
+      app,
+      getMainWindow: () => win,
+      cancelTrayHide: () => win.calls.push("cancel"),
+    })(win);
+    assert.deepEqual(
+      win.calls,
+      ["cancel", "app.show", "window.show", "window.focus", "app.focus"],
+    );
+  });
+
+  it("ignores absent or destroyed main windows", () => {
+    const destroyedMainWindow = { isDestroyed: () => true };
+    for (const getMainWindow of [() => null, () => destroyedMainWindow]) {
+      const win = hiddenWindow();
+      const cancelled = [];
+      revealFn({
+        mac: false,
+        app: {},
+        getMainWindow,
+        cancelTrayHide: (candidate) => cancelled.push(candidate),
+      })(win);
+      assert.deepEqual(cancelled, [win]);
+    }
+  });
+
+  // A fullscreen tray-close leaves the app hidden. The needs-user dialogs
+  // (token prompt, unrecoverable-gateway) reveal through this helper, so on
+  // macOS the app must be unhidden BEFORE window.show() or the dialog parks
+  // invisibly — the window's own show() records whether the app was still
+  // hidden at that instant.
+  it("revealForUserDecision unhides a hidden macOS app before showing its window", () => {
+    let hidden = true;
+    const win = hiddenWindow();
+    const app = {
+      show: () => { hidden = false; win.calls.push("app.show"); },
+      focus: () => win.calls.push("app.focus"),
+    };
+    const appHiddenAtShow = [];
+    const shownWhileHidden = win.show;
+    win.show = () => { appHiddenAtShow.push(hidden); shownWhileHidden(); };
+    revealFn({ mac: true, app })(win);
+    assert.deepEqual(appHiddenAtShow, [false], "window.show() ran while the app was still hidden");
+    assert.deepEqual(win.calls, ["app.show", "window.show", "window.focus", "app.focus"]);
+  });
+
+  // app.hide()/app.show() are macOS-only; elsewhere the reveal must not touch
+  // application visibility.
+  it("revealForUserDecision leaves app visibility alone off macOS", () => {
+    const win = hiddenWindow();
+    const app = {
+      show: () => win.calls.push("app.show"),
+      focus: () => win.calls.push("app.focus"),
+    };
+    revealFn({ mac: false, app })(win);
+    assert.deepEqual(win.calls, ["window.show", "window.focus"]);
   });
 
   // Terminal escalation: showUnrecoverableGatewayError is called DIRECTLY from

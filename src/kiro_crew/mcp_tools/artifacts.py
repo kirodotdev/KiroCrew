@@ -295,7 +295,10 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Get all comments on an artifact (local + provider-synced). "
                 "Use to read feedback, review comments, or discussion threads "
-                "on an artifact before addressing them."
+                "on an artifact before addressing them. Pass "
+                "exclude_resolved=true to skip threads that are already "
+                "resolved, so a mid-review read does not hand you back feedback "
+                "you have addressed."
             ),
             "inputSchema": {
                 "type": "object",
@@ -303,6 +306,10 @@ def schemas() -> list[dict[str, Any]]:
                     "slug": {
                         "type": "string",
                         "description": "Artifact slug to get comments for.",
+                    },
+                    "exclude_resolved": {
+                        "type": "boolean",
+                        "description": "Omit threads whose root is resolved (default false).",
                     },
                 },
                 "required": ["slug"],
@@ -528,7 +535,8 @@ def schemas() -> list[dict[str, Any]]:
                 "Preview a deploy of a webapp artifact or local directory to a "
                 "public URL on the user's AWS account. This tool is PREVIEW-ONLY: "
                 "it returns scan status and deploy details but never executes. "
-                "Final confirmation happens in the dashboard Artifact Deploy page. "
+                "Final confirmation happens in the dashboard at Artifacts -> "
+                "Artifact Deploy (/deploy) -> Pending confirmations. "
                 "Restricted-session guard and SEL audit apply identically to the "
                 "HTTP endpoint."
             ),
@@ -937,7 +945,11 @@ def artifact_delete(name: str, args: dict[str, Any]) -> str:
 def artifact_get_comments(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, ARTIFACT_GET_COMMENTS_SCHEMA)
     slug = args["slug"]
-    d = mcp_core._get(f"/api/artifacts/{slug}/comments")
+    # The default stays the full list: this tool's contract is "read the
+    # comments", and changing what it returns by default would silently shift
+    # every existing agent workflow. Opting in is one flag.
+    qs = "?exclude_resolved=true" if args.get("exclude_resolved") else ""
+    d = mcp_core._get(f"/api/artifacts/{slug}/comments{qs}")
     if d.get("error"):
         return f"Error: {d['error']}"
     comments = d.get("comments", [])
@@ -1174,7 +1186,18 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
     # carry file content.
     from kiro_crew.deploy.handlers import _redact_text as _deploy_redact
     if d.get("error"):
-        return f"Error: {_deploy_redact(str(d['error']))}"
+        # `error` is now the plain human sentence and `details` carries the stack
+        # and parameter names. Relay BOTH: the LLM is the caller that needs to
+        # read "use ttl_hours=0" to retry correctly, and the banner-friendly
+        # sentence alone would strip exactly that.
+        msg = _deploy_redact(str(d["error"]))
+        extra = _deploy_redact(str(d.get("details", "")))
+        remedy = _deploy_redact(str(d.get("remediation", "")))
+        if extra:
+            msg = f"{msg}\nDetails: {extra}"
+        if remedy:
+            msg = f"{msg}\nCommand: {remedy}"
+        return f"Error: {msg}"
     if d.get("blocked"):
         findings = _deploy_redact(str(d.get("findings", "")))
         if d.get("credential"):
@@ -1201,8 +1224,9 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
             f"Deploy blocked by scan ({d.get('count', '?')} non-credential "
             f"finding(s)):\n{findings}\n\n"
             f"These findings are overridable by a HUMAN: the deploy now "
-            f"appears under \"Pending confirmations\" on the Artifact "
-            f"Deploy page, where the user can review the findings and "
+            f"appears under \"Pending confirmations\" in the dashboard at "
+            f"Artifacts -> Artifact Deploy (/deploy), where the user can "
+            f"review the findings and "
             f"explicitly deploy anyway (or dismiss).\n"
             f"\nWARNING: Anyone with the published link can view this content. "
             f"It is served on the public internet with no authentication. Relay "
@@ -1235,8 +1259,9 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
         f"\nWARNING: Anyone with the published link can view this content. "
         f"It is served on the public internet with no authentication. Relay "
         f"this warning to the user before they confirm.\n"
-        f"\nThis deploy now appears under \"Pending confirmations\" on the "
-        f"Artifact Deploy page in the dashboard. Open it to confirm or dismiss."
+        f"\nThis deploy now appears under \"Pending confirmations\" in the "
+        f"dashboard: Artifacts -> Artifact Deploy (/deploy) -> Pending "
+        f"confirmations. Open it there to confirm or dismiss."
     )
 
 

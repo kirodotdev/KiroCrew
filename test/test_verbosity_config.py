@@ -312,7 +312,7 @@ class TestAnswerOnlyBlock:
         words = len(self._rules().split())
         # 300 held the three-check rewrite; the ceiling moved once, by the three
         # sentences the maintainer asked back in (the five-year-old register,
-        # picture-is-payload, and the surface gate for widget/HTML/mermaid).
+        # picture-is-payload, and the surface gate for the widget form).
         # It is a ceiling, not a target: the next addition trims something.
         assert words < 375, f"answer_only rules grew to {words} words"
 
@@ -347,23 +347,28 @@ class TestAnswerOnlyBlock:
     def test_shape_check_draws_the_shape_in_the_form_the_surface_renders(self):
         """The old rule lived in the fourteenth paragraph as "prefer" and was
         never reached. Now it is the first check and imperative. The form is
-        gated on the surface: a widget or mermaid only where the Inline Widgets
-        section is present (the dashboard renders both), else a plain table --
-        an unconditional "emit a widget" would land raw ``<mcwidget>`` markup in
-        a Slack or CLI reply, and a mermaid fence reaches Discord as raw source.
+        gated on the surface, and on a widget-capable one it is a single
+        mandate rather than a menu: a "richest form" list of alternatives let a
+        model reach past the widget for the adjacent plain-table fallback and
+        ship a one-column table of sentences as its "picture". Elsewhere the
+        table IS the picture -- an unconditional "emit a widget" would land raw
+        ``<mcwidget>`` markup in a Slack or CLI reply.
         """
         block = self._block()
         assert "Does the answer have a shape" in block
         assert "steps, before/after, cases and verdicts, sizes" in block
         assert (
-            "an inline widget, an HTML artifact or a mermaid fence ONLY when "
-            "your instructions carry an Inline Widgets section" in block
+            "When your instructions carry an Inline Widgets section, the picture "
+            "IS an inline widget (an HTML artifact when it is large)" in block
         )
+        # The one form the observed failure took is named, so the mandate rules
+        # out a table of prose without re-opening a menu of allowed forms.
+        assert "never a plain table of sentences" in block
         # The fallback names the surfaces that cannot render them and says
         # what the markup becomes there, so the model has a reason, not a rule.
         assert (
-            "on any other surface (a chat channel, a CLI) a plain table — widget, "
-            "HTML or mermaid markup lands there as raw text" in block
+            "On any other surface (a chat channel, a CLI) a plain table — widget "
+            "or HTML markup lands there as raw text" in block
         )
         # The Inline Widgets section already says to load the `widgets` skill;
         # repeating it here would be a second spelling of the same instruction.

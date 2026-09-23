@@ -581,3 +581,51 @@ class TestMalformedRequestReachesTheHandlePath:
     async def test_malformed_request_verdict_is_terminal(self, driver):
         """A structurally-rejected payload must not be re-sent by the ladder."""
         assert (await driver(_MALFORMED_REQUEST)).transient is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_malformed_request_is_tagged_structural_terminal(self, driver):
+        """The exception carries the narrower structural fact, not just terminal.
+
+        ``transient is False`` is the retry-layer verdict; ``structural_terminal``
+        is the stronger fact that the payload's SHAPE was rejected, so a NEW
+        context cannot help either. A self-driving caller (the auto-nudge loop)
+        reads this to STOP re-firing the same context rather than merely decline
+        an in-turn retry -- the two verdicts are distinct because a spent usage
+        limit is also terminal yet a fresh context there CAN succeed.
+        """
+        assert (await driver(_MALFORMED_REQUEST)).structural_terminal is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_message_only_echo_is_not_tagged_structural(self, driver):
+        """A malformed phrase echoed only in the JSON-RPC ``message`` (with a
+        real transient fault in ``data``) must NOT be read as structural.
+
+        Scoping the pattern to ``data`` is what keeps an unrelated 5xx from being
+        stamped terminal-structural by an incidental echo in ``message`` -- the
+        same scope the transient classifier and the formatter use.
+        """
+        echo = {
+            "code": -32603,
+            "message": "Improperly formed request",
+            "data": "InternalServerError: the backend hiccupped",
+        }
+        exc = await driver(echo)
+        assert exc.structural_terminal is False
+        assert exc.transient is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_other_terminal_errors_are_not_structural(self, driver):
+        """A spent usage limit is terminal but NOT structural: a fresh context
+        can succeed once the allowance resets, so it must not carry the tag that
+        stops a loop from ever re-firing."""
+        usage = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "You have reached your usage limit for this period.",
+        }
+        exc = await driver(usage)
+        assert exc.transient is False
+        assert exc.structural_terminal is False

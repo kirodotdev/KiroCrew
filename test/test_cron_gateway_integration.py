@@ -1056,6 +1056,32 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
 
 class TestLlmCronAdmission:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_modes", [False, True])
+    async def test_execution_binding_runs_off_loop(self, monkeypatch, with_modes):
+        from kiro_crew import execution_context
+
+        gw = _make_gw_for_llm()
+        gw.ctx_builder._session_memory_modes = {} if with_modes else None
+        job = _make_llm_job()
+        loop_thread = threading.get_ident()
+        bindings = []
+        original = execution_context.bind_session_execution
+
+        def bind(key, execution):
+            bindings.append((threading.get_ident(), key, execution))
+            return original(key, execution)
+
+        monkeypatch.setattr(execution_context, "bind_session_execution", bind)
+        result, _ = await asyncio.wait_for(_run_llm_callback(gw, job), 10)
+        assert result == "Agent response here"
+        # Mode publication also tightens the same canonical record.
+        assert len(bindings) == (2 if with_modes else 1)
+        thread, key, captured = bindings[0]
+        assert all(thread != loop_thread for thread, _, _ in bindings)
+        assert key == f"cron:{job.id}"
+        assert captured == execution_context.read_session_execution(key, required=True)
+
+    @pytest.mark.asyncio
     async def test_session_closing_retains_undispatched_one_shot(self):
         from kiro_crew.session import SessionClosingError
 
@@ -1783,7 +1809,7 @@ class TestCronPoolQueueWait:
 
             ran = threading.Event()
 
-            async def _execute(_job):
+            async def _execute(_job, _meta=None):
                 return await ex.run_in_cron_pool(ran.set, timeout=30, queue_timeout=60)
 
             svc._execute = _execute  # type: ignore[method-assign]
@@ -1815,7 +1841,7 @@ class TestCronPoolQueueWait:
         )
         job.timeout_secs = 2
 
-        async def _slow(_job):
+        async def _slow(_job, _meta=None):
             await asyncio.sleep(30)
 
         svc._execute = _slow  # type: ignore[method-assign]

@@ -33,8 +33,31 @@ describe('orderFoldersWithPaths', () => {
     expect(byId.get('c1')!.ancestors).toEqual(['Work'])
   })
 
-  it('keeps the full ancestry path so same-named subfolders stay unambiguous', () => {
-    const byId = new Map(orderFoldersWithPaths(nested).map(o => [o.folder.id, o]))
+  it('normalizes a non-string name in ancestors AND path, rather than coercing it', () => {
+    // `ancestors` and `path` are consumed as strings by everything downstream: the
+    // launcher hands each ancestor to `fuzzyMatch` as a keyword, and that calls
+    // `.toLowerCase()` on its candidate — so an unguarded non-string parent name off
+    // disk throws inside the caller's render memo. Read as EMPTY, never stringified:
+    // `join` alone would render a numeric name as `42`, which is the coercion this
+    // module's own rule rejects, and would make the folder findable by typing `42`.
+    const malformed = [
+      { id: 'p', name: 7, order: 0 },
+      { id: 'c', name: 'Child', order: 0, parent_id: 'p' },
+      { id: 'p2', name: null, order: 1 },
+      { id: 'c2', name: 'Other', order: 0, parent_id: 'p2' },
+    ] as unknown as ChatFolder[]
+    const byId = new Map(orderFoldersWithPaths(malformed).map(o => [o.folder.id, o]))
+    for (const id of ['p', 'c', 'p2', 'c2']) {
+      const row = byId.get(id)!
+      expect(typeof row.path, `${id} path`).toBe('string')
+      for (const a of row.ancestors) expect(typeof a, `${id} ancestor`).toBe('string')
+    }
+    expect(byId.get('c')!.ancestors).toEqual([''])
+    expect(byId.get('c')!.path).not.toContain('7')
+    expect(byId.get('p')!.path).toBe('')
+  })
+
+  it('keeps the full ancestry path so same-named subfolders stay unambiguous', () => {    const byId = new Map(orderFoldersWithPaths(nested).map(o => [o.folder.id, o]))
     // Both subfolders are named "Drafts"; their paths disambiguate them.
     expect(byId.get('c1')!.path).toBe('Work › Drafts')
     expect(byId.get('c2')!.path).toBe('Personal › Drafts')

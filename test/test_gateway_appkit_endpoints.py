@@ -38,6 +38,18 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.handlers import api_mcp_server_detail
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
 
+
+class _StageManager:
+    def running_agents_for(self, _parent: str) -> list[dict]:
+        return []
+
+    async def has_pending_work_for_async(self, _parent: str) -> bool:
+        return False
+
+    async def wait_for_parent_reports(self, _parent: str, _owner: str = "") -> bool:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -139,7 +151,20 @@ class TestMcpServerRegistration:
 
     @asynccontextmanager
     async def _make_client(self):
-        app = web.Application()
+        # ``/api/mcp/servers`` is listed in
+        # ``dashboard.server._STRICT_INTERNAL_API_PATHS``, so the transport this
+        # class exercises is the App Kit SDK's: a loopback process presenting
+        # ``X-Internal-Secret``, which ``token_auth`` grants and marks
+        # ``internal_auth``. The handler reads that mark to tell this caller from a
+        # browser session, which must be the dashboard owner, so the fixture has to
+        # publish it the way the middleware does or every request here lands on the
+        # owner gate instead of on the registration behaviour under test.
+        @web.middleware
+        async def _internal_secret_grant(request, handler):
+            request["internal_auth"] = True
+            return await handler(request)
+
+        app = web.Application(middlewares=[_internal_secret_grant])
         app.router.add_put("/api/mcp/servers/{name}", api_mcp_server_detail)
         app.router.add_delete("/api/mcp/servers/{name}", api_mcp_server_detail)
         async with TestClient(TestServer(app)) as c:
@@ -2803,8 +2828,7 @@ class TestNoteEndpoint:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
 
         slot = _ChatSlot("stage-slot", mode="orchestrator")
         slot._auto_run = False
@@ -2849,8 +2873,7 @@ class TestNoteEndpoint:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
 
         slot = _ChatSlot("stage-slot", mode="orchestrator")
         slot._auto_run = True

@@ -51,6 +51,10 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // Mode" to "Crew Members" when Crew Mode retired; the flag and the card are
   // the same ones, only the label (and so the id) narrowed.
   'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
+  // The peer-session card was relabeled from "Remote instance sessions" back to
+  // "Remote crew sessions" when the remote-crew vocabulary was restored. Same
+  // flag, same card — only the label, and so the derived id, moved.
+  'developer.remote-instance-sessions': 'developer.remote-crew-sessions',
 }
 
 /** Current registry ids, for fail-safe legacy rewrites below. */

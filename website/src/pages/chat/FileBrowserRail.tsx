@@ -7,6 +7,12 @@ import { api } from '../../api/client'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
 import ErrorNotice from '../../components/ErrorNotice'
 import { findReport } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
+import {
+  gitFilterRefusalCause,
+  gitFilterRefusalCopyKey,
+  isGitFilterRefusal,
+} from '../../utils/gitStatusError'
 import { EmptyState } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { cn } from '../../lib/utils'
@@ -347,7 +353,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     _setQuery(v)
   }
 
-  const { data: status, isError: statusError } = useQuery({
+  const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
     enabled: !!projectDir,
@@ -355,6 +361,21 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     refetchOnWindowFocus: true,
   })
   const changedCount = status?.files?.length ?? 0
+  // The server caps the listing at 500 and says so. Unless the badge reads that
+  // flag the cap reads as the total, so a repo with 900 changed files shows a
+  // bare `500` -- a wrong number rather than a rounded one.
+  const changedTruncated = status?.truncated === true
+  // Tooltip for the Changed badge. Reuses the Git panel's catalog entries so
+  // this surface adds no i18n keys, the same choice the composer badge made for
+  // the same claim. The mode name stays the first line so the button keeps
+  // saying what it does; `aria-label` is left alone so the accessible NAME is
+  // still the action, not the count.
+  const changedTitle = changedCount > 0
+    ? `${t('pages.chat.fileBrowserRail.changed')}\n${t(
+        changedTruncated ? 'components.gitPanel.uncommitted_capped' : 'components.gitPanel.uncommitted',
+        { count: changedCount },
+      )}`
+    : t('pages.chat.fileBrowserRail.changed')
 
   // Both queries poll (10s tree / 5s status); this is the "I changed something
   // outside the app, show me now" escape hatch. `refetchQueries` (not
@@ -436,11 +457,19 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               onClick={() => setChangedMode(true)}
               aria-pressed={changedMode}
               className={segBtn(changedMode)}
-              title={t('pages.chat.fileBrowserRail.changed')}
+              title={changedTitle}
               aria-label={t('pages.chat.fileBrowserRail.changed')}
             >
               <Diff size={12} className="shrink-0" />
-              {changedCount > 0 && <span className="opacity-60 text-[10px] tabular-nums">{changedCount}</span>}
+              {/* `500+` when capped: the count is a floor, not a total. Bare
+                  glyph concatenation rather than a catalog entry, matching the
+                  composer badge -- a `{{count}}+` string of its own would be a
+                  second spelling of one claim. */}
+              {changedCount > 0 && (
+                <span className="opacity-60 text-[10px] tabular-nums" data-testid="file-browser-rail-changed-count">
+                  {changedTruncated ? `${changedCount}+` : changedCount}
+                </span>
+              )}
             </button>
           </div>
           )}
@@ -456,7 +485,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               aria-label={contentMode
                 ? t('pages.chat.fileBrowserRail.content_placeholder')
                 : t('pages.chat.fileBrowserRail.filter_placeholder')}
-              className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text"
+              className="flex-1 min-w-0 bg-transparent border-none outline-hidden text-[12px] text-text"
             />
             {query && (
               <button
@@ -512,13 +541,34 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             </button>
           </div>
         </div>
-        {/* A failed status read is surfaced, not swallowed: without this the
-            Changed count silently reads 0, which is indistinguishable from a
-            clean tree. Its own row under the header (the 40px header is full).
-            File rail, no draft → hand-off on. */}
-        {statusError && (
+        {/* In All mode, a failed status read must still explain why the Changed
+            count is unavailable. In Changed mode the Pierre tree owns this same
+            query failure and renders the one-sentence notice plus its structured
+            agent handoff; mounting this row there would duplicate one failure. */}
+        {statusError && !changedMode && (
           <div className="px-2 pt-1.5 shrink-0">
-            <ErrorNotice variant="inline" message={t('pages.chat.fileBrowserRail.git_status_failed')} askAgent />
+            {/* A filter-driver refusal is NOT an outage, so it must not wear the
+                generic failed copy here. That spelling is permanent for an
+                LFS-configured repository -- it would say "failed" on every 5 s
+                poll, forever, with no cause and no "retry won't help" -- which is
+                the defect the refusal codes exist to end one panel over. Same
+                localized sentence the Git panel shows, so there is one wording
+                for one condition rather than three to keep in step. */}
+            {/* NO title here, unlike the Git panel. `inline` lays title and
+                message out as flex SIBLINGS, so at this rail's 300-520px the
+                title wraps into a five-line stack of two-word fragments beside a
+                narrow column of message -- the captured frame is what settled
+                that. The title exists in the panel to separate a refusal from a
+                coexisting outage notice; nothing renders beside this one, and
+                the message names the cause by itself. */}
+            <ErrorNotice
+              variant="inline"
+              message={isGitFilterRefusal(statusError)
+                ? t(gitFilterRefusalCopyKey(gitFilterRefusalCause(statusError)))
+                : t('pages.chat.fileBrowserRail.git_status_failed')}
+              report={findReport(errMessage(statusError))}
+              askAgent
+            />
           </div>
         )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">

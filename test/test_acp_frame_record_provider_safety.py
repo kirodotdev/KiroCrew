@@ -100,6 +100,43 @@ async def _read_one(backend: str, frame: dict = WIRE_FRAME) -> JsonRpcMessage:
     return msg
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+@pytest.mark.parametrize("backend", PROVIDERS)
+async def test_restricted_client_never_records_payload(backend, mode, monkeypatch):
+    recorder = AsyncMock()
+    monkeypatch.setattr("kiro_crew.acp.client.record_frame", recorder)
+    client = _client_with_wire(backend, WIRE_FRAME)
+    client.memory_mode = mode
+
+    message = await client._read_message(timeout=5)
+
+    assert message.params == WIRE_FRAME["params"]
+    recorder.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_restricted_runtime_disables_recording_before_start_await(mode, monkeypatch):
+    runtime = AcpRuntime()
+    runtime._initialized = True
+    entered = asyncio.Event()
+
+    async def delayed_work_dir(cwd):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "_session_work_dir", delayed_work_dir)
+    task = asyncio.create_task(runtime.create_session(memory_mode=mode))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    try:
+        assert runtime.recording_allowed is False
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 class _LiveRuntime:
     """An ``AcpRuntime`` for *backend* with a fake process and a live reader task.
 

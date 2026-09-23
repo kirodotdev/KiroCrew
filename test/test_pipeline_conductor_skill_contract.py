@@ -49,6 +49,7 @@ DESIGN_DOC = REPO_ROOT / "docs" / "request-for-change" / "rfc-pipeline-conductor
 #: none of them.
 BUNDLED_SCRIPTS = (
     "claim_preflight.py",
+    "coverage_filter.py",
     "fleet_probe.py",
     "credit_spend.py",
     "spec_check.py",
@@ -122,6 +123,72 @@ class TestAgentPromptNamesEveryScript:
         prompt = _flat(agent._PIPELINE_CONDUCTOR_SYSTEM_PROMPT)
         assert "does not carry" in prompt
         assert "never as permission" in prompt
+
+
+class TestQueueBuildExclusionIsDocumented:
+    """The queue build must subtract covered items, and must not read the
+    subtraction backwards.
+
+    The defect this pins: a work source selects and excludes by LABEL, and a PR
+    carrying ``Fixes #N`` applies no label, so a label-shaped selector emits
+    items whose fix is already in flight -- measured on this repo, 25 of 29
+    label-clean candidates. The per-item preflight refuses each of them, one
+    dispatch-time forge round at a time, which is the rediscovery the filter
+    moves upstream.
+
+    Every assertion here is about the DIRECTION of the cheaper answer. A filter
+    that only subtracts is safe beside a second evidence source; the same filter
+    read as a certificate would widen what gets dispatched on weaker evidence
+    than the authority uses, so "UNCOVERED is not permission" is the clause that
+    has to survive a rewrite.
+    """
+
+    HEADING = "### Queue build exclusion: `coverage_filter.py`"
+
+    def test_the_queue_build_step_cites_the_filter(self):
+        startup = _flat(_skill_section("## Startup (once per run)"))
+        assert "coverage_filter.py" in startup
+        # And says WHY a label-shaped selector is not enough, so the next editor
+        # cannot read the call as belt-and-braces and drop it.
+        assert "label" in startup
+
+    def test_the_filter_section_documents_every_exit_code(self):
+        rows = {
+            row.split("|")[1].strip()
+            for row in _skill_section(self.HEADING).splitlines()
+            if row.startswith("|") and row.count("|") >= 3
+        }
+        for code in ("0", "2", "3"):
+            assert code in rows, f"exit code {code} has no row in the filter table"
+
+    def test_uncovered_is_not_permission(self):
+        section = _flat(_skill_section(self.HEADING))
+        assert "not permission" in section
+        # The reason, not just the rule: a reference made in a PR comment is in
+        # the item's timeline and not in this answer.
+        assert "comment" in section
+        assert "`claim_preflight.py` still decides" in section
+
+    def test_an_unreadable_forge_keeps_every_candidate(self):
+        section = _flat(_skill_section(self.HEADING))
+        assert "no exclusion was computed" in section
+        assert "keep every candidate" in section
+        # An empty answer must not render as a finding about the items.
+        assert 'never read it as "none are covered"' in section
+
+    def test_an_absent_filter_script_has_a_defined_behavior(self):
+        section = _flat(_skill_section(self.HEADING))
+        assert "absent from your install" in section
+
+    def test_the_filter_is_described_as_subtractive_only(self):
+        section = _flat(_skill_section(self.HEADING))
+        assert "only ever subtracts" in section
+
+    def test_the_filter_costs_one_call_for_the_whole_batch(self):
+        """The whole reason it is a separate script. A per-item call here would
+        reinstate the cost that kept the check downstream of the scanner."""
+        section = _flat(_skill_section(self.HEADING))
+        assert "one forge call for the whole batch" in section
 
 
 class TestClaimPreflightIsDocumented:

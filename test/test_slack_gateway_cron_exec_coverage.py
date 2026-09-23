@@ -1188,7 +1188,7 @@ class TestDeliverScriptResult:
                 threads.append(True)  # on the loop -- the defect
             except RuntimeError:
                 threads.append(False)  # in a worker thread -- correct
-            return ({}, True, None, {}, None)
+            return ({}, True, None, {}, None, None)
 
         job = _job(script="probes.py:check", session_key="dashboard:chat-cold")
         result = {"status": "report", "message": "cold session"}
@@ -1533,6 +1533,7 @@ async def _cron_message_cb(
     orch.ctx_builder.hooks = MagicMock()
     orch.subagent_mgr = MagicMock()
     orch.subagent_mgr.has_pending_work_for = MagicMock(return_value=False)
+    orch.subagent_mgr.has_pending_work_for_async = AsyncMock(return_value=False)
     _turn = (
         AsyncMock(side_effect=error)
         if error is not None

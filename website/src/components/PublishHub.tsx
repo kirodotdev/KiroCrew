@@ -14,9 +14,13 @@ import { AlertCircle, AlertTriangle, Check, ExternalLink, Globe, Settings, Uploa
 import { api, type AppPublishProvider } from '../api/client'
 import { Card, Btn, ContentSkeleton } from './ui'
 import PublicPublishAckModal from './PublicPublishAckModal'
+import ErrorDetails from './ErrorDetails'
+import ErrorNotice from './ErrorNotice'
 import SimpleSelect from './SimpleSelect'
 import type { Artifact, PublishProviderDescriptor } from '../types'
 import { safeHttpUrl } from '../lib/safeUrl'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 
 import { i18nT } from '../i18n/t'
 interface UnifiedProvider {
@@ -34,11 +38,32 @@ interface UnifiedProvider {
    *  Only a provider knows WHICH action makes it available, so a core row explains
    *  itself here rather than sending the user to a generic setup page. */
   installHint?: string
+  /** Whether the published link is served with no authentication. Decides whether the
+   *  public-exposure warning and the blocking acknowledgment stand in front of the
+   *  confirm: both say the content is going onto the open internet, which is false for
+   *  a destination that stores it privately behind a login -- and a false gate teaches
+   *  the user to click past the true one. App rows are the public-web deploy surface,
+   *  so they are always reachable; a core row declares it via its descriptor. */
+  publicReachable: boolean
 }
 
 const ICONS: Record<string, typeof Globe> = { Globe, Upload, Settings, ExternalLink }
 function iconFor(name: string): typeof Globe {
   return ICONS[name] ?? Upload
+}
+
+/**
+ * Whether a provider row is the Artifact Deploy destination (publish to a public
+ * HTTPS URL in the operator's own AWS account).
+ *
+ * Identified by its endpoint or id rather than by its display label, which is
+ * translated and would stop matching in every language but English. An app row
+ * declares the deploy endpoint; the core registry row carries the `deploy-web`
+ * id. A row that is neither is some other destination and is never filtered.
+ */
+export function isPublicWebDeploy(p: { id: string; app?: { endpoint?: string } }): boolean {
+  if (p.id === 'deploy-web') return true
+  return (p.app?.endpoint ?? '').startsWith('/api/deploy/')
 }
 
 /**
@@ -177,6 +202,7 @@ export function buildProviderList(
       configured: p.configured,
       setupRoute: p.setupRoute,
       app: p,
+      publicReachable: true,
     })
   }
   // Core-registry rows come SECOND, and an id already claimed by an app row is
@@ -200,6 +226,9 @@ export function buildProviderList(
       setupRoute: '',
       core: c,
       installHint: c.install_hint,
+      // Only an explicit `false` turns the gate off. An older gateway omits the
+      // field, and the wrong default there would be a public link with no warning.
+      publicReachable: c.public_reachable !== false,
     })
   }
   return list
@@ -229,7 +258,14 @@ export function PublishHub({
     staleTime: 30_000,
   })
   const coreProviders = coreQuery.data?.providers ?? []
+  // Artifact Deploy is a Feature Preview, so its destination is not offered here
+  // until the operator opts in: publishing through it spends money in a real AWS
+  // account and puts the content on the open internet. Filtered at the ROW level
+  // rather than by hiding the panel, because an artifact's other destinations are
+  // unaffected by that choice.
+  const deployPreview = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const unified = buildProviderList(appProviders, artifact.kind, coreProviders)
+    .filter(p => deployPreview || !isPublicWebDeploy(p))
 
   const [selectedId, setSelectedId] = useState<string>('')
   const [preview, setPreview] = useState<Record<string, unknown> | null>(null)
@@ -240,7 +276,7 @@ export function PublishHub({
   // of an error rather than a non-empty `url`: a destination can publish
   // successfully and expose no browsable link, and conflating the two is what
   // rendered a succeeded publish as a blank error.
-  const [result, setResult] = useState<{ url?: string; error?: string; notice?: string; notice_code?: string } | null>(null)
+  const [result, setResult] = useState<{ url?: string; error?: string; notice?: string; notice_code?: string; details?: string; remediation?: string } | null>(null)
   const [busy, setBusy] = useState(false)
   // Non-null while the blocking public-exposure acknowledgment is on screen.
   // `overrideScan` remembers WHICH commit path opened it, so acknowledging
@@ -279,11 +315,11 @@ export function PublishHub({
     setPreview(null)
     try {
       if (selected.core) {
-        // A core row does NOT publish here. PublicPublishAckModal is the blocking
-        // acknowledgment in front of every action that creates a publicly accessible
-        // website (#3599), and it is reached from the confirm step -- so posting on this
-        // first click would make content world-readable with no consent shown at all.
-        // The backend has no preview to return for this path, so the confirm step is
+        // A core row does NOT publish here. For a publicly reachable destination,
+        // PublicPublishAckModal is the blocking acknowledgment in front of the publish
+        // (#3599), and it is reached from the confirm step -- so posting on this first
+        // click would make content world-readable with no consent shown at all. The
+        // backend has no preview to return for this path, so the confirm step is
         // entered locally: consent is about what is ABOUT to happen, not about a digest.
         setPreview({ requires_confirm: true, core: true })
         return
@@ -386,8 +422,15 @@ export function PublishHub({
         setPreview(null)
       } else if (data?.error) {
         // Checked BEFORE the outcome: an error response is authoritative even if
-        // it happens to carry other fields.
-        setResult({ error: data.error })
+        // it happens to carry other fields. `details` and `remediation` ride
+        // along so the banner can hold the plain sentence while the technical
+        // half goes behind the Details toggle.
+        setResult({
+          error: data.error,
+          ...(typeof data.details === 'string' && data.details ? { details: data.details } : {}),
+          ...(typeof data.remediation === 'string' && data.remediation
+            ? { remediation: data.remediation } : {}),
+        })
       } else if (outcome) {
         // `notice_code` travels with `notice` here for the same reason as the two
         // sibling sites above: the catalog selector keys the remedy copy off the code,
@@ -408,6 +451,22 @@ export function PublishHub({
       setBusy(false)
       publishInFlight.current = false
     }
+  }
+
+  /** The one place a commit click lands, for BOTH paths (clean confirm and scan
+   *  override). A publicly reachable destination goes through the blocking
+   *  acknowledgment first, and the acknowledgment's confirm is what calls
+   *  `confirmPublish`. A destination that requires authentication publishes on this
+   *  click: the acknowledgment's sentence -- "publish publicly" -- is false there, and
+   *  the same `scanBlocked` reset the acknowledgment performs is done here so the
+   *  override path settles identically whichever way it went. */
+  const commitPublish = (overrideScan: boolean) => {
+    if (selected?.publicReachable !== false) {
+      setAck({ overrideScan })
+      return
+    }
+    if (overrideScan) setScanBlocked(null)
+    void confirmPublish(overrideScan)
   }
 
   // While EITHER provider source is still loading, hold a skeleton rather than the
@@ -500,12 +559,14 @@ export function PublishHub({
             {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
           </div>
-          <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
-            <AlertTriangle className="lucide-inline shrink-0" />
-            <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
-          </div>
+          {selected.publicReachable && (
+            <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+              <AlertTriangle className="lucide-inline shrink-0" />
+              <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+            </div>
+          )}
           <div className="flex gap-2">
-            <Btn primary onClick={() => setAck({ overrideScan: false })} disabled={busy}>
+            <Btn primary onClick={() => commitPublish(false)} disabled={busy}>
               {busy ? i18nT('components.publishHub.publishing_2') : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
             </Btn>
             <Btn onClick={() => { setPreview(null); setSelectedId('') }}>{i18nT('components.publishHub.back')}</Btn>
@@ -536,12 +597,14 @@ export function PublishHub({
               <p className="text-[12px] text-muted">
                 {i18nT('components.publishHub.publishing_is_blocked_until_scan_findings_are_re')}
               </p>
-              <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
-                <AlertTriangle className="lucide-inline shrink-0" />
-                <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
-              </div>
+              {selected.publicReachable && (
+                <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+                  <AlertTriangle className="lucide-inline shrink-0" />
+                  <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+                </div>
+              )}
               <div className="flex gap-2">
-                <Btn danger onClick={() => setAck({ overrideScan: true })} disabled={busy}>
+                <Btn danger onClick={() => commitPublish(true)} disabled={busy}>
                   {busy ? i18nT('components.publishHub.publishing_2') : i18nT('components.publishHub.override_publish_anyway')}
                 </Btn>
                 <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
@@ -608,8 +671,14 @@ export function PublishHub({
       {result && (
         <div className="space-y-2">
           {result.error ? (
-            <div className="flex items-center gap-2 text-sm text-danger">
-              <AlertCircle size={14} /> {result.error}
+            <div className="space-y-1.5">
+              {/* Through ErrorNotice rather than a hand-written danger row: a
+                  failed publish is a dead end that needs the structured surface
+                  and the agent hand-off (errors-use-error-notice). */}
+              <ErrorNotice message={result.error} askAgent />
+              {/* Same split the deploy refusals use: the sentence stays in the
+                  banner, the stack and parameter names go one click away. */}
+              <ErrorDetails details={result.details} remediation={result.remediation} />
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -641,7 +710,10 @@ export function PublishHub({
       )}
 
       {/* Blocking public-exposure acknowledgment — the last thing between a
-          human and a world-readable URL, for BOTH commit paths. */}
+          human and a world-readable URL, for BOTH commit paths. Opened only by
+          `commitPublish`, which never opens it for a destination that requires
+          authentication: there the URL is not world-readable and the
+          acknowledgment's own words would be untrue. */}
       <PublicPublishAckModal
         open={!!ack}
         target={artifact.slug}

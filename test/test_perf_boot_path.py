@@ -37,6 +37,35 @@ from kiro_crew.slack.gateway import GatewayOrchestrator
 _SRC = str(Path(kiro_crew.__file__).resolve().parents[1])
 
 
+@pytest.fixture(autouse=True)
+def _close_knowledge_stores(monkeypatch):
+    """Close the SQLite connection each ``KnowledgeStore`` opened on this thread.
+
+    ``KnowledgeStore`` opens a per-thread SQLite connection (three descriptors
+    in WAL) on first ``db`` access and never closes it without an explicit
+    call; the scan tests here would otherwise leave the test-thread connection
+    open until GC. Track every instance and release it at teardown.
+    """
+    from kiro_crew.knowledge import store as _store_mod
+
+    created = []
+    orig_init = _store_mod.KnowledgeStore.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(_store_mod.KnowledgeStore, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for store in created:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+
 def _probe(snippet: str) -> dict:
     """Run *snippet* in a clean interpreter, returning the JSON it prints.
 
@@ -622,3 +651,33 @@ class TestOptionalMcpServersAreNotImportedByTheCli:
             "default-disabled server costs gateway boot nothing"
         )
         assert got["computer"] is False
+
+
+# ── Gateway boot: the panel subsystem stays off the boot chain ──────────────
+
+
+class TestPanelSubsystemIsNotLoadedAtBoot:
+    """``dashboard/handlers/members.py`` is imported while the gateway boots, and
+    the panel subsystem is optional: a host that never assigns a panel would pay
+    for loading it before the socket is bound. Its one consumer imports it inside
+    the function, so the module must stay out of ``sys.modules``."""
+
+    def test_handlers_import_does_not_load_agent_panel(self) -> None:
+        result = _probe(
+            "import json, sys\n"
+            "import kiro_crew.dashboard.handlers  # noqa: F401\n"
+            "print(json.dumps({\n"
+            "    'panel': 'kiro_crew.agent_panel' in sys.modules,\n"
+            "    'members': 'kiro_crew.dashboard.handlers.members' in sys.modules,\n"
+            "}))\n"
+        )
+        # Pin the assumption the guard rests on: the boot chain really does pull
+        # the members handlers in. If that stops holding, this pin goes green for
+        # the wrong reason, so it must fail instead.
+        assert result["members"] is True, (
+            "the members handlers are no longer on the boot import chain; "
+            "move this pin to whatever imports agent_panel now"
+        )
+        assert result["panel"] is False, (
+            "importing the dashboard handlers must not load kiro_crew.agent_panel"
+        )

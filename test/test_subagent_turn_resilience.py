@@ -107,12 +107,14 @@ def _mock_sessions(stream_factory) -> MagicMock:
     # would hand back coroutines nobody awaits.
     provider.context_window_tokens = lambda: 0
     provider.context_used_tokens = lambda: 0
+    provider.mcp_session_report = MagicMock(return_value=None)
     provider.stream = MagicMock(side_effect=stream_factory)
     sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
     sessions.release = MagicMock()
     sessions.reset = AsyncMock()
     sessions.record_success = MagicMock()
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.get_approval_policy = MagicMock(return_value="auto")
     sessions.has_session = MagicMock(return_value=True)
     sessions._provider = provider
@@ -141,6 +143,28 @@ async def _spawn_and_wait(mgr: SubagentManager, task: str = "do work") -> Subage
         assert info is not None
         await mgr._tasks[info.id]
     return info
+
+
+@pytest.mark.asyncio
+async def test_default_budget_allows_work_past_one_hundred_tools():
+    from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+
+    async def stream(*_args, **_kwargs):
+        for request_id in range(101):
+            yield LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title="read bounded input",
+                request_id=request_id,
+                tool_kind="mcp",
+            )
+        yield _text_event("verified result")
+        yield _complete_event()
+
+    manager = _manager(_mock_sessions(stream))
+    info = await _spawn_and_wait(manager)
+    assert info.error == ""
+    assert info.result == "verified result"
+    assert info.turns == 101
 
 
 # ── 1. Transient-backend retry ───────────────────────────────────────
@@ -179,6 +203,83 @@ async def test_transient_error_pretoken_retries_same_prompt():
     assert "recovered result" in info.result
     assert calls == ["built_message", "built_message"]  # pre-token: same prompt
     assert any(e[0] == "subagent_retrying" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_registration_rate_limited_death_retries_pretoken_and_recovers():
+    """A pre-token AcpRegistrationRateLimited (runtime death whose stderr shows
+    a throttled dynamic registration) rides the same zero-activity ladder as any
+    transient: the SAME prompt is re-sent after backoff and the run completes,
+    instead of surfacing a terminal generic process death."""
+    from kiro_crew.acp.client import registration_rate_limited_error
+
+    calls: list[str] = []
+    throttled = registration_rate_limited_error(
+        "Runtime process died during prompt",
+        "Dynamic registration failed: Registration failed: HTTP 429 Too Many Requests",
+    )
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) <= 2:
+                raise throttled
+            yield _text_event("registered and recovered")
+            yield _complete_event()
+
+        return _gen()
+
+    mgr = _manager(_mock_sessions(stream_factory))
+    # The typed message names a throttle, so the dependency adapters would
+    # classify it and park the run on a coordinator wake this harness does not
+    # drive; a null coordinator pins the IN-TURN ladder, which is the seam
+    # under test.
+    mgr.dependency_coordinator_async = AsyncMock(return_value=None)
+    with patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.error == ""
+    assert "registered and recovered" in info.result
+    # Zero activity on every failed attempt: the original prompt is replayed,
+    # never a continuation that could assume prior work.
+    assert calls == ["built_message"] * 3
+
+
+@pytest.mark.asyncio
+async def test_registration_rate_limited_exhaustion_surfaces_typed_message():
+    """Persistent registration throttling fails after the bounded budget with
+    the typed message (guidance, one retained cause) — not a stderr wall."""
+    from kiro_crew.acp.client import registration_rate_limited_error
+
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            raise registration_rate_limited_error(
+                "Runtime process died during prompt",
+                "Dynamic registration failed: Registration failed: HTTP 429 Too Many Requests",
+            )
+            yield  # noqa: unreachable — async generator marker
+
+        return _gen()
+
+    mgr = _manager(_mock_sessions(stream_factory))
+    # Same in-turn pin as the recovery test above: the message would otherwise
+    # classify as a dependency signal and wait on an undriven coordinator.
+    mgr.dependency_coordinator_async = AsyncMock(return_value=None)
+    with (
+        patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0),
+        patch("kiro_crew.subagent.configured_fallback_chain", return_value=()),
+    ):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.done is True
+    assert "rate-limited" in info.error
+    assert "retry later" in info.error
+    assert len(calls) == 1 + TRANSIENT_RETRIES  # initial + bounded retries
 
 
 @pytest.mark.asyncio
@@ -1011,6 +1112,11 @@ def test_no_raw_cancel_outside_chokepoint():
         # trigger a respawn (it only ever DISPATCHES via continue_conversation,
         # which cancel_all pre-empts by cancelling watchers first).
         "followup_watcher.cancel()",
+        # The pending async OPEN of the durable task store, cancelled by ``close()``.
+        # It is a store-open task, not a managed run: no terminal marker applies and
+        # cancelling it cannot trigger a respawn. Left pending it would complete after
+        # the close and re-attach the connection this method exists to release.
+        "taskq_open_task.cancel()",
     )
     chokepoint_src = inspect.getsource(subagent_mod.SubagentManager._cancel_task_intentionally)
     assert "task.cancel()" in chokepoint_src
@@ -1027,6 +1133,7 @@ def test_no_raw_cancel_outside_chokepoint():
         and "_reaper_task" not in line
         and "recovery_task" not in line
         and "report_task" not in line
+        and "taskq_open_task" not in line
     ]
     assert len(generic) == 1, (
         f"expected exactly one raw task.cancel() (the chokepoint body), " f"found: {generic}"

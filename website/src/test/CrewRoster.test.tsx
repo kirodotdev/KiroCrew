@@ -278,7 +278,7 @@ describe('crew roster — memory ownership notice', () => {
      while a match on incidental words would keep passing after the disclosure
      itself was dropped. The assertions below are about STRUCTURE — one
      page-level notice, two per-binding tips. */
-  const NOTICE = i18nT('pages.kiroCrewAgentsPage.bindings_preview_notice')
+  const NOTICE = i18nT('pages.kiroCrewAgentsPage.bindings_member_memory_notice')
   const TIP = i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')
 
   /* The view choice persists to localStorage, so a test here that switches to
@@ -307,7 +307,7 @@ describe('crew roster — memory ownership notice', () => {
     expect(screen.getAllByText(NOTICE)).toHaveLength(1)
   })
 
-  it('keeps workspace guidance and describes the current V1 memory before opt-in', async () => {
+  it('keeps workspace guidance and explains that existing V1 memory stays unchanged', async () => {
     await renderRoster()
     const sheet = await openEditor('oncall')
     gotoPane(sheet, 'place')
@@ -315,8 +315,8 @@ describe('crew roster — memory ownership notice', () => {
     // so the page-level notice is not readable from here — the tooltip is the
     // only place this caveat reaches a user who is mid-edit.
     expect(within(sheet).getAllByTitle(TIP)).toHaveLength(1)
-    const memory = within(sheet).getByText(/This member uses its current memory \(V1\)\./)
-    expect(memory).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
+    const memory = within(sheet).getByText(/This member keeps its current memory \(V1\)\./)
+    expect(memory).toHaveTextContent(/^This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\.$/)
     expect(within(sheet).queryByText(/This member cannot return to its previous memory/)).toBeNull()
   })
 
@@ -576,7 +576,7 @@ describe('crew editor — opening', () => {
     // Create mode has no crew to edit yet, so the bindings start on the defaults.
     expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('default')
     expect(within(sheet).queryByRole('combobox', { name: 'Memory Store' })).not.toBeInTheDocument()
-    expect(within(sheet).getByText(/own empty private memory/i)).toBeInTheDocument()
+    expect(within(sheet).getByText(/empty member memory/i)).toBeInTheDocument()
     // The Agent Template is the exception: it has NO safe default, because
     // pre-filling the built-in made a new crew an alias for the default agent.
     expect(within(sheet).getByRole('combobox', { name: 'Agent Template' }))
@@ -1452,8 +1452,39 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?member=staging$/)
   })
 
+  it.each([
+    ['memory unavailable', 409, '{"code":"member_memory_unavailable"}'],
+    ['template lineage', 409, '{"code":"lineage_unverifiable"}'],
+    ['foreign template', 409, '{"code":"foreign_private_copy"}'],
+    ['unknown code', 409, '{"code":"future_conflict"}'],
+    ['uncoded conflict', 409, '{"error":"Creation failed"}'],
+    ['malformed body', 409, 'not JSON'],
+    ['null body', 409, 'null'],
+    ['non-string code', 409, '{"code":409}'],
+    ['non-conflict status', 400, '{"code":"agent_exists"}'],
+  ])('preserves %s instead of reporting a duplicate member', async (_label, status, body) => {
+    const message = 'Creation is unavailable; retry after repairing the configuration.'
+    mockApi.createKirocrewAgent.mockRejectedValueOnce(new ApiError(status, message, body))
+    renderPage('/capabilities?tab=crews&new=1&from=members')
+    const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
+    const name = within(sheet).getByPlaceholderText('e.g. oncall')
+    fireEvent.change(name, { target: { value: 'staging' } })
+    const template = within(sheet).getByRole('combobox', { name: 'Agent Template' })
+    fireEvent.keyDown(template, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'oncall-agent' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Create member' }))
+    const err = await screen.findByTestId('crew-sheet-error')
+    expect(err).toHaveTextContent(message)
+    expect(err).not.toHaveTextContent('already exists')
+    expect(name).toHaveValue('staging')
+    expect(template).toHaveTextContent('oncall-agent')
+    expect(screen.getByRole('dialog', { name: 'Add crew member' })).toBeInTheDocument()
+    expect(screen.getByTestId('location-pathname')).toHaveTextContent('/capabilities')
+    expect(mockApi.createKirocrewAgent).toHaveBeenCalledTimes(1)
+  })
+
   it('a duplicate name from the Members roster is refused in the form\'s own word', async () => {
-    mockApi.createKirocrewAgent.mockRejectedValueOnce(new ApiError(409, "Agent 'staging' already exists", '{"error":"Agent \'staging\' already exists"}'))
+    mockApi.createKirocrewAgent.mockRejectedValueOnce(new ApiError(409, "Agent 'staging' already exists", '{"error":"Agent \'staging\' already exists","code":"agent_exists"}'))
     renderPage('/capabilities?tab=crews&new=1&from=members')
     const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
     const user = userEvent.setup()

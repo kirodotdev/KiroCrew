@@ -17,10 +17,12 @@ check fails it prints a specific fix command.
 
 ## Common Issues
 
-### kiro-cli is not on PATH
+### The default kiro-cli backend is not on PATH
 
-`kiro-cli` is the agent backend and is required: `agent.provider` is fixed to
-`acp`, and the gateway spawns `kiro-cli acp --agent <name>` for every session.
+`agent.provider` is fixed to ACP, while `agent.acp_backend` selects the ACP
+harness. With the default blank backend, `kiro-cli` is required and the gateway
+spawns `kiro-cli acp --agent <name>`. If you selected another ACP backend,
+`kirocrew doctor` reports that backend's executable and setup instead.
 
 ```bash
 which kiro-cli   # should print a path; empty means it is not on PATH
@@ -85,14 +87,59 @@ kirocrew setup --agent-only
 This regenerates `~/.kiro/agents/kirocrew.json` while preserving your own
 customizations in it.
 
+### Pod commands report Permission denied on the user bus
+
+`kirocrew pod` uses per-user service-manager units. On Linux it must connect to
+`$XDG_RUNTIME_DIR/bus`. Pod verb entry and the Pods row in `kirocrew doctor` run
+`systemctl --user is-system-running` once to test that connection. Low-level unit
+queries do not repeat the probe before each command.
+
+If doctor reports the bus as `sandboxed away`, the socket exists but an outer
+sandbox, such as a container or launcher shim, blocks the current process:
+
+```text
+Failed to connect to bus: Permission denied
+```
+
+Run pod commands from a host shell instead of that sandboxed process:
+
+```bash
+kirocrew doctor
+kirocrew pod status <worktree>
+kirocrew pod up <worktree>
+```
+
+If doctor reports `no user session bus`, or reports the address as stale because
+the socket it names holds nothing, no per-user systemd instance is running for
+this uid, and pods are `systemd --user` units. Start it with the
+`loginctl enable-linger <user>` command doctor prints. That command talks to the
+**system** bus, so it is not self-service on a host that cannot reach a bus at
+all: if it answers `Failed to create bus connection: Permission denied`, run it
+from a host shell, or have an administrator run
+`sudo loginctl enable-linger <uid>` — the numeric uid resolves where a name
+lookup answers `Failed to look up user <user>: No such process`. A Cloud Dev
+Desktop reaches the stale case by exporting `DBUS_SESSION_BUS_ADDRESS` from a
+login session whose manager has since stopped. To preview a worktree with no
+systemd at all, use `./dev-backend.sh`.
+
+Probe and unit operations resolve
+`systemctl` only from trusted system directories and ignore same-named PATH entries. A
+missing trusted executable, missing interpreter, or other failure while executing the
+resolved command is reported as an operational error, not as an absent backend.
+Destructive Dev Fleet cleanup then refuses to remove the worktree. Other Kiro Crew
+features do not depend on the pod service manager.
+
 ### MCP tools not working
 
-`kirocrew doctor` auto-appends missing `tools` / `allowedTools` entries for the
-managed servers and rewrites the file. It cannot auto-add a missing `mcpServers`
-entry, because the command path is install-specific. If tools still fail:
+`kirocrew doctor` auto-appends missing `tools` entries for managed servers and
+rewrites the file. It may also repair `allowedTools` for always-on servers, but
+it deliberately does not blanket-auto-approve `kirocrew-computer` or other
+opt-in servers. It cannot auto-add a missing `mcpServers` entry, because the
+command path is install-specific. If tools still fail:
 
-1. Check `~/.kiro/agents/kirocrew.json` for `kirocrew-core`, `kirocrew-cron`,
-   and `kirocrew-computer` under `mcpServers`, and for the matching `@`-prefixed
+1. Check `~/.kiro/agents/kirocrew.json` for `kirocrew-core` and
+   `kirocrew-cron` under `mcpServers`, plus `kirocrew-computer` only when
+   Computer Use is enabled and supported; check for matching `@`-prefixed
    entries under `tools`
 2. Check `~/.kiro/settings/mcp.json` for globally configured servers
 3. Re-run `kirocrew setup --agent-only`
@@ -175,7 +222,7 @@ compaction fires often:
 
 - Reduce always-on skills, which consume context in every session
 - Check memory size: large preferences and project files eat into the budget
-- Enable `skills.lazy_load` so a large skills set injects only a ranked top-K
+- Keep `skills.lazy_load` on (the default) so a large skills set injects only a ranked top-K
   instead of the whole catalog
 - Lower `session.timeout_secs` to recycle sessions more often
 
@@ -193,7 +240,8 @@ Frontend:
 cd website && npm install && npm run build 2>&1 | tail -20
 ```
 
-Node must be `20` or `>= 22`; an older Node fails the Vite build. Python must be
+Node must be `>= 22.12`, the floor Vite and Rolldown declare in
+`website/package-lock.json`; an older Node fails the Vite build. Python must be
 `>= 3.12`.
 
 ### Embedding model download failed
@@ -292,6 +340,26 @@ Common problems:
 About 700 MB of RSS is expected while the embedding model is loaded. One copy is
 shared by vector memory and the Knowledge Library. The model loads lazily on
 first use and stays resident afterwards.
+
+### `~/.kiro/crew/scratch/` is using a lot of disk
+
+Every agent process gets a directory under `~/.kiro/crew/scratch/` for its
+temp files and its `$KIROCREW_SCRATCH` work products (clones, build logs,
+screenshots). A directory is reclaimed automatically once every process
+recorded in its `.owner` file has exited and nothing in it has been touched for
+an hour, so short-lived sessions clean up on their own.
+
+One directory does not: the background runtime's tree (`runtime-*`) is shared by
+every dashboard session and is handed on from one runtime to its replacement, so
+it lives as long as the gateway does and is never pruned while a session might
+still need it. If it grows large, the fix is a gateway restart (a fresh tree is
+started and the old one is reclaimed by the hourly sweep once its processes are
+gone), or deleting large work products inside it that you know are finished.
+Do not delete a directory whose `.owner` names a live process.
+
+```bash
+du -sh ~/.kiro/crew/scratch/*/ | sort -h | tail
+```
 
 ### Subagent completion event seems cut off
 

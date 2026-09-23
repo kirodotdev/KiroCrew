@@ -187,11 +187,45 @@ def _strip_to_allowed_vars(mode_data: dict[str, str]) -> dict[str, str]:
     return result
 
 
-def _slugify_theme_name(name: str) -> str:
-    """Convert a theme name to a filesystem-safe slug."""
+# The prefix the hash fallback builds on, and the constant slug carried by an
+# installed pack whose name filters to nothing: such a pack sits at
+# ``_themes_dir()/custom/`` whatever its name is.
+_THEME_LEGACY_SLUG = "custom"
+
+
+def _theme_slug_ascii_part(name: str) -> str:
+    """The ASCII-filtered slug for *name*, empty when nothing survives.
+
+    Split out of :func:`_slugify_theme_name` so a caller can ask whether a slug
+    came from the hash fallback WITHOUT pattern-matching the result: a theme
+    named ``"Custom 0123456789abcdef"`` filters to ``custom-0123456789abcdef``,
+    which is indistinguishable by shape from a ``custom-<16 hex>`` fallback.
+    Emptiness here is the exact condition the fallback keys on.
+    """
     slug = re.sub(r"[^a-z0-9\-]", "-", name.lower()).strip("-")
     slug = re.sub(r"-+", "-", slug)
-    return slug[:_THEME_SLUG_MAX_LEN] or slug_hash_fallback(name, "custom")
+    return slug[:_THEME_SLUG_MAX_LEN]
+
+
+def _slugify_theme_name(name: str) -> str:
+    """Convert a theme name to a filesystem-safe slug."""
+    return _theme_slug_ascii_part(name) or slug_hash_fallback(
+        name, _THEME_LEGACY_SLUG
+    )
+
+
+def _theme_identity_source(manifest: dict[str, Any]) -> str:
+    """The exact string this manifest's slug derives from.
+
+    ``theme.json`` may declare its own ``slug``; otherwise the display ``name``
+    is used. Two packs agreeing on this string derive the same slug, which is
+    what makes it usable as a pack identity by the install path.
+    """
+    raw = manifest.get("slug")
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    name = manifest.get("name", "")
+    return name if isinstance(name, str) else ""
 
 
 def _safe_theme_slug(slug: str) -> str | None:
@@ -1407,12 +1441,14 @@ def _validate_theme_dir(
     if data_err:
         return None, data_err
 
-    raw_slug = manifest.get("slug")
-    slug = _slugify_theme_name(
-        raw_slug if isinstance(raw_slug, str) and raw_slug.strip() else name
-    )
+    identity = _theme_identity_source(manifest)
+    slug = _slugify_theme_name(identity)
     return {
         "slug": slug,
+        # The string ``slug`` derives from, carried so the install path can ask
+        # whether an already-installed pack is THIS pack without re-parsing the
+        # manifest. Consumers read named fields, so this key reaches no response.
+        "identity": identity,
         "name": theme_data["name"],
         "emoji": emoji.strip()[:_THEME_EMOJI_MAX_LEN] or _THEME_DEFAULT_EMOJI,
         "level": level,

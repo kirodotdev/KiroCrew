@@ -874,6 +874,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.content-filter-fallback-model",
+    "label": "Content-filter fallback model",
+    "labelKey": "pages.settings.chatPanel.refusal_fallback_model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "agent.refusal_fallback_model"
+  },
+  {
     "id": "chat.default-memory-mode",
     "label": "Default Memory Mode",
     "labelKey": "settings.chat.defaultMemoryMode.label",
@@ -1000,6 +1009,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.message-font-size",
+    "label": "Message Font Size",
+    "labelKey": "pages.settings.chatPanel.message_font_size",
+    "description": "Font size for the conversation, in every session: message text, code, tables, suggested replies and the message input. The Compact content width grows to match. Sidebar, session list and the rest of the interface are unaffected.",
+    "tab": "chat",
+    "type": "stepper",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.minimap-location",
+    "label": "Minimap location",
+    "labelKey": "pages.settings.chatPanel.minimap_location",
+    "description": "When located on the right edge, the minimap replaces the scroll bar.",
+    "tab": "chat",
+    "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
     "id": "chat.pin-the-latest-turn",
     "label": "Pin the latest turn",
     "labelKey": "pages.settings.chatPanel.pin_last_prompt",
@@ -1113,6 +1140,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Show Context Tokens",
     "labelKey": "pages.settings.chatPanel.show_token_usage",
     "description": "Display used and total tokens next to the context progress bar",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.show-pasted-text-in-full",
+    "label": "Show Pasted Text in Full",
+    "labelKey": "pages.settings.chatPanel.show_pasted_text_in_full",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1
@@ -1348,10 +1383,46 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
+    "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_memory_text",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
+    "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
+  },
+  {
+    "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_compaction",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
+    "description": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
+  },
+  {
+    "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_tool_args",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "label": "Also send tool-call arguments so Jev can flag risky calls",
+    "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
+  },
+  {
+    "id": "developer.artifact-deploy",
+    "label": "Artifact Deploy",
+    "labelKey": "pages.developer.featurePreviewsTab.artifact_deploy",
+    "description": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.chat-on-a-crew",
     "label": "Chat on a crew",
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
-    "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane.",
+    "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1
@@ -1366,6 +1437,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.decisions-jev",
+    "label": "Decisions (Jev)",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions",
+    "description": "Jev is a small, fast decision model. With this on, Kiro Crew asks Jev which one of your skills fits the message you just sent — or that none does — and uses Jev's pick for the share of your sessions shown under the switch; the rest keep the word-matching rule this build ships with. If Jev is slow, unreachable or answers with nothing usable, that message falls back to the same rule, so a decision never holds up your reply. Each call is also recorded in a log on the machine that runs Kiro Crew, for diagnostics. This switch is saved on the machine that runs Kiro Crew, not in this browser, so it applies on every device you open it from.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.developer-mode",
     "label": "Developer Mode",
     "labelKey": "pages.settings.developerPanel.developer_mode",
@@ -1375,10 +1455,37 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "developer.remote-instance-sessions",
-    "label": "Remote instance sessions",
+    "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
+    "label": "Earlier conversation one decision may carry, in characters",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_history_label",
+    "description": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine.",
+    "tab": "developer",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.jev-api-key",
+    "label": "Jev API key",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_api_key_label",
+    "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it.",
+    "tab": "developer",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.model-for-the-small-model-judge",
+    "label": "Model for the small-model judge",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_model",
+    "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one.",
+    "tab": "developer",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.remote-crew-sessions",
+    "label": "Remote crew sessions",
     "labelKey": "pages.developer.featurePreviewsTab.remote_instance_sessions",
-    "description": "Merge a connected remote instance's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished.",
+    "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1
@@ -1399,6 +1506,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
     "tab": "developer",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.which-judge-answers",
+    "label": "Which judge answers",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_provider",
+    "tab": "developer",
+    "type": "select",
     "occurrence": 1
   },
   {
@@ -1521,6 +1636,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.spend-a-few-credits-to-check-your-balance",
+    "label": "Spend a few credits to check your balance",
+    "labelKey": "pages.settings.displayPanel.credit_usage_scrape",
+    "description": "When your usage data is not available for free, your balance can still be checked by sending one billed message, about every 10 minutes while a dashboard tab is open. Each check spends a small number of credits.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "dashboard.usage_text_scrape_enabled"
+  },
+  {
     "id": "display.theme",
     "label": "Theme",
     "labelKey": "pages.settings.displayPanel.theme",
@@ -1553,7 +1678,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "toggle",
     "occurrence": 1,
     "configKey": "instances.enabled",
-    "label": "Enable remote instance management"
+    "label": "Enable remote crew management"
   },
   {
     "id": "notifications.sound-category-approval",
@@ -1625,6 +1750,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "label": "Proactive agent messages",
     "description": "When the agent proactively messages you outside a chat"
+  },
+  {
+    "id": "notifications.show-a-banner-for-new-notifications",
+    "label": "Show a banner for new notifications",
+    "labelKey": "pages.settings.notificationsPanel.show_banner_for_new_notifications",
+    "description": "A card slides in under the top bar when a notification arrives, then tucks into the bell.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1
   },
   {
     "id": "notifications.sound-category-skills",
@@ -1825,7 +1959,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "skills.auto-generate-skills-from-sessions",
     "label": "Auto-generate skills from sessions",
     "labelKey": "pages.settings.skillsPanel.auto_generate_skills_from_sessions",
-    "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on the Skills tab for review — nothing goes live without your approval (see below).",
+    "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on Agent Capabilities → Skills for review — nothing goes live without your approval (see below).",
     "tab": "skills",
     "type": "toggle",
     "occurrence": 1,
@@ -1854,7 +1988,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.auto-submit-when-i-finish-speaking",
     "label": "Auto-submit when I finish speaking",
     "labelKey": "pages.settings.sttSettings.endpointing",
-    "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1,
@@ -1900,7 +2033,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
     "labelKey": "pages.settings.sttSettings.dictation_panel",
-    "description": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1
@@ -1909,7 +2041,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.enabled",
     "label": "Enabled",
     "labelKey": "pages.settings.sttSettings.enabled",
-    "description": "Transcribe voice into the message box when you click the mic",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1
@@ -1941,20 +2072,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "stt.language_code"
   },
   {
-    "id": "voice.live-transcript-refresh-ms",
-    "label": "Live transcript refresh (ms)",
-    "labelKey": "pages.settings.sttSettings.partial_interval_ms",
-    "description": "How often the transcript is redrawn while you speak. Lower feels more immediate and costs more processing.",
-    "tab": "voice",
-    "type": "stepper",
-    "occurrence": 1,
-    "configKey": "stt.partial_interval_ms"
-  },
-  {
     "id": "voice.microphone",
     "label": "Microphone",
     "labelKey": "pages.settings.sttSettings.microphone",
-    "description": "Input device used to capture your voice",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
@@ -1963,21 +2083,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.model",
     "label": "Model",
     "labelKey": "pages.settings.sttSettings.model",
-    "description": "Models download on demand. Select one and click Download now; the desktop app already includes every other runtime dependency.",
     "tab": "voice",
     "type": "select",
     "occurrence": 1,
     "configKey": "stt.model"
-  },
-  {
-    "id": "voice.pause-that-ends-a-phrase-ms",
-    "label": "Pause that ends a phrase (ms)",
-    "labelKey": "pages.settings.sttSettings.silence_ms",
-    "description": "How much silence commits what you just said. Lower reacts sooner; higher tolerates thinking pauses.",
-    "tab": "voice",
-    "type": "stepper",
-    "occurrence": 1,
-    "configKey": "stt.silence_ms"
   },
   {
     "id": "voice.piper-binary",
@@ -2001,7 +2110,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.provider",
     "label": "Provider",
     "labelKey": "pages.settings.sttSettings.provider",
-    "description": "Local speech recognition runs on this machine and sends nothing anywhere. Transcribe uploads your audio to AWS.",
     "tab": "voice",
     "type": "select",
     "occurrence": 1,
@@ -2056,7 +2164,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.streaming",
     "label": "Streaming",
     "labelKey": "pages.settings.sttSettings.streaming",
-    "description": "Show the transcript in the input box as you speak, instead of only when you stop.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1,
@@ -2070,6 +2177,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "voice",
     "type": "stepper",
     "occurrence": 1
+  },
+  {
+    "id": "voice.tidy-up-transcripts-with-ai",
+    "label": "Tidy up transcripts with AI",
+    "labelKey": "pages.settings.sttSettings.polish",
+    "description": "Sends the finished text, never the audio, to the AI model you already chat with, which fixes punctuation and capitalisation. Your words are never changed.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "stt.polish"
   },
   {
     "id": "voice.voice",

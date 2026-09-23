@@ -1,15 +1,16 @@
 # kiro-cli MCP OAuth Token Storage
 
-Where kiro-cli writes MCP OAuth credentials on disk, how to find them, and
-how to "sign out" of a remote MCP server. Not documented upstream — derived
-from the `aws/amazon-q-developer-cli` source
-(`crates/chat-cli/src/mcp_client/oauth_util.rs`).
+Where kiro-cli writes MCP OAuth credentials on disk, how Kiro Crew identifies
+the exact pair without reading token bytes, and how to disconnect safely. The file
+layout is derived from `aws/amazon-q-developer-cli`'s
+`crates/chat-cli/src/mcp_client/oauth_util.rs`; Kiro Crew's current behavior is in
+`src/kiro_crew/mcp_grant.py` and `src/kiro_crew/connections/ownership.py`.
 
-> Why this matters: kiro-cli has **no `mcp logout` command**, no ACP method
-> for sign-out, and the docs say nothing about where tokens live. The only
-> in-CLI affordance is `/mcp` → reauthenticate inside an interactive
-> `kiro-cli chat` REPL — unreachable from Kiro Crew's ACP-based gateway.
-> Surgical file deletion is the only mechanism Kiro Crew can drive.
+> Current supported paths: interactive kiro-cli provides `/mcp logout <server>`,
+> while Kiro Crew's **Settings > Connections > Disconnect** removes configuration
+> it owns and, only after a sharer/ownership census, unlinks the server's paired
+> local grant artifacts. Manual file operations are recovery tools, not the normal
+> product workflow.
 
 ## Storage location
 
@@ -119,45 +120,45 @@ This is why two files exist: deleting only `.token.json` forces re-consent
 without re-registration, while deleting both forces full DCR. Different
 operations want different scopes.
 
-## How to "sign out" of a remote MCP server
+## How to sign out or disconnect
 
-There is no command. Three levels of action, choose by intent:
+### From Kiro Crew
 
-### 1. "Sign me out, keep kiro-cli registered" (most common intent)
+For a registry-backed provider, open **Settings > Connections** and choose
+**Disconnect**. The endpoint cancels an in-flight mint, removes the MCP entries
+Kiro Crew owns, and considers the stored grant in the same locked transaction.
+It unlinks both the token and registration artifacts only when its configuration
+census can prove no other server entry shares that artifact key. If a source is
+unreadable, a URL cannot be compared safely, another entry shares the grant, or an
+unlink fails, the grant is kept or reported as surviving instead of being declared
+gone.
 
-```bash
-KEY=$(python3 -c "import hashlib; print(hashlib.sha256(b'<server-url>').hexdigest())")
-rm "$HOME/.aws/sso/cache/${KEY}.token.json"
-pkill -f "kiro-cli acp"   # drop in-memory tokens in running sessions
+Disconnect is local. The card continues to point at the provider's own revoke page
+because only the provider can invalidate a token already issued upstream. An agent
+session that already holds credentials or a tool list in memory may also need to be
+recycled; starting a fresh session after the disconnect is the reliable boundary.
+
+### From interactive kiro-cli
+
+Use the current slash command with the configured server name:
+
+```text
+/mcp logout my-server
 ```
 
-Next MCP call → kiro-cli sees no token but has a registration → re-runs
-the consent flow only → emits `_kiro.dev/mcp/oauth_request` → Kiro Crew's
-banner fires → user authorizes → fresh token written.
+This removes the locally cached OAuth credential for that server and causes a fresh
+OAuth flow when authentication is next required. `/mcp auth my-server` forces a
+reauthentication, and `/mcp cancel-auth my-server` cancels a stuck browser flow.
+These are interactive-chat commands, not top-level `kiro-cli mcp` subcommands.
 
-### 2. "Forget this server entirely" (resets DCR too)
+### Manual recovery
 
-```bash
-KEY=$(python3 -c "import hashlib; print(hashlib.sha256(b'<server-url>').hexdigest())")
-rm "$HOME/.aws/sso/cache/${KEY}".{token,registration}.json
-pkill -f "kiro-cli acp"
-```
-
-Next MCP call → kiro-cli does full DCR + consent → both files are
-recreated. Use when changing OAuth scopes or doing a clean reset.
-
-### 3. "Reversible test" — rename to `.bak`
-
-```bash
-KEY=...
-DIR=$HOME/.aws/sso/cache
-mv "$DIR/$KEY.token.json"        "$DIR/$KEY.token.json.bak"
-mv "$DIR/$KEY.registration.json" "$DIR/$KEY.registration.json.bak"
-pkill -f "kiro-cli acp"
-```
-
-kiro-cli looks for the exact `.token.json` / `.registration.json` filenames
-(`oauth_util.rs:246`), so `.bak` is invisible to it. Restore by moving back.
+Prefer the two supported paths above. If recovery requires touching the cache by
+hand, compute the normalized `origin + path` key exactly as described above and
+operate only on that prefix's `.token.json` and `.registration.json` pair. Rename
+the exact files to a backup suffix before deleting anything, then recycle the
+relevant agent sessions. Never use a wildcard in this directory: the sibling
+single-file entries belong to AWS SSO and Kiro identity.
 
 ## Important caveats
 
@@ -169,11 +170,11 @@ kiro-cli looks for the exact `.token.json` / `.registration.json` filenames
    revocation, anyone who exfiltrated the token bytes (e.g. an agent that
    read the file) can keep using them.
 
-2. **kiro-cli sessions cache tokens in memory.** A running `kiro-cli acp`
-   subprocess holds the bearer in process memory regardless of what the
-   file says. Always `pkill -f "kiro-cli acp"` after deleting the file.
-   Kiro Crew's warm session pool means this also requires draining the pool
-   (or a gateway restart) to fully take effect.
+2. **Running sessions may cache credentials and tools.** Removing files on disk
+   does not rewrite an already-running agent process. Kiro Crew's Disconnect
+   removes the durable pair and rebuilds owned configuration, but recycle the
+   affected session (or restart the gateway when several pooled sessions are
+   involved) when the change must take effect immediately.
 
 3. **Path is shared with AWS SSO.** Never write code that does
    `rm ~/.aws/sso/cache/*.json` — that nukes legitimate AWS SSO sessions.
@@ -185,59 +186,28 @@ kiro-cli looks for the exact `.token.json` / `.registration.json` filenames
    back to "no creds, do OAuth"), but atomic-rename-into-place is safer
    than `rm` for production code.
 
-5. **No re-emit of kiro-cli's `oauth_request` for the current session.**
-   In-memory tokens in already-running sessions remain usable until the
-   process exits. Sign-out only takes effect on next process spawn.
+5. **Interactive kiro-cli can reauthenticate in place.** `/mcp auth` and
+   `/mcp logout` provide the supported current-session controls. Kiro Crew's
+   Connections surface instead manages its owned config and durable artifact
+   pair; use a fresh agent session after that operation so its tool inventory is
+   rebuilt.
 
-## How Kiro Crew should expose this
+## How Kiro Crew exposes this
 
-Two distinct dashboard affordances, mapping to actions 1 and 2 above:
+`mcp_grant.py` is the single implementation of the normalized key and paired
+artifact paths. It stats artifacts for presence without opening token bytes and
+unlinks the exact pair on a proven-owned Disconnect. `connections/ownership.py`
+performs the configuration census first, accounts for slash-sensitive artifact
+keys and endpoint aliases, preserves a grant when another entry shares it, and
+reports an incomplete census rather than guessing. The dashboard handler returns
+separate `grantRemoved`, `grantSurviving`, `grantSharedWith`, and census fields so
+its UI never collapses a partial operation into "disconnected".
 
-- **"Sign out"** → delete only `.token.json`. Common case.
-- **"Forget this connection"** → delete both. Edge case, separate UI.
-
-Implementation outline (~50 LOC):
-
-```python
-import hashlib
-from pathlib import Path
-
-def _mcp_cache_paths(server_url: str) -> tuple[Path, Path]:
-    key = hashlib.sha256(server_url.encode()).hexdigest()
-    cache = Path.home() / ".aws/sso/cache"
-    return cache / f"{key}.token.json", cache / f"{key}.registration.json"
-
-
-def sign_out_mcp(server_url: str) -> bool:
-    """Delete kiro-cli's cached OAuth token for this server.
-
-    Returns True if a token file was removed.  Caller should also restart
-    or recycle kiro-cli sessions so in-memory copies are dropped.
-
-    Does NOT revoke at the provider — call the provider's /revoke endpoint
-    separately for genuine sign-out, or instruct the user to revoke at the
-    provider's UI.
-    """
-    token_path, _ = _mcp_cache_paths(server_url)
-    if token_path.is_file():
-        token_path.unlink()
-        return True
-    return False
-
-
-def forget_mcp(server_url: str) -> bool:
-    """Delete both token AND registration so the next call re-runs DCR."""
-    token_path, reg_path = _mcp_cache_paths(server_url)
-    deleted = False
-    for p in (token_path, reg_path):
-        if p.is_file():
-            p.unlink()
-            deleted = True
-    return deleted
-```
-
-Pair with a `state.recycle_kiro_sessions()` call so the warm pool reloads
-(or trigger a kill on currently active ACP processes for that slot).
+This is deliberately one **Disconnect** operation, not separate "sign out" and
+"forget" buttons. Removing only configuration leaves a refresh token that silently
+reauthorizes later; removing only one artifact leaves an incomplete pair. The
+supported operation handles configuration and the pair together, while provider
+revocation remains a separate provider-side action.
 
 ## Long-term direction
 
@@ -250,7 +220,8 @@ because we'd inject pre-authenticated `Authorization` headers into the
 agent config at session-spawn time, and kiro-cli's OAuth path would be
 dead code in the Kiro Crew use case.
 
-Until then, the recipe in this doc is the only way to drive sign-out from
-Kiro Crew, and it's worth keeping the helper code small, well-tested, and
-clearly scoped to "kiro-cli's caching behavior" so it can be removed
-cleanly later.
+Until then, keep all cache-key derivation, presence checks, and exact-pair deletion
+in `mcp_grant.py`; callers should use the supported CLI or Connections surfaces
+rather than reproducing the undocumented cache layout. That keeps the compatibility
+code small and gives it one removal point when kiro-cli no longer owns the OAuth
+chain.

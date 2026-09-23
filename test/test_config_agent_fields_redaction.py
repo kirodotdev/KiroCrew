@@ -156,10 +156,13 @@ class TestMaskedConfigDict:
         # workspace/kiro_agent must mask; the benign defaults must not.
         cfg = KiroCrewConfig()
         cfg.agents["odd"] = KiroCrewAgentConfig(
-            kiro_agent=_CRED_DESCRIPTION, workspace=_EXFIL_TRIGGERS
+            member_id=_CRED_DESCRIPTION,
+            kiro_agent=_CRED_DESCRIPTION,
+            workspace=_EXFIL_TRIGGERS,
         )
         masked = _masked_config_dict(cfg)
         record = masked["agents"]["odd"]
+        assert record["member_id"] == _SENSITIVE_MASK
         assert record["kiro_agent"] == _SENSITIVE_MASK
         assert record["workspace"] == _SENSITIVE_MASK
         # Untouched benign defaults keep rendering in the Settings UI.

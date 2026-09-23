@@ -9,7 +9,7 @@ import pytest
 
 from kiro_crew import memory_edit, memory_stores
 from kiro_crew.config import loader
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
 
 @pytest.fixture(params=["v1", "v2"])
@@ -17,15 +17,15 @@ def store(tmp_path, monkeypatch, request):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     if request.param == "v2":
         name = "member-alice"
-        record = {"memory_version": 2, "owner_member": "alice"}
+        record = {"memory_version": 2, "owner_member": "alice", "owner_member_id": "alice"}
         directory = tmp_path / "memory_stores" / name
         directory.mkdir(parents=True)
-        (directory / "member-memory.json").write_text(json.dumps(record), encoding="utf-8")
+        create_member_database(directory / "memory.db", member_id="alice", store_id=name)
         (tmp_path / "config.json").write_text(
             json.dumps(
                 {
                     "memory_stores": {"default": {}, name: record},
-                    "agents": {"alice": {"memory_store": name}},
+                    "agents": {"alice": {"memory_store": name, "member_id": "alice"}},
                 }
             ),
             encoding="utf-8",
@@ -34,8 +34,11 @@ def store(tmp_path, monkeypatch, request):
         directory = tmp_path
     loader._invalidate_config_cache()
     monkeypatch.setattr(memory_stores, "_DECLARED_MEMO", None)
-    instance = VectorMemoryStore(db_path=directory / "memory.db")
-    instance.init()
+    if request.param == "v2":
+        instance = open_member_database(directory / "memory.db", member_id="alice", store_id=name)
+    else:
+        instance = VectorMemoryStore(db_path=directory / "memory.db")
+        instance.init()
     try:
         yield instance
     finally:
@@ -560,8 +563,22 @@ def test_malformed_selection_is_an_explicit_client_error(store, selection):
     assert error.value.status == 400
 
 
-def test_owner_records_keep_episode_source_and_copy_provenance(store):
-    from kiro_crew import memory_schema
+def test_owner_records_keep_episode_source_and_copy_provenance(store, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew import memory_schema, vector_memory
+
+    created_at = datetime(2026, 3, 4, 5, 6, tzinfo=timezone.utc)
+    edited_at = created_at + timedelta(seconds=1)
+
+    # An edit samples a fresh clock value; wall-clock ticks need not be unique.
+    class EditDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return edited_at if tz is None else edited_at.astimezone(tz)
+
+    monkeypatch.setattr(vector_memory, "_now_iso", lambda: created_at.isoformat())
+    monkeypatch.setattr(memory_edit, "datetime", EditDatetime)
 
     assert store.write_episodic(
         "We discussed emails and remembered the copied source correctly.",
@@ -586,7 +603,11 @@ def test_owner_records_keep_episode_source_and_copy_provenance(store):
     )
     memory_edit.apply_edit(store, "chosen", b"secret", preview["preview_id"])
     updated = memory_edit.list_records(store, {"kind": "episode"})["entries"][0]
+    assert datetime.fromisoformat(row["updated_at"]) == created_at
+    assert datetime.fromisoformat(updated["updated_at"]) == edited_at
     assert updated["updated_at"] != row["updated_at"]
+    assert updated["id"] == row["id"]
+    assert updated["text"] == "We corrected the email discussion and kept its original source."
     assert updated["derived_from"] == row["derived_from"]
 
 

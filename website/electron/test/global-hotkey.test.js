@@ -184,6 +184,25 @@ test("the handler shows + focuses an existing window and does not create one", (
   assert.strictEqual(appFocused, 1);
 });
 
+test("the handler unhides the application before showing its window", () => {
+  const { mod } = loadModule();
+  const order = [];
+  const win = {
+    isDestroyed: () => false,
+    isMinimized: () => false,
+    show: () => order.push("window.show"),
+    focus: () => order.push("window.focus"),
+  };
+  const handler = mod.createSummonHandler({
+    getWindow: () => win,
+    createWindow: () => {},
+    showApp: () => order.push("app.show"),
+    focusApp: () => order.push("app.focus"),
+  });
+  handler();
+  assert.deepStrictEqual(order, ["app.show", "window.show", "window.focus", "app.focus"]);
+});
+
 test("the handler restores a minimized window before focusing it", () => {
   const { mod } = loadModule();
   const win = fakeWindow({ minimized: true });

@@ -10,11 +10,25 @@ from typing import Any
 
 _Redactor = Callable[[str], tuple[str, object]]
 
+#: Outcome of a wait that ended without an answer. The client derives every
+#: decided outcome from ``approved`` alone, so this is the one decision that
+#: rides in the ``approval_resolved`` payload: without it an expired card
+#: renders as a rejection.
+_EXPIRED_DECISION = "expired"
+
 
 def _redact(text: object, redact_url: _Redactor, redact_secret: _Redactor) -> str:
     value, _ = redact_url(str(text or ""))
     value, _ = redact_secret(value)
     return value
+
+
+def _push_slots(state: Any) -> None:
+    """Recompute the slot lane flags; a failed push never breaks the approval."""
+    try:
+        state.push_slots_update()
+    except Exception:
+        state._log.debug("push_slots_update failed after approval status change", exc_info=True)
 
 
 class ApprovalCoordinator:
@@ -47,6 +61,12 @@ class ApprovalCoordinator:
             "ts": time.time(),
         }
         state.broadcast_ws("approval", state._pending_approvals[approval_id])
+        # The record names its owning slot, and the slot projection reads the
+        # live records through ``pending_coordinator_approvals``: this push is
+        # what moves the parent slot into the Needs Approval lane. Without it
+        # the lane, the command palette and Crew Companion's session watch all
+        # keep reading the slot as idle until some unrelated push happens.
+        _push_slots(state)
         timeout = (
             state._BACKGROUND_APPROVAL_TIMEOUT_SECS if is_background else state._APPROVAL_TIMEOUT
         )
@@ -55,8 +75,39 @@ class ApprovalCoordinator:
         except (asyncio.TimeoutError, asyncio.CancelledError):
             return False
         finally:
+            # A future that never carried a decision means the wait expired or
+            # was cancelled: retire the approval BEFORE popping it, or the
+            # rendered card keeps live buttons that answer 404 forever because
+            # no ``approval_resolved`` frame is ever emitted. A resolved future
+            # (done with a result) is retired by resolve()/resolve_state();
+            # retiring again here would double the broadcast on the healthy path.
+            if future.cancelled() or not future.done():
+                ApprovalCoordinator._retire_unresolved(state, approval_id, slot)
             state._pending_approvals.pop(approval_id, None)
             state._approval_futures.pop(approval_id, None)
+            # Every exit -- decided, expired, cancelled -- leaves the record
+            # gone, so one push here takes the slot back out of the lane.
+            _push_slots(state)
+
+    @staticmethod
+    def _retire_unresolved(state: Any, approval_id: str, slot_key: str) -> None:
+        """Retire an approval whose wait ends without a decision.
+
+        The card is client-injected from the WS ``approval`` frame, and the
+        ``approval_resolved`` broadcast retires it. The supplied slot key stays
+        the routing identity even when the slot is absent from ``state._slots``.
+        Slot permission rows belong to the chat-runner registry, whose
+        per-connection ids can collide with coordinator ids, so this registry
+        never touches them.
+        """
+        decision = _EXPIRED_DECISION
+        session_key = slot_key if slot_key else "state"
+        try:
+            state._audit_and_broadcast_approval(session_key, approval_id, False, decision)
+        except Exception:
+            state._log.warning(
+                "audit/broadcast failed for expired approval %s", approval_id, exc_info=True
+            )
 
     @staticmethod
     def audit_and_broadcast(
@@ -82,6 +133,10 @@ class ApprovalCoordinator:
             payload: dict = {"id": approval_id, "approved": approved}
             if session_key and session_key != "state":
                 payload["slot"] = session_key
+            # A decided approval's payload stays as it is: approved/rejected
+            # is derivable from ``approved``, and the client renders it so.
+            if decision == _EXPIRED_DECISION:
+                payload["decision"] = decision
             state.broadcast_ws("approval_resolved", payload)
         except Exception:
             state._log.warning("WS broadcast failed for approval resolution", exc_info=True)

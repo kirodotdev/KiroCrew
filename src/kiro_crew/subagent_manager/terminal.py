@@ -33,6 +33,76 @@ class TerminalCoordinator(ManagerComponent):
 
     __slots__ = ()
 
+    def _record_crew_log_terminal(self, info: SubagentInfo) -> None:
+        """Close *info*'s entry in the PARENT session's crew log, once.
+
+        Called from the exclusive one-shot terminal report, so a child cannot be
+        closed twice however the race between the reaper and ``_run``'s ``finally``
+        resolves.
+
+        The closer is chosen from the runtime's own three-way ``outcome`` and never
+        re-derived from error-nullability: ``completed`` closes as a completion, and
+        ``stopped`` and ``failed`` both close through ``subagent/failed`` carrying
+        which one it was. A stop is not a success and must not read as one, and it
+        is not an error either.
+
+        The parent session and the turn that asked are read back from the origin
+        pinned at the dispatch, and released here -- the parent is very likely on a
+        different turn by now, and asking which one would file this outcome under a
+        turn that did not cause it. An unknown origin means the dispatch was never
+        recorded (the flag was off then, or the parent could not be resolved), and
+        the emitter's empty-session-id no-op drops the closer rather than inventing
+        an opener for it.
+
+        Every name is imported inside the body: this method does not end in
+        ``_impl``, so it keeps this module's globals, where the facade's imports
+        exist only under ``TYPE_CHECKING``.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.subagent import logger as _logger
+
+        try:
+            if not crew_log_emit.enabled():
+                return
+            sid, _asking_turn = crew_log_emit.child_origin(info.id)
+            if not sid:
+                # Pinned but never opened -- a spawn the approval gate declined.
+                # It closes nothing, and the pin is dropped here rather than left
+                # for the FIFO to evict.
+                crew_log_emit.forget_child_origin(info.id)
+                return
+            # The pin is READ here and released in the finally, after the entry is
+            # handed to the writer. It is the only thing covering the gap the
+            # normal path opens: `done` flips in the run loop, which drops the
+            # child from the manager's running set, and this method runs later
+            # from the report task -- so between them the child is neither running
+            # nor owed, and a repair reading there would close it as `unknown`
+            # ahead of the outcome below. Releasing after the handover means the
+            # writer's debt takes over from the pin with no instant in between.
+            # Reporting stays one-shot without the pop: every route here is gated
+            # on `_claim_finalize`, which hands out one token.
+            elapsed_ms = int(max(0.0, float(info.elapsed or 0.0)) * 1000)
+            outcome = info.outcome
+            if outcome == "completed":
+                crew_log_emit.on_subagent_completed(sid, agent_id=info.id, duration_ms=elapsed_ms)
+            else:
+                crew_log_emit.on_subagent_failed(
+                    sid,
+                    agent_id=info.id,
+                    reason=info.error or "",
+                    outcome=outcome,
+                    duration_ms=elapsed_ms,
+                )
+        except Exception:
+            _logger.debug("crew log: closing a subagent entry failed", exc_info=True)
+        finally:
+            # Unconditional: a pin this method fails to release is a child the
+            # repair would treat as live forever.
+            try:
+                crew_log_emit.forget_child_origin(info.id)
+            except Exception:
+                _logger.debug("crew log: releasing a child origin failed", exc_info=True)
+
     def _claim_finalize_impl(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         """Claim the exclusive right to report ``info``'s terminal outcome.
 
@@ -90,7 +160,7 @@ class TerminalCoordinator(ManagerComponent):
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
-    ) -> None:
+    ) -> bool:
         """Deliver ``info``'s one-shot terminal report as a single unit.
 
         This is the exact work the finalize claim guards: fire the
@@ -118,6 +188,16 @@ class TerminalCoordinator(ManagerComponent):
         # are scheduled, with ``done=False`` as a batch-completion hold. The
         # exclusive report task owns the terminal transition; flipping here
         # means only the last sibling can observe the batch as fully settled.
+        #
+        # The crew log entry is handed over before this flip, but that order is
+        # NOT what protects the log, and reading it that way was wrong: on the
+        # normal completion path the run loop has already set `done` well before
+        # this method runs, so by here the flip is a no-op re-flip and the child
+        # left the manager's running set long ago. What covers that gap is the
+        # child's origin pin, which `_record_crew_log_terminal` holds until the
+        # closer is handed to the writer. This flip stays ahead of the event for
+        # the paths that reach a terminal without the run loop.
+        self._record_crew_log_terminal(info)
         info.done = True
         await self._manager._fire_event(
             "subagent_done",
@@ -144,10 +224,47 @@ class TerminalCoordinator(ManagerComponent):
                 # amber chip would silently vanish from a downgraded finished run.
                 "requested_model": _redact(info.requested_model),
                 "result": _done_result(info.result),
+                # WHY the run ended and whether ``result`` is a partial, so the
+                # parent does not infer success from ``error`` being unset.
+                "stop_reason": info.stop_reason,
+                "stop_class": info.stop_class,
+                "partial": info.partial,
             },
         )
         if not self._manager._on_done:
-            return
+            return True
+        if info.id in getattr(self._manager, "_teardown_cancelled_ids", ()):
+            # The parent this would report to has been retired. ``_on_done``
+            # resolves the parent key through the session registry and injects,
+            # which CREATES a session when none is live — so delivering here
+            # rebuilds the conversation the teardown just took down and seeds it
+            # with a retired run's terminal text. The ``subagent_done`` event above
+            # has already gone out, so a dashboard watching the card still sees it
+            # end; what is skipped is the injection into a conversation that is
+            # over. The run's own result file and tombstone are unaffected.
+            # Releasing the hold is part of the same statement. A wave member parks
+            # its siblings' announces on its own digest (``_digest_held_at``,
+            # ``_digest_settle_ids``), and the reaper's hold-expiry sweep arms a
+            # ``force_digest_flush`` for a batch whose hold has aged out. That flush
+            # builds a SYNTHETIC record with a fresh id, so the gate above can never
+            # match it: it would reach ``_on_done`` on its own and rebuild the retired
+            # parent's conversation minutes after this skip. Dropping this run out of
+            # the hold, and marking the siblings it was holding, leaves no injector
+            # armed for the wave. The siblings are NOT marked delivered -- their results
+            # never reached a parent, so orphan reconciliation must still be able to
+            # find them.
+            info._digest_held_at = 0.0
+            held, info._digest_settle_ids = info._digest_settle_ids, []
+            if held:
+                self._manager._teardown_cancelled_ids.update(held)
+            logger.info("Reaper: skipping parent delivery for %s — its parent ended", info.id)
+            # The gate has now done its job for this run: the delivery it existed to stop
+            # has been stopped, and ``_on_done`` was never called, so none of the gateway's
+            # injection paths can fire for it either. Discarding here is what keeps the gate
+            # from depending on its age backstop in the ordinary case -- an id is retained
+            # until the run's delivery is actually suppressed rather than for a fixed span.
+            self._manager._teardown_cancelled_ids.discard(info.id)
+            return True
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
             # The outcome has REACHED the parent. Recorded before any further
@@ -218,6 +335,7 @@ class TerminalCoordinator(ManagerComponent):
                         _ws_result_path(slot_key, info.id).unlink(missing_ok=True)
                 except Exception:
                     logger.debug("Failed to clean workspace result for %s", info.id, exc_info=True)
+            return True
         except asyncio.TimeoutError:
             logger.error(
                 "%s: completion injection timed out for %s after %.0fs",
@@ -237,8 +355,10 @@ class TerminalCoordinator(ManagerComponent):
                     exc_info=True,
                 )
             self._manager.notify_injection_failed(info, reason=injection_timeout_reason)
+            return False
         except Exception:
             logger.exception("%s: announce failed for %s", source, info.id)
+            return False
 
     async def _run_terminal_report_impl(
         self,
@@ -249,7 +369,7 @@ class TerminalCoordinator(ManagerComponent):
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
-    ) -> None:
+    ) -> bool:
         """Spawn the shielded terminal report and block until it completes.
 
         Convenience for callers that have no cancellable ``await`` between
@@ -261,7 +381,7 @@ class TerminalCoordinator(ManagerComponent):
         await and :meth:`_await_report` after, so the report task is already
         live (and shielded) no matter where the cancellation lands.
         """
-        await self._manager._await_report(
+        return await self._manager._await_report(
             self._manager._spawn_terminal_report(
                 info,
                 source=source,
@@ -281,7 +401,7 @@ class TerminalCoordinator(ManagerComponent):
         mark_delivered_on_success: bool,
         settle_digest: bool = False,
         teardown_done: "asyncio.Event | None" = None,
-    ) -> "asyncio.Task":  # type: ignore[type-arg]
+    ) -> "asyncio.Task[bool]":
         """Launch :meth:`_report_terminal` on a strongly-referenced task.
 
         Returns immediately (no ``await``) so the caller can start the report
@@ -310,7 +430,22 @@ class TerminalCoordinator(ManagerComponent):
 
         def _forget(t: "asyncio.Task") -> None:  # type: ignore[type-arg]
             self._manager._report_tasks.discard(t)
-            self._manager._report_owners.pop(t, None)
+            owner = self._manager._report_owners.pop(t, None)
+            self._manager._run_events._forget_finished_live_state(info)
+            if owner is None:
+                return
+            failed = t.cancelled()
+            if not failed:
+                try:
+                    failed = t.result() is False
+                except asyncio.CancelledError:
+                    failed = True
+                except Exception:
+                    failed = True
+            if failed:
+                self._manager._latch_report_failure(owner)
+            else:
+                self._manager._clear_report_failure(owner)
 
         task.add_done_callback(_forget)
         return task
@@ -623,6 +758,17 @@ class TerminalCoordinator(ManagerComponent):
         report could not be injected, including runs cancelled or rejected
         before they ever executed.
         """
+        if info.id in getattr(self._manager, "_teardown_cancelled_ids", ()):
+            # Same statement as the terminal-report gate: this run's parent has
+            # been retired, so there is no conversation for a failure notice to
+            # belong to. The notice is queued into the parent's slot and drained
+            # into the LLM's context on the parent key's next turn, so leaving it
+            # queued would surface a retired run's completion text inside whatever
+            # conversation that key serves next. This is the single choke point
+            # for every failure-announce caller (the ``_on_done`` timeout here and
+            # the gateway's injection paths), so gating it once covers them all.
+            logger.info("Reaper: skipping failure announce for %s — its parent ended", info.id)
+            return
         try:
             # Lazy: the dashboard layer must not be imported by a core module at
             # import time.

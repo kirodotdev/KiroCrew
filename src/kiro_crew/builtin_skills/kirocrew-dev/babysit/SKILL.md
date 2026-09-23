@@ -39,6 +39,16 @@ recording `last_status: ok`; heartbeat's allowlist has no shell or push.
 The bundled `pr_watch.py` script remains for existing jobs only; do not copy or
 register it for new babysit work. Use one session-owned driver, not two watchers.
 
+An installation can set how firmly this table's facts-decided row points at the
+structured path. With `monitoring.prefer_structured_arming` on, `monitor_watch` is
+this gateway's default for a supported pull request and the prompt loop is the
+exception; off (the default) the table reads as written. The setting changes what
+the two tool descriptions say and refuses neither tool, so the row that matters
+never moves: evidence the typed provider cannot see -- generic comments, advisory
+findings, a required final report -- is `monitor_start` with `gate=false` in
+either position. Read the descriptions you were given rather than assuming a
+position.
+
 ### Structured pull-request watch
 
 Use this only for pull-request lifecycle, mergeability, review decision,
@@ -187,12 +197,24 @@ never hand-roll a green result by filtering only check conclusions. Unknown or
 unmapped states fail closed. Mergeability can be asynchronous: `unknown`,
 `checking` or `unchecked` means wait, never pass; a closed object may never settle.
 Collapse superseded attempts to the newest per workflow/check identity when you
-read the rollup yourself and a start time orders the attempts; keep every row you
-cannot strictly order. A typed provider does not collapse: a display label cannot
-prove that two rows are one dispatch retried, so it keeps same-labelled rows
-independent and a `checks_failed` wake can name an attempt a newer run already
-replaced. On such a wake, resolve the newest run for that identity before treating
-the failure as live.
+read the rollup yourself, ordering by the RUN ID, which increases monotonically --
+never a job's start time, which waits on a runner queue, nor the run's creation time,
+which is second-granular and often tied. Keep every row you cannot strictly order.
+A typed provider collapses the same way,
+keyed on the workflow DEFINITION's id plus the check name rather than the display name,
+since two files may share one `name:`, and on the run's triggering event, since one file
+on `push` and `pull_request` dispatches twice for one commit. Highest RUN ID wins, but
+recency alone licenses nothing: the rollup has no lineage edge. Drop a row only
+when its own RUN concluded CANCELLED, the row itself is COMPLETED+CANCELLED, and a newer
+run of its identity exists. Read that cancellation from the RUN, never the row:
+`fail-fast`, a failed `needs`, or an operator cancelling one job all leave a CANCELLED
+row inside a run that concluded FAILURE and is live. Conversely, a cancelled NEWEST run
+is never droppable; that revives the verdict it superseded. Two
+rows of ONE run are not a retry and both stay, because a workflow can publish a check
+run under its own job's display name. Finally,
+any completed row of a replaced round still reads as live, not only a cancelled one.
+The bundled `pr_status.py` does NOT yet follow this rule and can drop a live failure;
+issue #11832 tracks it.
 
 Green checks do not answer review threads or advisory findings. Establish once
 per repo what its reviewer check means, and repeat when its fleet changes:
@@ -217,11 +239,16 @@ using its CLI or API help rather than field names remembered from elsewhere. Wai
 states, hidden allowed-failure jobs and "no single merge verdict" hosts all fail
 closed until you have confirmed the mapping on the actual host.
 
-Conflict or `BEHIND` requires an authorized sync, not another unchanged poll:
+Conflict, `BEHIND`, or `green_age.py` exit 30 requires an authorized sync, not
+another unchanged poll:
 GitHub cannot build a conflicted merge ref, so `pull_request` checks may never
-start while old checks look green. Rebase unambiguous conflicts under the repo's
-history rules, re-verify and push only with authorization; escalate ambiguous
-conflicts. A draft or `CHANGES_REQUESTED` also survives waiting. Read the reviewer:
+start while old checks look green. `BEHIND` is the weakest of the three and on
+some repositories never appears at all: `mergeStateStatus` reports it only under
+strict up-to-date protection, so where that is off, a base that moved underneath
+a green head is visible only through the green-age reading below. Rebase
+unambiguous conflicts under the repo's history rules, re-verify and push only
+with authorization; escalate ambiguous conflicts. A draft or `CHANGES_REQUESTED`
+also survives waiting. Read the reviewer:
 a product hold needs a human decision, not repeated patches. Report it once and
 stop with the blocking review quoted.
 
@@ -234,6 +261,7 @@ installation; never use an unresolved default expansion as a path argument.
 ```bash
 python3 "$SKILL_DIR/scripts/pr_status.py" <pr#> --json --reviewers <known-lanes>
 python3 "$SKILL_DIR/scripts/pr_findings.py" <pr#>
+python3 "$SKILL_DIR/scripts/green_age.py" --pr <pr#>
 ```
 
 Pin a known fleet with `--reviewers` / `PREPARE_PR_REVIEWERS`; discovery mode only
@@ -249,6 +277,15 @@ pretend the helper ran. Use the host interfaces above for general monitoring.
   stale reviewer stamps can mean a comment-triggered bot has not posted yet,
   not a code defect. `?`/JSON `null` threads mean unknown, never zero.
 - `2`: environment error, escalate rather than loop on it.
+
+`green_age.py` answers the separate question of whether a clean rollup still
+describes today's base: `0` fresh, `30` the base moved in files this PR also
+touches since the commit this head's CI ran on (an authorized sync, per the
+conflict rule above), `2` could not measure — which is neither fresh nor stale.
+`pr_status.py --json` carries the same reading in `advisory.green_age`, so a
+cycle that already polled does not need a second call. Keep it out of the stall
+key: on a busy repository the base moves constantly, and a commit count in the
+key would reset the streak forever.
 
 `--json` appends a last-line object without changing the exit code. Compare ONLY
 `progress_key` for stalls. Its `advisory` fields include unresolved threads,
@@ -274,7 +311,8 @@ For comment-aware legacy monitoring, declare review-ready only when all hold:
   the unchanged head and re-derive the claim. A third raise is either a rebuttal
   that did not answer the finding or a lane whose verdict is not reproducible on
   an identical tree, and only the re-run separates those.
-- No conflict, behind-base state, draft or changes-requested hold remains.
+- No conflict, behind-base state, draft or changes-requested hold remains, and
+  where the optional helper is installed, `green_age.py` is not reporting exit 30.
 - No current-head finding lacks a disposition. For Kiro Crew, use prepare-pr's
   disposition contract rather than inventing a second ledger format.
 

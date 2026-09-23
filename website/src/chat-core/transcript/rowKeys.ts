@@ -190,10 +190,14 @@ const DUP_KEY_SUFFIX = '~#'
 export function uniqueRowKeys(
   items: readonly DisplayItem[],
   msgKey: (m: ChatMessage) => string,
+  preferredKey?: (it: DisplayItem, index: number) => string | undefined,
 ): string[] {
   const seen = new Map<string, number>()
   return items.map((it, i) => {
-    const base = virtualKeyFor(it, i, msgKey, i === items.length - 1)
+    // A host may know a more durable identity than the generic lead/tail rule.
+    // The override still passes through this function so duplicate-key handling
+    // remains one list-level contract rather than a second host-side pass.
+    const base = preferredKey?.(it, i) ?? virtualKeyFor(it, i, msgKey, i === items.length - 1)
     const n = seen.get(base)
     if (n === undefined) {
       seen.set(base, 1)

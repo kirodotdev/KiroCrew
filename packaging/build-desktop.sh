@@ -46,13 +46,12 @@ HOST_ARCH="$(uname -m)"
 
 # Beacon provenance for the artifact this run produces, derived from the
 # electron-builder target rather than the host: mac.target is dmg, linux.target
-# is AppImage + deb + rpm (website/electron/package.json). Reading the host OS instead
-# would be wrong on Linux, where the same machine also builds wheels.
-# Windows ships an NSIS installer, which has no KNOWN_DISTRIBUTIONS value yet;
-# "source" is the honest answer until "nsis" is added on both sides.
+# is AppImage + deb + rpm, win.target is nsis (website/electron/package.json).
+# Reading the host OS instead would be wrong on Linux, where the same machine
+# also builds wheels.
 case "$OS" in
   darwin)  KC_DISTRIBUTION="dmg" ;;
-  windows) KC_DISTRIBUTION="source" ;;
+  windows) KC_DISTRIBUTION="nsis" ;;
   *)       KC_DISTRIBUTION="appimage" ;;
 esac
 

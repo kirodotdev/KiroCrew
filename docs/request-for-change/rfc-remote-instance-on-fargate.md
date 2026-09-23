@@ -1,6 +1,6 @@
 ---
 title: Remote Instance on Fargate
-status: in-progress
+status: partial
 kind: framework
 author: Raymond Chen (chenmingwei23)
 created: 2026-09-07
@@ -14,6 +14,15 @@ superseded-by: []
 ---
 
 # RFC: Remote Instance on Fargate
+
+> **Partly shipped — current behaviour is specified in
+> [`../system-specs/modules/cloud.md`](../system-specs/modules/cloud.md) and
+> [`../system-specs/modules/instances.md`](../system-specs/modules/instances.md).**
+> The single-task Fargate engine, configured provisioner lane, task-lifetime and
+> population bounds, direct turn API, and `fargate` registry/SSM tunnel are on
+> main. The body below predates registry parity and still describes registration,
+> the tunnel, and the relay as deferred; those claims are historical. Phase 2's
+> one-action fan-out and Phase 3's comparative measurements remain unbuilt.
 
 ## Summary
 
@@ -204,16 +213,19 @@ implementation of these five methods. Everything above the seam, which is the
 launch job machinery, the tunnel manager and the relay surfaces, does not learn
 that a second backend exists.
 
-The registry is the exception, and the reason is a hard one rather than a
-preference. `src/kiro_crew/instances/registry.py` closes its transport set:
-`CONNECTION_METHODS` is `("ssh", "ssm")` and a record naming anything else is
-refused with `InvalidInstanceError`. The identity fields are equally closed --
-`ssm_target` is validated against `^(i|mi)-[a-f0-9]{8,17}$`, an EC2 instance id or
+The registry was the exception, and the reason was a hard one rather than a
+preference. `src/kiro_crew/instances/registry.py` closed its transport set:
+`CONNECTION_METHODS` was `("ssh", "ssm")` and a record naming anything else was
+refused with `InvalidInstanceError`. The identity fields were equally closed --
+`ssm_target` was validated against `^(i|mi)-[a-f0-9]{8,17}$`, an EC2 instance id or
 an SSM managed-instance id -- and a task identity is neither. So a Fargate-backed
-crew cannot be registered without changing registry code, which is why section 6
+crew could not be registered without changing registry code, which is why section 6
 defers registry visibility with the tunnel and the relay rather than only those
-two. Whether phase 1 should spend a third transport to close that is open; see
-section 11.
+two. That third transport is now spent: `CONNECTION_METHODS` carries `"fargate"`,
+`SSM_TRANSPORT_METHODS` groups it with `"ssm"` as the pair sharing the
+`ssm_target` / `aws_profile` / `aws_region` coordinates, and `ssm_target` for it is
+validated as `ecs:<cluster>_<task-id>_<runtime-id>`, so section 6's deferral is
+closed rather than open.
 
 Per method, what changes and what does not:
 
@@ -222,7 +234,7 @@ Per method, what changes and what does not:
 | `preflight` | Credentials, region, image availability | Same shape |
 | `provision` | Register a task definition, `RunTask`, return the task identity | Minutes of bootstrap become an image pull |
 | `begin_signin` | Nothing to drive: the task is handed a model credential and refuses to boot without one | The device-code scrape has no counterpart |
-| `register` | Deferred: no transport in `CONNECTION_METHODS` names a task | The one method of the five phase 1 does not deliver |
+| `register` | `DescribeTasks` until the crew container reports a `runtimeId`, then register `ecs:<cluster>_<task-id>_<runtime-id>` under the `fargate` transport | The instance id is known at provision; a task's target is not, so this method reads before it writes |
 | `teardown` | `StopTask` | Stack deletion becomes an API call |
 
 ### Sizing
@@ -380,11 +392,12 @@ Existing size keys keep working. `size_key` is the protocol's parameter and the
 Fargate backend maps the same three keys to CPU and memory pairs, so a launch that
 does not name a backend behaves as it does today.
 
-No stored state changes shape, and in this phase no new state is written at all. A
-Fargate-backed crew is not registered, so nothing is added to the registry file and
-no existing record is reinterpreted: a registry written before this work is readable
-after it and the reverse holds too. Registry parity would need a third transport,
-and adding one is where that compatibility question would actually be decided.
+No stored state changes shape. A Fargate-backed crew is registered under the
+`fargate` transport, so a launch adds a registry record and no existing record is
+reinterpreted: a registry written before this work is readable after it, and a
+reader that does not know the transport refuses that one record rather than
+misreading any other. Registry parity needed a third transport, and that is where
+this compatibility question was decided.
 
 ## 10. Alternatives considered
 
@@ -415,15 +428,14 @@ the thing this RFC is trying to remove.
 
 ## 11. Open questions
 
-**Whether phase 1 buys registry parity.** A Fargate-backed crew cannot be
-registered as things stand: `CONNECTION_METHODS` is closed to `ssh` and `ssm` and
-the identity fields accept only an instance id (section 5). Closing that means a
-third transport in `src/kiro_crew/instances/registry.py` and a tunnel manager that
-knows what to do with a task, which is the largest single piece of work this RFC
-could add and is not needed for "deploy a crew and chat with it". Deferring it is
-what section 6 records. The question is whether the deferral holds through phase 2,
-because ten unregistered fan-out workers are ten things the owner cannot see in the
-one place they look.
+**Whether phase 1 buys registry parity.** Answered yes. It cost a third transport
+in `src/kiro_crew/instances/registry.py` and a tunnel manager that knows what to do
+with a task, which was the largest single piece of work this RFC could add and was
+not needed for "deploy a crew and chat with it" -- and the deferral section 6
+recorded did not hold, because ten unregistered fan-out workers are ten things the
+owner cannot see in the one place they look. `CONNECTION_METHODS` now carries
+`fargate`, `ssm_target` accepts an ECS task target for it, and `register` composes
+that target from the task's own coordinates.
 
 **Session lifetime against task lifetime.** A disposable task that lives minutes
 is a good fit for a short session. A fan-out worker that runs for hours is less

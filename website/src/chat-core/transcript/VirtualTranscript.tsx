@@ -13,8 +13,11 @@
  * cost of a long transcript — only the viewport window (plus overscan) is
  * mounted, so a 3000-row thread costs the same DOM as a 30-row one.
  *
- * The main chat page keeps its own inline wiring for now (P5-f switches it);
- * this component is the same recipe with the page's private state removed.
+ * The main chat page still wires `useVirtualChat` inline; this component now
+ * carries the surface that migration needs (the level-triggered older-history
+ * walk via `onTopReached`/`prefetchStartIndex`, and `getFollow`/
+ * `farmIsMeasured`/`restoreGate` on the handle), so it is the same recipe with
+ * the page's private state removed.
  */
 import React, {
   forwardRef,
@@ -45,12 +48,24 @@ export interface TranscriptEarlierPaging {
   handOff?: boolean
 }
 
-/** Imperative surface a host reaches through `ref`. Deliberately just what
- *  today's hosts call (the jump pill, the new-reply scroll); the page's
- *  navigation needs (`scrollToIndex`, `mountIndex`, `getFollow`) join when
- *  P5-f mounts the page here — surface follows a caller, not the other way. */
+/** Imperative surface hosts use for bottom pins and virtualized row steering. */
 export interface VirtualTranscriptHandle {
   scrollToBottom: (behavior?: ScrollBehavior) => void
+  /** Ensure a row is mounted without scrolling; `unionOnly` preserves a far window. */
+  mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
+  /** Estimate a row's scroller-coordinate top while it is unmounted. */
+  estimateRowTop: (index: number) => number | null
+  /** Current stick-to-bottom state, read imperatively by host scroll effects
+   *  that must not force a render (the main page mirrors it into a ref to gate
+   *  its older-history walk). */
+  getFollow: () => boolean
+  /** Whether the measure farm has recorded a real height for a row, so a host
+   *  gate can wait for measurement instead of trusting an estimate. */
+  farmIsMeasured: (index: number) => boolean
+  /** True while an anchored entry is still waiting for its row to hydrate: the
+   *  host covers the transcript with a skeleton for exactly this window (see
+   *  `useVirtualChat`'s own `restoreGate`). */
+  restoreGate: boolean
 }
 
 export interface VirtualTranscriptProps {
@@ -85,6 +100,14 @@ export interface VirtualTranscriptProps {
   /** Content below the rows (footers, working indicators). */
   belowRows?: React.ReactNode
   earlier?: TranscriptEarlierPaging
+  /** Level-triggered older-history walk: fires while the reader is parked near
+   *  the top with more history to load. An alternative to the `earlier` bar for
+   *  a host (the main page) that drives an automatic walk rather than an
+   *  explicit "Load earlier" button — supply one model, not both. */
+  onTopReached?: () => void
+  /** Prefetch lead for the older-history walk (rows from the top at which to
+   *  begin fetching). Only meaningful alongside `onTopReached`. */
+  prefetchStartIndex?: number
   /** Rows to hide by `visibility` (a bubble the pinned banner stands in for). */
   isRowHidden?: (item: DisplayItem, index: number) => boolean
 }
@@ -145,6 +168,8 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
     aboveRows,
     belowRows,
     earlier,
+    onTopReached,
+    prefetchStartIndex,
     isRowHidden,
   }, ref) {
     const ownScrollerRef = useRef<HTMLDivElement | null>(null)
@@ -182,9 +207,37 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
       runActive: running,
       followOutput,
       initialPlacement,
+      onTopReached,
+      prefetchStartIndex,
     })
 
-    useImperativeHandle(ref, () => ({ scrollToBottom: virt.scrollToBottom }), [virt.scrollToBottom])
+    // Two older-history models must not run on one mount: the `earlier` bar's
+    // onLoad and the level-triggered onTopReached walk would both fetch the
+    // same older slice, racing two prepends into `items`. The prop docs say
+    // "supply one model, not both"; warn a host that wired both, at author time.
+    if (import.meta.env.DEV && onTopReached && earlier?.hasMore) {
+      // eslint-disable-next-line no-console -- intentional dev-only author-time diagnostic
+      console.warn(
+        'VirtualTranscript: both older-history models are wired (onTopReached AND earlier.hasMore). '
+        + 'Supply one, not both — they will double-fetch older history.',
+      )
+    }
+
+    useImperativeHandle(ref, () => ({
+      scrollToBottom: virt.scrollToBottom,
+      mountIndex: virt.mountIndex,
+      estimateRowTop: virt.estimateRowTop,
+      getFollow: virt.getFollow,
+      farmIsMeasured: virt.farmIsMeasured,
+      restoreGate: virt.restoreGate,
+    }), [
+      virt.scrollToBottom,
+      virt.mountIndex,
+      virt.estimateRowTop,
+      virt.getFollow,
+      virt.farmIsMeasured,
+      virt.restoreGate,
+    ])
 
     const { isAtBottom } = virt
     useEffect(() => { onAtBottomChange?.(isAtBottom) }, [isAtBottom, onAtBottomChange])

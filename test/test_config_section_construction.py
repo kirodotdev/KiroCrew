@@ -9,7 +9,6 @@ import textwrap
 from dataclasses import fields, is_dataclass
 
 import pytest
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.config import loader
 from kiro_crew.memory_stores import (
@@ -144,7 +143,6 @@ class TestSectionConstruction:
             path,
             {
                 "agent": {"member_dispatch": True},
-                "memory": {"private_provisioning_enabled": True},
                 "skills": {"project_skills_enabled": True},
                 "dashboard": {"default_memory_mode": "persistent"},
             },
@@ -152,7 +150,6 @@ class TestSectionConstruction:
         for _ in range(2):
             cfg = loader.KiroCrewConfig.load()
             assert cfg.agent.member_dispatch is True
-            assert cfg.memory.private_provisioning_enabled is True
             assert cfg.skills.project_skills_enabled is True
             assert cfg.dashboard.default_memory_mode == "persistent"
         if change == "corrupt":
@@ -163,7 +160,6 @@ class TestSectionConstruction:
                 path,
                 {
                     "agent": {"member_dispatch": value},
-                    "memory": {"private_provisioning_enabled": value},
                     "skills": {"project_skills_enabled": value},
                     "dashboard": {"default_memory_mode": "temporary"},
                 },
@@ -173,13 +169,12 @@ class TestSectionConstruction:
         assert fresh.dashboard.default_memory_mode == "temporary"
         if change != "corrupt":
             assert fresh.agent.member_dispatch is False
-            assert fresh.memory.private_provisioning_enabled is False
 
     @pytest.mark.parametrize("change", ["owner", "binding", "corrupt"])
     def test_warm_private_store_admission_rejects_changed_config(
         self, tmp_path, monkeypatch, change
     ):
-        patch_private_memory_supported(monkeypatch)
+        pass  # Member routing does not depend on OS isolation.
         monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         cfg = loader.KiroCrewConfig.load()
@@ -195,7 +190,7 @@ class TestSectionConstruction:
 
             def withdraw(data):
                 if change == "owner":
-                    data["memory_stores"][store]["owner_member"] = "different-owner"
+                    data["memory_stores"][store]["owner_member_id"] = "different-owner"
                 else:
                     del data["agents"]["alice"]
                 return data
@@ -203,7 +198,7 @@ class TestSectionConstruction:
             loader.update_config_locked(mutate=withdraw)
             persisted = json.loads(path.read_text(encoding="utf-8"))
             if change == "owner":
-                assert persisted["memory_stores"][store]["owner_member"] == "different-owner"
+                assert persisted["memory_stores"][store]["owner_member_id"] == "different-owner"
             else:
                 assert "alice" not in persisted["agents"]
         with pytest.raises(UnknownMemoryStore):

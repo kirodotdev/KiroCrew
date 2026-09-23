@@ -27,14 +27,13 @@ import pytest
 
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp.client import (
-    OPENCODE_ACP_SUBCMD,
     OPENCODE_BIN,
     OPENCODE_INSTALL_COMMAND,
     PROTOCOL_VERSION_OPENCODE,
     AcpClient,
     _opencode_agent_permissions,
     _opencode_uniform_permission,
-    _resolve_opencode_bin,
+    _resolve_self_served_bin,
     _scrub_observed,
 )
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE, Routing, routing_for
@@ -83,7 +82,7 @@ class TestResolutionLadder:
         monkeypatch.setattr(acp_client.platform_compat, "is_executable_file", lambda _path: True)
         monkeypatch.setenv(_ENV_BIN, str(binary))
         monkeypatch.setattr(acp_client, "_mise_which", lambda _tool: "/never/reached")
-        resolved, _searched = _resolve_opencode_bin()
+        resolved, _searched = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
         expected = acp_client._normalize_exe_casing(str(binary)) or str(binary)
         assert resolved == expected
 
@@ -99,13 +98,13 @@ class TestResolutionLadder:
         monkeypatch.setattr(acp_client.platform_compat, "is_executable_file", lambda _path: False)
         monkeypatch.setenv(_ENV_BIN, str(not_a_binary))
         monkeypatch.setattr(acp_client, "_mise_which", lambda _tool: "/opt/mise/opencode")
-        resolved, _searched = _resolve_opencode_bin()
+        resolved, _searched = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
         assert resolved == "/opt/mise/opencode"
 
     def test_mise_is_consulted_before_path(self, monkeypatch):
         monkeypatch.setattr(acp_client, "_mise_which", lambda _tool: "/opt/mise/opencode")
         monkeypatch.setattr(acp_client.shutil, "which", lambda *_a, **_kw: "/usr/bin/opencode")
-        resolved, _searched = _resolve_opencode_bin()
+        resolved, _searched = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
         assert resolved == "/opt/mise/opencode"
 
     def test_path_is_the_last_rung(self, monkeypatch):
@@ -118,7 +117,7 @@ class TestResolutionLadder:
         """
         monkeypatch.setattr(acp_client, "_mise_which", lambda _tool: None)
         monkeypatch.setattr(acp_client.shutil, "which", lambda *_a, **_kw: "/usr/bin/opencode")
-        resolved, _searched = _resolve_opencode_bin()
+        resolved, _searched = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
         expected = acp_client._normalize_exe_casing("/usr/bin/opencode") or "/usr/bin/opencode"
         assert resolved == expected
         assert resolved.replace("\\", "/").endswith("/opencode")
@@ -129,15 +128,22 @@ class TestResolutionLadder:
         monkeypatch.setattr(acp_client, "_mise_which", lambda _tool: None)
         monkeypatch.setattr(acp_client.shutil, "which", lambda *_a, **_kw: None)
         monkeypatch.setenv("PATH", "/first:/second")
-        resolved, searched = _resolve_opencode_bin()
+        resolved, searched = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
         assert resolved is None
         assert "/first" in searched
 
     def test_there_is_no_adapter_package_in_the_argv(self):
         """The argv is the binary and its own subcommand: no node, no entry script."""
-        assert OPENCODE_ACP_SUBCMD == "acp"
-        assert OPENCODE_BIN == "opencode"
-        assert "npm" in OPENCODE_INSTALL_COMMAND
+        from kiro_crew.agent_sdk.backends import launch_for
+
+        record = launch_for(ACP_BACKEND_OPENCODE)
+        assert record.acp_args == ("acp",)
+        assert record.binary == "opencode"
+        assert "npm" in record.install_command
+        # The two names this module still binds, because its routing remedy spells
+        # them in prose. They must not drift from the row they are read out of.
+        assert OPENCODE_BIN == record.binary
+        assert OPENCODE_INSTALL_COMMAND == record.install_command
 
 
 def test_the_handshake_is_the_spec_dialect():
@@ -266,11 +272,43 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 3
             stdout = ""
+            stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         issue, remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
         assert "exit 3" in issue
         assert "debug config" in remedy
+
+    def test_the_childs_own_reason_reaches_the_refusal(self, tmp_path, monkeypatch):
+        """The child's own reason reaches the refusal, as on the pi read-back."""
+
+        class _Completed:
+            returncode = 1
+            stdout = ""
+            stderr = "Error: cannot parse config at line 3\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        assert "exit 1" in issue
+        assert "its configuration could not be parsed" in issue
+        # The fault, not the child's sentence: the line number is the harness's to
+        # repeat when the operator runs it, and quoting it would put child bytes back
+        # into a message that reaches the dashboard and the chat card.
+        assert "line 3" not in issue
+
+    def test_a_secret_in_the_childs_stderr_is_not_republished(self, tmp_path, monkeypatch):
+        # A 40-char run of the base64 alphabet: the AWS secret-key shape. Not real.
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+        class _Completed:
+            returncode = 1
+            stdout = ""
+            stderr = f"auth failed for key={secret}\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        assert secret not in issue
+        assert issue.endswith("recognises)"), issue
 
     def test_an_unparseable_document_is_an_issue(self, tmp_path, monkeypatch):
         class _Completed:

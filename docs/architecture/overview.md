@@ -7,8 +7,8 @@ subsystem has a module spec under
 [Feature and subsystem map](#feature-and-subsystem-map) below indexes all of
 them with their owning source path.
 
-For installation see [`../guides/install.md`](../guides/install.md); for a first
-run see [`../guides/install.md`](../guides/install.md).
+For installation and the first run, see
+[`../guides/install.md`](../guides/install.md).
 
 ---
 
@@ -16,29 +16,33 @@ run see [`../guides/install.md`](../guides/install.md).
 
 Three layers sit beneath Kiro Crew, and the distinction matters:
 
-1. **kiro-cli** is an agent *runtime*, not an agent. It owns the LLM connection,
-   tool execution (bash, file read/write, grep, glob), MCP server management,
-   session persistence, context compaction, and **ACP** (the Agent Client
-   Protocol): a JSON-RPC 2.0 stdio interface any orchestrator can drive.
+1. **An ACP harness** is an agent *runtime*, not an agent. `kiro-cli` is the
+   default and baseline harness; it owns the LLM connection, tool execution
+   (bash, file read/write, grep, glob), MCP server management, session
+   persistence, context compaction, and **ACP** (the Agent Client Protocol): a
+   JSON-RPC 2.0 stdio interface any orchestrator can drive. Other selectable
+   harnesses implement that same transport with capability-gated differences.
 2. **Agent configs** (JSON under `~/.kiro/agents/`, or a project's own
-   `<project>/.kiro/agents/`) tell kiro-cli *how* to
-   behave: system prompt, enabled tools, MCP servers. Every agent runs as
-   `kiro-cli acp --agent <name>`; the `--agent` flag selects the config, the
-   runtime is always kiro-cli. Kiro Crew generates and refreshes its own
-   `kirocrew.json` there (`agent.py`).
+   `<project>/.kiro/agents/`) tell the default harness *how* to behave: system
+   prompt, enabled tools, MCP servers. With the default backend Kiro Crew runs
+   `kiro-cli acp --agent <name>` and generates its own `kirocrew.json` there
+   (`agent.py`); other harnesses receive the equivalent projection through the
+   ACP provider seam.
 3. **Kiro Crew** is the gateway: a single asyncio process that multiplexes
-   surfaces onto that runtime and adds everything a runtime deliberately has no
-   opinion about.
+   surfaces onto the selected harness and adds everything a runtime deliberately
+   has no opinion about.
 
-Kiro Crew is **KiroACP-only**: `agent.provider` is fixed to `acp`, and kiro-cli is
-a hard requirement.
+Kiro Crew is **ACP-provider-only**: `agent.provider` is fixed to `acp`.
+`agent.acp_backend` selects the harness, with `kiro-cli` as the required baseline
+and default. The authoritative backend inventory and capability matrix are in
+[`../system-specs/modules/providers.md`](../system-specs/modules/providers.md).
 
 | Capability | kiro-cli alone | With Kiro Crew |
 |---|---|---|
 | Sessions | One per terminal | Many concurrent (channel threads, dashboard slots, cron jobs, subagents, task steps) |
-| Surfaces | Terminal only | CLI, web dashboard, Electron desktop, and seven messaging channels |
+| Surfaces | Terminal only | CLI, web dashboard, Electron desktop, and the messaging channels under [`src/kiro_crew/docs/`](../../src/kiro_crew/docs/README.md) (Slack, Discord, Telegram, Teams, WeChat and more) |
 | Persistence | Per-directory transcript | Cross-session memory (preferences, projects, daily history, lessons) |
-| Cross-session awareness | None | Sessions share memory, so one session sees what another learned |
+| Cross-session awareness | None | Sessions bound to the same Global V1 or private member V2 store share its learning; separate member stores do not cross |
 | Scheduling | None | Cron jobs (`every` / `at` / `cron` expression) with cross-process file locking |
 | Autonomous tasks | None | TaskRunner: spec, decompose, execute, retry, replan, checkpoint |
 | Self-learning | None | Lessons extracted from corrections, injected into later sessions |
@@ -52,8 +56,9 @@ a hard requirement.
   human typing commands.
 - **Specialization.** Different surfaces and jobs can each run a different agent
   config concurrently.
-- **Accumulation.** Conversations feed shared memory and lessons persist, so a
-  later session starts with what an earlier one learned.
+- **Accumulation.** Conversations feed the memory store bound to their session
+  and lessons persist, so a later session on that store starts with what an
+  earlier one learned.
 
 ### The agent hierarchy
 
@@ -88,8 +93,8 @@ graph TB
     end
 
     subgraph "Agent Backend"
-        KC[kiro-cli<br/>ACP over stdio]
-        LLM[LLM Provider<br/><i>via kiro-cli auth</i>]
+        KC[ACP harness<br/><i>kiro-cli by default</i>]
+        LLM[LLM Provider<br/><i>via harness auth</i>]
         MCP[MCP Servers<br/><i>tools</i>]
     end
 
@@ -106,7 +111,7 @@ graph TB
 ## Message flow
 
 A user message is hooked, routed to a session, enriched with context, forwarded
-to kiro-cli over ACP, and streamed back.
+to the selected harness over ACP, and streamed back.
 
 ```mermaid
 sequenceDiagram
@@ -116,7 +121,7 @@ sequenceDiagram
     participant Hooks as HookManager
     participant Session as SessionManager
     participant Context as ContextBuilder
-    participant ACP as kiro-cli (ACP)
+    participant ACP as ACP harness (kiro-cli default)
     participant LLM as LLM
 
     User->>Surface: sends message
@@ -124,7 +129,7 @@ sequenceDiagram
     GW->>Hooks: auto-reply, transform, inject, deny
     Hooks-->>GW: pass / block / auto-reply
     GW->>Session: get_or_create(session_key, agent)
-    Session-->>GW: kiro-cli process (warm or cold)
+    Session-->>GW: ACP harness process (warm or cold)
     GW->>Context: assemble prompt context
     Note over Context: memory + skills + lessons<br/>+ history + cross-tab
     Context-->>GW: enriched context
@@ -253,14 +258,14 @@ graph TB
     end
 
     subgraph "Session Pool"
-        WARM[Warm Pool<br/><i>pre-started kiro-cli</i>]
+        WARM[Warm Pool<br/><i>pre-started ACP harnesses</i>]
         ACTIVE[Active Sessions<br/><i>keyed by session_key</i>]
     end
 
-    subgraph "kiro-cli Processes"
-        P1[kiro-cli acp --agent kirocrew]
-        P2[kiro-cli acp --agent reviewer]
-        P3[kiro-cli acp --agent ...]
+    subgraph "ACP Harness Processes"
+        P1[default: kiro-cli acp --agent kirocrew]
+        P2[default: kiro-cli acp --agent reviewer]
+        P3[alternative ACP harness]
     end
 
     S1 --> ACTIVE
@@ -335,7 +340,10 @@ order, and the order is load-bearing:
 ## Memory lifecycle
 
 Memory is what lets a new session benefit from past conversations without
-replaying them.
+replaying them. The diagram below is the Global V1 path. A member-bound V2
+session instead uses one managed SQLite store under
+`~/.kiro/crew/memory_stores/<store>/`; unavailable V2 memory fails explicitly
+rather than falling back to Global V1.
 
 ```mermaid
 graph LR
@@ -379,7 +387,7 @@ graph LR
     DAILY --> VSIM
 ```
 
-**History decay** (`memory.read_recent_history`, default window 14 days): a day
+**Global V1 history decay** (`memory.read_recent_history`, default window 14 days): a day
 newer than the requested window is injected in full; days from the window
 boundary through day 60 are summarized (header plus the first entry, with a count
 of the rest); days 61 through 180 collapse to a one-line marker naming the date
@@ -593,27 +601,32 @@ graph LR
     end
 
     subgraph "Required"
-        KIRO[kiro-cli<br/><i>agent runtime</i>]
-        LLM2[LLM Provider<br/><i>via kiro-cli auth</i>]
+        KIRO[kiro-cli<br/><i>baseline/default ACP harness</i>]
+        LLM2[LLM Provider<br/><i>via selected harness auth</i>]
     end
 
     subgraph "Optional"
+        ACP_ALT[Alternative ACP harness]
         CHAN_API[Messaging APIs<br/><i>Slack, Discord, …</i>]
         MCP_EXT[External MCP Servers<br/><i>user-configured</i>]
         AWS[AWS<br/><i>cloud launcher, artifact deploy, cloud STT</i>]
     end
 
     GW2 --> KIRO
+    GW2 -.-> ACP_ALT
     KIRO --> LLM2
+    ACP_ALT -.-> LLM2
     GW2 -.-> CHAN_API
     KIRO -.-> MCP_EXT
+    ACP_ALT -.-> MCP_EXT
     GW2 -.-> AWS
 ```
 
 | Dependency | Required | Purpose |
 |---|---|---|
-| **kiro-cli** | Yes | Agent runtime: LLM inference plus tool execution |
-| **LLM provider** | Yes | Reached through kiro-cli's authenticated connection |
+| **kiro-cli** | Yes | Baseline and default ACP harness; also serves the KAS backend |
+| **LLM provider** | Yes | Reached through the selected ACP harness's authenticated connection |
+| **Alternative ACP harness** | No | Optional runtime selected by `agent.acp_backend`; see the provider spec |
 | **Messaging APIs** | No | Slack, Discord, Telegram, Webex, WeCom, Teams, Weixin gateways (the dashboard works without any) |
 | **AWS** | No | Cloud launcher, artifact deploy, optional cloud STT |
 | **External MCP servers** | No | Additional tools, user-configured |
@@ -640,8 +653,10 @@ entries:
 │   ├── memory/             # preferences.md, projects.md, history/
 │   ├── knowledge/          # knowledge.db (FTS5 + graph + vectors)
 │   └── HEARTBEAT.md        # heartbeat task list
+├── members/                # stable crew-member identities and briefs
+├── memory_stores/          # member/named stores (SQLite memory + lessons)
 ├── sessions/               # JSONL conversation logs (+ archive/)
-├── lessons.jsonl           # learned corrections
+├── lessons.jsonl           # Global V1 learned corrections
 ├── crons.json              # scheduled jobs
 ├── crons/                  # cron script bodies
 ├── hooks.json              # webhook workflow context
@@ -778,6 +793,7 @@ The dashboard port default is 5476, overridable with `KIROCREW_PORT`.
 ## Further reading
 
 - [`../system-specs/README.md`](../system-specs/README.md): the spec index
+- [`../system-specs/modules/providers.md`](../system-specs/modules/providers.md): ACP harnesses and capability differences
 - [`mcp.md`](mcp.md): MCP server discovery and tool management
 - [`security-deep-dive.md`](security-deep-dive.md): security model in depth
 - [`resource-protection.md`](resource-protection.md): resource limits and backpressure

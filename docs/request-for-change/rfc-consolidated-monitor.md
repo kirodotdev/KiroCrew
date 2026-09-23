@@ -14,6 +14,13 @@ superseded-by: []
 
 # RFC: one observation layer, one controller
 
+Status: draft, with partial groundwork implemented. Structured monitors now
+expose named `MonitorObservation` entries, per-condition coalescing, and bounded
+provider/turn/token accounting, but `monitor_start` still runs the separate
+`irq.poll` path while `monitor_watch` uses the structured controller. The single
+observation stack, out-of-session batching, and unified dashboard surface
+described below are not complete.
+
 Related: [rfc-token-efficient-monitors.md](rfc-token-efficient-monitors.md) specifies the structured-monitor half of what this document consolidates.
 
 ## Why

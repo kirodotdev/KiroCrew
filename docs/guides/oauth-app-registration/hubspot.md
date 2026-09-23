@@ -2,6 +2,11 @@
 
 *Who this is for: a HubSpot Super Admin (or a user with App Marketplace Access permission) of the HubSpot account whose CRM data Kiro Crew should read. You need a browser and access to that account's Development area. Expected time: 15 minutes.*
 
+**HubSpot has no Connections entry yet** — see the
+[index](README.md) for the providers pre-registered on this build — so its card
+and its **Connect** button appear once that entry ships. Registering the redirect
+URI below now means it already matches when it does.
+
 This runbook covers the **remote HubSpot MCP server** at `https://mcp.hubspot.com`, which lets Kiro Crew query CRM records, activities, conversations and marketing content as the signed-in HubSpot user. It is not the local "Developer MCP server" used for building HubSpot apps with the HubSpot CLI.
 
 ## Before you start

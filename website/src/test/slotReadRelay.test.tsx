@@ -28,6 +28,7 @@ import chatReducer, { setActiveSlot, clearMessages, switchSlot } from '../store/
 import dashboardReducer, { addSlotOptimistic, removeSlotOptimistic, updateSlot, markSlotRead, markSlotUnread, remoteSlotRead, restoreUnreadSince, restoreUnreadBadges, MANUAL_UNREAD } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 import { bindSlotReadSender, emitSlotRead, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
+import { setViewedThreadSlot, _resetViewedThreadForTests } from '../lib/viewedThread'
 
 /** Flip jsdom's document.hidden and fire the visibilitychange the hook listens for. */
 const setDocumentHidden = (v: boolean) => {
@@ -271,6 +272,56 @@ describe('slot_read over the dashboard socket', () => {
     } finally {
       window.history.pushState({}, '', '/')
     }
+  })
+
+  // The Crew Members page (`/members`, not a chat route) registers its open
+  // thread in `viewedThread` instead of moving chat.activeSlot. Two things
+  // must hold for that thread, or sibling windows keep a badge the user has
+  // already seen: the marker declines to badge it here, AND this window still
+  // relays the arrival as read -- `chat_done` in particular moves no
+  // `last_ts`, so nothing else on that page would ever relay the completion.
+  const MEMBER = 'member-oncall'
+  const onMembersRoute = (run: () => void) => {
+    window.history.pushState({}, '', '/members')
+    setViewedThreadSlot(MEMBER)
+    try { run() } finally {
+      _resetViewedThreadForTests()
+      window.history.pushState({}, '', '/')
+    }
+  }
+
+  it('a message landing in the registered viewed thread on /members is not badged and relays a read', () => {
+    const { ws } = mount()
+    onMembersRoute(() => {
+      act(() => {
+        ws.simulateMessage({ type: 'chat_message', data: { slot: MEMBER, role: 'assistant', content: 'hi', ts: '2026-09-10T00:00:00Z' } })
+      })
+      expect(dash().unreadSlots).not.toContain(MEMBER)
+      expect(sentReadFrames(ws)).toEqual([JSON.stringify({ type: 'slot_read', slot: MEMBER, read_ts: '2026-09-10T00:00:00Z' })])
+    })
+  })
+
+  it('a chat_done in the registered viewed thread on /members relays a read at its own ts', () => {
+    const { ws } = mount()
+    onMembersRoute(() => {
+      act(() => {
+        ws.simulateMessage({ type: 'chat_done', data: { slot: MEMBER, ts: '2026-09-10T00:00:05Z' } })
+      })
+      expect(dash().unreadSlots).not.toContain(MEMBER)
+      expect(sentReadFrames(ws)).toEqual([JSON.stringify({ type: 'slot_read', slot: MEMBER, read_ts: '2026-09-10T00:00:05Z' })])
+    })
+  })
+
+  it('on /members a message in an UNREGISTERED slot still badges it and relays nothing', () => {
+    // The registration is per slot: the viewed thread alone is on screen.
+    const { ws } = mount()
+    onMembersRoute(() => {
+      act(() => {
+        ws.simulateMessage({ type: 'chat_message', data: { slot: BACKGROUND, role: 'assistant', content: 'hi', ts: '2026-09-10T00:00:00Z' } })
+      })
+      expect(dash().unreadSlots).toContain(BACKGROUND)
+      expect(sentReadFrames(ws)).toEqual([])
+    })
   })
 
   it('a message landing in a background slot badges it and relays nothing', () => {

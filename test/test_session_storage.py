@@ -990,6 +990,33 @@ class TestRestoreIsAllOrNothing:
         assert not victim.exists()
         assert restored == 0
 
+    @pytest.mark.skipif(not hasattr(os, "O_DIRECTORY"), reason="POSIX descriptor-relative move")
+    def test_a_pinned_move_of_a_planted_link_never_publishes_its_target(
+        self, tmp_path: Path
+    ) -> None:
+        """The descriptor-relative branch is ``linkat``, which CPython asks to
+        FOLLOW the source by default: a link planted in the staged trash would then
+        be resolved and a hard link to its target -- a credential store, say --
+        published under `.threads`. The mover must link the link itself (or refuse),
+        never expose the target's bytes at the destination."""
+        secret = tmp_path / "secret"
+        secret.write_bytes(b"AKIA-not-for-the-agent")
+        staged = tmp_path / "trash"
+        staged.mkdir()
+        planted = staged / "chat.json"
+        planted.symlink_to(secret)
+        dest_dir = tmp_path / ".threads"
+        dest_dir.mkdir()
+        dst = dest_dir / "chat.json"
+        dir_fd = os.open(dest_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            session_storage._move_file_exclusive(planted, dst, dst_dir_fd=dir_fd)
+        finally:
+            os.close(dir_fd)
+        if dst.exists() or dst.is_symlink():
+            assert dst.is_symlink(), "the destination must never be a plain file of the target"
+        assert secret.stat().st_nlink == 1, "no second name was given to the target"
+
     def test_an_exclusive_move_never_replaces_an_occupied_destination(self, tmp_path: Path) -> None:
         """The no-clobber guarantee itself, independent of any restore path."""
         src = tmp_path / "src.jsonl"
@@ -1301,6 +1328,227 @@ class TestSidecarFiles:
         assert staged.read_bytes() == b"lock"
         assert session_storage.restore(batch.batch_id) == 1
         assert sidecar.read_bytes() == b"lock"
+
+
+class TestThreadSidecarRestoresUnderTheTranscriptLock:
+    """The reply-thread sidecar is written under the transcript's lock, so restore
+    publishes it -- and rolls it back -- under that same lock, beside the
+    transcript. Published before the lock, a reply a recreated chat committed in
+    between would ride the sidecar back to trash on a lost race."""
+
+    def _sidecar(self, crew_home: Path, stem: str) -> Path:
+        d = crew_home / "sessions" / ".threads"
+        d.mkdir(exist_ok=True)
+        p = d / f"{stem}.json"
+        p.write_text(json.dumps({"version": 1, "threads": {}}), encoding="utf-8")
+        aged = _NOW - 40 * _DAY
+        os.utime(p, (aged, aged))
+        return p
+
+    def test_the_sidecar_appears_only_once_the_transcript_lock_is_held(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        sidecar = self._sidecar(crew_home, "dashboard_chat-1")
+        transcript = crew_home / "sessions" / "dashboard_chat-1.jsonl"
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW
+        )
+        assert not sidecar.exists() and not transcript.exists()
+
+        seen: dict[str, bool] = {}
+        real_locked = session_storage.ConversationLog.locked_stems
+
+        @contextlib.contextmanager
+        def _observing(self_log, stems):
+            with real_locked(self_log, stems):
+                # Nothing under the lock's protection exists before it is taken.
+                seen["sidecar_before"] = sidecar.exists()
+                seen["transcript_before"] = transcript.exists()
+                yield
+                seen["sidecar_inside"] = sidecar.exists()
+                seen["transcript_inside"] = transcript.exists()
+
+        monkeypatch.setattr(session_storage.ConversationLog, "locked_stems", _observing)
+        assert session_storage.restore(batch.batch_id) == 1
+        assert seen == {
+            "sidecar_before": False,
+            "transcript_before": False,
+            "sidecar_inside": True,
+            "transcript_inside": True,
+        }
+        assert sidecar.exists() and transcript.exists()
+
+    def test_one_vanished_sidecar_costs_no_other_session_its_freshness(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reply writes only the sidecar, so its mtime is what keeps a threaded
+        session young. Each entry is stat'ed on its own: a sidecar renamed away by
+        a concurrent delete mid-scan must not empty the whole list and age every
+        other threaded session by its transcript alone."""
+        crew_home, _kiro_home = stores
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        _transcript(crew_home, "dashboard_chat-2", size=50, age_days=40)
+        fresh = self._sidecar(crew_home, "dashboard_chat-1")
+        os.utime(fresh, (_NOW, _NOW))
+        vanishing = self._sidecar(crew_home, "dashboard_chat-2")
+        real_scandir = os.scandir
+
+        class _Vanishing:
+            """An ``os.scandir`` iterator whose listing of the vanishing sidecar
+            is the moment it disappears -- the concurrent delete, mid-scan."""
+
+            def __init__(self, it):
+                self._it = it
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self._it.__exit__(*exc)
+
+            def close(self):
+                self._it.close()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                entry = next(self._it)
+                if entry.name == vanishing.name and vanishing.exists():
+                    vanishing.unlink()
+                return entry
+
+        def _scandir(path=".", *a, **k):
+            it = real_scandir(path, *a, **k)
+            if isinstance(path, int) or os.fspath(path) != os.fspath(fresh.parent):
+                return it
+            return _Vanishing(it)
+
+        monkeypatch.setattr(session_storage.os, "scandir", _scandir)
+        by_stem = {
+            u.stems[0]: u for u in session_storage.list_units(_index(), cached=False) if u.stems
+        }
+        assert by_stem["dashboard_chat-1"].age_days(_NOW) < 1, "the fresh sidecar still counts"
+        assert by_stem["dashboard_chat-2"].age_days(_NOW) >= 40
+
+    def test_a_sidecar_alone_is_not_restored_onto_a_recreated_chat(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A staged sidecar whose transcript is not in the batch takes the same
+        transcript recheck under the lock: a chat recreated under that stem is a
+        different chat, and the old replies must not be attached to it."""
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        sidecar = self._sidecar(crew_home, "dashboard_chat-1")
+        transcript = crew_home / "sessions" / "dashboard_chat-1.jsonl"
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW
+        )
+        staged_dir = session_storage.trash_root() / batch.batch_id / "crew"
+        # The transcript never comes back from this batch (a kill mid-staging left
+        # the sidecar behind on its own); the chat is then recreated.
+        (staged_dir / "dashboard_chat-1.jsonl").unlink()
+        manifest = session_storage.trash_root() / batch.batch_id / session_storage.MANIFEST_NAME
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        entry = json.loads(lines[1])
+        entry["files"] = [f for f in entry["files"] if not str(f["rel"]).endswith(".jsonl")]
+        assert any(str(f["rel"]).endswith(".json") for f in entry["files"]), "the sidecar stays"
+        manifest.write_text(f"{lines[0]}\n{json.dumps(entry)}\n", encoding="utf-8")
+        transcript.write_bytes(b"new chat")
+        assert session_storage.restore(batch.batch_id) == 0
+        assert not sidecar.exists(), "old replies must not land beside the new chat"
+        assert (staged_dir / ".threads" / "dashboard_chat-1.json").exists()
+        assert transcript.read_bytes() == b"new chat"
+
+    def test_a_lost_race_rolls_the_sidecar_back_under_the_lock_too(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        sidecar = self._sidecar(crew_home, "dashboard_chat-1")
+        transcript = crew_home / "sessions" / "dashboard_chat-1.jsonl"
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW
+        )
+        real_locked = session_storage.ConversationLog.locked_stems
+
+        @contextlib.contextmanager
+        def _recreate_under_lock(self_log, stems):
+            with real_locked(self_log, stems):
+                # The chat comes back the instant the lock is taken: the restore
+                # must lose the race for BOTH files and leave both staged.
+                transcript.write_bytes(b"new chat")
+                yield
+
+        monkeypatch.setattr(session_storage.ConversationLog, "locked_stems", _recreate_under_lock)
+        assert session_storage.restore(batch.batch_id) == 0
+        assert transcript.read_bytes() == b"new chat"
+        assert not sidecar.exists()
+        staged = (
+            session_storage.trash_root()
+            / batch.batch_id
+            / "crew"
+            / ".threads"
+            / "dashboard_chat-1.json"
+        )
+        assert staged.exists()
+
+    def test_a_link_where_the_sidecar_directory_should_be_leaves_the_batch_staged(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        self._sidecar(crew_home, "dashboard_chat-1")
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW
+        )
+        threads_dir = crew_home / "sessions" / ".threads"
+        elsewhere = crew_home / "elsewhere"
+        elsewhere.mkdir()
+        if threads_dir.exists():
+            threads_dir.rmdir()
+        threads_dir.symlink_to(elsewhere, target_is_directory=True)
+        assert session_storage.restore(batch.batch_id) == 0
+        assert list(elsewhere.iterdir()) == []
+        assert not (crew_home / "sessions" / "dashboard_chat-1.jsonl").exists()
+
+    def test_a_link_swapped_in_under_the_lock_cannot_redirect_the_publish(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The preflight's link check has a window; the publish closes it by
+        addressing the pinned `.threads` descriptor, so a link swapped in after
+        preflight is refused and nothing lands under its target."""
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        self._sidecar(crew_home, "dashboard_chat-1")
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW
+        )
+        threads_dir = crew_home / "sessions" / ".threads"
+        elsewhere = crew_home / "elsewhere"
+        elsewhere.mkdir()
+        real_locked = session_storage.ConversationLog.locked_stems
+
+        @contextlib.contextmanager
+        def _swap_under_lock(self_log, stems):
+            with real_locked(self_log, stems):
+                if threads_dir.exists() and not threads_dir.is_symlink():
+                    threads_dir.rmdir()
+                if not threads_dir.exists():
+                    threads_dir.symlink_to(elsewhere, target_is_directory=True)
+                yield
+
+        monkeypatch.setattr(session_storage.ConversationLog, "locked_stems", _swap_under_lock)
+        assert session_storage.restore(batch.batch_id) == 0
+        assert list(elsewhere.iterdir()) == []
+        assert not (crew_home / "sessions" / "dashboard_chat-1.jsonl").exists()
 
 
 class TestAttachmentsAreTheThirdHalf:

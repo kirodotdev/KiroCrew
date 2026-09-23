@@ -480,7 +480,7 @@ describe('mcpAppTheme — every built-in theme yields a complete color group (Pr
 describe('mcpAppTheme — the info wash matches the dashboard (Property 19)', () => {
   // Property 19: The derived info wash is the SAME wash `bg-info-subtle` paints
   // with. `--info` is the one status hue with no stored `-subtle` companion; the
-  // dashboard derives it in tailwind.config.js, and the map derives it from
+  // dashboard derives it in src/tailwind-theme.css, and the map derives it from
   // INFO_WASH. Two spellings of one wash inside a single theme is a visible
   // disagreement, so the percentage is pinned against the config that renders the
   // dashboard's own info surfaces. Validates: Requirements 2.5.
@@ -489,17 +489,17 @@ describe('mcpAppTheme — the info wash matches the dashboard (Property 19)', ()
     expect(src.from).toBe('wash')
     expect(src.name).toBe('--info')
 
-    const config = readFileSync(
-      join(__dirname, '..', '..', 'tailwind.config.js'),
+    const theme = readFileSync(
+      join(__dirname, '..', 'tailwind-theme.css'),
       'utf-8',
     )
     const match =
-      /'info-subtle':\s*'color-mix\(in srgb, var\(--info\) (\d+)%, transparent\)'/.exec(
-        config,
+      /--color-info-subtle:\s*color-mix\(in srgb, var\(--info\) (\d+)%, transparent\);/.exec(
+        theme,
       )
     expect(
       match,
-      'tailwind.config.js no longer spells info-subtle as a color-mix of --info; ' +
+      'tailwind-theme.css no longer spells info-subtle as a color-mix of --info; ' +
         'if it now reads a stored token, COLOR_TOKEN_MAP should read that token too',
     ).not.toBeNull()
     expect(`${match![1]}%`).toBe(INFO_WASH)

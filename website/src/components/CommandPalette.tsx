@@ -7,6 +7,7 @@ import { useAppSelector } from '../store'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import type { Result, ResourceProvider } from './commandPalette/types'
+import { slotRecency } from './commandPalette/slotRecency'
 import { registerProvider } from './commandPalette/providers'
 import { usePaletteActions } from './commandPalette/paletteActions'
 import { useAllAggregator } from './commandPalette/providers/allAggregator'
@@ -162,6 +163,12 @@ export default function CommandPalette({
   // Tab strip order (§1): All · Sessions · Knowledge · Skills ·
   // Prompts, with Artifacts + Apps + Pages + Actions riding along after the v1
   // corpus. Apps sits next to Pages because both are pure navigation targets.
+  //
+  // Folders are deliberately ABSENT. Reaching a session folder by name is a
+  // Command Bar feature, and it lives in that app (`apps/command-bar/`) the way
+  // session and artifact search reach their corpora there: one row you enter,
+  // then a list that narrows. Registering a second folder surface here would make
+  // the host own a copy of a feature the app already owns, and the two would drift.
   const tabs = useMemo<ResourceProvider[]>(
     () => [all, sessions, knowledge, skills, prompts, artifacts, apps, pages, actions, settings],
     [all, sessions, knowledge, skills, prompts, artifacts, apps, pages, actions, settings],
@@ -351,14 +358,18 @@ export default function CommandPalette({
     () =>
       activeProvider.id === 'recents'
         ? slots
-            .map(
-              (s) =>
-                `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
-                  s.pinned ? 1 : 0
-                }:${s.last_activity_ts ?? s.last_ts ?? ''}:${
-                  slotStatusDetail[s.key]?.kind ?? ''
-                }:${slotStatusDetail[s.key]?.text ?? ''}:${slotStatusDetail[s.key]?.ts ?? ''}`,
-            )
+            .map((s) => {
+              const detail = slotStatusDetail[s.key]
+              // The status string that can change under a stable `kind`: a tool
+              // phase's agent-written purpose, any other phase's label. Only a
+              // fingerprint input — the row itself renders via toolStatusLabel.
+              const detailText = detail?.kind === 'tool' ? detail.purpose ?? '' : detail?.label ?? ''
+              return `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
+                s.pinned ? 1 : 0
+              }:${slotRecency(s).timestamp ?? ''}:${
+                detail?.kind ?? ''
+              }:${detailText}:${detail?.ts ?? ''}`
+            })
             .join('|') + `#${unreadSlots.join(',')}#${simplifiedToolNames ? 1 : 0}`
         : '',
     [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames],
@@ -545,7 +556,7 @@ export default function CommandPalette({
       // height and its lower half sits behind the keyboard, unreachable. iOS also
       // scrolls the focused input into view, which moves the visual viewport's
       // origin -- hence the top offset as well as the height.
-      className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-sm animate-rise"
+      className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-xs animate-rise"
       style={{ top: vv.offsetTop, height: vv.height }}
       role="dialog"
       aria-modal="true"
@@ -611,7 +622,12 @@ export default function CommandPalette({
             // narrow viewport the row overflows instead and the modal's
             // overflow-hidden clips whatever trails the input — the Tab hint and,
             // worse, the close button.
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-[14px] text-text placeholder:text-muted"
+            // focus-cue-ok: combobox — focus stays in this field for the palette's
+            // whole lifetime (options are tabIndex={-1}; arrows move the
+            // aria-selected highlight below), so the highlighted option is the
+            // visible cue and the palette frame itself only exists while this
+            // field owns focus.
+            className="flex-1 min-w-0 bg-transparent border-none outline-hidden text-[14px] text-text placeholder:text-muted"
           />
           {scopeHint && (
             <span className="shrink-0 flex items-center gap-1 text-[11px] text-muted">

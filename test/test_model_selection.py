@@ -45,6 +45,6 @@ class TestSpawnRunModelParam:
             "os.environ", {"KIROCREW_SESSION_KEY": "sess"}
         ):
             mock_post.return_value = {"id": "agent1"}
-            _call_tool("spawn_run", {"task": "test"})
+            _call_tool("spawn_run", {"task": "test", "solo_reason": "bulk_data"})
             body = mock_post.call_args[0][1]
             assert "model" not in body

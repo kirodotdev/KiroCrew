@@ -26,9 +26,13 @@ verbatim makes the file itself hazardous to quote.
 
 from __future__ import annotations
 
+import pathlib
+import re
+
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
 from kiro_crew.dashboard.chat_utils import (
     has_leaked_tool_call,
+    should_notice_compaction_dropped_leak,
     should_notice_leaked_tool_call,
     should_notice_mixed_turn_leak,
 )
@@ -299,3 +303,263 @@ def test_a_mixed_turn_quoting_a_fenced_block_is_not_noticed():
     # Same structural exclusion the sibling gets: explaining a leak is not one.
     fenced = "Here is what a leak looks like:\n\n```\n" + _LEAK + "\n```\n"
     assert _mixed(final_segment_text=fenced) is False
+
+
+# ── The compaction boundary ───────────────────────────────────────────────
+# A REAL (non-synthesized) mid-turn compaction terminal is a segment boundary,
+# so the runner resets `assistant_text` there. Both predicates above read that
+# accumulator AT TURN END, so a leak that streamed BEFORE the boundary is gone
+# by the time either runs and both decline on an empty segment — while the raw
+# block was already on the user's screen (chunks stream to the wire as they
+# arrive) and the boundary does not flush it anywhere. The fact is therefore
+# captured at the boundary and only the boolean travels.
+
+
+def _dropped(**over):
+    """should_notice_compaction_dropped_leak with firing defaults, so each test
+    flips exactly the one field it is about."""
+    kw = dict(
+        dropped_leak=True,
+        leak_already_noticed=False,
+        stop_reason=_END,
+        end_turn_reason=_END,
+        prompt_depth=0,
+        is_cancelled=False,
+        refusal_reasons=[],
+    )
+    kw.update(over)
+    return should_notice_compaction_dropped_leak(**kw)
+
+
+def test_both_turn_end_predicates_are_blind_to_a_wiped_segment():
+    """The defect itself, stated as the gap it is.
+
+    This is what the boundary leaves behind: the leak really happened and
+    really reached the user, but the only input either turn-end predicate reads
+    is now empty, so neither can report it. Whatever the tool count was, the
+    answer is the same — which is why the fact has to be captured earlier.
+    """
+    wiped = ""
+    assert has_leaked_tool_call(wiped) is False
+    assert _notice(final_segment_text=wiped, turn_tool_calls=0) is False
+    assert _mixed(final_segment_text=wiped, turn_tool_calls=4) is False
+
+
+def test_a_leak_dropped_at_the_compaction_boundary_is_noticed():
+    """The fix: the turn-end card comes from the recorded fact, not the text."""
+    assert _dropped() is True
+
+
+def test_the_leak_is_detectable_at_the_boundary_before_the_reset():
+    """What the runner scans: the accumulator as it stands at the boundary.
+
+    Pins the pairing the fix depends on — the same detector the turn-end
+    predicates use, run one step earlier, is what makes the recorded fact true.
+    """
+    assert has_leaked_tool_call(_LEAK) is True
+
+
+def test_a_clean_segment_at_the_boundary_records_nothing():
+    """A compaction alone is not a leak. Only a segment carrying one is."""
+    assert has_leaked_tool_call("Summarizing the session so far.") is False
+    assert _dropped(dropped_leak=False) is False
+
+
+def test_a_dropped_leak_needs_no_tool_count():
+    """The signature is a closed set, and each absence is load-bearing.
+
+    ``turn_tool_calls`` is absent because that gate exists on the zero-call
+    sibling to protect UN-LANDING, and this predicate un-lands nothing.
+    ``in_stage_execution`` is absent for the reason its mixed-turn sibling omits
+    it: a notice changes no turn result the stage loop reads.
+    ``final_segment_text`` is absent because the text is already gone at turn
+    end, which is the defect -- the boundary fact travels instead.
+
+    The closed set is the load-bearing half. Nothing here can describe a
+    recovery's trigger (no tool result, no infra-error state, no progress-claim
+    text), so this predicate cannot be made to stand down for a recovery even in
+    principle -- which is precisely why it must not hold an exclusive slot ahead
+    of one, and why ``TestTheNoticeDoesNotStarveARecovery`` pins that placement.
+    """
+    import inspect
+
+    params = set(inspect.signature(should_notice_compaction_dropped_leak).parameters)
+    assert params == {
+        "dropped_leak",
+        "leak_already_noticed",
+        "stop_reason",
+        "end_turn_reason",
+        "prompt_depth",
+        "is_cancelled",
+        "refusal_reasons",
+    }
+
+
+def test_cancelled_refused_and_nested_dropped_leaks_are_not_noticed():
+    """The same turn-shape exclusions its siblings use, for the same reasons:
+    those paths own their own reporting, and a nested prompt is not the user's
+    turn.
+    """
+    assert _dropped(is_cancelled=True) is False
+    assert _dropped(stop_reason=STOP_REASON_CANCELLED) is False
+    assert _dropped(refusal_reasons=["tool_denied"]) is False
+    assert _dropped(stop_reason="error: tool stall") is False
+    assert _dropped(prompt_depth=1) is False
+
+
+def test_the_dropped_leak_card_does_not_double_up_on_a_sibling():
+    """One turn gets one leak card, decided by the flag rather than by ordering.
+
+    The caller evaluates this predicate OUTSIDE the chain its siblings sit in,
+    so position cannot be what prevents a second card. A turn whose
+    post-boundary segment also leaks is carded by a sibling, which sets the
+    flag; this predicate then declines on the same recorded boundary fact.
+    """
+    # Post-boundary segment leaks, nothing ran after the boundary.
+    assert _notice(final_segment_text=_LEAK, turn_tool_calls=0) is True
+    # Post-boundary segment leaks after dispatches earlier in the turn.
+    assert _mixed(final_segment_text=_LEAK, turn_tool_calls=4) is True
+    # Either of those carding is what silences this one -- not its position.
+    assert _dropped(leak_already_noticed=True) is False
+    assert _dropped(leak_already_noticed=False) is True
+
+
+def test_the_card_owns_no_turn_outcome_so_it_gates_on_nothing_a_recovery_reads():
+    """A recovery-shaped turn that also dropped a leak gets BOTH.
+
+    The predicate's answer is unchanged by anything a recovery keys on, so
+    evaluating it independently is safe in both directions: the card fires, and
+    the arm that owns the turn still gives the turn its outcome.
+    """
+    assert _dropped() is True
+    assert _dropped(leak_already_noticed=True) is False
+
+
+class TestTheNoticeDoesNotStarveARecovery:
+    """Source-level guard: the card must stay OUT of the outcome-owning chain.
+
+    The chain that ends a turn runs the two leak arms, the L1 infrastructure
+    retry and the promise-only guard as one ``if``/``elif``. The last two
+    RE-DRIVE the work, so an arm placed among them takes an exclusive slot: a
+    turn that both dropped a leak at its boundary and needs a recovery would get
+    the card and lose the recovery. A notice owns no outcome and so belongs
+    outside, which is a structural property no predicate test can observe.
+    """
+
+    RUNNER = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard/chat_runner.py"
+    CALL = "should_notice_compaction_dropped_leak("
+
+    def _call_line(self) -> str:
+        for line in self.RUNNER.read_text(encoding="utf-8").splitlines():
+            if self.CALL in line:
+                return line
+        raise AssertionError("the runner never calls the dropped-leak predicate")
+
+    def test_the_card_is_reached_by_its_own_if_not_by_an_elif(self):
+        line = self._call_line().strip()
+        assert line.startswith("if "), (
+            "the dropped-leak notice is chained with `elif`, so it takes an "
+            "exclusive slot in the turn-outcome chain and a turn that also needs "
+            "the L1 infra retry or the promise-only recovery loses it. A "
+            f"notice-only card belongs in its own `if`. Found: {line!r}"
+        )
+
+    def test_both_recovery_arms_still_have_their_own_conditions(self):
+        """The premise: those two arms are recoveries this card could shadow."""
+        source = self.RUNNER.read_text(encoding="utf-8")
+        assert "should_recover_promise_only(" in source
+        assert "_queue_recovery(" in source
+
+    def test_the_card_sets_no_flag_a_recovery_reads(self):
+        """`_noticed_leak` suppresses recovery arms, so this card must not set it."""
+        lines = self.RUNNER.read_text(encoding="utf-8").splitlines()
+        start = next(i for i, ln in enumerate(lines) if self.CALL in ln)
+        # The card's own block: from its call to the end of its slot.append.
+        window = "\n".join(lines[start : start + 40])
+        assert "_noticed_leak = True" not in window, (
+            "the dropped-leak card marks the turn un-landed, which suppresses the "
+            "recovery arms it was just decoupled from"
+        )
+
+
+class TestTheBoundaryScanRunsBeforeTheReset:
+    """Source-level guard over the runner half, which no unit test can reach.
+
+    The predicate above takes a boolean, so the whole fix rests on WHERE that
+    boolean is computed: the scan reads ``assistant_text`` and the compaction
+    boundary clears it, so a scan placed after the clear reads an empty string,
+    records False, and silently restores the defect while every predicate test
+    here still passes. Same doctrine as
+    ``test_deny_audit_first.TestEveryDenySiteAuditsBeforeTheWire``: the ordering
+    claim has to be checkable.
+
+    Scoped to the compaction boundary alone. The runner clears
+    ``assistant_text`` at several other sites (tool boundaries, clear, steer
+    cut) and those are not segment-summarization boundaries, so they are
+    deliberately out of scope -- the window is bounded by the
+    ``event.synthesized`` guard that identifies this one.
+    """
+
+    RUNNER = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard/chat_runner.py"
+    GUARD = re.compile(r"^\s*if not event\.synthesized:")
+    RESET = re.compile(r'^\s*assistant_text = ""\s*$')
+    SCAN = "has_leaked_tool_call("
+    FLAG = "_compaction_dropped_leak"
+    # The assignment must ACCUMULATE. A turn can cross more than one boundary,
+    # and a plain `= has_leaked_tool_call(...)` lets a later clean segment
+    # overwrite an earlier boundary's recorded leak, losing a card the user is
+    # owed. Matching the `or` is what makes that rewrite fail here.
+    ACCUMULATE = re.compile(r"_compaction_dropped_leak\s*=\s*_compaction_dropped_leak\s+or\b")
+
+    def _lines(self) -> list[str]:
+        return self.RUNNER.read_text(encoding="utf-8").splitlines()
+
+    def _boundary(self, lines: list[str]) -> int:
+        sites = [i for i, line in enumerate(lines) if self.GUARD.match(line)]
+        assert len(sites) == 1, (
+            f"expected exactly one `if not event.synthesized:` guard, saw {len(sites)} "
+            "-- the compaction-boundary window is no longer identifiable, so this "
+            "ratchet cannot say which reset it is guarding"
+        )
+        return sites[0]
+
+    def test_the_boundary_window_still_resets_the_accumulator(self):
+        """The premise: this window is where the segment text is discarded."""
+        lines = self._lines()
+        start = self._boundary(lines)
+        window = lines[start : start + 40]
+        assert any(self.RESET.match(line) for line in window), (
+            "the compaction boundary no longer clears `assistant_text` in its own "
+            "window -- if the reset moved, the scan below must move with it"
+        )
+
+    def test_the_leak_scan_precedes_the_reset_it_guards(self):
+        lines = self._lines()
+        start = self._boundary(lines)
+        window = lines[start : start + 40]
+        reset_at = next(i for i, line in enumerate(window) if self.RESET.match(line))
+        before = "\n".join(window[:reset_at])
+        assert self.SCAN in before and self.FLAG in before, (
+            "the compaction boundary clears `assistant_text` without scanning it "
+            f"for a leaked tool call first. A scan after line "
+            f"{start + reset_at + 1} reads an empty string and records no leak, so "
+            "a block the user already saw is reported nowhere."
+        )
+        assert self.ACCUMULATE.search(before), (
+            "the boundary OVERWRITES the recorded leak instead of accumulating it. "
+            "A turn crossing two boundaries then loses the first one's leak when "
+            "the second segment is clean, and the user gets no card for a block "
+            "they saw. Keep `= _compaction_dropped_leak or ...`."
+        )
+
+    def test_the_recorded_fact_reaches_the_turn_end_predicate(self):
+        """The flag is useless unless the notice arm actually reads it."""
+        source = self.RUNNER.read_text(encoding="utf-8")
+        assert "should_notice_compaction_dropped_leak(" in source, (
+            "the runner records the dropped leak but never consults the predicate "
+            "that would surface it"
+        )
+        assert f"dropped_leak={self.FLAG}" in source, (
+            "the notice arm does not receive the boundary's recorded fact, so the "
+            "card can never fire"
+        )

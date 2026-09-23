@@ -28,6 +28,22 @@ if [ -f "$GUI_OUT/target.paths" ]; then
           */gui-home.??????|*/gui-chrome.??????) rm -rf -- "$path" ;;
           *) echo "refusing to remove unexpected path for $key: $path" >&2 ;;
         esac ;;
+      notes)
+        # The fixed sample-notes tree boot.sh staged for the Knowledge scenarios:
+        # the exact path, a real directory this user owns, carrying the marker
+        # boot.sh wrote as a regular file (a symlink in its place is a plant, not
+        # a marker). Anything else at that path is not ours to remove.
+        case "$path" in
+          /tmp/kirocrew-gui-user-test)
+            marker="$path/.owned-by-gui-user-test"
+            if [ ! -L "$path" ] && [ -d "$path" ] && [ -O "$path" ] \
+               && [ ! -L "$marker" ] && [ -f "$marker" ] && [ -O "$marker" ]; then
+              rm -rf -- "$path"
+            else
+              echo "refusing to remove $path: not a directory boot.sh created (ownership marker missing)" >&2
+            fi ;;
+          *) echo "refusing to remove unexpected path for $key: $path" >&2 ;;
+        esac ;;
     esac
   done < "$GUI_OUT/target.paths"
 fi

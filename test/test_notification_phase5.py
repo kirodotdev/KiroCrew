@@ -3,6 +3,7 @@ send_notification agent tool + endpoint."""
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
@@ -12,7 +13,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers.messaging import api_notification_agent_push
-from kiro_crew.dashboard.state import DashboardState, sweep_expired_notifications
+from kiro_crew.dashboard.state import (
+    _MAX_PERSISTED_NOTIFICATIONS,
+    DashboardState,
+    sweep_expired_notifications,
+)
 
 
 def _make_state(monkeypatch, tmp_path) -> DashboardState:
@@ -182,6 +187,164 @@ class TestTtlSweeper:
         state._deliver_note(_note(title="fresh"))
         titles = [n["title"] for n in state._notification_log]
         assert titles == ["fresh"]
+
+
+class TestTrimUnservableLines:
+    """The append-time trim counts live rows and unservable lines separately.
+
+    An UNSERVABLE line is one ``_load_notifications`` can never serve: it does not
+    parse, or it parses to something other than a JSON object. It has no dedupe key
+    on the merge side, so a merge appends it instead of collapsing it and it lands
+    among the newest lines. Counting it in the live window lets a damaged or crafted
+    source evict genuine history, with the keep-on-ambiguity rule protecting the
+    unreadable lines ahead of the real ones.
+    """
+
+    @staticmethod
+    def _trim(path, rows) -> list[str]:
+        from kiro_crew.dashboard.state import _maybe_trim_notifications
+
+        path.write_text("".join(f"{row}\n" for row in rows), encoding="utf-8")
+        _maybe_trim_notifications(path)
+        return path.read_text(encoding="utf-8").splitlines()
+
+    @staticmethod
+    def _live_titles(lines) -> set[str]:
+        # Judged by the production acceptance predicate, so the assertion is about
+        # what the loader would actually serve rather than about what parses.
+        from kiro_crew.dashboard.state import _servable_note
+
+        titles = set()
+        for line in lines:
+            note = _servable_note(line)
+            if note is not None and "title" in note:
+                titles.add(note["title"])
+        return titles
+
+    def test_unparseable_lines_do_not_evict_live_history(self, tmp_path):
+        # One shared newest-N window keeps the unservable lines, which are newest,
+        # and drops every live row -- an append becomes an eviction.
+        live = _MAX_PERSISTED_NOTIFICATIONS
+        rows = [json.dumps(_note(title=f"live-{i}")) for i in range(live)]
+        # Truncated objects: unparseable, and enough of them to pass the 2x threshold.
+        rows += [f'{{"a": "x{i}' for i in range(live + 1)]
+
+        kept = self._trim(tmp_path / "notifications.jsonl", rows)
+
+        titles = self._live_titles(kept)
+        assert len(titles) == live
+        assert "live-0" in titles and f"live-{live - 1}" in titles
+
+    def test_non_object_json_lines_do_not_evict_live_history(self, tmp_path):
+        # A row that parses but is not an object is equally unservable, so treating
+        # "parses" as "live" would leave the eviction one character away.
+        live = _MAX_PERSISTED_NOTIFICATIONS
+        rows = [json.dumps(_note(title=f"live-{i}")) for i in range(live)]
+        rows += [json.dumps([i]) for i in range(live + 1)]
+
+        kept = self._trim(tmp_path / "notifications.jsonl", rows)
+
+        titles = self._live_titles(kept)
+        assert len(titles) == live
+        assert "live-0" in titles and f"live-{live - 1}" in titles
+
+    def test_rows_the_loader_rejects_do_not_evict_live_history(self, tmp_path):
+        # A row can parse as an object and still be unservable: normalize_note raises
+        # on an unhashable channel, so the loader skips it. Asking only whether the
+        # row is a dict would hand it a live slot and let it displace real history.
+        live = _MAX_PERSISTED_NOTIFICATIONS
+        rows = [json.dumps(_note(title=f"live-{i}")) for i in range(live)]
+        rows += [
+            json.dumps({"channel": [], "title": f"poison-{i}"}) for i in range(live + 1)
+        ]
+
+        kept = self._trim(tmp_path / "notifications.jsonl", rows)
+
+        titles = self._live_titles(kept)
+        assert len(titles) == live
+        assert "live-0" in titles and f"live-{live - 1}" in titles
+
+    def test_whitespace_wrapped_rows_count_as_live(self, tmp_path):
+        # str.strip removes whitespace json does not accept, a no-break space among
+        # it, so parsing the raw line would call a row the loader serves unservable
+        # and delete servable history. The kept bytes must stay unnormalized.
+        live = _MAX_PERSISTED_NOTIFICATIONS
+        rows = [
+            "\u00a0" + json.dumps(_note(title=f"live-{i}")) + "\u00a0"
+            for i in range(live)
+        ]
+        rows += [f'{{"a": "x{i}' for i in range(live + 1)]
+
+        kept = self._trim(tmp_path / "notifications.jsonl", rows)
+
+        assert len(kept) < len(rows), "the trim must actually trim"
+        assert len(self._live_titles(kept)) == live
+        assert all(line.startswith("\u00a0") for line in kept if "live-" in line)
+
+    def test_retained_bytes_keep_their_terminators(self, tmp_path):
+        # A text-mode read translates CRLF and a bare CR to LF, so a trim reading that
+        # way rewrites the terminator of every row it keeps. The snapshot dedupe key
+        # for a timestamp-less row is its raw bytes, and a bare CR is the byte that
+        # split a record into the fragments the merge deliberately keeps.
+        from kiro_crew.dashboard.state import _maybe_trim_notifications
+
+        live = _MAX_PERSISTED_NOTIFICATIONS
+        rows = [json.dumps(_note(title=f"live-{i}")) for i in range(live)]
+        rows += [f'{{"a": "x{i}' for i in range(live + 1)]
+        path = tmp_path / "notifications.jsonl"
+        path.write_bytes(("\r\n".join(rows) + "\r\n").encode("utf-8"))
+
+        _maybe_trim_notifications(path)
+
+        after = path.read_bytes()
+        original = ("\r\n".join(rows) + "\r\n").encode("utf-8")
+        assert b"\r\n" in after, "CRLF terminators must survive the rewrite"
+        assert len(after) < len(original), "the trim must actually trim"
+        for retained in after.split(b"\r\n")[:-1]:
+            assert retained + b"\r\n" in original, "a retained line was rewritten"
+
+    def test_a_bounded_window_of_unservable_lines_is_retained(self, tmp_path):
+        # Keep-on-ambiguity still holds -- some unservable lines survive for a human
+        # to read -- and the window is bounded, so they cannot grow the file freely.
+        live = _MAX_PERSISTED_NOTIFICATIONS
+        rows = [json.dumps(_note(title=f"live-{i}")) for i in range(live)]
+        rows += [f'{{"a": "x{i}' for i in range(live + 1)]
+
+        kept = self._trim(tmp_path / "notifications.jsonl", rows)
+
+        unservable = [line for line in kept if line.startswith('{"a": "x')]
+        assert unservable, "keep-on-ambiguity: an unservable line must survive"
+        assert len(unservable) < live + 1, "the unservable window must be bounded"
+
+    def test_retained_lines_keep_their_file_order(self, tmp_path):
+        # A fragment is only interpretable beside its neighbours, and a final line
+        # with no terminator must stay final or it glues onto the row after it.
+        live = _MAX_PERSISTED_NOTIFICATIONS
+        rows: list[str] = []
+        for i in range(live + 1):
+            rows.append(json.dumps(_note(title=f"live-{i}")))
+            rows.append(f'{{"a": "x{i}')
+
+        kept = self._trim(tmp_path / "notifications.jsonl", rows)
+
+        # Every retained line is still in the source at a strictly later position.
+        position = -1
+        for line in kept:
+            position = rows.index(line, position + 1)
+
+    def test_a_small_cap_still_bounds_the_unservable_window(self, monkeypatch, tmp_path):
+        # A cap whose division floors to zero must not lose the bound: a
+        # ``[-0:]`` slice is the whole list, so rounding down would retain every
+        # unservable line rather than a recent sample of them.
+        monkeypatch.setattr("kiro_crew.dashboard.state._MAX_PERSISTED_NOTIFICATIONS", 2)
+        rows = [json.dumps(_note(title=f"live-{i}")) for i in range(2)]
+        rows += [f'{{"a": "x{i}' for i in range(4)]
+
+        kept = self._trim(tmp_path / "notifications.jsonl", rows)
+
+        unservable = [line for line in kept if line.startswith('{"a": "x')]
+        assert len(unservable) == 1
+        assert self._live_titles(kept) == {"live-0", "live-1"}
 
 
 class TestSendNotificationToolIdentity:

@@ -33,7 +33,8 @@ reach them — [`../README.md`](../README.md) names the exception mechanism:
 
 - `chat/voice.md` — Kiro Crew's own voice setup, with no upstream counterpart.
 - `mcp/oauth-token-storage.md` — derived from the `aws/amazon-q-developer-cli`
-  source, not from published docs.
+  source and Kiro Crew's current `mcp_grant.py` / Connections implementation, not
+  from a published storage reference.
 
 `acp.md`, `hooks.md` and `steering.md` carry local additions on top of mirrored
 content; each is marked in the page. A re-fetch must preserve them.
@@ -48,7 +49,7 @@ content; each is marked in the page. A re-fetch must preserve them.
 | [chat/model-selection.md](chat/model-selection.md) | /docs/models/ and /docs/models/available-models/ — reasoning-effort behaviour is documented first-party and more precisely in [providers](../../system-specs/modules/providers.md) | 2026-09-06 |
 | [chat/session-management.md](chat/session-management.md) | /docs/cli/chat/session-management/ | 2026-09-06 |
 | [chat/subagents.md](chat/subagents.md) | /docs/custom-agents/subagents/ — describes **upstream's** subagent model, not Kiro Crew's; [subagent](../../system-specs/modules/subagent.md) owns the shipped `spawn_run` / `spawn_continue` contract | 2026-09-06 |
-| [chat/voice.md](chat/voice.md) | **Not a mirror**, and the one page here with no upstream source: Kiro Crew's own voice setup, speech-to-text in (local by default) and text-to-speech out (local Piper, or Amazon Polly). Its behavioral contracts live in [stt-streaming](../../system-specs/modules/stt-streaming.md) and [voice-streaming](../../system-specs/modules/voice-streaming.md); its settings reference is [configuration](../../../src/kiro_crew/docs/configuration.md). | n/a |
+| [chat/voice.md](chat/voice.md) | **Not a mirror**, and the one page here with no upstream source: Kiro Crew's own voice setup, speech-to-text in (local by default) and text-to-speech out (system by default, plus Piper or Amazon Polly), across the dashboard and supported messaging channels. Its behavioral contracts live in [stt-streaming](../../system-specs/modules/stt-streaming.md) and [voice-streaming](../../system-specs/modules/voice-streaming.md); its settings reference is [configuration](../../../src/kiro_crew/docs/configuration.md). | n/a |
 | [steering.md](steering.md) | /docs/steering/ — plus local measurement of what kiro-cli does with `inclusion` | 2026-09-06 |
 | [skills.md](skills.md) | /docs/skills/ | 2026-09-06 |
 | [hooks.md](hooks.md) | /docs/hooks/ and its `types` and `actions` subpages — plus Kiro Crew's fail-closed `PreToolUse` exit contract, which has no upstream counterpart | 2026-09-06 |
@@ -60,6 +61,6 @@ content; each is marked in the page. A re-fetch must preserve them.
 | [mcp/](mcp/) | /docs/mcp/ | 2026-09-06 |
 | [mcp/configuration.md](mcp/configuration.md) | /docs/mcp/configuration/ | 2026-09-06 |
 | [mcp/examples.md](mcp/examples.md) | /docs/mcp/examples/ — [connecting a remote OAuth MCP server](../../guides/connecting-remote-oauth-mcp-server.md) is the first-party guide readers are sent to | 2026-09-06 |
-| [mcp/oauth-token-storage.md](mcp/oauth-token-storage.md) | **Not a mirror**: derived from the `aws/amazon-q-developer-cli` source | n/a |
+| [mcp/oauth-token-storage.md](mcp/oauth-token-storage.md) | **Not a mirror**: derived from the `aws/amazon-q-developer-cli` source and current Kiro Crew `mcp_grant.py` / Connections behavior | n/a |
 | [mcp/security.md](mcp/security.md) | /docs/mcp/security/ — Kiro Crew's own security model is [security](../../system-specs/modules/security.md), which governs | 2026-09-06 |
 | [reference/slash-commands.md](reference/slash-commands.md) | /docs/reference/slash-commands/ — `scripts/docs_lint.py` hand-excepts this directory from the per-directory-index rule, so moving or renaming it requires editing that exception in the same change | 2026-09-06 |

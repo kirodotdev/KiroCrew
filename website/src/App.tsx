@@ -44,6 +44,7 @@ import { recordSessionStart, recordEvent } from './rum'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
+import { cronJobsQuery } from './api/cronJobsQuery'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
@@ -96,6 +97,7 @@ import NotificationsPage from './pages/NotificationsPage'
 const SessionsPage = lazy(() => import('./pages/SessionsPage'))
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
+import NotificationBanner from './components/notifications/NotificationBanner'
 import LogsPage from './pages/LogsPage'
 import HooksPage from './pages/HooksPage'
 import WebhooksPage from './pages/WebhooksPage'
@@ -164,6 +166,7 @@ import {
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
 import { appNotificationBadges, isAppNavId, mergeAppBadges } from './appNotificationBadges'
+import { appRunStates, nextSuccessExpiryMs, type AppRunState } from './appRunState'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
 import { fmtCompact, fmtNumber, fmtPercent, fmtUnit } from './i18n/format'
 // Static on purpose, and the tradeoff is real: the sidebar updates badge
@@ -424,7 +427,7 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   }, [dispatch, onCancel])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
@@ -557,7 +560,21 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
   const ariaLabel = `${count} ${label}`
   return collapsed
     ? <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" role="status" aria-label={ariaLabel} />
-    : <span className="absolute right-2 top-1/2 -translate-y-1/2 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" aria-label={ariaLabel}>{count}</span>
+    // Expanded: IN FLOW, not `absolute right-2`. The row's other right-edge
+    // occupant is the hover/focus shortcut hint, which is an in-flow span — so an
+    // absolutely-positioned badge sat ON TOP of it and a row with an unread count
+    // advertised a chord the badge covered ("Sessions ⌥C" read as "Sessions (1)"
+    // with a sliver of the modifier glyph showing). In flow the two are siblings
+    // in the row's flex line and cannot overlap at any count width.
+    //
+    // `title` names what the number IS, for sighted users: a bare pill beside a
+    // bare bot glyph does not say what either counts, and the fix above makes the
+    // two reliably co-visible. It carries the LABEL ALONE, not `ariaLabel` — the
+    // label is a plural phrase, so "1 unread conversations" would be visibly
+    // wrong at count 1, and the count is already rendered in the pill an inch
+    // away. `aria-label` keeps the count because a screen reader gets no pill.
+    // The update dot (App.tsx) likewise carries different title and aria strings.
+    : <span className="shrink-0 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" title={label} aria-label={ariaLabel}>{count}</span>
 }
 
 /** Sub-agent activity belongs in the expanded rail, where the bot icon and
@@ -567,10 +584,89 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
 function ActivityIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
   if (count <= 0 || collapsed) return null
   const ariaLabel = `${count} ${label}`
-  return <span className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-accent" role="status" aria-label={ariaLabel}>
+  return <span className="shrink-0 flex items-center gap-1 text-[11px] text-accent" role="status" title={label} aria-label={ariaLabel}>
+    {/* Size and spacing are main's. A 12px glyph was tried here to make the mark
+        identify its own count at a glance, and a reader of the rendered frames
+        still could not tell what it depicted -- so it bought nothing and cost the
+        row's last pixel of label width (the Sessions label fits in exactly 61px;
+        12px takes 62 and clips it to "Sessions" minus two characters). What this
+        glyph depicts is a question about the rail's iconography rather than about
+        the overlap, so it is left to the follow-up rather than guessed at here.
+        The `title` carries the naming for a user who hovers. */}
     <Bot size={11} className="animate-pulse" aria-hidden />
     {count}
   </span>
+}
+
+/**
+ * Accessible name for a rail run-state mark.
+ *
+ * A literal key per state rather than one interpolated from the state value:
+ * `dynamicKeys.test.ts` polices composed keys, and a literal also keeps the
+ * three strings findable by grep from the catalog side.
+ */
+function runStateLabel(state: AppRunState | undefined): string {
+  if (state === 'running') return i18nT('app.app_job_running')
+  if (state === 'error') return i18nT('app.app_job_failed')
+  if (state === 'success') return i18nT('app.app_job_succeeded')
+  return ''
+}
+
+/**
+ * Run-state mark for an installed app's rail row.
+ *
+ * Renders in BOTH rail modes, unlike `ActivityIndicator` above. That component
+ * withholds itself when collapsed because a second anonymous dot there competes
+ * with the unread badge without identifying a session; this mark is the opposite
+ * case on both counts -- it names the row's own app, and the collapsed rail is
+ * exactly where "is that job still going?" has to be answerable without opening
+ * the app, which is the whole point of having it.
+ *
+ * Shares the row's flex line with the other two indicators rather than claiming
+ * a corner of its own. An earlier revision placed each mark at a fixed offset
+ * the others were assumed not to use, which is only true while every one of them
+ * stays the width it was assumed to be -- a count pill grows with its digits.
+ * Siblings in one flex line cannot overlap at any width, so the arrangement no
+ * longer rests on an assumption about anyone's size. Independently of geometry,
+ * exactly one surface in the registry carries an `activitySelector` -- `chat`
+ * (Sessions), a Main-group HOST surface. A host surface row never carries an
+ * `appName`, so it never receives this mark, and an app row never receives an
+ * activity count: those two cannot meet on one row regardless.
+ *
+ * Colour alone does not carry the state. `running` is a filled dot inside a wide
+ * halo ring, `error` is a plain solid fill, and `success` is HOLLOW -- a ring
+ * with no fill. The error/success pair is the one that matters: red and green
+ * are the classic confusion, and a static red dot beside a static green one
+ * differing only in hue reads a failing job as a fresh success, silently, every
+ * time. The fill carries that distinction so hue does not have to, and `title`
+ * plus the accessible name state it in words for a sighted user and a screen
+ * reader.
+ *
+ * Nothing animates. An earlier revision pulsed `running` to mirror the Schedule
+ * page's badge, but this mark lives in persistent chrome on every page, so a
+ * long job would pull peripheral attention for its whole duration -- a cost the
+ * Schedule page does not pay, because the user goes there to watch. The halo
+ * ring distinguishes `running` without motion.
+ */
+function RunStateIndicator({ state, collapsed, label }: { state: AppRunState | undefined; collapsed: boolean; label: string }) {
+  if (!state) return null
+  const shape = state === 'running'
+    ? 'bg-accent ring-2 ring-accent/30'
+    : state === 'error'
+      ? 'bg-danger'
+      : 'bg-transparent ring-1 ring-ok'
+  // Collapsed: absolute in the icon's own corner, where there is no flex line to
+  // join and no chord to cover. Expanded: IN FLOW with the other two right-edge
+  // indicators. Keeping this one `absolute right-8` while the count pill moved
+  // into the line would have left exactly the bug this change exists to fix, one
+  // component over: an app row renders this mark AND an `appBadges`-driven pill,
+  // and a 2-3 digit pill reaches left past 32px to sit under it. Flex items
+  // cannot overlap, so joining the line closes it for this mark too rather than
+  // relying on the pill staying narrow. `z-10` goes with the absolute arm: an
+  // in-flow sibling needs no stacking order to avoid a box it cannot intersect.
+  return collapsed
+    ? <span className={`absolute bottom-1 right-1 w-2 h-2 rounded-full z-10 ${shape}`} role="status" aria-label={label} title={label} />
+    : <span className={`shrink-0 w-2 h-2 rounded-full ${shape}`} role="status" aria-label={label} title={label} />
 }
 
 /**
@@ -581,7 +677,7 @@ function ActivityIndicator({ count, collapsed, label }: { count: number; collaps
  * prior two-pipeline behavior without leaving per-id branches in the
  * renderer.
  */
-function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: boolean; appBadges: Record<string, number> }) {
+export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: string; collapsed: boolean; appBadges: Record<string, number>; runState?: AppRunState }) {
   const surface = getBuiltinSurface(navId)
   // selectSurfaceBadgeCount caches per-navId so this stays referentially
   // stable across renders inside a `.map()`.
@@ -600,6 +696,7 @@ function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: b
   return (
     <>
       <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
+      <RunStateIndicator state={runState} collapsed={collapsed} label={runStateLabel(runState)} />
       <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
       <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} />
     </>
@@ -691,7 +788,11 @@ function useNavTip<T extends HTMLElement>(enabled: boolean) {
   return { tip, tipOn, rowRef, showTip, hideTip, dismissTip }
 }
 
-function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed }: {
+/** Exported for `capture/nav-badge-chord.tsx`, which measures the row's
+ *  right-edge geometry in a real browser — the one check that can see the
+ *  badge-over-chord overlap this row's unit tests can only pin structurally
+ *  (happy-dom computes no layout). Same seam `UpdateOverlay` is exported on. */
+export function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed }: {
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
   /** Set on rows that TOGGLE a surface rather than navigate (e.g. the docked
    *  terminal). `active` only paints the row; without aria-pressed a screen
@@ -738,10 +839,14 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       // it when collapsed (icon-only, no text).
       role="button"
       tabIndex={0}
-      whileHover={collapsed ? undefined : { scale: 1.02 }}
+      // Hover is a HOVER: the row paints (`hover:bg-bg-hover` / `hover:text-text`
+      // below) and does not move. A scale on hover made every rail row grow a
+      // couple of pixels under the cursor, nudging its neighbours and re-reading
+      // as a layout change rather than as "you are pointing at this". Press still
+      // scales — that one is feedback for an action the user actually took.
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15 }}
-      className={`nav-item group/nav relative flex items-center min-w-0 rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+      className={`nav-item group/nav relative flex items-center min-w-0 rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle hover:brightness-110' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       onMouseEnter={showTip}
@@ -760,7 +865,6 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       // attribute is the non-visual route rather than a duplicate of one.
       aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
     >
-      {badge}
       {iconEl}
       {/* `aria-label` carries the FULL label: this span is `whitespace-nowrap overflow-hidden`, so
           a translation longer than the rail is silently cut off with no way to read it. Surfaced by
@@ -802,6 +906,13 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
           {shortcut.chord}
         </span>
       )}
+      {/* LAST in the flex line, so the expanded unread/activity indicators sit to
+          the RIGHT of the chord above rather than over it. Order matters only for
+          the in-flow expanded indicators: every caller-supplied badge (the dev
+          dot, the update dot) and the collapsed dot are absolutely positioned
+          against the row, so they render where they always did regardless of
+          where in the children they appear. */}
+      {badge}
       {collapsed && tip && createPortal(
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
@@ -871,7 +982,7 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
   const titleText = showsCollapse ? i18nT('app.show_fewer_apps') : i18nT('app.show_more_apps', { count: hiddenCount })
   return (
     <button ref={rowRef}
-      className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none w-full"
+      className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover/60 bg-transparent border-none w-full"
       // Dismiss the hover label on activation, without the fade-out. Unlike a
       // NavItem (which stays put when clicked, so the pointer is still
       // legitimately over it), activating this toggle re-flows the Apps list and
@@ -1031,8 +1142,9 @@ function NotificationsBellButton() {
    *
    * `scrim: null` because the sheet's column scrim is its own CHILD and travels
    * with it; there is no separate backdrop to fade in lockstep. Safe against
-   * registerDrawerTargets' projection precondition because nothing under
-   * `components/notifications/` imports framer-motion at all.
+   * registerDrawerTargets' projection precondition because nothing rendered
+   * INSIDE the sheet uses framer-motion (`NotificationBanner` does, but it is
+   * portalled beside the sheet, never within it).
    */
   useEffect(() => registerDrawerTargets(sheetX, {
     panel: () => sheetRef.current,
@@ -1081,6 +1193,14 @@ function NotificationsBellButton() {
     animateDrawer(sheetX, 0)
     recordEvent('notifications_open', { source: 'topbar' })
   }, [sheetX, parkedOffset])
+
+  // The banner's "open on this note" path: the same open as the bell, then
+  // the selection — one state owner, so the popover's auto-ack effect and its
+  // detail panel work for a banner tap exactly as for a row tap.
+  const openPanelOn = useCallback((ts: string) => {
+    openPanel()
+    setSelectedTs(ts)
+  }, [openPanel])
 
   // See NC_CLOSE_BACKSTOP_MS: `animateDrawer`'s arrival callback owns the
   // unmount, and this only rescues a phase that never heard back at all.
@@ -1138,9 +1258,16 @@ function NotificationsBellButton() {
     return () => { document.removeEventListener('pointerdown', onPointerDown); document.removeEventListener('keydown', onKey) }
   }, [open, selectedTs, closePanel])
 
-  // Auto-mark-read when opening a notification's detail
+  // Auto-mark-read when opening a notification's detail -- ONCE per
+  // selection. A rejected ack flips the row back to unread
+  // (`ackNotification.rejected`), and re-asking on that flip would loop the
+  // request forever; the detail panel's own "Mark read" is the retry.
+  const autoAckedTsRef = useRef<string | null>(null)
   useEffect(() => {
-    if (selected && !selected.acked) dispatch(ackNotification(selected.ts))
+    if (!selected) { autoAckedTsRef.current = null; return }
+    if (selected.acked || autoAckedTsRef.current === selected.ts) return
+    autoAckedTsRef.current = selected.ts
+    dispatch(ackNotification(selected.ts))
   }, [selected, dispatch])
 
   return (
@@ -1222,7 +1349,7 @@ function NotificationsBellButton() {
                 the cards' own backdrop-blur still samples the page). */}
             <div
               aria-hidden="true"
-              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.12] backdrop-blur-sm [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
+              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.12] backdrop-blur-xs [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
             />
             <div className="flex-1 min-h-0 px-3 py-2 flex flex-col">
               <NotificationFeed
@@ -1262,6 +1389,18 @@ function NotificationsBellButton() {
           )}
           </ErrorBoundary>
         </div>,
+        document.body
+      )}
+      {/* Live-arrival banner. Portalled like the sheet so a transformed
+          ancestor in the top bar cannot capture its `fixed` positioning; it
+          borrows the bell for its exit vector and this component's open/select
+          mechanics rather than holding any selection of its own. */}
+      {createPortal(
+        <NotificationBanner
+          bellRef={bellRef}
+          popoverOpen={phase !== 'closed'}
+          onOpenNote={openPanelOn}
+        />,
         document.body
       )}
     </div>
@@ -1327,13 +1466,18 @@ export default function App() {
   const version = useAppSelector(s => s.dashboard.status?.version) || '—'
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
-  // the red top-banner already tells the user what to do (paste a fresh
-  // `kirocrew token` URL) -- showing the loud pulsing "Offline" pill on top
-  // of that just stacks two banners arguing about the same root cause. So
-  // when authRequired is true, we suppress the offline pill in the top bar;
-  // auth banner is the single canonical signal. `isAuthBannerShown()` seeds
-  // initial state in case the banner was injected before App mounted (e.g.
-  // a 403 fired during the very first /api/status before React hydrated).
+  // the red top-banner tells the user what to do (paste a fresh
+  // `kirocrew token` URL) and the capsule reddens quietly underneath it --
+  // for a sighted user the tint does not argue with the banner. But the
+  // banner is a plain <div> with no role="alert"/aria-live, so it is never
+  // announced; the capsule's accessible name and role="status" region are the
+  // only screen-reader carriers of the offline cause. So when authRequired is
+  // true the capsule announces the auth-specific wording (session expired, see
+  // banner) instead of the generic "Gateway offline", which would point a
+  // screen-reader user at reconnection when pasting a token is the fix.
+  // `isAuthBannerShown()` seeds initial state in case the banner was injected
+  // before App mounted (e.g. a 403 fired during the very first /api/status
+  // before React hydrated).
   const [authRequired, setAuthRequired] = useState<boolean>(isAuthBannerShown)
   useEffect(() => {
     const onRequired = () => setAuthRequired(true)
@@ -2148,6 +2292,14 @@ export default function App() {
               label: target.label,
               group: 'Apps',
               icon,
+              // The app's own name, carried rather than re-derived from `id`.
+              // `id` is `app-<name>` only for AppHost-routed apps and the BARE
+              // name for a native builtin, so parsing it back cannot tell a
+              // builtin app's row from a host surface's row -- and a helper that
+              // guesses would have to choose between missing every builtin app
+              // and letting an app named `schedule` claim host chrome. Passing
+              // the name the target already resolved avoids that choice.
+              appName: target.name,
             }]
           })
         setAppNavItems(items)
@@ -2294,6 +2446,46 @@ export default function App() {
     () => mergeAppBadges(appBadges, appNotificationBadges(notificationItems)),
     [appBadges, notificationItems],
   )
+
+  // Rail RUN STATE for installed apps, derived from the app's own cron jobs.
+  // Separate from the badge above and deliberately not merged into it: the badge
+  // is a count meaning "something is waiting for you", while this is the state of
+  // scheduled work and is addressed to nobody -- see `appRunState`.
+  //
+  // Reads the SHARED ['cron-jobs'] query rather than adding a poll. That key is
+  // invalidated on every server `refresh` frame (`useWebSocket`), which is where
+  // its freshness comes from, and several surfaces already observe it, so the
+  // rail costs no extra request. `enabled` is not gated on having installed apps:
+  // the query is shared, so gating it here would only change WHICH observer
+  // happens to fetch first.
+  const { data: cronJobsForRail } = useQuery({
+    ...cronJobsQuery,
+    refetchOnWindowFocus: false,
+  })
+  // The derivation is a pure function of the job list AND an instant, so it needs
+  // a clock of its own: without one a `success` mark stays on screen past its
+  // window whenever no refresh follows, and the window would be a claim the code
+  // does not keep. The clock is state rather than a `Date.now()` read inside the
+  // memo so it is a real dependency, and it advances on exactly two occasions --
+  // the job list changed, or the earliest showing `success` just expired. That is
+  // why there is no ticking interval: a per-second clock would re-render the rail
+  // continuously to show the same thing in every second but one.
+  const [runStateClockMs, setRunStateClockMs] = useState(() => Date.now())
+  const railAppRunStates = useMemo(
+    () => appRunStates(cronJobsForRail ?? [], runStateClockMs),
+    [cronJobsForRail, runStateClockMs],
+  )
+  // Fresh data is judged against now, not against the previous tick.
+  useEffect(() => { setRunStateClockMs(Date.now()) }, [cronJobsForRail])
+  useEffect(() => {
+    const due = nextSuccessExpiryMs(cronJobsForRail ?? [], runStateClockMs)
+    // Null means nothing is showing `success`, so the common case arms no timer.
+    // Re-arming on each clock change walks a batch of successes in expiry order
+    // and terminates when the last one is gone, rather than looping.
+    if (due === null) return
+    const timer = setTimeout(() => setRunStateClockMs(Date.now()), due)
+    return () => clearTimeout(timer)
+  }, [cronJobsForRail, runStateClockMs])
 
   const [updating, setUpdating] = useState(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
@@ -2551,7 +2743,7 @@ export default function App() {
   // backend cache has not warmed yet" (null) apart from "the request failed"
   // (undefined) — both are falsy. Without it a failing endpoint renders as a
   // spinner that never resolves, since the 30s refetch keeps retrying forever.
-  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | 'scrape-disabled' | null>({
+  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | 'scrape-disabled' | 'signin-required' | null>({
     queryKey: ['kiro-usage'],
     queryFn: () => api.sessionsUsage().then(d => {
       const u: KiroUsagePayload = d?.usage || {}
@@ -2626,9 +2818,13 @@ export default function App() {
       // warming cache). Scrape opt-in off with no API plan -> same treatment:
       // permanent until the user flips dashboard.usage_text_scrape_enabled, so
       // explain rather than hide (#7623 — hiding left no hint a knob exists).
+      // No readable Kiro credential -> also terminal, but a DIFFERENT remedy:
+      // sign in again, which is free, where flipping the scrape knob spends
+      // credits on a fetch that cannot authenticate (#11602).
       // Empty cache (Kiro warming) -> spinner.
       if (u.available === false) {
         if (u.reason === 'api_key_auth') return 'api-key' as const
+        if (u.reason === 'signin_required') return 'signin-required' as const
         if (u.reason === 'scrape_disabled') return 'scrape-disabled' as const
         return 'none' as const
       }
@@ -3198,7 +3394,7 @@ export default function App() {
   }
 
   const renderNavRow = (
-    n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode },
+    n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode; appName?: string },
   ) => (
     <NavItem
       navId={n.id}
@@ -3209,7 +3405,7 @@ export default function App() {
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}
-      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} />}
+      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} />}
     />
   )
 
@@ -3323,8 +3519,8 @@ export default function App() {
           the strip it was summoned by, so hover and clicks land on the chrome's own
           surface handlers and the strip never has to resize or opt out of
           hit-testing — a hit target that changes under a resting pointer is what
-          made this flicker open/closed indefinitely. `focus-peek-strip` carries `-webkit-app-region:no-drag`, which
-          is load-bearing on the TOP one: Electron injects a 42px drag bar on
+          made this flicker open/closed indefinitely. `.focus-peek-top` / `.focus-peek-rail`
+          (index.css) carry `-webkit-app-region:no-drag`, which is load-bearing on the TOP one: Electron injects a 42px drag bar on
           document.body, and an ordinary div inside it becomes a window-drag
           region whose hover never reaches React. */}
       {focusActive && (
@@ -3333,14 +3529,14 @@ export default function App() {
             ref={topPeekTrigger}
             data-testid="focus-peek-top"
             aria-hidden="true"
-            className="focus-peek-strip focus-peek-top absolute left-0 right-0 top-0 z-[61]"
+            className="focus-peek-top absolute left-0 right-0 top-0 z-[61]"
             {...topPeek.triggerProps}
           />
           <div
             ref={railPeekTrigger}
             data-testid="focus-peek-rail"
             aria-hidden="true"
-            className="focus-peek-strip focus-peek-rail absolute left-0 bottom-0 z-[61]"
+            className="focus-peek-rail absolute left-0 bottom-0 z-[61]"
             // Starts below the top strip so the two tile the corner rather than
             // overlapping, where whichever won would be arbitrary.
             style={{ top: FOCUS_INSET }}
@@ -3448,7 +3644,12 @@ export default function App() {
             as a fourth grid child: `.topbar` declares exactly three tracks, so a
             bare sibling would be auto-placed into `.tb-right` and land inside the
             readout capsule's cluster. Two controls, which is the ceiling
-            website/AUTOSDE.yaml's max-two-buttons-per-row sets. */}
+            website/AUTOSDE.yaml's max-two-buttons-per-row sets.
+
+            `data-topbar-overlay` is read by the crew-pin capture harnesses
+            (website/scripts/capture-crew-pin-chips.mjs, record-crew-pin-chips.mjs,
+            capture-crew-chip-shrink.mjs) to find this cell; nothing in src/
+            reads it any more. Keep it. */}
         {!isMobile && (
           <div data-topbar-overlay className="flex items-center gap-1.5 min-w-0">
           <button
@@ -3580,6 +3781,37 @@ export default function App() {
               this fork's usage pill is Kiro-credits-only.) */}
           {(() => {
             const offline = !connected
+            // The accessible name and the role="status" live region are the
+            // ONLY screen-reader carriers of the offline cause: the
+            // session-expired banner api/client.ts injects is a plain <div>
+            // with no role="alert"/aria-live, so it is never announced. When
+            // auth is the real cause they must therefore say so -- announcing
+            // the generic "Gateway offline" points a screen-reader user at
+            // reconnection when pasting a token is the fix. This mirrors the
+            // branch the button `title` already uses (minus the collapse-toggle
+            // suffix, which is interaction text, not a status cause).
+            // Auth takes precedence over transport for the ANNOUNCED cause:
+            // `authRequired` (a 403 auth flag) and `connected` (Redux transport
+            // state) are independently sourced, so the session can expire while
+            // the socket is still up. In that state a transport-first ternary
+            // announces "Gateway connected" -- a reassuring lie -- and the
+            // session-expired banner api/client.ts injects is a plain <div>
+            // with no role="alert"/aria-live, so nothing else corrects it. The
+            // transport being up does not help a user whose session is dead, so
+            // the auth wording wins whenever auth is the real blocker.
+            const gatewayStatusMsg = authRequired
+              ? i18nT('app.gateway_offline_session_expired_see_banner_above')
+              : connected
+                ? i18nT('app.gateway_connected')
+                : i18nT('app.gateway_offline_reconnecting')
+            // The connection dot doubles as the capsule collapse toggle, so its
+            // accessible name must name that action -- not just the gateway
+            // state. title and aria-label share this composed value; the
+            // role="status" live region stays pure gatewayStatusMsg (a status
+            // region announces the connection cause, not the button's toggle
+            // affordance, which would speak "click to collapse" on every
+            // reconnect).
+            const capsuleActionMsg = `${gatewayStatusMsg} · ${capsuleCollapsed ? i18nT('app.click_to_expand_readouts') : i18nT('app.click_to_collapse_readouts')}`
             // whitespace-nowrap is the ladder's backstop for the BUILT-IN
             // segments that share this class string: if the group is ever
             // narrower than its contents (a locale wider than the measured
@@ -3598,15 +3830,15 @@ export default function App() {
                 key="conn"
                 className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
-                title={`${connected ? i18nT('app.gateway_connected') : authRequired ? i18nT('app.gateway_offline_session_expired_see_banner_above') : i18nT('app.gateway_offline_reconnecting')} · ${capsuleCollapsed ? i18nT('app.click_to_expand_readouts') : i18nT('app.click_to_collapse_readouts')}`}
-                aria-label={connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}
+                title={capsuleActionMsg}
+                aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
               >
                 <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}
-                <span role="status" className="sr-only">{connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}</span>
+                <span role="status" className="sr-only">{gatewayStatusMsg}</span>
               </button>
             )
             // Resource pressure indicator — always visible when tight/critical
@@ -3771,6 +4003,13 @@ export default function App() {
                 // the knob — hiding the segment here left users of v0.1.3-era
                 // dashboards with a pill that silently vanished (#7623).
                 segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_scrape_disabled')} aria-label={i18nT('app.kiro_credit_usage_scrape_disabled')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+              } else if (kiroUsageState === 'signin-required') {
+                // No live Kiro credential could be read (or it was rejected), so
+                // the free API never got an answer about this account. Terminal
+                // like 'scrape-disabled', but the label must name the FREE remedy,
+                // signing in again, because the scrape-disabled copy sent these
+                // users to a billed knob that cannot authenticate either (#11602).
+                segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_signin_required')} aria-label={i18nT('app.kiro_credit_usage_signin_required')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
               } else if (!kiroUsageState) {
                 segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {
@@ -3877,7 +4116,7 @@ export default function App() {
 
       {/* Update error modal */}
       {updateError && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')}>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')}>
           <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
             <div className="text-4xl mb-4"><AlertTriangle className="lucide-inline" /></div>
             <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.update_failed')}</div>
@@ -3896,7 +4135,7 @@ export default function App() {
 
       {/* Changelog modal */}
       {showChangelog && !updating && (
-        <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise" onClick={e => { if (e && e.target === e.currentTarget) { setShowChangelog(false); setShowFull(false) } }}>
+        <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" onClick={e => { if (e && e.target === e.currentTarget) { setShowChangelog(false); setShowFull(false) } }}>
           <div role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} className={`bg-card border border-border rounded-xl p-6 w-full mx-4 shadow-xl transition-all duration-300 ${showFull ? 'max-w-2xl' : 'max-w-md'}`}>
             <div className="flex justify-between items-center mb-4">
               <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> {i18nT('app.v')}{version}</div>
@@ -4056,7 +4295,7 @@ export default function App() {
           data-testid="nav-backdrop"
           aria-hidden="true"
           style={{ opacity: mobileNavScrim }}
-          className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-sm"
+          className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-xs"
           onClick={closeMobileNavDrawer}
         />
       )}

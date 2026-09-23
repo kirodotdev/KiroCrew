@@ -20,16 +20,25 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import _get_skills
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
 from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, provider_available
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
 from kiro_crew.skills import skills_dir as _skills_dir
 
+from .prompts import api_skills
+
 logger = logging.getLogger(__name__)
 
 # Slug validation for skill installation (filesystem safety).
 _SAFE_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+
+# The GitHub provider's identity, spelled out so the discovery policy can be
+# consulted BEFORE the module is imported (see ``_build_registry``). Pinned against
+# the provider's own ``name``/``api_base`` by a test, so this cannot drift into
+# gating one identity while registering another.
+_GITHUB_NAME = "github"
+_GITHUB_API_BASE = "https://api.github.com"
 
 
 # Credential-bearing URL query/fragment parameters. ``redact_credentials`` matches
@@ -59,23 +68,20 @@ def _redact_external(text: str) -> str:
     exfiltration URLs per the security-controls guideline. Benign content passes
     through unchanged.
 
-    Three layers. The purely-lexical URL-parameter scrub runs **LAST**, and that
-    order is load-bearing: ``redact_exfiltration_urls`` classifies a URL as
-    suspicious partly by query LENGTH (``_EXFIL_QUERY_MIN_LEN``), and it replaces
-    the ENTIRE url when it fires. Scrubbing first shortens
-    ``?token=<210 chars>&host=…&path=…`` below that threshold, so the exfil scan
-    stops firing and every OTHER parameter -- the actual payload, which this
-    regex does not name -- renders verbatim. Running the scrub last keeps the
-    whole-URL redaction intact and still catches the short tokens the shape
-    matcher and the entropy heuristic both miss (e.g. ``?token=abc123``).
+    Three layers, and the ORDER is load-bearing at both seams.
+    ``security.redact`` -- the canonical exfiltration-then-credentials
+    composition (``redact_with_findings`` records why that order: the URL pass
+    classifies partly by query LENGTH (``_EXFIL_QUERY_MIN_LEN``) and replaces
+    the ENTIRE url when it fires, so any pass that rewrites query values ahead
+    of it drops the query below that threshold and every OTHER parameter, the
+    actual payload, renders verbatim) -- runs first as one unit, and the
+    purely-lexical URL-parameter scrub runs LAST so it only sees values the
+    real passes left standing (its ``(?!\\[REDACTED)`` guard skips what they
+    already replaced).
     """
     if not text:
         return text
-    scrubbed, _ = redact_credentials(text)
-    scrubbed, _ = redact_exfiltration_urls(scrubbed)
-    return _URL_SECRET_PARAM_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", scrubbed
-    )
+    return _URL_SECRET_PARAM_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", redact(text))
 
 
 def _build_registry() -> ProviderRegistry:
@@ -100,6 +106,25 @@ def _build_registry() -> ProviderRegistry:
     skillsh = SkillsShProvider(SkillsShConfig(enabled=True))
     if admits_registry("skill", skillsh.name, skillsh.api_base):
         registry.register(skillsh)
+
+    # GitHub repositories -- the user's own skills, addressed as
+    # ``owner/repo[@ref][:path]`` rather than searched, and imported pinned to the
+    # resolved commit. It is a built-in for the same reason skills.sh is: a provider
+    # registered here inherits the human-only install gate, the bundle writer's
+    # containment checks and the discovery policy, none of which an independent
+    # import path would.
+    #
+    # Imported INSIDE the policy check, not at module scope: a deployment whose
+    # discovery policy refuses GitHub then never imports the module at all, so an
+    # optional subsystem costs a refused deployment nothing on the gateway's import
+    # path. The identity handed to the gate is spelled here rather than read off an
+    # instance, because reading it would require the import this defers;
+    # ``test_the_gated_identity_matches_the_provider`` pins both literals against
+    # the provider's own values so they cannot drift.
+    if admits_registry("skill", _GITHUB_NAME, _GITHUB_API_BASE):
+        from kiro_crew.skill_providers.github import GitHubRepoProvider
+
+        registry.register(GitHubRepoProvider(), name=_GITHUB_NAME)
 
     # Edition-contributed providers (CPP seam). Each passes through the same
     # discovery-policy gate as the built-in provider, so a managed allowlist
@@ -188,6 +213,10 @@ async def api_skills_discover(request: web.Request) -> web.Response:
       "providers": ["skillsh"]
     }
     """
+    if request.query.get("scope") == "installed":
+        # The existing agent-facing READ route also serves local discovery.
+        # It reuses the catalog's session/trust gates; no auth path is widened.
+        return await api_skills(request)
     query = request.query.get("q", "").strip()
     provider_filter = request.query.get("provider", "").strip() or None
     try:
@@ -226,33 +255,37 @@ async def api_skills_discover(request: web.Request) -> web.Response:
         # Check if a skill with a matching provider/slug key is already installed.
         # Use exact key match only — no suffix matching to avoid false positives
         # (e.g. "my-team/docker" matching a remote "docker" skill).
-        slug = _slugify(r.id or r.name)
+        # Same derivation the install path uses, or the badge would point at a
+        # different key than installing would create.
+        slug = _install_slug(registry.get(provider_id), r.id, r.id or r.name)
         expected_key = f"{provider_id}/{slug}" if slug and provider_id else ""
         installed = bool(r.installed or (expected_key and expected_key in local_keys))
         # All provider-sourced fields are attacker-controllable -- redact
         # before surfacing. Benign ids (owner/repo/slug) pass unchanged;
         # an id that trips the credential/exfiltration scanners would only
         # break install for that (malicious) entry, which is acceptable.
-        items.append({
-            "id": _redact_external(r.id),
-            "name": _redact_external(r.name),
-            "description": _redact_external(r.description),
-            "provider": provider_id,
-            "display_provider": _display_name(registry, provider_id),
-            "repo_url": _redact_external(r.repo_url),
-            "author": _redact_external(r.author),
-            "installed": installed,
-            # Defense-in-depth: providers should hand back a list[str] (see
-            # SkillsShProvider.search), but a non-list/None or non-string tag
-            # from any provider must not TypeError here and 500 the whole
-            # search response for every provider.
-            "tags": [
-                _redact_external(t)
-                for t in (r.tags if isinstance(r.tags, list) else [])
-                if isinstance(t, str)
-            ],
-            "installs": r.installs,
-        })
+        items.append(
+            {
+                "id": _redact_external(r.id),
+                "name": _redact_external(r.name),
+                "description": _redact_external(r.description),
+                "provider": provider_id,
+                "display_provider": _display_name(registry, provider_id),
+                "repo_url": _redact_external(r.repo_url),
+                "author": _redact_external(r.author),
+                "installed": installed,
+                # Defense-in-depth: providers should hand back a list[str] (see
+                # SkillsShProvider.search), but a non-list/None or non-string tag
+                # from any provider must not TypeError here and 500 the whole
+                # search response for every provider.
+                "tags": [
+                    _redact_external(t)
+                    for t in (r.tags if isinstance(r.tags, list) else [])
+                    if isinstance(t, str)
+                ],
+                "installs": r.installs,
+            }
+        )
 
     active_providers = registry.available_provider_names
 
@@ -318,14 +351,10 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     # Shape validation: valid JSON like `[]` has no .get(), and a non-string
     # field ({"provider": 1}) has no .strip() — either would 500. 400 instead.
     if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "Request body must be a JSON object"}, status=400
-        )
+        return web.json_response({"error": "Request body must be a JSON object"}, status=400)
     for _field in ("provider", "skill_id", "name"):
         if not isinstance(body.get(_field, ""), str) and body.get(_field) is not None:
-            return web.json_response(
-                {"error": f"'{_field}' must be a string"}, status=400
-            )
+            return web.json_response({"error": f"'{_field}' must be a string"}, status=400)
 
     provider_name = (body.get("provider") or "").strip()
     skill_id = (body.get("skill_id") or "").strip()
@@ -335,9 +364,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     # explicitly false-like value into consent to delete local edits.
     overwrite_raw = body.get("overwrite", False)
     if not isinstance(overwrite_raw, bool):
-        return web.json_response(
-            {"error": "'overwrite' must be a boolean"}, status=400
-        )
+        return web.json_response({"error": "'overwrite' must be a boolean"}, status=400)
     overwrite = overwrite_raw
 
     if not provider_name or not skill_id:
@@ -352,8 +379,9 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             {"error": f"Provider '{provider_name}' is not available"}, status=404
         )
 
-    # Determine the local slug for the installed skill.
-    slug = _slugify(custom_name or skill_id)
+    # Determine the local slug for the installed skill. An explicit user-supplied
+    # name still wins: the provider names the DEFAULT key, not the user's choice.
+    slug = _slugify(custom_name) if custom_name else _install_slug(provider, skill_id, skill_id)
     if not slug or not _SAFE_SLUG_RE.match(slug):
         return web.json_response(
             {"error": f"Cannot derive safe slug from '{skill_id}'"}, status=400
@@ -402,13 +430,9 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     content: str | None = None
     try:
         if hasattr(provider, "fetch_skill_bundle"):
-            bundle = await asyncio.wait_for(
-                provider.fetch_skill_bundle(skill_id), timeout=15.0
-            )
+            bundle = await asyncio.wait_for(provider.fetch_skill_bundle(skill_id), timeout=15.0)
         if bundle is None:
-            content = await asyncio.wait_for(
-                provider.fetch_skill_content(skill_id), timeout=15.0
-            )
+            content = await asyncio.wait_for(provider.fetch_skill_content(skill_id), timeout=15.0)
     except asyncio.TimeoutError:
         logger.warning("Timeout fetching skill %r from %s", _safe_skill_id, provider_name)
         _sel().log_tool_invocation(
@@ -421,9 +445,11 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "Fetch timed out"}, status=504)
     except Exception as exc:
-        scrubbed, _ = redact_credentials(str(exc))
-        scrubbed, _ = redact_exfiltration_urls(scrubbed)
-        logger.warning("Failed to fetch skill %r from %s: %r", _safe_skill_id, provider_name, scrubbed)
+        # Canonical composition — same reason as _redact_external above.
+        scrubbed = redact(str(exc))
+        logger.warning(
+            "Failed to fetch skill %r from %s: %r", _safe_skill_id, provider_name, scrubbed
+        )
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),
             tool_name="install_skill_from_provider",
@@ -448,9 +474,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 {"error": "Skill bundle exceeds size limit (5 MiB)"}, status=413
             )
     elif content and len(content.encode("utf-8")) > max_bundle_size:
-        return web.json_response(
-            {"error": "Skill content exceeds size limit"}, status=413
-        )
+        return web.json_response({"error": "Skill content exceeds size limit"}, status=413)
 
     # Write to local skills directory.
     file_count = 0
@@ -473,9 +497,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             try:
                 candidate.relative_to(skills_root)
             except ValueError:
-                logger.warning(
-                    "Refusing bundle install outside skills root: %s", skill_dir
-                )
+                logger.warning("Refusing bundle install outside skills root: %s", skill_dir)
                 return 0
             # Link defense: if the skill dir itself is a link, every containment
             # check below resolves against the link TARGET, so a pre-planted one
@@ -509,9 +531,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             try:
                 resolved_root.relative_to(skills_root)
             except ValueError:
-                logger.warning(
-                    "Refusing bundle write outside skills root: %s", skill_dir
-                )
+                logger.warning("Refusing bundle write outside skills root: %s", skill_dir)
                 return 0
             written = 0
             for rel_path, file_content in bundle:
@@ -543,9 +563,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 # newline="" on read and write keeps the copy byte-faithful.
                 with (skill_dir / "AGENTS.md").open("r", encoding="utf-8", newline="") as src:
                     agents_content = src.read()
-                (skill_dir / "SKILL.md").write_text(
-                    agents_content, encoding="utf-8", newline=""
-                )
+                (skill_dir / "SKILL.md").write_text(agents_content, encoding="utf-8", newline="")
             return written
 
         file_count = await asyncio.to_thread(_write_bundle)
@@ -560,9 +578,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     else:
         created = await asyncio.to_thread(skills.create_skill, key, content)
         if not created:
-            return web.json_response(
-                {"error": f"Failed to create skill at '{key}'"}, status=500
-            )
+            return web.json_response({"error": f"Failed to create skill at '{key}'"}, status=500)
         kind = "created"
         file_count = 1
 
@@ -575,14 +591,16 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         resources=f"key={key}",
         metadata={"kind": kind, "skill_id": skill_id},
     )
-    return web.json_response({
-        "ok": True,
-        "key": key,
-        "slug": slug,
-        "provider": provider_name,
-        "kind": kind,
-        "file_count": file_count,
-    })
+    return web.json_response(
+        {
+            "ok": True,
+            "key": key,
+            "slug": slug,
+            "provider": provider_name,
+            "kind": kind,
+            "file_count": file_count,
+        }
+    )
 
 
 def _slugify(raw: str) -> str:
@@ -591,6 +609,42 @@ def _slugify(raw: str) -> str:
         return ""
     slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw.strip()).strip("-").lower()[:64].rstrip("-")
     return slug
+
+
+def _install_slug(provider: SkillProvider | None, skill_id: str, fallback: str) -> str:
+    """The local slug for *skill_id*, letting the provider name it.
+
+    ``_slugify`` lowercases and folds ``/``, ``@`` and ``:`` all onto ``-``, so it
+    is not injective over a provider whose ids are case-sensitive paths: the
+    distinct GitHub addresses ``Foo/bar`` and ``foo-bar`` produce ONE key, where
+    installing the second deletes the first. A provider that knows its own
+    identity space can supply a collision-resistant key instead.
+
+    Optional, like ``fetch_skill_bundle``: a provider without the method keeps the
+    derived-from-id behaviour unchanged. Whatever comes back is still run through
+    ``_slugify`` here and still has to satisfy ``_SAFE_SLUG_RE`` at the call site,
+    so a provider cannot widen what is allowed to become a path segment. A missing,
+    non-string, empty or raising implementation falls back to *fallback* rather than
+    failing the request -- provider code must not be able to break install, and that
+    includes a raising DESCRIPTOR, which fails on attribute read rather than on call.
+    """
+    supplied = ""
+    try:
+        # The getattr is INSIDE the try deliberately: reading an attribute executes
+        # a descriptor, so a provider exposing ``install_slug`` as a property that
+        # raises would take the whole discover response down here -- before the
+        # guard meant to contain it ever ran. ``_build_registry`` documents the same
+        # hazard for the runtime-checkable protocol check; this is the same rule.
+        method = getattr(provider, "install_slug", None)
+        if callable(method):
+            raw = method(skill_id)
+            supplied = raw if isinstance(raw, str) else ""
+    except Exception:
+        logger.warning(
+            "Provider install_slug failed; deriving the key from the id",
+            exc_info=True,
+        )
+    return _slugify(supplied or fallback)
 
 
 def _display_name(registry: ProviderRegistry, provider_name: str) -> str:
@@ -635,9 +689,7 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     skill_id = request.query.get("id", "").strip()
 
     if not provider_name or not skill_id:
-        return web.json_response(
-            {"error": "Both 'provider' and 'id' are required"}, status=400
-        )
+        return web.json_response({"error": "Both 'provider' and 'id' are required"}, status=400)
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
@@ -654,9 +706,7 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     files: list[str] = []
     try:
         if hasattr(provider, "fetch_skill_bundle"):
-            bundle = await asyncio.wait_for(
-                provider.fetch_skill_bundle(skill_id), timeout=10.0
-            )
+            bundle = await asyncio.wait_for(provider.fetch_skill_bundle(skill_id), timeout=10.0)
             if bundle:
                 files = [p for p, _ in bundle]
                 skill_md = next((c for p, c in bundle if p == "SKILL.md"), None)
@@ -665,13 +715,11 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
                 # otherwise the preview would parse a different file (e.g. a
                 # first-listed README.md) than the installed skill.
                 agents_md = next((c for p, c in bundle if p == "AGENTS.md"), None)
-                content = skill_md or agents_md or next(
-                    (c for p, c in bundle if p.endswith(".md")), None
+                content = (
+                    skill_md or agents_md or next((c for p, c in bundle if p.endswith(".md")), None)
                 )
         if content is None:
-            content = await asyncio.wait_for(
-                provider.fetch_skill_content(skill_id), timeout=10.0
-            )
+            content = await asyncio.wait_for(provider.fetch_skill_content(skill_id), timeout=10.0)
     except (asyncio.TimeoutError, Exception):
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),
@@ -719,12 +767,14 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     # the REDACTED text, because capping first can cut a credential at the
     # boundary into fragments no redaction regex matches.
     safe_content = await asyncio.to_thread(_redact_external, content)
-    return web.json_response({
-        "description": _redact_external(meta.get("description", "")),
-        "name": _redact_external(meta.get("name", "")),
-        "license": _redact_external(meta.get("license", "")),
-        "author": _redact_external(meta.get("author", "")),
-        "content": safe_content[:max_preview],
-        "files": [_redact_external(f) for f in files[:200]],
-        "file_count": len(files),
-    })
+    return web.json_response(
+        {
+            "description": _redact_external(meta.get("description", "")),
+            "name": _redact_external(meta.get("name", "")),
+            "license": _redact_external(meta.get("license", "")),
+            "author": _redact_external(meta.get("author", "")),
+            "content": safe_content[:max_preview],
+            "files": [_redact_external(f) for f in files[:200]],
+            "file_count": len(files),
+        }
+    )

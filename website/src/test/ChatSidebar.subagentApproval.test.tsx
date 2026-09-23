@@ -164,7 +164,7 @@ describe('chat sidebar — sub-agents awaiting spawn approval', () => {
     const slots = [{ key: 'k', title: 'r', running: true, messages: 1 }]
     const { getByText, queryByText } = renderSidebar(
       slots,
-      { activeSlot: 'k', subagents: { a1: awaiting('a1') }, slotStatusDetail: { k: { text: 'Thinking…' } } },
+      { activeSlot: 'k', subagents: { a1: awaiting('a1') }, slotStatusDetail: { k: { kind: 'thinking' } } },
       'k',
     )
     expect(getByText('1 sub-agent needs approval')).toBeTruthy()

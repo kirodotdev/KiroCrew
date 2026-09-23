@@ -56,6 +56,10 @@ export function CodeEditor({
     onChange(value)
   }, [onChange])
   const liveFile = useMemo(
+    // `contents` is the live buffer; the seed `cacheKey` stays stable so it is
+    // the editing SESSION identity (caret survives typing) and the React remount
+    // identity below. PierreEditorImpl re-derives the content-tracking key Pierre's
+    // line cache needs from these contents, so callers do not touch that contract.
     () => ({ ...initialRef.current!.file, contents: content }),
     [content],
   )

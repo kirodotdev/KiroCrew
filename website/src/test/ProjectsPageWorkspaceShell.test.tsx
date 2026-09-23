@@ -24,7 +24,7 @@ vi.mock('../api/client', () => ({
   api: {
     taskRunnerStatus: vi.fn().mockResolvedValue({ running: false, available: true, runs: [] }),
     kirocrewAgents: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
-    syncKirocrewAgents: vi.fn().mockResolvedValue({}),
+    agentCatalog: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
     refineStatus: vi.fn().mockResolvedValue({ status: 'idle', text: '', error: '' }),
     cancelTaskRunner: vi.fn().mockResolvedValue({ ok: true }),
     deleteTaskRun: vi.fn().mockResolvedValue({ ok: true }),
@@ -39,7 +39,7 @@ vi.mock('../api/client', () => ({
 
 const run: ProjectRun = {
   task_id: 'run-1', name: 'Existing', running: false, status: 'completed',
-  steps: 2, completed: 2, failed: 0, skipped: 0, current_step: 2,
+  tasks: 2, completed: 2, failed: 0, skipped: 0, current_task: 2,
   spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
   task_details: [], started_at: 0, finished_at: 0,
   work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
@@ -198,7 +198,7 @@ describe('Task Runner — rail is keyboard operable', () => {
     // must be able to see it take focus.
     const expand = screen.getByRole('button', { name: 'Expand sidebar' })
     expect(expand.className).toContain('focus-ring')
-    expect(expand.className).not.toContain('outline-none')
+    expect(expand.className).not.toContain('outline-hidden')
   })
 })
 

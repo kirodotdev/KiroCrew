@@ -62,6 +62,7 @@ interface HostedProps {
   subscribeFn: (event: string, cb: (data: unknown) => void) => () => void
   navigateFn: (path: string) => void
   notifyFn: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
+  origin?: string
 }
 
 /** The props AppHost handed the SDK provider on its most recent render. */
@@ -209,6 +210,10 @@ describe('AppHost — hosting a real bundle', () => {
     expect(hosted().appName).toBe(NAME)
     expect(hosted().allowedApiPaths).toEqual(['/api/apps'])
     expect(hosted().allowedEvents).toEqual(['ledger:updated'])
+    // Provenance is forwarded so the SDK can refuse a host-owned state namespace
+    // to anything that is not a builtin. An installed app is external even when it
+    // has taken a builtin's name.
+    expect(hosted().origin).toBe('external')
   })
 
   it('scopes an app that declares no permissions to nothing at all', async () => {

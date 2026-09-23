@@ -1,4 +1,4 @@
-"""Complete private-member snapshots and startup-only recoverable restore.
+"""Complete member snapshots and startup-only recoverable restore.
 
 Global V1 does not call this module. A restore request stages a validated tree;
 only the gateway startup barrier may activate it before opening any memory.
@@ -34,10 +34,9 @@ PENDING = "pending-restore.json"
 MAX_BUNDLE_BYTES = 1024 * 1024 * 1024
 MAX_BUNDLE_FILES = 8192
 MAX_MANIFEST_BYTES = 1024 * 1024
-_HISTORY = re.compile(r"memory/history/\d{4}-\d{2}-\d{2}\.md\Z")
 _STAGE_NAME = re.compile(r"restore-[0-9a-f]{32}\Z")
 _ASIDE_NAME = re.compile(r"superseded-[0-9a-f]{32}\Z")
-_FILES = frozenset({"memory.db", "memory/preferences.md", "memory/projects.md", "lessons.jsonl"})
+_FILES = frozenset({"memory.db", "memory/preferences.md", "memory/projects.md"})
 _STORE_USE_LOCK = ".store-use.lock"
 
 
@@ -65,7 +64,9 @@ def is_member_store(db_path: Path) -> bool:
 
     record = KiroCrewConfig.load().memory_stores.get(name)
     return bool(
-        record and getattr(record, "memory_version", 1) == 2 and getattr(record, "owner_member", "")
+        record
+        and getattr(record, "memory_version", 1) == 2
+        and getattr(record, "owner_member_id", "")
     )
 
 
@@ -239,17 +240,14 @@ def _identity(db_path: Path, *, allow_missing: bool = False) -> tuple[str, str]:
         raise ValueError("Member memory directory is redirected")
     config = KiroCrewConfig.load()
     record = config.memory_stores.get(name)
-    owner = getattr(record, "owner_member", "")
+    owner = getattr(record, "owner_member_id", "")
     if not owner or getattr(record, "memory_version", 1) != 2:
-        raise ValueError("Memory has no private V2 owner")
-    memory_stores.require_member_memory_not_archived(name, expected_owner=owner)
-    if [key for key, value in config.agents.items() if value.memory_store == name] != [owner]:
-        raise ValueError("Memory is not exclusively bound to its owner")
-    marker = db_path.parent / memory_stores.MEMBER_MEMORY_MANIFEST
-    if marker.exists() or not allow_missing or db_path.parent.exists():
-        value = _read_json(marker)
-        if value.get("owner_member") != owner or value.get("memory_version") != 2:
-            raise ValueError("Member memory ownership does not match its configuration")
+        raise ValueError("Memory has no member identity")
+    owners = [value.member_id for value in config.agents.values() if value.memory_store == name]
+    if owners != [owner]:
+        raise ValueError("Memory is not exclusively bound to its member")
+    if not allow_missing:
+        _check_database(db_path, name, owner)
     return name, owner
 
 
@@ -268,7 +266,7 @@ def _read_json(path: Path) -> dict:
 
 
 def _allowed(name: str) -> bool:
-    return name in _FILES or _HISTORY.fullmatch(name) is not None
+    return name in _FILES
 
 
 def _discard_unpublished_stage(stage: Path, out: Path) -> None:
@@ -292,29 +290,16 @@ def _digest(path: Path) -> str:
 
 
 def _check_database(path: Path, name: str, owner: str) -> None:
-    with closing(sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
-        if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-            raise ValueError("Member snapshot database failed integrity checking")
-        if db.execute(
-            "SELECT type FROM sqlite_master WHERE name='memory_items'"  # wokeignore:rule=master
-        ).fetchone() != ("table",):
-            raise ValueError("Member snapshot does not contain a V2 database")
-        row = db.execute("SELECT value FROM memory_meta WHERE key='store_name'").fetchone()
-        if row != (name,):
-            raise ValueError("Member snapshot database belongs to a different store")
-        from kiro_crew import memory_schema
+    from kiro_crew.vector_memory import read_member_database_identity
 
-        identity = dict(db.execute("SELECT key, value FROM memory_meta"))
-        version = identity.get(memory_schema.PRIVATE_MEMORY_VERSION_META_KEY)
-        recorded_owner = identity.get(memory_schema.OWNER_MEMBER_META_KEY)
-        # Older member snapshots predate the durable marker. Their outer
-        # bundle/store identity still authorizes restore, and init stamps them
-        # after activation. A present marker must satisfy init's same contract
-        # before a healthy current directory can be displaced.
-        if (version is not None and (version != "2" or recorded_owner != owner)) or (
-            recorded_owner is not None and recorded_owner != owner
-        ):
-            raise ValueError("Member snapshot private database ownership is invalid")
+    try:
+        if read_member_database_identity(path) != (owner, name):
+            raise ValueError("Member snapshot database belongs to a different member or store")
+        with closing(sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+            if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("Member snapshot database failed integrity checking")
+    except sqlite3.Error as exc:
+        raise ValueError("Member snapshot database is missing, damaged, or unsupported") from exc
 
 
 def _manifest_valid(manifest: dict, name: str, owner: str) -> dict[str, str]:
@@ -322,7 +307,7 @@ def _manifest_valid(manifest: dict, name: str, owner: str) -> dict[str, str]:
         manifest.get("format") != BUNDLE_FORMAT
         or manifest.get("version") != BUNDLE_VERSION
         or manifest.get("store") != name
-        or manifest.get("owner_member") != owner
+        or manifest.get("member_id") != owner
     ):
         raise ValueError("Snapshot belongs to another member or uses an unsupported format")
     files = manifest.get("files")
@@ -342,74 +327,69 @@ def _manifest_valid(manifest: dict, name: str, owner: str) -> dict[str, str]:
 def backup_store(db_path: Path, *, now: datetime | None = None) -> Path:
     from kiro_crew.memory_startup import require_memory_ready
 
-    require_memory_ready(memory_stores.named_store_of_db(db_path))
-    name, owner = _identity(db_path)
-    out = backup_directory(db_path)
-    platform_compat.make_owner_only_dir(out)
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%S%fZ")
-    target = out / f"memory.{stamp}-{uuid4().hex}.zip"
-    partial = out / f".{target.name}.{uuid4().hex}.partial"
-    with tempfile.TemporaryDirectory(prefix="snapshot-", dir=out) as temporary:
-        stage = Path(temporary)
-        if stage.resolve().parent != out.resolve():
-            raise ValueError("Snapshot staging directory escaped its parent")
-        copied_db = stage / "memory.db"
-        with (
-            closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as src,
-            closing(sqlite3.connect(str(copied_db))) as dst,
-        ):
-            src.backup(dst)
-        _check_database(copied_db, name, owner)
-        files = {"memory.db": copied_db}
-        home = db_path.parent.resolve()
-        for relative in sorted(_FILES - {"memory.db"}):
-            candidate = home / relative
-            if candidate.exists():
-                files[relative] = candidate
-        history = home / "memory" / "history"
-        if history.exists():
-            if history.resolve() != history:
-                raise ValueError("Member history directory is redirected")
-            for candidate in history.glob("*.md"):
-                relative = candidate.relative_to(home).as_posix()
-                if _allowed(relative):
+    with ExitStack() as lifetime:
+        fd = acquire_store_use_lock(db_path)
+        lifetime.callback(release_store_use_lock, fd)
+        require_memory_ready(memory_stores.named_store_of_db(db_path))
+        name, owner = _identity(db_path)
+        out = backup_directory(db_path)
+        platform_compat.make_owner_only_dir(out)
+        stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%S%fZ")
+        target = out / f"memory.{stamp}-{uuid4().hex}.zip"
+        partial = out / f".{target.name}.{uuid4().hex}.partial"
+        with tempfile.TemporaryDirectory(prefix="snapshot-", dir=out) as temporary:
+            stage = Path(temporary)
+            if stage.resolve().parent != out.resolve():
+                raise ValueError("Snapshot staging directory escaped its parent")
+            copied_db = stage / "memory.db"
+            with (
+                closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as src,
+                closing(sqlite3.connect(str(copied_db))) as dst,
+            ):
+                src.backup(dst)
+            _check_database(copied_db, name, owner)
+            files = {"memory.db": copied_db}
+            home = db_path.parent.resolve()
+            for relative in sorted(_FILES - {"memory.db"}):
+                candidate = home / relative
+                if candidate.exists():
                     files[relative] = candidate
-        if len(files) > MAX_BUNDLE_FILES:
-            raise ValueError("Member snapshot has too many files")
-        hashes = {}
-        total = 0
-        try:
-            with zipfile.ZipFile(partial, "x", compression=zipfile.ZIP_DEFLATED) as bundle:
-                for relative, path in files.items():
-                    if path.resolve() != path or not path.is_file():
-                        raise ValueError("Member snapshot source is redirected or unreadable")
-                    if total + path.stat().st_size > MAX_BUNDLE_BYTES:
-                        raise ValueError("Member snapshot exceeds its size limit")
-                    # Read a source once: the hash and archive must describe the
-                    # same bytes even if a Markdown writer replaces its file.
-                    digest = hashlib.sha256()
-                    with path.open("rb") as source, bundle.open(relative, "w") as dest:
-                        while chunk := source.read(1024 * 1024):
-                            total += len(chunk)
-                            if total > MAX_BUNDLE_BYTES:
-                                raise ValueError("Member snapshot exceeds its size limit")
-                            digest.update(chunk)
-                            dest.write(chunk)
-                    hashes[relative] = digest.hexdigest()
-                manifest = {
-                    "format": BUNDLE_FORMAT,
-                    "version": BUNDLE_VERSION,
-                    "store": name,
-                    "owner_member": owner,
-                    "created_at": stamp,
-                    "files": hashes,
-                }
-                bundle.writestr(MANIFEST, json.dumps(manifest, sort_keys=True))
-            platform_compat.restrict_to_owner(partial)
-            replace_with_retry(partial, target)
-        finally:
-            partial.unlink(missing_ok=True)
-    return target
+            if len(files) > MAX_BUNDLE_FILES:
+                raise ValueError("Member snapshot has too many files")
+            hashes = {}
+            total = 0
+            try:
+                with zipfile.ZipFile(partial, "x", compression=zipfile.ZIP_DEFLATED) as bundle:
+                    for relative, path in files.items():
+                        if path.resolve() != path or not path.is_file():
+                            raise ValueError("Member snapshot source is redirected or unreadable")
+                        if total + path.stat().st_size > MAX_BUNDLE_BYTES:
+                            raise ValueError("Member snapshot exceeds its size limit")
+                        # Read a source once: the hash and archive must describe the
+                        # same bytes even if a Markdown writer replaces its file.
+                        digest = hashlib.sha256()
+                        with path.open("rb") as source, bundle.open(relative, "w") as dest:
+                            while chunk := source.read(1024 * 1024):
+                                total += len(chunk)
+                                if total > MAX_BUNDLE_BYTES:
+                                    raise ValueError("Member snapshot exceeds its size limit")
+                                digest.update(chunk)
+                                dest.write(chunk)
+                        hashes[relative] = digest.hexdigest()
+                    manifest = {
+                        "format": BUNDLE_FORMAT,
+                        "version": BUNDLE_VERSION,
+                        "store": name,
+                        "member_id": owner,
+                        "created_at": stamp,
+                        "files": hashes,
+                    }
+                    bundle.writestr(MANIFEST, json.dumps(manifest, sort_keys=True))
+                platform_compat.restrict_to_owner(partial)
+                replace_with_retry(partial, target)
+            finally:
+                partial.unlink(missing_ok=True)
+        return target
 
 
 def stage_restore(backup: Path, db_path: Path) -> Path:
@@ -472,12 +452,9 @@ def stage_restore(backup: Path, db_path: Path) -> Path:
                     raise ValueError("Member snapshot is invalid") from exc
                 _check_database(stage / "memory.db", name, owner)
                 (stage / MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
-                (stage / memory_stores.MEMBER_MEMORY_MANIFEST).write_text(
-                    json.dumps({"owner_member": owner, "memory_version": 2}), encoding="utf-8"
-                )
                 journal = {
                     "store": name,
-                    "owner_member": owner,
+                    "member_id": owner,
                     "stage": stage_name,
                     "aside": "superseded-" + uuid4().hex,
                     "prior_existed": db_path.parent.exists(),
@@ -504,7 +481,7 @@ def _pending_journal(db_path: Path, *, validate_owner: bool = True) -> tuple[Pat
         raise ValueError("Pending restore ownership no longer matches")
     if validate_owner:
         _, owner = _identity(db_path, allow_missing=True)
-        if journal.get("owner_member") != owner:
+        if journal.get("member_id") != owner:
             raise ValueError("Pending restore ownership no longer matches")
     for field, pattern in (("stage", _STAGE_NAME), ("aside", _ASIDE_NAME)):
         value = journal.get(field)
@@ -616,13 +593,12 @@ def cancel_pending_restore(db_path: Path) -> bool:
                 return _quarantine_invalid_pending(db_path, out)
             if journal is None:
                 return False
-            # Configuration need not bind the member, but a surviving
-            # identity file still prevents cancelling another owner's intent.
-            marker = db_path.parent / memory_stores.MEMBER_MEMORY_MANIFEST
-            if marker.exists():
-                identity = _read_json(marker)
-                if identity.get("owner_member") != journal.get("owner_member"):
-                    raise ValueError("Pending restore ownership no longer matches")
+            if db_path.exists():
+                from kiro_crew.vector_memory import read_member_database_identity
+
+                owner, store = read_member_database_identity(db_path)
+                if owner != journal.get("member_id") or store != journal.get("store"):
+                    raise ValueError("Pending restore member no longer matches")
             stage, aside = out / journal["stage"], out / journal["aside"]
             if aside.exists() or not stage.is_dir():
                 raise ValueError(
@@ -652,7 +628,7 @@ def apply_pending_restore(db_path: Path) -> str | None:
                 return None
             name, owner = _identity(db_path, allow_missing=True)
             journal = _read_json(pending)
-            if journal.get("store") != name or journal.get("owner_member") != owner:
+            if journal.get("store") != name or journal.get("member_id") != owner:
                 raise ValueError("Pending restore ownership no longer matches")
             stage_name, aside_name = journal.get("stage", ""), journal.get("aside", "")
             if (

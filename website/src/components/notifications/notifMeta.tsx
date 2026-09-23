@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { i18nT } from '../../i18n/t'
 // Aliased: this module exports its own `fmtTime`/`fmtFull` wrappers that add the
 // unknown-date fallback on top of these.
-import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/format'
+import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields, fmtRelative as fmtRelativeLocalized } from '../../i18n/format'
 
 /**
  * Shared notification metadata + helpers, so the full page and the topbar bell
@@ -115,16 +115,165 @@ export function fmtFull(ts: string | number): string {
   return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : fmtDateTime(d)
 }
 
-/** Markdown → one-line plain-text excerpt: images keep their alt text, links
- *  their label; fence language tags, heading / emphasis / blockquote markers and
- *  list bullets are dropped. Shared by notification previews and the
- *  transcript turn minimap. */
+/** Markdown → plain-text excerpt: images keep their alt text, links
+ *  their label. Paired formatting delimiters are unwrapped; code contents and
+ *  unpaired markers remain literal. Prose paragraphs are joined with a visible
+ *  separator. Shared by notification previews and the transcript turn minimap. */
 export function stripMd(text: string): string {
-  return text
-    .replace(/```[\w-]*/g, ' ')
-    .replace(/^\s{0,3}(?:[-+]|\d+\.)\s+/gm, '')
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/[*_~`#>]+/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  // A body arrives from persisted rows and the API, so the type is a hope,
+  // not a guarantee: a legacy or corrupted row can carry a truthy non-string.
+  // Three consumers call this (OS banner, feed excerpt, minimap); guarding
+  // here keeps a bad row from throwing past any of them.
+  if (typeof text !== 'string') return ''
+  // The separator idiom the detail panel already uses between a label and a
+  // session title. Punctuation, not copy.
+  const PARAGRAPH_SEPARATOR = ' · '
+  // Alternate prose and literal code. The cursor only advances: an unmatched
+  // fence owns the rest of the input instead of retrying at every backtick.
+  const parts: string[] = []
+  let start = 0
+  let lineStart = 0
+  let fenceLength = 0
+  let inlineStart = -1
+  let inlineLength = 0
+  let cursor = 0
+  // The final line ending belongs to the fence wrapper, not its code value.
+  const fenceContent = (end: number) => text.slice(start,
+    end > start && text[end - 1] === '\n' ? end - (text[end - 2] === '\r' ? 2 : 1) : end)
+  while (cursor < text.length) {
+    if (text[cursor] === '\n') {
+      // A DELIBERATE deviation from CommonMark, which lets an inline span span
+      // lines: here a newline ends an unclosed one. In a preview that matters,
+      // because one stray backtick would otherwise pair with another paragraphs
+      // away and hold everything between it as literal code, suppressing the
+      // flattening for that whole region. Bounding an unmatched delimiter to its
+      // own line costs only multi-line inline spans, which no producer writes.
+      lineStart = ++cursor
+      inlineStart = -1
+      continue
+    }
+    if (text[cursor] !== '`') {
+      cursor++
+      continue
+    }
+    const runStart = cursor
+    while (text[cursor] === '`') cursor++
+    const runLength = cursor - runStart
+    const atLinePrefix = runStart - lineStart <= 3
+      && /^[ \t]*$/.test(text.slice(lineStart, runStart))
+    if (fenceLength) {
+      if (atLinePrefix && runLength >= fenceLength) {
+        while (text[cursor] === ' ' || text[cursor] === '\t' || text[cursor] === '\r') cursor++
+        if (cursor === text.length || text[cursor] === '\n') {
+          parts.push(fenceContent(lineStart))
+          start = cursor
+          fenceLength = 0
+        }
+      }
+    } else if (atLinePrefix && runLength >= 3) {
+      parts.push(text.slice(start, lineStart))
+      fenceLength = runLength
+      // The whole info string is metadata, including spaces and punctuation.
+      const newline = text.indexOf('\n', cursor)
+      cursor = newline < 0 ? text.length : newline + 1
+      start = lineStart = cursor
+      inlineStart = -1
+    } else if (inlineStart < 0) {
+      inlineStart = runStart
+      inlineLength = runLength
+    } else if (runLength === inlineLength) {
+      parts.push(text.slice(start, inlineStart), text.slice(inlineStart + inlineLength, runStart))
+      start = cursor
+      inlineStart = -1
+    }
+  }
+  parts.push(fenceLength ? fenceContent(text.length) : text.slice(start))
+  // Prose owns its whitespace and paragraph boundaries. Defer a prose space
+  // until more content follows so trimming never reaches into literal code.
+  const paragraphs: string[] = ['']
+  let pendingSpace = false
+  parts.forEach((part, index) => {
+    if (index % 2) {
+      if (part) {
+        if (pendingSpace && paragraphs[paragraphs.length - 1]) paragraphs[paragraphs.length - 1] += ' '
+        paragraphs[paragraphs.length - 1] += part
+        pendingSpace = false
+      }
+      return
+    }
+    part
+      // A code boundary inside a line is not a heading or list boundary.
+      .replace(/^[ \t]{0,3}(?:[-+*]|\d+\.|#{1,6}|>)[ \t]+/gm,
+        (marker, offset: number) => offset === 0 && index > 0 ? marker : '')
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\*\*(?!\s)([^*\n]*?)(?<!\s)\*\*/g, '$1')
+      .replace(/(?<!\w)__(?!\s)([^_\n]*?)(?<!\s)__(?!\w)/g, '$1')
+      .replace(/(?<!\*)\*(?![\s*])([^*\n]*?)(?<!\s)\*(?!\*)/g, '$1')
+      .replace(/(?<![\w_])_(?!\s)([^_\n]*?)(?<!\s)_(?![\w_])/g, '$1')
+      .replace(/~~(?!\s)([^~\n]*?)(?<!\s)~~/g, '$1')
+      .split(/\r?\n(?:[ \t]*\r?\n)+/)
+      .forEach((paragraph, paragraphIndex) => {
+        if (paragraphIndex) {
+          paragraphs.push('')
+          pendingSpace = false
+        }
+        const prose = paragraph.replace(/\s+/g, ' ')
+        const content = prose.trim()
+        if (content) {
+          if (paragraphs[paragraphs.length - 1] && (pendingSpace || prose.startsWith(' '))) {
+            paragraphs[paragraphs.length - 1] += ' '
+          }
+          paragraphs[paragraphs.length - 1] += content
+          pendingSpace = prose.endsWith(' ')
+        } else if (prose) {
+          pendingSpace = true
+        }
+      })
+  })
+  // Empty paragraphs drop out, so the separator never leads, trails or doubles.
+  return paragraphs
+    .filter(Boolean)
+    .join(PARAGRAPH_SEPARATOR)
 }
+
+/** macOS Notification Center-style relative timestamp ("now", "35m ago", "2h ago").
+ *
+ * Delegated to the locale-aware seam so relative times render in the app
+ * language for every locale, with the "yesterday" literal from CLDR.
+ *
+ * Minute granularity is preserved deliberately — a notification feed that
+ * counted seconds would rewrite every row on every tick. Anything under a
+ * minute is collapsed to the locale's "now" rather than "45s ago". Shared by
+ * the bell popover's mac cards and the in-app banner so the same note never
+ * shows two different ages. */
+export function fmtRelativeMinute(ts: string): string {
+  const at = parseTs(ts)
+  const now = Date.now()
+  if (now - at.getTime() < 60_000) return fmtRelativeLocalized(now, { now })
+  return fmtRelativeLocalized(at, { now })
+}
+
+/** The mac-variant floating card material, split so the bell popover's rows
+ *  and the in-app banner share the blur and hairline border while each picks
+ *  its own tint and shadow (the banner floats over arbitrary page content and
+ *  needs a denser tint and a deeper shadow than a row inside the sheet's
+ *  scrim). Every consumer must also carry `notif-material`, the index.css hook
+ *  that solidifies these surfaces where backdrop-filter is unsupported. */
+export const MAC_CARD_BLUR_CLASS = 'backdrop-blur-2xl backdrop-saturate-150'
+export const MAC_CARD_BORDER_CLASS = 'border border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
+/** Popover rows: 72% card tint, the theme's medium elevation (inside the
+ *  sheet's own scrim). Shadows are theme tokens (`--shadow-md` / `--shadow-lg`
+ *  in index.css), which is what keeps them legible on both a light and a dark
+ *  palette without a literal alpha here. */
+export const MAC_CARD_TINT_CLASS = 'bg-[color-mix(in_srgb,var(--card)_72%,transparent)]'
+export const MAC_CARD_SHADOW_CLASS = 'shadow-md'
+/** Banner cards: 88% card tint, the theme's large elevation (floating over
+ *  arbitrary page content). */
+export const BANNER_CARD_TINT_CLASS = 'bg-[color-mix(in_srgb,var(--card)_88%,transparent)]'
+export const BANNER_CARD_SHADOW_CLASS = 'shadow-lg'
+
+/** macOS NC action buttons: quiet translucent capsules, text-only, with any
+ *  semantic tint on the LABEL (never a solid coloured fill). The `bg-[…]`
+ *  token leads because the i18n lint recognises an arbitrary-value class
+ *  cluster by its FIRST bracketed token carrying a comma or underscore. */
+export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'

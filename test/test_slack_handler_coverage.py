@@ -647,7 +647,7 @@ class TestKeywordCommands:
     async def test_sessions_keyword_allowed(self, slack, sessions, owner, monkeypatch):
         monkeypatch.setattr(
             "kiro_crew.slack.sessions_view._collect_recent_sessions",
-            lambda s, limit=0, kind=None: [],
+            lambda s, limit=0, kind=None, include_ended=False: [],
         )
         handled = await h.maybe_handle_keyword_command(
             "sessions", slack, sessions, "C1", "t1", "msg1", "t1", "U1"
@@ -789,29 +789,35 @@ class TestKeywordCommands:
 # spawn helpers
 # ──────────────────────────────────────────────────────────────────────
 class TestSpawnHelpers:
-    def test_no_prefix_is_ignored(self):
-        assert h._handle_spawn_command("please spawn later", MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_no_prefix_is_ignored(self):
+        assert await h._handle_spawn_command("please spawn later", MagicMock()) is None
 
-    def test_bg_prefix_accepted(self):
+    @pytest.mark.asyncio
+    async def test_bg_prefix_accepted(self):
         mgr = MagicMock(max_concurrent=2)
         mgr.spawn.return_value = MagicMock(id="z9")
-        assert "z9" in _reply(h._handle_spawn_command("bg do it", mgr))
+        assert "z9" in _reply(await h._handle_spawn_command("bg do it", mgr))
 
-    def test_empty_task_returns_none(self):
-        assert h._handle_spawn_command("spawn   ", MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_empty_task_returns_none(self):
+        assert await h._handle_spawn_command("spawn   ", MagicMock()) is None
 
-    def test_list_with_no_agents(self):
-        assert mc.spawn_task_reply("list", MagicMock(running=[])) == "No subagents running."
+    @pytest.mark.asyncio
+    async def test_list_with_no_agents(self):
+        assert await mc.spawn_task_reply("list", MagicMock(running=[])) == "No subagents running."
 
-    def test_status_lists_running_agents(self):
+    @pytest.mark.asyncio
+    async def test_status_lists_running_agents(self):
         agent = MagicMock(id="a7", started=time.time() - 5, task="reindex the corpus")
-        out = _reply(mc.spawn_task_reply("status", MagicMock(running=[agent])))
+        out = _reply(await mc.spawn_task_reply("status", MagicMock(running=[agent])))
         assert "a7" in out and "reindex the corpus" in out
 
-    def test_capacity_reached(self):
+    @pytest.mark.asyncio
+    async def test_capacity_reached(self):
         mgr = MagicMock(max_concurrent=3)
         mgr.spawn.return_value = None
-        assert "capacity reached (3)" in _reply(mc.spawn_task_reply("work", mgr))
+        assert "capacity reached (3)" in _reply(await mc.spawn_task_reply("work", mgr))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -989,7 +995,7 @@ class TestRunHelper:
 class TestSessionsHelper:
     @pytest.mark.asyncio
     async def test_collector_failure_is_audited(self, slack, monkeypatch):
-        def _boom(_sessions, limit=0, kind=None):
+        def _boom(_sessions, limit=0, kind=None, include_ended=False):
             raise OSError("history unreadable")
 
         monkeypatch.setattr("kiro_crew.slack.sessions_view._collect_recent_sessions", _boom)
@@ -1000,7 +1006,7 @@ class TestSessionsHelper:
     async def test_rows_render_blocks(self, slack, monkeypatch):
         monkeypatch.setattr(
             "kiro_crew.slack.sessions_view._collect_recent_sessions",
-            lambda s, limit=0, kind=None: [{"key": "s1"}],
+            lambda s, limit=0, kind=None, include_ended=False: [{"key": "s1"}],
         )
         monkeypatch.setattr(h, "_build_sessions_blocks", lambda rows: [{"type": "divider"}])
         await h._handle_sessions_command("sessions", slack, "C1", "t1", "msg1", "t1", None)
@@ -1112,12 +1118,10 @@ class TestAgentResolution:
 # ──────────────────────────────────────────────────────────────────────
 class TestThreadOverrideHydration:
     @pytest.mark.asyncio
-    async def test_private_identity_reads_run_off_loop_and_live_maps_stay_on_loop(
+    async def test_execution_identity_reads_run_off_loop_and_live_maps_stay_on_loop(
         self, monkeypatch
     ):
-        from kiro_crew import memory_stores
-        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
-        from kiro_crew.config.sections import MemoryStoreConfig
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
         loop_thread = threading.get_ident()
 
@@ -1128,35 +1132,23 @@ class TestThreadOverrideHydration:
 
         monkeypatch.setattr(h, "_thread_agents", LoopOwnedMap())
         monkeypatch.setattr(h, "_thread_projects", LoopOwnedMap())
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig(
-            kiro_agent="kirocrew", memory_store="member-reviewer"
+        execution = ExecutionContext(
+            "reviewer-id", MemoryStoreRef("member-reviewer", "reviewer-id"), "member", "kirocrew"
         )
-        cfg.memory_stores["member-reviewer"] = MemoryStoreConfig(
-            owner_member="reviewer", memory_version=2
-        )
-        monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
-        original = memory_stores.require_member_memory_not_archived
-        archive_reads = []
-
-        def read_archive(store):
-            with pytest.raises(RuntimeError, match="no running event loop"):
-                asyncio.get_running_loop()
-            archive_reads.append(store)
-            return original(store)
-
-        monkeypatch.setattr(memory_stores, "require_member_memory_not_archived", read_archive)
 
         def read_metadata(_key):
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
-            return {"agent": "reviewer", "memory_store": "member-reviewer", "project": "/srv/app"}
+            return {
+                "agent": "reviewer",
+                "execution_context": execution.to_record(),
+                "project": "/srv/app",
+            }
 
         log = MagicMock(get_metadata=MagicMock(side_effect=read_metadata))
         await h._hydrate_thread_overrides("t1", log)
         await h._hydrate_thread_overrides("t1", log)
         log.get_metadata.assert_called_once_with("t1")
-        assert archive_reads == ["member-reviewer"]
         assert h._thread_agents["t1"] == "kirocrew"
         assert h._thread_projects["t1"] == "/srv/app"
         assert "t1" in h._hydrated_sessions

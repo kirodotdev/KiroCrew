@@ -16,7 +16,7 @@ No other test is positioned to notice, so the guard lives here.
 Three properties, one test each:
 
 * every WRITE position names a relation that is writable in BOTH lineages;
-* every relation the module names at all — reads included — exists in both;
+* shared SQL names relations in both lineages; admitted member-only SQL names V2 tables;
 * the two lineages present ``semantic_memory`` and ``episodic_memories`` with
   identical column names in identical ORDER, because ``SELECT *`` feeds
   ``sqlite3.Row`` and a reordered view silently changes what a positional read
@@ -80,7 +80,7 @@ _NOT_A_RELATION: Final = frozenset(
         "SET",
         # SQLite's catalog: readable in every database, declared by neither
         # lineage's DDL, and absent from its own contents.
-        "the schema table",
+        "sqlite_schema",
     }
 )
 
@@ -280,6 +280,7 @@ def _crew_db() -> sqlite3.Connection:
     db = sqlite3.connect(":memory:")
     db.executescript(_BOOKKEEPING_SQL)
     db.executescript(memory_schema.CREW_SCHEMA_SQL)
+    db.executescript(memory_schema.MEMBER_SCHEMA_SQL)
     memory_record_metadata.ensure_schema(db)
     return db
 
@@ -390,29 +391,95 @@ class TestLineageDrift:
         assert "_epi_guard" in seeded[0]
 
     def test_every_relation_the_module_names_exists_in_both_lineages(self) -> None:
-        """A statement may only name a relation both lineages have.
-
-        This is what catches the other half of the drift: not a write to a view,
-        but a read (or write) of something only one lineage ever created.
-        """
-        named = _named_relations(self._module_tree())
-
-        # Non-vacuity: a renderer regression that collected nothing would
-        # otherwise satisfy every assertion below.
-        assert {"semantic_memory", "episodic_memories", "memory_events"} <= named, (
-            f"the scan collected {sorted(named)}, which is missing relations the module "
-            "demonstrably names — the literal collector is broken, not the module"
-        )
-
+        """Shared SQL works on both lineages; member-only SQL names real V2 tables."""
+        tree = self._module_tree()
+        member_functions = {
+            "_member_identity",
+            "create_member_database",
+            "_write_history",
+            "_append_history",
+            "read_history_entries",
+            "read_editable_history",
+            "_read_editable_history_for_day",
+            "replace_today_history",
+            "search_memory",
+            "rebuild_memory_index",
+            "consolidation_receipt",
+            "apply_consolidation",
+        }
+        functions = {
+            node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        }
+        assert member_functions <= functions.keys()
+        member_nodes = [functions[name] for name in member_functions]
+        # _write_semantic is shared, but this exact branch is reached only by
+        # apply_consolidation's V2 transaction. Keep all its other SQL shared.
+        consolidation_blocks = [
+            node
+            for node in ast.walk(functions["_write_semantic"])
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "_consolidation"
+        ]
+        assert consolidation_blocks
+        member_nodes.extend(consolidation_blocks)
+        for function in functions.values():
+            for call in ast.walk(function):
+                if isinstance(call, ast.Call) and any(
+                    keyword.arg == "_consolidation"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                    for keyword in call.keywords
+                ):
+                    assert function.name == "apply_consolidation"
+        member_lines = {
+            line for node in member_nodes for line in range(node.lineno, node.end_lineno + 1)
+        }
+        shared, member = set(), set()
+        for lineno, text in _executable_literals(tree):
+            if not _has_sql_head(text):
+                continue
+            target = member if lineno in member_lines else shared
+            for pattern in (_WRITE_RE, _READ_RE):
+                target.update(match.group(1) for match in pattern.finditer(text))
+        shared -= {_INTERPOLATED} | _NOT_A_RELATION
+        member -= {_INTERPOLATED} | _NOT_A_RELATION
+        assert {"semantic_memory", "episodic_memories", "memory_events"} <= shared
+        member_only = {
+            "member_database",
+            "memory_history",
+            "memory_consolidations",
+            "memory_fts",
+        }
+        assert member_only <= member
+        assert not (member_only & shared), "Member SQL escaped its admitted V2 operation"
         for lineage, db in (("v1", _v1_db()), ("crew", _crew_db())):
-            missing = sorted(named - _relations_of(db))
-            assert not missing, (
-                f"vector_memory names {missing}, which the {lineage} lineage does not "
-                f"have. Either add the relation to that lineage's DDL, route the "
-                f"statement through a memory_schema builder, or — if the name is not a "
-                f"relation at all (a SQL keyword, a PRAGMA target, a CTE) — add it to "
-                f"_NOT_A_RELATION with a comment saying which."
-            )
+            try:
+                required = shared | member if lineage == "crew" else shared
+                assert not (required - _relations_of(db)), (lineage, required - _relations_of(db))
+                if lineage == "crew":
+                    physical = {
+                        row[0]
+                        for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+                    }
+                    assert member_only <= physical
+                else:
+                    assert not (member_only & _relations_of(db))
+            finally:
+                db.close()
+
+    @pytest.mark.parametrize("sql", ["SELECT * FROM memory_history", "DELETE FROM memory_history"])
+    def test_member_relation_in_a_shared_operation_is_refused(self, monkeypatch, sql) -> None:
+        tree = self._module_tree()
+        unexpected = ast.parse(f"db.execute({sql!r})")
+        ast.increment_lineno(
+            unexpected,
+            max(node.end_lineno or 0 for node in ast.walk(tree) if hasattr(node, "end_lineno")) + 1,
+        )
+        tree.body.extend(unexpected.body)
+        monkeypatch.setattr(self, "_module_tree", lambda: tree)
+        with pytest.raises(AssertionError, match="Member SQL escaped its admitted V2 operation"):
+            self.test_every_relation_the_module_names_exists_in_both_lineages()
 
     def test_relation_inventory_checks_sql_without_classifying_returned_prose(self) -> None:
         sample = ast.parse(

@@ -25,6 +25,7 @@ import { deriveFollowUpOptions } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
 import { useAppApi } from './index'
 import type { ChatMessage } from '../types'
+import { loadChatConfig } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
 export interface ChatEmbedProps {
@@ -66,6 +67,16 @@ export interface ChatEmbedProps {
    * fixed offset that breaks whenever the composer's height changes.
    */
   aboveComposer?: ReactNode
+  /**
+   * Cap for the composer's auto-grow, in px. The textarea grows with the draft
+   * up to this height, then keeps it and scrolls. Defaults to the shared
+   * `useComposerDraft` cap (240px), which suits a full-height page but not a
+   * host that boxes the embed at a fixed height: there a maxed-out draft takes
+   * most of the box and the transcript above it is squeezed to a few lines. A
+   * fixed-height host passes a proportion of its own box here; the resting
+   * (empty) size is unaffected. Omitted, behaviour is unchanged.
+   */
+  composerMaxHeight?: number
 }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
@@ -89,7 +100,16 @@ export const EMBED_PAGE_LIMIT = 200
 /** The handler clamps `limit` here; a wider ask is silently this. */
 export const EMBED_PAGE_LIMIT_MAX = 500
 
-function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, aboveComposer }: ChatEmbedProps) {
+function ChatEmbed({
+  slotKey,
+  agent,
+  placeholder,
+  frameless,
+  startAtBottom,
+  onSend,
+  aboveComposer,
+  composerMaxHeight,
+}: ChatEmbedProps) {
   const api = useAppApi()
   const lastHashRef = useRef('')
   // The transcript is ChatMessageList's virtualized mount: it owns the scroller
@@ -109,6 +129,17 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   // reset that would let one wide read of the new slot slip out first.
   const [widened, setWidened] = useState<{ slot: string; limit: number } | null>(null)
   const limit = widened?.slot === slotKey ? widened.limit : EMBED_PAGE_LIMIT
+
+  // An embed is as long-lived as a ChatPane, so a one-shot read would leave it
+  // on the old size after the user changes the setting elsewhere (ChatPane.tsx
+  // follows the same `mc-config-changed`/`focus` reload).
+  const [messageFontSize, setMessageFontSize] = useState(() => loadChatConfig().messageFontSize)
+  useEffect(() => {
+    const reload = () => setMessageFontSize(loadChatConfig().messageFontSize)
+    window.addEventListener('focus', reload)
+    window.addEventListener('mc-config-changed', reload)
+    return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
+  }, [])
 
   const { data: slotData, refetch, isPlaceholderData, isError } = useQuery({
     queryKey: ['app-sdk-embed', slotKey, limit],
@@ -190,8 +221,8 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file —
    *  see useComposerDraft's own docs. Picking a follow-up option edits the draft
    *  (matching every other surface) instead of sending immediately. */
-  const { draft, setDraft, picked, toggleOption, composition, submitOnEnter } =
-    useComposerDraft({ followUpOptions })
+  const { draft, setDraft, textareaRef, picked, toggleOption, composition, submitOnEnter } =
+    useComposerDraft({ followUpOptions, maxHeight: composerMaxHeight })
 
   // startAtBottom follow is owned by the virtualizer behind ChatMessageList.
   // Non-startAtBottom embeds keep the message-arrival smooth scroll: it fires
@@ -299,7 +330,10 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   )
 
   return (
-    <div className={`flex flex-col h-full min-h-0 overflow-hidden ${frameless ? '' : 'border border-border rounded-lg bg-bg'}`}>
+    <div
+      className={`flex flex-col h-full min-h-0 overflow-hidden ${frameless ? '' : 'border border-border rounded-lg bg-bg'}`}
+      style={{ '--mc-message-font-size': `${messageFontSize}px` } as React.CSSProperties}
+    >
       {!frameless && (
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
@@ -364,12 +398,13 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         </div>
       )}
 
-      <div className={`flex items-center gap-2 px-3 py-2 shrink-0 ${frameless ? '' : 'border-t border-border bg-bg-accent'}`}>
-        <input
-          type="text"
+      <div className={`flex items-end gap-2 px-3 py-2 shrink-0 ${frameless ? '' : 'border-t border-border bg-bg-accent'}`}>
+        <textarea
+          ref={textareaRef}
+          rows={1}
           {...composition}
           aria-label={i18nT('appSdk.chatEmbed.chat_message')}
-          className="flex-1 min-w-0 px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-none focus-visible:border-accent transition-colors"
+          className="flex-1 min-w-0 min-h-[38px] resize-none overflow-y-auto px-3 py-2 mc-message-font-text bg-bg-elevated border border-border rounded-md text-text outline-hidden focus-visible:border-accent transition-colors"
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => submitOnEnter(e, () => send())}

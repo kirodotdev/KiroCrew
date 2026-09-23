@@ -9,12 +9,16 @@ from kiro_crew.acp.mcp_session_report import (
     _BUCKET_CAP,
     _ERROR_CAP,
     _NAME_CAP,
+    STATE_CONNECTED_WITHOUT_PROVENANCE,
+    KasMcpReadiness,
     McpSessionReport,
     roster_names,
     server_name_of,
 )
 from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INITIALIZED,
+    METHOD_KAS_MCP_STATUS,
+    METHOD_KAS_TOOLS_CHANGED,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
@@ -434,3 +438,281 @@ class TestEventOwnershipReachesTheReport:
             "a _record_session_mcp_event call site does not forward the event's "
             "ownership, so that MCP kind still contaminates every co-tenant's report"
         )
+
+
+_SID = "sess_ed78c259-a634-4c69-86de-65ca2c8056bc"
+_CLIENT = {"kiro": {"resource": {"resourceType": "mcpServer", "source": {"origin": "client"}}}}
+_GLOBAL = {"kiro": {"resource": {"resourceType": "mcpServer", "source": {"origin": "global"}}}}
+
+
+def _status(*servers: dict, sid: str | None = _SID) -> JsonRpcMessage:
+    return JsonRpcMessage(
+        method=METHOD_KAS_MCP_STATUS, params={"sessionId": sid, "servers": list(servers)}
+    )
+
+
+def _tags(*tags: str, sid: str | None = _SID) -> JsonRpcMessage:
+    return JsonRpcMessage(
+        method=METHOD_KAS_TOOLS_CHANGED,
+        params={"sessionId": sid, "tags": [{"source": "mcp", "tag": tag} for tag in tags]},
+    )
+
+
+def _core(status: str, meta: dict | None = None, *, catalog: bool = True, **extra: object) -> dict:
+    """One ``kirocrew-core`` status entry; ``meta=None`` reproduces the 2.18.0 wire.
+
+    ``catalog=False`` drops the connected entry's ``tools`` list, so exposure can
+    only come from a later tag frame.
+    """
+    entry: dict = {"name": "kirocrew-core", "status": status, **extra}
+    if status == "connected" and catalog:
+        entry["tools"] = [{"name": "ping", "description": "probe", "disabled": False}]
+    if meta is not None:
+        entry["_meta"] = meta
+    return entry
+
+
+class TestKasReadinessProvenance:
+    """The origin filter against the released wire shapes it has to read.
+
+    Captured frames (``bugfix-kas-compat57/2.18.0-agent-probe.json``,
+    ``bugfix-repair58-fable/2.18.0-newload-*.json``): released kiro-cli 2.18.0
+    emits ``_kiro/mcp/status`` and ``_kiro/tools/didChange`` under the session's
+    own id but NO ``_meta`` on any status entry. On it a session-level
+    ``mcpServers`` injection wins over a same-named global server on new and
+    load, while an agent-block declaration is shadowed by the global one on new
+    and coexists with it under one name on load. 2.20.0 stamps every entry with
+    ``origin: client``.
+    """
+
+    def test_captured_2_18_0_agent_only_wire_refuses_with_the_compatibility_limit(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connecting")))
+        assert ready.pending == "kirocrew-core: connecting"
+        assert not ready.failure
+        ready.record(_status(_core("connected")))
+        ready.record(_tags("@kirocrew-core/ping"))
+        assert ready.states["kirocrew-core"] == STATE_CONNECTED_WITHOUT_PROVENANCE
+        failure = ready.failure
+        assert failure.startswith(f"kirocrew-core: {STATE_CONNECTED_WITHOUT_PROVENANCE}")
+        # Actionable: names what the backend lacks and what satisfies the barrier.
+        assert "reports no MCP server origin" in failure
+        assert "_meta.kiro.resource.source.origin" in failure
+        # The tag is exposure evidence and is recorded as such; it never turns
+        # the refused server into a satisfied requirement.
+        assert "kirocrew-core" in ready.advertised
+        assert ready.pending.startswith(f"kirocrew-core: {STATE_CONNECTED_WITHOUT_PROVENANCE}")
+
+    def test_captured_2_18_0_injected_wire_is_ready_on_connected_catalog(self):
+        # ``2.18.0-newload-global+session.json``: the injected server's own
+        # catalog (``session_ping``) is what connects, on new and on load, and
+        # that catalog on the connected entry is the exposure evidence.
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",), injected=frozenset({"kirocrew-core"}))
+        ready.record(_status(_core("connecting")))
+        assert ready.pending == "kirocrew-core: connecting"
+        ready.record(_status(_core("connected")))
+        assert not ready.pending and not ready.failure
+
+    def test_injection_exempts_only_the_injected_name(self):
+        ready = KasMcpReadiness(
+            _SID,
+            ("kirocrew-core", "kirocrew-dashboard"),
+            injected=frozenset({"kirocrew-dashboard"}),
+        )
+        ready.record(
+            _status(_core("connected"), {"name": "kirocrew-dashboard", "status": "connected"})
+        )
+        ready.record(_tags("@kirocrew-core/ping", "@kirocrew-dashboard/ping"))
+        assert ready.states["kirocrew-dashboard"] == "connected"
+        assert ready.failure.startswith("kirocrew-core: connected without provenance")
+
+    def test_injection_does_not_waive_exposure_or_failure_states(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",), injected=frozenset({"kirocrew-core"}))
+        ready.record(_status(_core("connected", catalog=False)))
+        assert ready.pending == "kirocrew-core: tools not advertised"
+        ready.record(_status(_core("connected")))
+        assert not ready.pending
+        ready.record(_status(_core("failed", errorMessage="boom")))
+        assert ready.failure == "kirocrew-core: failed (boom)"
+
+    def test_injection_is_not_consulted_on_a_stamping_backend(self):
+        # With provenance present the explicit origin decides, injected or not:
+        # a same-named global entry is still skipped.
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",), injected=frozenset({"kirocrew-core"}))
+        ready.record(_status(_core("connected", _GLOBAL)))
+        ready.record(_tags("@kirocrew-core/ping"))
+        assert ready.pending == "kirocrew-core: unreported"
+        assert not ready.failure
+
+    def test_the_limit_outranks_a_backend_error_text_on_the_same_entry(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connected", errorMessage="irrelevant")))
+        assert "reports no MCP server origin" in ready.failure
+
+    def test_stamped_client_entry_without_catalog_waits_for_the_tag(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connected", _CLIENT, catalog=False)))
+        assert ready.pending == "kirocrew-core: tools not advertised"
+        ready.record(_tags("@kirocrew-core/ping"))
+        assert not ready.pending and not ready.failure
+
+    def test_explicit_global_origin_is_skipped_not_refused(self):
+        # A backend that speaks provenance and reports a same-named global
+        # server: the private declaration may still report, so stay pending.
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connected", _GLOBAL)))
+        ready.record(_tags("@kirocrew-core/ping"))
+        assert ready.pending == "kirocrew-core: unreported"
+        assert not ready.failure
+
+    def test_unstamped_entry_on_a_stamping_backend_is_skipped_not_refused(self):
+        # Provenance is a property of the SNAPSHOT: when any entry carries it,
+        # an unstamped required entry is foreign, not legacy.
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(
+            _status(_core("connected"), {"name": "other", "status": "connected", "_meta": _CLIENT})
+        )
+        assert ready.pending == "kirocrew-core: unreported"
+        assert not ready.failure
+
+    def test_legacy_snapshot_for_another_or_no_session_is_ignored(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connected"), sid="sess_other"))
+        ready.record(_status(_core("connected"), sid=None))
+        assert ready.pending == "kirocrew-core: unreported"
+        assert not ready.failure
+
+    def test_a_later_stamped_snapshot_replaces_the_refusal(self):
+        # Snapshots are full state, so the terminal reading is only as durable
+        # as the wire that produced it; a stamped client snapshot recovers.
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connected")))
+        assert ready.failure
+        ready.record(_status(_core("connected", _CLIENT)))
+        assert not ready.failure
+        assert ready.errors == {}
+
+
+class TestKasReadinessExposure:
+    """Exposure evidence across the released wires that disagree about it.
+
+    Captured kiro-cli 2.22.0 (KAS 0.66.0) off the production relay spawn with a
+    session-level ``kirocrew-core`` injection: the connected status entry carries
+    ``origin: client`` and an 82-entry ``tools`` catalog, and EVERY
+    ``_kiro/tools/didChange`` snapshot of the session lists only ``builtin``
+    tags (``read``, ``write``, ``shell``, ``web``) -- with or without
+    ``tool_search`` in the agent's ``tools``. No MCP tag ever arrives. A barrier
+    that needed one timed out every KAS session start on that release with
+    ``kirocrew-core: tools not advertised``.
+    """
+
+    def _builtin_tags(self) -> JsonRpcMessage:
+        return JsonRpcMessage(
+            method=METHOD_KAS_TOOLS_CHANGED,
+            params={
+                "sessionId": _SID,
+                "tags": [
+                    {"source": "builtin", "tag": "read", "description": "read-file tools"},
+                    {"source": "builtin", "tag": "shell", "description": "run-commands tools"},
+                ],
+            },
+        )
+
+    def test_captured_2_22_0_wire_is_ready_on_the_connected_catalog_alone(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(self._builtin_tags())
+        ready.record(_status(_core("connecting", _CLIENT)))
+        assert ready.pending == "kirocrew-core: connecting"
+        ready.record(_status(_core("connected", _CLIENT)))
+        # The builtin-only snapshot that arrives WITH the connected status on
+        # that release must not retract what the catalog just established.
+        ready.record(self._builtin_tags())
+        assert not ready.pending and not ready.failure
+
+    def test_an_empty_catalog_is_not_exposure(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connected", _CLIENT, catalog=False, tools=[])))
+        assert ready.pending == "kirocrew-core: tools not advertised"
+
+    def test_a_reconnect_still_needs_fresh_evidence(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connected", _CLIENT)))
+        assert not ready.pending
+        ready.record(_status(_core("connecting", _CLIENT)))
+        assert ready.pending == "kirocrew-core: connecting"
+        # Reconnected without a catalog: the earlier catalog is stale.
+        ready.record(_status(_core("connected", _CLIENT, catalog=False)))
+        assert ready.pending == "kirocrew-core: tools not advertised"
+        ready.record(_tags("@kirocrew-core/ping"))
+        assert not ready.pending
+
+    def test_a_tag_frame_adds_exposure_without_clearing_the_catalog_evidence(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core", "kirocrew-dashboard"))
+        ready.record(
+            _status(
+                _core("connected", _CLIENT),
+                {"name": "kirocrew-dashboard", "status": "connected", "_meta": _CLIENT},
+            )
+        )
+        assert ready.pending == "kirocrew-dashboard: tools not advertised"
+        ready.record(_tags("@kirocrew-dashboard/ping"))
+        assert not ready.pending
+        # A later full tag snapshot without the dashboard tag retracts the TAG
+        # evidence, as before this change; the core's catalog evidence stays.
+        ready.record(self._builtin_tags())
+        assert ready.pending == "kirocrew-dashboard: tools not advertised"
+        assert "kirocrew-core" in ready.advertised
+
+    def test_a_full_tag_snapshot_retracts_a_dropped_tag(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_status(_core("connected", _CLIENT, catalog=False)))
+        ready.record(_tags("@kirocrew-core/ping"))
+        assert not ready.pending
+        ready.record(_tags("@other/ping"))
+        assert ready.pending == "kirocrew-core: tools not advertised"
+        # Tag evidence also dies with the connection.
+        ready.record(_tags("@kirocrew-core/ping"))
+        assert not ready.pending
+        ready.record(_status(_core("connecting", _CLIENT)))
+        ready.record(_status(_core("connected", _CLIENT, catalog=False)))
+        assert ready.pending == "kirocrew-core: tools not advertised"
+
+
+class TestKasStatusReport:
+    def test_status_transitions_keep_external_failure_visible(self):
+        report = McpSessionReport()
+        report.begin_session([{"name": "external"}])
+
+        def status(value, **extra):
+            return _frame(
+                METHOD_KAS_MCP_STATUS,
+                sessionId="owned-session",
+                servers=[{"name": "external", "status": value, **extra}],
+            )
+
+        failed = status("failed", errorMessage="external failed")
+        assert not report.record_frame(failed, owned=False)
+        assert report.payload()["failed"] == []
+        assert report.record_frame(failed, owned=True)
+        assert report.payload()["failures"] == {"external": "external failed"}
+        report.include_configured(("kirocrew-core",))
+        assert report.payload()["configured"] == ["external", "kirocrew-core"]
+        assert report.payload()["failed"] == ["external"]
+        assert report.record_frame(status("connecting"), owned=True)
+        assert report.payload()["failed"] == []
+        assert report.payload()["failures"] == {}
+        assert report.record_frame(status("connecting", failedAuthorization=True), owned=True)
+        assert report.payload()["awaiting_auth"] == ["external"]
+        assert report.record_frame(status("connected"), owned=True)
+        assert report.payload()["ready"] == ["external"]
+        assert report.payload()["awaiting_auth"] == []
+        assert report.record_frame(status("connecting"), owned=True)
+        assert report.payload()["ready"] == []
+
+    def test_roster_extension_preserves_reference_diagnostics(self):
+        report = McpSessionReport()
+        report.begin_session([{"name": "external"}])
+        report.record_unresolved_refs(["@missing/tool"])
+        report.include_configured(("kirocrew-core", "external"))
+        assert report.payload()["configured"] == ["external", "kirocrew-core"]
+        assert report.payload()["unresolved_refs"] == ["@missing/tool"]

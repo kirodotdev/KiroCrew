@@ -154,9 +154,9 @@ describe('SettingsPage tabs', () => {
     expect(screen.getByTestId('privacy-panel')).toBeInTheDocument()
   })
 
-  it('lists a single Channels tab instead of per-channel tabs', () => {
+  it('lists a single Messaging Channels tab instead of per-channel tabs', () => {
     renderAt('/settings')
-    expect(screen.getByText('Channels')).toBeInTheDocument()
+    expect(screen.getByText('Messaging Channels')).toBeInTheDocument()
     // The five integrations are rows inside the Channels tab, not sidebar tabs.
     for (const name of ['Discord', 'Telegram', 'Webex', 'WeCom']) {
       expect(screen.queryByText(name)).not.toBeInTheDocument()

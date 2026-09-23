@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -67,6 +69,266 @@ class TestChatSlotInterrupt:
             assert resp.status == 200
             data = await resp.json()
             assert data["info"] == "not running"
+
+    @pytest.mark.asyncio
+    async def test_idle_queue_runs_selected_message_without_stopping(self, _patch_sel):
+        """Run now dispatches an idle queued card while child work continues."""
+        slot = _ChatSlot("test")
+        q1 = slot.queue_append("first")
+        q2 = slot.queue_append("second")
+        state = _mock_state(slot)
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["child-1"]))
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+            new=AsyncMock(return_value=True),
+        ) as start:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/interrupt",
+                    json={"queue_id": q2},
+                )
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert data == {"ok": True, "outcome": "started"}
+        state.sessions.stop_turn.assert_not_awaited()
+        start.assert_awaited_once_with(
+            state,
+            slot,
+            allow_user_during_subagents=True,
+            required_queue_id=q2,
+        )
+        assert [item["id"] for item in slot._queue] == [q1, q2]
+
+    @pytest.mark.asyncio
+    async def test_idle_queue_allows_the_owning_app_on_its_unbound_slot(self, _patch_sel):
+        """The dispatch-point revalidation preserves the legitimate app path."""
+        slot = _ChatSlot("test")
+        slot._app = "owner-app"
+        qid = slot.queue_append("queued")
+        state = _mock_state(slot)
+        request = MagicMock()
+        request.app = {"state": state}
+        request.match_info = {"slot": "test"}
+        request.get = lambda key, default="": "owner-app" if key == "app" else default
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_handlers.read_bounded_json",
+                new=AsyncMock(return_value=({"queue_id": qid}, None)),
+            ),
+            patch(
+                "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+                new=AsyncMock(return_value=True),
+            ) as start,
+        ):
+            resp = await api_chat_slot_interrupt(request)
+
+        assert resp.status == 200
+        assert json.loads(resp.body) == {"ok": True, "outcome": "started"}
+        start.assert_awaited_once_with(
+            state,
+            slot,
+            allow_user_during_subagents=True,
+            required_queue_id=qid,
+        )
+        state.sessions.stop_turn.assert_not_awaited()
+        assert [item["id"] for item in slot._queue] == [qid]
+
+    @pytest.mark.asyncio
+    async def test_idle_owning_app_revalidates_a_rebind_during_body_read(self, _patch_sel):
+        """A body-read rebind cannot dispatch an app card on a foreign session."""
+        slot = _ChatSlot("test")
+        slot._app = "owner-app"
+        q1 = slot.queue_append("first")
+        q2 = slot.queue_append("selected")
+        state = _mock_state(slot)
+        request = MagicMock()
+        request.app = {"state": state}
+        request.match_info = {"slot": "test"}
+        request.get = lambda key, default="": "owner-app" if key == "app" else default
+
+        async def rebind_while_reading(*_args, **_kwargs):
+            await asyncio.sleep(0)
+            slot.linked_session_key = "cron:job-42"
+            return {"queue_id": q2}, None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_handlers.read_bounded_json",
+                new=rebind_while_reading,
+            ),
+            patch(
+                "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+                new=AsyncMock(return_value=True),
+            ) as start,
+        ):
+            resp = await api_chat_slot_interrupt(request)
+
+        assert resp.status == 404
+        assert json.loads(resp.body) == {"error": "not found", "code": "slot_not_found"}
+        start.assert_not_awaited()
+        state.sessions.stop_turn.assert_not_awaited()
+        assert slot._stop_state == "idle"
+        assert [item["id"] for item in slot._queue] == [q1, q2]
+
+    @pytest.mark.asyncio
+    async def test_idle_no_queue_id_is_rejected_and_dispatches_nothing(self, _patch_sel):
+        """Idle interrupt without a queue_id must not run unselected work.
+
+        The subagent-hold bypass exists only to run the card the user selected.
+        With no queue_id there is no selection, so the endpoint returns a typed
+        400 and never calls the dispatcher (which would otherwise consume the
+        queue front / merge neighboring cards under allow_user_during_subagents).
+        """
+        slot = _ChatSlot("test")
+        q1 = slot.queue_append("first")
+        q2 = slot.queue_append("second")
+        state = _mock_state(slot)
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["child-1"]))
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+            new=AsyncMock(return_value=True),
+        ) as start:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/interrupt",
+                    json={},
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["code"] == "invalid_queue_id"
+        start.assert_not_awaited()
+        state.sessions.stop_turn.assert_not_awaited()
+        # Neighboring queue cards are untouched.
+        assert [item["id"] for item in slot._queue] == [q1, q2]
+
+    @pytest.mark.asyncio
+    async def test_idle_empty_queue_id_is_rejected(self, _patch_sel):
+        """A blank/whitespace queue_id is not a selection and is rejected."""
+        slot = _ChatSlot("test")
+        q1 = slot.queue_append("first")
+        state = _mock_state(slot)
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+            new=AsyncMock(return_value=True),
+        ) as start:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/interrupt",
+                    json={"queue_id": "   "},
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["code"] == "invalid_queue_id"
+        start.assert_not_awaited()
+        assert [item["id"] for item in slot._queue] == [q1]
+
+    @pytest.mark.asyncio
+    async def test_idle_non_string_queue_id_is_rejected(self, _patch_sel):
+        """A non-string queue_id on the idle path is a typed 400."""
+        slot = _ChatSlot("test")
+        slot.queue_append("first")
+        state = _mock_state(slot)
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+            new=AsyncMock(return_value=True),
+        ) as start:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/interrupt",
+                    json={"queue_id": 123},
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["code"] == "invalid_queue_id"
+        start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_running_without_queue_id_still_stops_and_preserves(self, _patch_sel):
+        """The running path keeps queue_id optional (stop-and-preserve)."""
+        slot = _ChatSlot("test")
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        slot.task = mock_task
+        slot.queue_append("msg")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/interrupt",
+                json={},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["outcome"] == "soft"
+        state.sessions.stop_turn.assert_awaited_once()
+        assert state.sessions.stop_turn.call_args.kwargs["preserve_queue"] is True
+
+    @pytest.mark.asyncio
+    async def test_idle_dispatch_refuses_slot_replaced_during_body_read(self, _patch_sel):
+        """A stale request cannot dispatch through a same-name replacement."""
+        slot = _ChatSlot("test")
+        qid = slot.queue_append("original queued prompt")
+        state = _mock_state(slot)
+        replacement = _ChatSlot("test")
+        replacement_qid = replacement.queue_append("replacement prompt")
+
+        async def replace_slot_while_reading(*_args, **_kwargs):
+            state._slots["test"] = replacement
+            return {"queue_id": qid}, None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_handlers.read_bounded_json",
+                new=replace_slot_while_reading,
+            ),
+            patch(
+                "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+                new=AsyncMock(return_value=True),
+            ) as start,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/interrupt",
+                    json={"queue_id": qid},
+                )
+                data = await resp.json()
+
+        assert resp.status == 404
+        assert data["code"] == "slot_not_found"
+        start.assert_not_awaited()
+        assert state._slots["test"] is replacement
+        assert [item["id"] for item in replacement._queue] == [replacement_qid]
+
+    @pytest.mark.asyncio
+    async def test_idle_queue_reports_a_selection_lost_before_dispatch(self, _patch_sel):
+        """A stale card is rejected so the client releases its pending latch."""
+        slot = _ChatSlot("test")
+        qid = slot.queue_append("queued")
+        state = _mock_state(slot)
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/interrupt",
+                    json={"queue_id": qid},
+                )
+                data = await resp.json()
+
+        assert resp.status == 409
+        assert data["code"] == "queue_item_unavailable"
+        state.sessions.stop_turn.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_queue_returns_400(self, _patch_sel):

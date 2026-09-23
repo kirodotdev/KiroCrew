@@ -146,7 +146,7 @@ class TestAgentSkillGlobsHardenedRead:
         _symlink_or_skip(secret, d / "evil.json")
         resolved = str(secret.resolve())
         monkeypatch.setattr(
-            "kiro_crew.agent_discovery.is_sensitive_path", lambda p: str(p) == resolved
+            "kiro_crew.agent_discovery.is_sensitive_canonical_path", lambda p: str(p) == resolved
         )
         sel_events: list[dict] = []
         monkeypatch.setattr(

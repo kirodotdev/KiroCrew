@@ -197,7 +197,9 @@ async def _pod_checkout_guard(name: str) -> str | None:
     return None
 
 
-def _reclaim_pod_locked(cfg, name: str, expected_checkout: str) -> tuple[str, str]:
+def _reclaim_pod_locked(
+    cfg, name: str, expected_checkout: str, *, require_missing_checkout: bool = False
+) -> tuple[str, str]:
     """Attribute pod *name* and tear it down as ONE locked transaction.
 
     Runs entirely inside ``rt.pod_name_mutex``, which is the cross-process flock
@@ -215,12 +217,13 @@ def _reclaim_pod_locked(cfg, name: str, expected_checkout: str) -> tuple[str, st
     submitted to the executor as one callable, so ``stop_pod``'s own acquisition
     nests instead of deadlocking.
 
-    *expected_checkout* is this repo's worktree path for *name*, resolved by the
-    caller before the lock -- it is not the racy half, since a foreign ``up``
-    moves the PIN, never our own worktree.
+    *expected_checkout* identifies this repository's checkout for *name*. The
+    missing-checkout teardown passes git's retained worktree record. When
+    *require_missing_checkout* is true, the locked transaction refuses if that
+    path is back on disk because a new pod may own the name.
 
-    Mirrors :func:`_pod_checkout_guard`'s attribution rules, and the CLI's
-    post-teardown env-file clear, so behaviour matches the paths it replaces.
+    Mirrors :func:`_pod_checkout_guard`'s attribution rules and clears the
+    checkout pin after a successful reclaim.
 
     Returns ``(outcome, detail)`` with outcome one of:
       ``reclaimed``  -- ours, torn down, HOME verified gone
@@ -264,6 +267,11 @@ def _reclaim_pod_locked(cfg, name: str, expected_checkout: str) -> tuple[str, st
         if not mine:
             return "foreign", (
                 f"pod {name!r} is pinned to a different checkout " "(basename collision)"
+            )
+        if require_missing_checkout and Path(expected_checkout).exists():
+            return "handed_over", (
+                f"pod {name!r}: its checkout {expected_checkout!r} is back on disk, "
+                "so a new pod may own the name"
             )
         cp = runtime.rt.stop_pod(cfg, name)
         if cp.returncode != 0:
@@ -318,34 +326,61 @@ async def _pod_up(name: str) -> dict:
 
 
 async def _pod_down(name: str) -> dict:
-    guard = await _pod_checkout_guard(name)
-    if guard:
-        return {"ok": False, "error": guard}
-    await runtime._warm_build_path()
-    cmd = runtime._find_cli() + ["pod", "down", name]
-    rc, stdout, stderr = await runtime._run_cmd(
-        cmd, cwd=repository._repo(), env=_pod_env(), timeout=30
-    )
-    if rc != 0:
-        return {"ok": False, "error": runtime._redact(stderr or stdout)}
-    # Post-stop verification: a CLI exit 0 is NOT proof the unit stopped (a
-    # broken `-m` entry point can no-op with rc 0, and a real stop
-    # can still fail or time out). Re-check the live unit state and fail CLOSED
-    # if the pod is still active — mirrors the post-shutdown recheck in
-    # _worktree_remove so "Stopped" is never reported for a pod still running.
+    target, ferr = await repository._find_worktree(name)
+    if target is not None:
+        guard = await _pod_checkout_guard(name)
+        if guard:
+            return {"ok": False, "error": guard}
+        await runtime._warm_build_path()
+        cmd = runtime._find_cli() + ["pod", "down", name]
+        rc, stdout, stderr = await runtime._run_cmd(
+            cmd, cwd=repository._repo(), env=_pod_env(), timeout=30
+        )
+        if rc != 0:
+            return {"ok": False, "error": runtime._redact(stderr or stdout)}
+        # Post-stop verification: a CLI exit 0 is NOT proof the unit stopped (a
+        # broken `-m` entry point can no-op with rc 0, and a real stop
+        # can still fail or time out). Re-check the live unit state and fail CLOSED
+        # if the pod is still active -- mirrors the post-shutdown recheck in
+        # _worktree_remove so "Stopped" is never reported for a pod still running.
+        cfg = runtime._load_cfg()
+        if runtime._POD_AVAILABLE and cfg:
+            try:
+                loop = asyncio.get_running_loop()
+                active = await loop.run_in_executor(
+                    subprocess_executor(), runtime.rt.active_names, cfg
+                )
+                if name in active:
+                    return {"ok": False, "error": "pod still active after shutdown"}
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "ok": False,
+                    "error": f"cannot verify pod shutdown: {runtime._redact(str(exc))}",
+                }
+        return {"ok": True, "error": None}
+
+    recorded, rerr = await repository._find_retained_worktree_path(name)
+    if recorded is None:
+        return {"ok": False, "error": ferr or rerr or f"worktree not found: {name!r}"}
     cfg = runtime._load_cfg()
-    if runtime._POD_AVAILABLE and cfg:
-        try:
-            loop = asyncio.get_running_loop()
-            active = await loop.run_in_executor(subprocess_executor(), runtime.rt.active_names, cfg)
-            if name in active:
-                return {"ok": False, "error": "pod still active after shutdown"}
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "ok": False,
-                "error": f"cannot verify pod shutdown: {runtime._redact(str(exc))}",
-            }
-    return {"ok": True, "error": None}
+    if cfg is None or not runtime._POD_AVAILABLE:
+        return {"ok": False, "error": ferr or f"worktree not found: {name!r}"}
+    try:
+        outcome, detail = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            functools.partial(
+                _reclaim_pod_locked,
+                cfg,
+                name,
+                recorded,
+                require_missing_checkout=True,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"cannot reclaim pod: {runtime._redact(str(exc))}"}
+    if outcome == "reclaimed":
+        return {"ok": True, "error": None}
+    return {"ok": False, "error": detail}
 
 
 async def _pod_restart(name: str) -> dict:
@@ -1069,8 +1104,9 @@ async def _worktree_remove_locked(
             # the socket were removed under a running pod, that pod is now
             # uncontrollable and will terminate on its next watchdog cycle.
             # As a defense-in-depth measure, we also probe the unit file directly.
+            loop = asyncio.get_running_loop()
             try:
-                runtime.rt.require_backend()
+                await loop.run_in_executor(subprocess_executor(), runtime.rt.require_backend)
             except runtime.rt.PodBackendAbsent:
                 # Defense-in-depth: attempt a direct unit-state query. If this
                 # somehow succeeds (bus re-appeared between require_backend and
@@ -1106,6 +1142,11 @@ async def _worktree_remove_locked(
                     residue,
                     name,
                 )
+            except runtime.rt.PodError as exc:
+                return {
+                    "ok": False,
+                    "error": f"cannot verify pod backend: {runtime._redact(str(exc))}",
+                }
             else:
                 try:
                     loop = asyncio.get_running_loop()
@@ -1245,13 +1286,21 @@ async def _worktree_remove_locked(
             # the pod. Removing the checkout under a live pod would leave its
             # gateway running from deleted files, so re-verify inactivity now.
             if runtime._POD_AVAILABLE and cfg:
+                loop = asyncio.get_running_loop()
                 try:
-                    runtime.rt.require_backend()
+                    await loop.run_in_executor(subprocess_executor(), runtime.rt.require_backend)
                 except runtime.rt.PodBackendAbsent:
                     pass  # backend provably absent — no pods can exist
+                except runtime.rt.PodError as exc:
+                    return {
+                        "ok": False,
+                        "error": (
+                            "cannot re-verify pod backend before removal: "
+                            f"{runtime._redact(str(exc))}"
+                        ),
+                    }
                 else:
                     try:
-                        loop = asyncio.get_running_loop()
                         active3 = await loop.run_in_executor(
                             subprocess_executor(), runtime.rt.active_names, cfg
                         )
@@ -1940,8 +1989,10 @@ async def _sync_start_locked() -> dict:
                 "ok": False,
                 "error": (
                     "could not stage the dependency preflight: "
-                    f"{exc.strerror or exc} — free space in the temporary "
-                    "directory and press Pull + Build again"
+                    f"{exc.strerror or exc} — check BOTH the free bytes (df -h) "
+                    "and the free file count (df -i) on the temporary directory, "
+                    "because either budget can be exhausted while the other still "
+                    "looks healthy — then free room and press Pull + Build again"
                 ),
             }
         # File before directory: the run's cleanup unlinks each entry and falls
@@ -2130,8 +2181,10 @@ async def _sync_start_locked() -> dict:
             "ok": False,
             "error": (
                 "could not stage the sync runner: "
-                f"{exc.strerror or exc} — free space in the temporary directory "
-                "and press Pull + Build again"
+                f"{exc.strerror or exc} — check BOTH the free bytes (df -h) and the "
+                "free file count (df -i) on the temporary directory, because either "
+                "budget can be exhausted while the other still looks healthy — then "
+                "free room and press Pull + Build again"
             ),
         }
     # Files before their directory: the run's cleanup unlinks each entry and
@@ -2413,12 +2466,32 @@ async def _prunable(path: str, branch: str | None) -> dict:
 
 async def _prune_candidates() -> dict:
     worktrees = await repository._discover_worktrees()
+    # The per-worktree verdict (_prunable) is several read-only git calls plus
+    # one or more networked gh calls (a PR-status lookup, its per-repo fallback
+    # traversal, and a merged/closed head-OID check), so a plain serial loop
+    # scales with fleet size: a 111-worktree fleet floors at ~57s even at one gh
+    # call each, double the gateway app proxy's 30s _PROXY_TIMEOUT, so the
+    # preview returns 504 and the button never renders. Run the verdicts
+    # concurrently under the same _PRUNE_CONCURRENCY bound the parallel prune
+    # workers use -- this path is read-only git (rev-parse, status,
+    # rev-list/cherry, merge-base) so it never touches _GIT_MUTATION_LOCK, which
+    # only the destructive removal path holds.
+    prunable = [w for w in worktrees if not w.get("is_main")]
+    sem = asyncio.Semaphore(_PRUNE_CONCURRENCY)
+
+    async def _verdict(w: dict) -> tuple[dict, dict]:
+        async with sem:
+            v = await _prunable(w["path"], w.get("branch"))
+        return w, v
+
+    # gather preserves the argument order in its result list regardless of
+    # completion order, so candidates/kept below stay deterministic (input
+    # discovery order) even though the verdicts finish out of order.
+    verdicts = await asyncio.gather(*(_verdict(w) for w in prunable))
+
     candidates, kept = [], []
-    for w in worktrees:
-        if w.get("is_main"):
-            continue
+    for w, v in verdicts:
         name = Path(w["path"]).name
-        v = await _prunable(w["path"], w.get("branch"))
         row = {"name": name, "code": v["code"], "branch": w.get("branch")}
         if v["ok"]:
             # A closed-PR candidate carries the ancestry warning so the
@@ -2443,7 +2516,7 @@ async def _prune_candidates() -> dict:
                 row["dirty_untracked"] = v.get("dirty_untracked")
                 row["dirty_untracked_paths"] = v.get("dirty_untracked_paths")
             kept.append(row)
-    return {"ok": True, "candidates": candidates, "kept": kept, "scanned": len(worktrees) - 1}
+    return {"ok": True, "candidates": candidates, "kept": kept, "scanned": len(prunable)}
 
 
 async def _prune_run(
@@ -2659,8 +2732,9 @@ async def _status_refresher() -> None:
     except repository.RepoUnavailable as exc:
         # No usable checkout to fetch or cache — nothing found, or the configured
         # path is not one. Returning ends the task instead of logging a traceback
-        # every cycle forever; the resolved value only changes on restart, so
-        # there is nothing to wait for.
+        # every cycle forever. A checkout found LATER restarts it from
+        # ``_ensure_repo_resolved``, which is the only thing that can change this
+        # answer inside one process.
         runtime.logger.info("dev-fleet: status refresher idle — %s", exc)
         return
     while True:
@@ -2674,6 +2748,45 @@ async def _status_refresher() -> None:
         except Exception:
             runtime.logger.exception("dev-fleet status refresher failed")
         await asyncio.sleep(_NET_REFRESH_S)
+
+
+async def _ensure_repo_resolved() -> None:
+    """Re-run main-checkout discovery while no VALID checkout is resolved, and start the
+    status refresher when an attempt resolves one.
+
+    ``/api/fleet`` calls this per poll. A resolved and valid install returns at the
+    first guard before any await, so the cost is paid only in the two states that have
+    no fleet to serve -- nothing found, and a configured path carrying no markers --
+    and the setup card or banner the user is looking at stops being a lie within one
+    poll instead of at the next gateway restart.
+
+    The refresher start lives here rather than in ``repository`` because the loop
+    and its task handle are owned at this level and ``repository`` sits below it in
+    the component DAG. Starting it is not optional bookkeeping: ``_status_refresher``
+    RETURNS when there is no usable checkout rather than idling, so a late resolution
+    that left it stopped would serve a fleet whose rows never refresh again — the setup
+    card disappears, the page looks alive, and nothing fetches. That is a worse
+    state than the honest "restart the gateway" this replaces.
+    """
+    global _refresher_task
+    # A resolved and VALID checkout returns here before any await. A resolved-but-invalid
+    # one falls through, because the operator can still correct the path its banner names
+    # and `repository` reopens that latch once the configured string changes.
+    if repository.MAIN_REPO and not repository._REPO_INVALID_MSG:
+        return
+    await repository.ensure_main_repo_discovered()
+    try:
+        repository._repo()
+    except repository.RepoUnavailable:
+        # Nothing found, or the path found carries no markers. Asked through the
+        # accessor rather than by testing `MAIN_REPO` for truthiness: an invalid path is
+        # truthy, and `_status_refresher` returns on its first line for one, so starting
+        # it would mint a task per poll that dies immediately.
+        return
+    if _background_tasks_disabled():
+        return
+    if _refresher_task is None or _refresher_task.done():
+        _refresher_task = asyncio.create_task(_status_refresher())
 
 
 # --- auto-prune reaper (opt-in) ---------------------------------------------
@@ -2814,6 +2927,7 @@ __all__ = (
     "_auto_prune_once",
     "_auto_prune_reaper",
     "_background_tasks_disabled",
+    "_ensure_repo_resolved",
     "_pod_checkout_guard",
     "_pod_down",
     "_pod_env",

@@ -1,6 +1,6 @@
 ---
 name: papyrus-latex-suggestions
-description: Propose actual inline replacement text (old → new) as accept/reject suggestions — LaTeX "suggesting mode" / track changes — that render directly in the PDF. Use when the author wants concrete edit proposals they can see and accept or reject. For remarks ABOUT the text (notes, not replacements), use papyrus-latex-comments.
+description: Propose inline replacement text (old -> new) as accept/reject suggestions, LaTeX 'suggesting mode' / track changes, rendered in the PDF. Use when the author wants concrete edit proposals to accept or reject. For remarks ABOUT the text rather than replacements, use papyrus-latex-comments.
 triggers: tracked change, track changes, suggesting mode, ulem, aisuggest, suggested edit, latex suggestion
 ---
 

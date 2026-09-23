@@ -161,8 +161,22 @@ class TestModelRegistry:
             assert mr.window_source("auto") == "kiro-list"
             assert mr.model_window("unlisted-model-zzz") == 272000
             assert mr.model_window("bad") is None  # 0 not cached
-            # A no-op refresh (same data) returns False — no persist needed.
-            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is False
+            # A no-op refresh (same snapshot) returns False — no persist needed.
+            assert (
+                mr.refresh_kiro_windows(
+                    [
+                        {"model_id": "auto", "context_window_tokens": 1000000},
+                        {"model_id": "unlisted-model-zzz", "context_window_tokens": 272000},
+                    ]
+                )
+                is False
+            )
+            # The catalog is ground truth: a model absent from it is evicted.
+            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is True
+            assert mr.model_window("unlisted-model-zzz") is None
+            # A snapshot with no usable window never wipes a good cache.
+            assert mr.refresh_kiro_windows([{"model_id": "bad", "context_window_tokens": 0}]) is False
+            assert mr.model_window("auto") == 1000000
             # persist is a separate step (offloaded to an executor by the caller).
             mr.persist_kiro_windows()
             assert (tmp_path / "model_windows.json").is_file()  # persisted
@@ -529,6 +543,154 @@ class TestAdvertisedModelCache:
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["a"]})
         assert mr.refresh_advertised_models("claude_code", []) is False
         assert mr.advertised_models("claude_code") == ["a"]
+
+    def test_refresh_refuses_an_over_long_id_and_says_so_once(self, monkeypatch, caplog):
+        # The id is REFUSED, not truncated: a truncated id names a different
+        # model, or none. The rest of the list is retained, and the overflow is
+        # said once so a shortened list is not read as "never advertised".
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        too_long = "x" * (mr.ADVERTISED_MODEL_ID_MAX_CHARS + 1)
+        at_limit = "y" * mr.ADVERTISED_MODEL_ID_MAX_CHARS
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            assert mr.refresh_advertised_models("acp", ["a", too_long, at_limit]) is True
+        assert mr.advertised_models("acp") == ["a", at_limit]
+        assert sum("refused 1 model id(s)" in r.message for r in caplog.records) == 1
+
+    def test_refresh_caps_the_count_at_the_shared_bound(self, monkeypatch, caplog):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        ids = [f"m{i}" for i in range(mr.ADVERTISED_MODELS_MAX_IDS + 3)]
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            assert mr.refresh_advertised_models("acp", ids) is True
+        kept = mr.advertised_models("acp")
+        assert len(kept) == mr.ADVERTISED_MODELS_MAX_IDS
+        assert kept == ids[: mr.ADVERTISED_MODELS_MAX_IDS]
+        assert any("refused 3 model id(s)" in r.message for r in caplog.records)
+        # A duplicate past the cap is still the same id, not a new refusal.
+        caplog.clear()
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            assert mr.refresh_advertised_models("acp", ids[:5] + ids[:5]) is True
+        assert mr.advertised_models("acp") == ids[:5]
+        assert not caplog.records
+
+    def test_a_refused_id_is_not_readmitted_from_the_sidecar(self, monkeypatch, tmp_path, caplog):
+        # The persisted copy is the same population: an oversized or over-long
+        # entry written by another version must not bypass the refresh bound --
+        # and the loader says what it refused, once, like the refresh does, so a
+        # shortened list is not read as a backend that never named those ids.
+        import json
+
+        path = tmp_path / "pm.json"
+        too_long = "x" * (mr.ADVERTISED_MODEL_ID_MAX_CHARS + 1)
+        ids = [too_long] + [f"m{i}" for i in range(mr.ADVERTISED_MODELS_MAX_IDS + 2)]
+        path.write_text(json.dumps({"acp": ids + ["m0"]}), encoding="utf-8")
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: path)
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            mr._load_advertised_models()
+        kept = mr.advertised_models("acp")
+        assert too_long not in kept
+        assert len(kept) == len(set(kept)) == mr.ADVERTISED_MODELS_MAX_IDS
+        # 1 over-long + 2 past the cap; the duplicate "m0" is neither.
+        assert sum("sidecar for acp refused 3 model id(s)" in r.message for r in caplog.records) == 1
+
+    def test_a_refused_window_row_is_not_readmitted_from_the_sidecar(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        # The window sidecar is loaded at import, so the bounds must exist before
+        # that load and be applied inside it: a pre-upgrade oversized file would
+        # otherwise retain every row and persist them all again. The overflow is
+        # said once, like every other store of these ids.
+        import json
+
+        path = tmp_path / "mw.json"
+        too_long = "x" * (mr.ADVERTISED_MODEL_ID_MAX_CHARS + 1)
+        data = {f"m{i}": 1000 for i in range(mr.ADVERTISED_MODELS_MAX_IDS + 2)}
+        data[too_long] = 1000
+        path.write_text(json.dumps(data), encoding="utf-8")
+        monkeypatch.setattr(mr, "_KIRO_WINDOWS", {})
+        monkeypatch.setattr(mr, "_kiro_windows_cache_path", lambda: path)
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            mr._load_kiro_windows()
+        assert too_long not in mr._KIRO_WINDOWS
+        assert len(mr._KIRO_WINDOWS) == mr.ADVERTISED_MODELS_MAX_IDS
+        assert sum("window sidecar refused 3 model id(s)" in r.message for r in caplog.records) == 1
+
+    def test_the_bounds_are_defined_before_the_import_time_loads(self):
+        # Both sidecar loaders run at import and read the bounds; a constant
+        # defined below the call would be a NameError at import, or a load that
+        # silently ran unbounded.
+        import inspect
+
+        src = inspect.getsource(mr)
+        bounds_at = src.index("ADVERTISED_MODELS_MAX_IDS = ")
+        assert bounds_at < src.index("\n_load_kiro_windows()")
+        assert bounds_at < src.index("\n_load_advertised_models()")
+
+    def test_one_admission_feeds_both_caches(self, monkeypatch, caplog):
+        # Two structures retaining one population (the catalog rows) take ONE
+        # admission answer: an id the count or length bound refuses gets no row
+        # in either cache, and the two hold exactly the same id set.
+        monkeypatch.setattr(mr, "_KIRO_WINDOWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        too_long = "x" * (mr.ADVERTISED_MODEL_ID_MAX_CHARS + 1)
+        rows = [
+            {"model_id": f"m{i}", "model_name": f"m{i}", "context_window_tokens": 1000}
+            for i in range(mr.ADVERTISED_MODELS_MAX_IDS)
+        ]
+        rows.append({"model_id": "one-too-many", "context_window_tokens": 1000})
+        rows.append({"model_id": too_long, "context_window_tokens": 1000})
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            assert mr.refresh_kiro_catalog(rows, "acp") == (True, True)
+        assert set(mr._KIRO_WINDOWS) == set(mr.advertised_models("acp"))
+        assert len(mr._KIRO_WINDOWS) == mr.ADVERTISED_MODELS_MAX_IDS
+        assert "one-too-many" not in mr._KIRO_WINDOWS
+        assert "one-too-many" not in mr.advertised_models("acp")
+        assert too_long not in mr._KIRO_WINDOWS
+        # Said once for the snapshot, not once per cache.
+        assert sum("refused 2 model id(s)" in r.message for r in caplog.records) == 1
+        assert sum("refused" in r.message for r in caplog.records) == 1
+
+    def test_admission_keeps_an_id_without_a_window_and_evicts_the_stale(self, monkeypatch):
+        # Vocabulary does not depend on the window field: a row with no valid
+        # window is still a kiro id. And a full cache never refuses a NEW
+        # catalog id -- the snapshot replaces the cache, so the two stores
+        # cannot disagree about whether the newest model exists.
+        monkeypatch.setattr(mr, "_KIRO_WINDOWS", {f"old{i}": 1 for i in range(mr.ADVERTISED_MODELS_MAX_IDS)})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        rows = [
+            {"model_id": "new-model", "model_name": "new-model", "context_window_tokens": 272000},
+            {"model_id": "no-window", "model_name": "no-window"},
+        ]
+        assert mr.refresh_kiro_catalog(rows, "acp") == (True, True)
+        assert mr._KIRO_WINDOWS == {"new-model": 272000}
+        assert mr.advertised_models("acp") == ["new-model", "no-window"]
+
+    def test_admission_skips_malformed_rows_and_keeps_order(self):
+        rows = [
+            {"model_id": "a", "model_name": "a", "context_window_tokens": 10},
+            {"model_id": "b-id", "model_name": "b", "context_window_tokens": 20},
+            {"model_id": 3, "model_name": " "},
+            None,
+            {"model_name": "c"},
+        ]
+        ids, windows = mr.admit_catalog_rows(rows)
+        assert ids == ["a", "b-id", "b", "c"]
+        assert windows == {"a": 10, "b-id": 20, "b": 20}
+
+    def test_a_registered_model_is_never_folded_onto_a_different_one(self):
+        assert mr.registered_model_key("global.anthropic.claude-opus-4-8[1m]") == "opus-4.8-1m"
+        assert mr.registered_model_key("claude-opus-4.8") == "opus-4.8-1m"
+        assert mr.registered_model_key("claude-opus-4-8") == "opus-4.8"
+        assert mr.registered_model_key("openai.gpt-9-nova[high]") is None
+        assert mr.same_registered_model("claude-opus-4.8", "claude-opus-4-8") is False
+        assert mr.same_registered_model("global.anthropic.claude-opus-4-8[1m]", "claude-opus-4.8") is True
+        # Unknown is not different.
+        assert mr.same_registered_model("openai.gpt-9-nova[high]", "claude-opus-4.8") is True
+        # A hand-typed case variant is the same registered model, not an unknown
+        # one -- otherwise the guard would wave the 200K pin onto the 1M id.
+        assert mr.registered_model_key("CLAUDE-OPUS-4-8") == "opus-4.8"
+        assert mr.registered_model_key("  Global.Anthropic.Claude-Opus-4-8[1M] ") == "opus-4.8-1m"
+        assert mr.same_registered_model("CLAUDE-OPUS-4-8", "claude-opus-4.8") is False
 
     def test_persist_round_trips(self, monkeypatch, tmp_path):
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})

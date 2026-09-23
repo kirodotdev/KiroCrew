@@ -1,6 +1,6 @@
 /**
  * Recording harness for the three shadcn/ui overlay primitives whose animation
- * classes only become real CSS once `tailwindcss-animate` is installed:
+ * classes only become real CSS once `tw-animate-css` is installed:
  * `ui/dropdown-menu.tsx`, `ui/context-menu.tsx` and `ui/popover.tsx`.
  *
  * Each carries `animate-in fade-in-0 zoom-in-95 slide-in-from-*` in its class

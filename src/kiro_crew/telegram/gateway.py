@@ -18,6 +18,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.spawn_approval_delivery import (
+    register_channel_delivery,
+    unregister_channel_delivery,
+)
 from kiro_crew.telegram.client import TelegramAuthError, TelegramClient
 from kiro_crew.telegram.commands import bot_command_payload
 from kiro_crew.telegram.transport import TelegramTransport
@@ -104,6 +108,19 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         # Handed to the dispatcher so its config applier can push a reloaded
         # allow-list at the live transport instead of waiting for a restart.
         dispatcher.transport = transport
+
+        # Channel-side spawn-approval delivery. Register this
+        # dispatcher's in-channel Approve/Deny/Trust prompt as the "telegram"
+        # surface the host spawn gate consults before its Slack-DM/dashboard
+        # fallback, and retire it when the client shuts down so the gate stops
+        # routing to a dispatcher that is going away. Idempotent: a restart
+        # replaces this channel's own hook.
+        # The hook is bound ONCE and the same object is handed to both calls, so the
+        # close is a compare-and-drop: a restart whose replacement hook already took
+        # the slot is not unregistered by this (older) client's close.
+        delivery_hook = dispatcher.deliver_spawn_approval
+        register_channel_delivery("telegram", delivery_hook)
+        client.on_close = lambda: unregister_channel_delivery("telegram", delivery_hook)
 
         # Prove the token with an authenticated call BEFORE reporting the
         # channel as connected — transport.connect() only schedules the

@@ -54,6 +54,27 @@ def _packaged_descriptions() -> dict[str, str]:
     return out
 
 
+class TestEveryDescriptionFitsTheIndexLine:
+    def test_no_packaged_description_exceeds_the_index_cut(self) -> None:
+        """Every packaged description fits the ``_SHORT_DESC_CHARS`` index line.
+
+        The index renders a description through ``_short_desc``, which cuts at
+        ``_SHORT_DESC_CHARS`` and appends an ellipsis; text past the cut is never
+        shown to any reader of the index. Pinning the whole corpus at or under the
+        cut keeps the cleanup from eroding one skill at a time.
+        """
+        offenders = {
+            name: len(desc)
+            for name, desc in _packaged_descriptions().items()
+            if len(desc) > _SHORT_DESC_CHARS
+        }
+        assert not offenders, (
+            f"description longer than the {_SHORT_DESC_CHARS}-char index line, so the "
+            "Available Skills entry ends on an ellipsis and the tail is never shown; "
+            f"trim it to what the skill is and when to load it: {offenders}"
+        )
+
+
 class TestRoutingDirectiveSurvivesIndexCut:
     def test_first_directive_lands_inside_the_index_line(self) -> None:
         offenders: list[str] = []

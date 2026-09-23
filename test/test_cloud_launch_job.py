@@ -170,6 +170,45 @@ class TestRunLaunch:
         # Persisted terminal state is visible to a fresh reader.
         assert lj.LaunchJobStore(root=s.root).get(job.id).status == lj.DONE
 
+    def test_verified_identity_mismatch_registers_then_fails_not_done(self, tmp_path):
+        """A refused sign-in (the box holds a session for a DIFFERENT identity
+        than the pinned target -- ordinary on a re-launch onto a reused stack) is
+        neither "already signed in" nor the benign no-URL case. The crew must
+        still be registered (visible, so ``cloud logout`` is reachable and it is
+        not a billing ghost), but the job ends FAILED with the refusal, never
+        DONE with a dead-end "sign in from the dashboard"."""
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        handle = FakeHandle(already=False, url="")
+        handle.error = "the instance is signed in to a different Kiro identity than X; run logout"
+        eng = FakeEngine(handle=handle)
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.FAILED
+        assert out.error.startswith("the instance is signed in to a different Kiro identity")
+        assert out.signin_detected is False
+        assert out.step(lj.STEP_SIGNIN).state == lj.STEP_FAILED
+        assert out.step(lj.STEP_SIGNIN).detail == handle.error
+        # Registered anyway -- the recovery needs the crew to exist in the hub.
+        assert out.step(lj.STEP_CONNECT).state == lj.STEP_DONE
+        assert [c[0] for c in eng.calls] == ["preflight", "provision", "begin_signin", "register"]
+        assert handle.closed is True
+        assert lj.LaunchJobStore(root=s.root).get(job.id).status == lj.FAILED
+
+    def test_real_handle_carries_the_prompt_error(self, monkeypatch):
+        """``_RealSigninHandle`` must expose ``prompt.error``: dropping it is what
+        let a verified mismatch masquerade as the no-URL case."""
+        from kiro_crew.cloud import launch_engine as le
+        from kiro_crew.cloud.login import LoginPrompt
+
+        refused = LoginPrompt(error="the instance is signed in to a different Kiro identity")
+        monkeypatch.setattr(le.login, "start_device_login", lambda *a, **k: refused)
+        h = le._RealSigninHandle("i-0abc123456789def0", "dev", "us-east-1")
+        assert h.error == refused.error
+        assert h.already_logged_in is False and h.url == ""
+        ok = LoginPrompt(url="https://example.com/device", code="ABCD-EFGH")
+        monkeypatch.setattr(le.login, "start_device_login", lambda *a, **k: ok)
+        assert le._RealSigninHandle("i-0abc123456789def0", "dev", "us-east-1").error == ""
+
     def test_device_code_awaiting_then_signed(self, tmp_path):
         s = _store(tmp_path)
         job = s.create(profile="dev", region="us-east-1", size_key="balanced")
@@ -238,6 +277,165 @@ class TestRunLaunch:
         assert out.status == lj.FAILED
         assert out.step(lj.STEP_PROVISION).state == lj.STEP_DONE
         assert not any(c[0] == "teardown" for c in eng.calls)
+
+    def test_registration_unavailable_never_persists_a_reapable_intermediate(self, tmp_path):
+        """No save may leave a failed connect step beside a non-terminal status.
+
+        That pair is exactly what ``reap_orphans`` reads as an interrupted launch,
+        and it rewrites the status to FAILED. A restart in such a window would turn
+        the DONE this path is heading for into a red card over a running crew. This
+        watches every save and asserts the combination is never on disk, so the
+        window does not exist rather than being merely narrow.
+        """
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+
+        seen: list[tuple[str, str]] = []
+        real_save = s.save
+
+        def _watched_save(j):
+            real_save(j)
+            # Read it BACK, so this asserts what a restart would find, not what the
+            # in-memory object happens to hold.
+            reloaded = lj.LaunchJobStore(root=s.root).get(j.id)
+            assert reloaded is not None
+            seen.append((reloaded.status, reloaded.step(lj.STEP_CONNECT).state))
+
+        s.save = _watched_save  # type: ignore[method-assign]
+        eng = FakeEngine(
+            handle=FakeHandle(already=True),
+            register_exc=lj.RegistrationUnavailable("registry write raised"),
+        )
+        out = lj.run_launch(job, s, eng)
+
+        assert out.status == lj.DONE
+        assert out.step(lj.STEP_CONNECT).state == lj.STEP_FAILED
+        trap = [
+            (status, step)
+            for status, step in seen
+            if step == lj.STEP_FAILED and status not in (lj.DONE, lj.FAILED)
+        ]
+        assert trap == [], f"a restart here would be reaped to FAILED: {trap}"
+        # And the end state a restart would find IS terminal, carrying both facts.
+        assert seen[-1] == (lj.DONE, lj.STEP_FAILED)
+
+    def test_a_reaped_restart_after_the_terminal_save_keeps_the_launch_done(self, tmp_path):
+        """The consequence side of the same invariant, through the reaper itself.
+
+        Once the single save has landed, the job is terminal, so ``reap_orphans``
+        skips it and the DONE with its registration reason survives the restart.
+        """
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        eng = FakeEngine(
+            handle=FakeHandle(already=True),
+            register_exc=lj.RegistrationUnavailable("registry write raised"),
+        )
+        lj.run_launch(job, s, eng)
+
+        # A fresh process: new store over the same root, then the reap it runs once.
+        restarted = lj.LaunchJobStore(root=s.root)
+        restarted.reap_orphans()
+
+        after = restarted.get(job.id)
+        assert after is not None
+        assert after.status == lj.DONE
+        assert after.step(lj.STEP_CONNECT).state == lj.STEP_FAILED
+        assert "registry write raised" in after.error
+
+    def test_registration_unavailable_keeps_the_launch_done_and_says_why(self, tmp_path):
+        """The Fargate lane's case: the task launched, only the row is missing.
+
+        DONE is what reports the task as launched, which is the thing that actually
+        happened and the thing its owner is paying for. The reason is on the connect
+        step AND on the job, because a red card over a running crew would leave them
+        with nothing to act on while the crew keeps billing.
+        """
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        eng = FakeEngine(
+            handle=FakeHandle(already=True),
+            register_exc=lj.RegistrationUnavailable(
+                "The crew is running (task arn:aws:ecs:...:task/crews/abc) but could not be "
+                "added to your crews: the task was still PROVISIONING after 180s"
+            ),
+        )
+        out = lj.run_launch(job, s, eng)
+
+        assert out.status == lj.DONE
+        assert out.step(lj.STEP_PROVISION).state == lj.STEP_DONE
+        assert out.step(lj.STEP_CONNECT).state == lj.STEP_FAILED
+        assert "could not be added to your crews" in out.step(lj.STEP_CONNECT).detail
+        assert "PROVISIONING" in out.error
+        # The crew exists: a launch that got this far is never rolled back.
+        assert not any(c[0] == "teardown" for c in eng.calls)
+
+    def test_a_registration_failure_never_claims_the_crew_was_added(self, tmp_path):
+        """The connect step's detail is the sentence under the card's icon. Leaving
+        the success wording on a failed registration would tell the user to look for
+        a crew that is not in the list."""
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        eng = FakeEngine(
+            handle=FakeHandle(already=True),
+            register_exc=lj.RegistrationUnavailable(
+                "could not read the task to register it: AccessDeniedException"
+            ),
+        )
+        out = lj.run_launch(job, s, eng)
+        assert "Added to Your crews" not in out.step(lj.STEP_CONNECT).detail
+
+    def test_a_refused_signin_still_outranks_a_registration_failure(self, tmp_path):
+        """Two things went wrong and only one is reported as the job's status. The
+        sign-in refusal wins: it means the crew serves chats under an identity the
+        launch did not ask for, which is worse than being absent from a list.
+        """
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        handle = FakeHandle(already=True)
+        handle.error = "this box holds a session for a different identity"
+        eng = FakeEngine(
+            handle=handle,
+            register_exc=lj.RegistrationUnavailable(
+                "could not read the task to register it: AccessDeniedException"
+            ),
+        )
+        out = lj.run_launch(job, s, eng)
+
+        assert out.status == lj.FAILED
+        assert "different identity" in out.error
+        assert out.step(lj.STEP_CONNECT).state == lj.STEP_FAILED
+
+    def test_a_cancel_during_the_registration_wait_is_not_dropped(self, tmp_path):
+        """The register step can block for minutes now, so a cancel can land inside it.
+
+        The Fargate engine polls DescribeTasks for up to three minutes waiting for a
+        runtime id, and the cancel route only sets the event -- it tears nothing down.
+        Without a check after the step the launch falls straight through to DONE and
+        the cancelled crew keeps billing with its cancel silently dropped.
+        """
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        cancel = threading.Event()
+
+        class _CancelDuringRegister(FakeEngine):
+            def register(self, *, instance_id, tag, profile, region):
+                # Stands in for the user pressing Cancel while the poll is waiting.
+                cancel.set()
+                super().register(
+                    instance_id=instance_id, tag=tag, profile=profile, region=region
+                )
+
+        eng = _CancelDuringRegister(handle=FakeHandle(already=True))
+        out = lj.run_launch(job, s, eng, cancel=cancel)
+
+        assert out.status == lj.CANCELLED
+        # The whole point: the compute that was created does not survive the cancel.
+        assert any(c[0] == "teardown" for c in eng.calls), eng.calls
+        # And the state a restart would read is the cancelled one, not a DONE.
+        reloaded = lj.LaunchJobStore(root=s.root).get(job.id)
+        assert reloaded is not None
+        assert reloaded.status == lj.CANCELLED
 
     def test_cancel_before_provision(self, tmp_path):
         s = _store(tmp_path)
@@ -714,3 +912,38 @@ class TestProvisionerOnTheJob:
         assert got.status == lj.FAILED
         assert "EC2 stack" not in got.error
         assert "instance may still exist" in got.error
+
+
+class TestTargetCompatibilityIsDecidedBeforeProvisioning:
+    def test_legacy_engine_with_identity_center_target_fails_at_preflight(self, tmp_path):
+        """The engine cannot receive a login_target; a job carrying an Identity
+        Center target must fail BEFORE `provision` runs. Deciding it at the
+        sign-in step would strand a billed, running, unregistered instance that
+        no teardown arm covers (those fire only on a provision-step failure)."""
+        from kiro_crew.cloud.login_target import KiroLoginTarget
+
+        s = _store(tmp_path)
+        job = s.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            login_target=KiroLoginTarget(
+                license="pro", start_url="https://example.awsapps.com/start", region="us-east-1"
+            ),
+        )
+        eng = FakeEngine()  # begin_signin(instance_id, profile, region): the legacy shape
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.FAILED
+        assert out.step(lj.STEP_PREFLIGHT).state == lj.STEP_FAILED
+        assert out.step(lj.STEP_PROVISION).state == lj.STEP_PENDING
+        assert "login_target" in out.error and "Builder ID" in out.error
+        # Nothing was provisioned, so nothing needed tearing down or registering.
+        assert [c[0] for c in eng.calls] == []
+
+    def test_legacy_engine_with_default_target_still_launches(self, tmp_path):
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        eng = FakeEngine()
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.DONE
+        assert [c[0] for c in eng.calls] == ["preflight", "provision", "begin_signin", "register"]

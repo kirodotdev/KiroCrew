@@ -39,8 +39,10 @@ from kiro_crew.config.loader import (
     ChannelConfig,
     KiroCrewConfig,
     MessagingConfig,
+    SlackConfig,
 )
 from kiro_crew.slack import events as ev
+from kiro_crew.slack import files as slack_files
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -1603,6 +1605,11 @@ class TestTranscribeWithReaction:
 
 
 class TestTranscribeFiles:
+    @pytest.fixture(autouse=True)
+    def _uncapped_provider(self, monkeypatch):
+        monkeypatch.setattr(ev, "load_stt_config", lambda: SimpleNamespace(timeout_secs=300))
+        monkeypatch.setattr(ev, "batch_duration_cap_secs", lambda _cfg: None)
+
     @pytest.mark.asyncio
     async def test_non_audio_and_urlless_files_skipped(self):
         orch = _make_orch()
@@ -1652,6 +1659,112 @@ class TestTranscribeFiles:
             assert await ev._transcribe_files(orch, files) == []
         outcomes = [c.kwargs.get("outcome") for c in _mock_sel.log_api_access.call_args_list]
         assert "empty" in outcomes
+
+    @pytest.mark.asyncio
+    async def test_over_duration_memo_is_refused_before_transcription(self, _mock_sel):
+        orch = _make_orch()
+        files = [
+            {
+                "mimetype": "audio/webm",
+                "url_private": "https://x.invalid/a.webm",
+                "filetype": "webm",
+                "name": "long.webm",
+            }
+        ]
+        with (
+            patch(
+                "kiro_crew.slack.events.load_stt_config",
+                return_value=SimpleNamespace(timeout_secs=900),
+            ),
+            patch("kiro_crew.slack.events.batch_duration_cap_secs", return_value=3600),
+            patch(
+                "kiro_crew.slack.events.audio_exceeds_secs",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch("kiro_crew.slack.events.transcribe_audio", new_callable=AsyncMock) as transcribe,
+        ):
+            result = await ev._transcribe_files(orch, files)
+
+        assert result == ["[Audio attachment — exceeds the 60-minute transcription limit]"]
+        # The note must be the pinned shared constant, not a drifted copy.
+        assert result == [slack_files.VOICE_MEMO_TOO_LONG.format(minutes=60)]
+        transcribe.assert_not_awaited()
+        assert any(
+            call.kwargs.get("error") == "audio_too_long"
+            for call in _mock_sel.log_api_access.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_unverified_duration_is_refused_before_transcription(self, _mock_sel):
+        orch = _make_orch()
+        files = [
+            {
+                "mimetype": "audio/webm",
+                "url_private": "https://x.invalid/a.webm",
+                "filetype": "webm",
+                "name": "unknown.webm",
+            }
+        ]
+        with (
+            patch(
+                "kiro_crew.slack.events.load_stt_config",
+                return_value=SimpleNamespace(timeout_secs=900),
+            ),
+            patch("kiro_crew.slack.events.batch_duration_cap_secs", return_value=3600),
+            patch(
+                "kiro_crew.slack.events.audio_exceeds_secs",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("kiro_crew.slack.events.transcribe_audio", new_callable=AsyncMock) as transcribe,
+        ):
+            result = await ev._transcribe_files(orch, files)
+
+        assert result == ["[Audio attachment — duration could not be verified]"]
+        # The note must be the pinned shared constant, not a drifted copy.
+        assert result == [slack_files.VOICE_MEMO_DURATION_UNVERIFIED]
+        transcribe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_under_cap_memo_is_transcribed(self, _mock_sel):
+        """A memo verified under the cap takes the healthy path: transcription
+        is awaited and its transcript returned, with neither refusal note."""
+        orch = _make_orch()
+        files = [
+            {
+                "mimetype": "audio/webm",
+                "url_private": "https://x.invalid/a.webm",
+                "filetype": "webm",
+                "name": "short.webm",
+            }
+        ]
+        with (
+            patch(
+                "kiro_crew.slack.events.load_stt_config",
+                return_value=SimpleNamespace(timeout_secs=900),
+            ),
+            patch("kiro_crew.slack.events.batch_duration_cap_secs", return_value=3600),
+            patch(
+                "kiro_crew.slack.events.audio_exceeds_secs",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.slack.events.transcribe_audio",
+                new_callable=AsyncMock,
+                return_value="hello from the memo",
+            ) as transcribe,
+        ):
+            result = await ev._transcribe_files(orch, files)
+
+        transcribe.assert_awaited_once()
+        assert result == ["hello from the memo"]
+        assert not any(
+            slack_files.VOICE_MEMO_TOO_LONG.format(minutes=60) in item
+            or slack_files.VOICE_MEMO_DURATION_UNVERIFIED in item
+            for item in result
+        )
 
     @pytest.mark.asyncio
     async def test_download_failure_audits_error(self, _mock_sel):
@@ -1866,6 +1979,91 @@ class TestRouteMessageGuards:
                     await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "channels governance policy"
+
+    @pytest.mark.asyncio
+    async def test_stop_is_recorded_before_the_liveness_checks(self):
+        """A turn between its abandoned attempt and its compaction replay has
+        no session and, when it started from an interaction, no registered
+        task either -- so this handler would answer "Nothing running." and
+        call nothing. The Stop is recorded on the manager FIRST, so the
+        replay reads it and stays dropped."""
+        orch = _make_orch()
+        orch.sessions.has_session = MagicMock(return_value=False)
+        orch.sessions.get_session_for_thread = MagicMock(return_value=None)
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock()
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+        orch.sessions.note_stop.assert_called_once_with("100.0")
+        orch.sessions.stop_turn.assert_not_awaited()
+        orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
+
+    @pytest.mark.asyncio
+    async def test_stop_is_recorded_against_the_threads_owning_session(self):
+        """A linked thread's turns -- and their compaction replay -- run under
+        the dashboard session that owns the thread, so the Stop must be recorded
+        under that key, not the bare thread ts the replay never reads."""
+        orch = _make_orch()
+        orch.sessions.has_session = MagicMock(return_value=False)
+        orch.sessions.get_session_for_thread = MagicMock(return_value="dashboard:chat-7")
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock()
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+        orch.sessions.get_session_for_thread.assert_called_with("100.0")
+        orch.sessions.note_stop.assert_called_once_with("dashboard:chat-7")
+
+    @pytest.mark.asyncio
+    async def test_flat_dm_stop_targets_a_dashboard_linked_thread_owner(self):
+        """With dm_single_session on, `!stop` typed inside a DM thread that a
+        dashboard send-to-Slack OWNS must stop that linked owner -- the running
+        turn lives under it, keyed by the thread ts -- not the channel-scoped
+        flat key. Stopping the flat key would leave the linked turn's provider
+        running while acking a session that was never busy. A self-derived owner
+        (``slack:<thread_ts>``) is not a real binding and does not win."""
+        orch = _make_orch(use_transport=True)
+        orch._cfg.slack = SlackConfig(dm_single_session=True)
+        orch.sessions.has_session = MagicMock(return_value=True)
+        # The thread ts (90.0) is owned by a dashboard session; the flat key
+        # (slack:D1) is not what the turn runs under.
+        orch.sessions.get_session_for_thread = MagicMock(
+            side_effect=lambda k: "dashboard:chat-7" if k == "90.0" else None
+        )
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock(return_value="stopped")
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(
+                    orch, _event(text="!stop", thread_ts="90.0", ts="100.0"), ev.SeenCache()
+                )
+        # The linked owner is what gets stopped and cleared -- never the flat key.
+        orch.sessions.stop_turn.assert_awaited_once()
+        assert orch.sessions.stop_turn.await_args.args[0] == "dashboard:chat-7"
+        orch.sessions.note_stop.assert_called_once_with("dashboard:chat-7")
+
+    @pytest.mark.asyncio
+    async def test_flat_dm_stop_ignores_a_self_derived_thread_owner(self):
+        """A DM thread claimed only by its own per-thread session
+        (``slack:<thread_ts>`` -- the shape dm_single_session merges away) is
+        NOT a real binding, so `!stop` still targets the flat channel key."""
+        orch = _make_orch(use_transport=True)
+        orch._cfg.slack = SlackConfig(dm_single_session=True)
+        orch.sessions.has_session = MagicMock(return_value=True)
+        # Only a self-derived owner exists: slack:<thread_ts>.
+        orch.sessions.get_session_for_thread = MagicMock(
+            side_effect=lambda k: "slack:90.0" if k == "90.0" else None
+        )
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock(return_value="stopped")
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(
+                    orch, _event(text="!stop", thread_ts="90.0", ts="100.0"), ev.SeenCache()
+                )
+        orch.sessions.stop_turn.assert_awaited_once()
+        assert orch.sessions.stop_turn.await_args.args[0] == "slack:D1"
 
     @pytest.mark.asyncio
     async def test_pure_stop_is_exempt_from_governance_denial(self):

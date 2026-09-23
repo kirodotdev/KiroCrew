@@ -46,6 +46,10 @@ def register(app: web.Application) -> None:
     # remote dashboard bearer cannot read.
     app.router.add_post("/api/update/arm", handlers.api_update_arm)
     app.router.add_get("/api/update/arm", handlers.api_update_arm_status)
+    # Declining a packaged-app request. SPA-callable like arm: it removes a
+    # nudge, grants nothing, and the side of the decision that says "no" must
+    # not be the harder one to reach.
+    app.router.add_delete("/api/update/arm", handlers.api_update_disarm)
     app.router.add_post("/api/update/approve", handlers.api_update_approve)
     # Restart with no update. Sibling of /api/update rather than a mode of it:
     # /api/update refuses every layout that is not a git checkout, while a
@@ -61,6 +65,13 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/sessions/memory", handlers.api_sessions_memory)
     app.router.add_get("/api/sessions/health", handlers.api_sessions_health)
     app.router.add_get("/api/sessions/usage", handlers.api_sessions_usage)
+    # Durable task queue + capacity view. The literal /summary is registered
+    # before the /{task_id} pattern for the same reason /sessions/search is.
+    app.router.add_get("/api/tasks", handlers.api_tasks_list)
+    app.router.add_get("/api/tasks/summary", handlers.api_tasks_summary)
+    app.router.add_get("/api/tasks/{task_id}", handlers.api_task_detail)
+    app.router.add_post("/api/tasks/{task_id}", handlers.api_task_action)
+    app.router.add_post("/api/tasks/{task_id}/cancel", handlers.api_task_cancel)
     app.router.add_get("/api/usage/kiro", handlers.api_kiro_usage)
     app.router.add_get("/api/usage", handlers.api_usage)
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
@@ -135,11 +146,28 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
     app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
     app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
+    # Decision-seam consent (Settings > Developer > Feature Previews). Owner-gated
+    # in the handler and browser-called like the AWS pair above, for the same
+    # reason: it is the operator's out-of-band surface for an egress
+    # authorization the agent must not be able to grant itself.
+    app.router.add_get("/api/decisions/consent", handlers.api_decisions_consent_get)
+    app.router.add_put("/api/decisions/consent", handlers.api_decisions_consent_put)
+    # The decision strip's own pair, owner-gated in the same handler module: a
+    # verdict on one turn (a WRITE of the decision log) and the folded report the
+    # strip's tooltip reads. Browser-called by the chat surface, like the consent
+    # pair above.
+    app.router.add_post("/api/decisions/feedback", handlers.api_decisions_feedback)
     # Flagged-file delivery consent. Owner-gated in the handler; deliberately NOT
     # on the strict-internal list in server.py, because unlike the file_send legs
     # its only legitimate caller IS the owner's browser.
     app.router.add_get("/api/file-delivery/consent", handlers.api_file_delivery_consent_get)
     app.router.add_post("/api/file-delivery/consent", handlers.api_file_delivery_consent_post)
+    app.router.add_get(
+        "/api/file-delivery/consent/arm", handlers.api_file_delivery_consent_arm_status
+    )
+    app.router.add_post(
+        "/api/file-delivery/consent/approve", handlers.api_file_delivery_consent_approve
+    )
     app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)

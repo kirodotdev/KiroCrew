@@ -87,21 +87,17 @@ def pid_file_name(port: int) -> str:
     return f"{_MARKER_PREFIX}{int(port)}{_PID_SUFFIX}"
 
 
-def _start_file_name(port: int) -> str:
-    """File name of the start-identity sidecar for a gateway serving *port*.
-
-    Mirrors :func:`pid_file_name`. Private because the token is only ever read
-    through :func:`read_pid_record_path`, which derives this name from the pid
-    path it was handed -- so no consumer outside this module needs to spell it.
-    """
-    return f"{_MARKER_PREFIX}{int(port)}{_START_SUFFIX}"
-
-
 def _start_path_for(path: Path) -> Path:
     """Start-identity sidecar sitting beside the pid sidecar at *path*.
 
-    One derivation rule shared by the writer and the reader, so the two cannot
-    drift apart on where the token lives.
+    The one derivation rule in this module, shared by the writer and every
+    reader, so the two cannot drift apart on where the token lives.
+
+    Keyed on the pid PATH rather than on a port because the pid sidecar is not
+    always inside this process's ``run/``: a pod keeps its own in an isolated
+    data home (``pod.runtime._pod_pid_record_path``), which a bare port cannot
+    name. ``test_pod_api.py`` re-spells the ``.start`` suffix literally, on
+    purpose, as a tripwire for renaming it here without updating its readers.
     """
     return path.with_suffix(_START_SUFFIX)
 
@@ -516,7 +512,7 @@ def prune_markers(*, keep_port: int) -> None:
 
     It removes the marker, the pid sidecar and that pid's start identity, but
     NEVER the credential, because ``_gateway_owns_port`` cannot tell a dead
-    gateway from an unprovable one. It
+    gateway from an unprovable one. That check
     fails closed by RETURNING FALSE -- non-POSIX returns False outright, and a
     missing or throwing listener-lookup tool is folded into False as well -- so
     False means "ownership not proven", not "process gone". Deleting on False

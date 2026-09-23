@@ -105,7 +105,7 @@ export default function PrivacyChapter({
           <h1
             ref={headingRef}
             tabIndex={-1}
-            className="text-2xl font-semibold text-text-strong outline-none"
+            className="text-2xl font-semibold text-text-strong outline-hidden"
           >
             {i18nT('components.privacyChapter.title')}
           </h1>

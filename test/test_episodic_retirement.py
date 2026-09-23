@@ -15,7 +15,7 @@ import pytest
 from member_memory_helpers import declare_v2_store
 
 from kiro_crew import memory_stores
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 from kiro_crew.vector_memory_constants import _MAX_EPISODIC_RETIRED_PER_WRITE
 
 pytestmark = pytest.mark.xdist_group("episodic_retirement")
@@ -50,8 +50,7 @@ def store(tmp_path: Path, monkeypatch):
     root = tmp_path / "memory_stores"
     monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
     directory = declare_v2_store(tmp_path, "member-color")
-    st = VectorMemoryStore(db_path=directory / "memory.db")
-    st.init()
+    st = open_member_database(directory / "memory.db", member_id="color", store_id="member-color")
     try:
         for text in (*_RESTATES, *_SAME_TOPIC):
             st.write_episodic(text, conversation_id="c1", importance=0.6)

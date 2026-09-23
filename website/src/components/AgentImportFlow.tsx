@@ -507,7 +507,7 @@ export default function AgentImportFlow({
     const { title, description } = headings[stage]
     return (
       <div className="mt-6">
-        <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
+        <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-hidden">
           {title}
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted">{description}</p>
@@ -520,7 +520,7 @@ export default function AgentImportFlow({
       return (
         <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
           <Loader2 className="lucide-inline animate-spin text-accent" />
-          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
+          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-hidden">
             {i18nT('components.agentImportFlow.scanning_for_agent_setup')}
           </h1>
           <p className="mt-2 text-sm text-muted">{i18nT('components.agentImportFlow.checking_supported_tools_on_this_gateway_host')}</p>
@@ -531,7 +531,7 @@ export default function AgentImportFlow({
       return (
         <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
           <AlertTriangle className="lucide-inline text-danger" />
-          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
+          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-hidden">
             {i18nT('components.agentImportFlow.we_could_not_scan_agent_setup')}
           </h1>
           {/* Scan-failed state: no selections exist yet, so the hand-off loses nothing. */}
@@ -560,7 +560,7 @@ export default function AgentImportFlow({
       return (
         <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
           <AlertTriangle className="lucide-inline text-danger" />
-          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
+          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-hidden">
             {i18nT('components.agentImportFlow.found_setup_kirocrew_could_not_read')}
           </h1>
           {/* Persistent reader failure reported by the gateway — exactly what the
@@ -607,7 +607,7 @@ export default function AgentImportFlow({
       return (
         <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
           <FileSearch className="lucide-inline text-muted" />
-          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
+          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-hidden">
             {i18nT('components.agentImportFlow.no_supported_setup_found')}
           </h1>
           <p className="mt-2 max-w-lg text-sm leading-relaxed text-muted">

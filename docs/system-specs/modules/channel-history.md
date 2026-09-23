@@ -2,15 +2,17 @@
 
 ## Overview
 
-`channel_history.py` — ephemeral in-memory rolling window that captures
-ALL messages per Slack channel. Provides conversational context when the
-agent is @mentioned in group channels. Thread-aware: separates current
-thread messages from other threads for clear LLM context.
+`channel_history.py` — per-channel rolling history for Slack group context.
+Normal channels use an ephemeral in-memory window. Channels in `observe` mode
+use a deeper window persisted as JSONL so it survives gateway restarts. Only
+messages admitted by the sender, interceptor, activation, and channel-governance
+gates are eligible; thread context is isolated to the current thread rather than
+mixed with other threads.
 
 ## Problem
 
 In a DM, the agent sees every message. In a group channel like #team-oncall,
-multiple people are talking. When someone @mentions KiroCrew, the agent only
+multiple people are talking. When someone @mentions Kiro Crew, the agent only
 sees that single message — zero context about the surrounding conversation.
 
 Additionally, when multiple threads are active in the same channel, messages
@@ -40,12 +42,12 @@ When `thread_ts` is provided, output includes only messages from the current thr
 ## Design
 
 - **Per-channel**: each channel gets its own independent deque
-- **Thread-aware**: entries carry optional `thread_ts`; `context_for()` splits by thread
-- **Max entries**: 50 per channel (configurable)
-- **TTL**: 5 minutes — stale messages from old topics are evicted
-- **In-memory only**: no disk persistence (ephemeral context)
-- **Push on EVERY message**: before owner lock, captures all channel members
-- **Inject on every message**: not just new sessions, since conversation changes
+- **Thread-aware**: entries carry optional `thread_ts` and `msg_ts`; `context_for()` returns only the current thread when given `thread_ts`, or only top-level messages otherwise
+- **Normal-mode capacity**: 50 entries per channel
+- **Normal-mode TTL**: 5 minutes — stale messages from old topics are evicted
+- **Observe mode**: defaults to 200 entries and one week, configured by `slack.observe_max_messages` and `slack.observe_ttl_hours`; entries are appended to owner-local JSONL under `<data-home>/history`, loaded on startup, and compacted lazily
+- **Push after gates**: unauthorized, intercepted, activation-off, and channel-governance-denied content is never recorded; observe mode records admitted messages before the mention/active-thread routing decision, while other modes record only messages accepted for processing
+- **Inject on every built message**: `ContextBuilder.build_message()` reads current channel history on both new and follow-up turns and neutralizes structural prompt markers
 
 ## Thread Context (Trust ACP)
 
@@ -61,11 +63,11 @@ cross-thread contamination on follow-up messages.
 
 ## Wiring
 
-### Gateway (`slack/gateway.py`)
+### Gateway and event routing (`slack/gateway.py`, `slack/events.py`)
 
-1. `ChannelHistory()` created at startup
-2. `ctx_builder.channel_history = channel_history` — attached to context builder
-3. `channel_history.push(channel, sender_id, text, thread_ts=thread_ts)` — before owner lock
+1. `ChannelHistory()` is created at startup with `history_dir=<data-home>/history` and the configured observe-mode limits.
+2. `ctx_builder.channel_history = channel_history` attaches it to the context builder; configured `observe` channels call `set_observe()` and load persisted entries.
+3. `slack/events.py` applies sender authorization, interception, activation, and channel-governance gates before recording content. Observe mode records admitted messages before mention routing; other activation modes push after deduplication and attachment/transcription processing.
 
 ### Context Builder (`context.py`)
 
@@ -82,7 +84,9 @@ Passes `channel_id=channel` and `thread_ts=thread_ts or msg_ts` to `build_messag
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `_DEFAULT_MAX_ENTRIES` | 50 | Max messages per channel buffer |
-| `_DEFAULT_TTL_SECS` | 300 | 5 min TTL for message expiry |
+| `_DEFAULT_TTL_SECS` | 300 | 5 min TTL for normal-mode message expiry |
+| `OBSERVE_MAX_ENTRIES` | 200 | Observe-mode default; gateway config may override it |
+| `OBSERVE_TTL_SECS` | 604800 | Observe-mode one-week default; gateway config may override it |
 
 ## APIs
 
@@ -107,15 +111,14 @@ populated by `slack/events.py` which resolves sender display names via
 
 ## Thread Metadata Injection
 
-When the bot is @mentioned in a channel thread, prior messages may be
-invisible (the in-memory buffer only contains messages observed via Socket
-Mode). The handler falls back to `conversations.replies(limit=1)` to fetch
-the thread parent text and reply count. This metadata is injected via a
-dedicated `thread_meta` parameter on `build_message`. Graceful degradation:
-if the API call fails (e.g. missing `groups:history` scope), thread context
-is simply skipped.
-
-`HistoryEntry` includes `msg_ts` for correct thread parent identification.
+On a new, non-resumed, non-compressed thread session, the handler first uses
+`fetch_message(channel, thread_ts)` to retrieve the thread parent. If that is
+unavailable, it falls back to `fetch_thread_replies(limit=1)` for parent text
+and reply count; missing `channels:history` or `groups:history` scope degrades to
+bare thread identifiers. Parent text and fallback metadata are treated as
+untrusted input: prompt-injection matches are withheld and audited, and accepted
+text is structurally neutralized before injection. `HistoryEntry.msg_ts` lets the
+in-memory window identify a top-level message as the parent of a later thread.
 
 ## Per-Channel thread_follow
 

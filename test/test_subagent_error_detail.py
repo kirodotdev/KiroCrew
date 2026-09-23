@@ -139,6 +139,64 @@ class TestTombstoneCarriesTheReason:
         assert len(self._tombstone(agent_root, "longone")["detail"]) == _MAX_ERROR_DETAIL_LEN
 
 
+class TestTombstoneResolvesRecoveryAction:
+    """``recovery_action`` is the terminal state, not a promise to decide later.
+
+    Only the gateway-restart path ever resolved it, so an abnormal exit that
+    wrote a literal ``"pending"`` stayed pending for the rest of the run's life.
+    """
+
+    def _recovery(self, agent_root, agent_id):
+        tomb = json.loads((agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8"))
+        return tomb["recovery_action"]
+
+    def test_a_retrievable_result_makes_recovery_a_read(self, agent_root):
+        from kiro_crew.subagent_persistence import create_agent_folder, update_state
+
+        create_agent_folder("withresult", task="t")
+        (agent_root / "withresult" / "result.txt").write_text("the answer", encoding="utf-8")
+        # The run records the complete flag at its complete event; the
+        # tombstone writer trusts that record, not the file alone.
+        update_state("withresult", result_complete=True)
+
+        SubagentManager._write_tombstone(SubagentInfo(id="withresult", task="t"), "error")
+
+        assert self._recovery(agent_root, "withresult") == "result_available"
+
+    def test_a_result_without_the_complete_flag_is_a_fragment(self, agent_root):
+        """A non-empty file without the flag is an opening sentence, not an answer."""
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        create_agent_folder("fragmented", task="t")
+        (agent_root / "fragmented" / "result.txt").write_text(
+            "an opening sentence", encoding="utf-8"
+        )
+
+        SubagentManager._write_tombstone(SubagentInfo(id="fragmented", task="t"), "error")
+
+        assert self._recovery(agent_root, "fragmented") == "partial_result"
+
+    def test_no_result_still_owes_the_user_a_notification(self, agent_root):
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        create_agent_folder("noresult", task="t")
+
+        SubagentManager._write_tombstone(SubagentInfo(id="noresult", task="t"), "timeout")
+
+        assert self._recovery(agent_root, "noresult") == "notification_pending"
+
+    def test_an_empty_result_file_is_not_a_result(self, agent_root):
+        """The rule is non-empty, not merely present: a 0-byte file recovers nothing."""
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        create_agent_folder("emptyresult", task="t")
+        (agent_root / "emptyresult" / "result.txt").write_text("", encoding="utf-8")
+
+        SubagentManager._write_tombstone(SubagentInfo(id="emptyresult", task="t"), "reaped")
+
+        assert self._recovery(agent_root, "emptyresult") == "notification_pending"
+
+
 class TestTerminalArmUsesTheDescription:
     """The rendering is only useful if the arm that stores the error calls it."""
 

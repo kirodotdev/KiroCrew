@@ -297,6 +297,15 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#8891",
         auto_adopt=True,
     ),
+    # A stored 100 may be an intentional cost/turn cap. Value equality cannot
+    # distinguish that choice from a materialized default, so only an absent
+    # key follows the new budget automatically; the operator may adopt or keep.
+    SupersededDefault(
+        dotted_key="agent.subagent_max_turns",
+        old_default=100,
+        new_default=1000,
+        changed_in="#12203",
+    ),
 )
 
 
@@ -475,9 +484,16 @@ def adopted_superseded() -> dict[str, object]:
 
     Fails SOFT like the ack read. The consequence of losing the file is bounded and
     known: a key could auto-adopt a second time, which un-materializes a value the
-    operator may have restored. Two things keep that bounded: the pending record is
-    written BEFORE the rewrite and a failed record aborts the adoption, and a key
-    reaches this suppressing map only once its removal is known to have landed.
+    operator may have restored. What keeps that bounded is the ORDER of the two
+    writes: the record lands here BEFORE the removal is attempted, and a failed
+    record aborts the adoption -- so the map can name a key whose removal then
+    failed (a missed improvement, still reported as drift), but never the reverse.
+    See :func:`record_adoptions` for why that side of the window was chosen.
+
+    Rendered by ``kirocrew doctor`` and ``kirocrew config defaults`` through
+    :func:`adoption_summary`, because the load-path WARNING that announced the
+    removal is one line in one gateway log; this map is what an operator reads a
+    week later to learn what changed in their file and how to put it back.
     """
     return _map_from_document(_read_ack_document(), ADOPTED_SECTION)
 
@@ -907,6 +923,67 @@ def drop_drifted_keys(base_data: dict, dotted_keys: list[str]) -> list[str]:
     return removed
 
 
+def _terminal_safe(value: object) -> str:
+    """Render *value* so a string out of the sidecar cannot drive the terminal.
+
+    The ledger is a plain file the agent sandbox can write, so every string read
+    back out of it is untrusted input headed for the operator's terminal, where ESC
+    and BEL start and end sequences the terminal EXECUTES rather than displays (an
+    OSC 52 writes the clipboard, silently). Control characters are escaped rather
+    than stripped so the value stays diagnosable. ``str.isprintable()`` is False for
+    exactly the C0/C1 range plus the separators and format characters, and True for
+    ordinary text in any script, so a real key or value is unharmed.
+    """
+    return "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in str(value))
+
+
+def adoption_summary(dotted_key: str, removed: object) -> str:
+    """One line describing an auto-adopted key, shared by ``doctor`` and the CLI.
+
+    Worded as a record of what happened plus the exact undo, and nothing else: the
+    loader's WARNING at adoption time carries the same two facts, and this is the
+    on-demand replay of it for an operator who did not see that log line. It says
+    the key was removed from ``config.json`` and no more -- ``config.local.json``
+    may still carry it, so "the default now applies" would be false there -- and it
+    does not claim the operator never chose *removed*, which the mechanism cannot
+    know. It also allows for the marker-first window: the ledger entry lands BEFORE
+    the removal, so an entry whose config write then failed describes a value that
+    is still stored (and still listed as drift, which is how the operator tells).
+
+    Both fields come from the sidecar, a plain file the agent sandbox can write, so
+    both are untrusted output. Two rules follow. Every character printed is passed
+    through :func:`_terminal_safe`. And the pasteable restore command is built ONLY
+    from registry literals: the entry is matched against ``SUPERSEDED_DEFAULTS`` by
+    key and by exact value (type included), and the command names the registry's own
+    ``dotted_key`` and ``old_default`` rather than the sidecar's bytes. No quoting
+    scheme is portable across every shell the operator might paste into (POSIX
+    quoting leaves ``cmd.exe`` metacharacters live), so a value the registry does
+    not vouch for gets no command at all -- it is shown, escaped, as unrecognised.
+    """
+    key = _terminal_safe(dotted_key)
+    shown = _terminal_safe(repr(removed))
+    vouched = next(
+        (
+            entry
+            for entry in SUPERSEDED_DEFAULTS
+            if entry.dotted_key == dotted_key
+            and type(removed) is type(entry.old_default)
+            and removed == entry.old_default
+        ),
+        None,
+    )
+    if vouched is None:
+        return (
+            f"{key}: auto-adoption recorded for stored value {shown}, which no registered "
+            f"default explains; no restore command is offered for it"
+        )
+    return (
+        f"{key}: stored value {shown} was removed from config.json on upgrade (if that "
+        f"write failed the value is still stored and still listed as drift). Restore it "
+        f"with: kirocrew config set {vouched.dotted_key} {vouched.old_default}"
+    )
+
+
 def drift_summary(entry: SupersededDefault) -> str:
     """One line describing *entry*'s drift, shared by the log and ``doctor``.
 
@@ -955,6 +1032,13 @@ def render_doctor_section(issues: list[str]) -> None:
     from kiro_crew.config.loader import config_path  # circular import
 
     print("\nStored Defaults")
+    # The adoption ledger is rendered FIRST, before config.json is even opened: an
+    # adopted key is by construction not drift (its stored value is gone), so
+    # it would otherwise never appear here -- and a missing or unreadable config
+    # must not hide what an earlier load removed from it. This is the surface
+    # ``record_adoptions`` promises the record on.
+    for dotted, removed in sorted(adopted_superseded().items()):
+        print(f"  adopted:     ℹ️  {adoption_summary(dotted, removed)}")
     path = config_path()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))

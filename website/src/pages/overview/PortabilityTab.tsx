@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { Download, Upload, FileArchive, AlertCircle, CheckCircle } from 'lucide-react'
 import { Card, CardTitle } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 interface Manifest {
@@ -10,6 +11,29 @@ interface Manifest {
   hostname: string
   user: string
   contents: Record<string, number>
+}
+
+/**
+ * The message to show for a refused portability call.
+ *
+ * A 5xx from these endpoints answers with deliberately opaque boilerplate
+ * ("Export failed", "Import failed", "Preview failed") — English produced in
+ * Python that never passes through the i18n catalog, and that says no more than
+ * *fallback* already says in the reader's language. A 4xx carries the archive
+ * validator's own detail ("missing manifest.json"), which is the whole value of
+ * the message, so it is preserved.
+ *
+ * Gated on `code` as well as status: a refusal with no machine-readable
+ * identity may be from something other than these handlers, and there the prose
+ * can be the only detail available.
+ */
+export function refusalText(
+  status: number,
+  data: { error?: string; code?: string },
+  fallback: string,
+): string {
+  if (data.code && status >= 500) return fallback
+  return data.error || fallback
 }
 
 export default function PortabilityTab() {
@@ -61,7 +85,7 @@ export default function PortabilityTab() {
       if (data.ok) {
         setPreview(data.manifest)
       } else {
-        setPreviewError(data.error || i18nT('pages.overview.portabilityTab.invalid_archive'))
+        setPreviewError(refusalText(resp.status, data, i18nT('pages.overview.portabilityTab.invalid_archive')))
       }
     } catch {
       setPreviewError(i18nT('pages.overview.portabilityTab.network_error_during_preview'))
@@ -83,7 +107,10 @@ export default function PortabilityTab() {
         const items = data.summary?.items || []
         setImportStatus({ type: 'ok', msg: `Import complete (${items.length} items). Restart gateway to apply all changes.` })
       } else {
-        setImportStatus({ type: 'error', msg: data.error || i18nT('pages.overview.portabilityTab.import_failed') })
+        setImportStatus({
+          type: 'error',
+          msg: refusalText(resp.status, data, i18nT('pages.overview.portabilityTab.import_failed')),
+        })
       }
     } catch (e: unknown) {
       setImportStatus({ type: 'error', msg: e instanceof Error ? e.message : i18nT('pages.overview.portabilityTab.network_error') })
@@ -167,19 +194,23 @@ export default function PortabilityTab() {
           </div>
         )}
 
-        {previewError && (
-          <div className="mt-3 text-danger text-[12px] inline-flex items-center gap-1">
-            <AlertCircle size={12} /> {previewError}
-          </div>
-        )}
+        {/* No hand-off: the chosen archive lives in the file input above and in
+            `preview`, neither of which is saved anywhere durable. The hand-off
+            unmounts this tab, and a `File` cannot be restored programmatically,
+            so the user would have to pick the archive again. */}
+        <ErrorNotice variant="inline" message={previewError} className="mt-3" testId="portability-preview-error" />
 
-        {importStatus.msg && (
-          <div className={`mt-3 text-[12px] inline-flex items-center gap-1 ${importStatus.type === 'ok' ? 'text-ok' : importStatus.type === 'error' ? 'text-danger' : 'text-muted'}`}>
-            {importStatus.type === 'ok' && <CheckCircle size={12} />}
-            {importStatus.type === 'error' && <AlertCircle size={12} />}
-            {importStatus.msg}
-          </div>
-        )}
+        {/* No hand-off: same unsaved archive selection as the preview error
+            above. Only the failure branch moves to `ErrorNotice`; the success
+            and progress lines are not errors and must not be dressed as one. */}
+        {importStatus.type === 'error'
+          ? <ErrorNotice variant="inline" message={importStatus.msg} className="mt-3" testId="portability-import-error" />
+          : importStatus.msg && (
+            <div className={`mt-3 text-[12px] inline-flex items-center gap-1 ${importStatus.type === 'ok' ? 'text-ok' : 'text-muted'}`}>
+              {importStatus.type === 'ok' && <CheckCircle size={12} />}
+              {importStatus.msg}
+            </div>
+          )}
       </Card>
     </div>
   )

@@ -25,6 +25,19 @@ concurrency:
 jobs:
   version:
     name: Compute Nightly Version
+    # NOT routed to the CodeBuild fleet. This job fires only on `schedule` and
+    # `workflow_dispatch` -- github.actor on a schedule tick is whoever last
+    # edited the workflow file, not a live human triggering the run, and on
+    # workflow_dispatch it's whoever clicked Run, which need not be a
+    # collaborator with fleet access. Either way the AWS webhook's actor
+    # allowlist can reject the request, and this job has no fork check to
+    # fall back to `ubuntu-latest` on: `github.event.pull_request` does not
+    # exist for either trigger, so the routing expression's fork term is
+    # always false and it always requests the fleet -- the same
+    # availability-bug mechanism as issue-summary.yml/issue-triage.yml's
+    # `issues`/`issue_comment` triggers, which have the identical gap. A
+    # scheduled run whose actor the allowlist rejects queues forever
+    # instead of running, so this job stays on `ubuntu-latest`.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -366,6 +379,13 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      # A failed arm64 build must not skip the x64 publishers (#2645). Safe on
+      # THIS lane specifically: a nightly run publishes per-arch keys, per-arch
+      # feeds and per-arch aliases and records no cross-arch completeness claim
+      # -- it never calls scripts/release_promotion.py, so nothing downstream
+      # reads "this version has both arches". release.yml does record that
+      # claim and therefore keeps the default (false).
+      soft_fail_arm64: true
 
   # Windows builds in its own workflow because it Authenticode-signs during the
   # build (the Squirrel installer embeds already-signed executables), so unlike
@@ -425,16 +445,26 @@ jobs:
   # status visible in the run graph.
   #
   # Scope of that separation, stated precisely because the obvious reading is
-  # wrong: it decouples the PUBLISH steps, not the BUILDS. Both publishers
-  # still `needs: build-desktop`, which is the reusable-workflow caller job
-  # aggregating BOTH matrix legs, so a failed arm64 build skips the x64
-  # publish too. That is deliberate for now -- the versioned S3 keys are
-  # immutable, so publishing half a release and then discovering the other
-  # arch never built is the worse failure -- but it does mean a broken arm64
-  # build can hold up an x64 release, which was not true before this lane
-  # existed. True per-arch publish independence needs the publishers to run
-  # past a partial build failure and let their own artifact download decide;
-  # tracked in #2645 rather than reshaped here.
+  # wrong: it decouples the PUBLISH steps, and on THIS lane the arm64 BUILD too.
+  # Every publisher still `needs: build-desktop`, the reusable-workflow caller
+  # job -- `needs` is what makes it wait for the build and for the package
+  # smoke. What changed is which failures that caller reports: this lane passes
+  # `soft_fail_arm64: true`, so a failed arm64 build leg no longer fails the
+  # caller and no longer skips the x64 publishers with it (#2645). The arm64
+  # publishers still run and still go red, on their own missing artifact.
+  #
+  # What still holds every Linux publish here, deliberately:
+  #   - a failed `smoke-linux-packages`. It carries no continue-on-error, so a
+  #     deb or rpm that would not install holds the publish for both arches.
+  #   - a failed x64 build leg, because that x64-only smoke cannot run without
+  #     its package.
+  #   - `dependency-vulnerability-gate` and `platform-tests`, which is why they
+  #     stay in `needs` with no `if:` relaxing them.
+  #
+  # release.yml keeps the old coupling on purpose and says why at its own copy
+  # of this block: its run records the stable promotion candidate, where all
+  # three arm64 Linux roles are REQUIRED (scripts/release_promotion.py), so
+  # per-arch independence there is #1030's question rather than this one's.
   publish-linux-appimage-x64:
     name: Publish Linux appimage (nightly channel · x64)
     needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]

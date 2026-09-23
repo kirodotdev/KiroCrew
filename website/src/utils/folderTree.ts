@@ -99,6 +99,26 @@ const folderName = (f: ChatFolder): string =>
     : ''
 
 /**
+ * A folder's name as a STRING, for anything that will call a string method on it
+ * or render it.
+ *
+ * `ChatFolder.name` is typed `string`, and at the type level this reader is
+ * redundant — but the value comes from `folders.json` on disk, which a hand edit
+ * or an older writer can leave holding a number, `null`, or an object. Every
+ * consumer that then calls `.toLowerCase()`, `.split()` or `.length` on it throws,
+ * and one throw inside a `useMemo` takes the whole sidebar down: the crash is in
+ * render, so there is no row left to explain it and no way to clear the search box
+ * that triggered it.
+ *
+ * Same rule as {@link folderName} above, and for the same reason: a non-string
+ * reads as EMPTY rather than being stringified, so a malformed folder simply does
+ * not match and does not highlight instead of matching the literal text
+ * `[object Object]`.
+ */
+export const folderNameText = (f: ChatFolder): string =>
+  typeof f.name === 'string' ? f.name : ''
+
+/**
  * Flatten folders into pre-order (tree) sequence so children sit directly under
  * their parent, siblings sorted by `order` then name. Each entry carries its
  * ancestor names (for breadcrumb rendering) and depth (for indentation).
@@ -122,13 +142,23 @@ export function orderFoldersWithPaths(folders: readonly ChatFolder[]): OrderedFo
   const walk = (folder: ChatFolder, ancestors: string[], visited: Set<string>) => {
     if (visited.has(folder.id) || ancestors.length > 20) return
     visited.add(folder.id)
+    // Read through the guard, not raw. `ancestors` and `path` leave this module and
+    // are consumed as STRINGS: the launcher feeds each ancestor to `fuzzyMatch` as a
+    // keyword, and that calls `.toLowerCase()` on its candidate — so one non-string
+    // parent name off disk throws inside the caller's render memo and takes the
+    // launcher down. Guarding at the call sites would leave the next consumer to
+    // rediscover it; guarding here makes the contract "these are strings" true for
+    // all four. It also stops `path` from coercing: `join` would render a numeric
+    // name as `42`, which is exactly the stringification this module's own rule
+    // rejects.
+    const self = folderNameText(folder)
     out.push({
       folder,
       ancestors: [...ancestors],
       depth: ancestors.length,
-      path: [...ancestors, folder.name].join(FOLDER_PATH_SEP),
+      path: [...ancestors, self].join(FOLDER_PATH_SEP),
     })
-    for (const child of childrenOf(folder.id)) walk(child, [...ancestors, folder.name], visited)
+    for (const child of childrenOf(folder.id)) walk(child, [...ancestors, self], visited)
   }
   const visited = new Set<string>()
   for (const root of childrenOf('')) walk(root, [], visited)

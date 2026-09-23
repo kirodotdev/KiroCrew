@@ -38,6 +38,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/skills", handlers.api_skills_create)
     # Multi-provider skill discovery (skills.sh REST browser)
     app.router.add_get("/api/skills/-/discover", api_skills_discover)
+    app.router.add_post("/api/skills/-/discover", handlers.api_skills)
     app.router.add_get("/api/skills/-/discover/preview", api_skills_discover_preview)
     app.router.add_post("/api/skills/-/discover/install", api_skills_discover_install)
     # Auto-skill pending-approval queue + pin (v2). Registered before the

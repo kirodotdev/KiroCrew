@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+import { api } from '../../api/client'
 
 import SettingsSearch from './SettingsSearch'
 
@@ -27,17 +30,28 @@ function ParamsProbe() {
 }
 
 function setup(initialEntry = '/settings?tab=chat&channel=slack') {
+  // A QueryClient because the search reads `['dashboardConfig']` to learn whether a
+  // governance-gated entry may be offered at all. The cases below are about ranking
+  // and activation and query nothing governed, so an unresolved read is fine here;
+  // `settingsSearchGovernance.test.ts` owns the offered/withheld behaviour.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <SettingsSearch />
-      <ParamsProbe />
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <SettingsSearch />
+        <ParamsProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
 const input = () => screen.getByRole('combobox')
 
 describe('SettingsSearch', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('shows matching rows for a query against a stable registry entry', () => {
     setup()
     fireEvent.change(input(), { target: { value: 'zoom' } })
@@ -113,5 +127,22 @@ describe('SettingsSearch', () => {
     const after = screen.getAllByRole('option')
     expect(after[0]).toHaveAttribute('aria-selected', 'false')
     expect(after[1]).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('still offers the governed entry when the ceiling read FAILED', async () => {
+    // This component resolves the governance answer itself
+    // (`!isSuccess || data?.decisions_enabled === true`), so the case belongs here
+    // rather than against a restatement of that expression. A failed read is not a
+    // denial: the Decisions card this row navigates to renders the read-failed notice,
+    // so withholding the row would report the setting as absent on a host that merely
+    // could not check.
+    vi.spyOn(api, 'dashboardConfig').mockRejectedValue(new Error('offline'))
+    setup()
+    fireEvent.change(input(), { target: { value: 'Decisions' } })
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('option').some(o => /Decisions/i.test(o.textContent ?? '')),
+      ).toBe(true)
+    })
   })
 })

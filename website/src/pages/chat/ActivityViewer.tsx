@@ -25,6 +25,7 @@ import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
+import { CrewLogTab } from './CrewLogPanel'
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import GitPanel from '../../components/GitPanel'
@@ -34,8 +35,8 @@ import { normalizeModelKey } from '../../lib/model'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
-  tool: <Wrench size={12} className="text-amber-400" />,
-  done: <CheckCircle size={12} className="text-green-400" />,
+  tool: <Wrench size={12} className="text-warn" />,
+  done: <CheckCircle size={12} className="text-ok" />,
   error: <AlertCircle size={12} className="text-danger" />,
   stopped: <Square size={12} className="text-muted" />,
 } as const
@@ -185,6 +186,20 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
 
   const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
   const fmtElapsed = displayElapsed >= 60 ? `${Math.floor(displayElapsed / 60)}m ${displayElapsed % 60}s` : `${displayElapsed}s`
+  // A running card whose start time was only ASSUMED has no elapsed figure to
+  // show: the agent may have been running long before the frame that minted its
+  // entry, so a number here would be wrong rather than merely imprecise. A
+  // `subagent_done` or snapshot frame supplies real timing and this resolves.
+  // Withheld HERE rather than inside the line above so that line stays exactly
+  // as it was: its `m`/`s` concatenation is frozen i18n debt, and rewriting the
+  // line would move that debt onto a line this change wrote.
+  const shownElapsed = isRunning && a.startedAtAssumed ? '--' : fmtElapsed
+  // What the header calls this agent. An entry recovered from an incremental
+  // frame has no agent name, and showing nothing left two such cards reading as
+  // the same "Running Tool" with no way to tell them apart -- the same complaint
+  // the progress row had, so the same fallback answers it. This is not a redesign
+  // of the header, only a refusal to leave the recovered state anonymous.
+  const identity = a.agent || (a.id ? `agent #${a.id.slice(-6)}` : '')
 
   // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
   // narrow rail it was the part that survived truncation while the actual
@@ -221,7 +236,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       >
         <span className="shrink-0 flex items-center">{STATUS[a.status]}</span>
         <span className="text-[13px] font-semibold text-text truncate min-w-0" title={i18nT('pages.chat.activityViewer.subagent', { label: statusLabel })}>{statusLabel}</span>
-        {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={a.agent}>{a.agent}</code>}
+        {identity && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={identity}>{identity}</code>}
         {(() => {
           const resolvedKnown = !!a.model
           const display = a.model || a.requestedModel || ''
@@ -260,12 +275,14 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             </code>
           )
         })()}
-        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
+        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{shownElapsed}</span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
-      {/* Input (task) */}
-      {!collapsed && (
+      {/* Input (task). Gated on the task itself: an entry recovered from an
+          incremental frame has none, and the header over an empty block reads as
+          a task that is blank rather than one not yet known. */}
+      {!collapsed && a.task && (
         <div className="px-3 pt-1 pb-2">
           <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.input')}</div>
           <pre className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed">{a.task}</pre>
@@ -358,7 +375,7 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   return (
     <div className={`mx-2 mb-2 rounded-lg border overflow-hidden shadow-sm transition-all ${isResolved ? 'border-ok/40 bg-card' : 'border-warn/40 bg-warn/5'}`}>
       <div className="flex items-center gap-2 px-3 py-2">
-        <span className="shrink-0 flex items-center">{isResolved ? <CheckCircle size={15} className="text-green-400" /> : <Lock size={15} className="text-muted" />}</span>
+        <span className="shrink-0 flex items-center">{isResolved ? <CheckCircle size={15} className="text-ok" /> : <Lock size={15} className="text-muted" />}</span>
         <span className="text-[13px] font-semibold text-text truncate min-w-0">{isResolved ? (decisionLabel[localDecision || ''] || i18nT('pages.chat.activityViewer.resolved')) : i18nT('pages.chat.activityViewer.approval_needed')}</span>
         <span className="text-[11px] text-muted/40 font-mono ml-auto shrink-0">{fmtTime(entry.ts)}</span>
       </div>
@@ -428,7 +445,7 @@ function LinksTab({
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder={i18nT('pages.chat.activityViewer.search_files')}
-              className="w-full h-7 pl-8 pr-8 rounded-md bg-bg-elevated border border-border text-[12px] text-text placeholder:text-muted/50 focus:outline-none focus-visible:border-border-strong transition-colors"
+              className="w-full h-7 pl-8 pr-8 rounded-md bg-bg-elevated border border-border text-[12px] text-text placeholder:text-muted/50 focus:outline-hidden focus-visible:border-border-strong transition-colors"
               aria-label={i18nT('pages.chat.activityViewer.search_files')}
             />
             {query && (
@@ -485,11 +502,13 @@ export { countDiffStats }
  * a trailing external-link arrow in the row's right slot. The whole row is the
  * anchor, so any part of it opens the link in a new tab. */
 function ResourceRow({ link }: { link: ExtractedLink }) {
+  /* eslint-disable shadcn/no-unknown-classes -- shadcn-ui/lint#38: the rule reads every member of a destructured initializer as a class */
   const { Icon, colorCls } = link.type === 'cr'
     ? { Icon: GitPullRequest, colorCls: 'text-accent' }
     : link.type === 'issue'
       ? { Icon: CircleDot, colorCls: 'text-ok' }
       : { Icon: LinkIcon, colorCls: 'text-muted' }
+  /* eslint-enable shadcn/no-unknown-classes */
   const typeLabel = resourceTypeLabel(link.type)
   let host = ''
   try { host = new URL(link.url).hostname.replace(/^www\./, '') } catch { host = link.url }
@@ -744,7 +763,7 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
                 onChange={e => setLibQuery(e.target.value)}
                 placeholder={i18nT('pages.chat.activityViewer.artifacts_search_library')}
                 aria-label={i18nT('pages.chat.activityViewer.artifacts_search_library')}
-                className="w-full text-[12px] pl-7 pr-2.5 py-1.5 rounded-md bg-bg border border-border text-text placeholder:text-muted focus:outline-none focus-visible:border-accent transition-colors"
+                className="w-full text-[12px] pl-7 pr-2.5 py-1.5 rounded-md bg-bg border border-border text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent transition-colors"
               />
             </div>
             {libQuery.trim() && (
@@ -847,7 +866,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   chatMode?: string
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
-  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'links' | 'artifacts' | 'side' | 'workflows' | 'git' | 'summary' | 'pins'
+  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'crewlog' | 'context' | 'links' | 'artifacts' | 'side' | 'workflows' | 'git' | 'summary' | 'pins'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
@@ -1006,7 +1025,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="px-3 py-2 shrink-0 flex justify-center">
           <SegmentedControl
             segments={TABS}
-            value={effectiveTab === 'context' || effectiveTab === 'git' || effectiveTab === 'summary' || effectiveTab === 'pins' ? tab : effectiveTab}
+            value={effectiveTab === 'context' || effectiveTab === 'crewlog' || effectiveTab === 'git' || effectiveTab === 'summary' || effectiveTab === 'pins' ? tab : effectiveTab}
             onChange={t => { setTab(t); explicitTab.current = true; dispatch(openActivityToTab(t)) }}
             layoutId="activity-tab"
           />
@@ -1194,6 +1213,12 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           in THIS session" — Logs for the tool calls, this for the context
           that was injected around them. */}
       {effectiveTab === 'context' && <ContextBreakdownTab slot={slot} subagents={subagents} />}
+
+      {/* Crew log — the five folds over this session's append-only record. Sits
+          beside Logs and Context for the same reason they sit together: all
+          three answer "what actually happened in THIS session", this one from
+          the record the gateway wrote rather than from live client state. */}
+      {effectiveTab === 'crewlog' && <CrewLogTab key={slot} slot={slot} />}
 
       {/* Session summary — the goal-level view of this session, so returning to
           it does not mean re-reading the transcript. */}

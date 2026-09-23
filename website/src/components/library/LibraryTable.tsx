@@ -78,7 +78,7 @@ export function FolderColorSwatches({ value, onPick, size = 16 }: { value?: stri
           title={label()}
           onClick={(e) => { e.stopPropagation(); onPick(c) }}
           onPointerDown={(e) => e.stopPropagation()}
-          className={`rounded-full border cursor-pointer transition-transform hover:scale-110 ${
+          className={`rounded-full border cursor-pointer hover:brightness-125 swatch-cue ${
             value === c ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg border-transparent' : 'border-border'
           }`}
           style={{ width: size, height: size, background: c }}
@@ -92,8 +92,8 @@ export function FolderColorSwatches({ value, onPick, size = 16 }: { value?: stri
         title={i18nT('pages.artifactsPage.no_color')}
         onClick={(e) => { e.stopPropagation(); onPick('') }}
         onPointerDown={(e) => e.stopPropagation()}
-        className={`rounded-full border cursor-pointer transition-transform hover:scale-110 flex items-center justify-center text-muted bg-transparent ${
-          !value ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg border-transparent' : 'border-border'
+        className={`rounded-full border cursor-pointer hover:brightness-125 swatch-cue flex items-center justify-center text-muted bg-transparent ${
+          !value ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg border-transparent' : 'border-border hover:border-border-strong'
         }`}
         style={{ width: size, height: size }}
       >
@@ -148,7 +148,7 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
-      className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-none text-sm select-text focus-ring"
+      className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-hidden text-sm select-text focus-ring"
       {...ime.bindEnter<HTMLInputElement>({
         onFocus: (e) => (e.target as HTMLInputElement).select(),
         onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() },
@@ -471,7 +471,9 @@ export function SessionDocStar({ d, busy, onMaterialize }: { d: SessionDoc; busy
     <IconButton
       variant="accent"
       disabled={busy}
-      onClick={() => onMaterialize(d.path, d.session_key)}
+      // stopPropagation: the star sits inside rows that open the read-only
+      // preview on click — starring must not ALSO open the preview.
+      onClick={(e) => { e.stopPropagation(); onMaterialize(d.path, d.session_key) }}
       title={i18nT('pages.artifactsPage.star_creates_a_starred_artifact_from_this_docume')}
       aria-label={i18nT('pages.artifactsPage.star_document')}
       className="shrink-0"
@@ -482,12 +484,25 @@ export function SessionDocStar({ d, busy, onMaterialize }: { d: SessionDoc; busy
 }
 
 /** A single unsaved session-document row (from "your chats"). Leading star
- * materializes it into a real, starred artifact. Shares the same columns as
- * ArtifactRow so both live in one unified table. */
-export function SessionDocRow({ d, busy, onMaterialize, edgeRight = false }: { d: SessionDoc; busy: boolean; onMaterialize: (path: string, sessionKey?: string) => void; edgeRight?: boolean }) {
+ * materializes it into a real, starred artifact; clicking the row opens the
+ * read-only preview (same gesture as ArtifactRow's click-to-open). Shares the
+ * same columns as ArtifactRow so both live in one unified table. */
+export function SessionDocRow({ d, busy, onMaterialize, onPreview, edgeRight = false }: { d: SessionDoc; busy: boolean; onMaterialize: (path: string, sessionKey?: string) => void; onPreview?: (d: SessionDoc) => void; edgeRight?: boolean }) {
   const ftype = docFileType(d.path)
   return (
-    <tr className="group/docrow transition-colors hover:bg-bg-hover">
+    <tr
+      className={`group/docrow transition-colors hover:bg-bg-hover ${onPreview ? 'cursor-pointer' : ''}`}
+      onClick={onPreview ? () => onPreview(d) : undefined}
+      // Keyboard twin of the click: the row is focusable and Enter/Space open
+      // the preview. The target guard keeps keys from the nested star button
+      // (its own Enter/Space bubble up here) from ALSO opening the preview —
+      // and preventDefault on those would cancel the star's native click.
+      tabIndex={onPreview ? 0 : undefined}
+      onKeyDown={onPreview ? (e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPreview(d) }
+      } : undefined}
+    >
       <td className="px-2.5 py-2 border-b border-border text-center">
         <SessionDocStar d={d} busy={busy} onMaterialize={onMaterialize} />
       </td>
@@ -531,6 +546,7 @@ export function LibraryTable({
   pinningSlug,
   sessionDocs = [],
   onMaterialize,
+  onPreviewDoc,
   materializingPath = null,
 }: {
   items: Artifact[]
@@ -543,6 +559,8 @@ export function LibraryTable({
   pinningSlug: string | null
   sessionDocs?: SessionDoc[]
   onMaterialize?: (path: string, sessionKey?: string) => void
+  /** Row click opens the read-only session-doc preview. */
+  onPreviewDoc?: (d: SessionDoc) => void
   materializingPath?: string | null
 }) {
   // The pinned Actions column's seam is painted only while the scroller hides
@@ -559,7 +577,7 @@ export function LibraryTable({
             <ArtifactRow key={a.slug} a={a} onOpen={onOpen} onDelete={onDelete} deletingSlug={deletingSlug} onTogglePin={onTogglePin} pinningSlug={pinningSlug} edgeRight={edges.right} />
           ))}
           {onMaterialize && sessionDocs.map((d) => (
-            <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} edgeRight={edges.right} />
+            <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} onPreview={onPreviewDoc} edgeRight={edges.right} />
           ))}
         </tbody>
       </table>
@@ -632,7 +650,7 @@ export function FolderRow({ folder, folders, depth, expanded, onToggle, actions,
 /** Nested, collapsible tree table (browse mode): folders in pre-order with
  * their artifacts indented beneath, Unfiled at the end. Collapsed by default —
  * expansion is client-local (localStorage), by design (§2.5). */
-export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug, overFolderId, dragActive, sessionDocs = [], onMaterialize, materializingPath = null }: {
+export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug, overFolderId, dragActive, sessionDocs = [], onMaterialize, onPreviewDoc, materializingPath = null }: {
   items: Artifact[]
   sort: SortState
   onSort: (key: SortKey) => void
@@ -651,6 +669,8 @@ export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggl
   dragActive: boolean
   sessionDocs?: SessionDoc[]
   onMaterialize?: (path: string, sessionKey?: string) => void
+  /** Row click opens the read-only session-doc preview. */
+  onPreviewDoc?: (d: SessionDoc) => void
   materializingPath?: string | null
 }) {
   // See LibraryTable: the pinned Actions seam is gated on measured overflow,
@@ -754,7 +774,7 @@ export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggl
             />
           ))}
           {onMaterialize && sessionDocs.map((d) => (
-            <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} edgeRight={edges.right} />
+            <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} onPreview={onPreviewDoc} edgeRight={edges.right} />
           ))}
         </tbody>
       </table>

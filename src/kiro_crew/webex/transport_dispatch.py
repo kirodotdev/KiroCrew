@@ -51,7 +51,7 @@ import asyncio
 import logging
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
@@ -59,7 +59,11 @@ from kiro_crew.history import mint_row_mid, transcript_stem
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
-from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
+from kiro_crew.messaging.commands import (
+    compact_unsupported_backend,
+    compact_unsupported_reply,
+    note_user_stop,
+)
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
@@ -82,6 +86,12 @@ from kiro_crew.messaging.link import (
     seed_generation,
 )
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
+from kiro_crew.messaging.queue_drain import (
+    drain_until_quiet,
+    entry_channel,
+    register_drain,
+    tag_entry,
+)
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
@@ -141,6 +151,112 @@ _COMPACT_FAILURE_TYPES = frozenset(("failed", "timeout"))
 # An uncaptioned screenshot has no text, and a blank receipt line would read as a
 # bug rather than as "your file is waiting".
 _QUEUED_ATTACHMENT_LABEL = "(attachment)"
+
+#: This channel's name in the shared queue-drain contract
+#: (``messaging/queue_drain.py``). ONE constant, used both to tag the entries this
+#: dispatcher produces and to register its drain, because a tag that does not match the
+#: registration cannot be woken for its own entries. The neutral key those entries carry
+#: it under is defined in that module, not here: a per-module copy of the string fails
+#: silently, making this channel's entries unowned to every drain.
+_CHANNEL = "webex"
+
+#: Prefix the queued envelope fields take on a queue entry.
+_ORIGIN_PREFIX = "webex_"
+
+
+class _QueuedPlace(NamedTuple):
+    """Where one queued Webex message's reply goes, and who sent it.
+
+    Recorded per QUEUED MESSAGE and NOT inherited from the envelope that opened the
+    finished turn: under ``messaging.dm_scope = "unified"`` every allow-listed person's
+    direct room collapses onto one session key, so one queue holds messages from several
+    people, and a turn replayed under the opener's envelope answers one person's text in
+    another person's room, attributed to them.
+
+    ``room_type`` rides along because it is what ``_route_of`` reads to decide whether a
+    message routes to a person or to a space, and therefore which SESSION KEY the replay
+    resolves to. A replay that inherited the wrong one would run against a different
+    session than the one the message was queued on.
+    """
+
+    room_id: str
+    parent_id: str
+    person_email: str
+    room_type: str
+
+    @property
+    def sender_key(self) -> tuple[str, str, str]:
+        """WHO sent this and WHERE the reply goes: sender, room, and thread root.
+
+        Two entries may be collapsed into one turn exactly when all three match, because
+        one turn gets one envelope and one audited caller.
+
+        The sender is in the key, not just the conversation. A GROUP SPACE routes as
+        ``space:{room_id}``, and ``_session_key`` takes that route -- so every
+        allow-listed member of one space shares one session key and one queue under ANY
+        ``dm_scope``, not only under ``unified``. Keying on room and thread alone would
+        collapse two members' mid-turn messages into one turn, and
+        :func:`_reply_envelope` stamps the FIRST entry's email, so the second member's
+        text would run and be SEL-audited as the first member. Delivery into the shared
+        space would look right, which is what makes the misattribution the lasting half.
+
+        Room and thread stay in the key beside the sender: a different room is reachable
+        whenever a unified key puts two people on one queue, and a different thread
+        whenever ``reply_in_thread`` is on, so mixing either would answer text into a
+        conversation it did not come from.
+        """
+        return (self.person_email, self.room_id, self.parent_id)
+
+
+def _queued_place(kwargs: dict) -> _QueuedPlace | None:
+    """An owned entry's place, or None if ANOTHER channel recorded it.
+
+    Ownership is decided on the NEUTRAL channel tag, never on whether a ``webex_`` key
+    happens to be present. That distinction is the whole fix: a foreign entry carries no
+    ``webex_room_id``, and reading it with a default produced ``""`` -- which then became
+    THE room for the drained turn, so another transport's message was answered into an
+    empty room under an empty identity, and was consumed off the queue while doing it.
+
+    For an entry this channel DID record, the fields are REQUIRED: a missing key raises a
+    ``KeyError`` naming it, and an empty ``room_id`` raises too, because that is the value
+    that would address a reply at nothing. Both producers are in this module
+    (``_enqueue_with_receipt``, and the drain's own re-enqueue which passes an entry's own
+    kwargs straight back), so either is a producer bug here -- and a silent misdelivery is
+    a worse outcome than a loud failure. The queue is an in-process list on a live
+    session, so there is no entry persisted by an older build to be lenient towards.
+    """
+    if entry_channel(kwargs) != _CHANNEL:
+        return None
+    place = _QueuedPlace(
+        room_id=str(kwargs[f"{_ORIGIN_PREFIX}room_id"] or ""),
+        parent_id=str(kwargs[f"{_ORIGIN_PREFIX}parent_id"] or ""),
+        person_email=str(kwargs[f"{_ORIGIN_PREFIX}person_email"] or ""),
+        room_type=str(kwargs[f"{_ORIGIN_PREFIX}room_type"] or ""),
+    )
+    if not place.room_id:
+        raise KeyError(f"{_ORIGIN_PREFIX}room_id")
+    return place
+
+
+def _reply_envelope(inbound: "WebexInbound | None", place: _QueuedPlace) -> "WebexInbound":
+    """The envelope a drained turn answers under: the QUEUED entry's, never the opener's.
+
+    Built on *inbound* when the finished turn had one, so a field this replay does not
+    address (the spool's ``message_id``, card inputs) keeps whatever that turn carried.
+    When a PEER channel woke this drain there is no such envelope, and a bare one is
+    correct rather than a fallback: every field that addresses or attributes the reply
+    comes from *place*, and deliberately stashing a "last seen" inbound would reintroduce
+    the defect this module fixes, one channel further out.
+    """
+    base = inbound if inbound is not None else WebexInbound(person_email="", room_id="", text="")
+    return replace(
+        base,
+        room_id=place.room_id,
+        parent_id=place.parent_id,
+        person_email=place.person_email,
+        room_type=place.room_type,
+    )
+
 
 # How many conversations ``/sessions`` prints. A Webex message is byte-capped,
 # and a list longer than this stops being scannable anyway.
@@ -249,6 +365,12 @@ class WebexDispatcher:
             self, "webex", "messaging", target="transport", name="WebexDispatcher"
         )
         self._queue = ReceiptQueue()
+        # Publish this drain so a peer transport that set aside one of THIS channel's
+        # entries can wake it. Required for the set-aside to be a deferral rather than an
+        # indefinite wait: a drain otherwise runs only from the tail of its own channel's
+        # turn, so an entry another channel put back waited for this one to finish some
+        # unrelated turn, and waited forever if the user went quiet here.
+        register_drain(_CHANNEL, self._drain_queue)
         # What the newest options card offered, per conversation. Owned HERE and
         # not by the renderer: that card is the last thing a turn sends, so every
         # press arrives after the turn — and the renderer — is gone.
@@ -595,7 +717,7 @@ class WebexDispatcher:
         # drive_turn released the semaphore in its finally, so the session is free
         # and anything queued during the turn can run now.
         if drain:
-            await self._drain_queue(inbound, session_key)
+            await self._drain_queue(session_key, inbound)
 
     async def _handle_busy(
         self,
@@ -1144,6 +1266,17 @@ class WebexDispatcher:
                 # ``parent_id``, and two threads share one room id — so a room-only
                 # envelope would answer thread B inside thread A.
                 webex_parent_id=inbound.parent_id,
+                # The ROOM TYPE too: ``_route_of`` reads it to decide whether the
+                # replay routes to a person or to a space, so an entry that did not
+                # carry it could only be replayed onto the opener's routing, which is
+                # a different session key whenever the two differ.
+                webex_room_type=inbound.room_type,
+                # Which CHANNEL recorded this entry. Neutral, and splatted from the
+                # shared helper rather than written as a literal keyword, because the
+                # fields above cannot be read until ownership is known: one session key
+                # is shared by every dispatcher on the host, so this queue also holds
+                # entries no ``webex_`` field describes.
+                **tag_entry({}, _CHANNEL),
             ):
                 return False
             await self._queue.create_or_grow_locked(
@@ -1155,8 +1288,40 @@ class WebexDispatcher:
             )
             return True
 
-    async def _drain_queue(self, inbound: "WebexInbound", session_key: str) -> None:
+    async def _drain_queue(self, session_key: str, inbound: "WebexInbound | None" = None) -> None:
         """Answer everything queued during the just-finished turn.
+
+        *inbound* is the envelope whose turn just finished, and it is OPTIONAL because
+        this drain is also registered as this channel's wake target
+        (``messaging/queue_drain.py``): a peer transport sharing this queue calls it with
+        the session key alone, and then no envelope opened anything here. Nothing that
+        addresses or attributes a replay is taken from it either way -- see
+        :func:`_reply_envelope`.
+
+        An entry ANOTHER transport recorded shares this queue under a unified scope and
+        cannot be answered here at all: it carries no field this channel can address. It
+        is set aside, and because it has already been accepted and receipted, its owner's
+        drain is woken once this pump is done -- outside ``self._queue.lock``, since that
+        drain takes its own lock and runs a whole turn. See ``messaging/queue_drain.py``
+        for why the cascade terminates.
+        """
+        # The sequence -- pump, then wake outside the queue lock but INSIDE this
+        # channel's active marker, then pump again for any wake a peer could not deliver
+        # back here -- lives in the shared module, because all four drains need exactly
+        # it and getting the order wrong has no local symptom.
+        await drain_until_quiet(
+            channel=_CHANNEL,
+            session_key=session_key,
+            pump=lambda foreign: self._pump_queue(session_key, inbound, foreign),
+        )
+
+    async def _pump_queue(
+        self,
+        session_key: str,
+        inbound: "WebexInbound | None",
+        foreign_channels: set[str],
+    ) -> None:
+        """The collapse-and-answer loop itself. See :meth:`_drain_queue`.
 
         Collapses up to ``_MAX_COLLAPSE`` messages into ONE combined turn (order
         preserved, blank-line joined) rather than replaying each separately, and
@@ -1165,30 +1330,51 @@ class WebexDispatcher:
         Iterates rather than recurses: one burst can span several capped turns,
         and a deferred message must drain in THIS pump rather than waiting for
         unrelated future input.
+
+        Split out so the peer wake has ONE exit point to run after: this loop returns
+        from several places, and a wake that some of them skipped is the defect it exists
+        to close.
         """
         while True:
             texts: list[str] = []
             files: list[str] = []
             remainder: list[tuple[str, str, dict]] = []
-            # The CONVERSATION this drained turn answers into: room AND thread
-            # root, because that pair is what the reply envelope carries. Taken
-            # from the FIRST entry rather than from *inbound*, whose turn may have
-            # been opened by another person (a shared unified key puts two humans
-            # on one queue) or in another thread.
-            convo: tuple[str, str] | None = None
-            email = ""
+            # The PLACE this drained turn answers into, taken from the first entry it
+            # collapses rather than from *inbound*, whose turn may have been opened by
+            # another person (a shared unified key puts two humans on one queue), in
+            # another thread, or on another transport entirely.
+            place: _QueuedPlace | None = None
+            # Latched the moment one owned entry does not fit, so everything behind it
+            # defers too and the queue keeps exact arrival order. Mirrors the other three
+            # drains; see the collapse test below for what its absence costs.
+            defer_rest = False
             async with self._queue.lock:
                 while True:
                     item = self.sessions.dequeue(session_key)
                     if item is None:
                         break
-                    item_convo = (
-                        str(item[2].get("webex_room_id") or ""),
-                        str(item[2].get("webex_parent_id") or ""),
-                    )
-                    if convo is None:
-                        convo = item_convo
-                        email = str(item[2].get("webex_person_email") or "")
+                    item_place = _queued_place(item[2])
+                    if item_place is None:
+                        # ANOTHER transport recorded this entry, so it is not this
+                        # dispatcher's to answer -- it holds no address this channel can
+                        # reach. Set aside for its own channel's drain WITHOUT blocking
+                        # the rest: this channel's own queue must not wait behind a
+                        # foreign entry, which would strand it whenever that transport
+                        # sends nothing further. Remember WHOSE it is: the entry was
+                        # already accepted and receipted, so its owner is woken once this
+                        # pump is done.
+                        #
+                        # Reading it as this channel's own was the defect. The room
+                        # defaulted to "" and, being the first entry read, became THE
+                        # room for the whole turn -- so another transport's message was
+                        # answered into an empty room under an empty identity, and was
+                        # consumed off the queue in the process rather than set aside.
+                        remainder.append(item)
+                        foreign_channels.add(entry_channel(item[2]))
+                        continue
+                    item_sender = item_place.sender_key
+                    if place is None:
+                        place = item_place
                     # Collapse only messages from the SAME conversation -- same
                     # room AND same thread root. One combined turn gets ONE
                     # envelope, so mixing either would answer text into a chat or a
@@ -1198,7 +1384,18 @@ class WebexDispatcher:
                     # else defers itself AND everything behind it, so FIFO stays
                     # exact and the outer loop drains it next as its own turn in its
                     # own envelope.
-                    if len(texts) < _MAX_COLLAPSE and item_convo == convo:
+                    #
+                    # ``defer_rest`` is what makes that last sentence true. Without it
+                    # the test is re-applied per entry, so A/B/A lets A's later message
+                    # match ``place.sender_key`` again and join A's turn -- answered
+                    # AHEAD of a B that arrived before it. Matching the sender and the
+                    # room is not enough; the entry must also be reached before anything
+                    # was set aside.
+                    if (
+                        not defer_rest
+                        and len(texts) < _MAX_COLLAPSE
+                        and item_sender == place.sender_key
+                    ):
                         texts.append(item[1])
                         # Collapsed messages contribute their attachments too, in
                         # order, so a burst of "here, and here" screenshots all
@@ -1207,20 +1404,39 @@ class WebexDispatcher:
                     else:
                         # Once one message does not fit, defer it AND
                         # everything behind it, so queue order stays exact.
+                        defer_rest = True
                         remainder.append(item)
+                # ``own_deferred`` and NOT ``len(remainder)``: that also counts
+                # entries from a DIFFERENT conversation and entries another TRANSPORT
+                # recorded, each of which drains in its own turn in its own room.
+                # Showing those here would promise this sender a follow-up for messages
+                # they never sent.
+                own_deferred = 0
                 for _ts, rtext, rkw in remainder:
+                    r_place = _queued_place(rkw)
+                    if (
+                        r_place is not None
+                        and place is not None
+                        and r_place.sender_key == place.sender_key
+                    ):
+                        own_deferred += 1
                     # ``**rkw`` and not a bare re-enqueue: a deferred entry must
                     # keep its attachments, or a burst past the collapse cap
                     # silently loses the files of everything after the cap.
                     self.sessions.enqueue(session_key, str(time.time()), rtext, force=True, **rkw)
-                if texts:
+                if texts and place is not None:
+                    # Addressed to the DRAINED entry's room, not the opener's: the
+                    # receipt bubble was posted into the room of whoever queued first,
+                    # and ``edit_receipt`` carries the room id, so editing it under the
+                    # opener's address reaches a different room where that message id
+                    # does not exist.
                     await self._queue.flip_answering_locked(
                         session_key,
-                        self._receipt_surface(inbound),
+                        self._receipt_surface(_reply_envelope(inbound, place)),
                         texts,
-                        len(remainder),
+                        own_deferred,
                     )
-            if not texts:
+            if not texts or place is None:
                 return
             if remainder:
                 logger.debug(
@@ -1244,12 +1460,9 @@ class WebexDispatcher:
             # different room. Falls back to *inbound* only when an entry predates
             # this field (a queue persisted by an older build).
             drained = replace(
-                inbound,
+                _reply_envelope(inbound, place),
                 text="\n\n".join(texts),
                 file_urls=tuple(files),
-                room_id=(convo[0] if convo and convo[0] else inbound.room_id),
-                parent_id=(convo[1] if convo else inbound.parent_id),
-                person_email=email or inbound.person_email,
             )
             # interpret_commands=False: drained payloads are pure turn content, so
             # a queued "/new" must reach the model as literal text rather than
@@ -1269,6 +1482,10 @@ class WebexDispatcher:
         so it stays snappy.
         """
         session_key = self._session_key(_route_of(inbound))
+        # Recorded before the busy check, so a Stop landing while the session is
+        # between an abandoned attempt and its replay still counts (see
+        # ``note_user_stop``).
+        note_user_stop(self.sessions, session_key)
         cancelled_turn = False
         if self.sessions.is_busy(session_key):
             provider = self.sessions.get_provider(session_key)

@@ -6,6 +6,7 @@ import json
 import math
 import struct
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,7 +15,8 @@ from member_memory_helpers import declare_v2_store
 from kiro_crew import memory_edit, memory_stores, memory_v2
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.history_consolidation import HistoryConsolidator
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
+from kiro_crew.vector_memory_constants import _MAX_EPISODIC_RETIRED_PER_WRITE
 
 
 @pytest.fixture
@@ -22,10 +24,11 @@ def stores(tmp_path, monkeypatch):
     root = tmp_path / "memory_stores"
     monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
     directory = declare_v2_store(tmp_path, "member-alice")
-    v2 = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=2)
+    v2 = open_member_database(
+        directory / "memory.db", member_id="alice", store_id="member-alice", embedding_dim=2
+    )
     v1 = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
-    for store in (v1, v2):
-        store.init()
+    v1.init()
     try:
         yield v1, v2
     finally:
@@ -423,15 +426,65 @@ def test_restored_episode_returns_to_warm_recall(stores, monkeypatch, accelerato
     assert {row["id"] for row in after} == {restored, survivor}
 
 
-def test_v1_retirement_keeps_pre_feature_unbounded_contract(stores):
+def test_v1_retirement_is_capped_at_the_same_ceiling_as_v2(stores):
+    """Five literal matches, three tombstones: the ceiling is shared, the audit shape is not.
+
+    Every candidate matches the text fallback, so an uncapped rule would take all
+    five. The two survivors are the safe direction (a stale episode is outranked, a
+    wrongly retired one is invisible). V1's ``conflict_retire`` rows keep their
+    original ``new_value=None`` shape so the retired-episodes listing is unchanged.
+    """
     v1, _ = stores
     for index in range(5):
         episode(v1, f"Deployment {index}: color: red.")
     v1._retire_stale_episodic("pref.color", "red")
-    assert v1.get_episodic_list() == []
+    assert len(v1.get_episodic_list()) == 5 - _MAX_EPISODIC_RETIRED_PER_WRITE
     events = [e for e in v1.get_events() if e["event_type"] == "conflict_retire"]
-    assert len(events) == 5
+    assert len(events) == _MAX_EPISODIC_RETIRED_PER_WRITE
     assert all(e["new_value"] is None for e in events)
+
+
+def test_v1_vector_arm_and_text_fallback_share_one_budget(stores):
+    """Two arms, one ceiling: the fallback gets only what the vector arm left.
+
+    Two rephrased episodes clear cosine 0.7 but carry no literal phrase, and three
+    literal episodes score nothing. A per-arm cap would retire 2 + 3; the shared
+    budget retires 2 + 1.
+    """
+    v1, _ = stores
+    rephrased = [
+        episode(v1, "The user went with a crimson theme."),
+        episode(v1, "Crimson stayed the chosen palette."),
+    ]
+    literal = [episode(v1, f"Deployment {index}: color: red.") for index in range(3)]
+    pooled = [dict(r, cosine_sim=0.9) for r in v1.get_episodic_list() if r["id"] in rephrased]
+    with mock.patch.multiple(
+        v1,
+        _try_embed=mock.Mock(return_value=[1.0, 0.0]),
+        search_episodic=mock.Mock(return_value=pooled),
+    ):
+        v1._retire_stale_episodic("pref.color", "red")
+    alive = {r["id"] for r in v1.get_episodic_list()}
+    assert len(alive) == 5 - _MAX_EPISODIC_RETIRED_PER_WRITE
+    assert not (alive & set(rephrased)), "the vector arm spends its share first"
+    assert len(alive & set(literal)) == len(literal) - (_MAX_EPISODIC_RETIRED_PER_WRITE - 2)
+
+
+def test_v1_rewrite_of_an_identical_value_retires_nothing(stores):
+    """Reaffirming a fact supersedes nothing, so the episodes restating it stay.
+
+    The same key then changes value, which proves the guard narrowed the trigger to
+    real supersession rather than switching retirement off on V1.
+    """
+    v1, _ = stores
+    assert v1.set_semantic("pref.color", "red", 1.0, "user_explicit") is None
+    target = episode(v1, "The selected color: red for deployment.")
+    assert v1.set_semantic("pref.color", "red", 1.0, "user_explicit") is None
+    assert target in {r["id"] for r in v1.get_episodic_list()}
+    assert [e for e in v1.get_events() if e["event_type"] == "conflict_retire"] == []
+
+    assert v1.set_semantic("pref.color", "blue", 1.0, "user_explicit") is None
+    assert target not in {r["id"] for r in v1.get_episodic_list()}
 
 
 def test_reaffirming_a_v2_fact_does_not_retire_its_evidence(stores):

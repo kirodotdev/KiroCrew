@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from kiro_crew import __version__, code_fingerprint, platform_compat, release_channel
 from kiro_crew.cloud import aws, sizes
 from kiro_crew.deploy import profiles as profiles_mod
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
 
 logger = logging.getLogger(__name__)
@@ -72,9 +75,9 @@ _POLL_TIMEOUT = 60
 # Cap at 51 chars: the template names the IAM role/instance-profile
 # `kirocrew-ec2-${StackTag}` (13-char prefix), and IAM role names max out at 64,
 # so 13 + 51 = 64. A longer tag would fail role creation at deploy time.
-_TAG_RE = re.compile(r"^[a-zA-Z0-9-]{1,51}$")
+_TAG_RE = re.compile(r"^[a-zA-Z0-9-]{1,51}\Z")
 _TAG_SPEC = FieldSpec(name="tag", type=str, max_len=51, pattern=_TAG_RE)
-_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
+_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+\Z")
 _REGION_SPEC = FieldSpec(name="region", type=str, max_len=32, pattern=_REGION_RE)
 # The profile charset ('+' admitted for IAM Identity Center derived names,
 # leading '-' excluded so a value is never option-shaped, \Z anchor)
@@ -82,18 +85,27 @@ _REGION_SPEC = FieldSpec(name="region", type=str, max_len=32, pattern=_REGION_RE
 # (same idiom as deploy/handlers.py; cloud/ already depends on deploy via the
 # shared aws-bin resolver in cloud/aws.py).
 _PROFILE_SPEC = profiles_mod.PROFILE_SPEC
-_CIDR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$")
+_CIDR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}\Z")
 _CIDR_SPEC = FieldSpec(name="allow_ssh_cidr", type=str, max_len=18, pattern=_CIDR_RE)
 # repo/ref reach a `git clone --branch '<ref>' '<repo>'` in the instance
 # UserData; charset-validate them so a crafted value can't break out of the
 # single quotes and run as root on the box (defense in depth even though these
 # are not CLI-wired today).
-_REPO_RE = re.compile(r"^[A-Za-z0-9_.:/@+-]{1,255}$")
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.:/@+-]{1,255}\Z")
 _REPO_SPEC = FieldSpec(name="repo", type=str, max_len=255, pattern=_REPO_RE)
-_REF_RE = re.compile(r"^[A-Za-z0-9_./-]{1,128}$")
+_REF_RE = re.compile(r"^[A-Za-z0-9_./-]{1,128}\Z")
 _REF_SPEC = FieldSpec(name="ref", type=str, max_len=128, pattern=_REF_RE)
+#: Where the template's public-repo fallback clones from when no ``repo`` is
+#: passed: the ``KirocrewRepo`` default of ``kirocrew-ec2.yaml``, spelled here
+#: too because the release-tag probe below must ask the SAME remote the
+#: instance will clone (``test_cloud_ec2.py`` pins the two spellings together).
+PUBLIC_REPO_URL = "https://github.com/kirodotdev/KiroCrew.git"
+#: Budget for one ``git ls-remote`` round trip to that remote. A launch already
+#: waits minutes on CloudFormation, so a slow answer costs little; a hung one
+#: must not hang the launch, and a miss is never worse than today's ``main``.
+_REF_PROBE_TIMEOUT_SECONDS = 15.0
 # EC2 subnet ids are `subnet-` + 8 (EC2-Classic era) or 17 hex chars.
-_SUBNET_ID_RE = re.compile(r"^subnet-[0-9a-f]{8,17}$")
+_SUBNET_ID_RE = re.compile(r"^subnet-[0-9a-f]{8,17}\Z")
 _SUBNET_ID_SPEC = FieldSpec(name="subnet_id", type=str, max_len=24, pattern=_SUBNET_ID_RE)
 
 
@@ -235,9 +247,7 @@ def _zone_shadows_host(zone: str, host: str) -> bool:
     return host == zone or host.endswith("." + zone)
 
 
-def shadowed_download_hosts(
-    vpc_id: str, profile: str, region: str
-) -> list[tuple[str, str]]:
+def shadowed_download_hosts(vpc_id: str, profile: str, region: str) -> list[tuple[str, str]]:
     """``(host, zone)`` pairs where a private hosted zone hides a download host.
 
     An interface VPC endpoint with private DNS enabled creates a private hosted
@@ -309,9 +319,7 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
     )
 
 
-def discover_network(
-    profile: str, region: str, instance_type: str = ""
-) -> tuple[str, str, str]:
+def discover_network(profile: str, region: str, instance_type: str = "") -> tuple[str, str, str]:
     """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
 
     ``egress_kind`` is ``"nat"`` or ``"igw"`` — the caller uses it to decide
@@ -522,6 +530,105 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
     return result
 
 
+def release_tag_exists(ref: str, repo: str = "") -> bool:
+    """Whether ``repo`` (default: the public repo) carries the tag ``ref``.
+
+    One ``git ls-remote --exit-code`` against the remote, with a short timeout,
+    run from the trusted git's own directory rather than the gateway's working
+    directory: the gateway may be sitting inside a repository the agent can
+    write to, and a ``.git/config`` there (``url.*.insteadOf`` onto an
+    ``ext::`` transport) would otherwise decide
+    what the probe runs. Repository-local config has no env switch — git finds
+    it by walking up from ``cwd`` — so ``GIT_CEILING_DIRECTORIES`` names that
+    same directory and the walk never climbs past it; the only ``.git/config``
+    git could then honour sits where the agent cannot write. Everything the
+    environment CAN switch off (inherited ``GIT_*``, global and system config,
+    the credential prompt) is :func:`code_fingerprint.hardened_git_env`, the
+    gateway's one hardened-git recipe. ``git`` itself comes from
+    :func:`platform_compat.trusted_git_bin`, never a bare ``PATH`` lookup: the
+    gateway's ``PATH`` can lead with an agent-writable directory, and a shim
+    there would run with the gateway's privileges on every packaged launch.
+    Any way of not getting a definite "yes" — no trusted ``git`` on this
+    machine, no network, a 128 from the remote, a timeout — answers ``False``:
+    the caller then keeps the template default rather than asking the instance
+    to clone a tag that may not be there, which would fail the boot inside the
+    stack.
+    """
+    git = platform_compat.trusted_git_bin()
+    if git is None:
+        logger.warning(
+            "no trusted git on this machine; cannot probe %s for tag %s",
+            repo or PUBLIC_REPO_URL,
+            ref,
+        )
+        return False
+    argv = [
+        git,
+        "ls-remote",
+        "--exit-code",
+        "--tags",
+        "--",
+        repo or PUBLIC_REPO_URL,
+        f"refs/tags/{ref}",
+    ]
+    trusted_dir = Path(git).resolve().parent
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=trusted_dir,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_REF_PROBE_TIMEOUT_SECONDS,
+            env=code_fingerprint.hardened_git_env(GIT_CEILING_DIRECTORIES=str(trusted_dir)),
+            check=False,
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("could not probe %s for tag %s: %s", repo or PUBLIC_REPO_URL, ref, exc)
+        return False
+    if proc.returncode != 0:
+        logger.warning(
+            "tag %s not found on %s (git ls-remote exit %d)",
+            ref,
+            repo or PUBLIC_REPO_URL,
+            proc.returncode,
+        )
+        return False
+    return True
+
+
+def resolve_public_ref(repo: str = "") -> str:
+    """The git ref the public-repo clone should install for THIS build.
+
+    The template's ``KirocrewRef`` defaults to ``main``, which is right for a
+    checkout that ships its own source and wrong for a packaged install: the
+    instance then runs whatever ``main`` is while this machine runs a release,
+    and ``remote_relay.ensure_version_parity`` refuses every session between
+    them on ``major.minor``. So a packaged install pins the first release tag
+    its own version names (:func:`release_channel.release_refs`, likeliest
+    first) that the remote confirms it has. Returns ``""`` — "let the template
+    default stand" — when no tag maps onto the version (a nightly) or the
+    remote carries none of them (a fork, a build stamped before its tag was
+    pushed, no network from here); the WARNING says which, and the launch
+    proceeds exactly as it does today.
+    """
+    refs = release_channel.release_refs()
+    if not refs:
+        logger.warning(
+            "no release tag maps onto Kiro Crew %s; the instance will run main", __version__
+        )
+        return ""
+    for ref in refs:
+        if release_tag_exists(ref, repo):
+            return ref
+    logger.warning(
+        "no release tag %s for Kiro Crew %s; the instance will run main",
+        " / ".join(refs),
+        __version__,
+    )
+    return ""
+
+
 def build_deploy_argv(
     *,
     tag: str,
@@ -626,6 +733,14 @@ def deploy(
         ship_source = source_mod.find_repo_root() is not None
         if not ship_source:
             logger.info("no checkout found; the instance will clone the public repo")
+    # A public-repo clone with no explicit ref would install the template's
+    # `main`; pin this build's release tag instead so the instance can talk to
+    # this machine. The dry run stays offline (the probe is a network round
+    # trip), so its argv shows the ref only when the caller passed one.
+    if not ship_source and not ref and not dry_run:
+        ref = resolve_public_ref(repo)
+        if ref:
+            logger.info("the instance will install release tag %s", ref)
 
     if dry_run:
         # For the dry run we can't hit AWS for the VPC or account id, so show
@@ -689,9 +804,7 @@ def deploy(
                 subnet_id, profile, region, tier.instance_type
             )
         else:
-            vpc_id, subnet_id, egress_kind = discover_network(
-                profile, region, tier.instance_type
-            )
+            vpc_id, subnet_id, egress_kind = discover_network(profile, region, tier.instance_type)
         # Both paths above settle on a VPC; check the resolver BEFORE provisioning
         # anything. A private hosted zone that shadows a download host makes the
         # bootstrap fail deterministically minutes later, blaming the wrong layer.

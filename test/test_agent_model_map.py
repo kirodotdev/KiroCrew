@@ -88,7 +88,7 @@ def test_sensitive_denial_preserves_caller_attribution(tmp_path, monkeypatch):
     security_log = MagicMock()
     monkeypatch.setattr(
         agent_discovery,
-        "is_sensitive_path",
+        "is_sensitive_canonical_path",
         lambda path: str(target) in str(path),
     )
     monkeypatch.setattr(agent_discovery, "_sel", lambda: security_log)

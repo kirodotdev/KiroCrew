@@ -270,7 +270,7 @@ class TestUncProbeGate:
 
     def test_attacker_host_is_refused(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            "kiro_crew.config.paths.data_home", lambda: tmp_path / "home"
+            "kiro_crew.config.paths.peek_data_home", lambda: tmp_path / "home"
         )
         assert hooks.unc_probe_allowed(r"\\evil\share\x.png") is False
         assert hooks.unc_probe_allowed("//evil/share/x.png") is False
@@ -278,7 +278,7 @@ class TestUncProbeGate:
     def test_unc_under_a_unc_data_home_is_allowed(self, monkeypatch):
         """Roaming profile: the data home ITSELF is a UNC share."""
         monkeypatch.setattr(
-            "kiro_crew.config.paths.data_home",
+            "kiro_crew.config.paths.peek_data_home",
             lambda: Path(r"\\fileserver\home\me\.kiro\crew"),
         )
         allowed = hooks.unc_probe_allowed(
@@ -296,7 +296,7 @@ class TestUncProbeGate:
 
     def test_sibling_share_on_same_server_is_refused(self, monkeypatch):
         monkeypatch.setattr(
-            "kiro_crew.config.paths.data_home",
+            "kiro_crew.config.paths.peek_data_home",
             lambda: Path(r"\\fileserver\home\me\.kiro\crew"),
         )
         if os.name == "nt":
@@ -314,7 +314,7 @@ class TestUncProbeGate:
 
     def _patch_roots(self, monkeypatch, tmp_path, agents_dir):
         """Local data home + the given agents dir, isolating the new root."""
-        monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: tmp_path / "home")
+        monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", lambda: tmp_path / "home")
         monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
 
     def test_unc_kiro_agents_dir_is_allowed(self, monkeypatch, tmp_path):
@@ -363,7 +363,7 @@ class TestUncProbeGate:
 
         monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", boom)
         monkeypatch.setattr(
-            "kiro_crew.config.paths.data_home",
+            "kiro_crew.config.paths.peek_data_home",
             lambda: Path("//fileserver/home/me/.kiro/crew"),
         )
         assert hooks.unc_probe_allowed("//fileserver/home/me/.kiro/crew/uploads/x.png") is True
@@ -381,10 +381,36 @@ class TestUncProbeGate:
             calls.append(1)
             return Path(self._UNC_KIRO_HOME + "/agents")
 
-        monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: tmp_path / "home")
+        monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", lambda: tmp_path / "home")
         monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", counting_agents_dir)
         assert hooks.unc_probe_allowed(self._UNC_KIRO_HOME + "/agents/foo.json") is True
         assert hooks.unc_probe_allowed(self._UNC_KIRO_HOME + "/agents/bar.json") is True
+        assert hooks.unc_probe_allowed("//evil/share/x.png") is False
+        assert len(calls) == 1
+
+    def test_data_home_is_resolved_once_per_configuration(self, monkeypatch, tmp_path):
+        """The data home is the OTHER resolving root, and it needs the same memo.
+
+        ``data_home()`` is cheap only on its default-home branch. With
+        ``KIROCREW_HOME`` set it calls ``_valid_override_home()`` first, on
+        every call, which does ``Path(override).expanduser().resolve()`` --
+        and a roaming profile is precisely when that override names a share, so
+        the per-check cost is an SMB round-trip. ``config_dir()``'s own memo
+        does not cover it: that memo sits behind the predicate.
+
+        Same contract as the agents root above, asserted the same way: the
+        accessor is consulted once per configuration, not once per check.
+        """
+        calls: list[int] = []
+
+        def counting_data_home():
+            calls.append(1)
+            return Path(self._UNC_KIRO_HOME + "/crew")
+
+        monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", counting_data_home)
+        monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: tmp_path / "agents")
+        assert hooks.unc_probe_allowed(self._UNC_KIRO_HOME + "/crew/uploads/a.png") is True
+        assert hooks.unc_probe_allowed(self._UNC_KIRO_HOME + "/crew/uploads/b.png") is True
         assert hooks.unc_probe_allowed("//evil/share/x.png") is False
         assert len(calls) == 1
 
@@ -398,7 +424,7 @@ class TestUncProbeGate:
             calls.append(1)
             raise RuntimeError("no usable home")
 
-        monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: tmp_path / "home")
+        monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", lambda: tmp_path / "home")
         monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", boom)
         assert hooks.unc_probe_allowed("//evil/share/x.png") is False
         assert hooks.unc_probe_allowed("//evil/share/y.png") is False

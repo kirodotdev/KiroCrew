@@ -32,6 +32,7 @@ const STATUS_LABEL_KEY = {
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { editableEventTarget } from '../../utils/editableTarget'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
 const TABS = ['list', 'graph', 'sources', 'settings'] as const
@@ -380,9 +381,12 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      // Composed-path aware: the caret may sit in a shadow-root editor whose
+      // events are retargeted to a plain host element by the time they arrive.
+      const editable = editableEventTarget(e)
+      if (editable) {
         if (e.key === 'Escape') {
-          (target as HTMLInputElement).blur()
+          editable.blur()
           e.preventDefault()
         }
         return

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from kiro_crew.stt import engine as engine_mod
-from kiro_crew.stt import models
+from kiro_crew.stt import models, telemetry
 from kiro_crew.stt.engine import LoadedKey
 from kiro_crew.stt.hallucinations import filter_hallucinations
 from kiro_crew.stt.limits import DEFAULT_PARTIAL_INTERVAL_MS, MIN_PARTIAL_INTERVAL_MS
@@ -392,7 +392,11 @@ class LocalSession:
             return []
         try:
             text = await self._engine.decode(
-                _padded(phrase), superseding=True, expect=self._key, abort_if=self._partial_obsolete
+                _padded(phrase),
+                superseding=True,
+                expect=self._key,
+                abort_if=self._partial_obsolete,
+                kind=telemetry.KIND_PARTIAL,
             )
         except engine_mod.DecodeFailed as exc:
             # A partial is cosmetic and the next one is moments away, so one failed
@@ -473,7 +477,7 @@ class LocalSession:
             return SttEvent(KIND_FINAL, text="", audio_end_sample=audio_end_sample)
         padded = _padded(audio)
         try:
-            text = await self._engine.decode(padded, expect=self._key)
+            text = await self._engine.decode(padded, expect=self._key, kind=telemetry.KIND_FINAL)
             if not text and self._engine.loaded_key != self._key:
                 # The engine refuses a decode whose model was replaced by a concurrent
                 # session (an operator changing `stt.model` mid-meeting is enough), and
@@ -490,7 +494,9 @@ class LocalSession:
                 if not result.ok:
                     return SttEvent(KIND_ERROR, text=result.detail, code=result.code)
                 self._key = self._engine.loaded_key
-                text = await self._engine.decode(padded, expect=self._key)
+                text = await self._engine.decode(
+                    padded, expect=self._key, kind=telemetry.KIND_FINAL
+                )
         except engine_mod.DecodeFailed as exc:
             # The one decode whose failure the user has to be told about: this is the
             # text they keep. Reported as an `error` event rather than an empty final
@@ -530,7 +536,11 @@ class LocalSession:
             return False
         try:
             text = await self._engine.decode(
-                _padded(phrase), superseding=True, expect=self._key, abort_if=self._partial_obsolete
+                _padded(phrase),
+                superseding=True,
+                expect=self._key,
+                abort_if=self._partial_obsolete,
+                kind=telemetry.KIND_PHRASE_COMMIT,
             )
         except engine_mod.DecodeFailed as exc:
             # Display-only text, so the same trade as a partial: skip this phrase and
@@ -587,12 +597,17 @@ async def transcribe_pcm(
     padded = _padded(pcm)
     expected = eng.loaded_key
     try:
-        text = await eng.decode(padded, expect=expected)
+        # Labelled `batch`, not `final`: this is one whole recording decoded once,
+        # with no partials before it and no phrase commits, so averaging it into the
+        # live path's finals would flatter a number the live path never achieves.
+        # Telling them apart is what lets a diagnostic answer "is dictation slow, or
+        # is this host slow" separately for the two entry points.
+        text = await eng.decode(padded, expect=expected, kind=telemetry.KIND_BATCH)
         if not text and eng.loaded_key != expected:
             result = await eng.ensure_loaded(model_name, language)
             if not result.ok:
                 return "", result
-            text = await eng.decode(padded, expect=eng.loaded_key)
+            text = await eng.decode(padded, expect=eng.loaded_key, kind=telemetry.KIND_BATCH)
     except engine_mod.DecodeFailed as exc:
         # Reported through the Availability this function already returns, so the batch
         # caller's existing "unavailable" branch names the real reason instead of

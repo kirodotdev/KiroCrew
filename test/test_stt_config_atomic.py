@@ -72,17 +72,25 @@ async def test_put_blocks_on_config_lock() -> None:
 @pytest.mark.asyncio
 async def test_put_offloads_atomic_write(monkeypatch) -> None:
     """A slow fsync-backed write must not run on the gateway event loop."""
-    import kiro_crew.agent as agent_mod
+    import kiro_crew.config.loader as loader
+
+    # Land the one-time boot migrations before recording starts: ``load()``
+    # persists them inline on whatever thread calls it, and this test is about
+    # the handler's own write, not the loader's.
+    config_path().write_text("{}", encoding="utf-8")
+    loader.KiroCrewConfig.load()
 
     event_loop_thread = threading.get_ident()
     write_threads: list[int] = []
-    original_write = agent_mod._atomic_json_write
+    original_write = loader.write_config_atomically
 
-    def recording_write(path, data) -> None:
+    def recording_write(path, data, **kw) -> None:
         write_threads.append(threading.get_ident())
-        original_write(path, data)
+        original_write(path, data, **kw)
 
-    monkeypatch.setattr(agent_mod, "_atomic_json_write", recording_write)
+    # The PUT writes through ``update_config_locked``, whose file write is the
+    # loader's ``write_config_atomically``.
+    monkeypatch.setattr(loader, "write_config_atomically", recording_write)
 
     resp = await core.api_stt_config(_put({"language_code": "it-IT"}))
 

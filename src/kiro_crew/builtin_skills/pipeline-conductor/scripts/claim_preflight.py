@@ -61,19 +61,20 @@ Exit codes (the conductor branches on these):
 
 The five checks, all of them, every call:
 
-  1. ``open_prs``      open PRs referencing the item, FORK PRs included, with
-                       ``is_cross_repository`` and author per hit, plus
-                       ``untrusted_fork`` when a cross-repository PR's author
-                       has no standing. That last one changes no verdict: it
-                       makes the suppression LOUD, because opening a fork PR
+  1. ``open_prs``      open PRs referencing the item, FORK PRs included, each
+                       annotated ``closes_item`` by a closing keyword aimed at
+                       this item, with ``is_cross_repository`` and author per
+                       hit, plus ``untrusted_fork`` when a cross-repository PR's
+                       author has no standing. That last one changes no verdict:
+                       it makes the suppression LOUD, because opening a fork PR
                        needs no permission and a silent SKIP anybody can cause
                        is how an item leaves the queue with nobody told.
   2. ``merged_prs``    MERGED PRs referencing the item, each annotated
                        ``landed`` by ``git merge-base --is-ancestor`` and
-                       ``closes_item`` by a closing keyword aimed at this item.
-                       BOTH are load-bearing: a PR merged somewhere other than
-                       the branch a worker would start from is not coverage, and
-                       a PR that merely MENTIONS the item is not closure.
+                       ``closes_item`` by the same keyword read. BOTH are
+                       load-bearing: a PR merged somewhere other than the branch
+                       a worker would start from is not coverage, and a PR that
+                       merely MENTIONS the item is not closure.
   3. ``prose_claim``   the body and the NEWEST human comment, scanned for
                        self-claim phrases and for closure requests — over what
                        the author SAYS, with code fences, backtick spans,
@@ -102,10 +103,13 @@ Verdict precedence, first match wins (see :func:`verdict`, a pure function of
 the checks dict so every branch is unit-testable with no forge access):
 
   1. ``merged_prs`` LANDED and CLOSES it       → CLOSE ``already-fixed``
-  2. any ``open_prs`` entry                  → SKIP  ``open-pr``, marked
+  2. an ``open_prs`` entry that CLOSES it    → SKIP  ``open-pr``, marked
                                                ``untrusted-fork`` at
                                                ``risk=high`` when the PR is an
-                                               unvouched fork
+                                               unvouched fork. An entry that only
+                                               MENTIONS the item does not
+                                               suppress: it falls through and
+                                               forces ``risk=high``
   3. ``prose_claim.closure_requested``       → REVIEW ``reporter-asked-close``
                                                at ``risk=high``
   4. ``prose_claim.claimed_by_other``        → SKIP  ``prose-claim``
@@ -113,8 +117,9 @@ the checks dict so every branch is unit-testable with no forge access):
   6. any check errored                       → UNKNOWN
   7. otherwise                               → CLAIM, annotated with ``risk``,
                                                which an UNCORROBORATED absent
-                                               symbol or an UNAUTHORIZED claim
-                                               forces to ``high``
+                                               symbol, an UNAUTHORIZED claim, or
+                                               a MENTION-ONLY open PR forces to
+                                               ``high``
 
 Rule 3 is the one verdict here that is read out of HAND-WRITTEN ENGLISH, which is
 why it is REVIEW and not CLOSE. CLOSE is the strongest response this script has,
@@ -134,6 +139,14 @@ Rules 2, 3 and 4 all suppress work on evidence anybody can manufacture, and all
 answer it the same way rather than by refusing to look: the finding stands, and
 the doubt is published alongside it. A verdict that acts while doubting has to
 say so, or the doubt is only in this docstring.
+
+The mention-only open PR is that rule run backwards, and it owes the same debt. A
+reference with no closing keyword is the weaker evidence, so rule 2 DECLINES to
+suppress — but a bare reference can still be work in flight whose author never
+spelled a keyword, so declining silently would trade one blind spot for another.
+The finding is published as ``open_pr_mention_only`` and forces ``risk=high``,
+which routes the item to the live recheck instead of the batch. A verdict that
+declines while doubting has to say so too.
 
 Note that 6 sits BELOW the positive findings on purpose: a definite answer to
 one question outranks a partial view of another, and no error path can reach
@@ -167,6 +180,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -308,11 +322,14 @@ ACTIVE_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR
 #: channel the self-claim path already refuses to open.
 INSIDER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
-#: GitHub's closing keywords. A merged PR is coverage only if it CLAIMS to close
-#: the item; a bare cross-reference ("see #123", "related to #123") is a mention
-#: and decides nothing. Deliberately negation-blind, matching GitHub's own
-#: parser: "does not close #123" links and closes #123 there too, so treating it
-#: as a claim keeps this script's reading and the forge's reading identical.
+#: GitHub's closing keywords. A PR is coverage only if it CLAIMS to close the
+#: item; a bare cross-reference ("see #123", "related to #123", "Refs #123") is a
+#: mention and decides nothing. Read on BOTH the merged and the open side, from
+#: the same title-and-body text, because the question does not change across the
+#: merge boundary: a merged mention is not closure, and an open mention is not
+#: coverage. Deliberately negation-blind, matching GitHub's own parser: "does not
+#: close #123" links and closes #123 there too, so treating it as a claim keeps
+#: this script's reading and the forge's reading identical.
 _CLOSING_WORDS = "close[sd]?|fix(?:e[sd])?|resolve[sd]?"
 
 
@@ -329,6 +346,24 @@ def closing_reference_re(repo: str, item: int) -> re.Pattern[str]:
         rf"|https?://github\.com/{owner_repo}/issues/{item}\b)"
     )
     return re.compile(rf"\b(?:{_CLOSING_WORDS})\s*:?\s+{target}", re.IGNORECASE)
+
+
+def claims_closure(closing_re: re.Pattern[str], title: Any, body: Any) -> bool:
+    """Whether a closing keyword aimed at the item sits WITHIN one field.
+
+    The title and the body are searched SEPARATELY and never concatenated.
+    GitHub honours a closing reference only within a single field, and the
+    pattern's ``\\s+`` matches a newline, so joining the two fields with one lets
+    a title ending in a closing word glue to a body opening with a bare ``#N``
+    (``fix`` + ``\\n`` + ``#123``) and match a reference NEITHER field carries.
+    That fabricates coverage, and fabricated coverage suppresses an item nobody
+    is fixing -- silently, which is the harm this module exists to prevent.
+
+    The text is arbitrary and opening a fork PR needs no permission, so the
+    fabrication is craftable rather than accidental. Searching per field removes
+    the whole class instead of guarding one spelling of it.
+    """
+    return bool(closing_re.search(str(title or ""))) or bool(closing_re.search(str(body or "")))
 
 
 RECENT_DAYS = 14
@@ -487,7 +522,13 @@ def gh_json(args: list[str]) -> tuple[Any, str | None]:
 
 
 def git(repo_dir: str, args: list[str]) -> tuple[int, str, str]:
-    return run(["git", "-C", repo_dir, *args])
+    # ``-C`` scopes git to the clone; ``cwd`` makes the clone the child's working
+    # directory as well, so the read runs from inside it rather than from wherever
+    # the conductor happened to launch this script. ABSOLUTE for both: git resolves
+    # ``-C`` against the child's cwd, so a relative path handed to both would be
+    # applied twice (``repo/repo``) and a valid nested clone would read as missing.
+    where = os.path.abspath(repo_dir)
+    return run(["git", "-C", where, *args], cwd=where)
 
 
 # --------------------------------------------------------------------------- #
@@ -518,8 +559,15 @@ def referencing_prs(repo: str, item: int) -> tuple[list[dict], list[dict], str |
 
     ONE timeline call finds every cross-reference — fork PRs included, which is
     the half the old ``--state open`` search could not see — and one detail call
-    per referenced PR supplies the two fields the timeline omits: the merge
-    commit, and the head repository that makes a PR a fork PR.
+    per referenced PR supplies the fields the timeline omits: the merge commit,
+    the head repository that makes a PR a fork PR, and the title and body a
+    closing keyword would be written in.
+
+    Every hit on BOTH lists carries ``closes_item``. The timeline event is
+    keyword-free by construction — it fires on a bare mention — so the reference
+    alone cannot tell coverage from a pointer, and the keyword is what does. The
+    annotation is symmetric on purpose: when only the merged side carried it, an
+    open ``Refs #N`` was read as coverage while a merged one was not.
 
     A reference to a PR in ANOTHER repository is skipped: it cannot land code
     on this repo's default branch, so it is not coverage of this item.
@@ -560,13 +608,16 @@ def referencing_prs(repo: str, item: int) -> tuple[list[dict], list[dict], str |
     for number in numbers:
         detail, error = gh_json(["gh", "api", f"repos/{repo}/pulls/{number}"])
         if error or not isinstance(detail, dict):
-            # An OPEN PR already confirmed is a definite answer, and the module's
-            # precedence puts a definite answer above a partial view: discarding
-            # it here turned a SKIP into UNKNOWN over a later PR that could not
-            # have changed it. The accumulated hits travel with the error, and
-            # the caller keeps the finding while marking the merged side
-            # unanswered. Rule 1 outranks rule 2, so a CLOSE can still be missed
-            # this way -- that costs an item left open, never a false close.
+            # An OPEN PR already confirmed to CLAIM CLOSURE is a definite answer,
+            # and the module's precedence puts a definite answer above a partial
+            # view: discarding it here turned a SKIP into UNKNOWN over a later PR
+            # that could not have changed it. The accumulated hits travel with
+            # the error, and the caller keeps the finding while marking the
+            # merged side unanswered. Hits that only MENTION the item are kept
+            # too and suppress nothing, so the errored merged side still decides
+            # the verdict and it reads UNKNOWN rather than CLAIM. Rule 1 outranks
+            # rule 2, so a CLOSE can still be missed this way -- that costs an
+            # item left open, never a false close.
             return open_prs, merged_prs, (error or "unparseable-json")
         head = detail.get("head") or {}
         base = detail.get("base") or {}
@@ -582,15 +633,20 @@ def referencing_prs(repo: str, item: int) -> tuple[list[dict], list[dict], str |
             # a forge enum, but the trust decision belongs in one place.
             "author_association": detail.get("author_association"),
         }
+        # A PR is coverage only if it CLAIMS to close the item. A bare
+        # cross-reference is a mention, and a mention decides nothing: reading it
+        # as coverage suppresses an item nobody is fixing, and reading it as a
+        # claim would starve an item whose fix was only partial. So it is
+        # recorded and left to fall through to the remaining checks.
+        #
+        # Asked ONCE, above the merge boundary, because it is the same question
+        # on both sides of it. Asking it only of merged PRs leaves an asymmetry
+        # that suppresses an item on a bare reference: an OPEN PR saying
+        # "Refs #N", this repository's own idiom for deliberately-not-closing,
+        # would take the item out of the queue.
+        hit["closes_item"] = claims_closure(closing_re, detail.get("title"), detail.get("body"))
         if detail.get("merged"):
             hit["merge_commit_sha"] = detail.get("merge_commit_sha")
-            # A merged PR is coverage only if it CLAIMS to close the item. A
-            # bare cross-reference is a mention, and a mention decides nothing:
-            # reading it as coverage would CLOSE live work, and reading it as a
-            # claim would starve an item whose fix was only partial. So it is
-            # recorded and left to fall through to the remaining checks.
-            claimed = f"{detail.get('title') or ''}\n{detail.get('body') or ''}"
-            hit["closes_item"] = bool(closing_re.search(claimed))
             merged_prs.append(hit)
         elif detail.get("state") == "open":
             open_prs.append(hit)
@@ -601,20 +657,25 @@ def referencing_prs(repo: str, item: int) -> tuple[list[dict], list[dict], str |
 def annotate_untrusted_forks(open_prs: list[dict], reporter: str | None) -> None:
     """Set ``untrusted_fork`` on each open hit. Annotation only, by design.
 
-    Opening a fork PR needs no permission, so a cross-repository PR that merely
-    MENTIONS an item is a suppression channel available to anybody: the item
+    Opening a fork PR needs no permission, so a cross-repository PR that claims
+    to close an item is a suppression channel available to anybody: the item
     SKIPs and leaves the queue. The tempting fix -- stop trusting fork PRs -- is
     the wrong trade. In a public repository most genuine coverage arrives as a
     fork PR, and dropping those reinstates the duplicate-dispatch class this
     whole script was built from, repeatedly, to close a channel that costs an
     outsider one throwaway PR.
 
-    So the verdict does not move: an open PR still SKIPs, fork PRs included, as
-    the skill's check list requires. What changes is that the suppression stops
-    being SILENT -- it carries ``risk=high`` and an ``untrusted-fork`` marker, so
-    the conductor reviews it as a triage signal instead of watching the item
-    vanish. The objection worth answering was never the detection; it was a
-    response that was both unconditional and unreported.
+    So the verdict does not move: an open PR that claims closure still SKIPs,
+    fork PRs included, as the skill's check list requires. What changes is that
+    the suppression stops being SILENT -- it carries ``risk=high`` and an
+    ``untrusted-fork`` marker, so the conductor reviews it as a triage signal
+    instead of watching the item vanish. The objection worth answering was never
+    the detection; it was a response that was both unconditional and unreported.
+
+    Every open hit is annotated, not only the suppressing ones, because this
+    function answers a question of fact and :func:`verdict` decides what the fact
+    is worth -- and because the marker is read back by
+    :func:`untrusted_fork_skip`, which is where the covering-only scoping lives.
 
     Standing is an insider association or the item's own reporter, since a
     reporter fixing their own bug from a fork is the ordinary case, not an
@@ -1212,13 +1273,61 @@ def unauthorized_claim(checks: dict) -> str | None:
     return str(who) if who else "unknown"
 
 
+def covering_open_prs(checks: dict) -> list[dict]:
+    """Open PR hits that CLAIM to close the item, in timeline order.
+
+    The suppressing subset of check 1. A hit without a closing keyword is a
+    pointer rather than coverage, so it is not here — see
+    :func:`mention_only_open_prs`, which reports it instead.
+    """
+    return [hit for hit in entries(checks.get("open_prs")) if hit.get("closes_item")]
+
+
+def mention_only_open_prs(checks: dict) -> list[int]:
+    """Numbers of open PRs that reference the item WITHOUT claiming to close it.
+
+    The fourth member of the family with :func:`unauthorized_claim`,
+    :func:`untrusted_fork_skip` and :func:`closure_request`, and the only one that
+    runs the other way round: those three act while doubting, this one DECLINES
+    to act and still has to say what it saw.
+
+    Declining is the fix for a measured suppression. ``Refs #N`` is this
+    repository's own idiom for referenced-but-deliberately-not-closed and its PR
+    template keeps ``Related Issues`` apart from a closing trailer, so the
+    clearest signal an author can give that they are leaving an item for somebody
+    else was being read as the reason to skip it — silently, since the item did
+    not appear as refused-for-a-reason, it simply never came up.
+
+    Reporting is the other half, and it is not decoration: a bare reference may
+    still be work in flight that its author never spelled as a closing keyword.
+    So these numbers force ``risk=high``, which is the pipeline's existing "do not
+    batch this, re-check it live immediately before claiming" channel. Nothing is
+    lost that the old suppression had — the per-item recheck sees the same
+    reference — and the item reaches the queue.
+    """
+    found: list[int] = []
+    for hit in entries(checks.get("open_prs")):
+        if hit.get("closes_item"):
+            continue
+        number = hit.get("number")
+        if isinstance(number, int):
+            found.append(number)
+    return found
+
+
 def untrusted_fork_skip(checks: dict) -> int | None:
     """The number of the first open PR whose SKIP is an untrusted fork, or None.
 
     The counterpart to :func:`unauthorized_claim`: both name a finding this
     script acts on while doubting, so the doubt has to travel with the verdict.
+
+    Only a COVERING hit is considered, because only a covering hit suppresses. A
+    mention-only fork PR leaves the item in the queue, so reporting it as an
+    untrusted-fork suppression would name a suppression that does not happen —
+    :func:`mention_only_open_prs` carries that case, and raises the risk just the
+    same.
     """
-    for hit in entries(checks.get("open_prs")):
+    for hit in covering_open_prs(checks):
         if hit.get("untrusted_fork"):
             number = hit.get("number")
             return number if isinstance(number, int) else None
@@ -1243,11 +1352,14 @@ def closure_request(checks: dict) -> bool:
 
 def risk_of(checks: dict) -> str:
     """``low`` or ``high``, from check 5, from an uncorroborated absent symbol,
-    from an unauthorized self-claim, from an untrusted-fork suppression, and from
-    a prose closure request, defaulting to the cautious side."""
+    from an unauthorized self-claim, from an untrusted-fork suppression, from a
+    prose closure request, and from an open PR that references the item without
+    claiming to close it, defaulting to the cautious side."""
     if uncorroborated_absent_symbols(checks) or unauthorized_claim(checks):
         return "high"
     if untrusted_fork_skip(checks) is not None or closure_request(checks):
+        return "high"
+    if mention_only_open_prs(checks):
         return "high"
     recency = checks.get("recency")
     if not isinstance(recency, dict) or errored(recency):
@@ -1276,7 +1388,11 @@ def verdict(checks: dict) -> tuple[str, str, dict]:
                     "landed": True,
                 },
             )
-    for hit in entries(checks.get("open_prs")):
+    for hit in covering_open_prs(checks):
+        # A closing keyword, same as rule 1 demands of a merged PR. An open PR
+        # that merely MENTIONS the item is not coverage: it falls through, and
+        # mention_only_open_prs() raises the risk so the item takes the live
+        # recheck rather than leaving the queue unannounced.
         return (
             "SKIP",
             "open-pr",
@@ -1343,6 +1459,12 @@ def verdict(checks: dict) -> tuple[str, str, dict]:
     claimed = unauthorized_claim(checks)
     if claimed:
         evidence["claim_without_standing"] = claimed
+    mention_only = mention_only_open_prs(checks)
+    if mention_only:
+        # The suppression this rule DECLINED to make, published rather than
+        # dropped. Same contract as symbol_absent_uncorroborated above: the human
+        # line is one field wide, so the reason lives in --json.
+        evidence["open_pr_mention_only"] = mention_only
     return "CLAIM", "clean", evidence
 
 
@@ -1425,9 +1547,11 @@ def collect(repo: str, item: int, default_branch: str, repo_dir: str | None) -> 
         checks["prose_claim"] = {"error": slug}
         checks["recency"] = {"error": slug}
         checks["symbol_on_base"] = {"error": slug}
-        # An open PR still SKIPs when the item itself cannot be read, so the
-        # suppression still needs its marker. Nobody is known to be the
-        # reporter here, which annotates more forks rather than fewer.
+        # An open PR that claims closure still SKIPs when the item itself cannot
+        # be read -- ``closes_item`` comes from the PULL's own title and body, so
+        # it survives an unreadable item -- and the suppression still needs its
+        # marker. Nobody is known to be the reporter here, which annotates more
+        # forks rather than fewer.
         #
         # Keyed on the HITS, not on the absence of an error: a half-finished scan
         # can now return a confirmed open PR alongside its error, and gating on

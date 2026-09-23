@@ -81,7 +81,7 @@ const SLOTS = [
   { key: 'k-none', title: 'untagged session', running: false, messages: 2 },
 ]
 
-function renderSidebar(slots: ChatSlot[] = SLOTS, revealRequest: { key: string; nonce: number } | null = null) {
+function renderSidebar(slots: ChatSlot[] = SLOTS, revealRequest: { kind: 'session' | 'folder'; target: string; nonce: number } | null = null) {
   // Spread the real slice defaults: RTK REPLACES a slice with preloadedState
   // rather than merging, so a partial drops keys the reducers assume exist.
   const defaults = createTestStore().getState()
@@ -297,7 +297,7 @@ describe('chat sidebar — filter menu Tags section', () => {
     try {
       localStorage.setItem('mc-session-tag-filter', JSON.stringify(['t1']))
       // Reveal is present on the FIRST render, before chatTags resolves.
-      const utils = renderSidebar(SLOTS, { key: 'k-beta', nonce: 1 })
+      const utils = renderSidebar(SLOTS, { kind: 'session', target: 'k-beta', nonce: 1 })
       await waitFor(() =>
         expect(JSON.parse(localStorage.getItem('mc-session-tag-filter') || '[]')).toEqual([]))
       // And it stays revealed once the vocabulary lands.

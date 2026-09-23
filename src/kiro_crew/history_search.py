@@ -34,6 +34,14 @@ _SEARCH_MAX_SCORING_EXTRAS = 12  # distinct scoring-only needles (CJK bigrams) p
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
 _PHRASE_BOOST = 4  # extra weight per exact whole-query hit in a multi-word search
 _SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
+
+#: Seconds a session's transcript must have gone unmodified before the backfill
+#: pass indexes it. A session that is being written changes on every turn, and
+#: every change re-reads, re-folds and re-walks the whole file — O(n^2) work
+#: over the session's life. Deferring until the file goes quiet indexes it once
+#: instead. Until then the session is simply not vouched for, so search scans
+#: it directly — the same superset guarantee un-indexed sessions already have.
+_INDEX_QUIET_WINDOW_SECS = 120.0
 # Recency boost bounds for search_sessions: a session modified now scores
 # ×(1 + _RECENCY_MAX_BOOST); the extra weight halves every
 # _RECENCY_HALF_WEIGHT_DAYS of age and decays toward ×1.0 — never a penalty
@@ -1314,6 +1322,14 @@ class SessionCatalogProjection:
         half-indexed, and a row that describes half a file is exactly the kind of
         lie this design refuses to store.
 
+        A session whose file changed within the last ``_INDEX_QUIET_WINDOW_SECS``
+        is deferred, not indexed: it is still being written, and indexing it now
+        buys a row the next turn invalidates. Deferred sessions are reported in
+        their own ``deferred`` count, NOT in ``remaining`` — the caller's pass
+        cadence keys on ``remaining``, and a deferral cannot be serviced by
+        coming straight back, only by waiting out the window. They are picked up
+        by the caller's idle-paced passes once quiet.
+
         Rows for sessions that have left the search window are dropped in the
         same pass. They are unreachable by search (the window is the only thing
         scored) so keeping them would grow the index without bound while
@@ -1321,7 +1337,7 @@ class SessionCatalogProjection:
         """
         index = self.search_index
         if not index.available:
-            return {"indexed": 0, "dropped": 0, "remaining": 0}
+            return {"indexed": 0, "dropped": 0, "remaining": 0, "deferred": 0}
         window = self._log.list_sessions()[: _facade_search_scan_window()]
         window_keys = {meta["key"] for meta in window}
         stats: dict[str, os.stat_result] = {}
@@ -1331,7 +1347,18 @@ class SessionCatalogProjection:
             except OSError:
                 continue
         fresh = index.fresh_keys(stats)
-        pending = [meta["key"] for meta in window if meta["key"] not in fresh]
+        quiet_cutoff_ns = _time.time_ns() - int(_INDEX_QUIET_WINDOW_SECS * 1e9)
+        pending: list[str] = []
+        deferred = 0
+        for meta in window:
+            key = meta["key"]
+            if key in fresh:
+                continue
+            st = stats.get(key)
+            if st is not None and st.st_mtime_ns > quiet_cutoff_ns:
+                deferred += 1
+                continue
+            pending.append(key)
         departed = index.indexed_keys() - window_keys
         index.drop(departed)
         deadline = _time.monotonic() + budget_secs
@@ -1345,6 +1372,7 @@ class SessionCatalogProjection:
             "indexed": indexed,
             "dropped": len(departed),
             "remaining": len(pending) - indexed,
+            "deferred": deferred,
         }
 
     def _index_shortlist(

@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.mcp_gateway.backend import Backend
-from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
+from kiro_crew.mcp_gateway.pool import BackendPool, PoolAtCapacity, PoolKey
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -140,6 +140,104 @@ async def test_private_backends_are_outside_the_capacity_budget() -> None:
     shared = _make_mock_backend(key_b, pid=99)
     assert await pool.get_or_create(key_b, _spawner(shared)) is shared
     assert len(pool) == 1
+
+
+# --- resident slots: capacity decided BEFORE the fork ------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_resident_slot_is_refused_before_anything_is_spawned() -> None:
+    """A capacity check made only in ``add`` runs after the spawn, so a full
+    pool pays for a fork it then reaps. The slot puts the decision in front of
+    the fork: at capacity with nothing evictable it raises with no process in
+    existence."""
+    pool = BackendPool(max_backends=1)
+    occupant = _make_mock_backend(_make_pool_key(server="a"))
+    await pool.add(_make_pool_key(server="a"), occupant)
+    await occupant.attach_stub("s")  # attached: not an eviction victim
+
+    with pytest.raises(PoolAtCapacity):
+        await pool.reserve_resident_slot(_make_pool_key(server="b"))
+    assert pool.stats()["capacity_rejects"] == 1
+    assert pool.resident_pending == 0
+
+
+@pytest.mark.asyncio
+async def test_a_pending_slot_counts_against_capacity_until_add_consumes_it() -> None:
+    pool = BackendPool(max_backends=1)
+    key_a, key_b = _make_pool_key(server="a"), _make_pool_key(server="b")
+    slot = await pool.reserve_resident_slot(key_a)
+    assert slot.pending and pool.resident_pending == 1
+    # Another key sees the pool as full while the first spawn is in flight.
+    with pytest.raises(PoolAtCapacity):
+        await pool.reserve_resident_slot(key_b)
+    # The same key asking again gets the SAME pending slot (blue-green retry).
+    assert await pool.reserve_resident_slot(key_a) is slot
+    # ``add`` consumes it: the entry now owns the capacity, no double count.
+    await pool.add(key_a, _make_mock_backend(key_a))
+    assert slot.consumed and pool.resident_pending == 0 and len(pool) == 1
+    slot.release()  # a consumed slot's release is a no-op
+    assert len(pool) == 1
+
+
+@pytest.mark.asyncio
+async def test_releasing_a_pending_slot_frees_the_capacity() -> None:
+    pool = BackendPool(max_backends=1)
+    slot = await pool.reserve_resident_slot(_make_pool_key(server="a"))
+    slot.release()
+    slot.release()
+    assert pool.resident_pending == 0
+    # The unit is free again for whoever asks next.
+    await pool.reserve_resident_slot(_make_pool_key(server="b"))
+    assert pool.resident_pending == 1
+
+
+@pytest.mark.asyncio
+async def test_a_slot_for_a_key_with_a_live_entry_is_a_noop() -> None:
+    pool = BackendPool(max_backends=1)
+    key = _make_pool_key(server="a")
+    await pool.add(key, _make_mock_backend(key))
+    slot = await pool.reserve_resident_slot(key)
+    assert slot.consumed and pool.resident_pending == 0
+
+
+@pytest.mark.asyncio
+async def test_a_slot_evicts_an_idle_entry_like_add_did() -> None:
+    pool = BackendPool(max_backends=1)
+    idle_key = _make_pool_key(server="idle")
+    idle = _make_mock_backend(idle_key)
+    await pool.add(idle_key, idle)  # refcount 0, unreserved: evictable
+    slot = await pool.reserve_resident_slot(_make_pool_key(server="new"))
+    assert slot.pending and len(pool) == 0 and pool.stats()["evictions_lru"] == 1
+    await asyncio.gather(*pool._shutdown_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_reaps_a_slot_its_spawn_left_behind() -> None:
+    """A spawn that takes a slot and then raises past its own cleanup must not
+    leave a phantom occupant: the pool's own finally drops it."""
+    pool = BackendPool(max_backends=1)
+    key = _make_pool_key(server="a")
+
+    async def _spawn() -> Backend:
+        await pool.reserve_resident_slot(key)
+        raise OSError(12, "ENOMEM")
+
+    with pytest.raises(OSError):
+        await pool.get_or_create(key, _spawn)
+    assert pool.resident_pending == 0
+    assert len(pool) == 0
+
+
+@pytest.mark.asyncio
+async def test_private_backends_take_no_resident_slot() -> None:
+    """Exclusivity stays a topology property: the host budget bounds private
+    backends, the resident slot does not."""
+    pool = BackendPool(max_backends=1)
+    key = _make_pool_key(server="a")
+    await pool.reserve_resident_slot(_make_pool_key(server="pooled"))  # pool is now "full"
+    got = await pool.acquire_exclusive(key, "stub-x", _spawner(_make_mock_backend(key)))
+    assert got is not None and pool.stats()["exclusive"] == 1
 
 
 @pytest.mark.asyncio
@@ -379,6 +477,7 @@ class _NullWriter:
 
 class _HandlerBackend:
     supports_caller_identity = True
+    control_plane = False
     quarantined = False
     exclusive_token = ""
 

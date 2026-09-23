@@ -156,7 +156,7 @@ const TabsContent = React.forwardRef<
       // Radix puts `tabindex=0` on the panel so the rail's one tab stop leads
       // into it; that makes the panel itself focusable, and the global outline
       // would then ring the entire page body.
-      className={cn('focus-visible:outline-none', className)}
+      className={cn('focus-visible:outline-hidden', className)}
       {...props}
     />
   )

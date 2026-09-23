@@ -26,8 +26,11 @@ outside the pooling budget.
 - **`mcp_gateway.poolable_servers`** — deprecated alias, read only when `stub_servers`
   is absent. A pooled server already ran behind a stub, so migrating it to the stub
   set preserves behaviour rather than granting anything.
-- **`mcp_gateway.apps_enabled`** — deprecated and ignored. Capability follows the stub;
-  a preference cannot grant it and cannot honestly withdraw it.
+- **`mcp_gateway.apps_enabled`** — retired from the UI and no longer written by
+  MCP Management, but a stored `false` remains an honoured opt-out. Capability
+  follows the stub, so this key cannot grant MCP Apps; for compatibility it can
+  still withdraw them. The `KIROCREW_MCP_APPS` environment flag is the other
+  kill switch, and explicit off wins.
 - **The broker starts iff something is stubbed.**
 
 A stub for every stdio server is the shape this note originally argued for, and the
@@ -95,12 +98,13 @@ from a hand-written config or an overlay predating the token is unaffected.
 
 ## Where the stub comes from
 
-Two paths emit stubs, and both are now unconditional for stdio servers:
+Two paths can emit stubs, and both apply the same explicit
+`mcp_gateway.stub_servers` roster to stdio servers:
 
 - **Agent-declared servers** in `~/.kiro/agents/*.json`, wrapped in that agent's
-  overlay.
-- **Global `settings/mcp.json` servers**, injected into each agent's overlay so
-  the stub carries the right agent identity. The injected stub takes precedence
+  overlay only when the server name is in the roster.
+- **Global `settings/mcp.json` servers**, injected into each agent's overlay only
+  when rostered so the stub carries the right agent identity. The injected stub takes precedence
   over the raw same-named global entry at ACP `session/new`
   (`session_servers.py`), which is what keeps a server from being wrapped twice
   under two identities; no settings overlay is written and the real settings
@@ -162,6 +166,89 @@ concern, and per-connection backends fail the way they would without a gateway �
 by exhausting host resources, observably, rather than by silently rejecting an
 unrelated session.
 
+## Session identity does not depend on the stub
+
+The stub used to be the only way one of Crew's own MCP servers could learn WHICH
+session was calling it, and that coupling is now gone. It came about honestly: the
+per-session token that names an ACP session was minted for gatewayd
+(`mcp_gateway/claim.py`, `mint_stub_session_token`), rode only stub entries, and had
+exactly one reader — the daemon, matching it against a claim frame. So a server with
+no stub, on an install with no daemon, had no per-session identity channel at all. It
+fell back to `KIROCREW_SESSION_KEY`, which is *wrong by construction* in the two
+topologies that matter most:
+
+- **warm-pool rekey.** A pooled process is re-keyed to a new session while the MCP
+  children it already spawned keep the env they were spawned with, so their key names
+  the PREVIOUS session.
+- **`spawn_run` session sharing.** One kiro-cli process hosts N ACP sessions, so every
+  process-keyed source — the env var, the `session_pid_<pid>` file, a `/proc` ancestor
+  walk — answers with the PARENT's session for a subagent's server.
+
+The token now has a second reader that needs no daemon: the gateway publishes a
+`token -> session_key` mapping to a MAC-signed file (`session_token_sig.py`) at
+`session/new` and again on every `rekey()`, and `session_token_sig.session_key_from_env_token`
+reads it directly. Every client-side resolver shares that one reader rather than
+holding its own copy of the order: `mcp_core`'s strict and lenient paths, the
+client-side `mcp_caller.CallerContext.from_env` behind the stub's own caller block,
+and the managed-tool-policy lookup in `mcp_shared`. Two of those sit behind a cache,
+and the token is read ABOVE it in both — a memoised answer is the pre-rekey session,
+so a token read below a cache is inert on exactly the call it exists for. Three consequences worth
+stating because each one was previously false:
+
+- **The token is minted unconditionally.** It used to be gated on a reachable gatewayd
+  socket, on the correct reasoning that a token nothing reads is an inert value on
+  every `session/new`. There is now a reader, so the socket gates the CLAIM alone.
+- **It rides every control-plane element, not only stub entries** — through the one
+  owner of that question (`providers/mirrors/identity.py`,
+  `control_plane_identity_env`), plus the member-dispatch element and the kiro-cli
+  child env. `KIROCREW_SESSION_KEY` stays beside it as the fallback for the one case
+  the token cannot cover: no SEL trust root to sign the mapping with.
+- **The resolver reads the token ABOVE the env var.** Where the two disagree the env
+  var is the stale answer, so preferring it is the misattribution above. The
+  gateway-injected per-call caller context still outranks both, because it is stamped
+  per CALL and cannot go stale at all.
+
+**No new config surface.** Nothing on the list at the top of this note changed, and
+pooling stays opt-in: a default install — no stub, no daemon, gateway off — is exactly
+the install this closes the identity gap for.
+
+### The trust boundary, plainly
+
+The mapping file lives in `config_dir()`, which is same-uid agent-writable, so the
+file is not the trust root — the MAC is. It is keyed by a subkey derived from the SEL
+trust root (`sel_hmac.key`), under a domain label distinct from the `session_pid`
+sidecar's so the two can never be cross-replayed.
+
+**How strong the key's protection actually is**, stated here so the follow-up inherits an
+accurate baseline rather than a rounded-up one: `is_sensitive_path` refuses that leaf on
+the agent FILE-TOOL path, but `security.md` classifies it `VISIBLE` — no OS fence, no
+bash-layer fence — and a spawned shell reaches a file through an `open()` that never
+routes through the tool gate. So the forgery defence below holds against the file tools
+and not against a shell. That residual is not this protocol's: the SEL audit chain rests
+on the same key and carries the same gap, and `security.md` names the remedy (move the
+in-sandbox reader behind the gateway so the leaf can become `HIDDEN`, never another
+matcher). A shell that can read the key can also mint a local API token and bypass
+client-side resolution altogether, so this protocol is not the narrow point.
+
+What the MAC buys, and what it does not:
+
+- **Blocked:** forging a mapping (no valid MAC without the key); replaying
+  another session's mapping under a token you hold (the token, not the filename, is
+  bound into the MAC); tampering with the session key in place; and planting a symlink
+  at the predictable path, on both sides — publication is `atomic_write`/`os.replace`
+  and verification opens `O_NOFOLLOW` and refuses a non-regular file.
+- **Out of scope, and UNCHANGED from the env var it sits beside:** a same-uid process
+  that can read the mapping directory. It could already read the `session_pid` files
+  and present another session's key through `KIROCREW_SESSION_KEY`, and a shell-capable
+  same-uid agent can bypass client-side resolution entirely by minting a local API
+  token. Same-uid processes are inside the boundary. This narrows nothing and widens
+  nothing; authenticating the calling PROCESS (SO_PEERCRED over a gateway-owned
+  socket) is the stronger, orthogonal follow-up tracked with the pid sidecar.
+
+The filename is `sha256(token)` rather than the token, so the directory can be listed
+without handing out a bearer name — and a listing is useless, because verification
+requires the token that hashes to the name.
+
 ## Costs this accepts
 
 - **Process count.** Servers off the allowlist become one backend per ACP
@@ -178,9 +265,10 @@ unrelated session.
 ## Out of scope
 
 - Changing `PoolKey`. It gains no dimension, in this change or any other.
-- `UNPOOLABLE_SERVERS` — Kiro Crew's own MCP servers, which bind to
-  `KIROCREW_SESSION_KEY` and are passed through unwrapped. They are already
-  per-session by construction; giving them stubs is a separate change.
+- `UNPOOLABLE_SERVERS` currently excludes nothing: the set is empty. Kiro
+  Crew's own MCP servers stay direct only while they are absent from
+  `mcp_gateway.stub_servers`; the signed session-token mapping gives them identity
+  without requiring a stub.
 - HTTP/SSE MCP entries. They need no stub and merge raw from the real settings
   file.
 - Per-server MCP Apps control. Orthogonal to stub emission.

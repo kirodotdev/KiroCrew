@@ -1047,11 +1047,11 @@ class TestMain:
         h = tmp_path / "h"
         monkeypatch.setattr(server, 'QUEUE_DIR', q)
         monkeypatch.setattr(server, 'HANDLED_DIR', h)
-        # Patch ThreadingHTTPServer to not actually listen
+        # Patch the listener class so main() binds nothing
         mock_server = MagicMock()
         mock_server.serve_forever.side_effect = KeyboardInterrupt
         monkeypatch.setattr(
-            server, 'ThreadingHTTPServer', lambda addr, handler: mock_server
+            server, '_Server', lambda addr, handler: mock_server
         )
         server.main()
         assert q.is_dir()
@@ -1066,7 +1066,7 @@ class TestMain:
         mock_server = MagicMock()
         mock_server.serve_forever.side_effect = KeyboardInterrupt
         monkeypatch.setattr(
-            server, 'ThreadingHTTPServer', lambda addr, handler: mock_server
+            server, '_Server', lambda addr, handler: mock_server
         )
         assert server.main() == 0
 

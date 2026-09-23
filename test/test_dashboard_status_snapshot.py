@@ -31,8 +31,10 @@ class TestStatusSnapshot:
     def test_contains_core_fields(self, state: DashboardState) -> None:
         snap = state.status_snapshot()
         assert snap["sessions"] == 3
-        assert snap["cron_jobs"] == 2
-        assert snap["lessons"] == 1
+        # cron_jobs/lessons are caller-supplied; with no args they are unknown
+        # (None), never computed inline on the loop.
+        assert snap["cron_jobs"] is None
+        assert snap["lessons"] is None
         assert snap["subagents"] == 1
         assert snap["no_crons"] is False
         assert "uptime" in snap
@@ -133,7 +135,8 @@ class TestStatusSnapshot:
         assert snap["release_channel"] in ("nightly", "insider", "stable")
 
     def test_cached_overrides_skip_expensive_calls(self, state: DashboardState) -> None:
-        """Passing cron_jobs/lessons skips list_jobs()/load_all()."""
+        """Caller-supplied cron_jobs/lessons pass straight through and never
+        touch list_jobs()/load_all() — the counts are always caller-supplied."""
         state.crons.list_jobs.reset_mock()
         state.lessons.load_all.reset_mock()
         snap = state.status_snapshot(cron_jobs=99, lessons=42)
@@ -141,6 +144,22 @@ class TestStatusSnapshot:
         assert snap["lessons"] == 42
         state.crons.list_jobs.assert_not_called()
         state.lessons.load_all.assert_not_called()
+
+    def test_no_counts_emits_none_without_blocking_calls(self, state: DashboardState) -> None:
+        """With no counts passed, both keys are None and neither blocking store
+        is touched. Fails on the previous head, which fell back to
+        ``crons.list_jobs()``/``_count_lessons()`` inline on the event loop —
+        the ``no-blocking-call-on-event-loop`` freeze class this path avoids.
+        """
+        state.crons.list_jobs.side_effect = AssertionError("list_jobs must not run on the loop")
+        state._count_lessons = MagicMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("_count_lessons must not run on the loop")
+        )
+        snap = state.status_snapshot()
+        assert snap["cron_jobs"] is None
+        assert snap["lessons"] is None
+        state._count_lessons.assert_not_called()
+        state.crons.list_jobs.assert_not_called()
 
     def test_update_available_passthrough(self, state: DashboardState) -> None:
         # The default is None, not False: a snapshot taken before any check has run
@@ -152,12 +171,14 @@ class TestStatusSnapshot:
 
 
 class TestAllStatusSnapshotCallersPassTheUpdateFields:
-    """Every status emitter must fill the update fields from the shared reader.
+    """The status funnel joins the update fields to the snapshot for every emitter.
 
-    A caller that omits them gets ``update_available=None`` and a dark badge,
-    which hides a real update from that transport. One reader
-    (``status_update_fields``) is what keeps the two emitters from drifting, so
-    the contract is now "you call it", not "the literal kwarg appears".
+    A snapshot without the update fields carries ``update_available=None`` and a
+    dark badge, hiding a real update from that transport. Rather than trust each
+    emitter to spread ``status_update_fields()``, the sole funnel
+    (``status_counts.cached_status_snapshot``) reads them itself, so the contract
+    is structural — "the only ``status_snapshot`` call lives in the funnel" — not
+    "the literal kwarg appears at every call site".
     """
 
     def test_the_shared_reader_carries_every_update_field(self) -> None:
@@ -262,52 +283,83 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "crashes all three transports"
         )
 
-    def test_ws_uses_the_shared_reader(self) -> None:
-        import inspect
+    def test_the_funnel_joins_every_update_field_into_the_snapshot(self, state, monkeypatch):
+        """``cached_status_snapshot`` surfaces every ``status_update_fields`` key.
 
-        from kiro_crew.dashboard import ws
+        This pins the funnel — the one place the update fields and the cached
+        counts are joined — not any caller: it patches the reader to a sentinel
+        dict of the real keys and asserts each surfaces with its value in the
+        funnel's output. It fails on the previous head only if a caller forgot
+        to spread the fields; now that the funnel reads them itself, an emitter
+        cannot drop them.
+        """
+        import asyncio
 
-        source = inspect.getsource(ws)
-        assert "status_update_fields()" in source, (
-            "ws.py calls status_snapshot() without the shared update fields — "
-            "they default to no-verdict, hiding real availability from WebSocket clients"
+        from kiro_crew.dashboard import status_counts
+        from kiro_crew.dashboard.handlers.updates import status_update_fields
+
+        sentinel = {key: f"S:{key}" for key in status_update_fields()}
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.updates.status_update_fields",
+            lambda: dict(sentinel),
         )
 
-    def test_system_api_uses_the_shared_reader(self) -> None:
-        import inspect
+        async def _run():
+            return await status_counts.cached_status_snapshot(state)
 
-        from kiro_crew.dashboard import handlers_system
-
-        source = inspect.getsource(handlers_system)
-        assert "status_update_fields()" in source
+        snap = asyncio.run(_run())
+        for key, value in sentinel.items():
+            assert snap[key] == value
 
     def test_every_status_snapshot_call_site_uses_the_shared_reader(self) -> None:
         """Named-module checks miss a NEW emitter, which is how one already slipped.
 
         The SSE stream in ``handlers/updates.py`` read the cache directly, on a key
         this contract had renamed — so it published a hardcoded ``False`` and no test
-        noticed, because the two assertions above only look at the two modules that
-        were known emitters when they were written. This walks the AST instead: every
-        ``status_snapshot(...)`` call anywhere in the package must take its update
-        fields from ``status_update_fields()``, so the guard covers emitters nobody
-        has written yet.
+        noticed, because the earlier per-emitter checks only looked at the two modules
+        that were known emitters when they were written. This walks the AST instead.
+
+        The three emitters now funnel through
+        ``status_counts.cached_status_snapshot``, which is the ONE place that
+        may call ``DashboardState.status_snapshot`` — and which joins in the
+        update fields from ``status_update_fields()`` itself, so no caller has
+        to spread them. The structural contract is therefore: exactly ONE
+        ``status_snapshot(...)`` call exists in the package, it is the one
+        inside ``cached_status_snapshot`` in ``status_counts.py``, and it
+        spreads ``status_update_fields()``. A call anywhere else, or a second
+        call anywhere in ``status_counts.py``, bypasses the off-loop count
+        cache (reintroducing the blocking-call freeze class) or the shared
+        update-fields join, so the ratchet counts calls rather than trusting a
+        filename.
         """
         import ast
         import pathlib
 
         # Scoped to the dashboard package on purpose: `DashboardState.status_snapshot`
-        # lives here and so does every emitter, while `platform/interfaces.py` defines
-        # an UNRELATED `status_snapshot()` on the platform provider that a
-        # name-only match would flag.
-        root = pathlib.Path(inspect_module_root()) / "dashboard"
-        offenders: list[str] = []
-        for path in root.rglob("*.py"):
+        # and its sole permitted caller (`status_counts.cached_status_snapshot`) both
+        # live here, while `tunnel/manager.py` and `platform/interfaces.py` define and
+        # call an UNRELATED `status_snapshot()` on a provider that a whole-tree
+        # name match would flag.
+        dashboard = pathlib.Path(inspect_module_root()) / "dashboard"
+        funnel = ("status_counts.py", "cached_status_snapshot")
+        # Every status_snapshot(...) call in the package, with the function that
+        # encloses it, so the assertion below can count them and place them.
+        calls: list[tuple[str, str, int, str]] = []
+        for path in dashboard.rglob("*.py"):
             if "_vendor" in path.parts:
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except SyntaxError:  # pragma: no cover - not our syntax to fix
                 continue
+            enclosing: dict[int, str] = {}
+            for fn in ast.walk(tree):
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for inner in ast.walk(fn):
+                        if isinstance(inner, ast.Call):
+                            # Innermost function wins: nested defs are walked
+                            # after their parent and overwrite its entry.
+                            enclosing[id(inner)] = fn.name
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -315,17 +367,29 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
                 name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
                 if name != "status_snapshot":
                     continue
-                # The fields may arrive as `**status_update_fields()` or as an
-                # explicit `update_available=...`; only the shared reader is
-                # accepted, because hand-passing one field is how drift starts.
-                srcseg = ast.unparse(node)
-                if "status_update_fields()" not in srcseg:
-                    offenders.append(f"{path.name}:{node.lineno}: {srcseg[:90]}")
+                calls.append(
+                    (path.name, enclosing.get(id(node), "<module>"), node.lineno, ast.unparse(node))
+                )
 
-        assert not offenders, (
-            "these status_snapshot() call sites bypass status_update_fields(), so "
-            "their transport reports a stale or missing update verdict:\n  "
-            + "\n  ".join(offenders)
+        described = "\n  ".join(f"{f}:{ln} in {fn}: {src[:90]}" for f, fn, ln, src in calls)
+        assert len(calls) == 1, (
+            "exactly one status_snapshot call is permitted, inside "
+            "status_counts.cached_status_snapshot; any other bypasses the off-loop "
+            "count cache or the shared update reader:\n  " + described
+        )
+        fname, fn, _lineno, src = calls[0]
+        assert (fname, fn) == funnel, (
+            "the one status_snapshot call is not the funnel:\n  " + described
+        )
+        spreads_update_fields = any(
+            kw.arg is None
+            and isinstance(kw.value, ast.Call)
+            and getattr(kw.value.func, "id", getattr(kw.value.func, "attr", ""))
+            == "status_update_fields"
+            for kw in ast.parse(src, mode="eval").body.keywords
+        )
+        assert spreads_update_fields, (
+            "the funnel's status_snapshot call must spread status_update_fields():\n  " + described
         )
 
 

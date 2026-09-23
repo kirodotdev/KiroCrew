@@ -2,6 +2,11 @@
 
 *Who this is for: the person who owns (or can create) a Google Cloud project and wants Kiro Crew agents to search and read files in a Google Drive account through Google's remote Drive MCP server. Expected time: 30–45 minutes of clicking, plus a wait of "a couple of days" for Google to accept you into the Developer Preview Program if you are not already a member.*
 
+**Google Drive has no Connections entry yet** — see the
+[index](README.md) for the providers pre-registered on this build — so its card
+and its **Connect** button appear once that entry ships. Registering the redirect
+URI below now means it already matches when it does.
+
 Google's Drive MCP server is a **Developer Preview** feature. Google accepts a plain-http loopback redirect URI, so Kiro Crew's callback works as-is; the gating items are program enrollment and OAuth scope class, both covered below.
 
 ## Before you start

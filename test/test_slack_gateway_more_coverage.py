@@ -47,7 +47,15 @@ import pytest
 
 from kiro_crew.autonudge import APPROVAL_STALL_REASON, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
+from kiro_crew.monitoring.models import (
+    DEFAULT_MONITOR_CADENCE_SECS,
+    DEFAULT_MONITOR_STALL_MIN_SECS,
+    DEFAULT_MONITOR_STALL_TICKS,
+    MonitorObservation,
+    MonitorObservationStatus,
+    MonitorOutcome,
+    MonitorState,
+)
 from kiro_crew.slack import gateway as gw
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
@@ -147,9 +155,7 @@ class TestWarnIfKiroCliOutdated:
         never happened. The refusal path itself is covered separately by
         :meth:`test_unresolvable_binary_never_spawns`.
         """
-        with patch(
-            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
-        ):
+        with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"):
             yield
 
     @pytest.mark.asyncio
@@ -161,7 +167,7 @@ class TestWarnIfKiroCliOutdated:
         argument is no protection. Nothing to warn about, so nothing runs.
         """
         orch = _make_orchestrator()
-        with patch("kiro_crew.slack.gateway.resolve_kiro_cli", return_value=None):
+        with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value=None):
             with patch("asyncio.create_subprocess_exec") as spawn:
                 await orch._warn_if_kiro_cli_outdated()
         spawn.assert_not_called()
@@ -177,7 +183,7 @@ class TestWarnIfKiroCliOutdated:
         proc = _probe_proc(_communicate)
         orch = _make_orchestrator()
         with patch(
-            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
+            "kiro_crew.kiro_cli.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
         ) as mock_resolve:
             with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as spawn:
                 await orch._warn_if_kiro_cli_outdated()
@@ -200,7 +206,7 @@ class TestWarnIfKiroCliOutdated:
             return None if kwargs.get("include_inherited_path") is False else "/w/venv/bin/kiro-cli"
 
         with caplog.at_level("WARNING"):
-            with patch("kiro_crew.slack.gateway.resolve_kiro_cli", side_effect=_resolve):
+            with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_resolve):
                 with patch("asyncio.create_subprocess_exec") as spawn:
                     await orch._warn_if_kiro_cli_outdated()
         spawn.assert_not_called()
@@ -211,7 +217,7 @@ class TestWarnIfKiroCliOutdated:
         """No kiro-cli anywhere is not a problem to report — the backend is optional."""
         orch = _make_orchestrator()
         with caplog.at_level("WARNING"):
-            with patch("kiro_crew.slack.gateway.resolve_kiro_cli", return_value=None):
+            with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value=None):
                 with patch("asyncio.create_subprocess_exec") as spawn:
                     await orch._warn_if_kiro_cli_outdated()
         spawn.assert_not_called()
@@ -233,7 +239,7 @@ class TestWarnIfKiroCliOutdated:
 
         with caplog.at_level("WARNING"):
             with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
-                with patch("kiro_crew.slack.gateway.resolve_kiro_cli", side_effect=_hang):
+                with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_hang):
                     with patch("asyncio.create_subprocess_exec") as spawn:
                         await orch._warn_if_kiro_cli_outdated()
         spawn.assert_not_called()
@@ -885,6 +891,7 @@ class TestNotifyNudgeExpired:
             (MonitorOutcome.BLOCKED, "future_reason", "details", "reopen"),
             (MonitorOutcome.SUCCESS, "pull_request_merged", "was merged", "review-ready"),
             (MonitorOutcome.SUCCESS, "review_ready", "ready for review", "decide the next step"),
+            (MonitorOutcome.BLOCKED, "verdict_stall", "Last seen", "Nothing is wrong"),
         ],
     )
     def test_structured_notice_uses_the_recorded_reason(self, outcome, reason, expected, forbidden):
@@ -911,6 +918,150 @@ class TestNotifyNudgeExpired:
         assert forbidden not in body
         assert loop.monitor.target in body
         assert ds.notify.call_args.kwargs["meta"] is None
+
+    def test_a_stalled_suppressed_red_is_not_described_as_fine(self):
+        """The dominant stall is an ALREADY-ALERTED red, so the copy must not deny it.
+
+        A watch reaches twelve identical ticks most easily when the subject is
+        actionable, was alerted once, and is inside its re-alert interval -- the
+        engine tests build exactly that. Telling that reader "nothing is wrong with
+        the pull request" is false precisely when the stall is most likely, so the
+        notice names the verdict it kept reaching instead of characterising it.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(id="monitor-1", slot_key="chat-1", message="")
+        loop.active = False
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1.0,
+            outcome=MonitorOutcome.BLOCKED,
+            stopped_at=2.0,
+            stopped_reason="verdict_stall",
+            last_observation_reason_code="checks_failed",
+        )
+
+        orch._notify_nudge_expired(loop)
+
+        body = ds.notify.call_args.args[2]
+        assert "checks_failed" in body
+        assert "Nothing is wrong" not in body
+
+    def test_the_rendered_thresholds_are_the_ones_that_tripped_the_stall(self):
+        """Drive a REAL stall through the engine, then read the notice it produces.
+
+        The other stall cases here hand the notifier a state with the reason already
+        set, which pins the copy but not its provenance: nothing would notice if the
+        sentence rendered a different threshold from the one that actually retired
+        the watch. This runs the production decision path until it stops, takes the
+        reason that path recorded, and asserts BOTH numbers in the notice are the
+        constants the trip used.
+        """
+        from kiro_crew.monitoring.decision import decide_monitor, monitor_stall_reason
+
+        state = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_fingerprint="red-1",
+            last_wake_fingerprint="red-1",
+            coalesce_alerted={"red-1": 1_000.0},
+        )
+        observation = MonitorObservation(
+            "red-1",
+            MonitorObservationStatus.ACTIONABLE,
+            reason_code="checks_failed",
+        )
+        now = 1_100.0
+        for _ in range(DEFAULT_MONITOR_STALL_TICKS):
+            # The probe writer records the observation's code before the decision
+            # branch runs (`autonudge.py` staged_state.last_observation_reason_code,
+            # and the same line in `monitoring/shadow.py`). The engine does not, so a
+            # test that called only the engine would render the empty fallback and
+            # prove nothing about what a real stall notice says.
+            state.last_observation_reason_code = observation.reason_code
+            outcome = decide_monitor(state, observation, now=now)
+            now += DEFAULT_MONITOR_CADENCE_SECS
+        reason = monitor_stall_reason(state, now=now - DEFAULT_MONITOR_CADENCE_SECS)
+        assert reason, f"the engine did not record a stall; last decision {outcome.decision}"
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(id="monitor-1", slot_key="chat-1", message="")
+        loop.active = False
+        state.outcome = MonitorOutcome.BLOCKED
+        state.stopped_reason = reason
+        state.stopped_at = now
+        loop.monitor = state
+
+        orch._notify_nudge_expired(loop)
+
+        body = ds.notify.call_args.args[2]
+        assert str(DEFAULT_MONITOR_STALL_TICKS) in body
+        assert str(DEFAULT_MONITOR_STALL_MIN_SECS // 60) in body
+        assert "checks_failed" in body
+
+    def test_every_blocking_stop_reason_has_its_own_copy(self):
+        """A reason added to the model must not fall through to the generic copy.
+
+        The enumeration above is written by hand, so it goes stale in silence: a
+        new ``MONITOR_STOP_*`` value simply starts rendering the catch-all, which
+        reads as "resolve the reported problem" for a subject that may have none.
+        This derives the list from the module instead, so adding a constant fails
+        HERE rather than in front of a user.
+
+        The exclusions are reasons that never reach this branch, each for a stated
+        structural reason -- not a list to append to when a case is inconvenient.
+        """
+        from kiro_crew.monitoring import models as monitor_models
+
+        handled_by_an_outcome_branch = {
+            monitor_models.MONITOR_STOP_RUNTIME_BUDGET,
+            monitor_models.MONITOR_STOP_AGENT_TURN_BUDGET,
+            monitor_models.MONITOR_STOP_TOKEN_BUDGET,
+            monitor_models.MONITOR_STOP_PROVIDER_ERROR_BUDGET,
+        }
+        never_a_blocker = {
+            monitor_models.MONITOR_STOP_USER,
+            monitor_models.MONITOR_STOP_SESSION_CLOSE,
+        }
+        reasons = (
+            {
+                value
+                for name, value in vars(monitor_models).items()
+                if name.startswith("MONITOR_STOP_") and isinstance(value, str)
+            }
+            - handled_by_an_outcome_branch
+            - never_a_blocker
+        )
+        assert reasons, "no stop reasons discovered -- the naming convention moved"
+
+        generic = "resolve the reported problem"
+        for reason in sorted(reasons):
+            orch = _make_orchestrator()
+            ds = _mock_dashboard_state()
+            orch.dashboard_state = ds
+            loop = NudgeLoop(id="monitor-1", slot_key="chat-1", message="")
+            loop.active = False
+            loop.monitor = MonitorState(
+                kind="github_pull_request",
+                target="https://github.com/acme/widgets/pull/7",
+                objective="review_ready",
+                created_ts=1.0,
+                outcome=MonitorOutcome.BLOCKED,
+                stopped_at=2.0,
+                stopped_reason=reason,
+            )
+
+            orch._notify_nudge_expired(loop)
+
+            body = ds.notify.call_args.args[2]
+            assert generic not in body, f"{reason} falls through to the generic copy"
 
     def test_budget_notice_explains_how_to_continue(self):
         orch = _make_orchestrator()

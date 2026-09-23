@@ -8,6 +8,13 @@ unreadable record is listed but survives a plain purge; a conductor holding no
 items is kept at any age; a terminal session ledger written to recently is not
 old; and the window has one owner, so the CLI default cannot drift from the
 module's.
+
+Note on the fixtures: ``session_ledger.record`` appends to the session's crew log,
+and the session ledger's record is a fold of those entries. The on-disk
+``<data home>/ledger/<store>/state.json`` document is LEGACY residue that nothing
+writes; ``ledger_sweep`` still governs it, so these fixtures build such a
+store directly on disk (see :func:`_legacy_session_store`) instead of going
+through ``record``.
 """
 
 from __future__ import annotations
@@ -48,16 +55,76 @@ def _iso_days_ago(days: float) -> str:
     return (datetime.now().astimezone() - timedelta(days=days)).isoformat(timespec="seconds")
 
 
-def _session_ledger(key: str, *, phase: str, age_days: float) -> Path:
-    """A session ledger in *phase*, whose age the sweep will measure as *age_days*."""
-    sl.record(key, goal="ship it", phase=phase, event="moved", event_kind="phase")
+def _write_legacy_state(directory: Path, state: dict) -> None:
+    """Write ``state.json`` in the shape the sweep parses. Call before backdating."""
+    (directory / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+def _legacy_session_store(
+    key: str,
+    *,
+    phase: str,
+    age_days: float,
+    goal: str = "ship it",
+) -> Path:
+    """Build the LEGACY on-disk session-ledger store directly.
+
+    ``session_ledger.record`` appends a ``ledger/recorded`` entry to the session's crew
+    log, and the record is a fold of those entries. The ``<data home>/ledger/``
+    directory the sweep governs holds legacy residue that nothing writes, so this
+    fixture stands one
+    up on disk itself: the store directory (``session_ledger.ledger_dir``), the
+    ``state.json`` document with the ten keys the sweep reads, and the ``slot_key``
+    breadcrumb the sweep needs to name the store.
+    """
     directory = sl.ledger_dir(key)
-    state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / ".lock").touch()
+    state = sl._empty_state()
+    state["goal"] = goal
+    state["phase"] = phase
+    state["next"] = "keep going"
+    state["events"] = [{"kind": "phase", "text": "moved"}]
+    now = _iso_days_ago(0)
+    state["created_at"] = now
+    state["last_progress_at"] = now
     if phase in sl.TERMINAL_PHASES:
         state["finished_at"] = _iso_days_ago(age_days)
-    (directory / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    _write_legacy_state(directory, state)
+    (directory / "slot_key").write_text(key + "\n", encoding="utf-8")
+    _backdate(directory / "slot_key", age_days)
     _backdate(directory / "state.json", age_days)
     return directory
+
+
+# Kept name so the tests read as before; it now builds the legacy store on disk.
+_session_ledger = _legacy_session_store
+
+
+def _touch_session_store(
+    directory: Path,
+    *,
+    phase: str | None = None,
+    restamp_finished: bool = False,
+) -> None:
+    """Simulate a later write into an existing legacy store, on disk.
+
+    ``session_ledger.record`` writes a crew log entry rather than ``state.json``, so a
+    resume or a touch against a legacy store is spelled as an edit to that document.
+    Optionally moves the phase (a resume) and re-stamps ``finished_at`` to now
+    (a phase write into a terminal ledger). Freshens the record's mtime so the
+    sweep reads the store as written just now.
+    """
+    state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+    if phase is not None:
+        state["phase"] = phase
+        if phase not in sl.TERMINAL_PHASES:
+            state["finished_at"] = ""
+        elif restamp_finished:
+            state["finished_at"] = _iso_days_ago(0)
+    elif restamp_finished:
+        state["finished_at"] = _iso_days_ago(0)
+    _write_legacy_state(directory, state)
 
 
 def _work_item(conductor: str = CONDUCTOR) -> str:
@@ -139,8 +206,9 @@ def test_purge_removes_only_the_candidates():
 
 @pytest.mark.parametrize("phase", ["implementing", "awaiting-ci", "blocked"])
 def test_an_in_flight_session_ledger_is_never_a_candidate(phase):
-    """The ledger IS what a resumed loop reads to recover its next step, so age
-    alone can never make it collectable."""
+    """An in-flight legacy store is never collectable by age alone -- the sweep
+    keeps it whatever its age, so a resume's recovery data (now folded from the
+    crew log) is never swept out from under a live session."""
     directory = _session_ledger("chat-4-busy", phase=phase, age_days=3650)
 
     report = sweep.scan(older_than_days=1)
@@ -456,7 +524,7 @@ def test_a_ledger_reopened_after_the_scan_is_not_purged():
     assert {stale.name, other.name} <= _stores(report)
 
     # The session came back to life between the report and the purge.
-    sl.record("chat-17-reopened", phase="implementing", event="resumed", event_kind="phase")
+    _touch_session_store(stale, phase="implementing")
 
     result = sweep.purge(report)
 
@@ -526,7 +594,7 @@ def test_a_session_ledger_resumed_after_the_scan_is_refused_under_its_lock():
         state = json.loads((dir_path / "state.json").read_text(encoding="utf-8"))
         return state.get("phase") in sl.TERMINAL_PHASES
 
-    sl.record(key, phase="implementing", event="resumed", event_kind="phase")
+    _touch_session_store(directory, phase="implementing")
     removed = sl.purge_matching({key}, guard=_guard)
 
     assert seen == [directory.name], "the guard must run for the matched store"
@@ -1015,7 +1083,7 @@ def test_a_terminal_session_ledger_written_to_recently_is_not_old():
     directory = _session_ledger("chat-30-touched", phase="done", age_days=90)
     assert directory.name in _stores(sweep.scan(older_than_days=30))
 
-    sl.record("chat-30-touched", goal="a note added after the fact")
+    _touch_session_store(directory)  # a goal/note write freshens state.json, not finished_at
     state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
     assert state["phase"] == "done"
     assert (datetime.now().astimezone() - datetime.fromisoformat(state["finished_at"])).days >= 89
@@ -1030,7 +1098,7 @@ def test_the_session_guard_refuses_a_terminal_ledger_touched_after_the_scan():
     report = sweep.scan(older_than_days=30)
     assert directory.name in _stores(report)
 
-    sl.record("chat-31-touched", artifacts={"pr": "https://example.invalid/pr/1"})
+    _touch_session_store(directory)  # an artifact write freshens state.json, not finished_at
 
     result = sweep.purge(report)
 
@@ -1071,9 +1139,8 @@ def test_the_session_guard_refuses_a_ledger_that_finished_again_recently():
     assert directory.name in _stores(report)
 
     # Between the report and the purge: resumed, then done again -- finished_at
-    # is re-stamped to now by ``session_ledger.record``.
-    sl.record("chat-26-refinished", phase="implementing", event="resumed", event_kind="phase")
-    sl.record("chat-26-refinished", phase="done", event="shipped", event_kind="phase")
+    # is re-stamped to now by a terminal phase write.
+    _touch_session_store(directory, phase="done", restamp_finished=True)
     state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
     assert state["phase"] == "done"
 

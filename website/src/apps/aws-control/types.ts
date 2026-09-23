@@ -478,11 +478,21 @@ export interface InstallIdentity {
  * Payload of `GET /backup/{account}`. `runs` holds the last local run per kind;
  * `remote` lists the archive in the bucket (null when it could not be read,
  * with the reason in `remoteError`). `nightly` is the scheduled-snapshot toggle.
+ * `nightlySessions` is the SEPARATE grant for the scheduled sessions archive,
+ * and is absent from an older backend, which reads as off -- the safe direction
+ * for a field that authorizes uploading transcripts.
+ * `nightlySessionsBlocked` is why that grant cannot run here, or absent when it
+ * can. Separate from the grant on purpose: the grant is the owner's answer and
+ * must read back as they set it, while this says whether asking for it achieves
+ * anything on this host. A surface that reads only the grant shows transcripts
+ * as scheduled while none are produced.
  * `jobs` carries the in-flight and last-failed run per kind for this account.
  * `install` is this machine's own identity, always present.
  */
 export interface BackupStatus {
   nightly: boolean
+  nightlySessions?: boolean
+  nightlySessionsBlocked?: string | null
   runs: Partial<Record<BackupKind, BackupRun>>
   jobs?: Partial<Record<BackupKind, BackupJobState>>
   install: InstallIdentity

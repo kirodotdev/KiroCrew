@@ -69,8 +69,21 @@ def test_semantic_search_decodes_nested_json_and_normalizes_unicode(env, name, q
     tier = env.tiers[name]
     value = {"nested": [{"label": '上海 Straße ＡＢＣ says "literal"', "flag": False}]}
     assert tier.set_semantic("pref.nested", value, 1.0, "user_explicit") is None
-    assert "\\u4e0a" in tier.get_semantic("pref.nested")["value_json"]
-    assert [row["key"] for row in tier.get_all_semantic(q=query)] == ["pref.nested"]
+    # The store persists the raw dump -- the size gate measures these bytes.
+    assert "\u4e0a" in tier.get_semantic("pref.nested")["value_json"]
+    # A legacy row persists the escaped dump and must stay searchable: the
+    # decoder path sees through the escapes.
+    assert tier.set_semantic("pref.nested_legacy", value, 1.0, "user_explicit") is None
+    tier.db.execute(
+        f"UPDATE {tier._sem_rel} SET value_json=? WHERE key=?",
+        (json.dumps(value), "pref.nested_legacy"),
+    )
+    tier.db.commit()
+    assert "\\u4e0a" in tier.get_semantic("pref.nested_legacy")["value_json"]
+    assert sorted(row["key"] for row in tier.get_all_semantic(q=query)) == [
+        "pref.nested",
+        "pref.nested_legacy",
+    ]
 
 
 @pytest.mark.parametrize("query", ["%", "_"])

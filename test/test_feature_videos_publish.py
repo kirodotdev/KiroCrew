@@ -239,6 +239,7 @@ def _sign_bytes(payload: bytes, private_key: Path, tmp_path: Path) -> str:
     signature = subprocess.run(
         [fixture.openssl_or_skip(), "dgst", "-sha256", "-sign", str(private_key), str(path)],
         check=True,
+        cwd=tmp_path,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     ).stdout

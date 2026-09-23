@@ -17,6 +17,7 @@ import React from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { createTestStore } from '../src/test/helpers'
 import { useNativeNotification } from '../src/hooks/useNativeNotification'
+import { approvalNotificationBody } from '../src/lib/approvalNotificationBody'
 import type { Notification as MeshNotification } from '../src/types'
 
 const BOT_NAME = 'Kiro'
@@ -54,6 +55,10 @@ describe('useNativeNotification', () => {
         requestPermission: vi.fn(),
       }),
     )
+    // The toast fires only while the user is away from the window (the in-app
+    // banner covers a focused one); happy-dom's default is the focused state,
+    // so hide the document for every formatting case below.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -63,6 +68,7 @@ describe('useNativeNotification', () => {
     act(() => root.unmount())
     container.remove()
     vi.unstubAllGlobals()
+    delete (document as { hidden?: boolean }).hidden
   })
 
   function mount(store: ReturnType<typeof createTestStore>) {
@@ -164,6 +170,93 @@ describe('useNativeNotification', () => {
     // Regression: old code used notifCount (4), new code uses delta (1).
     expect(opts.body).toBe('New notification')
     expect(opts.body).not.toMatch(/4 new/)
+  })
+
+  it('flattens the markdown body -- an OS toast renders plain text only', () => {
+    // A note body is markdown by contract (the detail panel renders it as
+    // markdown). macOS Notification Center does not: before the fix it painted
+    // `**auto/verify-python-package**` with the asterisks visible.
+    const store = createTestStore({ notifications: { items: [] } as any })
+    mount(store)
+
+    act(() => {
+      store.dispatch({
+        type: 'notifications/addNotification',
+        payload: makeNotif({
+          kind: 'skills',
+          title: 'New skill awaiting review',
+          body:
+            '**auto/verify-python-package-contains-source** — Verify a built wheel\n' +
+            '\nGenerated from a session. Needs your approval before it can be used.' +
+            '\n**Triggers:** after a wheel build' +
+            '\n_Bundles executable scripts — review them before approving._',
+          approval_id: 'skill-1',
+        }),
+      })
+    })
+
+    expect(notificationCtor).toHaveBeenCalledTimes(1)
+    const [, opts] = notificationCtor.mock.calls[0]
+    expect(opts.body).not.toMatch(/[*_`#>]/)
+    expect(opts.body).toContain('auto/verify-python-package-contains-source')
+    expect(opts.body).toContain('Triggers: after a wheel build')
+    // The blank line between the heading and the description survives as a
+    // visible separator rather than running the two paragraphs together.
+    expect(opts.body).toContain('Verify a built wheel · Generated from a session')
+  })
+
+  it.each([
+    'rm -rf *cache*', '_tmp_', '~~name~~', '~/.ssh/id_rsa', 'echo hi > out.log',
+    'echo ```; rm -rf *cache*', 'echo ````; rm -rf *cache*',
+  ])('sends the exact authorized command to the native banner: %s', command => {
+    const store = createTestStore({ notifications: { items: [] } as any })
+    mount(store)
+    act(() => {
+      store.dispatch({
+        type: 'notifications/addNotification',
+        payload: makeNotif({
+          body: approvalNotificationBody('agent', command, 'Review this'),
+          approval_id: 'literal-command',
+        }),
+      })
+    })
+    expect(notificationCtor).toHaveBeenCalledTimes(1)
+    expect(notificationCtor.mock.calls[0][1].body).toBe(`Source: agent · ${command} · Review this`)
+  })
+
+  it('falls back to the generic body when the markdown flattens to nothing', () => {
+    const store = createTestStore({ notifications: { items: [] } as any })
+    mount(store)
+
+    act(() => {
+      store.dispatch({
+        type: 'notifications/addNotification',
+        payload: makeNotif({ title: 'Heads up', body: '**__**', job_id: 'job-md' }),
+      })
+    })
+
+    expect(notificationCtor).toHaveBeenCalledTimes(1)
+    const [, opts] = notificationCtor.mock.calls[0]
+    expect(opts.body).toBe('New notification')
+  })
+
+  it('falls back to the generic body when a persisted body is not a string', () => {
+    // A legacy or corrupted persisted row: truthy, so the `body ?` branch is
+    // taken, but not text. The banner must degrade to the fallback line, not
+    // throw out of the granted-notification effect.
+    const store = createTestStore({ notifications: { items: [] } as any })
+    mount(store)
+
+    act(() => {
+      store.dispatch({
+        type: 'notifications/addNotification',
+        payload: makeNotif({ title: 'Heads up', body: { raw: 42 } as unknown as string, job_id: 'job-bad' }),
+      })
+    })
+
+    expect(notificationCtor).toHaveBeenCalledTimes(1)
+    const [, opts] = notificationCtor.mock.calls[0]
+    expect(opts.body).toBe('New notification')
   })
 
   it('uses a per-event tag so rapid updates replace instead of stack', () => {

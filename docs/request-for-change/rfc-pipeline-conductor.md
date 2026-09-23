@@ -137,11 +137,23 @@ subprocess-free scripts:
   are derived, never configurable: transcripts only from this gateway's own session store (keys are
   validated stems; a candidate resolving outside the store — a symlink — reads as missing), state
   only beside the config file.
+- `scripts/coverage_filter.py` — the batch half of the same coverage question, for the QUEUE rather
+  than for one candidate. The work source selects and excludes by label, and a PR carrying
+  `Fixes #N` applies no label, so a label-shaped selector cannot tell a covered item from a free
+  one: measured on this repo, 25 of 29 label-clean candidates were already referenced by an open PR.
+  `claim_preflight.py` refuses each of them, but only at claim time and at one timeline read plus one
+  detail read per referencing PR, per item — a cost that scales with the backlog and is paid again
+  every cycle. So this script reads the repository's open pull requests once, fork and draft PRs
+  included, and reports which candidates their titles or bodies reference. It only ever SUBTRACTS:
+  `COVERED` is a positive finding, `UNCOVERED` certifies nothing, and an unreadable forge exits 3
+  printing no `uncovered` list, so the cheaper evidence can never widen what gets dispatched and
+  cannot be mistaken for permission. That asymmetry is what makes two evidence sources safe rather
+  than a drift risk; the reference vocabulary the two scripts share is pinned by a test.
 - `scripts/credit_spend.py` — per-item credit rollup with budget verdicts `within` / `exhausted` /
   `truncated` (a bounded scan never claims `within`) / `unmetered` (absent metering is unknown,
   not zero).
 
-The design rule the three share: **a decision expressed as prose in the skill rots silently, and a
+The design rule these scripts share: **a decision expressed as prose in the skill rots silently, and a
 decision computed by a script can be tested.** Each script exists because a predicate the skill
 used to state in prose was found to be answering one question and treating an empty answer as
 permission.

@@ -23,6 +23,72 @@ You need:
 The app is **disabled by default** (`defaultEnabled: false`). Enable it from the Apps
 page, then open **Auto-Improve** in the left nav.
 
+Enabling the app also creates two Crew Members: **auto-improvement-scout** and
+**auto-improvement-engineer**. Open Crew Members to edit their permanent rules,
+talk to either member, or inspect its private memory. Each has its own memory;
+the Scout's candidate report is the handoff to the Engineer.
+
+The Run button coordinates their work. The Scout investigates; the Engineer
+implements candidates in isolated worktrees; the app's deterministic tests and
+measurements decide acceptance. Each assignment has a fresh conversation,
+listed in member activity and chat history. The run feed identifies its member;
+open that member's activity to inspect the assignment conversation.
+Member identity, rules and memory survive the next run.
+Disabling the app stops the run and retains both members and their history.
+Removing a member or changing its app template prevents subsequent runs until
+that team configuration is restored.
+
+Before starting an assignment, the app checks that working directory's
+`.kiro/agents` files. A project agent named `auto-improvement-scout` or
+`auto-improvement-engineer` would replace the app's governed template, so the
+assignment refuses to start. The refusal identifies the conflicting file:
+rename or remove that project agent before retrying. Unreadable or invalid agent
+specs also require repair before a run; a different filename or a symlink does
+not bypass the check. JSON and Markdown specs are checked, with JSON taking
+precedence over a same-stem Markdown file. Parent directories are not scanned.
+
+Unattended assignments retain the app's credential-isolation prerequisite.
+The gateway's effective sandbox must be `strict`, selected through the
+`sandbox.min_level` governance floor, or the operator must make the existing
+explicit `acceptUnsandboxedAgentRisk` decision. The `cc` profile leaves SSH and
+GitHub CLI credentials readable and requires the same explicit risk acknowledgement
+as `auto` and `standard`. Setting `agent.sandbox` to an unsupported value is not a
+substitute. Kiro reports credits rather than USD; use cycle and time limits to bound
+these runs, since the app does not convert credits to dollars.
+
+### Recover a missing or changed member
+
+Stop the run and wait until it finishes stopping before repairing either role.
+If only the template changed and the recorded member and private store are intact,
+open **Crew Members → Edit member → Agent template**. Restore
+`auto-improvement-scout` for the Scout or `auto-improvement-engineer` for the
+Engineer. This keeps the member's identity, rules, memory and history.
+
+If the recorded member or store is missing, restore the original state from backup
+to retain its memory, or explicitly create a fresh replacement:
+
+1. Disable Auto-Improvement, then stop the gateway before editing files.
+2. Use that gateway's data home: its `KIROCREW_HOME`, normally `~/.kiro/crew`.
+   Keep backup copies of `config.json` and
+   `apps/auto-improvement/data/crew.json` there before changing either.
+   The latter holds both role mappings for the app, across all repositories.
+3. If the broken role's canonical name (`auto-improvement-scout` or
+   `auto-improvement-engineer`) is occupied, rename that key under `agents` in
+   `config.json` to an unused name. Preserve the entire member record, including
+   `member_id`, `memory_store` and `source`. If its store declaration exists,
+   update `memory_stores[<store>].owner_member` to the new label; keep
+   `owner_member_id` and the store key unchanged. Leave existing directories intact.
+4. In the working `crew.json`, remove only the broken role's property:
+   `discovery` for Scout or `implementation` for Engineer. Keep valid JSON and
+   retain the healthy role's exact ID, even if that member has been renamed.
+5. Restart the gateway and re-enable Auto-Improvement. The missing role receives
+   a fresh identity and empty private memory; the healthy role keeps its identity,
+   name, rules, memory and history.
+
+Replacement does not transfer old memory or manual documents. Existing store files,
+member documents and transcripts remain associated with the old identity; missing
+data is not recreated. Old sessions do not become sessions of the replacement.
+
 ### Is my repository a good target?
 
 The gate runs your suite several times per candidate (build → lint → collect → RED twice

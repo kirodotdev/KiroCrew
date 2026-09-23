@@ -1,5 +1,7 @@
 # Design — Kiro Crew App Builder Kit
 
+Status: historical; the proposed `website/src/kit/` implementation is not present.
+
 ## Overview
 
 The App Builder Kit is a new frontend library at `website/src/kit/` that layers on the

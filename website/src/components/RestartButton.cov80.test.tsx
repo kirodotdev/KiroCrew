@@ -12,9 +12,24 @@ const restartSessions = vi.mocked(api.restartSessions)
 describe('RestartButton', () => {
   beforeEach(() => {
     restartSessions.mockReset()
+    // The button asks before it relaunches; these cases are about what
+    // happens after the operator has said yes.
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
     vi.useFakeTimers({ shouldAdvanceTime: true })
   })
-  afterEach(() => vi.useRealTimers())
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+  it('asks first, saying what stays and what stops, and does nothing when declined', () => {
+    // The reassurance has to land at the moment of the click, not only in a
+    // hover title: a reader who reads "Restart" as breaking something never
+    // presses it, and a saved template change never reaches a running chat.
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<RestartButton />)
+    fireEvent.click(screen.getByRole('button'))
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(confirm.mock.calls[0][0]).toMatch(/Your chats and their history stay; a reply in progress stops/)
+    expect(restartSessions).not.toHaveBeenCalled()
+  })
 
   it('reports success and clears the notice after the timeout', async () => {
     restartSessions.mockResolvedValue(undefined as never)

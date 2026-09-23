@@ -9,13 +9,15 @@
  * - the switch inside the dialog IS the card's switch: flipping either one
  *   writes the same preview flag, and the other reflects it
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, within, cleanup } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../components/FeaturePreviewIntroDialog'
 import { FeaturePreviewsSection } from '../pages/settings/FeaturePreviewsSection'
+import { api } from '../api/client'
 
 const INTRO: FeaturePreviewIntro = {
   summary: 'What it does.',
@@ -103,10 +105,21 @@ describe('FeaturePreviewIntroButton', () => {
 describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
   beforeEach(() => {
     for (const k of ['mc-preview-webhooks', 'mc-preview-crew', 'mc-preview-remote-crew-chat']) localStorage.removeItem(k)
+    // The Decisions card reads `config.json`; stubbed so these capture-button
+    // cases do not wait on a fetch that cannot succeed under vitest.
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
   })
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
 
-  const renderSection = () => render(<MemoryRouter><FeaturePreviewsSection /></MemoryRouter>)
+  const renderSection = () =>
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><FeaturePreviewsSection /></MemoryRouter>
+      </QueryClientProvider>,
+    )
 
   it('offers the button for the previews that have real captures, and not for the one that does not', () => {
     renderSection()

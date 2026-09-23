@@ -616,6 +616,12 @@ class TelegramClient:
         # transitions to persistently-failing or recovers. Set by the gateway
         # to keep the settings status badge truthful after startup.
         self.on_status: Callable[[bool, str], None] | None = None
+        #: Optional teardown callback: called once from :meth:`close`, best-effort.
+        #: The gateway sets it to unregister the dispatcher's spawn-approval
+        #: delivery hook so the host gate stops routing to a channel that is going
+        #: away (the registration is process-global; see
+        #: ``messaging/spawn_approval_delivery.py``).
+        self.on_close: Callable[[], None] | None = None
         #: Last health state reported through on_status (None = never
         #: reported). The gateway seeds this with the startup getMe outcome so
         #: transitions are relative to the boot state.
@@ -717,6 +723,14 @@ class TelegramClient:
     async def close(self) -> None:
         """Gracefully shut down."""
         self._closed = True
+        # Retire any process-global registration this channel holds (the
+        # spawn-approval delivery hook) BEFORE tearing the transport down, so the
+        # host spawn gate stops routing to a dispatcher that is going away.
+        if self.on_close is not None:
+            try:
+                self.on_close()
+            except Exception:
+                logger.debug("Telegram on_close callback failed", exc_info=True)
         # Best-effort flush of buffered albums BEFORE cancelling the polling
         # task. This is NOT a delivery guarantee -- see _flush_all_albums: the
         # handler it spawns races SessionManager._closing and may be refused,

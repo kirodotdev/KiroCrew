@@ -277,7 +277,11 @@ class HeartbeatService:
         self._memory_backup_task = asyncio.create_task(self._back_up_memory())
 
     async def _back_up_memory(self) -> None:
-        """Take a rotating copy of every active private V2 memory store.
+        """Take a rotating copy of every active memory store, the default one first.
+
+        The default store is the one every install has and the one the module
+        exists for; a sweep that visited only member silos protected the small
+        stores and left the largest one with no copy at all.
 
         Offloaded to ``maintenance_executor`` because the SQLite backup API is blocking
         and copies the whole file; on the event loop a large store would stall every
@@ -300,7 +304,6 @@ class HeartbeatService:
             return memory_backup.back_up_all_stores(
                 int(cfg.backup_keep),
                 should_stop=self._memory_backup_stop.is_set,
-                private_only=True,
             )
 
         try:

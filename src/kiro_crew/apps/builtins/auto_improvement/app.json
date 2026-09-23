@@ -23,9 +23,13 @@
     ]
   },
   "skills": ["skills/ai-discover", "skills/metric-design"],
-  "agents": ["agents/discovery.json", "agents/pr-author.json"],
+  "agents": ["agents/discovery.json", "agents/pr-author.json", "agents/scout.json", "agents/engineer.json"],
   "backend": {
-    "routes": "backend.routes:register_routes"
+    "routes": "backend.routes:register_routes",
+    "hooks": {
+      "on_startup": "backend.crew:on_startup",
+      "on_shutdown": "backend.crew:on_shutdown"
+    }
   },
   "mcpServers": {
     "auto-improvement": {

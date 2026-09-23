@@ -21,6 +21,8 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.superseded_defaults import (
     acked_superseded,
+    adopted_superseded,
+    adoption_summary,
     coerced_value_drift,
     coercion_summary,
     drift_summary,
@@ -287,6 +289,14 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
     is neither drifted nor coerced is refused rather than silently ignored, because
     a typo would otherwise read as success.
     """
+    wanted = list(getattr(args, "keys", None) or [])
+    listing = not (getattr(args, "adopt", False) or getattr(args, "keep", False) or wanted)
+    if listing:
+        # BEFORE config.json is opened: a ledger can outlive or outlast the file it
+        # describes, and what an earlier load removed is still the answer to the
+        # question this command was asked -- a missing or corrupt config must not
+        # hide it. Listing only; an adopted key is not an --adopt/--keep target.
+        _print_adopted()
     path = config_path()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -310,7 +320,6 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
     drifted = superseded_default_drift(raw, acked={})
     coerced = coerced_value_drift(raw)
     acked = acked_superseded()
-    wanted = list(getattr(args, "keys", None) or [])
     if wanted:
         known = {e.dotted_key for e in drifted} | {c.dotted_key for c, _ in coerced}
         unknown = [k for k in wanted if k not in known]
@@ -450,6 +459,19 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         print("Take the current defaults:  kirocrew config defaults --adopt")
         print("Affirm your values:         kirocrew config defaults --keep")
         print("Either accepts specific keys, e.g. --keep session.autocompact_pct")
+
+
+def _print_adopted() -> None:
+    """List what the load path already auto-adopted, with the undo for each.
+
+    Listing only: an adopted key holds no stored value any more, so it is neither
+    drift nor something ``--adopt``/``--keep`` can act on, and it is deliberately not
+    folded into the ``known`` set those flags validate against. It is shown because
+    the only other announcement was one WARNING line in a gateway log, and "what did
+    the upgrade change in my file" is exactly the question a bare listing asks.
+    """
+    for dotted, removed in sorted(adopted_superseded().items()):
+        print(f"ℹ️  {adoption_summary(dotted, removed)}\n")
 
 
 def _overlay_keys(dotted_keys: list[str]) -> set[str]:

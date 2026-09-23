@@ -194,6 +194,35 @@ describe('QuestionCard — collapsing', () => {
 
   const header = (text: string) => screen.getByText(text).closest('button')!
 
+  it('starts a multi-question card compact, with only the first question open', () => {
+    // A fully open multi-question card is taller than the viewport, so it buries
+    // the composer and the conversation and leaves collapse-all as the only way
+    // back. Opening at one question is the shape the card already walks towards
+    // as answers fold; it just starts there now.
+    render(<QuestionCard questions={twoQuestions} onSubmit={vi.fn()} />)
+    expect(screen.getByText('Carve-out')).toBeInTheDocument()
+    expect(screen.queryByText('staging')).not.toBeInTheDocument()
+    expect(header('Trust model')).toHaveAttribute('aria-expanded', 'true')
+    expect(header('Environments')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('starts a single-question card open, where folding would only add a click', () => {
+    // Nothing follows it and nothing is buried, so the card is already at the
+    // height it needs. Same predicate the auto-fold uses.
+    render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} />)
+    expect(screen.getByText('Red')).toBeInTheDocument()
+    expect(header('What is your favorite color?')).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('starts a replaced question set in the same shape as a fresh mount', () => {
+    // The reset and the initial state read one helper. Were they to drift, a
+    // re-dispatched card would open at full height while a fresh one did not.
+    const { rerender } = render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} />)
+    rerender(<QuestionCard questions={twoQuestions} onSubmit={vi.fn()} />)
+    expect(screen.getByText('Carve-out')).toBeInTheDocument()
+    expect(screen.queryByText('staging')).not.toBeInTheDocument()
+  })
+
   it('folds a question away and back on the header toggle', () => {
     render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} />)
     expect(screen.getByText('Red')).toBeInTheDocument()
@@ -264,11 +293,13 @@ describe('QuestionCard — collapsing', () => {
     expect(screen.getByText('Submit').closest('button')!).toBeDisabled()
   })
 
-  it('auto-folds an answered question on a multi-question card', () => {
+  it('auto-folds an answered question and opens the next unanswered one', () => {
     render(<QuestionCard questions={twoQuestions} onSubmit={vi.fn()} />)
     fireEvent.click(screen.getByText('Carve-out').closest('button')!)
-    // Q1 folds to its answer; Q2 stays open, so the card walks DOWN to Submit
-    // instead of growing past it.
+    // Q1 folds to its answer and Q2 opens in the same beat, so the card walks
+    // DOWN towards Submit with exactly one question open: the next one needing
+    // an answer. Without the hand-off a compact card would leave Q2 shut and
+    // charge a click on a muted row to find it.
     expect(screen.queryByText('Public only')).not.toBeInTheDocument()
     expect(screen.getByText('staging')).toBeInTheDocument()
   })
@@ -280,6 +311,35 @@ describe('QuestionCard — collapsing', () => {
     fireEvent.click(screen.getByText('staging').closest('button')!)
     fireEvent.click(screen.getByText('Submit').closest('button')!)
     expect(onSubmit).toHaveBeenCalledWith({ 'Trust model': 'Carve-out', 'Environments': 'staging' })
+  })
+
+  it('folds the whole card once the last question is answered', () => {
+    render(<QuestionCard questions={twoQuestions} onSubmit={vi.fn()} />)
+    fireEvent.click(screen.getByText('Carve-out').closest('button')!)
+    fireEvent.click(screen.getByText('staging').closest('button')!)
+    // Nothing is left to hand off to, so the card ends walked all the way down
+    // to Submit rather than re-opening something the user already settled.
+    expect(screen.queryByText('Public only')).not.toBeInTheDocument()
+    expect(screen.queryByText('prod')).not.toBeInTheDocument()
+    expect((screen.getByText('Submit').closest('button') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('does not reopen an answered question when an earlier answer changes', () => {
+    // The hand-off targets the first question with no answer, not the one after
+    // the click. Opening `qIdx + 1` instead would reopen a settled question here.
+    const threeQuestions = [
+      ...twoQuestions,
+      { question: 'Rollout', options: [{ label: 'canary' }, { label: 'full' }] },
+    ]
+    render(<QuestionCard questions={threeQuestions} onSubmit={vi.fn()} />)
+    fireEvent.click(screen.getByText('Carve-out').closest('button')!)
+    fireEvent.click(screen.getByText('staging').closest('button')!)
+    fireEvent.click(screen.getByText('canary').closest('button')!)
+
+    fireEvent.click(header('Trust model'))
+    fireEvent.click(screen.getByText('Public only').closest('button')!)
+    expect(screen.queryByText('prod')).not.toBeInTheDocument()
+    expect(screen.queryByText('full')).not.toBeInTheDocument()
   })
 
   it('does not auto-fold a single-question card', () => {
@@ -321,11 +381,13 @@ describe('QuestionCard — collapsing', () => {
 
   it('folds the rest when only some questions are already folded', () => {
     // Mixed state must mean "collapse all", not "expand all" — otherwise the
-    // control re-opens what the user just folded.
+    // control re-opens what the user just folded. A fresh multi-question card is
+    // already mixed, first question open and the rest folded, so the starting
+    // state is the case under test and needs no manual fold to reach.
     render(<QuestionCard questions={twoQuestions} onSubmit={vi.fn()} />)
-    fireEvent.click(header('Trust model'))
     expect(screen.getByText('Collapse all')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Collapse all'))
+    expect(screen.queryByText('Carve-out')).not.toBeInTheDocument()
     expect(screen.queryByText('staging')).not.toBeInTheDocument()
   })
 

@@ -224,7 +224,7 @@ def replay_frames(
     reads its permission frames the way the live session did. Absent, as on every
     other harness, no frame is read as an envelope.
 
-    The session-ledger flag is forced ON for the replay. The parsers measure a
+    The crew log flag is forced ON for the replay. The parsers measure a
     tool result's full byte count and digest only while that flag is set, since
     the emitter is its only consumer -- so replaying with it off would record a
     shorter event than any session with the feature enabled produces, and the
@@ -234,15 +234,15 @@ def replay_frames(
     restored afterwards: this process runs other tests, and leaving the feature on
     for them would change what they exercise.
     """
-    prior = os.environ.get("KIROCREW_SESSION_LEDGER")
-    os.environ["KIROCREW_SESSION_LEDGER"] = "1"
+    prior = os.environ.get("KIROCREW_CREW_LOG")
+    os.environ["KIROCREW_CREW_LOG"] = "1"
     try:
         return _replay(frames, gate_envelope_nonce=gate_envelope_nonce)
     finally:
         if prior is None:
-            os.environ.pop("KIROCREW_SESSION_LEDGER", None)
+            os.environ.pop("KIROCREW_CREW_LOG", None)
         else:
-            os.environ["KIROCREW_SESSION_LEDGER"] = prior
+            os.environ["KIROCREW_CREW_LOG"] = prior
 
 
 def _replay(
@@ -295,7 +295,9 @@ def _replay(
                 entry["usage"] = list(parse_usage_update(update))
                 entry["usage_cost"] = parse_usage_cost(update)
             if discriminant == "tool_call_update":
-                todo = parse_todo_snapshot(update)
+                todo = parse_todo_snapshot(
+                    update, caches["tool_name_cache"], cache_scope=caches["cache_scope"]
+                )
                 if todo is not None:
                     entry["todo"] = todo
         elif action == "steer":

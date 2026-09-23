@@ -33,6 +33,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import source_corpus
 from aiohttp import web
 
 from conftest import requires_symlinks
@@ -51,10 +52,10 @@ from kiro_crew.dashboard.handlers.mcp import (
     api_mcp_active,
 )
 
-# One xdist worker for the whole module: every test here derives from ONE module-cached
-# scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
-# spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
-# per full run for this file alone. Grouping keeps the cache single-copy per run.
+# One xdist worker for the whole module: the call-site ratchet below reads src/ through
+# ``test/source_corpus.py``'s shared, module-lifetime text cache. Under `--dist loadgroup`
+# an unmarked module is spread across workers and each worker re-pays that read and holds
+# its own copy of the corpus. Grouping keeps the cache single-copy per run.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_agent_spec_hardened_reads")
 
 # The two refusal shapes cheap enough to plant per surface. "oversized" is the
@@ -531,7 +532,10 @@ class TestDenialAuditNeverRaises:
     def _break_sel(monkeypatch):
         from kiro_crew import agent_discovery
 
+        # Every fence refuses: the project-directory and cache-key checks ask
+        # is_sensitive_path, the spec readers ask is_sensitive_canonical_path.
         monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda _p: True)
+        monkeypatch.setattr(agent_discovery, "is_sensitive_canonical_path", lambda _p: True)
 
         def _explode():
             raise OSError("SEL home is not writable")
@@ -578,7 +582,9 @@ class TestSensitiveSymlinkGuard:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "linked.json").symlink_to(target)
-        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+        monkeypatch.setattr(
+            agent_discovery, "is_sensitive_canonical_path", lambda p: str(target) in str(p)
+        )
         monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
 
         out = _build_kiro_model_map()
@@ -656,7 +662,9 @@ class TestAgentSpecEntryMissing:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / AGENT_FILENAME).symlink_to(target)
-        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+        monkeypatch.setattr(
+            agent_discovery, "is_sensitive_canonical_path", lambda p: str(target) in str(p)
+        )
         monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
 
         assert mint._agent_spec_entry_missing("probe") is True
@@ -722,7 +730,9 @@ class TestDenialAttribution:
 
         path = tmp_path / "protected.json"
         path.write_text(json.dumps({"name": "linked"}), encoding="utf-8")
-        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(path) in str(p))
+        monkeypatch.setattr(
+            agent_discovery, "is_sensitive_canonical_path", lambda p: str(path) in str(p)
+        )
         events: list[dict] = []
         monkeypatch.setattr(
             agent_discovery,
@@ -881,6 +891,13 @@ class TestProjectNamesDenialAttribution:
 # Forwarding helpers are pinned as forwarding rather than forced to use a fixed
 # literal that would erase the caller's attribution.
 _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # Two reads under one label: the launch loop reads each authored spec to
+    # project it, and stale-alias validation re-reads the recorded source to
+    # confirm it still names the same agent before reclaiming the view.
+    "kiro_crew/acp/skill_projection.py": [
+        ("native_skill_projection", "acp"),
+        ("native_skill_projection", "acp"),
+    ],
     # Two reads, deliberately labelled apart: the session-MCP translation resolves
     # the PROJECT checkout first (kiro-cli resolves --agent there before the user
     # level) and falls back to the user-level spec, so a refusal names which of the
@@ -895,15 +912,27 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/agent_capabilities.py": [("capability_publish", "dashboard")],
     "kiro_crew/agent_discovery.py": [
+        ("agent_skill_globs", "unknown"),
+        # ``agent_welcome_message`` reads the PROJECT checkout's specs itself
+        # (project scope shadows the user level, as `list_agents` resolves it),
+        # so it names the hint read rather than forwarding: a refused checkout
+        # spec is attributed to the greeting, not to whichever surface asked.
+        ("agent_welcome_message", "unknown"),
         ("forward:operation", "forward:source"),
         ("forward:operation", "forward:source"),
         # ``spec_by_declared_name`` scans specs it did not name for whichever
         # surface resolves an agent id and finds no ``<agent_id>.json``; it
         # forwards so each such surface attributes its own denials.
         ("forward:operation", "forward:source"),
+        # ``agent_spec_stems`` reads each ``*.md`` to decide whether it is a
+        # spec at all, for the Slack listings; it forwards for the same reason.
+        ("forward:operation", "forward:source"),
         ("list_agents", "unknown"),
         ("list_agents", "unknown"),
         ("resolve_project_agent_name", "unknown"),
+    ],
+    "kiro_crew/apps/builtins/auto_improvement/spine/crew_runner.py": [
+        ("auto_improvement_assignment", "unknown")
     ],
     "kiro_crew/cli_doctor.py": [("doctor", "cli"), ("doctor", "cli"), ("doctor", "cli")],
     "kiro_crew/config/loader.py": [("load_config", "unknown")],
@@ -920,6 +949,15 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("steering_resources", "unknown"),
     ],
     "kiro_crew/cron_script.py": [("cron_resolve_mcp_server", "cron")],
+    # The templates tab's read-only rule for a definition PATCH reads the spec
+    # file the PATCH targets, so it labels itself as that PATCH; create re-reads
+    # the SOURCE it copies inside the spec lock (the fork/publish shape).
+    "kiro_crew/dashboard/handlers/agent_templates.py": [
+        ("api_agent_detail", "dashboard"),
+        ("api_agent_template_create", "dashboard"),
+        ("api_agent_template_delete", "dashboard"),
+        ("api_agent_template_delete", "dashboard"),
+    ],
     "kiro_crew/dashboard/handlers/agents.py": [
         ("api_agent_detail", "dashboard"),
         ("api_agent_detail", "dashboard"),
@@ -987,8 +1025,10 @@ _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/dashboard/chat_handlers.py": [
         ("api_chat", "dashboard"),
         ("api_chat_slot_agent", "dashboard"),
+        ("api_chat_slot_agent", "dashboard"),
     ],
     "kiro_crew/dashboard/chat_runner.py": [("chat_turn", "unknown")],
+    "kiro_crew/dashboard/chat_threads.py": [("thread_reply", "dashboard")],
     "kiro_crew/dashboard/handlers/side.py": [("side_panel", "dashboard")],
     "kiro_crew/spawn_warm.py": [("spawn_warm", "unknown")],
 }
@@ -1009,14 +1049,19 @@ def _labelled_call_sites(target: str) -> dict[str, list[tuple[str | None, str | 
     forwarded kwargs are written. This applies to every entry in
     ``_RATCHET_INVENTORY``, not to any one callee.
 
-    Cached per *target*: the source tree cannot change mid-run, both tests in
-    ``TestCallSiteLabelRatchet`` ask the same three targets, and the scan itself
-    (rglob + ast.parse of the whole ``src/`` tree) is the expensive part.
+    Cached per *target*: the source tree cannot change mid-run and both tests in
+    ``TestCallSiteLabelRatchet`` ask the same targets. The scan itself goes through
+    ``test/source_corpus.py``: one shared read of ``src/`` for the module, and a
+    parse of only the files whose text names *target* at all. That narrowing cannot
+    hide a site -- every match above is an identifier equal to *target* (a ``Name``
+    id, an ``Attribute`` attr, or a positional ``Name`` argument), and the corpus
+    matches identifiers on NFKC-normalised text, which is how CPython folds them at
+    parse time. Before this the function did its own ``rglob`` + ``ast.parse`` of
+    all ~1,600 modules once PER TARGET (6 x ~9 s per run).
     """
-    src = Path(__file__).resolve().parent.parent / "src"
+    src = source_corpus.src_root().parent
     sites: dict[str, list[tuple[str | None, str | None]]] = {}
-    for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for path, _text, tree in source_corpus.parsed_candidates(require_any=(target,)):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -1055,7 +1100,17 @@ def _labelled_call_sites(target: str) -> dict[str, list[tuple[str | None, str | 
 # surface triggered a denial. Callers therefore name themselves at the call
 # site, and the wrapper's own `_read_agent_spec` call is pinned as forwarding.
 _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/agent_discovery.py": [("agent_skill_globs", "unknown")],
+    # ``cached_agent_specs`` is the on-loop face of the same snapshot: it
+    # forwards its caller's labels into the pool-side refresh, so the surface
+    # that asked still owns the denial. Pinned as forwarding, like the wrapper.
+    "kiro_crew/agent_discovery.py": [
+        ("agent_skill_globs", "unknown"),
+        ("forward:operation", "forward:source"),
+    ],
+    # The named-agent model resolver runs on the event loop from the provider
+    # factory; it reads the snapshot so a warm call re-parses nothing, and keeps
+    # the label its per-file hardened read carried.
+    "kiro_crew/config/loader.py": [("load_config", "unknown")],
     "kiro_crew/dashboard/handlers/_shared.py": [("skills_loaded_by_agents", "dashboard")],
 }
 
@@ -1074,10 +1129,32 @@ _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+# The strict reader is the direct-filename read for the three surfaces that
+# need the failure CLASS (transient vs deterministic) rather than ``None``: the
+# KAS projection, the overlay rewriter and the tool-policy read. Each names
+# itself so a sensitive-target denial is attributed to the surface that asked.
+# The tool-policy read has TWO sites under one label: the direct-filename read,
+# and the sweep that asks whether any spec in the directory is unreadable before
+# reporting "no policy" -- the declared-name scan folds a refusal into "no
+# match", so that sweep is how the surface learns the difference. Both belong to
+# the same resolution and so carry the same label.
+_EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
+    "kiro_crew/dashboard/handlers/sessions.py": [
+        ("session_tool_policy", "dashboard"),
+        ("session_tool_policy", "dashboard"),
+    ],
+    "kiro_crew/doctor_deadpath.py": [("doctor", "cli")],
+    "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
+    "kiro_crew/slack/handler.py": [("slack_resolve_agent", "slack")],
+}
+
+
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "_read_agent_spec": _EXPECTED_CALL_SITE_LABELS,
     "parsed_agent_specs": _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS,
     "project_agent_names": _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS,
+    "read_agent_spec_strict": _EXPECTED_STRICT_CALL_SITE_LABELS,
     "spec_by_declared_name": _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS,
     "warm_project_agent_names": _EXPECTED_WARM_CALL_SITE_LABELS,
 }

@@ -226,8 +226,8 @@ describe('memory store picker — the listing', () => {
     await waitFor(() => expect(api.memoryBackups).toHaveBeenCalledWith(undefined))
     vi.clearAllMocks()
 
-    await pickStore(picker, 'Private to finance-reviewer · Memory V2')
-    await waitFor(() => expect(picker).toHaveAttribute('title', 'Private to finance-reviewer · Memory V2'))
+    await pickStore(picker, 'finance-reviewer · Member memory (V2)')
+    await waitFor(() => expect(picker).toHaveAttribute('title', 'finance-reviewer · Member memory (V2)'))
     fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Profile' }), { button: 0, ctrlKey: false })
 
     // Every store-scoped read on the page, re-issued under the new name. The

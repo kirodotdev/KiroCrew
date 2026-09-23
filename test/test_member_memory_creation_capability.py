@@ -1,4 +1,4 @@
-"""Member creation refuses unusable isolation before changing ownership."""
+"""Explicit member creation is independent of OS memory-confidentiality mechanisms."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp import web
@@ -16,24 +15,15 @@ from kiro_crew import member_memory_auth as auth
 from kiro_crew import sandbox
 from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_dir
+from kiro_crew.config.sections import MemoryStoreConfig
 from kiro_crew.dashboard.handlers import agents as handlers
 from kiro_crew.dashboard.handlers.core import api_kirocrew_config_patch
-from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
-    memory_index_path_for,
-    memory_store_dir_for,
+    UnknownMemoryStore,
     memory_stores_root,
     provision_member_memory,
     require_member_memory_store,
 )
-
-_UNSUPPORTED = [
-    ("win32", "kas", "auto", "namespace", False, "WSL/Linux gateway"),
-    ("linux", "codex", "auto", "namespace", False, "Use Kiro, Claude Code or KAS"),
-    ("linux", "kas", "off", "namespace", False, "Enable agent.sandbox"),
-    ("linux", "kas", "auto", "none", False, "Restore OS sandbox support"),
-    ("darwin", "", "auto", "sandbox-exec", True, "Disable that delegation"),
-]
 
 
 def _environment(monkeypatch, platform, backend, mode, mechanism, delegates):
@@ -69,272 +59,6 @@ def _app(monkeypatch):
     app.router.add_put("/api/agents/{name}", handlers.api_kirocrew_agent_update)
     app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
     return app
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("entrypoint", ["create", "opt_in", "sync"])
-@pytest.mark.parametrize("platform,backend,mode,mechanism,delegates,remedy", _UNSUPPORTED)
-async def test_dashboard_refuses_unsupported_allocation_without_side_effects(
-    monkeypatch, entrypoint, platform, backend, mode, mechanism, delegates, remedy
-):
-    await asyncio.to_thread(
-        _environment, monkeypatch, platform, backend, mode, mechanism, delegates
-    )
-    app = _app(monkeypatch)
-    retire = AsyncMock()
-    monkeypatch.setattr(handlers, "_retire_legacy_member_contexts", retire)
-    checked = []
-    supported = auth.private_memory_execution_supported
-
-    def check(*, session_key):
-        with pytest.raises(RuntimeError, match="no running event loop"):
-            asyncio.get_running_loop()
-        checked.append(session_key)
-        return supported(session_key=session_key)
-
-    monkeypatch.setattr(auth, "private_memory_execution_supported", check)
-    if entrypoint == "sync":
-        discovered = AgentInfo(
-            name="new-member",
-            filename="new-member.json",
-            description="",
-            model="auto",
-            source="package",
-        )
-        monkeypatch.setattr(handlers, "list_agents", lambda: [discovered])
-    before = await asyncio.to_thread(_snapshot)
-    async with TestClient(TestServer(app)) as client:
-        if entrypoint == "create":
-            response = await client.post(
-                "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
-            )
-        elif entrypoint == "sync":
-            response = await client.post("/api/agents/sync")
-        else:
-            response = await client.put(
-                "/api/agents/reviewer", json={"provision_memory": True, "description": "Changed"}
-            )
-        assert response.status == 409, await response.text()
-        result = await response.json()
-        assert result["code"] == "member_memory_unavailable"
-        assert remedy in result["error"]
-    assert checked == [
-        "dashboard:member-reviewer" if entrypoint == "opt_in" else "dashboard:member-new-member"
-    ]
-    retire.assert_not_awaited()
-    assert await asyncio.to_thread(_snapshot) == before
-    loaded = await asyncio.to_thread(KiroCrewConfig.load)
-    assert await asyncio.to_thread(require_member_memory_store, loaded, "reviewer") == "default"
-
-
-@pytest.mark.parametrize("action", ["create", "update"])
-@pytest.mark.parametrize("platform,backend,mode,mechanism,delegates,remedy", _UNSUPPORTED)
-def test_cli_refuses_unsupported_allocation_before_persisting(
-    monkeypatch, capsys, action, platform, backend, mode, mechanism, delegates, remedy
-):
-    from kiro_crew.cli_commands import _handle_agent
-
-    _environment(monkeypatch, platform, backend, mode, mechanism, delegates)
-    before = _snapshot()
-    with pytest.raises(SystemExit) as exc:
-        _handle_agent(
-            argparse.Namespace(
-                agent_action=action,
-                name="new-member" if action == "create" else "reviewer",
-                kiro_agent="kirocrew" if action == "create" else None,
-                workspace="default" if action == "create" else None,
-                memory_store="default" if action == "create" else None,
-                provision_memory=True,
-            )
-        )
-    assert exc.value.code == 1
-    assert remedy in capsys.readouterr().err
-    assert _snapshot() == before
-    assert require_member_memory_store(KiroCrewConfig.load(), "reviewer") == "default"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("entrypoint", ["create", "opt_in"])
-async def test_supported_member_backend_can_allocate_with_a_different_default_backend(
-    monkeypatch, entrypoint
-):
-    cfg = await asyncio.to_thread(
-        _environment, monkeypatch, "linux", "kas", "auto", "namespace", False
-    )
-    cfg.agent.acp_backend = "codex"
-    await asyncio.to_thread(cfg.save)
-    async with TestClient(TestServer(_app(monkeypatch))) as client:
-        if entrypoint == "create":
-            response = await client.post(
-                "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
-            )
-            name = "new-member"
-        else:
-            response = await client.put("/api/agents/reviewer", json={"provision_memory": True})
-            name = "reviewer"
-        assert response.status == 200, await response.text()
-        store = (await response.json())["memory_store"]
-    loaded = await asyncio.to_thread(KiroCrewConfig.load)
-    assert store != "default"
-    assert loaded.memory_stores[store].owner_member == name
-    assert await asyncio.to_thread(require_member_memory_store, loaded, name) == store
-
-
-@pytest.mark.asyncio
-async def test_unsupported_gateway_keeps_v1_edits_and_owned_v2_management(monkeypatch):
-    cfg = await asyncio.to_thread(
-        _environment, monkeypatch, "win32", "kas", "auto", "namespace", False
-    )
-    cfg.agents["private-member"] = KiroCrewAgentConfig()
-    store = await asyncio.to_thread(provision_member_memory, cfg, "private-member")
-    await asyncio.to_thread(cfg.save)
-    async with TestClient(TestServer(_app(monkeypatch))) as client:
-        response = await client.put("/api/agents/reviewer", json={"description": "Still V1"})
-        assert response.status == 200, await response.text()
-        response = await client.put("/api/agents/private-member", json={"provision_memory": True})
-        assert response.status == 200, await response.text()
-        assert (await response.json())["memory_store"] == store
-    loaded = await asyncio.to_thread(KiroCrewConfig.load)
-    assert loaded.agents["reviewer"].description == "Still V1"
-    assert await asyncio.to_thread(require_member_memory_store, loaded, "reviewer") == "default"
-    assert await asyncio.to_thread(require_member_memory_store, loaded, "private-member") == store
-
-
-async def _set_provisioning(client, enabled):
-    response = await client.patch(
-        "/api/config/kirocrew",
-        json={"path": "memory.private_provisioning_enabled", "value": enabled},
-    )
-    assert response.status == 200, await response.text()
-    assert (await response.json())["memory"]["private_provisioning_enabled"] is enabled
-    loaded = await asyncio.to_thread(KiroCrewConfig.load)
-    assert loaded.memory.private_provisioning_enabled is enabled
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("entrypoint", ["create", "opt_in", "sync"])
-async def test_owner_provisioning_pause_refuses_new_stores_and_can_be_resumed(
-    monkeypatch, entrypoint
-):
-    await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
-    app = _app(monkeypatch)
-    retire = AsyncMock(return_value=None)
-    monkeypatch.setattr(handlers, "_retire_legacy_member_contexts", retire)
-    if entrypoint == "sync":
-        discovered = AgentInfo(
-            name="new-member",
-            filename="new-member.json",
-            description="",
-            model="auto",
-            source="package",
-        )
-        monkeypatch.setattr(handlers, "list_agents", lambda: [discovered])
-
-    async def allocate(client):
-        if entrypoint == "create":
-            return await client.post(
-                "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
-            )
-        if entrypoint == "sync":
-            return await client.post("/api/agents/sync")
-        return await client.put("/api/agents/reviewer", json={"provision_memory": True})
-
-    async with TestClient(TestServer(app)) as client:
-        await _set_provisioning(client, False)
-        before = await asyncio.to_thread(_snapshot)
-        response = await allocate(client)
-        assert response.status == 409, await response.text()
-        body = await response.json()
-        assert body["code"] == "member_memory_unavailable"
-        assert "paused by memory.private_provisioning_enabled" in body["error"]
-        retire.assert_not_awaited()
-        assert await asyncio.to_thread(_snapshot) == before
-
-        await _set_provisioning(client, True)
-        response = await allocate(client)
-        assert response.status == 200, await response.text()
-    loaded = await asyncio.to_thread(KiroCrewConfig.load)
-    member = "reviewer" if entrypoint == "opt_in" else "new-member"
-    store = await asyncio.to_thread(require_member_memory_store, loaded, member)
-    assert loaded.memory_stores[store].memory_version == 2
-    assert loaded.memory_stores[store].owner_member == member
-
-
-@pytest.mark.parametrize("action", ["create", "update"])
-def test_cli_provisioning_pause_preserves_existing_v1(monkeypatch, capsys, action):
-    from kiro_crew.cli_commands import _handle_agent
-
-    cfg = _environment(monkeypatch, "linux", "kas", "auto", "namespace", False)
-    cfg.memory.private_provisioning_enabled = False
-    cfg.save()
-    before = _snapshot()
-    with pytest.raises(SystemExit) as exc:
-        _handle_agent(
-            argparse.Namespace(
-                agent_action=action,
-                name="new-member" if action == "create" else "reviewer",
-                kiro_agent="kirocrew" if action == "create" else None,
-                workspace="default" if action == "create" else None,
-                memory_store="default" if action == "create" else None,
-                provision_memory=True,
-            )
-        )
-    assert exc.value.code == 1
-    assert "paused by memory.private_provisioning_enabled" in capsys.readouterr().err
-    assert _snapshot() == before
-    assert require_member_memory_store(KiroCrewConfig.load(), "reviewer") == "default"
-
-
-@pytest.mark.asyncio
-async def test_pause_after_admission_keeps_admitted_creation_and_preserves_pause(monkeypatch):
-    await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
-    admitted = []
-
-    def admit_then_pause(member):
-        auth.require_member_memory_creation(member)
-        admitted.append(member)
-        cfg = KiroCrewConfig.load()
-        cfg.memory.private_provisioning_enabled = False
-        cfg.save()
-
-    monkeypatch.setattr(handlers, "require_member_memory_creation", admit_then_pause)
-    async with TestClient(TestServer(_app(monkeypatch))) as client:
-        response = await client.post(
-            "/api/agents", json={"name": "admitted-member", "kiro_agent": "kirocrew"}
-        )
-        assert response.status == 200, await response.text()
-        store = (await response.json())["memory_store"]
-        assert admitted == ["admitted-member"]
-        loaded = await asyncio.to_thread(KiroCrewConfig.load)
-        assert loaded.memory.private_provisioning_enabled is False
-        assert (
-            await asyncio.to_thread(require_member_memory_store, loaded, "admitted-member") == store
-        )
-
-        before = await asyncio.to_thread(_snapshot)
-        response = await client.post(
-            "/api/agents", json={"name": "later-member", "kiro_agent": "kirocrew"}
-        )
-        assert response.status == 409, await response.text()
-        assert (await response.json())["code"] == "member_memory_unavailable"
-        assert admitted == ["admitted-member"]
-        assert await asyncio.to_thread(_snapshot) == before
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["false", 0, None])
-async def test_owner_provisioning_control_rejects_non_boolean_writes(monkeypatch, value):
-    await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
-    async with TestClient(TestServer(_app(monkeypatch))) as client:
-        await _set_provisioning(client, False)
-        before = await asyncio.to_thread(_snapshot)
-        response = await client.patch(
-            "/api/config/kirocrew",
-            json={"path": "memory.private_provisioning_enabled", "value": value},
-        )
-        assert response.status == 400, await response.text()
-        assert (await response.json())["error"] == "must be a boolean"
-        assert await asyncio.to_thread(_snapshot) == before
 
 
 @pytest.mark.asyncio
@@ -376,52 +100,160 @@ async def test_private_creation_refuses_degraded_config_but_allows_absent_memory
         if shape == "absent-memory":
             assert response.status == 200, body
             loaded = await asyncio.to_thread(KiroCrewConfig.load)
-            assert loaded.memory.private_provisioning_enabled is True
             store = await asyncio.to_thread(require_member_memory_store, loaded, "new-member")
             assert loaded.memory_stores[store].memory_version == 2
         else:
             assert response.status == 409, body
             assert body["code"] == "member_memory_unavailable"
-            assert "requires readable memory configuration" in body["error"]
+            assert "configuration is unreadable" in body["error"]
             assert await asyncio.to_thread(_snapshot) == before
 
 
 @pytest.mark.asyncio
-async def test_provisioning_pause_preserves_v2_admission_binding_and_memory_management(monkeypatch):
-    cfg = await asyncio.to_thread(
-        _environment, monkeypatch, "linux", "kas", "auto", "namespace", False
+async def test_discovery_and_update_never_provision_member_memory(monkeypatch):
+    await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
+    app = _app(monkeypatch)
+    monkeypatch.setattr(
+        handlers,
+        "list_agents",
+        lambda: [
+            AgentInfo(
+                name="discovered",
+                filename="discovered.json",
+                description="",
+                model="auto",
+                source="package",
+            )
+        ],
     )
-    cfg.agents["private-member"] = KiroCrewAgentConfig()
-    store = await asyncio.to_thread(provision_member_memory, cfg, "private-member")
-    await asyncio.to_thread(cfg.save)
-    session_key = "dashboard:member-private-member"
-    await asyncio.to_thread(auth.bind_private_session_store, session_key, store)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/agents/sync")
+        assert response.status == 200, await response.text()
+        loaded = await asyncio.to_thread(KiroCrewConfig.load)
+        assert loaded.agents["discovered"].memory_store == "default"
+        before = await asyncio.to_thread(_snapshot)
+        response = await client.put("/api/agents/discovered", json={"provision_memory": True})
+        assert response.status == 400, await response.text()
+        assert await asyncio.to_thread(_snapshot) == before
+        assert KiroCrewConfig.load().agents["discovered"].memory_store == "default"
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+@pytest.mark.parametrize("backend", ["kas", "codex"])
+async def test_explicit_creation_uses_database_not_platform_admission(
+    monkeypatch, platform, backend
+):
+    await asyncio.to_thread(_environment, monkeypatch, platform, backend, "off", "none", False)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("member creation queried OS sandbox capability")
+
+    monkeypatch.setattr(sandbox, "detect_backend", forbidden)
     async with TestClient(TestServer(_app(monkeypatch))) as client:
-        await _set_provisioning(client, False)
-        _, before_inventory = await asyncio.to_thread(_snapshot)
-        response = await client.put("/api/agents/private-member", json={"provision_memory": True})
-        assert response.status == 200, await response.text()
-        assert (await response.json())["memory_store"] == store
-        assert (await asyncio.to_thread(_snapshot))[1] == before_inventory
-        response = await client.put("/api/agents/reviewer", json={"description": "Still V1"})
-        assert response.status == 200, await response.text()
-
-    def check_existing_memory():
-        loaded = KiroCrewConfig.load()
-        assert loaded.memory.private_provisioning_enabled is False
-        assert require_member_memory_store(loaded, "private-member") == store
-        assert require_member_memory_store(loaded, "reviewer") == "default"
-        assert loaded.agents["reviewer"].description == "Still V1"
-        auth.require_private_memory_execution(session_key=session_key)
-        assert auth.read_private_session_store(session_key) == store
-        memory = MemoryStore(
-            workspace=memory_store_dir_for(store),
-            index_db=memory_index_path_for(store),
-            memory_version=2,
+        response = await client.post(
+            "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
         )
-        assert memory.write_preferences("Keep this member's existing guidance.")
-        assert memory.read_preferences() == "Keep this member's existing guidance."
-        assert auth.read_private_session_store(session_key) == store
+        member = "new-member"
+        assert response.status == 200, await response.text()
+        store = (await response.json())["memory_store"]
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    assert cfg.agents[member].member_id == cfg.memory_stores[store].owner_member_id
+    assert await asyncio.to_thread(require_member_memory_store, cfg, member) == store
 
-    await asyncio.to_thread(check_existing_memory)
+
+@pytest.mark.parametrize("backend", ["kiro", "kas", "claude", "codex"])
+def test_cli_explicit_creation_with_sandbox_off(monkeypatch, backend):
+    from kiro_crew.cli_commands import _handle_agent
+
+    _environment(monkeypatch, "win32", backend, "off", "none", False)
+    _handle_agent(
+        argparse.Namespace(
+            agent_action="create",
+            name="new-member",
+            kiro_agent="kirocrew",
+            workspace="default",
+            memory_store="default",
+        )
+    )
+    cfg = KiroCrewConfig.load()
+    assert require_member_memory_store(cfg, "new-member") != "default"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interface", ["dashboard", "cli"])
+@pytest.mark.parametrize("field", ["member_id", "owner_member_id"])
+@pytest.mark.parametrize(
+    "invalid", [[], {}, None, False, 123], ids=["list", "dict", "null", "bool", "number"]
+)
+async def test_creation_refuses_malformed_reserved_identity(
+    monkeypatch, capsys, interface, field, invalid
+):
+    from kiro_crew.cli_commands import _handle_agent
+
+    def prepare():
+        cfg = _environment(monkeypatch, "win32", "kas", "off", "none", False)
+        store = provision_member_memory(cfg, "reviewer")
+        cfg.agents["legacy-global"] = KiroCrewAgentConfig()
+        cfg.agents["legacy-named"] = KiroCrewAgentConfig(memory_store="legacy")
+        cfg.memory_stores["legacy"] = MemoryStoreConfig()
+        (memory_stores_root() / "legacy").mkdir()
+        cfg.save()
+        path = config_dir() / "config.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        record = (
+            document["agents"]["reviewer"]
+            if field == "member_id"
+            else document["memory_stores"][store]
+        )
+        record[field] = invalid
+        document["unrelated-setting"] = {"keep": ["exactly"]}
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return store
+
+    def snapshot_and_check(store):
+        cfg = KiroCrewConfig.load()
+        record = cfg.agents["reviewer"] if field == "member_id" else cfg.memory_stores[store]
+        assert getattr(record, field) == invalid
+        assert type(getattr(record, field)) is type(invalid)
+        with pytest.raises(UnknownMemoryStore):
+            require_member_memory_store(cfg, "reviewer")
+        assert require_member_memory_store(cfg, "legacy-global") == "default"
+        assert require_member_memory_store(cfg, "legacy-named") == "legacy"
+        assert "new-member" not in cfg.agents
+        root = memory_stores_root()
+        return (
+            (config_dir() / "config.json").read_bytes(),
+            {
+                str(path.relative_to(root)): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file()
+            },
+        )
+
+    store = await asyncio.to_thread(prepare)
+    before = await asyncio.to_thread(snapshot_and_check, store)
+    if interface == "dashboard":
+        async with TestClient(TestServer(_app(monkeypatch))) as client:
+            response = await client.post(
+                "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
+            )
+            assert response.status == 409, await response.text()
+            body = await response.json()
+            assert body["code"] == "member_memory_unavailable"
+            assert "identity must be a string" in body["error"]
+    else:
+        with pytest.raises(SystemExit) as exc:
+            await asyncio.to_thread(
+                _handle_agent,
+                argparse.Namespace(
+                    agent_action="create",
+                    name="new-member",
+                    kiro_agent="kirocrew",
+                    workspace="default",
+                    memory_store="default",
+                ),
+            )
+        assert exc.value.code == 1
+        assert "identity must be a string" in capsys.readouterr().err
+    assert await asyncio.to_thread(snapshot_and_check, store) == before

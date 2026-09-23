@@ -71,8 +71,27 @@ function mount(over: Record<string, unknown> = {}) {
   )
 }
 
-/** The Streaming row, identified by its description copy. */
-const streamingRow = () => screen.queryByText(/show the transcript in the input box/i)
+/**
+ * The Streaming row, identified by its LABEL and reached through the Fine-tuning
+ * disclosure that now holds it.
+ *
+ * Two consequences of the panel keeping only the necessary decisions on its surface:
+ * the row lives inside a collapsed group, so it has to be opened before it exists in
+ * the DOM at all, and its explanation lives in a "?" tip, so the description copy is
+ * not a way to find it.
+ */
+async function openFineTuning() {
+  const header = await screen.findByRole('button', { name: /fine-tuning/i })
+  if (header.getAttribute('aria-expanded') !== 'true') fireEvent.click(header)
+}
+
+/** Present only when this provider can stream; null when the group is empty. */
+async function streamingRow() {
+  const header = screen.queryByRole('button', { name: /fine-tuning/i })
+  if (!header) return null
+  await openFineTuning()
+  return screen.queryByText('Streaming')
+}
 
 /**
  * The provider `<select>`, located by its accessible name rather than by index —
@@ -135,14 +154,15 @@ describe('SttSettings streaming gate', () => {
 
   it('offers the streaming toggle for the on-device apple provider', async () => {
     mount({ provider: 'apple' })
-    await waitFor(() => expect(streamingRow()).toBeTruthy())
+    await waitFor(() => expect(screen.queryByRole('button', { name: /fine-tuning/i })).toBeTruthy())
+    expect(await streamingRow()).toBeTruthy()
   })
 
   it('hides the streaming toggle for a provider that cannot stream', async () => {
     mount({ provider: 'local' })
     await waitFor(() => expect(mockApi.sttConfig).toHaveBeenCalled())
     await waitFor(() => expect(providerSelect()).toBeTruthy())
-    expect(streamingRow()).toBeNull()
+    expect(await streamingRow()).toBeNull()
   })
 
   it('turns streaming on when moving to a streaming-capable provider', async () => {
@@ -170,6 +190,7 @@ describe('SttSettings streaming gate', () => {
     // must not lose the toggle. The fallback used to be transcribe-only, which
     // would now hide the DEFAULT provider's own toggle.
     mount({ provider: 'local', streaming_providers: undefined })
-    await waitFor(() => expect(streamingRow()).toBeTruthy())
+    await waitFor(() => expect(screen.queryByRole('button', { name: /fine-tuning/i })).toBeTruthy())
+    expect(await streamingRow()).toBeTruthy()
   })
 })

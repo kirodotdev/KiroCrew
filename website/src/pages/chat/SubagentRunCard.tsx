@@ -253,7 +253,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
             : counts.failed > 0
               ? <AlertCircle size={15} className="text-danger" />
               : settled > 0
-                ? <CheckCircle2 size={15} className="text-green-500" />
+                ? <CheckCircle2 size={15} className="text-ok" />
                 : queued > 0
                   ? <Clock size={15} className="text-muted" />
                   : <Bot size={15} className="text-accent/70" />}

@@ -11,7 +11,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
-import { render, screen, renderHook, act, cleanup } from '@testing-library/react'
+import { render, screen, renderHook, act, cleanup, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom'
 
 // DeveloperPage's tabs are heavy and irrelevant here — the last describe only
@@ -55,6 +56,7 @@ import {
 } from '../utils/previewFlags'
 import { usePreviewFlag, usePreviewFlagRevision } from '../hooks/usePreviewFlag'
 import { createPagesProvider } from '../components/commandPalette/providers/pagesProvider'
+import { api } from '../api/client'
 import { FeaturePreviewsSection, FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from '../pages/settings/FeaturePreviewsSection'
 import DeveloperPage from '../pages/DeveloperPage'
 
@@ -342,8 +344,32 @@ describe('usePreviewFlagRevision', () => {
 })
 
 describe('Settings > Developer > Feature Previews', () => {
+  // One card in this section — Decisions — is backed by gateway state rather
+  // than a `previewFlags.ts` key: whether it is drawn at all reads
+  // `decisions_enabled` off `['dashboardConfig']` (the `capabilities.decisions`
+  // ceiling), its switch reads the consent keystone and its share reads
+  // `['kirocrewConfig']`. All three stubbed here rather than left to reach
+  // the network: every case below is about the four localStorage previews, and a
+  // real read cannot succeed under vitest (a failed one would render an
+  // ErrorNotice with its own "Ask the agent" link and pollute the link census).
+  // `decisionsCard.test.tsx` owns that card's own states.
+  beforeEach(() => {
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+    vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue({
+      enabled: false, endpoint: '', configured_endpoint: 'https://api.typesafe.ai/v1/systemone', permits: false,
+    })
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   const renderTab = () =>
-    render(<MemoryRouter><FeaturePreviewsSection /></MemoryRouter>)
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><FeaturePreviewsSection /></MemoryRouter>
+      </QueryClientProvider>,
+    )
 
   /** `aria-checked` via the ATTRIBUTE: the Toggle is a `div role="switch"`, and
    *  the reflected `ariaChecked` DOM property is not populated for one. */
@@ -407,22 +433,81 @@ describe('Settings > Developer > Feature Previews', () => {
     // not an ingress — it opens an explainer dialog, never the page — and it is
     // present on either side of the toggle by design.
     const { container } = renderTab()
+    /**
+     * The Decisions card is INCLUDED, subtree and all.
+     *
+     * In the state this test renders — governance permitting, consent off, no stored
+     * credential — that card draws no buttons at all: its point rows are
+     * `role="tab"`, and the credential's reveal and replace controls exist only once a
+     * key is stored. So excluding its frame subtracted an empty set and left the census
+     * blind to the largest card on the tab for no benefit.
+     *
+     * Counting it is what makes this a ratchet rather than decoration: a button
+     * appearing anywhere in that subtree in this state fails here, which is exactly the
+     * ingress drift the census exists to catch. A future state that legitimately draws
+     * one belongs in `decisionsCard.test.tsx`, which pins the card's own states.
+     */
     const realButtons = () =>
-      Array.from(container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'))
-    expect(realButtons()).toHaveLength(0)
+      Array.from(
+        container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'),
+      )
+    /**
+     * The Decisions card is WALKED, not allowed for.
+     *
+     * Its subtree is asserted as an exact set, so a button appearing there fails here --
+     * and so does a second copy of one already expected. A name filter over the whole
+     * tab would have done neither: it went unscoped, so the same name on another card
+     * disappeared from the census too, and it bounded no count.
+     *
+     * The two it draws once settled: the hand-off on its read-failure notice (this tab
+     * stubs no API, so the card's reads fail here) and the credential field's reveal.
+     * Neither navigates. A third belongs in the expected set with a reason, never behind
+     * a blanket allowance -- and because the set is exact, a duplicate of one of these
+     * fails too, which a name filter could not catch.
+     */
+    const nameOf = (b: Element) =>
+      (b.textContent?.trim() || b.getAttribute('aria-label') || '?').trim()
+    const decisionsFrame = () =>
+      screen.queryByRole('switch', { name: 'Decisions (Jev)' })?.closest('.card-glow') ?? null
+    const decisionsButtons = () =>
+      Array.from(
+        decisionsFrame()?.querySelectorAll(
+          'button:not([data-testid="feature-preview-intro-button"])',
+        ) ?? [],
+      )
+        .map(nameOf)
+        .sort()
+    // Outside that card, unfiltered and unchanged: this is the ingress property.
+    const ingressButtons = () =>
+      realButtons()
+        .filter(el => !decisionsFrame()?.contains(el))
+        .map(nameOf)
+        .sort()
+    expect(ingressButtons()).toEqual([])
     await act(async () => {
       screen.getByRole('switch', { name: /^crew members$/i }).click()
     })
-    expect(realButtons()).toHaveLength(0)
+    expect(ingressButtons()).toEqual([])
+    // The Decisions subtree, exactly. A new button here -- or a duplicate of one of
+    // these -- fails, which a name allowance could not do.
+    // The Decisions subtree, exactly, once its reads have settled. Awaited rather than
+    // sampled: the card draws only the credential reveal until its reads land and adds
+    // the hand-off on the read-failure notice after, so a bare expect reads whichever
+    // moment it hit. A button this set does not name never converges, so it fails here.
+    await waitFor(() => {
+      expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
+    })
     // The webhooks card still HAS its link, so this is an asymmetry on purpose
     // rather than the ingress mechanism having been broken for both.
     await act(async () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
-    expect(realButtons().map(b => b.textContent?.trim())).toEqual(['Open Webhooks'])
+    expect(ingressButtons()).toEqual(['Open Webhooks'])
+    // And the card beside it still draws only its own two.
+    expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
   })
 
-  it('renders the section header and the per-device caveat once, above the cards', () => {
+  it('renders the section header and the section-wide caveat once, above the cards', () => {
     // The caveat used to be the Developer-page tab's description, rendered by
     // SidePanelLayout as the page header. Inside Settings the section has to
     // carry it itself — once, not per card — or the toggles read as released
@@ -432,33 +517,38 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(screen.getAllByText(/unpolished on purpose/i)).toHaveLength(1)
   })
 
-  it('carries the redirect anchor on ONE element that wraps the whole section', () => {
+  it('carries the redirect anchor on ONE element that wraps the whole section', async () => {
     // `?highlight=key:<anchor>` rings the element carrying data-setting-key.
     // The old-bookmark reader asked a section-sized question, so the ring must
     // enclose the header and every card — an anchor on a single card would
     // answer "is this row selected?" instead.
     const { container } = renderTab()
+    // Awaited: the Decisions card is not drawn until the governance read
+    // (`decisions_enabled`) lands, so the fifth switch arrives a tick late.
+    await waitFor(() => {
+      expect(screen.getAllByRole('switch')).toHaveLength(5)
+    })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
     const anchor = anchors[0]
     expect(anchor.contains(screen.getByRole('heading', { name: /feature previews/i }))).toBe(true)
+    // Five, not four: the count is here so a card added outside the anchor
+    // fails rather than silently escaping the ring. The fifth is Decisions,
+    // whose switch is backend config — a different write path, the same ring.
     for (const s of screen.getAllByRole('switch')) expect(anchor.contains(s)).toBe(true)
-    // Four, not three: the count is here so a card added outside the anchor
-    // fails rather than silently escaping the ring.
-    expect(screen.getAllByRole('switch')).toHaveLength(4)
   })
 
-  it('carries a remote-instance-sessions card that starts off and writes only its own key', async () => {
+  it('carries a remote-crew-sessions card that starts off and writes only its own key', async () => {
     // The toggle IS this preview's whole affordance — it has no page of its own,
     // so nothing else on the page would reveal a card that failed to render or
     // an onChange wired to the wrong constant. Four flags now share one section,
     // and a shared write would release every unfinished surface at once, so the
     // sibling assertions are the point rather than padding.
     //
-    // `/^remote instance sessions$/i` anchored: the card's description also says
+    // `/^remote crew sessions$/i` anchored: the card's description also says
     // "Sessions list", and the accessible name is the label alone.
     renderTab()
-    const toggle = () => screen.getByRole('switch', { name: /^remote instance sessions$/i })
+    const toggle = () => screen.getByRole('switch', { name: /^remote crew sessions$/i })
     expect(toggle().getAttribute('aria-checked')).toBe('false')
     await act(async () => { toggle().click() })
     expect(localStorage.getItem(PREVIEW_INSTANCE_SESSIONS)).toBe('1')

@@ -28,17 +28,27 @@ the superseded turn. So an export CAN persist pending session state, and it fail
 rather than exporting when that write fails. What it never does is change the
 conversation -- a flush writes what is already in memory.
 
-**Layer A only.** The tunnel's bundle can carry *Layer B* -- the kiro-cli context
-window -- byte-exact and unredacted, and that is forced rather than chosen: the
-thinking-block signatures inside it are validated when the conversation is
-replayed, so redacting it and transplanting it cannot both hold. What makes
-byte-exact acceptable is therefore the DESTINATION: a send goes to the operator's
-own authenticated peer, which stores it 0600. A file has no destination -- the
-whole point of it is that it can sit in a download, a bucket or on a USB stick --
-so that justification does not carry over and an export ships the transcript
-alone, with ``layer_b_skipped`` set so the loss is stated rather than inferred.
-The cost is real and accepted: a session installed from a file resumes from its
-transcript rather than through ``session/load``.
+**Layer B travels only on an explicit operator opt-in, and is withheld by
+default.** The bundle CAN carry *Layer B* -- the kiro-cli context window --
+byte-exact and unredacted, so a session installed from the file RESUMES through
+``session/load`` rather than replaying its transcript as a lossy prefix. Byte-exact
+is forced rather than chosen: the thinking-block signatures inside Layer B are
+validated when the conversation is replayed, so redacting it and transplanting it
+cannot both hold -- there is no redacted variant. Because an export can be shared
+with another person, unredacted context must not ride along unless the operator
+asks for it: the RFC (``rfc-s3-backup.md`` O1) assigns that risk to the operator,
+not the exporter, and its minimum bar for putting a sensitive payload into a
+bundle is conjunctive (``rfc-s3-backup.md``:317-319) -- a separate config key OFF
+BY DEFAULT and an explicit per-invocation flag. So Layer B travels only when the
+caller is the dashboard operator, ``dashboard.export_include_layer_b`` is enabled
+(standing permission, default false), AND the request carries
+``?include_layer_b=true`` (this export asked). Every non-operator export and every
+export by an operator who never chose stays Layer A only, sets
+``layer_b_skipped``, and tells the reader the copy resumes from its transcript.
+Layer B is also withheld, with the same flag, for the cases the builder gate
+already handles: a mid-turn snapshot whose context would lag the visible
+transcript. A session that never opened a kiro-cli context sets neither key,
+because there is no context to lose.
 
 **Nothing here installs.** Reading such a file back is a separate, later piece of
 work; this module only produces one.
@@ -64,11 +74,12 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.loader import _raw_config
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     build_transfer_bundle_async,
     bundle_rejection_reason,
-    local_instance_label,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
@@ -173,6 +184,54 @@ def gzip_bundle(bundle: dict[str, Any]) -> bytes:
     return gzip.compress(raw, mtime=0)
 
 
+#: Whether the operator has granted STANDING PERMISSION for the file export to
+#: carry Layer B -- the byte-exact, unredacted model context window. This is one
+#: of the TWO operator opt-ins; see :func:`_export_layer_b_requested` for the other.
+#: A verified dashboard-operator request is also required. The RFC's minimum bar for putting a sensitive payload into a
+#: bundle is conjunctive (rfc-s3-backup.md:317-319): a separate config key OFF BY
+#: DEFAULT, and an explicit per-invocation flag. Only a dashboard-operator request
+#: can carry Layer B, and only when BOTH opt-ins hold, so the operator opts in once
+#: at the config layer and again per export; every other export stays Layer A only.
+#: rfc O1
+#: assigns this to the operator ("the operator's risk decision, not the
+#: implementer's"), and a default-on would ship the implementer's decision to
+#: everyone who never chooses -- the opposite of what O1 assigns -- so the default
+#: is OFF.
+#:
+#: A backend config key rather than a Settings row on purpose: a key needs no
+#: i18n, whereas a UI row would need ``en.json`` plus nine locales and the
+#: ``app-manifest-sync``-class catalog gate. It is read through the same
+#: ``_raw_config`` route ``dashboard.max_background_turns`` uses, and an
+#: unreadable or non-boolean value falls back to WITHHOLDING (the safe default)
+#: rather than failing an export.
+def _export_layer_b_permitted() -> bool:
+    """Whether the operator has enabled the standing permission to carry Layer B.
+    Default False; enable by setting ``config.json -> dashboard.export_include_layer_b``
+    to ``true``. This alone does not carry Layer B -- the request must also ask for
+    it (see :func:`_export_layer_b_requested`)."""
+    try:
+        raw = (_raw_config().get("dashboard") or {}).get("export_include_layer_b", False)
+    except Exception:
+        logger.debug(
+            "export_include_layer_b config unavailable; withholding Layer B", exc_info=True
+        )
+        return False
+    return raw if isinstance(raw, bool) else False
+
+
+#: The explicit per-invocation half of the RFC bar (rfc-s3-backup.md:317-319). A
+#: standing config permission is not enough on its own: THIS export must also ask
+#: to carry Layer B, via ``?include_layer_b=true`` (or ``1``/``yes``/``on``) on the
+#: request. Absent, malformed, or any other value reads as "did not ask", so the
+#: export withholds. Keeping the two conditions separate is deliberate -- the RFC's
+#: bar is a conjunctive list and must not collapse to one lever.
+def _export_layer_b_requested(request: web.Request) -> bool:
+    """Whether THIS export invocation explicitly asked to carry Layer B via the
+    ``include_layer_b`` query flag. Default False (absent == did not ask)."""
+    raw = request.query.get("include_layer_b", "")
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 async def api_chat_slot_export(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot}/export — download one session as a file."""
     state: DashboardState = request.app["state"]
@@ -243,19 +302,45 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
         bundle = await build_transfer_bundle_async(
             state,
             slot,
-            origin=local_instance_label(),
+            # A downloaded file can be shared with anyone, so it must not stamp
+            # this host's identity. ``local_instance_label()`` is the machine's
+            # hostname, which on a Linux dev host can embed the operator's login
+            # and in any case names a machine the
+            # recipient cannot act on. The tunnel path keeps the real label
+            # (it reaches the operator's own trusted peer instance); the file
+            # path carries none, so on import the "(from ...)" suffix is simply
+            # absent rather than disclosing where the file came from.
+            origin="",
             with_source=True,
-            # Layer A ONLY. Layer B -- the model's context window -- travels
-            # byte-exact and unredacted over a tunnel, and what makes that
-            # acceptable is the destination: the operator's own authenticated
-            # peer, stored 0600, never outside their trust boundary. A file has no
-            # destination at all; the whole point of it is that it can sit in a
-            # download, a bucket or on a USB stick. So the justification does not
-            # carry over and the context stays behind. The bundle says so via
-            # ``layer_b_skipped``, and the cost is honest: a session installed
-            # from a file resumes from its transcript rather than through
-            # ``session/load``.
-            include_layer_b=False,
+            # Layer B -- the byte-exact, unredacted model context window -- rides
+            # along ONLY when all three conditions hold: the caller is the
+            # dashboard operator, standing config permission
+            # (``dashboard.export_include_layer_b``) is ON, and this request asks
+            # for it (``?include_layer_b=true``). The latter two are the operator's
+            # twofold opt-in and the RFC's conjunctive minimum bar for a sensitive
+            # payload in a bundle (rfc-s3-backup.md:317-319). Layer B cannot be
+            # redacted -- the thinking-block signatures inside it are validated on
+            # replay, so redacting and transplanting cannot both hold, and there is
+            # no redacted variant -- so it ships byte-exact or not at all. Carrying
+            # it lets an installed file resume through ``session/load`` rather than
+            # replaying a lossy prefix; that full-fidelity resume is why an operator
+            # would ask for it.
+            #
+            # The default is WITHHOLD for everyone who never chooses, because
+            # whether unredacted context leaves in a downloaded file is the
+            # operator's risk decision, not the exporter's (rfc-s3-backup.md O1),
+            # and a default-on would ship the implementer's decision to everyone
+            # who never chose -- the opposite of what O1 assigns. A withheld export
+            # degrades to Layer A and sets ``layer_b_skipped`` so the lost resume
+            # fidelity is stated, not inferred from an absent key. The builder seam
+            # ``include_layer_b`` also withholds on its own for a mid-turn snapshot,
+            # a v1 sender, or a session that never opened a context; this caller
+            # only supplies the operator's opt-in on top of that.
+            include_layer_b=(
+                _export_layer_b_permitted()
+                and _export_layer_b_requested(request)
+                and is_owner_dashboard_request(request)
+            ),
         )
     except SnapshotUnstable:
         # No consistent view of the source: a flush landed inside every retry, or

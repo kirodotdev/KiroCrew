@@ -44,7 +44,7 @@ class TestSpawnSubAgentsCancellation:
                 with pytest.raises(ToolCancelled):
                     _call_tool(
                         "spawn_sub_agents",
-                        {"agents": [{"prompt": "never finishes"}]},
+                        {"agents": [{"prompt": "never finishes"}], "solo_reason": "bulk_data"},
                     )
         finally:
             mcp_shared._thread_cancel_event = None
@@ -59,7 +59,7 @@ class TestSpawnSubAgentsCancellation:
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
             result = _call_tool(
-                "spawn_sub_agents", {"agents": [{"prompt": "quick"}]}
+                "spawn_sub_agents", {"agents": [{"prompt": "quick"}], "solo_reason": "bulk_data"}
             )
             assert '"completed"' in result
 

@@ -47,10 +47,14 @@ describe('useNativeNotification skips silenced / passive-priority notes (#11300)
     vi.clearAllMocks()
     FakeNotification.instances = []
     vi.stubGlobal('Notification', FakeNotification)
+    // The banner fires only while the user is away from the window; the
+    // muted/unmuted distinction under test needs a window that WOULD banner.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    delete (document as { hidden?: boolean }).hidden
   })
 
   it('does not fire a native banner for a note the backend marked silenced', () => {

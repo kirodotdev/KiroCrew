@@ -69,7 +69,7 @@ the stock build's no-op property. Core registrations belong in the seed maps
 - the **edition's own** `$KIROCREW_EDITION_DIR/extensions.tsx` (or `.ts`) when that
   env var points at an edition repo, so the edition injects its `register*()`
   calls and component imports by build config, compiled through the same
-  vite/rollup pass, without shadowing or overlaying any core file. That
+  Vite/Rolldown pass, without shadowing or overlaying any core file. That
   copy-and-shadow erosion is what the seams exist to eliminate.
 
 Resolution is eager, so a misconfigured `KIROCREW_EDITION_DIR` (set but with no
@@ -89,8 +89,9 @@ one-way door. With the opt-in as the gate, every pipeline (release, publish, and
 the backend `setup.py` to `build-frontend.sh` path) is protected **by default**: a
 stray or inherited `KIROCREW_EDITION_DIR` fails the build instead of silently
 compiling edition sources into a public artifact. Only the edition's own build
-script sets the opt-in. Forgetting it fails safe (stock), and there is no guard
-variable a release job must remember to set. Never set
+script sets the opt-in. Forgetting it fails safe before any artifact is emitted;
+the build never falls back to stock. There is no guard variable a release job must
+remember to set. Never set
 `KIROCREW_ALLOW_EDITION=1` in a release or publish job.
 
 An edition-mode build also prints a loud self-identifying warning naming the
@@ -289,6 +290,31 @@ already-registered one) is resolved core-wins, and `reportSeamCollision`:
 - **degrades safe in production** (warn and ignore), so a shipped app never
   white-screens over a duplicate.
 
+Degrading safe is not the same as degrading **silently**, and closing that gap is
+not this module's job. An edition compiles its own bundle, so the dev/test throw
+never runs over its registrations: the first anyone hears of a refused one is a
+`console.warn` in a shipped app, which is how one edition shipped ten builtin
+pages that all clicked straight through to chat with no signal a user could see.
+The refusal is still not thrown at registration — that runs before `App` mounts,
+so a throw takes the whole dashboard down over one bad entry, which is worse than
+the entry being missing.
+
+**Remembering a refusal belongs to the seam that has somewhere to show it.**
+Today that is the builtin-page seam alone, because a refused route is a URL the
+user can still navigate to and find nothing at, so `builtinRegistry.ts` keeps its
+own `Map` of reasons and `builtinRefusalReason(route)` as the reader; nothing
+about it is in `seamCollision.ts`, which stays the shared fail-loud/degrade-safe
+policy and nothing more. Every other rejection leaves the core's own surface
+rendered rather than a blank the user can address — a rejected theme is absent
+from the picker, a rejected autolink rule leaves a token unlinked, a rejected
+renderer's row is filtered out before it can open an empty dialog — so a store
+there would be a generalisation with one consumer. A **duplicate** is not
+recorded either, at any seam: the key still resolves to the winning registration,
+so there is no empty space to explain and a record would only describe a
+registration that lost a race. A seam that later grows a user-reachable hole can
+keep its own record next to the miss path that reads it, which is where this one
+lives.
+
 The subtractive seam is deliberately **exempt**. `suppressOverviewBuiltin()` is a
 set, and a repeat is not a conflict: two owners cannot share one render slot, but
 two parties that both want a surface gone agree. So re-entrant registration (HMR,
@@ -302,10 +328,66 @@ an error.
 top-level path segment, `/^\/[A-Za-z0-9][A-Za-z0-9._~-]*$/`. `BuiltinAppRoute`
 resolves the catch-all `/:builtinApp` from one path parameter and matches only
 `location.pathname`, never the query or hash. So a multi-segment (`/reports/daily`),
-query (`/reports?daily`), hash (`/reports#x`), whitespace, or `.`/`..` route would
-register but never resolve, and navigation would redirect to chat. The mandatory
-alphanumeric first character is what excludes `.` and `..`. A non-conforming route
-routes through `reportSeamCollision`.
+query (`/reports?daily`), hash (`/reports#x`), dot-segment (`/../reports`),
+whitespace, or `.`/`..` route could
+never resolve as written. The mandatory alphanumeric first character is what
+excludes `.` and `..`. A non-conforming route routes through
+`reportSeamCollision`, as does an entry whose `appId` is missing or outside
+`[a-z0-9-]`.
+
+Both refusals are **recorded**, under the leading segment the router would have
+asked for rather than the string the entry was registered with — `/reports` for all
+four spellings above. That difference is the whole point: nothing can ask for
+`/reports/daily`, so a reason filed under it would be unreadable and the route
+would still vanish into chat. The record is written BEFORE `reportSeamCollision`,
+whose dev/test branch throws, so a dev/test run leaves the same record a
+production run leaves; and the first refusal for a key wins, since a second report
+describes a retry rather than the reason the key is empty. A route with no leading
+`/` is the one case that gets no synthesised key: no URL produces that spelling, so
+there is no empty page to explain, and inventing one would let a refusal for
+`reports` answer for the different key `/reports`.
+
+`BuiltinAppRoute` splits its miss path on that record. A path nobody registered is
+a typo or a stale link and still redirects to chat; a path whose registration was
+REFUSED renders instead, through the route's own `ErrorBoundary` so the failure is
+journaled to `recordError` and the RUM `react_error` event. What it renders is an
+explicit `fallback`, not the boundary's default card, for three reasons specific to
+a refusal: the default card's **"Try Again" cannot succeed** (the refusal is
+decided once at startup and immutable for the page load, so clearing the boundary
+re-throws the same reason), it **names no page** (nothing in the sidebar is active
+on a refused route, so the route goes in the heading), and it shows **only the
+registration diagnostic** — charsets and storage keys, addressed to whoever built
+the bundle. So a plain sentence leads, the diagnostic is kept below it under a
+label saying who it is for, and the only action offered is the agent hand-off,
+which carries that diagnostic into a chat that can act on it. What that hand-off
+does is stated in the page rather than in the button's `title`: a tooltip reaches
+neither keyboard nor touch, and on a page with one affordance a reader who cannot
+tell a context-carrying hand-off from a plain new chat is guessing at the only
+thing left to try. Supplying a
+`fallback` changes what RENDERS, never what is journaled: `componentDidCatch` runs
+either way, which is why the refusal is still thrown rather than rendered directly.
+
+Deriving that key is **normalisation plus percent-decoding, not string slicing**.
+The route is first run through `URL`, the normaliser the browser itself applies
+before the router sees anything: that cuts the query and hash on a LITERAL `?`/`#`
+and removes dot segments in every spelling, so `/../reports`, `/./reports` and
+`/%2e%2e/reports` are all asked for as `/reports`. Then the two passes
+react-router performs on what survives, worth mirroring exactly, because `%` is
+outside the route pattern and so every escaped route is refused — the class the
+record exists for. `decodePath` decodes every segment of the pathname under ONE
+try/catch, then `matchPath` turns `%2F` back into `/` on the captured parameter.
+So `/reports%2Ddaily` is asked for as `/reports-daily`, `/reports%2Fdaily`
+as `/reports/daily` — a `/` that stays INSIDE the one parameter, so the key is read
+to its end rather than cut there — and a double-encoded `%252F` resolves all the way
+to `/`. Three consequences a plain `decodeURIComponent` would get wrong: an encoded
+`%3F`/`%23` is still in the pathname and decodes inside the parameter, which is why
+the cut is on a literal one; one malformed escape anywhere leaves the
+WHOLE pathname undecoded, so `/x%2Dy/z%ZZ` keeps its `%2D`; and the decode cannot be
+allowed to throw, which would abandon every entry after the offending one in the
+same batch. Two spellings get no local key at all: a route with no leading `/`
+(above), and an **authority-relative** one — `//host/path`, plus the `/\host/path`
+and tab-smuggled forms the URL parser treats identically — which opens with a `/`
+but addresses another origin, where this build has no empty page to explain.
 
 **Panel shortcuts.** `registerPanelShortcut({ code, path, label })` identifies the
 chord solely by `KeyboardEvent.code`, and the displayed key is derived from that
@@ -511,7 +593,7 @@ unoffered method draws nothing.
 
 **Remote-instance provisioner forms.**
 `registerRemoteProvisionerRenderer({ kind, component })` supplies the launch form
-that Settings → Remote Instances → "Set up a new one" draws for one provisioner
+that Settings → Remote Crew → "Set up a new one" draws for one provisioner
 the backend offers. It keys on `kind`, not `id`, for the same reason as the seam
 above: `id` is what `POST /api/cloud/launch` names in `provider_id` (an id the
 server does not offer is refused with `unknown_provisioner`), while `kind` exists

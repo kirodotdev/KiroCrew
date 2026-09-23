@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.execution_context import execution_for_store
 from kiro_crew.subagent import _TURN_LIMIT, SubagentManager
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -43,6 +44,7 @@ def _mock_sessions() -> MagicMock:
     sessions.reset = AsyncMock()
     sessions.record_success = MagicMock()
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     return sessions
 
 
@@ -180,8 +182,12 @@ class TestSpawnWithoutApprovalCallback:
             ctx_builder=ctx,
         )
         info = SubagentInfo(
-            id="test01", task="tool approval task", parent_session_key="slack:C123:T456"
+            execution_context=execution_for_store(""),
+            id="test01",
+            task="tool approval task",
+            parent_session_key="slack:C123:T456",
         )
+        manager._log_spawned(info)
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._run_inner(info, "subagent:test01")
@@ -1398,6 +1404,13 @@ class TestEffectiveTurnLimit:
             default_turn_limit=default_turn_limit,
         )
 
+    def test_unconfigured_manager_has_finite_long_task_budget(self) -> None:
+        from kiro_crew.subagent import SubagentInfo
+
+        manager = SubagentManager(sessions=_mock_sessions(), ctx_builder=None)
+        assert manager._effective_turn_limit(SubagentInfo(id="long", task="test")) == 1000
+        assert manager._default_timeout == 10800
+
     def test_per_spawn_override_wins(self) -> None:
         from kiro_crew.subagent import SubagentInfo
 
@@ -1431,6 +1444,7 @@ class TestAgentInheritance:
 
         sessions = _mock_sessions()
         sessions.get_agent = MagicMock(return_value="parent-agent")
+        sessions.get_agent_selection = MagicMock(return_value=("template", "parent-agent"))
 
         events: list[tuple[str, dict]] = []
 
@@ -1442,7 +1456,14 @@ class TestAgentInheritance:
             ctx_builder=_mock_ctx_builder_auto_spawn(),
             on_event=capture,
         )
-        info = SubagentInfo(id="sub-1", task="do stuff", parent_session_key="parent-key", agent="")
+        info = SubagentInfo(
+            execution_context=execution_for_store("", template_id="parent-agent"),
+            id="sub-1",
+            task="do stuff",
+            parent_session_key="parent-key",
+            agent="",
+        )
+        mgr._log_spawned(info)
         await mgr._run(info)
 
         # get_or_create should receive the inherited agent
@@ -1600,7 +1621,7 @@ class TestCheckMemoryAvailable:
         from kiro_crew.subagent import check_memory_available
 
         with patch("builtins.open", side_effect=PermissionError("denied")):
-            ok, avail = check_memory_available(path="/proc/meminfo")
+            ok, avail = check_memory_available(path=str(tmp_path / "meminfo"))
         assert ok is True
         assert avail == -1.0
 
@@ -1616,20 +1637,27 @@ class TestCheckMemoryAvailable:
 
 
 class TestSpawnMemoryGuard:
-    """Tests that spawn() refuses when memory is low — covers Coverlay lines."""
+    """spawn() under low memory: deferred into the durable queue, or refused
+    when no store backs the deferral."""
 
-    def test_spawn_refused_low_memory(self):
-        """spawn() returns error SubagentInfo when memory is below threshold."""
-        from unittest.mock import MagicMock, patch
+    def _mgr(self):
+        from unittest.mock import MagicMock
 
         from kiro_crew.subagent import SubagentManager
 
-        mgr = SubagentManager(
-            sessions=MagicMock(),
+        return SubagentManager(
+            sessions=_mock_sessions(),
             ctx_builder=MagicMock(),
             on_done=MagicMock(),
             max_concurrent=3,
         )
+
+    def test_spawn_deferred_low_memory(self):
+        """With the task store open, the row stays queued with a retry time."""
+        from unittest.mock import MagicMock, patch
+
+        mgr = self._mgr()
+        assert mgr._taskq is not None
 
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(False, 2.5)),
@@ -1637,6 +1665,34 @@ class TestSpawnMemoryGuard:
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None
+        assert info.done is False and info.queued is True
+        row = mgr._taskq.get(info.id)
+        assert row is not None and row.state == "queued" and row.next_run_at is not None
+        mock_sel.return_value.log_tool_invocation.assert_called_once()
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "deferred_low_memory"
+        assert call_kwargs["metadata"]["available_gb"] == 2.5
+
+    def test_spawn_refused_low_memory(self):
+        """Without a store, spawn() returns an error SubagentInfo."""
+        from unittest.mock import MagicMock, patch
+
+        mgr = self._mgr()
+        mgr._taskq = None
+
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(False, 2.5)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
 
             info = mgr.spawn(task="test task", parent_session_key="sess-1")
@@ -1773,7 +1829,13 @@ class TestSubagentPostToolUseHook:
         manager.hook_store = MagicMock()
         manager.hook_store.fire = AsyncMock()
 
-        info = SubagentInfo(id="t01", task="test", parent_session_key="slack:C:T")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="t01",
+            task="test",
+            parent_session_key="slack:C:T",
+        )
+        manager._log_spawned(info)
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._run_inner(info, "subagent:t01")
@@ -1837,7 +1899,13 @@ class TestSubagentPostToolUseHook:
         manager.hook_store = MagicMock()
         manager.hook_store.fire = AsyncMock()
 
-        info = SubagentInfo(id="t02", task="test", parent_session_key="slack:C:T")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="t02",
+            task="test",
+            parent_session_key="slack:C:T",
+        )
+        manager._log_spawned(info)
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._run_inner(info, "subagent:t02")
@@ -1880,7 +1948,13 @@ class TestSubagentPostToolUseHook:
         # Default hook_store is None — explicitly verify no raise.
         assert manager.hook_store is None
 
-        info = SubagentInfo(id="t03", task="test", parent_session_key="slack:C:T")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="t03",
+            task="test",
+            parent_session_key="slack:C:T",
+        )
+        manager._log_spawned(info)
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._run_inner(info, "subagent:t03")
@@ -1918,7 +1992,13 @@ class TestSubagentPostToolUseHook:
         manager.hook_store = MagicMock()
         manager.hook_store.fire = AsyncMock(side_effect=RuntimeError("boom"))
 
-        info = SubagentInfo(id="t04", task="test", parent_session_key="slack:C:T")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="t04",
+            task="test",
+            parent_session_key="slack:C:T",
+        )
+        manager._log_spawned(info)
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             # Should not raise even though hook_store.fire raises.
@@ -2058,11 +2138,13 @@ class TestSubagentUsageRow:
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
         info = SubagentInfo(
+            execution_context=execution_for_store(""),
             id="usage01",
             task="do the thing",
             agent="researcher",
             parent_session_key="slack:C123:T456",
         )
+        manager._log_spawned(info)
 
         persist = AsyncMock()
         with (
@@ -2105,11 +2187,13 @@ class TestSubagentUsageRow:
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
         info = SubagentInfo(
+            execution_context=execution_for_store(""),
             id="usage02",
             task="do the thing",
             agent="researcher",
             parent_session_key="slack:C123:T456",
         )
+        manager._log_spawned(info)
 
         persist = AsyncMock()
         with (
@@ -2164,7 +2248,13 @@ class TestIdentityTrustedChildParentPolicyAuto:
         ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult.allow())
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
-        info = SubagentInfo(id="idmcp01", task="t", parent_session_key="dashboard:default")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="idmcp01",
+            task="t",
+            parent_session_key="dashboard:default",
+        )
+        manager._log_spawned(info)
         manager._agents["idmcp01"] = info
         return manager, info, provider
 
@@ -2272,7 +2362,13 @@ class TestIdentityTrustedChildHookIdentityGrant:
         ctx.hooks.on_tool_call = MagicMock(return_value=hook_result)
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
-        info = SubagentInfo(id="idhook01", task="t", parent_session_key="dashboard:default")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="idhook01",
+            task="t",
+            parent_session_key="dashboard:default",
+        )
+        manager._log_spawned(info)
         manager._agents["idhook01"] = info
         return manager, info, provider
 
@@ -2387,7 +2483,13 @@ class TestChildEscalationLimit:
         ctx.hooks.auto_approve_subagent_spawn = True
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
-        info = SubagentInfo(id="esc01", task="t", parent_session_key="dashboard:default")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="esc01",
+            task="t",
+            parent_session_key="dashboard:default",
+        )
+        manager._log_spawned(info)
         manager._agents["esc01"] = info
 
         tombstones: list[str] = []

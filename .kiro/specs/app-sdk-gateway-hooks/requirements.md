@@ -1,5 +1,7 @@
 # Requirements Document
 
+Status: implemented in `src/kiro_crew/apps/hooks_integration.py` and the related `apps` modules.
+
 ## Introduction
 
 This feature extends the KiroCrew App SDK and gateway to provide backend integration hooks, enabling apps (both built-in and external) to register API routes, manage cron jobs, and hook into gateway lifecycle without modifying KiroCrew core files. The goal is to eliminate the pattern where every new app must hardcode itself into `routes.py`, `server.py`, and `manager.py`.

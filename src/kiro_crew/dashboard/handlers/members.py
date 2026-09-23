@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 
 from aiohttp import web
 
@@ -42,6 +43,12 @@ logger = logging.getLogger(__name__)
 #: scan alike; the log itself rotates at ~256KiB so this is a display cap,
 #: not a durability boundary.
 _ACTIVITY_LIMIT = 50
+# How many log envelopes one backwards page reads. Larger than the display limit
+# because the log is shared: config, binding, rules, message, slot and patrol
+# events all sit between one member's activity records, so a page the size of the
+# display cap would usually need several round trips to fill it. This bounds the
+# allocation per page, which is the point -- it is not a cap on the answer.
+_ACTIVITY_PAGE = 500
 
 
 def _parse_activity_ts(raw: str) -> float:
@@ -108,17 +115,61 @@ def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
     a colliding slug. Names failing the agent-name grammar are skipped rather
     than matched: they cannot have been created through the validated CRUD
     surface, so a hand-edited config row never becomes addressable here.
+
+    ADDRESSABILITY only. A caller asking whether a crew still EXISTS must use
+    :func:`_slug_is_claimed_by_any_member` instead -- see the contrast there.
     """
     out: list[str] = []
     for name in cfg.agents:
         if not _AGENT_NAME_RE.match(name):
             continue
         try:
-            if members_mod.slug_for_name(name) == slug:
+            if members_mod.member_slug(name, cfg) == slug:
                 out.append(name)
         except MemberSlugError:
             continue
     return out
+
+
+def _slug_is_claimed_by_any_member(cfg: KiroCrewConfig, slug: str, owner_key: str) -> bool:
+    """Whether a crew named in the roster still derives *slug* and *owner_key*.
+
+    The same enumeration as :func:`_member_names_for_slug` WITHOUT the grammar
+    filter, and the difference is the point. That filter is right for deciding
+    what a route may address -- an ungrammatical row stays unreachable -- and
+    wrong for deciding whether a crew is still there, because the create route
+    validates a crew name only against the credential-shape check, so a name the
+    grammar rejects can be a real, live crew. Filtering it out here would report
+    a live owner as gone, and the caller reads "gone" as permission to take its
+    record over.
+
+    Compared on the ownership DIGEST, like every other check on this path, so no
+    crew name has to be carried around to make the comparison.
+
+    Resolved through ``member_slug``, the same function the publish path uses to
+    choose which record to write, and NOT through ``slug_for_name``. The two
+    disagree for a crew whose persisted ``member_id`` is not what its name
+    derives -- which provisioning produces deliberately, to keep a recreated
+    crew off a deleted namesake's records. Resolving one side by persisted
+    identity and the other by name would skip exactly that crew here, report a
+    live owner as gone, and hand its record to the next writer.
+
+    ``agent_panel`` is imported HERE rather than at module scope because this
+    module is pulled in while the gateway boots, and the panel subsystem is
+    optional: loading it before the socket is bound delays readiness for every
+    installation, including the ones that never assign a panel.
+    """
+    from kiro_crew import agent_panel as agent_panel_mod
+
+    for name in cfg.agents:
+        try:
+            if members_mod.member_slug(name, cfg) != slug:
+                continue
+        except MemberSlugError:
+            continue
+        if agent_panel_mod.crew_key(name) == owner_key:
+            return True
+    return False
 
 
 #: The roster's origin vocabulary. ``source`` on the record is free text in a
@@ -161,7 +212,7 @@ async def api_members(request: web.Request) -> web.Response:
         if not _AGENT_NAME_RE.match(name):
             continue
         try:
-            slug = members_mod.slug_for_name(name)
+            slug = members_mod.member_slug(name, cfg)
         except MemberSlugError:
             continue
         store = agent_cfg.memory_store
@@ -283,20 +334,112 @@ async def api_members(request: web.Request) -> web.Response:
         if stopped:
             row["last_message_stopped"] = True
 
+    # Per-member event-log projections + lazy config reconcile. Off-loop
+    # because ensure/append/snapshot are synchronous file IO (one fsync per
+    # append). Best-effort: a logging fault never breaks the roster, so a
+    # member whose log cannot be reconciled falls back to an empty projection
+    # rather than failing the endpoint. The config-derived row fields are
+    # sourced from the reconciled roster view — after reconcile they equal the
+    # live config, so a hand-edited config is corrected in the log AND the row
+    # stays byte-identical to what it would have carried straight from cfg.
+    agent_cfgs = {row["name"]: cfg.agents.get(row["name"]) for row in rows}
+
+    def _project_rows() -> dict[str, dict]:
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.service import get_service
+
+        svc = get_service()
+        out: dict[str, dict] = {}
+        # This map is keyed by SLUG while the roster is keyed by row, and a slug is
+        # a lossy fold, so two rows can land on one key. Whichever row is projected
+        # last would win it: in one order the log's own member loses its state to a
+        # stranger's blank, and in the other the stranger's row renders the owner's
+        # roster, activity, wake and driving state as its own. Counting the rows per
+        # slug FIRST makes the answer independent of iteration order -- a collided
+        # slug is blank for everyone, which is the same visibly-empty row the
+        # header-name guard below already serves, and never somebody else's data.
+        slug_rows = Counter(row["slug"] for row in rows)
+        for row in rows:
+            slug = row["slug"]
+            try:
+                if slug_rows[slug] > 1:
+                    logger.warning(
+                        "member slug %r is shared by %d members, so none of them "
+                        "gets a projection; rename one member so their slugs differ",
+                        slug,
+                        slug_rows[slug],
+                    )
+                    out[slug] = {"asOfSeq": -1, "values": {}}
+                    continue
+                # Hand over the config this read already loaded: ensure resolves a
+                # placeholder header name, and `name == slug` is true for any member
+                # whose name IS its own fold, so without this the roster would load
+                # the config once per row off the loop.
+                svc.ensure(slug, row["name"], cfg)
+                # A slug is LOSSY, and colliding names are supported: `Review_Agent`
+                # and `review-agent` both fold to `review-agent`, and each activity
+                # entry keeps the exact name so attribution survives. What does NOT
+                # survive is a whole-member PROJECTION: one log holds one member's
+                # folded roster, activity, wake and driving state, so serving it on a
+                # second member's row renders the first member's work as the second's.
+                # The header names the member the log belongs to, so a row that is
+                # not that member is served an empty projection instead of a wrong
+                # one. Logged at warning level because a blank row needs its reason.
+                # A header holding the SLUG is exempt: `ensure` writes the header only
+                # while the log is fresh, so a writer with no name in hand (the
+                # message path passes None) locks the slug in as the name for good.
+                # That placeholder names nobody, and a slug is a lossy fold, so it
+                # differs from almost every real name -- reading it as a second member
+                # would blank a member's own state over a value that never was a name.
+                logged = svc.logged_name(slug)
+                if logged is not None and logged != row["name"] and logged != slug:
+                    logger.warning(
+                        "member slug %r logs %r, so %r gets no projection; "
+                        "rename one member so their slugs differ",
+                        slug,
+                        logged,
+                        row["name"],
+                    )
+                    out[slug] = {"asOfSeq": -1, "values": {}}
+                    continue
+                snap = svc.snapshot(slug)
+                values = snap.get("values", {}) if isinstance(snap, dict) else {}
+                agent_cfg = agent_cfgs.get(row["name"])
+                if agent_cfg is not None:
+                    eventlog_hooks.reconcile_member_config(
+                        slug, row["name"], agent_cfg, values.get("roster", {})
+                    )
+                    # Re-snapshot only when the reconcile appended (the roster
+                    # config fields would otherwise be stale for this response).
+                    snap = svc.snapshot(slug)
+                out[slug] = snap if isinstance(snap, dict) else {"asOfSeq": -1, "values": {}}
+            except Exception:
+                logger.debug("member projections failed for %r", slug, exc_info=True)
+                out[slug] = {"asOfSeq": -1, "values": {}}
+        return out
+
+    projections = await asyncio.to_thread(_project_rows)
+    # Same network-boundary redaction as the /history read and the projection
+    # WS push: a projection block carries agent-authored free-text (an activity
+    # record's `project`, message previews) and `svc.snapshot()` returns it raw,
+    # so the credential + exfiltration-URL chain has to run before it crosses to
+    # the browser or the roster list leaks what the sibling reads scrub.
+    from kiro_crew.eventlog.service import _redact_projection_value
+
+    for row in rows:
+        block = projections.get(row["slug"], {"asOfSeq": -1, "values": {}})
+        row["projections"] = _redact_projection_value(block)
+
     return web.json_response({"members": rows})
 
 
 def _member_thread_slot(cfg, member: str, slug: str) -> tuple[str, str]:
-    """Keep protected V2 DMs; otherwise give private memory a fresh generation."""
-    from kiro_crew.member_memory_auth import read_private_session_store
+    """Choose the member's deterministic DM key without opening learned memory."""
     from kiro_crew.memory_stores import require_member_memory_store
 
-    store = require_member_memory_store(cfg, member)
+    store = require_member_memory_store(cfg, member, require_directory=False)
     record = cfg.memory_stores.get(store)
     if record is None or record.memory_version != 2:
-        return members_mod.member_slot_key(slug), ""
-    legacy_key = members_mod.member_thread_session_alias(slug)
-    if read_private_session_store(legacy_key) == store:
         return members_mod.member_slot_key(slug), ""
     return members_mod.member_slot_key(slug, store), store
 
@@ -514,51 +657,142 @@ async def api_member_thread(request: web.Request) -> web.Response:
         from kiro_crew.member_memory_auth import read_private_session_store
 
         canonical_key = members_mod.member_thread_session_alias(slug, generation)
-        async with slot._lock:
-            if effective_session_key(slot) != canonical_key or slot.running:
-                return web.json_response(
-                    {
-                        "error": "the member thread is running or linked to another session",
-                        "code": "member_slot_conflict",
-                    },
-                    status=409,
-                )
-            # The owner selected this slug, not an editable transcript or DM
-            # binding. A colliding slug needs an already protected assignment.
-            slot._memory_assignment_from_history = True
+
+        async def reopen_bound_thread() -> web.Response:
+            """Return a running member thread validated against current ownership.
+
+            Read-only: it writes no assignment and does not touch the turn. Both
+            reachable running paths share it, so the opener that finds a turn
+            already in flight and the one whose turn starts during its slot-lock
+            wait are answered by the same validation rather than by two.
+            """
+            from kiro_crew.dashboard.chat_persistence import member_store_ownership_holds
+            from kiro_crew.dashboard.handlers.agents import _get_config_lock
+            from kiro_crew.memory_stores import memory_store_namespace_lock
+
+            # Do not hold the slot lock while waiting for config: member
+            # updates already take config before slot.
             try:
-                if (
-                    len(slug_owners) != 1
-                    and (await asyncio.to_thread(read_private_session_store, canonical_key))
-                    != member_store
-                ):
-                    return web.json_response(
-                        {
-                            "error": "choose distinct member names before opening this private thread",
-                            "code": "member_pin_mismatch",
-                        },
-                        status=409,
-                    )
-                assigned_store = await pin_private_agent_store(
-                    state, canonical_key, member_name, cfg
-                )
+                assigned_store = await asyncio.to_thread(read_private_session_store, canonical_key)
             except Exception as exc:
                 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 
                 return _store_unavailable_response(member_store, exc)
-            if (
-                state._slots.get(slot_key) is not slot
-                or effective_session_key(slot) != canonical_key
-                or slot.agent != member_name
-            ):
+            async with _get_config_lock(), slot._lock:
+
+                @memory_store_namespace_lock()
+                def current_binding():
+                    current = KiroCrewConfig.load()
+                    if not member_store_ownership_holds(current, member_name, member_store):
+                        return None
+                    return members_mod.read_dm_binding(slug)
+
+                try:
+                    binding = await asyncio.to_thread(current_binding)
+                except Exception as exc:
+                    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+                    return _store_unavailable_response(member_store, exc)
+                if (
+                    state._slots.get(slot_key) is not slot
+                    or effective_session_key(slot) != canonical_key
+                    or slot.agent != member_name
+                    or slot.mode != members_mod.DM_SLOT_MODE
+                    or slot.memory_store != member_store
+                    or assigned_store != member_store
+                    or binding is None
+                    or binding.get("slot_key") != slot.key
+                    or binding.get("member") != member_name
+                ):
+                    error = "member thread changed or its private binding is inconsistent"
+                    if effective_session_key(slot) != canonical_key:
+                        error = "the member thread is linked to another session"
+                    elif slot.memory_store != member_store or assigned_store != member_store:
+                        error = "the member thread has a different member memory assignment"
+                    return web.json_response(
+                        {"error": error, "code": "member_slot_conflict"},
+                        status=409,
+                    )
+                return web.json_response(
+                    {"slot_key": slot.key, "slug": slug, "member": member_name}
+                )
+
+        if slot.running:
+            return await reopen_bound_thread()
+        running_after_wait = False
+        async with slot._lock:
+            if effective_session_key(slot) != canonical_key:
                 return web.json_response(
                     {
-                        "error": "member thread changed during assignment",
+                        "error": "the member thread is linked to another session",
                         "code": "member_slot_conflict",
                     },
                     status=409,
                 )
-            slot.memory_store = assigned_store
+            try:
+                if slot.running:
+                    # The turn started while this opener waited for the slot.
+                    # Its entry snapshot cannot authorize reuse, and taking the
+                    # config lock here would invert the config -> slot order,
+                    # so re-enter the running path once after this lock is
+                    # released: it validates current ownership under config
+                    # then slot, which is the answer this window deserves
+                    # rather than a conflict the caller has to retry through.
+                    running_after_wait = True
+                else:
+                    # The owner selected this slug, not an editable transcript
+                    # or DM binding. A collision needs a protected assignment.
+                    slot._memory_assignment_from_history = True
+                    if (
+                        len(slug_owners) != 1
+                        and (await asyncio.to_thread(read_private_session_store, canonical_key))
+                        != member_store
+                    ):
+                        return web.json_response(
+                            {
+                                "error": "choose distinct member names before opening this private thread",
+                                "code": "member_pin_mismatch",
+                            },
+                            status=409,
+                        )
+                    assigned_store = await pin_private_agent_store(
+                        state, canonical_key, member_name, cfg
+                    )
+            except Exception as exc:
+                from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+                return _store_unavailable_response(member_store, exc)
+            if not running_after_wait:
+                if slot.running:
+                    # A turn started while this opener awaited the namespaced
+                    # assignment above. ``slot._lock`` does not exclude it:
+                    # ``api_chat`` reads ``slot.running`` and publishes
+                    # ``slot.task`` without taking the slot lock, so the window
+                    # is the await, not the lock. Publishing an assignment onto
+                    # a thread whose turn is already in flight is the write this
+                    # route exists to avoid, so drop it -- the same treatment
+                    # the pre-assignment window above gets -- and answer through
+                    # the read-only reopen path instead. The assignment
+                    # ``pin_private_agent_store`` already published cannot
+                    # repoint that turn: ``bind_session_execution`` compares the
+                    # record it read and refuses a differing member or store.
+                    running_after_wait = True
+                elif (
+                    state._slots.get(slot_key) is not slot
+                    or effective_session_key(slot) != canonical_key
+                    or slot.agent != member_name
+                ):
+                    return web.json_response(
+                        {
+                            "error": "member thread changed during assignment",
+                            "code": "member_slot_conflict",
+                        },
+                        status=409,
+                    )
+                else:
+                    slot.memory_store = assigned_store
+        if running_after_wait:
+            return await reopen_bound_thread()
 
     created = (
         binding is None
@@ -581,6 +815,19 @@ async def api_member_thread(request: web.Request) -> web.Response:
                 },
                 status=500,
             )
+        # Record the binding in the member's append-only log. The trust-file
+        # write above is the security fence and stays authoritative; this is
+        # the durable projection input for the roster's slot_key. Best-effort
+        # and off-loop (ensure/append are synchronous file IO); a logging fault
+        # never fails a binding the fence already persisted.
+
+        def _emit_binding() -> None:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.eventlog.types import MEMBER_BINDING
+
+            eventlog_hooks.emit(slug, member_name, MEMBER_BINDING, {"slot_key": slot.key})
+
+        await asyncio.to_thread(_emit_binding)
 
     return web.json_response({"slot_key": slot.key, "slug": slug, "member": member_name})
 
@@ -623,7 +870,70 @@ async def api_member_activity(request: web.Request) -> web.Response:
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
 
-    entries = await asyncio.to_thread(members_mod.read_activity, slug)
+    # Source the records from the member's append-only log: ACTIVITY_RECORD
+    # events for THIS exact member, unwrapped to the record dict each carries.
+    #
+    # The member filter and the timestamp parse run INSIDE this read, before any
+    # cap, because a log's newest N envelopes are not N of one member's activity
+    # records. The same log also carries config, binding, rules, message, slot and
+    # patrol events, and a colliding slug's log carries another exact name's
+    # records as well -- so capping the envelope read first and filtering second
+    # drops activity that is well inside the window the drawer promises.
+    #
+    # But the read is PAGED rather than asked for the whole log. `history` with
+    # `limit=None` materialises every event in the lifetime file into a list and
+    # reverses it, which is bounded only while the log still fits the retained tail
+    # (`MAX_RETAINED_EVENTS`); past that the allocation is the file's whole length,
+    # on a request path, for a response that shows `_ACTIVITY_LIMIT` rows. The log
+    # has no rotation, so outgrowing the tail is ordinary ageing rather than an
+    # extreme input. Paging keeps the filter where it has to be AND keeps the
+    # allocation bounded: walk backwards a page at a time and stop as soon as one
+    # more than the display cap has matched, which is all `capped` needs to know.
+    def _read_activity_records() -> list[tuple[float, int, dict]]:
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.types import ACTIVITY_RECORD
+
+        svc = get_service()
+        out: list[tuple[float, int, dict]] = []
+        before: int | None = None
+        while True:
+            page = svc.history(slug, before=before, limit=_ACTIVITY_PAGE)
+            if not page:
+                break
+            for event in page:
+                if event.get("type") != ACTIVITY_RECORD:
+                    continue
+                record = event.get("data")
+                if not isinstance(record, dict):
+                    continue
+                if record.get("member") != member:
+                    # A colliding slug's log holds records for another exact name;
+                    # they belong to that member's drawer, not this one's.
+                    continue
+                ts = _parse_activity_ts(record.get("ts", ""))
+                if ts <= 0:
+                    # A record without a readable timestamp cannot be placed on a
+                    # timeline; skip it rather than sorting garbage to the top.
+                    continue
+                # ``seq`` is the log's own append order, which is what the former
+                # read index stood in for -- and it stays the same number whatever
+                # slice this read returns, so same-second ties break identically.
+                out.append((ts, int(event.get("seq", 0)), record))
+            if len(out) > _ACTIVITY_LIMIT:
+                # One past the display cap is enough: the sort below can only trim
+                # the oldest tail, and `capped` is a boolean, not a total.
+                break
+            if len(page) < _ACTIVITY_PAGE:
+                break  # the log is exhausted
+            oldest = page[-1].get("seq")  # pages come newest-first
+            if not isinstance(oldest, int) or (before is not None and oldest >= before):
+                # No usable cursor, or one that did not move: stop rather than
+                # re-read the same page for ever.
+                break
+            before = oldest
+        return out
+
+    entries = await asyncio.to_thread(_read_activity_records)
 
     def _sanitize(text: str) -> str:
         # Same redaction chain the roster's message preview uses: a project
@@ -637,20 +947,11 @@ async def api_member_activity(request: web.Request) -> web.Response:
         return text
 
     rows: list[tuple[float, int, dict]] = []
-    for idx, entry in enumerate(entries):
-        if entry.get("member") != member:
-            # A colliding slug's log holds records for another exact name;
-            # they belong to that member's drawer, not this one's.
-            continue
-        ts = _parse_activity_ts(entry.get("ts", ""))
-        if ts <= 0:
-            # A record without a readable timestamp cannot be placed on a
-            # timeline; skip it rather than sorting garbage to the top.
-            continue
+    for ts, seq, entry in entries:
         rows.append(
             (
                 ts,
-                idx,
+                seq,
                 {
                     "ts": ts,
                     "via": entry.get("via", "") or "chat",
@@ -675,6 +976,152 @@ async def api_member_activity(request: web.Request) -> web.Response:
             # of asserting an exact count it cannot know.
             "capped": capped,
             "entries": [r[2] for r in rows[:_ACTIVITY_LIMIT]],
+        }
+    )
+
+
+async def api_member_briefing(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/briefing?member=<name> — a crewmate's own notes, read-only.
+
+    Feeds the Crewmates page panel's Notes tab. The briefing
+    (``members/<slug>/briefing.md``) is the crewmate's self-maintained standing
+    notes — an AGENT-written file, curated by the crewmate for its future self.
+    This endpoint reads and never writes, and the panel offers no editor for
+    the file: the dashboard's file viewer reads through a redacting path and
+    its Save writes the buffer back, so any in-dashboard edit of an
+    agent-written file could replace a secret the crewmate wrote in the
+    meantime with its placeholder. The notes are edited where the crewmate
+    writes them, outside the dashboard.
+
+    The text comes from :func:`members.read_member_briefing_bounded` and
+    inherits its total contract: a missing or unreadable file reads as ``""``
+    (the normal state of a fresh crewmate — never a 404), and content past
+    ``MEMBER_BRIEFING_MAX_CHARS`` is cut at the cap with a visible marker
+    (:func:`members.cap_member_briefing`, applied AFTER redaction so the cap
+    cannot split a token past the patterns), which the panel renders as-is so
+    the human sees the same overflow the crewmate is shown. ``supported`` is :func:`members.member_briefing_supported`:
+    on platforms without ``O_NOFOLLOW`` and the pinned ancestor walk the read
+    fails closed to ``""`` and the panel explains that from the flag rather
+    than presenting an empty briefing as "no notes yet". ``updated_ts`` is the
+    file's own mtime (epoch seconds) or ``null`` when there is no file.
+    ``redacted`` and ``truncated`` each say the wire text shows less than the
+    file holds (a secret replaced by its placeholder; a tail past the cap not
+    shown), so the panel can say so above the notes instead of leaving
+    placeholders and a marker unexplained. A successful read leaves a SEL row
+    (``members.briefing.read`` / ``allowed``), as the rules read does.
+
+    ``member`` (query, REQUIRED) is the exact crew name, same posture as the
+    activity endpoint: slugification is lossy, and the exact name is echoed
+    back so the frontend keys its cache by name rather than by a slug two
+    crewmates can share -- and, as on the rules endpoint, the exact name must
+    derive this slug, exist, and be the ONLY crew that derives it: the briefing
+    is one file per slug, so for a colliding slug the notes belong to neither
+    crewmate and the read is refused (409 ``briefing_slug_ambiguous``) rather
+    than shown -- with an Edit -- as one of theirs.
+    """
+    denied = await _deny_app_caller(request, "members.briefing")
+    if denied is not None:
+        return denied
+    # Owner gate, the rules endpoint's boundary: the briefing is the crewmate's
+    # private working memory, written for its owner. Any allowed Slack user can
+    # mint a dashboard session (`!dashboard`), so the app-caller guard alone
+    # would let a non-owner colleague read notes the owner never shared. Gated
+    # before any validation or file IO, so a denial costs no read.
+    owner_denied = await require_owner_dashboard_request(request, "members.briefing.read")
+    if owner_denied is not None:
+        return owner_denied
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    member = request.query.get("member", "")
+    if not member or not _AGENT_NAME_RE.match(member):
+        return web.json_response(
+            {"error": "member query parameter required", "code": "missing_member"}, status=400
+        )
+    # The briefing is a PER-SLUG file and the slug is lossy (`Code_Reviewer` and
+    # `code-reviewer` share one), so for a colliding slug the file belongs to
+    # neither crewmate cleanly: showing it as one member's notes -- with an Edit
+    # that saves over it -- would let the two overwrite each other. Same posture
+    # as the rules endpoint: verify the exact member derives this slug, exists,
+    # and is the ONLY one that does; otherwise refuse with a coded answer the
+    # panel turns into a plain sentence. Config read off-loop (file IO).
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    try:
+        if members_mod.member_slug(member, cfg) != slug:
+            return web.json_response(
+                {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
+            )
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
+        )
+    if member not in cfg.agents:
+        return web.json_response(
+            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+        )
+    if _member_names_for_slug(cfg, slug) != [member]:
+        return web.json_response(
+            {
+                "error": "multiple crews share this slug; their notes would be ambiguous",
+                "code": "briefing_slug_ambiguous",
+            },
+            status=409,
+        )
+
+    supported = members_mod.member_briefing_supported()
+
+    # The pinned, bounded open (text + mtime from one descriptor) is blocking
+    # file IO: one hop off the loop.
+    text, updated_ts, read_bounded = await asyncio.to_thread(
+        members_mod.read_member_briefing_bounded, slug
+    )
+
+    # Same redaction chain as the activity endpoint: the briefing is an
+    # AGENT-written file, so a token the crewmate pasted into its own notes
+    # would otherwise cross this network boundary into the browser verbatim.
+    # Run on the whole BOUNDED buffer, BEFORE the character cap: a redaction
+    # over already-capped text cannot match a token the cap split in two, and
+    # the plaintext half would cross the boundary unmatched. The cap comes
+    # after -- judged on the REDACTED length, so a briefing that only
+    # overflowed before its placeholders shrank it is shown whole -- and drops
+    # a trailing split word for the same reason (the bounded read has an edge
+    # of its own).
+    text, url_hits = _h.redact_exfiltration_urls(text)
+    text, cred_hits = _h.redact_credentials(text)
+    text, truncated = members_mod.cap_member_briefing(text, read_bounded, drop_split_tail=True)
+    # Whether the text on the wire shows less than the file holds, so the panel
+    # can say so above the notes: ``redacted`` when a placeholder replaced a
+    # secret, ``truncated`` when the marker stands in for the tail.
+    redacted = bool(url_hits or cred_hits)
+
+    # Audit the disclosure, as the rules read does: WHO read a crewmate's
+    # private notes matters as much as who was refused, and a denied-only
+    # trail cannot answer "was this boundary disclosed". Best effort -- an
+    # audit must never change the outcome.
+    try:
+        _sel().log_api_access(
+            caller=request.remote or "",
+            operation="members.briefing.read",
+            outcome="allowed",
+            source="dashboard",
+            resources=f"slug={slug}",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for members.briefing.read failed", exc_info=True)
+
+    return web.json_response(
+        {
+            "slug": slug,
+            "member": member,
+            "supported": supported,
+            "text": text,
+            "updated_ts": updated_ts,
+            "redacted": redacted,
+            "truncated": truncated,
         }
     )
 
@@ -826,8 +1273,10 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Reuse this off-loop snapshot for identity validation and collision checks.
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     try:
-        if members_mod.slug_for_name(member) != slug:
+        if members_mod.member_slug(member, cfg) != slug:
             return web.json_response(
                 {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
             )
@@ -835,9 +1284,6 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
         )
-    # Config load does filesystem reads + validation — off-loop, like every
-    # other handler's config access on a request path.
-    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if member not in cfg.agents:
         return web.json_response(
             {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
@@ -870,6 +1316,18 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "could not persist rules", "code": "rules_write_failed"}, status=500
         )
+
+    # Record the rules change in the member's append-only log. The trust-file
+    # write above is the security fence and stays authoritative; this is the
+    # durable event so the log reflects the current rules text. Best-effort and
+    # off-loop; a logging fault never fails a save the fence already persisted.
+    def _emit_rules() -> None:
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import MEMBER_RULES
+
+        eventlog_hooks.emit(slug, member, MEMBER_RULES, {"text": rules})
+
+    await asyncio.to_thread(_emit_rules)
 
     # Same audit posture as the GET: a successful boundary WRITE is the event
     # an owner most needs a trace of — it is the moment the member's safety

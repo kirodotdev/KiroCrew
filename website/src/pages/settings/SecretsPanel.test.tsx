@@ -1,16 +1,27 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { SecretsPanel } from './SecretsPanel'
+import { isAuthBannerShown, __resetAuthRecoveryStateForTests } from '../../api/client'
+import en from '../../i18n/locales/en.json'
+// The transport's own recovery copy is hand-authored, so it lives in the manual
+// catalog rather than in the codemod-regenerated `en.json`. A repo guard keeps a
+// key out of both files at once, so this is the one place it can be read from.
+import enManual from '../../i18n/locales/en.manual.json'
 
 /**
- * The panel talks to `/api/secrets` through bare `fetch` (not the `api` client),
- * so the seam under test is the global fetch. Each case stubs it with a small
- * router keyed on method + URL rather than a single blanket resolve, because the
- * add and delete paths must be asserted on the REQUEST they send, not just on
- * the re-render they cause.
+ * The panel talks to `/api/secrets` through the shared `api` client, which issues
+ * the request with the global `fetch`, so the seam under test is still the global
+ * fetch, and every assertion about the REQUEST (method, URL, body, headers) reads
+ * the same as before. Each case stubs it with a small router keyed on method + URL
+ * rather than a single blanket resolve, because the add and delete paths must be
+ * asserted on the request they send, not just on the re-render they cause.
+ *
+ * Stubs are installed with {@link stubFetch}, never with a bare `vi.stubGlobal`:
+ * the transport's failure path reads fields off the response that a hand-written
+ * `{ ok, status, json }` literal does not have.
  */
 type FetchCall = { url: string; method: string; body?: unknown; headers?: Record<string, string> }
 type ManagedSecret = { name: string; kind: 'jira_api_token' | 'jira_host_token'; host?: string }
@@ -28,8 +39,62 @@ let listManagedError = false
 /** When set, the next `/api/secrets` GET rejects — drives the error path. */
 let listShouldFail = false
 
+/**
+ * Fill a partial `Response` literal out to the shape the transport reads.
+ *
+ * `api/client.ts` reads the auth-challenge HEADER (to decide whether a 403 is a
+ * lapsed session) and the body TEXT (to unwrap the backend's message) off the
+ * response. A stub carrying only `ok`/`status`/`json` makes the transport throw a
+ * TypeError about a missing property, which reaches the card in place of the
+ * refusal the server actually sent. Completing it in ONE place is what keeps the
+ * next stub in this file from being wrong in the same way.
+ *
+ * `text` is DERIVED from `json` when a stub does not supply it, including the
+ * `.catch('')` -- so a stub whose `json` rejects (a non-JSON error body) yields an
+ * empty body, which the transport renders as `HTTP <status>`. That is what this
+ * panel's own local guard used to do for the same response.
+ *
+ * Only ABSENT fields are filled, so a case that needs a real header or a real
+ * body text supplies its own and this leaves it alone.
+ */
+function completeResponse(r: Response, url: string): Response {
+  const partial = r as unknown as {
+    headers?: unknown
+    text?: unknown
+    url?: unknown
+    json: () => Promise<unknown>
+  }
+  if (!partial.headers) partial.headers = { get: () => null }
+  if (!partial.text) {
+    partial.text = () =>
+      Promise.resolve()
+        .then(() => partial.json())
+        .then(body => (typeof body === 'string' ? body : JSON.stringify(body)))
+        .catch(() => '')
+  }
+  if (!partial.url) partial.url = url
+  return r
+}
+
+/**
+ * Install a fetch stub, completing whatever it answers with.
+ *
+ * Use this instead of `vi.stubGlobal('fetch', vi.fn(...))`: a rejection still
+ * propagates untouched (the transport never sees a response at all), and a
+ * resolved answer is passed through {@link completeResponse} first.
+ */
+function stubFetch(
+  impl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> | Response,
+) {
+  const wrapped = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+    completeResponse(await impl(input, init), String(input)),
+  )
+  vi.stubGlobal('fetch', wrapped)
+  return wrapped
+}
+
 function installFetch() {
-  const impl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  return stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
     // Normalise Headers object / plain object / undefined to a plain record so
@@ -64,16 +129,14 @@ function installFetch() {
       } as Response)
     }
     // POST /api/secrets and DELETE /api/secrets/:name both just acknowledge.
-    // `ok`/`status` are required: the panel's `j()` helper rejects a non-OK
-    // response, so a mock without them would read as a failure.
+    // `ok`/`status` are required: the transport rejects a non-OK response, so a
+    // stub without them would read as a failure.
     return Promise.resolve({
       ok: true,
       status: 200,
       json: () => Promise.resolve({ ok: true }),
     } as Response)
   })
-  vi.stubGlobal('fetch', impl)
-  return impl
 }
 
 function mount() {
@@ -116,10 +179,7 @@ describe('SecretsPanel', () => {
 
   it('shows the loading line while the list query is in flight', () => {
     // A never-settling GET keeps `isLoading` true for the assertion.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => new Promise<Response>(() => {})),
-    )
+    stubFetch(() => new Promise<Response>(() => {}))
     mount()
 
     expect(screen.getByText('Loading…')).toBeInTheDocument()
@@ -436,23 +496,20 @@ describe('SecretsPanel', () => {
   it('disables a managed row while its save is pending', async () => {
     const user = userEvent.setup()
     let resolvePost: (response: Response) => void = () => {}
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'POST') {
-          return new Promise<Response>((resolve) => { resolvePost = resolve })
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({
-            names: ['JIRA_API_TOKEN'],
-            managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
-          }),
-        } as Response)
-      }),
-    )
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        return new Promise<Response>((resolve) => { resolvePost = resolve })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          names: ['JIRA_API_TOKEN'],
+          managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
+        }),
+      } as Response)
+    })
     mount()
     await screen.findByText('Jira API token')
 
@@ -481,23 +538,20 @@ describe('SecretsPanel', () => {
     // delete settles.
     const user = userEvent.setup()
     let resolveDelete: (response: Response) => void = () => {}
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'DELETE') {
-          return new Promise<Response>((resolve) => { resolveDelete = resolve })
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({
-            names: ['JIRA_API_TOKEN'],
-            managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
-          }),
-        } as Response)
-      }),
-    )
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'DELETE') {
+        return new Promise<Response>((resolve) => { resolveDelete = resolve })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          names: ['JIRA_API_TOKEN'],
+          managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
+        }),
+      } as Response)
+    })
     mount()
     await screen.findByText('Jira API token')
 
@@ -530,23 +584,20 @@ describe('SecretsPanel', () => {
     // corrupt the credential. The row is now frozen for the duration of the Add.
     const user = userEvent.setup()
     let resolvePost: (response: Response) => void = () => {}
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'POST') {
-          return new Promise<Response>((resolve) => { resolvePost = resolve })
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({
-            names: ['JIRA_API_TOKEN'],
-            managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
-          }),
-        } as Response)
-      }),
-    )
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        return new Promise<Response>((resolve) => { resolvePost = resolve })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          names: ['JIRA_API_TOKEN'],
+          managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
+        }),
+      } as Response)
+    })
     mount()
     await screen.findByText('Jira API token')
 
@@ -763,24 +814,21 @@ describe('SecretsPanel error handling', () => {
   it('keeps the typed secret in the form when the POST is rejected', async () => {
     const user = userEvent.setup()
     // Route the POST to a 403 while the list GET keeps working.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'POST') {
-          return Promise.resolve({
-            ok: false,
-            status: 403,
-            json: () => Promise.resolve({ error: 'forbidden' }),
-          } as Response)
-        }
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
         return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: [] }),
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({ error: 'forbidden' }),
         } as Response)
-      }),
-    )
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('No secrets stored yet.')
 
@@ -799,24 +847,21 @@ describe('SecretsPanel error handling', () => {
 
   it('keeps the confirmation open when the DELETE is rejected', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'DELETE') {
-          return Promise.resolve({
-            ok: false,
-            status: 500,
-            json: () => Promise.resolve({ error: 'boom' }),
-          } as Response)
-        }
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'DELETE') {
         return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: ['MY_API_KEY'] }),
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'boom' }),
         } as Response)
-      }),
-    )
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: ['MY_API_KEY'] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('MY_API_KEY')
 
@@ -832,33 +877,31 @@ describe('SecretsPanel error handling', () => {
   })
 
   it('surfaces the backend error prose in the thrown error', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() =>
-        Promise.resolve({
-          ok: false,
-          status: 400,
-          json: () => Promise.resolve({ error: 'Secret name must be a string' }),
-        } as Response),
-      ),
+    stubFetch(() =>
+      Promise.resolve({
+        ok: false,
+        status: 400,
+        json: () => Promise.resolve({ error: 'Secret name must be a string' }),
+      } as Response),
     )
     mount()
 
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('HTTP 400: Secret name must be a string')
+    // The backend's sentence, with no status code in front of it. The transport
+    // renders `HTTP <status>` only for a refusal that carried no human message,
+    // so a refusal that DID carry one now reads as the sentence alone -- the same
+    // rule every other panel's failures follow.
+    expect(alert).toHaveTextContent('Could not load secrets: Secret name must be a string')
     expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
   })
 
   it('rejects a non-OK response whose body is not JSON', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() =>
-        Promise.resolve({
-          ok: false,
-          status: 502,
-          json: () => Promise.reject(new SyntaxError('not json')),
-        } as unknown as Response),
-      ),
+    stubFetch(() =>
+      Promise.resolve({
+        ok: false,
+        status: 502,
+        json: () => Promise.reject(new SyntaxError('not json')),
+      } as unknown as Response),
     )
     mount()
 
@@ -877,24 +920,21 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
    */
   it('shows the save error message after a failed POST', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'POST') {
-          return Promise.resolve({
-            ok: false,
-            status: 403,
-            json: () => Promise.resolve({ error: 'forbidden' }),
-          } as Response)
-        }
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
         return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: [] }),
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({ error: 'forbidden' }),
         } as Response)
-      }),
-    )
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('No secrets stored yet.')
 
@@ -903,10 +943,12 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
     await user.type(screen.getByLabelText('Secret value'), 'sk-abc123')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
-    // The alert carries the backend prose surfaced by `j()` (HTTP 403: forbidden).
+    // The alert carries the backend prose the transport unwrapped. The status
+    // digits are deliberately no longer asserted: a refusal that sent a message
+    // is shown as that message, and the status still travels on the `ApiError`
+    // and into the error journal for diagnostics.
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Could not save secret')
-    expect(alert).toHaveTextContent('403')
     expect(alert).toHaveTextContent('forbidden')
   })
 
@@ -918,24 +960,21 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
    */
   it('clears the stale save error when the form is cancelled and reopened', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'POST') {
-          return Promise.resolve({
-            ok: false,
-            status: 403,
-            json: () => Promise.resolve({ error: 'forbidden' }),
-          } as Response)
-        }
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
         return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: [] }),
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({ error: 'forbidden' }),
         } as Response)
-      }),
-    )
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('No secrets stored yet.')
 
@@ -961,22 +1000,19 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
   it('disables Cancel while the POST is in flight', async () => {
     const user = userEvent.setup()
     let resolvePost: (r: Response) => void = () => {}
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'POST') {
-          return new Promise<Response>((resolve) => {
-            resolvePost = resolve
-          })
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: [] }),
-        } as Response)
-      }),
-    )
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        return new Promise<Response>((resolve) => {
+          resolvePost = resolve
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('No secrets stored yet.')
 
@@ -1004,23 +1040,20 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
     const user = userEvent.setup()
     let resolveDelete: (r: Response) => void = () => {}
     const deletes: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'DELETE') {
-          deletes.push(String(input))
-          return new Promise<Response>((resolve) => {
-            resolveDelete = resolve
-          })
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: ['ALPHA', 'BETA'] }),
-        } as Response)
-      }),
-    )
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'DELETE') {
+        deletes.push(String(input))
+        return new Promise<Response>((resolve) => {
+          resolveDelete = resolve
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: ['ALPHA', 'BETA'] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('ALPHA')
 
@@ -1051,22 +1084,19 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
   it('disables Save while a DELETE is in flight', async () => {
     const user = userEvent.setup()
     let resolveDelete: (r: Response) => void = () => {}
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'DELETE') {
-          return new Promise<Response>((resolve) => {
-            resolveDelete = resolve
-          })
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: ['ALPHA'] }),
-        } as Response)
-      }),
-    )
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'DELETE') {
+        return new Promise<Response>((resolve) => {
+          resolveDelete = resolve
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: ['ALPHA'] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('ALPHA')
 
@@ -1092,24 +1122,21 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
    */
   it('shows the delete error message after a failed DELETE', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'DELETE') {
-          return Promise.resolve({
-            ok: false,
-            status: 500,
-            json: () => Promise.resolve({ error: 'boom' }),
-          } as Response)
-        }
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'DELETE') {
         return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: ['MY_API_KEY'] }),
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'boom' }),
         } as Response)
-      }),
-    )
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: ['MY_API_KEY'] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('MY_API_KEY')
 
@@ -1118,30 +1145,27 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Could not delete secret')
-    expect(alert).toHaveTextContent('500')
+    // Same as the save case: the unwrapped sentence, not the status digits.
     expect(alert).toHaveTextContent('boom')
     expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
   })
 
   it('does not offer delete-error handoff while the add form holds a draft', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        if ((init?.method ?? 'GET') === 'DELETE') {
-          return Promise.resolve({
-            ok: false,
-            status: 500,
-            json: () => Promise.resolve({ error: 'boom' }),
-          } as Response)
-        }
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'DELETE') {
         return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: ['MY_API_KEY'], managed: [] }),
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'boom' }),
         } as Response)
-      }),
-    )
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: ['MY_API_KEY'], managed: [] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('MY_API_KEY')
 
@@ -1158,26 +1182,23 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
 
   it('does not offer page-level handoff while a managed row holds a draft', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        if ((init?.method ?? 'GET') === 'DELETE') {
-          return Promise.resolve({
-            ok: false,
-            status: 500,
-            json: () => Promise.resolve({ error: 'boom' }),
-          } as Response)
-        }
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'DELETE') {
         return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({
-            names: ['MY_API_KEY'],
-            managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
-          }),
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'boom' }),
         } as Response)
-      }),
-    )
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          names: ['MY_API_KEY'],
+          managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
+        }),
+      } as Response)
+    })
     mount()
     await screen.findByText('Jira API token')
 
@@ -1197,23 +1218,20 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
   it('disables Save while the POST is in flight', async () => {
     const user = userEvent.setup()
     let resolvePost: (r: Response) => void = () => {}
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'POST') {
-          // Never settles until we release it, holding the mutation pending.
-          return new Promise<Response>(res => {
-            resolvePost = res
-          })
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: [] }),
-        } as Response)
-      }),
-    )
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        // Never settles until we release it, holding the mutation pending.
+        return new Promise<Response>(res => {
+          resolvePost = res
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('No secrets stored yet.')
 
@@ -1247,23 +1265,20 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
   it('does not send a second POST on a double-click', async () => {
     const user = userEvent.setup()
     const seen: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        const method = init?.method ?? 'GET'
-        if (method === 'POST') {
-          seen.push('POST')
-          // Stay pending so the first click holds `isPending` true across the
-          // second click.
-          return new Promise<Response>(() => {})
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ names: [] }),
-        } as Response)
-      }),
-    )
+    stubFetch((_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        seen.push('POST')
+        // Stay pending so the first click holds `isPending` true across the
+        // second click.
+        return new Promise<Response>(() => {})
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [] }),
+      } as Response)
+    })
     mount()
     await screen.findByText('No secrets stored yet.')
 
@@ -1314,5 +1329,513 @@ describe('SecretsPanel session key', () => {
       expect(post).toBeTruthy()
       expect(post?.headers?.['X-Session-Key']).toBe('dashboard:ui')
     })
+  })
+})
+
+/**
+ * What an EXPIRED session sees (issue #12240).
+ *
+ * The panel used to issue its own `fetch` behind a local `!r.ok` guard, which
+ * reaches none of the shared transport's session-expiry recovery: no silent
+ * cookie refresh, no re-auth banner, and an error message built from the
+ * gateway's own reason text. A signed-out user was therefore told
+ * `Could not save secret: HTTP 403: <cryptographic reason>` and offered a retry
+ * that could not succeed, while every sibling settings panel raised the banner.
+ *
+ * These cases assert the observable halves of that recovery, each produced only
+ * by going through the client: the refresh attempt, the banner in the document,
+ * and the sign-in instruction on the card. The last two cases are the controls
+ * that keep the fix from being a blanket re-auth prompt on any refusal.
+ */
+describe('SecretsPanel on an expired session', () => {
+  /** The auth challenge the gateway answers an API call with once the dashboard
+   *  session no longer authenticates: 403 carrying `X-Auth-Required`, and a body
+   *  whose `error` names the CRYPTOGRAPHIC reason -- accurate, and useless to a
+   *  user, which is why the transport substitutes its own message. */
+  const AUTH_CHALLENGE = { error: 'invalid signature', code: 'forbidden' }
+
+  /** A `Response` whose header read answers from *headers*. Written out here
+   *  rather than left to `completeResponse` because these cases are about the
+   *  header, so supplying it is the point. */
+  function authDenied(body: unknown) {
+    return {
+      ok: false,
+      status: 403,
+      headers: { get: (k: string) => (k === 'X-Auth-Required' ? 'true' : null) },
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    } as unknown as Response
+  }
+
+  /**
+   * The list GET succeeds so the Add form is reachable; the save POST is denied
+   * with the auth challenge; the silent refresh that follows comes back 401.
+   *
+   * 401 is what takes the recovery all the way to the banner -- a TRANSIENT
+   * refresh failure deliberately does NOT banner, so it is the terminal answer
+   * that makes the end of the pipeline observable.
+   */
+  function denySaveWithExhaustedRefresh() {
+    return stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: () => Promise.reject(new SyntaxError('revoked')),
+        } as unknown as Response)
+      }
+      if (method === 'POST' && url === '/api/secrets') {
+        return Promise.resolve(authDenied(AUTH_CHALLENGE))
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [], managed: [] }),
+      } as Response)
+    })
+  }
+
+  const banner = () => document.getElementById('mc-session-expired')
+
+  /** Fill the Add form and submit it, which is the click the issue names. */
+  async function save(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    await user.type(screen.getByLabelText('Secret name'), 'MY_KEY')
+    await user.type(screen.getByLabelText('Secret value'), 'sk-abc123')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+  }
+
+  beforeEach(() => {
+    __resetAuthRecoveryStateForTests()
+  })
+
+  afterEach(() => {
+    __resetAuthRecoveryStateForTests()
+    vi.unstubAllGlobals()
+  })
+
+  it('attempts the silent refresh instead of failing the save outright', async () => {
+    const user = userEvent.setup()
+    const fetchMock = denySaveWithExhaustedRefresh()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.anything()),
+    )
+  })
+
+  it('raises the re-auth banner once the refresh comes back terminal', async () => {
+    const user = userEvent.setup()
+    denySaveWithExhaustedRefresh()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+
+    await waitFor(() => expect(banner()).not.toBeNull())
+    expect(isAuthBannerShown()).toBe(true)
+    // The banner is only worth raising for what it carries: the command that
+    // mints a fresh token, and somewhere to paste the result.
+    expect(banner()?.textContent).toContain('kirocrew token')
+    expect(banner()?.querySelector('input')).not.toBeNull()
+  })
+
+  it('names signing in on the card, not the gateway reason', async () => {
+    const user = userEvent.setup()
+    denySaveWithExhaustedRefresh()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(enManual.api.client.session_expired_sign_in_again)
+    // Not the cryptographic reason, which describes HMAC verification and names
+    // nothing the user can do -- and which is exactly what the panel's own local
+    // guard put on the card.
+    expect(alert).not.toHaveTextContent('invalid signature')
+    // The panel's frame stays: it says WHICH action failed and prescribes
+    // nothing, so it does not compete with the recovery instruction inside it.
+    expect(alert.textContent).toContain(en.settings.secrets.save_error.split('{{')[0].trim())
+  })
+
+  it('keeps the typed secret in the form through the denial', async () => {
+    // The data-loss guard has to survive the move onto the shared transport: the
+    // value is unrecoverable, and a session the user can still repair is the
+    // worst moment to discard it.
+    const user = userEvent.setup()
+    denySaveWithExhaustedRefresh()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+    await screen.findByRole('alert')
+
+    expect(screen.getByLabelText('Secret name')).toHaveValue('MY_KEY')
+    expect(screen.getByLabelText('Secret value')).toHaveValue('sk-abc123')
+  })
+
+  it('keeps a non-auth 403 on its own prose, with no banner', async () => {
+    // An ordinary permission denial is a 403 too, and it carries NO
+    // `X-Auth-Required`. Its sentence already names the remedy, and a re-auth
+    // banner beside it would send the user to fix something that is not broken.
+    // The transport keys on the header rather than the status, and this is the
+    // control that proves it.
+    const user = userEvent.setup()
+    const refused = { error: 'Secrets are read-only on a remote dashboard.', code: 'read_only_remote' }
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'POST' && String(input) === '/api/secrets') {
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve(refused),
+        } as Response)
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [], managed: [] }),
+      } as Response)
+    })
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(refused.error)
+    expect(alert).not.toHaveTextContent(enManual.api.client.session_expired_sign_in_again)
+    expect(banner()).toBeNull()
+    expect(isAuthBannerShown()).toBe(false)
+  })
+
+  it('clears a banner left by an earlier lapse when a later save succeeds', async () => {
+    const user = userEvent.setup()
+    denySaveWithExhaustedRefresh()
+    const view = mount()
+    await screen.findByText('No secrets stored yet.')
+    await save(user)
+    await waitFor(() => expect(banner()).not.toBeNull())
+    view.unmount()
+
+    installFetch()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await waitFor(() => expect(banner()).toBeNull())
+    expect(isAuthBannerShown()).toBe(false)
+  })
+
+  /**
+   * The remaining two of the three requests the issue names. Save is the one the
+   * acceptance criteria describe and is covered in full above; these pin that the
+   * list and delete requests reach the same recovery, so a later change that moves
+   * one of them back onto a raw `fetch` fails here rather than being found by a
+   * signed-out user.
+   */
+  it('raises the banner and names signing in when the LIST is denied', async () => {
+    stubFetch((input: RequestInfo | URL) =>
+      String(input) === '/api/auth/refresh'
+        ? Promise.resolve({
+            ok: false,
+            status: 401,
+            json: () => Promise.reject(new SyntaxError('revoked')),
+          } as unknown as Response)
+        : Promise.resolve(authDenied(AUTH_CHALLENGE)),
+    )
+    mount()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(enManual.api.client.session_expired_sign_in_again)
+    expect(alert).not.toHaveTextContent('invalid signature')
+    await waitFor(() => expect(banner()).not.toBeNull())
+  })
+
+  it('raises the banner and names signing in when the DELETE is denied', async () => {
+    const user = userEvent.setup()
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: () => Promise.reject(new SyntaxError('revoked')),
+        } as unknown as Response)
+      }
+      if ((init?.method ?? 'GET') === 'DELETE') {
+        return Promise.resolve(authDenied(AUTH_CHALLENGE))
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: ['MY_API_KEY'], managed: [] }),
+      } as Response)
+    })
+    mount()
+    await screen.findByText('MY_API_KEY')
+
+    await user.click(screen.getByRole('button', { name: 'Delete secret MY_API_KEY' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(enManual.api.client.session_expired_sign_in_again)
+    expect(alert).not.toHaveTextContent('invalid signature')
+    await waitFor(() => expect(banner()).not.toBeNull())
+    // The secret is still listed: a denied delete must not read as a removal.
+    expect(screen.getByText('MY_API_KEY')).toBeInTheDocument()
+  })
+
+  /**
+   * The draft survives the RECOVERY, not just the denial (issue #12240 review).
+   *
+   * Preserving the form through a refused save is only half the promise. The
+   * re-auth banner used to submit its pasted token with a full-page navigation,
+   * which discarded the draft on the way to fixing the session -- so the panel
+   * handed the value back and then the recovery threw it away. The banner now
+   * exchanges the token against `/api/auth/me?token=...` instead, which
+   * authenticates by the same mechanism (the gateway's auth middleware reads a
+   * query token ahead of the cookie and writes the session cookie onto the
+   * response) without leaving the page.
+   */
+  function grantOnExchange() {
+    return stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (url.startsWith('/api/auth/me')) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) } as Response)
+      }
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: () => Promise.reject(new SyntaxError('revoked')),
+        } as unknown as Response)
+      }
+      if (method === 'POST' && url === '/api/secrets') {
+        return Promise.resolve(authDenied(AUTH_CHALLENGE))
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [], managed: [] }),
+      } as Response)
+    })
+  }
+
+  /** Paste *token* into the banner and press Enter. */
+  function pasteToken(token: string) {
+    const field = banner()!.querySelector('input') as HTMLInputElement
+    field.value = token
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  }
+
+  it('keeps the typed secret through the re-auth, which no longer reloads', async () => {
+    const user = userEvent.setup()
+    const fetchMock = grantOnExchange()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+    await waitFor(() => expect(banner()).not.toBeNull())
+
+    pasteToken('fresh-token')
+
+    // The exchange goes through the API, not through a navigation.
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/auth/me?token=fresh-token', expect.anything()),
+    )
+    // The banner clears itself once the session is live again.
+    await waitFor(() => expect(banner()).toBeNull())
+    // And the whole point: the draft is still on the form, so one click completes
+    // the save the lapsed session refused.
+    expect(screen.getByLabelText('Secret name')).toHaveValue('MY_KEY')
+    expect(screen.getByLabelText('Secret value')).toHaveValue('sk-abc123')
+  })
+
+  it('never writes the secret to localStorage or sessionStorage', async () => {
+    // A regression guard against the rejected alternative, not a restatement of
+    // the test above: the other way to survive a reload is to persist the draft,
+    // which would put a plaintext credential in web storage. This fails if anyone
+    // implements that, and it scans every key and value rather than a known key so
+    // a differently-named implementation cannot slip past it.
+    const user = userEvent.setup()
+    grantOnExchange()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+    await waitFor(() => expect(banner()).not.toBeNull())
+    pasteToken('fresh-token')
+    await waitFor(() => expect(banner()).toBeNull())
+
+    for (const store of [window.localStorage, window.sessionStorage]) {
+      const contents: string[] = []
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i)
+        if (k === null) continue
+        contents.push(k, store.getItem(k) ?? '')
+      }
+      const joined = contents.join('\u0000')
+      expect(joined).not.toContain('sk-abc123')
+      expect(joined).not.toContain('fresh-token')
+    }
+  })
+
+  it('keeps the banner up when the exchange is refused, and re-enables the field', async () => {
+    // A rejected token must not read as recovery: the banner is the only way back,
+    // so clearing it on a failed exchange would strand the user. The field is
+    // re-enabled with its text intact so a mistyped paste can be corrected.
+    const user = userEvent.setup()
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/auth/me')) {
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({ error: 'invalid signature' }),
+        } as Response)
+      }
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: () => Promise.reject(new SyntaxError('revoked')),
+        } as unknown as Response)
+      }
+      if ((init?.method ?? 'GET') === 'POST' && url === '/api/secrets') {
+        return Promise.resolve(authDenied(AUTH_CHALLENGE))
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [], managed: [] }),
+      } as Response)
+    })
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+    await waitFor(() => expect(banner()).not.toBeNull())
+    pasteToken('stale-token')
+
+    const field = () => banner()?.querySelector('input') as HTMLInputElement | undefined
+    await waitFor(() => expect(field()?.disabled).toBe(false))
+    expect(banner()).not.toBeNull()
+    expect(field()?.value).toBe('stale-token')
+    // The draft is untouched either way.
+    expect(screen.getByLabelText('Secret value')).toHaveValue('sk-abc123')
+  })
+
+  it('drops the stale sign-in card once auth is restored, keeping the draft', async () => {
+    const user = userEvent.setup()
+    denySaveWithExhaustedRefresh()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+    // The card is right while the session is down: it names the failure and
+    // tells the reader to use the banner above.
+    const card = await screen.findByText(/Could not save secret/)
+    expect(card.textContent).toContain('paste the sign-in URL into the banner')
+
+    // Auth genuinely comes back. `mc-auth-recovered` is emitted only from
+    // `removeAuthBanner`, whose every caller is gated on a 2xx or an accepted
+    // token exchange -- NOT `mc-auth-cleared`, which the banner's own X also
+    // emits while the session is still broken. From here the card is describing
+    // a session that no longer exists and pointing at a banner that is gone, so
+    // it has to go.
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mc-auth-recovered'))
+    })
+    await waitFor(() => {
+      expect(screen.queryByText(/Could not save secret/)).toBeNull()
+    })
+    // What the user typed is still theirs. Clearing a stale ERROR must not be a
+    // back door to clearing the draft the whole fix exists to protect.
+    expect(screen.getByLabelText('Secret name')).toHaveValue('MY_KEY')
+    expect(screen.getByLabelText('Secret value')).toHaveValue('sk-abc123')
+  })
+
+  it('keeps the sign-in card when the banner is only dismissed', async () => {
+    const user = userEvent.setup()
+    denySaveWithExhaustedRefresh()
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+    await waitFor(() => expect(banner()).not.toBeNull())
+    await screen.findByText(/Could not save secret/)
+
+    // Drive the banner's REAL dismiss button, not a synthetic event: the whole
+    // defect lived in the chain from that click to this card, so a dispatched
+    // event would skip the part under test. The X tears the banner down inline
+    // and emits `mc-auth-cleared` -- it never calls `removeAuthBanner`, so no
+    // `mc-auth-recovered` is emitted and nothing has authenticated.
+    const dismiss = Array.from(banner()?.querySelectorAll('button') ?? []).find(
+      b => b.textContent === '✕',
+    )
+    expect(dismiss).toBeDefined()
+    await act(async () => {
+      dismiss?.click()
+    })
+    // Precondition, not the claim: prove the click landed. Without this the test
+    // would also pass when the button was never found and nothing happened.
+    await waitFor(() => expect(banner()).toBeNull())
+
+    // Settle a full render cycle, for the same reason the sibling case does: an
+    // unguarded reset lands on the NEXT render.
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
+    // The session is still broken, so the card is still true and must stay.
+    expect(screen.getByText(/Could not save secret/)).toBeInTheDocument()
+  })
+
+  it('leaves a failure that is still true on screen', async () => {
+    const user = userEvent.setup()
+    // A plain refusal with no auth challenge: nothing about it is resolved by
+    // signing in, so even a REAL `mc-auth-recovered` must not erase it. The
+    // event is deliberately the recovery one, not `mc-auth-cleared`: the hook no
+    // longer listens to `mc-auth-cleared` at all, so dispatching that here would
+    // pass whatever `isAuthExpiredError` did and test nothing.
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if ((init?.method ?? 'GET') === 'POST' && url === '/api/secrets') {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          headers: { get: () => null },
+          json: () => Promise.resolve({ error: 'disk full' }),
+          text: () => Promise.resolve('{"error":"disk full"}'),
+        } as unknown as Response)
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ names: [], managed: [] }),
+      } as Response)
+    })
+    mount()
+    await screen.findByText('No secrets stored yet.')
+
+    await save(user)
+    await screen.findByText(/Could not save secret/)
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mc-auth-recovered'))
+    })
+    // Settle a full render cycle before looking. Asserting straight after the
+    // dispatch proves nothing: an unguarded reset lands on the NEXT render, so
+    // the card is still on screen at that instant either way and the case passes
+    // even when the reset is wrong. Waiting is what makes it discriminate --
+    // with the guard removed, this find now fails.
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
+    expect(screen.getByText(/Could not save secret/)).toBeInTheDocument()
   })
 })

@@ -782,6 +782,170 @@ class TestStreamMachinery:
         streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
         assert streamed == ["A ", "B "], streamed
 
+    def test_flush_on_edit_interval_does_not_tear_a_word_in_half(self):
+        """A model fragment boundary landing mid-word must not split it.
+
+        The throttled flush sends what is in ``_stream_buffer`` when the
+        edit-interval timer fires, and that timer knows nothing about where a
+        word ends. Two model fragments ("...ch" then "ạy...", the split shape
+        seen on a Vietnamese reply) land far enough apart to each cross the 1s
+        throttle, so each is a flush of its own; without a boundary check Slack
+        renders the word torn across two appended, unfixable segments.
+        """
+        rec = _RecSlack()
+        # turn_start, chunk 1 (@1000, flushes), chunk 2 (@1002, past interval,
+        # flushes), on_done (@1003).
+        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1003.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang chạ"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="y trên máy.\n"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        # The first flush holds "chạ" back rather than sending it torn; it is
+        # only released once "y" arrives and completes the word.
+        assert streamed == ["Đang ", "chạy trên máy.\n"], streamed
+        assert "".join(streamed) == "Đang chạy trên máy.\n"
+
+    def test_held_word_is_released_at_on_done_even_with_no_trailing_space(self):
+        """A turn that ends mid-word must still deliver the whole word.
+
+        The held tail exists only until the true end of the turn -- ``on_done``
+        flushes unconditionally so a turn that happens to stop right after a
+        throttled cut never leaves a fragment permanently stuck in the
+        renderer's buffer.
+        """
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0, 1002.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        assert "".join(streamed) == "partial", streamed
+
+    def test_a_script_written_without_spaces_still_streams_progressively(self):
+        """Whitespace is the only boundary here, so a script with none is sent.
+
+        Chinese, Japanese and Thai supply no whitespace for whole paragraphs. A
+        holdback that waited for one would re-hold the entire buffer on every
+        tick, so the reader would see nothing between newlines and the throttled
+        cadence the stream path exists for would be lost for exactly the
+        multibyte-script users a word-boundary guard is meant to help. Both
+        fragments below cross the throttle, so both must appear on their own.
+        """
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1003.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="正在机器上运行"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="第二段文字。\n"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        assert streamed == ["正在机器上运行", "第二段文字。\n"], streamed
+
+    def test_an_over_long_run_is_sent_rather_than_held(self):
+        """The hold is bounded, so one unbroken run cannot stall the stream.
+
+        A run far longer than any word is not a token mid-flight; it is content
+        this rule cannot read -- a base64 blob, a minified line, a space-free
+        script after one leading space. Holding it would defer real output
+        waiting for a boundary that may never arrive, so it goes out as written.
+        Asserted on the boundary helper rather than through a turn because the
+        ref-hold can defer a long unbroken run for its own, unrelated reason,
+        which would make a stream-level assertion pass without this rule.
+        """
+        from kiro_crew.slack.renderer import _WORD_HOLD_MAX, _split_trailing_word
+
+        short = "y" * _WORD_HOLD_MAX
+        assert _split_trailing_word(f"pin {short}") == ("pin ", short)
+        over = "y" * (_WORD_HOLD_MAX + 1)
+        assert _split_trailing_word(f"pin {over}") == (f"pin {over}", "")
+        # No whitespace at all: nothing to hold against, so send as written.
+        assert _split_trailing_word("正在机器上运行") == ("正在机器上运行", "")
+
+    def test_a_tool_card_cannot_get_between_a_held_word_and_its_start(self):
+        """Prose before a tool must finish before the card, not after it.
+
+        The hold is only ever safe because the NEXT flush stitches it back onto
+        its own word. A tool boundary is the one place that premise fails: the
+        card is appended immediately after the flush, so a complete word the
+        model simply did not follow with a space is released on the FAR side of
+        it and reads as the opening of the post-tool sentence -- "Đang kiểm tra
+        máy " / card / "chủ và ...". Nothing is lost, which is why no test
+        caught it; the order is wrong, and appends are final on Slack's side,
+        so the reader cannot be given the sentence back.
+
+        The trailing word carries a non-ASCII character deliberately: the
+        driver's own StreamRedactor holds a trailing ASCII run back as a
+        possible credential prefix, which would satisfy this assertion without
+        the renderer's hold ever being exercised.
+        """
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1004.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider(
+            [
+                # No trailing space, so the throttled flush has a word to hold.
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang kiểm tra máy chủ"),
+                AcpEvent(kind=EVENT_TOOL_CALL, title="Bash", tool_name="Bash"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=" và ổ đĩa.\n"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        # Split the interleaved call log at the first task card.
+        before, after, seen_card = "", "", False
+        for method, kw in rec.calls:
+            if method == "append_task":
+                seen_card = True
+            elif method == "append_stream":
+                if seen_card:
+                    after += kw["text"]
+                else:
+                    before += kw["text"]
+        assert seen_card, rec.calls
+        assert before == "Đang kiểm tra máy chủ", rec.calls
+        assert after == " và ổ đĩa.\n", rec.calls
+
+        """The rescued transcript must not end on half a word.
+
+        A dying turn is the one exit where the hold is released without a flush,
+        and the buffer behind it holds the rest of that same word. Releasing the
+        hold alone appends ``"chạ"`` as the last thing the durable transcript
+        establishes and drops the ``"y "`` that completes it -- the very tear the
+        throttled holdback exists to prevent, reintroduced on the failure path.
+        """
+        rec = _RecSlack()
+        clock = _FakeClock([1000.0, 1000.0])
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        provider = _Provider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang chạ")])
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        # The flush held "chạ"; the continuation then buffered behind it without
+        # crossing the throttle, so neither has reached Slack.
+        assert renderer._word_hold == "chạ", renderer._word_hold
+        renderer._stream_buffer = "y trên máy."
+
+        asyncio.run(renderer.release_held_word())
+
+        streamed = "".join(kw["text"] for m, kw in rec.calls if m == "append_stream")
+        assert streamed == "Đang chạy trên máy.", streamed
+        assert renderer.delivered_text == "Đang chạy trên máy.", renderer.delivered_text
+        # Both are consumed: a second call cannot re-send either.
+        assert renderer._word_hold == "" and renderer._stream_buffer == ""
+
     def test_append_failure_triggers_one_rotation(self):
         rec = _FlakyAppendSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
@@ -1386,3 +1550,170 @@ class TestWaitIdentity:
         # different tool; and a foreign server's own ``wait`` is not the core
         # tool, so a suffix match would roll the stream over on it.
         assert is_wait_identity(tool_name) is False
+
+
+class TestRenderFallbackEmptyText:
+    """A tool-only / reasoning-only turn reaches ``_render_fallback`` with empty
+    text on the no-stream path; the answer-carrying ``chat.update`` must not be
+    sent empty (Slack rejects empty text as ``no_text`` and raises, failing an
+    ordinary completed turn). The fallback substitutes the ``_No response._``
+    placeholder, mirroring the native path."""
+
+    def test_empty_text_sends_placeholder_not_empty_update(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        # Simulate the no-stream placeholder path: a message ts exists to update.
+        renderer._stream_ts = "ts-existing"
+
+        asyncio.run(renderer._render_fallback(""))
+
+        updates = [kw["text"] for name, kw in rec.calls if name == "update_message"]
+        assert updates, "no update_message was attempted"
+        # The answer-carrying update carried the placeholder, never empty text —
+        # an empty text would raise no_text against the real client.
+        assert all(t for t in updates), "an empty chat.update was sent (no_text raise)"
+        assert updates[0] == "_No response._"
+
+
+class TestOptionsFooterCancellationDefersFinalize:
+    """F2: on an OPTIONS turn the footer is answer-carrying (the choices ride
+    only in it). A CancelledError during the footer ``post_blocks`` must leave
+    the turn UN-finalized so the transport dispatcher records a failure — not a
+    finalized success for choices the reader never received. The renderer defers
+    ``_finalized`` past the footer for OPTIONS turns precisely for this."""
+
+    def test_cancel_during_options_footer_leaves_turn_unfinalized(self):
+        async def scenario():
+            rec = _RecSlack()
+
+            async def _cancel_post_blocks(channel, blocks, text, thread_ts=None, **kw):
+                raise asyncio.CancelledError()
+
+            rec.post_blocks = _cancel_post_blocks  # type: ignore[assignment]
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            # Streaming path with an OPTIONS-only-carrying answer body.
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+            renderer._stream_ts = "ts-stream"
+            renderer._use_slack_stream = True
+            renderer._delivered = "pick one"  # answer body already streamed
+
+            raised = False
+            try:
+                await renderer.on_done()
+            except asyncio.CancelledError:
+                raised = True
+
+            assert raised, "the cancellation must propagate so the dispatcher can act"
+            # The OPTIONS choices never reached the reader, so the turn must NOT be
+            # finalized — an un-finalized turn is what makes the dispatcher record a
+            # failure instead of booking a success for undelivered choices.
+            assert (
+                renderer.turn_finalized is False
+            ), "finalized a turn whose OPTIONS never delivered"
+
+        asyncio.run(scenario())
+
+    def test_non_options_footer_cancel_still_finalizes(self):
+        """A non-OPTIONS turn's footer is pure decoration, so the answer is
+        already delivered and the turn stays finalized even if the footer post is
+        cancelled — the deferral must apply ONLY to OPTIONS turns."""
+
+        async def scenario():
+            rec = _RecSlack()
+
+            async def _cancel_post_blocks(channel, blocks, text, thread_ts=None, **kw):
+                raise asyncio.CancelledError()
+
+            rec.post_blocks = _cancel_post_blocks  # type: ignore[assignment]
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "just an answer, no choices"
+            renderer._stream_ts = "ts-stream"
+            renderer._use_slack_stream = True
+            renderer._delivered = "just an answer, no choices"
+
+            try:
+                await renderer.on_done()
+            except asyncio.CancelledError:
+                pass
+
+            # No OPTIONS: the answer is fully delivered, the footer is decoration,
+            # so the turn is finalized (a footer cancellation must not un-book a
+            # delivered answer).
+            assert renderer.turn_finalized is True
+
+        asyncio.run(scenario())
+
+
+class TestTransportRedactionNotice:
+    """The DEFAULT Slack path posts a redaction notice below a rewritten answer.
+
+    Driven through the real TurnDriver so the StreamRedactor writes the
+    placeholder exactly as production does. The tally counts the final
+    display-safe body plus the posted 💭 reasoning, mirroring the native
+    handler's per-turn count; shared wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"
+
+    def _run(self, rec, events):
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(events)
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+
+    def test_redacted_answer_is_followed_by_one_threaded_notice(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Run: psql {self._SECRET_URI}"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        outbound = [str(kw.get("text") or kw.get("final_text") or "") for _method, kw in rec.calls]
+        assert not any("SuperSecret123" in t for t in outbound)
+        notices = [
+            kw["text"]
+            for method, kw in rec.calls
+            if method == "post_message" and "Security notice" in str(kw.get("text"))
+        ]
+        assert len(notices) == 1
+        assert "SuperSecret123" not in notices[0]
+        # Below the answer: the stream is finalized before the notice posts.
+        methods = [m for m, _ in rec.calls]
+        last_post_message = max(i for i, m in enumerate(methods) if m == "post_message")
+        assert methods.index("stop_stream") < last_post_message
+
+    def test_clean_answer_posts_no_notice(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="All green, deploy finished."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        assert not any(
+            "Security notice" in str(kw.get("text"))
+            for method, kw in rec.calls
+            if method == "post_message"
+        )
+
+    def test_notice_send_failure_does_not_fail_a_delivered_turn(self):
+        class _NoticeFailsSlack(_RecSlack):
+            async def post_message(self, channel, text, thread_ts=None, **kw):
+                if "Security notice" in str(text):
+                    raise RuntimeError("slack down after the answer")
+                return await super().post_message(channel, text, thread_ts, **kw)
+
+        rec = _NoticeFailsSlack()
+        # Must not raise: the answer is already delivered when the notice fails.
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Run: psql {self._SECRET_URI}"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        stops = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert len(stops) == 1 and "[REDACTED: credential]" in str(stops[0]["final_text"])

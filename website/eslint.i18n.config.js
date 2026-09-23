@@ -682,6 +682,14 @@ export default [
               // the moment a label contains a colon, which several already do
               // ("Missing:", "Preset name:").
               '^cc:[A-Za-z0-9:._-]+$',
+              // An ECS Exec target example used as a form placeholder, e.g.
+              // `ecs:my-cluster_taskid_runtimeid`: a module-level ALL-CAPS constant,
+              // which is where `i18n-strict` looks inside, and the camelCase
+              // pattern cannot reach it because it forbids the colon.
+              //
+              // Anchored on the `ecs:` prefix, no spaces, and no second colon (the
+              // target shape has exactly one), so prose cannot match.
+              '^ecs:[A-Za-z0-9_.-]+$',
               '^[\\w.-]+/[\\w./-]*$',
               // EVERY PATTERN IN THIS FILE IS MATCHED FULL-STRING, so a prefix
               // pattern MUST spell out its own tail. `eslint-plugin-i18next` compiles
@@ -728,6 +736,16 @@ export default [
               // The autolink href template's substitution placeholder, consumed by
               // `expand()`; a translated token would stop every match expanding.
               String.raw`^\{match\}$`,
+              // The goal loop's kill-switch placeholder, `{{STOP_FILE}}`. The
+              // server replaces it with the loop's stop-sentinel path when each
+              // nudge is sent (`render_nudge_message`), so the spelling is a wire
+              // contract with the backend, not copy: a translated token would
+              // reach the server unrecognised and the loop would ship an
+              // instruction with no off switch. EXACT, not a `{{ALL_CAPS}}` shape,
+              // for the reason stated on `{match}` above -- a shape would start
+              // releasing any interpolation placeholder the moment one was held
+              // in an ALL-CAPS constant.
+              String.raw`^\{\{STOP_FILE\}\}$`,
               // A FILE-PICKER `accept` EXTENSION LIST, e.g.
               // `,.txt,.md,.json,.har,.yaml` — the comma-joined dot-extension
               // string handed to `<input type="file" accept=…>`. These live at
@@ -1297,6 +1315,36 @@ export default [
   // catalog, not under this exemption; keep this module protocol-and-diagnostics.
   {
     files: ['src/app-sdk/index.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // STORAGE FORMAT ONLY: the view-state record's own serialization. Every literal
+  // in this module is compared or written BY VALUE and none is ever rendered --
+  // the four outcome tags (`absent`, `restored`, `revision-mismatch`,
+  // `unreadable`) and two action tags (`write`, `remove`) are discriminants the
+  // caller switches on, the key is `kc:app:<appId>:view:<name>` built from the
+  // host-minted appId, and the flagged line is JSON SYNTAX:
+  // `{"revision":…,"state":…}`.
+  //
+  // That line cannot earn a narrower exemption, which is why this is file-scoped.
+  // It is RETURNED rather than passed, so no callee exemption reaches it; an
+  // inline disable cannot work either, because the two gates register the rule
+  // under different names (`i18next/…` here, `i18n-strict/…` in the strict
+  // config) and naming both makes each run fail on the one it does not know.
+  // Rewriting it to avoid the literal is worse on every branch: the state half
+  // arrives pre-serialized from `canonicalState` to guarantee a stable byte form,
+  // so nesting it through `JSON.stringify` would need a parse round-trip that
+  // defeats the canonicalisation the stored-record tests assert, and an array
+  // `join` would trade one flagged literal for four.
+  //
+  // Scoped to this one file, and verified copy-free: the module holds no
+  // sentence-shaped string except one developer diagnostic, which is already
+  // exempt through the call it is passed to. Copy added here later belongs in the
+  // catalog, not under this exemption.
+  {
+    files: ['src/app-sdk/viewState.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

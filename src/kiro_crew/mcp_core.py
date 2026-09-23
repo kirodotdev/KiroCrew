@@ -9,7 +9,7 @@ Tools:
     spawn_status    — retrieve full subagent output
     resource_status — check host resource headroom before heavy work
     learn_add       — save a learned correction
-    learn_list      — list all lessons
+    learn_list      — list one window of lessons, with the total
     learn_remove    — remove lessons by substring
     task_run        — start the autonomous task runner
 """
@@ -57,7 +57,6 @@ from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_call
 from kiro_crew.mcp_shared import (
     call_tool_with_logging,
     internal_caller,
-    member_proof_header_value,
     run_mcp_stdio_loop,
 )
 from kiro_crew.mcp_tools import build_tool_list, dispatch
@@ -72,7 +71,13 @@ from kiro_crew.security import (
     redact_local_paths,
 )
 from kiro_crew.sel import sel
-from kiro_crew.session_directive import DIRECTIVE_TOOLS, refuse_if_markerless
+from kiro_crew.session_directive import (
+    DIRECTIVE_TOOLS,
+    clear_vouch,
+    refuse_if_markerless,
+)
+from kiro_crew.session_pid_sig import session_pid_mapping_path
+from kiro_crew.session_token_sig import session_key_from_env_token
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.trigger_match import rank_triggered
 from kiro_crew.validation import (
@@ -702,6 +707,53 @@ def _get_knowledge_search(db_path: Path, cfg_path: Path) -> tuple[Any, Any]:
         return store, embedder
 
 
+def _session_key_from_token() -> str:
+    """Resolve this session's key from its signed per-session TOKEN, or "".
+
+    The identity channel that needs no daemon, no broker stub and no config
+    switch. The token is minted per ACP ``session/new``
+    (:func:`kiro_crew.mcp_gateway.claim.mint_stub_session_token`) and rides THIS
+    session's own ``mcpServers`` elements in ``env``, so — unlike every
+    process-keyed source — a ``spawn_run`` subagent sharing its parent's kiro-cli
+    process carries a different name than its parent. The gateway publishes the
+    token -> session-key mapping to a MAC-signed file
+    (:func:`kiro_crew.session_token_sig.publish_session_token`) at ``session/new``
+    and again on every warm-pool ``rekey()``, and the MAC is what makes the file
+    trustworthy in a directory an agent can write.
+
+    The read itself belongs to
+    :func:`kiro_crew.session_token_sig.session_key_from_env_token`, the one reader
+    every resolver shares — this module's two, the client-side
+    ``mcp_caller.CallerContext.from_env`` and the managed-tool-policy lookup in
+    ``mcp_shared`` — so the token's position and its fail-closed behaviour cannot
+    drift between them. Read at the SAME position in each: after the
+    gateway-injected per-call caller context, and BEFORE the
+    ``KIROCREW_SESSION_KEY`` env var. That order is load-bearing rather than
+    arbitrary — a warm-pool process is re-keyed to a new session while the env its
+    MCP children were spawned with keeps naming the PREVIOUS one, so where the two
+    disagree the env var is the stale answer and the file is the current one.
+    Placing the token second (below the caller context) keeps the gateway's own
+    per-call injection authoritative wherever it exists, since that is stamped per
+    CALL and therefore cannot go stale at all.
+
+    Fails closed: an unset token, a missing mapping, or a MAC that does not verify
+    all return ``""`` and the caller falls through to the sources it had before.
+    Never raises — an identity source that can raise would turn a resolvable
+    session into a crashed tool call.
+    """
+    try:
+        return session_key_from_env_token()
+    except Exception:
+        # No logger here, and no bare stderr write: this module runs inside the
+        # kirocrew-core stdio MCP server, whose stray stdout/stderr would corrupt
+        # the JSON-RPC stream — the same constraint the governance-degrade branch
+        # below states, and the reason this module keeps no logger at all. The
+        # observable consequence of a failure is the refusal the caller already
+        # emits, which carries :func:`strict_identity_diagnosis`.
+        pass
+    return ""
+
+
 def _resolve_session_key() -> str:
     """Return the real session key, falling back to PID file when env var is absent.
 
@@ -722,11 +774,12 @@ def _resolve_session_key() -> str:
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
         return ctx.session_key
-    from kiro_crew.member_memory_auth import protected_member_session_for_pid
-
-    protected = protected_member_session_for_pid(os.getpid())
-    if protected is not None:
-        return protected
+    # The signed per-session token, ABOVE the env var: after a warm-pool rekey the
+    # env key names the previous session and the mapping file names the current
+    # one. See :func:`_session_key_from_token`.
+    from_token = _session_key_from_token()
+    if from_token:
+        return from_token
     sk = os.environ.get("KIROCREW_SESSION_KEY", "")
     if sk:
         return sk
@@ -763,10 +816,19 @@ def _resolve_session_key_strict() -> str:
     """Resolve the session key, refusing PID-walked and unsigned identities.
 
     Like ``_resolve_session_key`` but drops the ``/proc`` ancestor walk.
-    Two identity sources are accepted:
+    Three identity sources are accepted:
 
-    1. The gateway-injected ``KIROCREW_SESSION_KEY`` env var.
-    2. The direct ``KIROCREW_HOST_PID`` -> ``session_pid_<pid>.txt``
+    1. The signed per-SESSION token (:func:`_session_key_from_token`). Minted per
+       ``session/new``, carried in the ``env`` of this session's own
+       ``mcpServers`` elements, and resolved through a MAC-signed mapping file the
+       gateway republishes on every ``rekey()``. It is the only source that is
+       both per-session (so a ``spawn_run`` subagent does not inherit its
+       parent's identity on a shared runtime) and switch-free (no gatewayd, no
+       broker stub, no config key) — which is why it is accepted ABOVE the env
+       var: where the two disagree, a warm-pool rekey has made the env stale and
+       the file is current.
+    2. The gateway-injected ``KIROCREW_SESSION_KEY`` env var.
+    3. The direct ``KIROCREW_HOST_PID`` -> ``session_pid_<pid>.txt``
        lookup, but ONLY when the HMAC sidecar written by the gateway
        verifies (:func:`kiro_crew.session_pid_sig.verify_session_pid`).
        PID-namespace sandboxing strips ``KIROCREW_SESSION_KEY`` from the
@@ -791,7 +853,7 @@ def _resolve_session_key_strict() -> str:
     telemetry) keep the lenient resolver where misattribution is
     harmless.
 
-    Source 0 (accepted BEFORE both of the above): the gateway-injected
+    Source 0 (accepted BEFORE all three of the above): the gateway-injected
     per-call caller context. In the pooled topology gatewayd strips any
     client-forged ``kirocrew.caller`` block on every inbound frame and
     injects its own (built from the uid-gated claim-push at ``rekey()``),
@@ -805,11 +867,12 @@ def _resolve_session_key_strict() -> str:
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
         return ctx.session_key
-    from kiro_crew.member_memory_auth import protected_member_session_for_pid
-
-    protected = protected_member_session_for_pid(os.getpid())
-    if protected is not None:
-        return protected
+    # The signed per-session token, ABOVE the env var: after a warm-pool rekey the
+    # env key names the previous session and the mapping file names the current
+    # one. See :func:`_session_key_from_token`.
+    from_token = _session_key_from_token()
+    if from_token:
+        return from_token
     sk = os.environ.get("KIROCREW_SESSION_KEY", "")
     if sk:
         return sk
@@ -829,7 +892,7 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
 
     Every strict refusal already says *what* was refused; none of them says why
     THIS install cannot answer "which session is calling", so the reader has no
-    next step. This inspects the same three sources
+    next step. This inspects the same sources
     :func:`_resolve_session_key_strict` accepts and names the missing channel.
 
     The distinction that matters to an operator: on the kiro backend a session's
@@ -847,21 +910,60 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
     """
     if _resolve_session_key_strict():
         return ""
-    if os.environ.get("KIROCREW_HOST_PID", "").isdigit():
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+    if os.environ.get(STUB_SESSION_TOKEN_ENV, ""):
+        # The switch-free channel was WIRED — this session's MCP element carried
+        # a token — and the signed mapping is what failed. That is a trust-root
+        # or publication problem, never a routing one, so pointing the reader at
+        # ``stub_servers`` here would send them to configure a channel they
+        # already have. Named separately from the pid sidecar below because the
+        # two fail for different reasons and only one of them is fixed by the
+        # sandbox launcher being present.
+        return (
+            f" No identity channel: this session's MCP element carried a session "
+            f"token but its signed mapping did not verify. Check `kirocrew doctor` "
+            f"(SEL trust root) — {server} needs no routing when this channel works."
+        )
+    host_pid = os.environ.get("KIROCREW_HOST_PID", "")
+    if host_pid.isdigit():
         # The sandbox launcher declared a host pid, so the channel exists and
         # the sidecar is what failed — a signing/trust-root problem, not routing.
+        # Name the directory the verifier actually searched: when an agent spec
+        # pinned a foreign KIROCREW_HOME into this stub's environment,
+        # the path is the poisoned home, and without it the operator is sent to
+        # `kirocrew doctor` on the real gateway, which reports a healthy trust
+        # root and points nowhere.
+        suffix = ""
+        try:
+            mapping = session_pid_mapping_path(host_pid)
+            # Existence-independent on purpose: the mapping directory is
+            # same-uid agent-writable, so any wording that varies with what is
+            # at the path (present, absent, a planted symlink) becomes an
+            # existence oracle. Naming the searched path is the whole of the
+            # diagnostic; whether anything is there is one `ls` away.
+            suffix = f" (mapping searched: {mapping})"
+        except (OSError, RuntimeError, ValueError):
+            # A diagnostic must never replace the denial it decorates with a
+            # crash: Path.home() raises RuntimeError with no resolvable home,
+            # expanduser RuntimeError on "~unknown", resolution OSError, and
+            # garbage ValueError. On any of them, keep the generic wording.
+            suffix = ""
         return (
-            f" No identity channel: the signed pid mapping for this session did not "
-            f"verify. Check `kirocrew doctor` (trust root) — {server} does not need "
-            f"routing when this channel works."
+            f" No identity channel: the signed pid mapping for this session did "
+            f"not verify{suffix}. Check `kirocrew doctor` (trust root) — {server} "
+            f"does not need routing when this channel works."
         )
     return (
-        f" No identity channel on this install: {server} is not in "
+        f" No identity channel on this install: {server}'s MCP element carries "
+        f"neither a session token nor a session key, {server} is not in "
         f"mcp_gateway.stub_servers, so the gateway injects no per-call caller, and "
         f"the kiro backend's AcpRuntime is session-unbound (it carries no session "
-        f"key in its environment by design). Route {server} from MCP Management "
-        f"(or add it to mcp_gateway.stub_servers and restart) to give this session "
-        f"a verifiable identity. `kirocrew doctor` reports the same check."
+        f"key in its environment by design). A session token on the element is the "
+        f"switch-free fix and needs no gateway; where this backend emits no element "
+        f"for {server} at all, route it from MCP Management (or add it to "
+        f"mcp_gateway.stub_servers and restart) to give this session a verifiable "
+        f"identity. `kirocrew doctor` reports the same check."
     )
 
 
@@ -870,8 +972,6 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
 #: attributed channel sends, crew/app state, cron ownership). These operations
 #: resolve the caller STRICTLY through :func:`require_strict_session_key`, never
 #: the lenient resolver whose ``/proc`` ancestor walk can return a parent slot.
-#: Shared protocol-log access is conditional: private memory boundaries require
-#: strict Global identity; pure V1 keeps read-only diagnostics attribution.
 #: The registry includes every module with a strict operation. This is data:
 #: ``test/test_identity_topology.py`` scans the source tree and fails when a
 #: module calls the strict resolver directly (bypassing the gate) or calls the
@@ -880,9 +980,12 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
 REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
     {
         "mcp_computer.py",
+        "mcp_crew_log.py",
         "mcp_cron.py",
         "mcp_dashboard.py",
+        "mcp_debug.py",
         "mcp_work.py",
+        "mcp_panel.py",
         "mcp_tools/apps.py",
         "mcp_tools/control.py",
         "mcp_tools/learn.py",
@@ -890,6 +993,7 @@ REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
         "mcp_tools/logs.py",
         "mcp_tools/messaging.py",
         "mcp_tools/sessions.py",
+        "mcp_tools/skills.py",
         "mcp_tools/workflows.py",
     }
 )
@@ -904,7 +1008,8 @@ def require_strict_session_key(refusal: str, server: str = "kirocrew-core") -> t
     operator learns why THIS install cannot answer "which session is calling".
 
     Resolution is :func:`_resolve_session_key_strict` — gateway-injected
-    caller context, ``KIROCREW_SESSION_KEY``, or the HMAC-verified host-pid
+    caller context, the HMAC-verified per-session token,
+    ``KIROCREW_SESSION_KEY``, or the HMAC-verified host-pid
     sidecar; never the lenient ``/proc`` ancestor walk, under which a subagent
     resolves to its PARENT slot and could read or mutate the parent's state.
 
@@ -1251,7 +1356,7 @@ def _session_key_header_error(sk: str) -> str | None:
 
 
 def _caller_header() -> dict[str, str]:
-    """Component attribution plus this invocation's private-member authority.
+    """Component attribution for independently authenticated internal requests.
 
     MCP stdio servers declare their component name via
     ``mcp_shared.set_internal_caller`` (done centrally in
@@ -1263,24 +1368,36 @@ def _caller_header() -> dict[str, str]:
     known set before trusting it into an audit line. Processes that never
     declared an identity (CLI, tests) send no header rather than a guess.
 
-    A pooled backend additionally forwards the current caller's short-lived
-    member proof. It is independent of component attribution and is verified
-    against the live runtime binding by the private-memory HTTP authorizer.
     """
-    from kiro_crew.mcp_caller import current_caller
-    from kiro_crew.member_memory_auth import PROOF_HEADER
-
     name = internal_caller()
-    headers = {"X-Internal-Caller": name} if name else {}
-    caller = current_caller()
-    if caller is not None and caller.from_gateway and caller.member_memory_proof:
-        # Only this invocation's gateway-minted proof may cross the pooled
-        # backend boundary. Environment and process-lifetime identity caches do
-        # not establish member authority. Malformed metadata earns no header.
-        proof = member_proof_header_value(caller.member_memory_proof)
-        if proof:
-            headers[PROOF_HEADER] = proof
-    return headers
+    return {"X-Internal-Caller": name} if name else {}
+
+
+def _session_token_header() -> dict[str, str]:
+    """Attach the signed per-session token to internal gateway requests.
+
+    The token is already injected into each MCP server's environment.  Sending
+    it alongside ``X-Session-Key`` lets the gateway bind a loopback TCP request
+    to the session that launched this MCP process; the gateway verifies the
+    signature and the key match.  It is a transport identity proof, not a
+    member-memory capability.
+
+    EVERY verb below attaches it, not only the writes: the gateway's
+    session-scoped reads authorize on the declared key the same way, so a read
+    that omitted it would be answered as an unnamed caller and a whole tool
+    surface would refuse on a policy it could not fetch.
+
+    A pooled backend is spawned from gatewayd's own environment, so the
+    per-session token is not in ``os.environ``; gatewayd forwards it inside the
+    per-call caller block for Kiro Crew's control-plane servers instead, and the
+    caller block wins because it is stamped per CALL and cannot go stale. The
+    header itself is spelled once, in :mod:`kiro_crew.session_token_sig`, beside
+    the verifier that reads it.
+    """
+    from kiro_crew.session_token_sig import session_token_header
+
+    ctx = current_caller()
+    return session_token_header(ctx.session_token if ctx is not None and ctx.from_gateway else "")
 
 
 def _transport_failure(message: str, mark: bool) -> dict:
@@ -1439,7 +1556,9 @@ def _send(
                 refusal = exc
             except Exception as exc:
                 return _transport_failure(str(exc), mark_transport_error)
-        return {"error": _refused_message(refused[0], refusal)}
+        # ``refused`` is the one failure that proves nothing reached a gateway,
+        # so a caller may fall back to a local path without risking a replay.
+        return {"error": _refused_message(refused[0], refusal), "refused": True}
 
     # ONE resolution for this attempt; both transports derive from it.
     target = _resolve_api_target()
@@ -1515,6 +1634,7 @@ def _post(
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
+        **_session_token_header(),
     }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
@@ -1639,7 +1759,11 @@ def _get(path: str, session_key: str | None = None, *, timeout: float = 10) -> d
     ``python -m kiro_crew pod`` subprocess in the gateway, so they pay a cold
     interpreter start that 10s cannot cover on a loaded host.
     """
-    headers = {"X-Internal-Secret": _internal_secret(), **_caller_header()}
+    headers = {
+        "X-Internal-Secret": _internal_secret(),
+        **_caller_header(),
+        **_session_token_header(),
+    }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
     if _sk_err:
@@ -1662,6 +1786,7 @@ def _patch(path: str, body: dict | None = None, *, session_key: str | None = Non
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
+        **_session_token_header(),
     }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
@@ -1690,6 +1815,7 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
+        **_session_token_header(),
     }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
@@ -1702,7 +1828,11 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
 
 def _delete(path: str, body: dict | None = None) -> dict:
     data = json.dumps(body or {}).encode() if body else None
-    headers = {"X-Internal-Secret": _internal_secret(), **_caller_header()}
+    headers = {
+        "X-Internal-Secret": _internal_secret(),
+        **_caller_header(),
+        **_session_token_header(),
+    }
     sk = _resolve_session_key()
     _sk_err = _session_key_header_error(sk)
     if _sk_err:
@@ -1844,7 +1974,7 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     schema = MCP_CORE_SCHEMAS.get(name)
     if schema:
         return validate_tool_args(args, schema)
-    return args  # tools without schemas (learn_list) pass through
+    return args  # tools without schemas pass through
 
 
 def _current_session_thread_ts() -> str | None:
@@ -1959,6 +2089,26 @@ def capture_directive(kind: str, args: dict[str, Any]) -> bool:
     return True
 
 
+def directive_capture_active() -> bool:
+    """True while this call is a GATEWAY-SIDE replay under :func:`derive_directive`.
+
+    A directive tool's handler runs TWICE for one arming call: once in the MCP
+    server, where its return text answers the model, and once here, where
+    :func:`derive_directive` re-runs it only to intercept the directive it
+    publishes and DISCARDS the returned text (see :func:`_call_tool_body`).
+
+    The two runs differ in one way that matters for I/O: this one executes on the
+    gateway's OWN event loop, called synchronously from the aiohttp handler, so a
+    blocking loopback request back to this same gateway cannot be serviced while
+    it waits -- every session stalls until that request times out.
+
+    A handler that reads gateway state only to shape its REFUSAL TEXT must
+    therefore skip the read here: the text is discarded, and the turn boundary
+    re-decides authoritatively either way.
+    """
+    return _DIRECTIVE_CAPTURE.get() is not None
+
+
 def derive_directive(
     tool: str, raw_args: dict[str, Any], session_key: str
 ) -> tuple[str, dict[str, Any]] | None:
@@ -2037,6 +2187,11 @@ def _call_tool_body(name: str, raw_args: dict[str, Any]) -> str:
     # handler, so a schema rejection never reaches code that could tag itself.
     # Without the tag the consumer reads a decline as a LOST directive
     # marker and fires a WARNING meant for a transport regression.
+    #
+    # Clear the vouch FIRST: the gate honours a marker only if this dispatch
+    # produced it, so a directive emitted by the PREVIOUS call must not be able
+    # to authorize marker-shaped bytes in this one.
+    clear_vouch()
     return refuse_if_markerless(
         name,
         call_tool_with_logging(

@@ -31,13 +31,18 @@ event must survive, in order:
 Capabilities (personal account over the Web protocol): the reply streams by
 editing one bubble, because this protocol exposes an edit where the Business
 Cloud API does not; media rides the shared ingest and upload paths; reactions
-carry phase receipts. ``max_buttons=0``, so an ``[OPTIONS:]`` trailer degrades to
-a numbered list answered by typing. That is a deliberately conservative choice,
-NOT a platform ceiling: the pinned wheel ships a complete interactive-message
-builder and a poll builder, and what is unverified is whether a recipient's client
-renders a native-flow message sent from a PERSONAL linked device rather than a
-Business account. Recording it as impossible would close the door on every future
-picker here, so it is recorded as unverified. Unlike
+carry phase receipts. ``max_buttons=0``, and unlike the other zero-widget channels
+this renderer does not fall back to a numbered list: ``turn_renderer._strip_options``
+removes a COMPLETE ``[OPTIONS:]`` trailer from the reply, so a question whose
+choices live only there reaches the user without them. A tool approval is
+unaffected -- ``on_prompt_choice`` builds its own numbered prompt. Declaring no
+widget is a deliberately conservative choice, NOT a platform ceiling: the pinned
+wheel ships a complete interactive-message builder and a poll builder, and what is
+unverified is whether a recipient's client renders a native-flow message sent from
+a PERSONAL linked device rather than a Business account. Recording it as impossible
+would close the door on every future picker here, so it is recorded as unverified.
+Losing the list is a gap rather than a position; ``docs/channel-capabilities.md``
+records it for a reader. Unlike
 the Business Cloud API there is no 24-hour window, so
 ``supports_proactive_send=True`` and reminders work.
 """

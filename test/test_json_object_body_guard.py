@@ -159,6 +159,9 @@ _CAP_REASONS = {
 _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Pre-existing capped sites -- the bounded read's live consumers.
     "chat_pins.py::api_chat_pins_create": ("<default>", _BOUNDED_BY_DEFAULT),
+    # A thread reply is one text field (capped at 32 KiB by the handler) plus a
+    # slot key, so the shared default ceiling is the right one.
+    "chat_threads.py::api_chat_thread_reply": ("<default>", _BOUNDED_BY_DEFAULT),
     # Voice config is a flat set of short scalars (provider name, voice name,
     # rate, paths) and voice synthesis takes one reply's text, which the panel
     # already truncates well below the shared default. Neither has a legitimate
@@ -186,6 +189,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # store itself accepts. The cap is owned in kiro_crew/ui_prefs.py beside the
     # limits it has to cover, so the two cannot drift apart again.
     "handlers/ui_prefs.py::api_ui_prefs": ("MAX_REQUEST_BYTES", _BOUNDED_EXPLICIT),
+    # Installed exact-read keys allow 32,768 characters. Escaped astral characters
+    # need 12 JSON bytes each; 512 KiB covers those keys plus the control envelope.
+    "handlers/prompts.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),
     # agents.py tranche.
     "handlers/agents.py::api_agent_config": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/agents.py::api_default_agent": ("None", _CONTROL_FIELDS_CAP_PENDING),
@@ -275,6 +281,14 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_tags.py::api_chat_tag_column_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_columns_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_slot_drop": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # chat_folders.py: the reorder endpoint carries a bounded list of folder
+    # ids and integer orders, capped at the folder ceiling, so it takes a
+    # per-route byte ceiling sized from that entry budget rather than the
+    # shared default (a max-size flat-tree reorder exceeds 64 KB).
+    "chat_folders.py::api_chat_folder_reorder": (
+        "_MAX_REORDER_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # ---- tranche 3 ----
     # chat_handlers.py: control-field slot mutations take the cap; the sites
     # that carry a chat message, queued-edit text, follow-up prompts, or

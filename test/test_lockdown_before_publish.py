@@ -560,6 +560,22 @@ def reasserter(path):
         assert not checker.scan_source(source)
 
 
+def _waiver_key(fixture: Path, function: str) -> str:
+    """The ``KNOWN_UNCONVERTED`` key ``main()`` will look up for *fixture*.
+
+    ``scan_path`` keys a file by its path RELATIVE to the checkout when it lies
+    inside one and by its absolute posix path otherwise, and ``main()`` derives
+    the checkout root from the checker's own location. A fixture under
+    ``tmp_path`` may be either -- pytest's temp root is not guaranteed to sit
+    outside the repository (a developer's ``TMPDIR=./tmp`` puts it inside) -- so
+    the key is derived through the checker's own keying rather than assumed to be
+    the absolute form.
+    """
+    root = Path(checker.__file__).resolve().parent.parent
+    rel = checker.scan_path(fixture, root)[0][0]
+    return f"{rel}::{function}"
+
+
 class TestTheRealTree:
     """The gate the CI job runs."""
 
@@ -760,11 +776,10 @@ class TestTheRealTree:
             "    other.chmod(0o600)\n",
             encoding="utf-8",
         )
-        # `scan_path` keys a file outside the repo by its absolute posix path.
         monkeypatch.setattr(
             checker,
             "KNOWN_UNCONVERTED",
-            {f"{fixture.as_posix()}::save": ("#9999", "tracked")},
+            {_waiver_key(fixture, "save"): ("#9999", "tracked")},
         )
 
         exit_code = checker.main(["check", str(fixture)])
@@ -792,7 +807,7 @@ class TestTheRealTree:
         monkeypatch.setattr(
             checker,
             "KNOWN_UNCONVERTED",
-            {f"{fixture.as_posix()}::save": ("#9999", "tracked")},
+            {_waiver_key(fixture, "save"): ("#9999", "tracked")},
         )
 
         assert checker.main(["check", str(fixture)]) == 0

@@ -92,6 +92,26 @@ allow-dependencies-licenses:
   - pkg:npm/%40anthropic-ai/claude-code-win32-arm64        # same — platform binary of the above
   - pkg:npm/%40anthropic-ai/claude-code-win32-x64          # same — platform binary of the above
 
+  # opencode's per-platform binary packages carry NO license field in their
+  # manifests (only name/version/os/cpu), so the gate reports them "unknown".
+  # They are built from the same repository as `opencode-ai` (MIT --
+  # https://github.com/sst/opencode/blob/dev/LICENSE) and are installed ONLY by
+  # the Real Adapter Contract Tests lane from test/real_adapters/package-lock.json
+  # -- a CI-only test fixture, never shipped, linked, or distributed with the
+  # product. The lockfile lists every platform's optional package; the runner
+  # installs one. Remove these once upstream declares the license on them.
+  - pkg:npm/opencode-darwin-arm64                # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-darwin-x64                  # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-darwin-x64-baseline         # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-linux-arm64                 # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-linux-arm64-musl            # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-linux-x64                   # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-linux-x64-baseline          # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-linux-x64-baseline-musl     # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-linux-x64-musl              # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-windows-arm64               # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-windows-x64                 # MIT -- platform binary of opencode-ai, same repository
+  - pkg:npm/opencode-windows-x64-baseline        # MIT -- platform binary of opencode-ai, same repository
 
 # License gate only — vulnerability scanning is covered separately by the
 # nightly/release Dependency Audit and the Semgrep / CodeQL jobs, so we don't duplicate it here.

@@ -379,7 +379,7 @@ export default function SessionPulseSurveyCard({
                               aria-checked={checked}
                               tabIndex={roving}
                               onClick={() => setSelectedRating(option)}
-                              className={`text-left px-3 py-2 rounded-lg text-[13px] cursor-pointer transition-all border font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg ${
+                              className={`text-left px-3 py-2 rounded-lg text-[13px] cursor-pointer transition-all border font-medium focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg ${
                                 checked
                                   ? 'border-accent text-text bg-accent-subtle/60'
                                   : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg font-normal'
@@ -418,7 +418,7 @@ export default function SessionPulseSurveyCard({
                           value={feedback}
                           onChange={(e) => setFeedback(e.target.value)}
                           placeholder={t('components.sessionPulseSurveyCard.optional')}
-                          className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus:border-accent focus:outline-none resize-vertical min-h-[60px]"
+                          className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus:border-accent focus:outline-hidden resize-y min-h-[60px]"
                         />
                       </div>
 
@@ -438,7 +438,7 @@ export default function SessionPulseSurveyCard({
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
                           placeholder={t('components.sessionPulseSurveyCard.email_placeholder')}
-                          className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus:border-accent focus:outline-none"
+                          className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus:border-accent focus:outline-hidden"
                         />
                       </div>
 

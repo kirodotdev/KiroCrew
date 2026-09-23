@@ -100,7 +100,7 @@ const isSynthesisInjection = (msg: ChatMessage): boolean =>
  * boundary, because a wrong guess hides an answer behind a toggle that promises
  * a repeat below.
  */
-const isTurnEnd = (msg: ChatMessage): boolean =>
+export const isTurnEnd = (msg: ChatMessage): boolean =>
   msg.role === 'assistant' &&
   !!(msg.meta as Record<string, unknown> | undefined)?.turn_stats
 

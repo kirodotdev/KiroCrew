@@ -579,3 +579,53 @@ class TestNoOps:
         await r.on_turn_start()
         await r.on_thinking("pondering")
         assert len(c.sent) == 1 and c.edits == []
+
+
+class TestRedactionNotice:
+    """A rewritten answer is followed by one threaded notice; clean answers are not.
+
+    Webex assembles and sends the whole answer at ``on_done``, so the tally
+    counts the assembled content. Shared wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"
+
+    @pytest.mark.asyncio
+    async def test_redacted_answer_is_followed_by_one_notice(self) -> None:
+        client = FakeClient()
+        r = _renderer(client)
+        await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+        await r.on_done()
+
+        bodies = [m for _room, m in client.sent] + [m for _mid, _room, m in client.edits]
+        assert not any("SuperSecret123" in m for m in bodies)
+        notices = [m for _room, m in client.sent if "Security notice" in m]
+        assert len(notices) == 1
+        assert "SuperSecret123" not in notices[0]
+
+    @pytest.mark.asyncio
+    async def test_clean_answer_sends_no_notice(self) -> None:
+        client = FakeClient()
+        r = _renderer(client)
+        await r.on_text_chunk("All green, deploy finished.")
+        await r.on_done()
+
+        assert not any("Security notice" in m for _room, m in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_notice_send_failure_does_not_fail_a_delivered_turn(self) -> None:
+        client = FakeClient()
+        real_send = client.send_message
+
+        async def send_but_fail_the_notice(conversation_id, markdown, **kw):
+            if "Security notice" in markdown:
+                raise RuntimeError("webex down after the answer")
+            return await real_send(conversation_id, markdown, **kw)
+
+        client.send_message = send_but_fail_the_notice  # type: ignore[method-assign]
+        r = _renderer(client)
+        await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+        await r.on_done()  # must not raise
+        delivered = [m for _room, m in client.sent] + [m for _mid, _room, m in client.edits]
+        assert any("[REDACTED: credential]" in m for m in delivered)

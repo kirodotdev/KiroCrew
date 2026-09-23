@@ -28,7 +28,7 @@ jobs:
   # release on the insider channel; bare semver tags are stable.
   version:
     name: Derive Version + Channel
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       version: ${{ steps.channel.outputs.version }}
@@ -178,7 +178,7 @@ jobs:
     name: Resolve Tested Candidate
     if: needs.version.outputs.promote_mode == 'true'
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     permissions:
       actions: read
       contents: read
@@ -247,7 +247,7 @@ jobs:
   stable-gate:
     name: Stable publication gate
     needs: [version]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Replaces the workflow default: `actions: read` is what lets the promotion
     # check ask whether a prerelease tag's release run actually SUCCEEDED.
@@ -489,16 +489,24 @@ jobs:
   # status visible in the run graph.
   #
   # Scope of that separation, stated precisely because the obvious reading is
-  # wrong: it decouples the PUBLISH steps, not the BUILDS. Both publishers
-  # still `needs: build-desktop`, which is the reusable-workflow caller job
-  # aggregating BOTH matrix legs, so a failed arm64 build skips the x64
-  # publish too. That is deliberate for now -- the versioned S3 keys are
-  # immutable, so publishing half a release and then discovering the other
-  # arch never built is the worse failure -- but it does mean a broken arm64
-  # build can hold up an x64 release, which was not true before this lane
-  # existed. True per-arch publish independence needs the publishers to run
-  # past a partial build failure and let their own artifact download decide;
-  # tracked in #2645 rather than reshaped here.
+  # wrong: it decouples the PUBLISH steps, not the BUILDS. Every publisher here
+  # still requires `needs.build-desktop.result == 'success'`, which is the
+  # reusable-workflow caller job aggregating ALL THREE matrix legs, so a failed
+  # arm64 build skips the x64 publish too.
+  #
+  # That is deliberate on THIS lane, and the reason is one layer down rather
+  # than in the workflow: a release run records the stable promotion candidate
+  # (see `record-promotion`), and scripts/release_promotion.py lists
+  # appimage_arm64, deb_arm64 and rpm_arm64 in REQUIRED_ARTIFACT_NAMES. Only
+  # the Windows installer pair is OPTIONAL. So publishing x64 alone here would
+  # burn immutable versioned keys for a version that can never be promoted to
+  # stable, and buying per-arch availability means moving those three roles to
+  # optional -- changing what a complete release IS. That is the question
+  # #1030 exists to settle, so it is not decided here.
+  #
+  # nightly.yml's copy of this block IS decoupled (#2645): it passes
+  # `soft_fail_arm64: true` to build-desktop.yml, which it can because a
+  # nightly run publishes per-arch keys and feeds and records no candidate.
   publish-linux-appimage-x64:
     name: Publish Linux appimage (${{ needs.version.outputs.channel }} channel · x64)
     needs: [version, stable-gate, build-desktop, resolve-promotion]
@@ -791,12 +799,52 @@ jobs:
   # already preserves.
   github-release:
     name: Create GitHub Release
-    needs: [version, stable-gate, sign-and-notarize, build-windows]
+    # The release page is the PUBLICLY VISIBLE marker that a publication
+    # completed, so it waits on every REQUIRED lane and not on macOS alone.
+    # Announcing while a required lane failed leaves users a version that is
+    # visible but only partially promoted: the page offers assets while the CLI,
+    # a Linux format or the Docker tag never received this version, and nothing
+    # records which lanes actually landed. The required set is the same one
+    # record-promotion demands, so the two cannot disagree about what a complete
+    # publication means.
+    #
+    # The boundary is the ANNOUNCEMENT, not the bytes. Nothing here can
+    # un-publish a Docker tag or an npm version, so withholding the release page
+    # is the strongest atomicity this workflow can offer; a rerun after a fixed
+    # lane reaches this job again with the same immutable artifacts.
+    #
+    # build-windows stays in `needs` and out of the condition. Waiting on it
+    # keeps a slow Windows runner from being raced past, while gating on its
+    # result would couple the page to a lane whose soft_fail exists to keep it
+    # optional -- and soft_fail makes that result `success` even on failure, so
+    # the check would assert nothing. Pinned by
+    # test_the_release_page_waits_for_windows_without_depending_on_it.
+    needs:
+      - version
+      - stable-gate
+      - publish-cli
+      - publish-linux-appimage-x64
+      - publish-linux-appimage-arm64
+      - publish-linux-deb-x64
+      - publish-linux-deb-arm64
+      - publish-linux-rpm-x64
+      - publish-linux-rpm-arm64
+      - publish-docker
+      - sign-and-notarize
+      - build-windows
     if: >-
       ${{ always() && needs.version.result == 'success' &&
           needs.stable-gate.result == 'success' &&
+          needs.publish-cli.result == 'success' &&
+          needs.publish-linux-appimage-x64.result == 'success' &&
+          needs.publish-linux-appimage-arm64.result == 'success' &&
+          needs.publish-linux-deb-x64.result == 'success' &&
+          needs.publish-linux-deb-arm64.result == 'success' &&
+          needs.publish-linux-rpm-x64.result == 'success' &&
+          needs.publish-linux-rpm-arm64.result == 'success' &&
+          needs.publish-docker.result == 'success' &&
           needs.sign-and-notarize.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: write
@@ -1104,11 +1152,91 @@ jobs:
               out.write(notes)
           PY_EXTRACT
 
+      # ONE rule decides this: nothing here ever writes to a release the public
+      # can already see. Every guard below followed from patching the ways that
+      # rule was being broken -- `draft: true` on an update withdrew a live page,
+      # a swallowed API error made a live page look absent, a rerun re-uploaded
+      # over certified bytes, and an interrupted re-upload left a mixed asset set
+      # visible on a public page. None of those are recoverable by anything this
+      # run can do, and all of them are downstream of writing to a page users can
+      # already see.
+      #
+      # So a stable page is only ever CREATED, as a draft, and only while the
+      # public cannot see one. A page that is already public is left exactly as it
+      # is. That also makes the draft flag a constant on the create path rather
+      # than a decision, which is why there is now no state in which this action
+      # updates a visible release.
+      - name: Decide whether this run may write the release page
+        id: page
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          CHANNEL: ${{ needs.version.outputs.channel }}
+        run: |
+          set -euo pipefail
+          # Insider is untouched. Those pages are prereleases whose audience opted
+          # into partial states, and record-promotion is already the completion
+          # record the promotion path consumes.
+          if [ "$CHANNEL" != "stable" ]; then
+            echo "action=create" >> "$GITHUB_OUTPUT"
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+            echo "channel=$CHANNEL: prerelease pages are published on create."
+            exit 0
+          fi
+          # Guessing is the one thing this step must not do. Reading a rate limit
+          # or a 5xx as "no release yet" would send a create at a page that is
+          # actually public, and the action turns a create into an UPDATE -- the
+          # very write this rule exists to prevent. So only gh's own "release not
+          # found" counts as absent; any other error fails the step, and this run
+          # then publishes nothing, which is recoverable.
+          if release=$(gh release view "$TAG" -R "$REPO" --json isDraft,assets 2>probe-error.log); then
+            drafted=$(printf '%s' "$release" | jq -r '.isDraft')
+            marked=$(printf '%s' "$release" | jq -r '[.assets[].name] | index("stable-publication.json") != null')
+          elif grep -qiE 'release not found|HTTP 404' probe-error.log; then
+            drafted=absent
+            marked=false
+          else
+            cat probe-error.log >&2
+            echo "::error::cannot read the release state for $TAG, so this run will not touch the release page: a wrong guess writes to a page users can already see. Re-run once the API answers."
+            exit 1
+          fi
+          if [ "$drafted" = "false" ]; then
+            echo "action=skip" >> "$GITHUB_OUTPUT"
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+            if [ "$marked" = "true" ]; then
+              echo "::notice::$TAG is already published and carries its completion marker; this run uploads nothing to it."
+            else
+              # An anomaly, not a state this workflow produces: a draft published
+              # by hand, or a release from before the marker existed. Named here
+              # and refused in record-stable-promotion, because repairing it means
+              # writing to a live page and certifying it means vouching for an
+              # asset set this run did not upload.
+              echo "::warning::$TAG is published with no completion marker. This run will not modify a live release; see docs/build/release.md."
+            fi
+          else
+            echo "action=create" >> "$GITHUB_OUTPUT"
+            echo "draft=true" >> "$GITHUB_OUTPUT"
+            echo "release state for $TAG is '$drafted': creating the page as a draft."
+          fi
+
+
+      # A STABLE page is created as a DRAFT, and record-stable-promotion is what
+      # makes it visible. This action creates the release and uploads every asset
+      # in one call, so publishing on create means the page is public from its
+      # first asset onward: an upload that dies halfway leaves a live release
+      # offering some platforms and silently missing others, and the rerun then
+      # edits a page users have already seen. Draft-on-create turns visibility
+      # into one separate action taken only once the upload finished.
+      # Runs only on the create path. The steps above still ran, but they only
+      # assemble locally, so a run the probe told to skip touches nothing remote.
       - name: Create GitHub Release
+        if: steps.page.outputs.action == 'create'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           body_path: release-notes.md
           generate_release_notes: true
+          draft: ${{ steps.page.outputs.draft }}
           prerelease: ${{ needs.version.outputs.channel == 'insider' }}
           files: release/*
 
@@ -1139,7 +1267,7 @@ jobs:
           needs.publish-docker.result == 'success' &&
           needs.sign-and-notarize.result == 'success' }}
     needs: [version, release-candidate-tests, publish-cli, publish-linux-appimage-x64, publish-linux-appimage-arm64, publish-linux-deb-x64, publish-linux-deb-arm64, publish-linux-rpm-x64, publish-linux-rpm-arm64, publish-docker, sign-and-notarize, build-windows]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -1249,3 +1377,175 @@ jobs:
           path: promotion-bundle/*
           if-no-files-found: error
           retention-days: 90
+
+  # The stable counterpart of record-promotion: the completion marker for a
+  # STABLE publication, plus the one action that makes that publication visible.
+  #
+  # record-promotion answers "is this candidate promotable?" for insider. Nothing
+  # answered "did version X finish publishing on every lane?" for stable, which
+  # left the question inferable from six green job bubbles and nothing else --
+  # and left `github-release` as its own unguarded boundary, since it creates the
+  # page and uploads the assets in one step.
+  #
+  # So this job does exactly two things, in this order: write the marker onto the
+  # draft, then publish the draft. A lane that failed leaves the draft
+  # unpublished and no marker written, which is the whole all-or-nothing claim.
+  # It cannot un-publish an OCI tag or an npm version -- nothing here can -- so
+  # what it withholds is the ANNOUNCEMENT, exactly as `github-release` documents.
+  record-stable-promotion:
+    name: Complete Stable Publication
+    # build-windows appears in neither `needs` nor the condition. Its result is
+    # soft-failed to `success` even when the build failed, so gating on it would
+    # assert nothing while coupling stable publication to the one lane kept
+    # deliberately optional; and the wait edge the other two jobs carry exists so
+    # an artifact DOWNLOAD cannot race a slow runner, which this job never does.
+    # The wait it does need it inherits through github-release.
+    needs:
+      - version
+      - stable-gate
+      - publish-cli
+      - publish-linux-appimage-x64
+      - publish-linux-appimage-arm64
+      - publish-linux-deb-x64
+      - publish-linux-deb-arm64
+      - publish-linux-rpm-x64
+      - publish-linux-rpm-arm64
+      - publish-docker
+      - sign-and-notarize
+      - github-release
+    if: >-
+      ${{ always() && needs.version.outputs.channel == 'stable' &&
+          needs.version.result == 'success' &&
+          needs.stable-gate.result == 'success' &&
+          needs.publish-cli.result == 'success' &&
+          needs.publish-linux-appimage-x64.result == 'success' &&
+          needs.publish-linux-appimage-arm64.result == 'success' &&
+          needs.publish-linux-deb-x64.result == 'success' &&
+          needs.publish-linux-deb-arm64.result == 'success' &&
+          needs.publish-linux-rpm-x64.result == 'success' &&
+          needs.publish-linux-rpm-arm64.result == 'success' &&
+          needs.publish-docker.result == 'success' &&
+          needs.sign-and-notarize.result == 'success' &&
+          needs.github-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Editing a release needs contents:write, and this job holds nothing else:
+    # no AWS identity, no package scope. Same least-privilege split as
+    # github-release, pinned by test_workflow_permissions.py.
+    permissions:
+      contents: write
+    steps:
+      # Reconciliation for an interrupted or repeated run. It reads the RELEASE's
+      # own state rather than any record of what this run did, so it holds for a
+      # rerun days later on a different runner -- and it asks about the MARKER,
+      # not about visibility, because those can disagree. A draft carries a
+      # "Publish release" button any operator can press, and a page published
+      # that way (or published before this job existed) is visible with nothing
+      # certifying it. Reading visibility alone would call that state complete
+      # and leave it uncertified forever; reading the marker makes completion
+      # mean what the marker says it means.
+      - name: Reconcile an interrupted or repeated run
+        id: reconcile
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          release=$(gh release view "$TAG" -R "$REPO" --json isDraft,assets)
+          drafted=$(printf '%s' "$release" | jq -r '.isDraft')
+          marked=$(printf '%s' "$release" | jq -r '[.assets[].name] | index("stable-publication.json") != null')
+          if [ "$drafted" = "false" ] && [ "$marked" = "true" ]; then
+            echo "::notice::$TAG is already published and carries its completion marker; this run has nothing to complete."
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          elif [ "$drafted" = "false" ]; then
+            # Visible but uncertified, and NOT a state this workflow produces: a
+            # draft published by hand, or a release from before this job existed.
+            # It is not repaired automatically, because every repair writes to a
+            # page users can already see, and it is not certified either, because
+            # the marker would vouch for an asset set this run never uploaded. A
+            # human decides which of the two it is.
+            echo "::error::$TAG is published but carries no completion marker. Marking it would certify an asset set this run did not upload, and rebuilding it would rewrite a release users can already see; neither happens automatically. Either delete the release page (keeping the tag) and re-run this tag, or accept the version as one published before the marker existed. See docs/build/release.md."
+            exit 1
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is a draft; completing its publication."
+          fi
+
+      # The marker names what it certifies: the identity of the publication and
+      # the lane set that had to succeed for the file to exist at all. A marker
+      # that only said "done" could not be audited against the lanes.
+      - name: Write the stable publication marker
+        if: steps.reconcile.outputs.already_published != 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+          BASE_VERSION: ${{ needs.version.outputs.base_version }}
+          PROMOTE_MODE: ${{ needs.version.outputs.promote_mode }}
+          DOCKER_DIGEST: ${{ needs.publish-docker.outputs.digest }}
+          # Spelled out rather than derived: the file records the required set as
+          # a fact, and the job's `if` above is what proves each one succeeded.
+          REQUIRED_LANES: >-
+            publish-cli
+            publish-linux-appimage-x64 publish-linux-appimage-arm64
+            publish-linux-deb-x64 publish-linux-deb-arm64
+            publish-linux-rpm-x64 publish-linux-rpm-arm64
+            publish-docker sign-and-notarize
+        run: |
+          set -euo pipefail
+          python3 - > stable-publication.json <<'PY'
+          import datetime
+          import json
+          import os
+
+          print(
+              json.dumps(
+                  {
+                      "schema": "kirocrew.stable-publication/1",
+                      "tag": os.environ["TAG"],
+                      "version": os.environ["VERSION"],
+                      "base_version": os.environ["BASE_VERSION"],
+                      "promote_mode": os.environ["PROMOTE_MODE"],
+                      "docker_digest": os.environ.get("DOCKER_DIGEST", ""),
+                      "source_sha": os.environ["GITHUB_SHA"],
+                      "source_run_id": os.environ["GITHUB_RUN_ID"],
+                      "required_lanes": sorted(os.environ["REQUIRED_LANES"].split()),
+                      "completed_at": datetime.datetime.now(datetime.timezone.utc)
+                      .replace(microsecond=0)
+                      .isoformat()
+                      .replace("+00:00", "Z"),
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+          )
+          PY
+          cat stable-publication.json
+
+      # A release ASSET, not a workflow artifact: an artifact expires, and "did
+      # this version publish completely?" outlives any retention window.
+      # --clobber makes the attach idempotent, so a rerun that reaches here with
+      # a draft already carrying a marker replaces it instead of failing.
+      - name: Attach the completion marker to the release
+        if: steps.reconcile.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" stable-publication.json --clobber -R "$REPO"
+
+      # Last step in the job on purpose: the page becomes public already carrying
+      # its marker, and nothing runs afterwards that could fail while users are
+      # already looking at the release.
+      - name: Publish the stable release page
+        if: steps.reconcile.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false -R "$REPO"
+          echo "published $TAG: every required stable lane landed."

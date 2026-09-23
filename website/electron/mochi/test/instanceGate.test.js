@@ -9,7 +9,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { parseMochiEnabled, enabledOrTrust, hostDisabledMeansTeardown } = require("../instanceGate");
+const { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown } = require("../instanceGate");
 
 test("both payload shapes are understood", () => {
   // {apps: [...]} — the documented shape.
@@ -40,13 +40,20 @@ test("missing enabled flag reads as disabled, not as enabled", () => {
   assert.strictEqual(parseMochiEnabled({ apps: [{ name: "mochi" }] }), false);
 });
 
-test("a non-answer is TRUSTED, so one slow reply cannot move the pet", () => {
-  assert.strictEqual(enabledOrTrust(null), true);
+test("a non-answer stays UNKNOWN — neither a 'no' that moves the pet nor a 'yes' that creates one", () => {
+  // THE BUG THIS ENCODES: the old rule trusted a non-answer as "enabled". With
+  // Mochi switched off on the host, a stored remote pointer and a tunnel that
+  // had just come back, one timed-out probe made the reconcile tick CREATE a
+  // full-display screen-saver-level overlay for a disabled app, which then failed
+  // to load and blanketed every display with nothing the user could dismiss.
+  assert.strictEqual(remoteEnabledState(null), "unknown");
+  assert.notStrictEqual(remoteEnabledState(null), "enabled");
+  assert.notStrictEqual(remoteEnabledState(null), "disabled");
 });
 
 test("a real answer is passed through untouched", () => {
-  assert.strictEqual(enabledOrTrust(true), true);
-  assert.strictEqual(enabledOrTrust(false), false);
+  assert.strictEqual(remoteEnabledState(true), "enabled");
+  assert.strictEqual(remoteEnabledState(false), "disabled");
 });
 
 // ── hostDisabledMeansTeardown ──────────────────────────────────────────────────

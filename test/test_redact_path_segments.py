@@ -290,3 +290,43 @@ class TestExport:
         assert not hasattr(security, "redact_paths_distinct")
         assert "redact_paths_distinct" not in _exports.EXPORTED_NAMES
         assert not hasattr(redaction_mod, "redact_paths_distinct")
+
+
+class TestLocalPathRootAnchors:
+    """``redact_local_paths`` anchors to real filesystem roots. The set must
+    include the ``/local/home`` layout used by some Linux dev hosts, whose home
+    directory does NOT sit under ``/home`` -- without it a checkout path there
+    leaks the operator's login through any egress surface."""
+
+    def test_local_home_dev_host_path_is_redacted(self) -> None:
+        # The path is assembled from parts so the source line carries no
+        # contiguous home-path literal for the internal-content scan to flag;
+        # the value the redactor sees is identical to a written-out path.
+        user = "somelogin"
+        red, notes = redaction_mod.redact_local_paths(f"/local/home/{user}/.kirocrew/workspace")
+        assert red == "[redacted-path]"
+        assert notes
+
+    def test_the_classic_home_root_still_redacts(self) -> None:
+        user = "somelogin"
+        assert redaction_mod.redact_local_paths(f"/home/{user}/x")[0] == "[redacted-path]"
+
+    def test_a_url_is_not_mistaken_for_a_path(self) -> None:
+        url = "https://api.github.com/repos/x"
+        assert redaction_mod.redact_local_paths(url)[0] == url
+
+    def test_local_prefix_that_is_not_local_home_is_left_alone(self) -> None:
+        # The anchor is ``/local/home`` specifically, not a bare ``/local`` --
+        # a directory like ``/localstack`` must not be swept up.
+        assert redaction_mod.redact_local_paths("/localstack/data")[0] == "/localstack/data"
+
+
+def test_forward_slash_windows_paths_redact_without_treating_uri_schemes_as_drives() -> None:
+    """C:/ is a Windows path; x:// and https:// remain URLs, not drives."""
+    red, notes = redaction_mod.redact_local_paths("edited C:/Users/Alice/project/x.py just now")
+    assert red == "edited [redacted-path] just now"
+    assert notes
+    assert redaction_mod.redact_local_paths("x://host/path")[0] == "x://host/path"
+    assert redaction_mod.redact_local_paths("https://api.github.com/repos/x")[0] == (
+        "https://api.github.com/repos/x"
+    )

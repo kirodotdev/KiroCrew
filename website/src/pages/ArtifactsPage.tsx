@@ -15,6 +15,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
 import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
+import Clickable from '../components/Clickable'
 import SimpleSelect from '../components/SimpleSelect'
 import RemoteArtifactCard from '../components/RemoteArtifactCard'
 import { publishNoticeKey } from '../components/PublishHub'
@@ -31,10 +32,13 @@ import { useDndSensors } from '../hooks/useDndSensors'
 import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
 import { compareText } from '../i18n/format'
 import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { markJustCreatedBlank } from '../lib/blankHandoff'
 import { IMPORT_ACCEPT, IMPORTABLE_EXT_LIST, MAX_IMPORT_BYTES, planFileImport, wasContentRedacted, type ImportPlan, type ImportRejection } from '../lib/artifactImport'
 import type { Artifact, ArtifactFolder, PublishProviderDescriptor, RemoteArtifact, SessionDoc } from '../types'
 import { KIND_BADGE, isoToTs, docFileType, FolderColorSwatches, FolderGlyph, FolderNameInput, FolderMenu, SessionDocStar, LibraryTable, LibraryTree } from '../components/library/LibraryTable'
+import SessionDocPreview from '../components/library/SessionDocPreview'
 import type { SortKey, SortState, LibraryDrag, FolderActions } from '../components/library/LibraryTable'
 import { WidgetThumb, ContentThumb, ImageThumb, WebAppThumb } from '../components/library/ArtifactThumbs'
 import { useColumnCount } from '../hooks/useColumnCount'
@@ -725,7 +729,7 @@ function MasonryGridItem({ data, context, index }: { data: GridEntry; context: L
 const SESSION_DOCS_COLLAPSED = 5
 const SESSION_DOCS_COLLAPSE_KEY = 'mc-artifacts-session-docs-collapsed'
 
-function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }: {
+function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath, onPreview }: {
   docs: SessionDoc[]
   /** True while the session-docs query is in flight — renders a fixed-height
    *  skeleton so the section does not pop in and shift the gallery under the
@@ -733,6 +737,8 @@ function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }:
   pending: boolean
   onMaterialize: (path: string, sessionKey?: string) => void
   materializingPath: string | null
+  /** Row click opens the read-only preview (the star stays the save gesture). */
+  onPreview: (d: SessionDoc) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   // Persisted: a user who never intends to save these docs can put the section
@@ -772,7 +778,7 @@ function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }:
           type="button"
           onClick={toggleCollapsed}
           aria-expanded={!collapsed}
-          className="flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-inherit font-inherit"
+          className="flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-inherit"
         >
           {collapsed ? <ChevronRight size={14} className="shrink-0 text-muted" /> : <ChevronDown size={14} className="shrink-0 text-muted" />}
           {i18nT('pages.artifactsPage.from_your_chats')}
@@ -790,17 +796,24 @@ function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }:
       <div
         ref={listRef}
         tabIndex={-1}
-        className={`flex flex-col gap-0.5 outline-none ${expanded ? 'max-h-[40vh] overflow-y-auto' : ''}`}
+        className={`flex flex-col gap-0.5 outline-hidden ${expanded ? 'max-h-[40vh] overflow-y-auto' : ''}`}
       >
         {visible.map((d) => (
-          <div key={d.path} className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg">
+          // Click opens a read-only preview — a READ, no registration, no side
+          // effects. Promotion into the library stays on the explicit star
+          // (which stops propagation so starring never also opens the preview).
+          <Clickable
+            key={d.path}
+            onClick={() => onPreview(d)}
+            className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-bg-hover transition-colors"
+          >
             <SessionDocStar d={d} busy={materializingPath === d.path} onMaterialize={handleMaterialize} />
             <FileText size={13} className="text-ok shrink-0" />
             <span className="text-sm text-text-strong font-medium truncate min-w-0 max-w-[280px]">{d.name}</span>
             <span className="text-[11px] text-muted truncate min-w-0 flex-1">{d.path}</span>
             <span className="text-[12px] text-muted truncate min-w-0 max-w-[180px]" title={d.session_title}>{d.session_title}</span>
             <span className="text-[12px] text-muted whitespace-nowrap shrink-0">{_timeAgo(isoToTs(d.updated_at))}</span>
-          </div>
+          </Clickable>
         ))}
       </div>
       {/* OUTSIDE the scrollable list on purpose: inside it, "Show less" sat
@@ -830,6 +843,10 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // deployment — otherwise the option is visible and only explains itself after
   // a click.
   const cloudDeployEnabled = useCloudDeploymentEnabled()
+  // Artifact Deploy is a Feature Preview: the route stays reachable, but the
+  // product does not offer it until the operator opts in, because every door
+  // leads to spending in a real AWS account and to content on the open internet.
+  const deployPreview = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const [filter, setFilter] = useState('')
   const isMobile = useIsMobile()
   const [tagFilter, setTagFilter] = useState('')
@@ -1444,14 +1461,38 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     collisionNoticeRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
     collisionNoticeRef.current?.focus?.()
   }, [collisionNotice])
+  // Read-only preview of an unsaved session doc (row click). Lives at the page
+  // so all three views (gallery / table / tree) share one modal instance.
+  const [previewDoc, setPreviewDoc] = useState<SessionDoc | null>(null)
+  const handlePreviewDoc = useCallback((d: SessionDoc) => setPreviewDoc(d), [])
+  // A successful save's ONLY other effects are removals — the row unmounts,
+  // the preview closes — so without this notice the save is indistinguishable
+  // from the document vanishing. Transient by design: it acknowledges, then
+  // gets out of the way (the new card in the library above is the durable
+  // evidence). role="status" on the render makes it a polite live region.
+  const [savedNotice, setSavedNotice] = useState<{ name: string } | null>(null)
+  useEffect(() => {
+    if (!savedNotice) return
+    const t = setTimeout(() => setSavedNotice(null), 6_000)
+    return () => clearTimeout(t)
+  }, [savedNotice])
   const materializeMut = useMutation({
     mutationFn: ({ path, sessionKey }: { path: string; sessionKey?: string }) => api.materializeArtifact(path, sessionKey),
-    onSuccess: (data) => {
+    onSuccess: (data, vars) => {
       // Only a colliding promote may replace the notice: clearing it here would
       // wipe an unread warning when the next document promotes cleanly.
       if (data?.slug_collided_with) {
         setCollisionNotice({ slug: data.slug, collidedWith: data.slug_collided_with })
+      } else {
+        // The collision banner already says "your document was saved as …",
+        // so the plain acknowledgment only renders for the clean case —
+        // both at once would announce the same save twice.
+        setSavedNotice({ name: vars.path.split(/[\\/]/).pop() || vars.path })
       }
+      // A materialize started from the preview modal finishes the modal's job:
+      // the document is now a real artifact (its row unmounts), so close the
+      // preview rather than leave it showing a doc that no longer exists.
+      setPreviewDoc((prev) => (prev && prev.path === vars.path ? null : prev))
       qc.invalidateQueries({ queryKey: ['artifacts'] })
       qc.invalidateQueries({ queryKey: ['artifact-session-docs'] })
     },
@@ -1652,6 +1693,15 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
           </div>
         ))}
 
+        {savedNotice && (
+          <div className="mb-4 bg-ok-subtle border border-ok/20 rounded-lg p-3 flex items-center gap-3 animate-rise" role="status">
+            <Star size={16} className="text-ok shrink-0" aria-hidden="true" />
+            <div className="flex-1 min-w-0 text-sm text-ok break-words">
+              {i18nT('pages.artifactsPage.saved_to_library_notice', { name: savedNotice.name })}
+            </div>
+            <Btn aria-label={i18nT('app.dismiss')} onClick={() => setSavedNotice(null)} className="text-ok/60 hover:text-ok shrink-0"><X className="lucide-inline" /></Btn>
+          </div>
+        )}
         {collisionNotice && (
           <div ref={collisionNoticeRef} tabIndex={-1} className="mb-4 bg-warn-subtle border border-warn/20 rounded-lg p-3 flex items-start gap-3 animate-rise" role="status">
             <span className="text-warn text-lg shrink-0"><AlertTriangle className="lucide-inline" aria-hidden="true" /></span>
@@ -1746,7 +1796,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                     * behind a tap without costing anything: keeping it visible
                     * is what forced the filter row to wrap and left a lone
                     * right-floated button on a line of its own. */}
-                  {isMobile && cloudDeployEnabled && (
+                  {isMobile && cloudDeployEnabled && deployPreview && (
                     <>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onSelect={() => navigate('/deploy')}>
@@ -1824,7 +1874,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 />
               </div>
             </div>
-            {cloudDeployEnabled && !isMobile && (
+            {cloudDeployEnabled && !isMobile && deployPreview && (
               <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
                 <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
               </Btn>
@@ -1939,6 +1989,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                   pending={sessionDocsQ.isPending}
                   onMaterialize={handleMaterialize}
                   materializingPath={materializingPath}
+                  onPreview={handlePreviewDoc}
                 />
               </CollapsibleChrome>
             )}
@@ -2005,6 +2056,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 pinningSlug={pinningSlug}
                 sessionDocs={pinnedOnly || tagFilter ? [] : sessionDocs}
                 onMaterialize={pinnedOnly ? undefined : handleMaterialize}
+                onPreviewDoc={handlePreviewDoc}
                 materializingPath={materializingPath}
               />
             ) : (
@@ -2025,6 +2077,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 dragActive={!!activeDrag}
                 sessionDocs={pinnedOnly || tagFilter ? [] : sessionDocs}
                 onMaterialize={pinnedOnly ? undefined : handleMaterialize}
+                onPreviewDoc={handlePreviewDoc}
                 materializingPath={materializingPath}
               />
             )}
@@ -2053,6 +2106,16 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             folders={folders}
             onConfirm={confirmDeleteFolder}
             onClose={() => setDeletingFolder(null)}
+          />
+
+          {/* Read-only preview of an unsaved session document (row click in any
+            * view). The header star materializes it; on success the modal
+            * closes via materializeMut.onSuccess. */}
+          <SessionDocPreview
+            doc={previewDoc}
+            onClose={() => setPreviewDoc(null)}
+            onMaterialize={handleMaterialize}
+            materializingPath={materializingPath}
           />
 
         {/* Remote browse — one section per discovery-capable registered

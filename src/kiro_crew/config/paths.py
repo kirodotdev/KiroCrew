@@ -290,6 +290,48 @@ def shared_kiro_settings_writable() -> bool:
     return not os.environ.get("KIROCREW_POD")
 
 
+def shared_kiro_agents_writable() -> bool:
+    """False when this process must not write the SHARED kiro agents dir.
+
+    ``~/.kiro/agents`` belongs to the kiro-cli installation, like
+    ``~/.kiro/settings/mcp.json`` above, and every instance under this ``$HOME``
+    reads the same specs. ``agent.rebuild_agent_config`` stamps the writing
+    instance's own ``KIROCREW_HOME`` into every managed MCP server entry
+    (``_managed_mcp_env``), so a spec written by an instance whose data home is
+    NOT the default one poisons every other instance: their stubs resolve
+    ``config_dir()`` to the writer's home, find no ``session_pid_<pid>`` mapping
+    and a different trust root, and every strict-identity tool fails closed with
+    "signed pid mapping did not verify". The writer being durable does
+    not help — the pinned home is still wrong for the default-home audience.
+
+    Mirrors :func:`shared_kiro_settings_writable` and starts from its predicate
+    (``KIROCREW_POD``), then adds the data-home question that guard deliberately
+    does not ask: an active ``KIROCREW_HOME`` override means the specs this
+    process would write describe ITS home, not the shared audience's. An
+    override that RESOLVES to the default home is carved back in — such an
+    instance is the default-home one in substance, and refusing it would leave
+    a belt-and-braces ``export KIROCREW_HOME=~/.kiro/crew`` install with specs
+    that are never refreshed (and a fresh install with none at all).
+
+    Deciding WHETHER a given write is aimed at the shared dir — and whether a
+    refusal would protect anything — is the caller's job: this predicate only
+    answers "may THIS process own the shared one".
+    ``agent._decline_shared_agent_home`` exempts provably private targets first
+    (the ``KIRO_HOME``-derived layouts, so layout ownership is decided there,
+    not here) and refuses only when an existing shared spec is present to
+    preserve — a relocated-home install on a machine with no default-home spec
+    still writes, because there is no audience to poison and refusing would
+    leave it with no spec at all. Reads stay allowed, as with the settings
+    guard.
+    """
+    if not shared_kiro_settings_writable():
+        return False
+    override = _valid_override_home()
+    if override is None:
+        return True
+    return override == _resolve_default_home().resolve()
+
+
 def config_dir() -> Path:
     global _config_dir_memo
     override_raw = os.environ.get("KIROCREW_HOME")
@@ -387,43 +429,6 @@ def peek_data_home() -> Path:
     return _resolve_default_home()
 
 
-def private_runtime_log_dir() -> Path | None:
-    """Diagnostics routing only; this NEVER grants session or memory authority.
-
-    The namespace publishes a readonly marker and an execution-scoped log mount
-    before Python starts, so early configuration diagnostics do not race the
-    gateway's later PID publication. Seatbelt receives a path hint but confines
-    writes to that exact directory independently of the hint.
-    """
-    home = config_dir()
-    if sys.platform == "linux":
-        from kiro_crew.platform_compat import is_readonly_filesystem
-
-        if not is_readonly_filesystem(home):
-            return None
-        marker = home / ".private-member-runtime"
-        try:
-            if not marker.is_symlink() and marker.stat().st_mode & 0o222 == 0:
-                with marker.open("rb") as handle:
-                    if handle.read(2) == b"1":
-                        return home / "agent-logs"
-        except OSError:
-            pass
-    elif sys.platform == "darwin":
-        hint = os.environ.get("_KIROCREW_PRIVATE_LOG_DIRECTORY", "")
-        if hint:
-            path = Path(hint)
-            # circular import: this module is a leaf (see the module docstring) and must
-            # not import from ``kiro_crew`` at import time.
-            from kiro_crew.memory_stores import EXECUTION_LOGS_DIR_NAME, MEMORY_STORES_DIR_NAME
-
-            if path.parent == home / MEMORY_STORES_DIR_NAME / EXECUTION_LOGS_DIR_NAME and (
-                path.name.startswith("member-")
-            ):
-                return path
-    return None
-
-
 def ensure_data_home() -> Path:
     """Eagerly resolve and create the data home — call BEFORE the loop.
 
@@ -449,14 +454,6 @@ def ensure_data_home() -> Path:
     the right outcome, an unbootable gateway is not.
     """
     home = config_dir()
-    if (
-        sys.platform == "linux"
-        and private_runtime_log_dir() is not None
-        and home.stat().st_mode & 0o777 == 0o700
-    ):
-        # The private launcher already established the home. Its namespace view
-        # is readonly; attempting chmod there produces a false security warning.
-        return home
     from kiro_crew.platform_compat import restrict_dir_to_owner
 
     try:
@@ -467,16 +464,16 @@ def ensure_data_home() -> Path:
             exc_info=True,
         )
     # UNCONDITIONAL, not in an `else`. The home failing to tighten is the case
-    # where the ledger root's own mode matters MOST: it is the only remaining
-    # boundary, and skipping it there leaves every lazily created ledger
+    # where the crew log root's own mode matters MOST: it is the only remaining
+    # boundary, and skipping it there leaves every lazily created crew log
     # directory at the process umask. The helper reports its own failure, so a
     # filesystem that refuses both still boots.
-    _ensure_ledger_root(home, restrict_dir_to_owner)
+    _ensure_crew_log_root(home, restrict_dir_to_owner)
     return home
 
 
-def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
-    """Establish ``<home>/ledgers`` owner-only, before anything writes a ledger.
+def _ensure_crew_log_root(home: Path, restrict: Callable[[Path], None]) -> None:
+    """Establish ``<home>/crew-log`` owner-only, before anything writes a crew log.
 
     Eager rather than lazy because two other mechanisms are stated per PATH and
     both are weaker while the name does not exist: the Linux sandbox bind-mask
@@ -495,12 +492,12 @@ def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
     exotic filesystem must not make the gateway unbootable, and the sandbox mask
     plus the file-tool fence still stand if this one assertion cannot be made.
     """
-    root = home / "ledgers"
+    root = home / "crew-log"
     try:
         canonical_home = home.resolve()
-        if root.is_symlink() or root.resolve() != canonical_home / "ledgers":
+        if root.is_symlink() or root.resolve() != canonical_home / "crew-log":
             logger.warning(
-                "Refusing ledger root %s: it is a link or resolves outside %s",
+                "Refusing crew log root %s: it is a link or resolves outside %s",
                 root,
                 canonical_home,
             )
@@ -509,20 +506,20 @@ def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
         restrict(root)
         # The kind directories under it need the same two properties, and for the
         # same reason: containment resolves its base first, so a linked
-        # ``ledgers/<kind>`` would make the link's target the containment root and
-        # every ledger path beneath it would pass while living outside this tree.
+        # ``crew-log/<kind>`` would make the link's target the containment root and
+        # every crew log path beneath it would pass while living outside this tree.
         # Establishing them here is what the argument above makes for the root --
         # a name that does not exist has no mode to inherit and is skipped by the
-        # sandbox mask. The names are the spellings ``ledger/store.py::_ROOT_DIR``
+        # sandbox mask. The names are the spellings ``crew_log/store.py::_ROOT_DIR``
         # maps its kinds to; this module imports no ``kiro_crew`` package at module
         # scope, so they are stated rather than read.
         for leaf in ("crews", "sessions"):
             kind_root = root / leaf
             if kind_root.is_symlink() or (
-                kind_root.exists() and kind_root.resolve() != canonical_home / "ledgers" / leaf
+                kind_root.exists() and kind_root.resolve() != canonical_home / "crew-log" / leaf
             ):
                 logger.warning(
-                    "Refusing ledger kind directory %s: it is a link or resolves outside %s",
+                    "Refusing crew log kind directory %s: it is a link or resolves outside %s",
                     kind_root,
                     canonical_home,
                 )
@@ -531,7 +528,7 @@ def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
             restrict(kind_root)
     except (OSError, RuntimeError):
         logger.warning(
-            "Cannot restrict %s to owner-only; ledgers may be readable by other users",
+            "Cannot restrict %s to owner-only; crew logs may be readable by other users",
             root,
             exc_info=True,
         )
@@ -550,27 +547,27 @@ def config_package_dir() -> Path:
 def _in_ephemeral_tree(path: Path, env: Mapping[str, str] | None = None) -> bool:
     """Whether *path* lives inside an AppImage's ephemeral runtime mount.
 
-    An AppImage runs from a squashfs the runtime mounts under a randomized
-    ``/tmp/.mount_<name>XXXXXX`` directory and unmounts on exit, so anything
-    resolved there is valid ONLY for the life of that process. A machine-wide
-    launcher aimed into it dangles the moment the app quits — the same hazard as
-    :func:`_in_linked_git_worktree`, from a different direction.
+        An AppImage runs from a squashfs the runtime mounts under a randomized
+        ``/tmp/.mount_<name>XXXXXX`` directory and unmounts on exit, so anything
+        resolved there is valid ONLY for the life of that process. A machine-wide
+        launcher aimed into it dangles the moment the app quits — the same hazard as
+        :func:`_in_linked_git_worktree`, from a different direction.
 
-``$APPDIR`` (the mount point) is exported by the AppImage runtime and is the
-    authoritative signal; ``$APPIMAGE`` names the outer image file rather than the
-    mount, so it cannot answer an ancestry test. The ``.mount_`` path component is
-    the fallback for a child process that inherited no environment, matched on the
-    RESOLVED path so a symlink into the mount cannot slip past.
+    ``$APPDIR`` (the mount point) is exported by the AppImage runtime and is the
+        authoritative signal; ``$APPIMAGE`` names the outer image file rather than the
+        mount, so it cannot answer an ancestry test. The ``.mount_`` path component is
+        the fallback for a child process that inherited no environment, matched on the
+        RESOLVED path so a symlink into the mount cannot slip past.
 
-    Deliberately NOT "anything under the temp directory". A scratch tree in
-    ``/tmp`` is every bit as ephemeral, but a blanket temp-dir rule cannot tell a
-    reaped work directory from a legitimate install a developer or test placed
-    there, and the launcher those produce is caught precisely by
-    :func:`_bin_is_usable` instead — by the interpreter being gone, which is the
-    property that actually breaks the command.
+        Deliberately NOT "anything under the temp directory". A scratch tree in
+        ``/tmp`` is every bit as ephemeral, but a blanket temp-dir rule cannot tell a
+        reaped work directory from a legitimate install a developer or test placed
+        there, and the launcher those produce is caught precisely by
+        :func:`_bin_is_usable` instead — by the interpreter being gone, which is the
+        property that actually breaks the command.
 
-    Stdlib-only and subprocess-free for the same reason as the worktree guard:
-    this runs on the gateway start path.
+        Stdlib-only and subprocess-free for the same reason as the worktree guard:
+        this runs on the gateway start path.
     """
     env = os.environ if env is None else env
     appdir = (env.get("APPDIR") or "").strip()

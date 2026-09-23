@@ -34,7 +34,7 @@ import asyncio
 import logging
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
@@ -71,6 +71,12 @@ from kiro_crew.messaging.link import (
     release_conversation_location,
     seed_generation,
 )
+from kiro_crew.messaging.queue_drain import (
+    drain_until_quiet,
+    entry_channel,
+    register_drain,
+    tag_entry,
+)
 from kiro_crew.messaging.queue_receipt import (
     ATTACHMENT_PLACEHOLDER,
     MAX_COLLAPSE,
@@ -92,7 +98,7 @@ from kiro_crew.teams.cards import (
     KIND_SESSION,
     parse_submit,
 )
-from kiro_crew.teams.client import TeamsSendError
+from kiro_crew.teams.client import TeamsInbound, TeamsSendError
 from kiro_crew.teams.commands import (
     DIRECTIVE_USAGE,
     HELP_TEXT,
@@ -113,7 +119,7 @@ if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
-    from kiro_crew.teams.client import TeamsClient, TeamsInbound
+    from kiro_crew.teams.client import TeamsClient
     from kiro_crew.teams.transport import TeamsTransport
 
 logger = logging.getLogger(__name__)
@@ -139,6 +145,152 @@ _RELEASE_FAILURE = (
     "⚠️ Couldn't save the session release, so the command was NOT completed. Fix the "
     "gateway's storage problem, then retry."
 )
+
+#: Prefix the queued origin fields are stored under on a queue entry, so they can
+#: never collide with the entry's other payload (``attachments``).
+_ORIGIN_PREFIX = "teams_"
+
+#: This channel's name in the shared queue-drain contract
+#: (``messaging/queue_drain.py``). ONE constant, used both to tag the entries this
+#: dispatcher produces and to register its drain, because a tag that does not match the
+#: registration cannot be woken for its own entries. The neutral key those entries carry
+#: it under is defined in that module, not here: a per-module copy of the string fails
+#: silently, making this channel's entries unowned to every drain.
+_CHANNEL = "teams"
+
+#: Teams admits PERSONAL scope only (``TeamsTransport.receive`` drops every other
+#: scope), so the conversation type is the same for every entry that can reach this
+#: queue. That is what lets a drain woken by a peer channel replay an entry with no
+#: opening envelope to copy: see :func:`_wake_template`.
+_PERSONAL_SCOPE = "personal"
+
+#: Origin fields that name WHICH MESSAGE rather than WHO sent it or WHERE its reply
+#: goes, so they are excluded from ``_QueuedOrigin.sender_key``. Only ``activity_id``
+#: qualifies: the Bot Framework mints a fresh one per activity (``client.py``'s
+#: ``activity.get("id")``, which the replay guard also relies on being unique), so
+#: comparing it would make two messages from ONE person compare unequal and stop the
+#: collapse the drain exists for.
+#:
+#: The exclusion is a DENY list, so a field added to ``_QueuedOrigin`` later joins the
+#: key by default. That direction is deliberate: a missing WHO field lets two people's
+#: messages collapse into one turn under one identity, while a surplus WHICH-MESSAGE
+#: field only costs a collapse, and answering the wrong person is the worse failure.
+_NOT_A_SENDER = frozenset({"activity_id"})
+
+
+class _QueuedOrigin(NamedTuple):
+    """Who sent one queued message, where its reply goes, and which activity it was.
+
+    Recorded per QUEUED MESSAGE when it arrives, and NOT inherited from the envelope
+    that opened the finished turn: under ``messaging.dm_scope = "unified"`` every
+    allow-listed person's direct chat collapses into one session key, so one queue
+    holds messages from several people. A drained turn that ran under the opener's
+    envelope would post one person's answer into another person's chat, and would
+    name the opener as the author of text they did not write everywhere the turn is
+    attributed -- its audit caller, its persisted transcript row, and its
+    principal-scoped context all resolve from this envelope.
+
+    Every field names WHO, WHERE or WHICH MESSAGE, and the two are used differently:
+    the WHOLE origin addresses the replayed turn, while only the WHO-and-WHERE subset
+    (``sender_key``) decides which entries may share one turn. ``conversation_type``
+    is not here: Teams admits personal scope only, so it is the same for every entry
+    on a queue.
+    """
+
+    conversation_id: str
+    service_url: str
+    resolved_identity: str
+    user_email: str
+    aad_object_id: str
+    activity_id: str
+
+    @property
+    def sender_key(self) -> tuple[str, ...]:
+        """Who sent this and where the reply goes, with the message's own id dropped.
+
+        Two entries may be collapsed into one turn exactly when these match, because
+        one turn gets one envelope. Derived from ``_fields`` minus ``_NOT_A_SENDER``
+        rather than listed by hand, so a new field cannot be silently left out of the
+        comparison that keeps two people's messages apart.
+        """
+        return tuple(getattr(self, name) for name in self._fields if name not in _NOT_A_SENDER)
+
+
+def _inbound_origin(inbound: "TeamsInbound") -> _QueuedOrigin:
+    """This message's own origin, for recording on its queue entry."""
+    return _QueuedOrigin(
+        conversation_id=inbound.conversation_id,
+        service_url=inbound.service_url,
+        resolved_identity=inbound.resolved_identity,
+        user_email=inbound.user_email,
+        aad_object_id=inbound.aad_object_id,
+        activity_id=inbound.activity_id,
+    )
+
+
+def _origin_kwargs(inbound: "TeamsInbound") -> dict[str, str]:
+    """This message's origin as prefixed queue-entry keyword arguments.
+
+    The neutral channel tag rides with them because a drain must be able to tell an
+    entry it owns from one another transport recorded BEFORE it reads any
+    channel-specific field, and because the value names which peer drain to wake for a
+    foreign entry.
+    """
+    origin = _inbound_origin(inbound)
+    recorded = {f"{_ORIGIN_PREFIX}{name}": value for name, value in origin._asdict().items()}
+    return tag_entry(recorded, _CHANNEL)
+
+
+def _wake_template(origin: _QueuedOrigin) -> "TeamsInbound":
+    """A bare inbound to replay *origin*'s entries onto when no envelope opened them.
+
+    A drain woken by a PEER channel has no inbound of its own: the turn that finished
+    belonged to another transport. Everything that addresses or attributes the replay
+    comes from the queued entry's own origin anyway, so the only field left to supply is
+    the conversation type, which :data:`_PERSONAL_SCOPE` fixes for every entry that can
+    reach this queue.
+
+    Deliberately NOT a stashed "last seen" inbound: that would reintroduce exactly the
+    defect this module fixes, replaying one person's message under an envelope somebody
+    else's turn brought in, only now across channels as well as across senders.
+    """
+    return TeamsInbound(
+        conversation_id=origin.conversation_id,
+        conversation_type=_PERSONAL_SCOPE,
+        service_url=origin.service_url,
+        text="",
+    )
+
+
+def _queued_origin(kwargs: dict) -> _QueuedOrigin | None:
+    """The origin recorded on a queue entry, or None if ANOTHER channel recorded it.
+
+    One queue can hold entries from more than one transport. Every DM dispatcher is
+    constructed with the orchestrator's single ``SessionManager``, and under
+    ``messaging.dm_scope = "unified"`` ``build_dm_session_key`` reduces a direct chat's
+    bucket to ``unified:{agent}`` -- dropping the CHANNEL as well as the user -- so a
+    Teams chat and a Telegram DM to the same agent resolve to one session key, and
+    therefore one queue.
+
+    Such an entry is not this dispatcher's to replay: it carries no field this channel
+    can address. So None means DEFER, never raise and never guess. Raising here would
+    lose messages rather than guard loudly: the entry is already dequeued when this
+    runs, so an exception discards every message dequeued in that iteration, and the
+    remainder is re-enqueued only after the loop.
+
+    Ownership is decided on the NEUTRAL channel field, not on the presence of a
+    prefixed one, so an entry that names THIS channel but is missing a field still
+    raises a ``KeyError`` naming it. That case is a producer bug in this module -- both
+    producers are here, ``_enqueue_with_receipt`` and the drain's own re-enqueue -- and
+    defaulting to empty strings would address the reply to an empty conversation id,
+    which is a silent misdelivery.
+    """
+    if entry_channel(kwargs) != _CHANNEL:
+        return None
+    return _QueuedOrigin(
+        *(str(kwargs[f"{_ORIGIN_PREFIX}{name}"] or "") for name in _QueuedOrigin._fields)
+    )
+
 
 # Re-exported so callers keep importing ConversationState from this module's
 # command surface, matching the Telegram/WeCom/Webex packages.
@@ -181,6 +333,12 @@ class TeamsDispatcher:
         # WeCom/Weixin (whose reply is bound to the inbound request) it can carry
         # the single collapsing receipt bubble the shared module implements.
         self._queue = ReceiptQueue()
+        # Publish this drain so a peer transport that set aside one of THIS channel's
+        # entries can wake it. Required for the set-aside to be a deferral rather than
+        # an indefinite wait: a drain otherwise runs only from the tail of its own
+        # channel's turn, so an entry another channel put back waited for this one to
+        # finish some unrelated turn, and waited forever if the user went quiet here.
+        register_drain(_CHANNEL, self._drain_queue)
         # Live renderer per session, so a card click can settle the prompt it
         # answered and resolve an option chip against the labels that turn
         # actually offered. Read by _handle_card_action.
@@ -807,6 +965,13 @@ class TeamsDispatcher:
                 text,
                 force=False,
                 attachments=list(inbound.attachments or []),
+                # The sender and their chat ride with the entry too, because the
+                # drain replays it and the reply reaches whoever the replayed
+                # envelope names. Under ``dm_scope = "unified"`` two allow-listed
+                # people share ONE session key and therefore one queue, so without
+                # this a message queued by one of them during the other's turn is
+                # answered into the other's chat and attributed to them.
+                **_origin_kwargs(inbound),
             ):
                 return False
             # An upload with no caption has no text; a placeholder keeps it from
@@ -816,17 +981,67 @@ class TeamsDispatcher:
             )
             return True
 
-    async def _drain_queue(self, session_key: str, inbound: "TeamsInbound") -> None:
-        """Collapse everything queued during the finished turn into ONE turn.
+    async def _drain_queue(self, session_key: str, inbound: "TeamsInbound | None" = None) -> None:
+        """Answer everything queued during the just-finished turn.
+
+        *inbound* is the envelope whose turn just finished, and it is OPTIONAL because
+        this drain is also registered as this channel's wake target
+        (``messaging/queue_drain.py``): a peer transport sharing this queue calls it
+        with the session key alone, and then no envelope opened anything here. Nothing
+        that addresses or attributes a replay is taken from it either way -- see
+        :func:`_wake_template`.
+
+        An entry ANOTHER transport recorded shares this queue under a unified scope and
+        cannot be answered here at all: it carries no field this channel can address. It
+        is set aside, and because it has already been accepted and receipted, its
+        owner's drain is woken once this pump is done -- outside ``self._queue.lock``,
+        since that drain takes its own lock and runs a whole turn. See
+        ``messaging/queue_drain.py`` for why the cascade terminates.
+        """
+        # Channels whose entries this pump set aside, so they can be woken after it.
+        # The sequence -- pump, then wake outside the queue lock but INSIDE this
+        # channel's active marker, then pump again for any wake a peer could not deliver
+        # back here -- lives in the shared module, because all four drains need exactly
+        # it and getting the order wrong has no local symptom.
+        await drain_until_quiet(
+            channel=_CHANNEL,
+            session_key=session_key,
+            pump=lambda foreign: self._pump_queue(session_key, inbound, foreign),
+        )
+
+    async def _pump_queue(
+        self,
+        session_key: str,
+        inbound: "TeamsInbound | None",
+        foreign_channels: set[str],
+    ) -> None:
+        """Collapse everything one sender queued during the finished turn into ONE turn.
 
         Order is preserved and the texts are blank-line joined, rather than
         replaying N separate turns. The dequeue and the receipt flip run together
         under ``self._queue.lock``; the combined turn itself runs OUTSIDE it, so
         messages arriving during it open a fresh receipt and drain after.
+
+        One combined turn gets ONE envelope, so it may only combine messages that
+        SHARE one -- same sender, same chat. That is ``_QueuedOrigin.sender_key`` and
+        deliberately NOT the whole origin, which also names the individual message.
+        Under ``dm_scope = "unified"`` one session key, and therefore one queue, is
+        shared by every allow-listed person, so a queue holding two of them is
+        reachable on the live path. Anything from a different sender or chat defers
+        itself and everything behind it, so FIFO stays exact and the outer loop drains
+        it next as its own turn under its own envelope.
+
+        Split out from :meth:`_drain_queue` so the peer wake has ONE exit point to run
+        after: this loop returns from several places, and a wake that some of them
+        skipped is the defect it exists to close.
         """
         while True:
             texts: list[str] = []
             attachments: list[Any] = []
+            # The origin this iteration answers, taken from the FIRST entry it
+            # collapses rather than from *inbound*, whose turn another person may
+            # have opened.
+            origin: _QueuedOrigin | None = None
             async with self._queue.lock:
                 remainder: list[tuple[str, str, dict]] = []
                 defer_rest = False
@@ -835,6 +1050,22 @@ class TeamsDispatcher:
                     if item is None:
                         break
                     queued_files = list(item[2].get("attachments") or [])
+                    item_origin = _queued_origin(item[2])
+                    if item_origin is None:
+                        # ANOTHER transport recorded this entry, so it is not this
+                        # dispatcher's to answer -- it holds no address this channel can
+                        # reach. Set aside for its own channel's drain WITHOUT
+                        # ``defer_rest``: order matters within one sender's messages,
+                        # which ``sender_key`` already keeps exact, while blocking this
+                        # channel's own queue behind a foreign entry would strand it
+                        # whenever that transport sends nothing further. Remember WHOSE
+                        # it is: the entry was already accepted and receipted, so its
+                        # owner is woken once this pump is done.
+                        remainder.append(item)
+                        foreign_channels.add(entry_channel(item[2]))
+                        continue
+                    if origin is None:
+                        origin = item_origin
                     # One collapsed turn must not exceed the neutral ingest's own
                     # per-turn attachment cap, or the surplus files would be
                     # silently refused by the ingest instead of answered next round.
@@ -843,7 +1074,17 @@ class TeamsDispatcher:
                         and queued_files
                         and len(attachments) + len(queued_files) > _MAX_COLLAPSED_ATTACHMENTS
                     )
-                    if not defer_rest and len(texts) < MAX_COLLAPSE and not over_files:
+                    fits = (
+                        not defer_rest
+                        and len(texts) < MAX_COLLAPSE
+                        and not over_files
+                        # sender_key, NOT the whole origin: the origin also carries
+                        # this message's own activity id, which is unique per message,
+                        # so comparing all of it would make one person's own burst
+                        # compare unequal and drain as N turns.
+                        and item_origin.sender_key == origin.sender_key
+                    )
+                    if fits:
                         texts.append(item[1])
                         attachments.extend(queued_files)
                     else:
@@ -853,26 +1094,60 @@ class TeamsDispatcher:
                         remainder.append(item)
                 # Re-enqueue the surplus IN ORIGINAL ORDER (the queue is empty
                 # now, so re-adding preserves FIFO) to drain after the next turn.
+                #
+                # ``own_deferred`` and NOT ``len(remainder)``: that also counts entries
+                # from a DIFFERENT sender and entries another TRANSPORT recorded, each
+                # of which drains in its own turn in its own chat. Showing those in this
+                # sender's receipt would promise them a follow-up for messages they
+                # never sent.
+                own_deferred = 0
                 for msg_ts, queued_text, kwargs in remainder:
+                    r_origin = _queued_origin(kwargs)
+                    if (
+                        origin is not None
+                        and r_origin is not None
+                        and r_origin.sender_key == origin.sender_key
+                    ):
+                        own_deferred += 1
                     self.sessions.enqueue(session_key, msg_ts, queued_text, force=True, **kwargs)
-                if not texts:
+                if not texts or origin is None:
                     return
+                combined = "\n\n".join(t for t in texts if t)
+                replay = replace(
+                    # The envelope this replay is built ON is either the finished turn's
+                    # inbound or, when a peer channel woke this drain, a bare template:
+                    # every field below overrides whatever it carried for addressing and
+                    # attribution, so the two differ only in the fields a replay does
+                    # not read.
+                    inbound if inbound is not None else _wake_template(origin),
+                    text=combined,
+                    attachments=attachments,
+                    conversation_id=origin.conversation_id,
+                    service_url=origin.service_url,
+                    resolved_identity=origin.resolved_identity,
+                    user_email=origin.user_email,
+                    aad_object_id=origin.aad_object_id,
+                    activity_id=origin.activity_id,
+                )
+                # The receipt too: its bubble was posted into the chat of whoever
+                # queued first, so editing it under the opener's address reaches a
+                # different chat, where that activity id does not exist.
                 await self._queue.flip_answering_locked(
                     session_key,
-                    self._receipt_surface(inbound),
+                    self._receipt_surface(replay),
                     [t or ATTACHMENT_PLACEHOLDER for t in texts],
-                    len(remainder),
+                    own_deferred,
                 )
-            combined = "\n\n".join(t for t in texts if t)
-            replay = replace(inbound, text=combined, attachments=attachments)
             # Drained payloads are turn content, so command interpretation is off:
             # a queued "/new" must reach the model as text, not execute on drain.
             # drain=False keeps the pump in THIS loop instead of nesting a drain
             # inside the replayed turn.
             await self.handle_message(replay, interpret_commands=False, drain=False)
             # Loop rather than return: messages that arrived DURING the combined
-            # turn join this same FIFO pump. The only exit is the empty-queue check
-            # above, so nothing is left waiting for unrelated future user input.
+            # turn join this same FIFO pump, as do messages this iteration deferred
+            # because they came from someone else. The only exit is the empty-queue
+            # check above, so nothing is left waiting for unrelated future user
+            # input, and every iteration drains at least one message.
 
     # ── /stop ──────────────────────────────────────────────────────────────
 

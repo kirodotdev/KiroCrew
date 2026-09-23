@@ -149,11 +149,11 @@ await scene('A2', async () => {
   })
   const { page } = o
   await page.goto(`${base}/chat`, { waitUntil: 'networkidle' })
-  const trigger = page.getByRole('button', { name: /switch instance/i }).first()
+  const trigger = page.getByRole('button', { name: /switch crew/i }).first()
   await trigger.waitFor({ state: 'visible', timeout: 15_000 })
   await trigger.click()
   await page.getByRole('menuitemradio', { name: /remote crew/i }).first().click()
-  const fragment = 'This tab stays until you disconnect the instance'
+  const fragment = 'This tab stays until you disconnect the crew'
   await shoot(page, {
     file: 'a2-instances-viewport-error-footer.png', fragment,
     container: page.locator('div.max-w-md').filter({ hasText: fragment }).first(),

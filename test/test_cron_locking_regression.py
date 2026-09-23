@@ -977,11 +977,11 @@ class TestMergeResultOffLoop:
         tick_task = asyncio.create_task(ticker())
         try:
             svc._executing.add(job.id)
-            svc._job_run_meta[job.id] = (time.time(), "scheduled")
+            claim = svc._job_run_meta[job.id] = (time.time(), "scheduled")
             # The merge will raise CronStoreBusy inside to_thread (contended);
             # _run_job_isolated swallows it (best-effort) and completes without
             # ever parking the loop.
-            await svc._run_job_isolated(job)
+            await svc._run_job_isolated(job, claim)
             # Sampled before the ticker is stopped: counting ticks that ran after
             # the merge returned would hold even for a merge that parked the loop.
             ticks_during_merge = ticks
@@ -1008,8 +1008,8 @@ class TestMergeResultOffLoop:
         svc._on_job = on_job
         job = svc.add_job(name="j", message="m", every_secs=60)
         svc._executing.add(job.id)
-        svc._job_run_meta[job.id] = (time.time(), "scheduled")
-        await svc._run_job_isolated(job)
+        claim = svc._job_run_meta[job.id] = (time.time(), "scheduled")
+        await svc._run_job_isolated(job, claim)
 
         # A fresh service reading the same store sees the persisted last_run_ts.
         reloaded = CronService(base_dir=tmp_path)

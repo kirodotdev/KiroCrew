@@ -66,6 +66,8 @@ async def _put(
     apps_root_is_file: bool = False,
     apps_dir_unreadable: bool = False,
     apps_child_unstattable: bool = False,
+    app_root_shape: str | None = None,
+    apps_child_vanishes: bool = False,
     managed: tuple[str, ...] = (),
     managed_specs: dict[str, dict] | None = None,
     extra_managed: dict[str, dict] | None = None,
@@ -139,6 +141,25 @@ async def _put(
         if apps_root_is_file:
             break
         _app_root = _apps_root / _app
+        if app_root_shape == "broken_symlink":
+            # The app ROOT itself is a DANGLING link: ``lstat`` succeeds (the link
+            # is there, so the name is occupied and this app's manifest is
+            # unreachable rather than absent), ``stat`` raises FileNotFoundError.
+            _app_root.symlink_to(_apps_root / "no-such-app-root")
+            continue
+        if app_root_shape == "link_to_file":
+            # The app ROOT is a link whose target EXISTS but is a plain FILE, so
+            # both ``lstat`` and ``stat`` succeed and only ``S_ISDIR`` is False.
+            # The dangling-link screen cannot see this shape: nothing raises.
+            _target = _apps_root / "not-a-directory.txt"
+            _target.write_text("not an app root", encoding="utf-8")
+            _app_root.symlink_to(_target)
+            continue
+        if app_root_shape == "plain_file":
+            # A plain FILE standing where the app root belongs: nothing raises and
+            # nothing is link-ish, which is the shape that must stay a skip.
+            _app_root.write_text("not an app root", encoding="utf-8")
+            continue
         _app_root.mkdir(exist_ok=True)
         if installed_absent:
             continue  # a directory under apps/ carrying no installed.json
@@ -200,6 +221,18 @@ async def _put(
                     yield _UnstattableChild(child)
 
         _handler_apps_root = _RootWithUnstattableChild(_apps_root)
+    if apps_child_vanishes:
+        # The OVERSHOOT GUARD for the child screen: a name the listing returns and
+        # that is GONE by the time the screen looks at it. An uninstall completing
+        # between ``iterdir`` and the ``lstat`` leaves exactly this, so it must stay
+        # a skip -- the one shape that separates "nothing is there" from the
+        # dangling link above, which occupies the name and must refuse.
+        class _RootWithVanishedChild(type(_apps_root)):  # type: ignore[misc]
+            def iterdir(self):
+                yield from super().iterdir()
+                yield self / "uninstalled-mid-walk"
+
+        _handler_apps_root = _RootWithVanishedChild(_apps_root)
 
     _managed_map: dict[str, dict] = {n: {} for n in managed}
     if managed_specs:
@@ -990,6 +1023,176 @@ async def test_an_unstattable_apps_root_child_fails_the_put(tmp_path):
     PROVING it is not a directory.
     """
     await _assert_refused_and_intact(tmp_path, apps_child_unstattable=True)
+
+
+@requires_symlinks
+@pytest.mark.asyncio
+async def test_a_dangling_app_root_link_fails_the_put(tmp_path):
+    """A DANGLING app-root link OCCUPIES the name, so it is unreadable, not absent.
+
+    The child screen reached its skip through a single ``child.stat()``, which
+    FOLLOWS the link -- so it answered ``FileNotFoundError`` both for a name
+    nothing occupies and for a name a dangling link still occupies, and skipped
+    both as "not an app". The second is the opposite answer: something is standing
+    where the app root belongs, its manifest is unreachable, and what it declares
+    is therefore UNKNOWN rather than empty. Empty is what deletes its live
+    bridges, which is the cannot-read-becomes-not-owned defect this whole function
+    exists to refuse -- and it already refuses exactly this shape one position out,
+    for ``installed.json``, via ``_require_present_shape``.
+    """
+    await _assert_refused_and_intact(tmp_path, app_root_shape="broken_symlink")
+
+
+@pytest.mark.asyncio
+async def test_an_apps_root_child_that_vanished_after_the_listing_still_skips(tmp_path):
+    """The overshoot guard: a name that is genuinely GONE stays a skip.
+
+    Distinguishing the dangling link above must not turn the ordinary uninstall
+    race into a 500. An uninstall completing between ``iterdir`` and the screen
+    leaves a listed name with nothing at it, ``lstat`` raises
+    ``FileNotFoundError`` for the entry ITSELF, and that is the one proof of
+    absence. Needs no symlink privilege, so it carries this row on every platform
+    the dangling-link test may skip on.
+
+    ``mcpServers`` is submitted EMPTY on purpose: a submitted entry always wins, so
+    resubmitting ``demo:notes`` would decide the verdict without ever consulting
+    the walk and the row would pass however the screen behaved.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {"demo:notes": {"command": "notes-mcp"}}},
+        submitted={"name": "kirocrew", "mcpServers": {}},
+        apps={"demo": ("notes",)},
+        apps_child_vanishes=True,
+    )
+
+    assert response.status == 200, "a vanished name must not turn a routine PUT into a 500"
+    assert "demo:notes" in written["mcpServers"], "the live bridge was deleted"
+
+
+@requires_symlinks
+def test_both_app_root_walks_agree_a_dangling_link_is_not_absence(tmp_path):
+    """ONE tree, BOTH readers: neither walk may call a dangling app root absent.
+
+    Two modules decide independently whether an entry in the apps root stands for
+    an installed app, and they feed different decisions -- ``apps.manager``'s read
+    gates whether an ``mcpServers`` GRANT may be pruned, this walk gates whether an
+    app's BRIDGES may be deleted. Nothing else makes them agree, so this row is
+    what fails when they stop agreeing.
+
+    They cannot share one function: this side must RAISE (its contract is
+    fail-loud, and a name it cannot read is not a name it may report as unowned),
+    while the manager side returns a listing plus a completeness bool. What they
+    must share is the RULE, so this pins the rule on a single on-disk tree --
+    a dangling link at ``apps/demo`` -- and asserts each reader's own spelling of
+    "not absence". A later edit to either module's screens fails here instead of
+    silently moving one answer.
+    """
+    from kiro_crew.apps.manager import list_apps_with_skips
+    from kiro_crew.dashboard.handlers.agents import (
+        AppOwnershipUnreadable,
+        _app_declared_server_names,
+    )
+
+    apps_root = tmp_path / "apps"
+    apps_root.mkdir()
+    (apps_root / "demo").symlink_to(apps_root / "no-such-app-root")
+
+    with patch("kiro_crew.apps.manager.apps_dir", return_value=apps_root):
+        listing = list_apps_with_skips()
+    assert listing.apps == [], "a dangling root carries no readable record"
+    assert listing.complete is False, (
+        "the manager counts a link-ish entry as an app the listing DROPPED, so an "
+        "app missing from `apps` there carries no information"
+    )
+
+    with (
+        patch("kiro_crew.dashboard.handlers.agents.apps_dir", return_value=apps_root),
+        pytest.raises(AppOwnershipUnreadable) as caught,
+    ):
+        _app_declared_server_names()
+    assert "demo" in str(caught.value), "the refusal must name the entry it could not read"
+
+
+@requires_symlinks
+@pytest.mark.asyncio
+async def test_an_app_root_link_to_a_file_fails_the_put(tmp_path):
+    """A link-ish app root whose target RESOLVES to a file is still not absence.
+
+    The sibling the dangling-link screen cannot reach. Here ``lstat`` succeeds AND
+    ``stat`` succeeds -- the target is a real file -- so nothing raises and the only
+    thing that is False is ``S_ISDIR``. A screen that skips every non-directory
+    therefore reports the name as free, while ``apps.manager`` reads the same entry
+    through ``entry.is_symlink() or is_link_or_junction(entry)`` and counts it as an
+    app the listing DROPPED. That split is the same cannot-read-becomes-not-owned
+    defect one shape over, so the link-ish half must refuse.
+    """
+    await _assert_refused_and_intact(tmp_path, app_root_shape="link_to_file")
+
+
+@pytest.mark.asyncio
+async def test_a_plain_file_where_an_app_root_belongs_still_skips(tmp_path):
+    """The overshoot guard: refusing link-ish non-directories must spare plain ones.
+
+    ``_entry_stands_for_a_dropped_app`` deliberately does NOT count a plain file,
+    because a file BESIDE the app directories is an ordinary member of a healthy
+    apps root. So the new screen must split on link-ness, not on "is not a
+    directory" -- refusing every non-directory would turn any stray file in the
+    apps root into a 500 and disagree with the manager in the other direction.
+
+    ``mcpServers`` is submitted EMPTY on purpose: a submitted entry always wins, so
+    resubmitting ``demo:notes`` would decide the verdict without ever consulting the
+    walk and the row would pass however the screen behaved.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {"demo:notes": {"command": "notes-mcp"}}},
+        submitted={"name": "kirocrew", "mcpServers": {}},
+        apps={"demo": ("notes",)},
+        app_root_shape="plain_file",
+    )
+
+    assert response.status == 200, "a plain file in the apps root must not cause a 500"
+    assert (
+        written["mcpServers"] == {}
+    ), "a plain file stands for no app, so the grant is genuinely unowned here"
+
+
+@requires_symlinks
+def test_both_app_root_walks_agree_a_link_to_a_file_is_not_absence(tmp_path):
+    """ONE tree, BOTH readers, for the shape where nothing raises.
+
+    The agreement row above pins a tree where ``stat`` RAISES, so it cannot fail if
+    a reader starts deciding link-ness by whether the resolution threw. This tree
+    resolves cleanly and differs from a real app root only in ``S_ISDIR``, which is
+    what makes it the discriminating case: each reader has to reach "not absence"
+    from the entry's own link-ness rather than from a raised error.
+    """
+    from kiro_crew.apps.manager import list_apps_with_skips
+    from kiro_crew.dashboard.handlers.agents import (
+        AppOwnershipUnreadable,
+        _app_declared_server_names,
+    )
+
+    apps_root = tmp_path / "apps"
+    apps_root.mkdir()
+    target = apps_root / "not-a-directory.txt"
+    target.write_text("not an app root", encoding="utf-8")
+    (apps_root / "demo").symlink_to(target)
+
+    with patch("kiro_crew.apps.manager.apps_dir", return_value=apps_root):
+        listing = list_apps_with_skips()
+    assert listing.apps == [], "a link to a file carries no readable record"
+    assert (
+        listing.complete is False
+    ), "the manager counts a link-ish non-directory as an app the listing DROPPED"
+
+    with (
+        patch("kiro_crew.dashboard.handlers.agents.apps_dir", return_value=apps_root),
+        pytest.raises(AppOwnershipUnreadable) as caught,
+    ):
+        _app_declared_server_names()
+    assert "demo" in str(caught.value), "the refusal must name the entry it could not read"
 
 
 @pytest.mark.asyncio

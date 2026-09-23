@@ -80,7 +80,12 @@ from kiro_crew.security import (
     scan_exfiltration_urls,
 )
 from kiro_crew.sel import sel
-from kiro_crew.validation import MCP_CRON_SCHEMAS, ValidationError, validate_tool_args
+from kiro_crew.validation import (
+    MCP_CRON_SCHEMAS,
+    ValidationError,
+    infer_use_case,
+    validate_tool_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1184,7 +1189,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     "member_id": {
                         "type": "string",
                         "description": "Crew Member responsible for this schedule. Uses that "
-                        "member's private memory. Omit to inherit the creating conversation's "
+                        "member's memory. Omit to inherit the creating conversation's "
                         "member; ordinary conversations retain global V1 memory.",
                     },
                     "silent": {
@@ -1869,15 +1874,15 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     """Execute a cron tool and return the result as text."""
-    from kiro_crew.config.paths import private_runtime_log_dir
-
-    if private_runtime_log_dir() is not None:
-        # This marker selects a transport only. The gateway independently
-        # verifies the process/session/store before opening the cron store.
+    # Managed callers use ordinary authenticated gateway routing, including
+    # live restricted sessions whose execution record intentionally is not on disk.
+    if current_caller() is not None or _resolve_session_key():
+        # The gateway authenticates the request and resolves its captured session
+        # execution before opening the cron store.
         from kiro_crew.mcp_core import _post
 
         session_key, refusal = require_strict_session_key(
-            "Cannot verify this private cron caller. Reopen the member conversation.",
+            "Cannot identify this cron caller. Reopen the conversation.",
             server="kirocrew-cron",
         )
         if refusal:
@@ -1892,6 +1897,20 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
         response = _post(
             "/api/crons/tools", {"name": name, "arguments": args}, session_key=session_key
         )
+        if (
+            response.get("refused")
+            and current_caller() is None
+            and infer_use_case(session_key) == "cli"
+        ):
+            # No gateway is listening (nothing was executed) and the identity is
+            # POSITIVELY the attended CLI's own -- ``kirocrew chat`` presents the
+            # ``cli_chat`` key everywhere it is identified, and it is the one
+            # surface whose cron tools always wrote the host store directly.
+            # Keep that. A gateway-minted key (dashboard, channel, cron,
+            # subagent) with no injected caller is the non-pooled gateway
+            # topology, where a refused dial is an outage of the gateway that
+            # validates the call: report it, never write around it.
+            return _call_tool_locally(name, raw_args)
         if response.get("error"):
             advice = (
                 " Outcome unknown; check cron_list before retrying a mutation."
@@ -2688,7 +2707,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         except ValueError as e:
             return f"Error: {e}"
         if not updated:
-            return f"Job not found: {jid}"
+            return f"Error: job not found: {jid}"
         sel().log_api_access(
             caller="mcp",
             operation="cron.update",
@@ -2724,7 +2743,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         if removed:
             return f"Removed job: {jid}"
-        return f"Job not found: {jid}"
+        return f"Error: job not found: {jid}"
 
     if name == "cron_remove_all":
         jobs = svc.list_jobs(include_disabled=True)
@@ -2773,7 +2792,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         if paused:
             return f"Paused job: {jid}"
-        return f"Job not found: {jid}"
+        return f"Error: job not found: {jid}"
 
     if name == "cron_resume":
         jid = args["job_id"]
@@ -2789,7 +2808,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         if resumed:
             return f"Resumed job: {jid}"
-        return f"Job not found: {jid}"
+        return f"Error: job not found: {jid}"
 
     if name == "cron_trigger":
         jid = args["job_id"]
@@ -2799,7 +2818,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # ``trigger_cron_job`` is the enforcing one; this only makes its reason
         # reachable, since an unknown id never survives the ownership lookup.
         if not _JOB_ID_RE.fullmatch(jid):
-            return f"Invalid job ID format: {jid}"
+            return f"Error: Invalid job ID format: {jid}"
         # Ownership check
         own_err = _check_cron_job_ownership(svc, jid)
         if own_err:
@@ -2821,7 +2840,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
         if ok:
             return f"{msg} - executing now."
-        return msg
+        # The audit row above already calls this an error; say so on the wire.
+        return msg if msg.startswith("Error:") else f"Error: {msg}"
 
     if name == "cron_secret_request":
         jid = args["job_id"]
@@ -2941,4 +2961,5 @@ def run_mcp_server() -> None:
         _list_tools,
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        error_prefix_is_error=True,
     )

@@ -17,7 +17,11 @@ describe('papyrus at phone widths', () => {
 
   it('drops the percentage width so the source column is not half a phone', async () => {
     const s = await src()
-    expect(s).toMatch(/width: isMobile \? '100%' : `\$\{SOURCE_PANE_PERCENT\}%`/)
+    // The 50% share is gone entirely: the PDF and co-author columns now own
+    // persisted pixel widths and the source column is `flex-1`, so it is never a
+    // fixed fraction of a phone viewport.
+    expect(s, 'no fixed percentage share may survive').not.toMatch(/SOURCE_PANE_PERCENT/)
+    expect(s).toMatch(/className=\{`flex flex-col flex-1 min-h-0 min-w-0 \$\{narrowChat \? 'hidden' : ''\}`\}/)
   })
 
   it('reaches the file tree from a top bar instead of a 176px side pane', async () => {
@@ -26,9 +30,13 @@ describe('papyrus at phone widths', () => {
       .toMatch(/<Btn[\s\S]{0,160}aria-expanded=\{treeOpen\}/)
     expect(s, 'the bar must reuse the existing Files label')
       .toContain("i18nT('apps.papyrus.fileTree.files')")
-    // Full width when open, no width at all when closed -- and `w-44` must not
-    // survive into the narrow branch.
-    expect(s).toMatch(/\? `w-full shrink-0 max-h-\[40vh\] overflow-y-auto \$\{treeOpen \? '' : 'hidden'\}`\s*\n?\s*: 'w-44 shrink-0'/)
+    // Full width when open, no width at all when closed. The desktop branch is
+    // now a dragged width, so what must not survive into the NARROW branch is any
+    // side-pane width at all -- the tree is a drawer there, and `tree.width` is
+    // applied only when `!isMobile`.
+    expect(s).toMatch(/\? `w-full shrink-0 max-h-\[40vh\] overflow-y-auto \$\{treeOpen \? '' : 'hidden'\}`\s*\n?\s*: 'shrink-0 overflow-hidden'/)
+    expect(s, 'no hardcoded 176px tree column may remain').not.toMatch(/'w-44 shrink-0'/)
+    expect(s, 'the dragged width is desktop-only').toMatch(/width: isMobile \? undefined : tree\.width/)
   })
 
   it('bounds the stacked panes in vh, since a percentage would not resolve', async () => {
@@ -41,7 +49,7 @@ describe('papyrus at phone widths', () => {
   it('turns the divider with the axis', async () => {
     const s = await src()
     // A left border draws a stray vertical rule once the row is a column.
-    expect(s).toMatch(/border-t border-border \$\{narrowChat \? 'hidden' : ''\}`\s*\n?\s*: 'flex-1 border-l border-border'/)
+    expect(s).toMatch(/border-t border-border \$\{narrowChat \? 'hidden' : ''\}`\s*\n?\s*: 'shrink-0 border-l border-border'/)
   })
 
   it('moves BOTH co-author widths, not just the inner one', async () => {
@@ -49,10 +57,14 @@ describe('papyrus at phone widths', () => {
     // The motion wrapper is animated and content-sized. A percentage on the
     // child alone resolves against a box that hugs its content, so the panel
     // comes out NARROWER than the pixel width it replaced.
+    //
+    // Both read `chatWidth`, the width after the room-aware ceiling, rather than
+    // the hook's raw `chat.width`: a wrapper on one and the ceiling on the other
+    // would animate to a width the content box never takes.
     expect(s, 'the animated wrapper width must move')
-      .toMatch(/animate=\{\{ width: isMobile \? '100%' : CHAT_PANEL_WIDTH, opacity: 1 \}\}/)
+      .toMatch(/animate=\{\{ width: isMobile \? '100%' : chatWidth, opacity: 1 \}\}/)
     expect(s, 'the inner fixed width must move too')
-      .toMatch(/style=\{\{ width: isMobile \? '100%' : CHAT_PANEL_WIDTH \}\}/)
+      .toMatch(/style=\{\{ width: isMobile \? '100%' : chatWidth \}\}/)
     expect(s, 'the wrapper must own the pane while narrow')
       .toMatch(/isMobile \? 'flex-1' : 'shrink-0'/)
   })
@@ -80,6 +92,26 @@ describe('papyrus at phone widths', () => {
     // app's primary exit. A positioned ancestor cannot contain a `fixed` child, so
     // the gate has to be on the render condition.
     expect(s).toMatch(/\{isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing/)
+  })
+
+  it('keeps the co-author open flag a desktop-only preference', async () => {
+    const s = await src()
+    // The panel covers the pane while narrow, so a flag stored on a desktop must
+    // not reopen it on a phone, and dismissing it on a phone -- the only way back
+    // to the text there -- must not rewrite the desktop layout.
+    expect(s, 'the mount read must ignore the flag while narrow')
+      .toMatch(/useState\(\(\) => \(isMobile \? false : loadChatOpen\(\)\)\)/)
+    expect(s, 'the paper-switch read must ignore it too')
+      .toMatch(/setChatOpen\(isMobileRef\.current \? false : loadChatOpen\(\)\)/)
+    expect(s, 'and the write must be skipped while narrow')
+      .toMatch(/if \(isMobile\) return[\s\S]{0,900}safeSetItem\(CHAT_OPEN_KEY/)
+    // Widening past the breakpoint re-runs the effect while `chatOpen` still holds
+    // the closed state the narrow mount forced. Writing there would erase a stored
+    // preference on a plain window drag, so the transition reads it back instead.
+    expect(s, 'the breakpoint side must be carried across runs')
+      .toMatch(/const wasMobile = wasMobileRef\.current\s*\n\s*wasMobileRef\.current = isMobile/)
+    expect(s, 'crossing back to desktop must restore, not write')
+      .toMatch(/if \(wasMobile\) \{\s*\n\s*setChatOpen\(loadChatOpen\(\)\)\s*\n\s*return\s*\n\s*\}/)
   })
 
   it('does not repeat the Files heading directly under the disclosure bar', async () => {

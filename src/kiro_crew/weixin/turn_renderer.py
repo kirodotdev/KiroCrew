@@ -17,7 +17,12 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.messaging.renderer import Renderer, render_options_as_text
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    count_redaction_tags,
+    redaction_notice,
+    render_options_as_text,
+)
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.weixin.client import TYPING_START, TYPING_STOP
 from kiro_crew.weixin.renderer import render_chunks
@@ -151,6 +156,21 @@ class WeixinRenderer(Renderer):
         if not body:
             body = "…" if ok else _ERROR_TEXT
         await self._send(body)
+        cred_count, url_count = count_redaction_tags(body)
+        if cred_count or url_count:
+            # The answer above carries a redaction placeholder, so a follow-up
+            # notice tells the reader the text was rewritten. Counted over the
+            # DELIVERED body, and best-effort by the shared contract: ``_send``
+            # raises so the DISPATCHER can fail an undelivered turn, but the
+            # answer has already landed — the raise is contained here rather
+            # than allowed to convert a delivered turn into a failed one.
+            try:
+                await self._send(redaction_notice(cred_count, url_count))
+            except Exception:
+                logger.warning(
+                    "weixin: could not deliver the redaction notice (answer already sent)",
+                    exc_info=True,
+                )
 
     async def close(self) -> None:
         """Idempotent teardown: finalize the turn if it never reached on_done.
@@ -178,7 +198,15 @@ class WeixinRenderer(Renderer):
         must reach ``handle_message``'s except branch (which calls
         ``record_failure``). ``close()`` is the teardown path and suppresses it,
         since by then the turn is already being unwound.
+
+        The body is scrubbed render-aware HERE rather than in ``text()`` because
+        ``text()`` is also what the dispatcher persists: the redaction belongs on
+        the bytes that ship, not on the transcript. iLink renders the body as
+        markdown, so a credential split by emphasis (``AKIA**REST**``) or a link
+        survives the channel-neutral literal stream pass and is reassembled on
+        screen; this is the same send-boundary scrub every markdown channel does.
         """
+        body = self.redact_for_target(body)
         ctx_token = self._ctx.get(self._account_id, self._to)
         chunks = render_chunks(body, self.capabilities.max_message_chars)
         for i, part in enumerate(chunks):

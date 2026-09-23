@@ -1,24 +1,29 @@
-# deploy-web — KiroCrew App Design Doc (v1)
+# deploy-web — Kiro Crew Historical Design Doc (v1)
 
-**Status:** ✅ Implemented (v1) — built-in app at `kiro_crew/apps/builtins/deploy_web/`
-(engine/render/scan/iam/handlers) + UI `KiroCrewWebsite/src/apps/deploy-web/DeployWebPage.tsx`,
-disabled/opt-in by default. 54 backend tests pass; flake8/isort/mypy clean; tsc + vite build clean.
-🔄 **In progress (2026-06-14): Route B refactor** — publishing unified behind a removable
-publish-provider registry on the artifact page; app page slimming to a pure management
-console (see §1.1–§1.3). Follow-ups: IAM policy not yet run through Access Analyzer (§9.5);
-chat-native skill ships but its auto-registration via discovery `skills` propagation is pending.
+**Status: historical and superseded.** This file records the original v1/Route B design
+rationale; it is not the current operational contract. The standalone `deploy_web` built-in was
+removed and the feature was folded into core at `src/kiro_crew/deploy/`. The dashboard console is
+`website/src/pages/ArtifactDeployPage.tsx` at `/deploy`, and the current user contract is
+[Artifact Deploy](../docs/deploy-web.md).
+
+The current implementation also differs from the proposal below in three important ways: the
+`deploy-web-aws` row is a core provider emitted by `src/kiro_crew/apps/routes.py`; profiles live in
+the multi-profile registry at `~/.kiro/crew/deploy/profiles.json`; and the MCP `deploy_artifact`
+tool is preview-only, with execution confirmed by a human in the dashboard. Static artifact
+publishing uses per-site infrastructure, while the operator scripts for app artifacts use the
+shared `kirocrew-deploy-base` stack. The body below is preserved as historical design rationale.
 
 ---
 
 ## 1. Goal
 
-Extend KiroCrew's scope — including **public usage** — by collaborating with AWS,
-**without KiroCrew ever managing AWS accounts or credentials**, to **safely deploy
+Extend Kiro Crew's scope — including **public usage** — by collaborating with AWS,
+**without Kiro Crew ever managing AWS accounts or credentials**, to **safely deploy
 artifacts as a publicly-available web page** served from the **user's own AWS account**.
 
 ### Audience
 **Anyone with their own AWS account — internal *and* external alike.** "Bring
-your own AWS" is the deliberate bar. The *user-owns-their-own-cloud* model (KiroCrew
+your own AWS" is the deliberate bar. The *user-owns-their-own-cloud* model (Kiro Crew
 never hosts, never holds liability) applies identically to internal and external AWS
 users, so AWS S3 + CloudFront is the right fit for the whole segment. No-cloud / casual
 users (who'd want GitHub Pages / Vercel / Netlify push-simplicity) are a **different,
@@ -27,7 +32,7 @@ out-of-scope audience** — a possible future *separate* app, not a gap here.
 ### Core idea — set up once, reuse forever
 1. **One-time AI-guided setup** (§12): the agent walks the user through AWS *access* —
    credentials reachable (profile) + the scoped IAM policy they apply + region. Done
-   **once ever**, reused for everything after. KiroCrew stores only the profile name.
+   **once ever**, reused for everything after. Kiro Crew stores only the profile name.
 2. **Per publish, reuse that setup:** a new artifact → new site (fresh bucket +
    distribution + URL) reuses the same credentials/IAM/code path — ~30 sec of user time.
    Re-publishing the **same** site is **idempotent** (find by tag → `s3 sync` changed
@@ -37,16 +42,16 @@ out-of-scope audience** — a possible future *separate* app, not a gap here.
    > Net value prop: pay the AWS setup cost **once** (with AI smoothing it), then every
    > future publish is **near-zero-effort**.
 
-### Packaging — built-in app, ships with KiroCrew
-deploy-web is a **built-in app that ships *with* KiroCrew** (like Research Lab / Team
+### Packaging — built-in app, ships with Kiro Crew
+deploy-web is a **built-in app that ships *with* Kiro Crew** (like Research Lab / Team
 Manager), **not** a separately-installed App Store download. It is still a self-contained
 *app module* (its own page + skill, per §1.1) — registered in the
-KiroCrew package and **disabled / opt-in by default** so users without AWS never see AWS
+Kiro Crew package and **disabled / opt-in by default** so users without AWS never see AWS
 surface. Shipping built-in means zero install friction; the opt-in gate + the §6.1
 credential non-goals keep the *credential/account* review surface unchanged (the AWS
 *resource* code lives isolated in this module, gated off until enabled).
 
-**Flagship use case:** publish an existing KiroCrew artifact — **HTML, markdown file,
+**Flagship use case:** publish an existing Kiro Crew artifact — **HTML, markdown file,
 or interactive widget** (these three are the primary target) — to a real **public
 URL**. Today `artifact_publish` shares only internally (an internal artifact registry);
 deploy-web makes the artifact publicly live via the user's own S3 + CloudFront.
@@ -154,16 +159,16 @@ action per provider. When none are available it degrades to a setup prompt.
 
 ## 2. Verdict (from research)
 
-**YES — build a `deploy-web` built-in KiroCrew app** (ships with KiroCrew, opt-in/disabled
+**YES — build a `deploy-web` built-in Kiro Crew app** (ships with Kiro Crew, opt-in/disabled
 by default) that publishes static sites to the user's own AWS account via a thin
 `aws`-CLI workflow.
 The "never manage credentials" constraint is fully satisfiable — it is already
-KiroCrew's code-verified posture.
+Kiro Crew's code-verified posture.
 
 ### One-picture flow
-> User authenticates **once** (`aws configure sso`) → KiroCrew stores only the
+> User authenticates **once** (`aws configure sso`) → Kiro Crew stores only the
 > **profile name** → `deploy-web --artifact <dir>` runs a deterministic 6-step flow
-> on the user's credentials → returns a live HTTPS URL. KiroCrew never sees or stores a key.
+> on the user's credentials → returns a live HTTPS URL. Kiro Crew never sees or stores a key.
 
 ---
 
@@ -183,7 +188,7 @@ The AWS-recommended **secure** static-hosting pattern:
 - Optional custom domain = ACM cert in **us-east-1** + Route 53 alias.
 
 ### Why low-risk to build
-deploy-web mostly **extends code KiroCrew already ships**:
+deploy-web mostly **extends code Kiro Crew already ships**:
 - `sync/s3.py` already shells to `aws` with `--profile` only (never reads keys) and
   already creates private, encrypted, public-access-blocked buckets.
 - Ships as a **built-in app** (own page + skill, registered in the package);
@@ -230,7 +235,7 @@ Two deterministic steps run in the Python module **before** assets are uploaded:
   extension) so browsers render rather than download.
 
 **b) Pre-publish content scan (Q4)** — deploying makes content world-readable, so before
-upload the module runs the rendered output through KiroCrew's **existing
+upload the module runs the rendered output through Kiro Crew's **existing
 `redaction.py`/`security.py` secret regexes** + internal-data heuristics (employee aliases,
 `*.internal-corp` hosts, AWS account ids/ARNs). On a match: **block-and-warn** — show what
 was flagged and where, require an explicit "publish anyway"; **never silently redact**.
@@ -240,7 +245,7 @@ Always show a content summary in the approval. Best-effort detection, not a guar
 
 ## 5. State model — stateless-by-tag (no local cache)
 
-- **AWS account is the source of truth.** KiroCrew holds **no** local record — **no
+- **AWS account is the source of truth.** Kiro Crew holds **no** local record — **no
   SQLite cache in v1** (Q8). `list-sites` queries the Resource Groups Tagging API live
   every time (`tag:GetResources Key=kirocrew:managed`), so there is zero drift.
 - **Identity vs naming (Q2):**
@@ -279,7 +284,7 @@ Always show a content summary in the approval. Best-effort detection, not a guar
 
 ## 6. Credentials — code-verified safe
 
-- KiroCrew **never persists AWS credentials** — every key reference in source is
+- Kiro Crew **never persists AWS credentials** — every key reference in source is
   defensive (redaction + symlink-block); no write path exists.
 - Profile-name-only invocation; credential resolution delegated to the AWS CLI
   default provider chain (auto-refreshing SSO tokens).
@@ -289,7 +294,7 @@ Always show a content summary in the approval. Best-effort detection, not a guar
 ### 6.1 Explicit non-goals (review-surface minimization)
 To keep this feature **out of credential- and account-management scope** (and avoid
 triggering a heavy security review), the design commits to these hard NON-goals — none
-of the following is ever done by KiroCrew:
+of the following is ever done by Kiro Crew:
 
 - ❌ Reading, parsing, storing, caching, logging, or transmitting AWS access keys,
   secret keys, session tokens, or `~/.aws/credentials` / `~/.aws/config` contents.
@@ -297,17 +302,17 @@ of the following is ever done by KiroCrew:
 - ❌ Creating or managing **AWS accounts**, IAM **users**, IAM **roles**, or IAM
   **policies** (no IAM write — guided install only *shows* policy text the user applies).
 - ❌ Running `aws configure`, `aws sso login`, `ada`, or any credential-establishing
-  command on the user's behalf — these remain **user-run, outside KiroCrew**.
+  command on the user's behalf — these remain **user-run, outside Kiro Crew**.
 - ❌ Assuming roles, minting STS tokens, or brokering cross-account access.
 
-What KiroCrew **does**, and the entire trust surface, is narrow:
+What Kiro Crew **does**, and the entire trust surface, is narrow:
 - ✅ Store a single opaque string: the **profile name** (no secret material).
 - ✅ Pass `--profile <name>` to the **local** AWS CLI and let the OS-resident provider
-  chain resolve credentials entirely outside KiroCrew's process boundary.
+  chain resolve credentials entirely outside Kiro Crew's process boundary.
 - ✅ Make scoped, tagged, least-privilege resource calls (S3 + CloudFront) the user
   has already authorized via their own applied IAM policy.
 
-This makes the credential/account boundary identical to KiroCrew's existing,
+This makes the credential/account boundary identical to Kiro Crew's existing,
 already-reviewed `sync/s3.py` posture — deploy-web introduces **no new credential
 handling** to review, only new (non-credential) resource API calls.
 
@@ -326,7 +331,7 @@ identity. Full paste-ready JSON in research cycle 006 / FINDINGS.md.
 
 ---
 
-## 8. Build shape — built-in app (ships with KiroCrew)
+## 8. Build shape — built-in app (ships with Kiro Crew)
 
 **Mechanism:** deploy-web is **not** an MCP server and does **not** define a new
 `deploy_web` LLM tool (the App SDK has no "app publishes a tool" primitive;
@@ -338,7 +343,7 @@ LLM free-handing commands:
 - **Backend: a Python builtin module** — runs the §4 6-step deploy flow + recall/destroy
   by shelling to the **`aws` CLI as a subprocess with `--profile`** (the exact
   `sync/s3.py` pattern; reuses `_create_bucket`). **Not boto3** — the CLI keeps
-  credential resolution entirely outside KiroCrew's process, preserving the §6.1
+  credential resolution entirely outside Kiro Crew's process, preserving the §6.1
   boundary. Deterministic, fast, no per-deploy LLM tokens.
 - **`ui.pages`** → a "Web Deploy" page that calls the module's **backend endpoints
   directly** (deploy / recall / destroy / list). No LLM in the deploy mechanics.
@@ -346,14 +351,14 @@ LLM free-handing commands:
   ("deploy this artifact publicly") by routing to the same backend; documents the
   recipe for the agent. The deterministic flow lives in Python, not the skill.
 - **No per-app update cron.** As a **built-in** app, deploy-web is versioned and updated
-  with the KiroCrew package itself (`kirocrew update`) — there is no independent upstream
+  with the Kiro Crew package itself (`kirocrew update`) — there is no independent upstream
   to poll, so it ships **no** update-check cron (the App-Store self-update pattern doesn't
   apply to built-ins; re-add a *script/command* cron only if it is ever repackaged as an
   externally-installed app).
 - **`setup.configSchema`**: `{profile, region}` — **profile name only**, no keys.
 - **`dependencies.commands:["aws"]`** with `managedBy:"app"` → check existence + install
   hint, never auto-install or manage.
-- **Built-in packaging:** ships inside the KiroCrew package (registered like Research
+- **Built-in packaging:** ships inside the Kiro Crew package (registered like Research
   Lab / Team Manager builtins), **disabled / opt-in by default**; os `macos`/`linux`.
 
 **Destructive ops:** recall/destroy (`s3 rm`, `delete-bucket`, `delete-distribution`)
@@ -370,7 +375,7 @@ resources** on the user's **own AWS account** and spends real money, so the bar 
 higher than for a normal local widget.
 
 ### 9.1 Credential safety (never manage keys)
-- KiroCrew **never reads, stores, or persists** AWS credentials — verified across the
+- Kiro Crew **never reads, stores, or persists** AWS credentials — verified across the
   source (§6). Every key reference is defensive (redaction + symlink-block); no write
   path exists.
 - Only the **profile name** is persisted in app config. Credential resolution is fully
@@ -390,7 +395,7 @@ higher than for a normal local widget.
 - **Hard-excluded from heartbeat/cron safe-tool sets** — a background or scheduled
   session can never silently provision or tear down public infrastructure.
 - The approval prompt **states the public nature** of the URL being created
-  (a world-readable site), per KiroCrew's security-awareness norm.
+  (a world-readable site), per Kiro Crew's security-awareness norm.
 - `destroy_web` is treated as **destructive**: it echoes the tag-resolved resources
   (bucket + distribution) it will delete, and confirms.
 - Guided install (§12) performs **no IAM writes** — it only generates policy text for
@@ -450,7 +455,7 @@ permissions** (`ce:`/`cloudwatch:` are deliberately *not* in the IAM policy, to 
 
 ### 11a — Setup time & reusability
 - **One-time AWS prep (~10–15 min, once ever):** `aws configure sso` (~3 min) +
-  create the IAM role/policy (~5–10 min). KiroCrew stores only the profile name.
+  create the IAM role/policy (~5–10 min). Kiro Crew stores only the profile name.
 - **Per-deploy (~30 sec of user time, then 5–15 min unattended):** pick artifact →
   Deploy → approve. CloudFront propagation 5–15 min (AWS-side; app polls, doesn't block).
 - **Reusable:** the framework is reused directly for every deploy. Re-deploying the
@@ -508,7 +513,7 @@ longer initiated from the app.
 
 The one-time AWS prep (§11a) — the IAM role + policy + SSO config — is the real
 friction point. It is also exactly the kind of fiddly, failure-prone setup an **agent**
-is good at: KiroCrew already has a live agent in the loop, so "installation" doesn't
+is good at: Kiro Crew already has a live agent in the loop, so "installation" doesn't
 have to be a static form — it can be a **conversation that verifies itself**.
 
 ### Why agent-guided beats a static wizard
@@ -530,10 +535,10 @@ reading the result, and adapting — that verification-and-diagnosis is the diff
 - Generate the cycle-006 scoped IAM policy JSON (S3 + CloudFront only, confined to
   `kirocrew-web-*` + `kirocrew:managed` tag) and show it to the user.
 - The **user applies it themselves** (console or their own `aws iam` command) and
-  attaches it to their assumable role. KiroCrew does **not** create, attach, or modify
+  attaches it to their assumable role. Kiro Crew does **not** create, attach, or modify
   any IAM role/policy — it never performs an IAM write. Options shown are
   **"I'll apply it myself"** (paste-the-JSON, the only apply path) / **"Explain it"**.
-- **Verify (read-only reachability only, Q3):** after the user applies it, KiroCrew runs
+- **Verify (read-only reachability only, Q3):** after the user applies it, Kiro Crew runs
   a **read-only reachability** check — `sts:GetCallerIdentity` + a harmless
   `cloudfront:ListDistributions` / `s3:ListAllMyBuckets` — labelled "**access
   reachable**," **not** "fully verified." It is *not possible* to verify create/write
@@ -555,7 +560,7 @@ Step 1/3 — AWS access
    ✓ Found profile 'my-sso' → account 1234..., us-west-2.
 Step 2/3 — Permissions
    [shows scoped IAM JSON]  [I'll apply it myself | Explain]
-   (You apply it — KiroCrew never edits your IAM.)
+   (You apply it — Kiro Crew never edits your IAM.)
    Verifying (read-only reachability)... ✓ Access reachable (full check on first deploy).
 Step 3/3 — Done
    ✓ Saved profile 'my-sso' + region us-west-2. Ready.
@@ -565,10 +570,10 @@ Step 3/3 — Done
 - **Safety boundary intact.** The agent guides, *generates* policy text, and
   *read-only verifies* — it never reads/stores keys and **never performs an IAM write**.
   The only thing it persists is the profile name. The user applies the IAM policy
-  themselves; KiroCrew never creates/attaches/modifies roles or policies.
-- **No account management.** KiroCrew does not create AWS accounts, IAM users/roles,
+  themselves; Kiro Crew never creates/attaches/modifies roles or policies.
+- **No account management.** Kiro Crew does not create AWS accounts, IAM users/roles,
   or credentials, and does not rotate or transmit them. All account/IAM mutation is the
-  user's own action, outside KiroCrew.
+  user's own action, outside Kiro Crew.
 
 ### Reusable App SDK primitive
 This is **not** deploy-web-specific. Generalize it into the App SDK as
@@ -594,7 +599,7 @@ deploy-web alone. deploy-web is the first consumer.
   (Q3); **user applies the IAM policy themselves** (Option A, §12 / Route B §1.1).
 - Cost always shown **`~estimated`** (Q6).
 - Built as a **Python builtin module** (aws CLI subprocess, not boto3) + UI page +
-  thin chat skill (§8) — no per-app update cron (built-in; updated with KiroCrew).
+  thin chat skill (§8) — no per-app update cron (built-in; updated with Kiro Crew).
 - **Route B publish surface (§1.1):** all publishing flows through a **provider
   registry** on the artifact page. The internal registry (PRIVATE/SHARED/PUBLIC) is a built-in
   provider wrapping the existing dialog unchanged; deploy-web is an app provider

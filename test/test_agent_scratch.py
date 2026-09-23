@@ -45,10 +45,35 @@ class TestAllocate:
 
 
 class TestEnv:
-    def test_exports_temp_triple_and_scratch_alias(self, tmp_path: Path) -> None:
+    def test_exports_temp_triple_and_scratch_alias(self, tmp_path: Path, monkeypatch) -> None:
+        # Where the cap can bound the log, the pin rides along with the triple.
+        monkeypatch.setattr(sc, "_CAN_CAP_LOGS", True)
         env = sc.scratch_env(tmp_path)
         value = str(tmp_path)
-        assert env == {"TMPDIR": value, "TMP": value, "TEMP": value, "KIROCREW_SCRATCH": value}
+        assert env == {
+            "TMPDIR": value,
+            "TMP": value,
+            "TEMP": value,
+            "KIROCREW_SCRATCH": value,
+            "KIRO_CHAT_LOG_FILE": str(tmp_path / "kiro-log" / "kiro-chat.log"),
+        }
+        # The default NAME is load-bearing: kiro-cli writes mcp.log/lsp.log
+        # beside the chat log only when it is called kiro-chat.log.
+        assert Path(env["KIRO_CHAT_LOG_FILE"]).name == "kiro-chat.log"
+
+    def test_log_pin_is_omitted_where_the_cap_cannot_run(self, tmp_path: Path, monkeypatch) -> None:
+        # A pinned log nothing rotates is unbounded, so a platform without the
+        # cap (Windows) leaves kiro-cli at its own default location.
+        monkeypatch.setattr(sc, "_CAN_CAP_LOGS", False)
+        env = sc.scratch_env(tmp_path)
+        value = str(tmp_path)
+        assert env == {
+            "TMPDIR": value,
+            "TMP": value,
+            "TEMP": value,
+            "KIROCREW_SCRATCH": value,
+        }
+        assert "KIRO_CHAT_LOG_FILE" not in env
 
 
 class TestLivenessSweep:
@@ -192,3 +217,140 @@ class TestLivenessSweep:
 
         assert sc.sweep_dead_scratch(now=now) == 0
         assert path.exists()
+
+
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="the log cap needs dir_fd opens and O_NOFOLLOW"
+)
+
+
+@posix_only
+class TestKiroCliLogCap:
+    CAP = 4096
+    KEEP = 1024
+
+    @staticmethod
+    def _log_dir(scratch_root: Path, label: str = "s") -> Path:
+        path = sc.allocate_scratch(label)
+        log_dir = path / sc.KIRO_CLI_LOG_SUBDIR
+        log_dir.mkdir()
+        return log_dir
+
+    def _cap(self) -> int:
+        return sc.cap_kiro_cli_logs(cap_bytes=self.CAP, keep_bytes=self.KEEP)
+
+    def test_oversized_log_is_tail_kept_and_truncated_while_open(self, scratch_root: Path) -> None:
+        log_dir = self._log_dir(scratch_root)
+        log = log_dir / "kiro-chat.log"
+        body = b"".join(b"%08d\n" % i for i in range(1000))  # 9000 bytes
+        log.write_bytes(body)
+        # The writer is kiro-cli, alive, appending -- model it with an open
+        # O_APPEND descriptor that keeps writing after the rotation.
+        writer = os.open(log, os.O_WRONLY | os.O_APPEND)
+        try:
+            assert self._cap() == 1
+            assert log.stat().st_size == 0
+            assert (log_dir / "kiro-chat.log.1").read_bytes() == body[-self.KEEP :]
+            assert stat.S_IMODE((log_dir / "kiro-chat.log.1").stat().st_mode) == 0o600
+            os.write(writer, b"after\n")
+        finally:
+            os.close(writer)
+        # O_APPEND lands the next record at the new end: no hole, no lost writer.
+        assert log.read_bytes() == b"after\n"
+
+    def test_all_three_members_are_bounded_and_small_ones_kept(self, scratch_root: Path) -> None:
+        log_dir = self._log_dir(scratch_root)
+        (log_dir / "kiro-chat.log").write_bytes(b"x" * (self.CAP + 1))
+        (log_dir / "mcp.log").write_bytes(b"y" * (self.CAP + 1))
+        (log_dir / "lsp.log").write_bytes(b"z" * self.CAP)  # exactly at the cap: kept
+
+        assert self._cap() == 2
+        assert (log_dir / "kiro-chat.log").stat().st_size == 0
+        assert (log_dir / "mcp.log").stat().st_size == 0
+        assert (log_dir / "lsp.log").stat().st_size == self.CAP
+
+    def test_under_cap_untouched_and_missing_root_is_zero(self, scratch_root: Path) -> None:
+        assert sc.cap_kiro_cli_logs() == 0  # no root yet
+        log_dir = self._log_dir(scratch_root)
+        (log_dir / "kiro-chat.log").write_bytes(b"small")
+        assert self._cap() == 0
+        assert (log_dir / "kiro-chat.log").read_bytes() == b"small"
+
+    def test_symlinked_log_is_never_truncated(self, scratch_root: Path, tmp_path: Path) -> None:
+        victim = tmp_path / "victim.txt"
+        victim.write_bytes(b"v" * (self.CAP + 1))
+        log_dir = self._log_dir(scratch_root)
+        (log_dir / "kiro-chat.log").symlink_to(victim)
+
+        assert self._cap() == 0
+        assert victim.stat().st_size == self.CAP + 1
+
+    def test_hard_linked_log_is_never_truncated(self, scratch_root: Path, tmp_path: Path) -> None:
+        victim = tmp_path / "victim.txt"
+        victim.write_bytes(b"v" * (self.CAP + 1))
+        log_dir = self._log_dir(scratch_root)
+        os.link(victim, log_dir / "kiro-chat.log")
+
+        assert self._cap() == 0
+        assert victim.stat().st_size == self.CAP + 1
+
+    def test_symlinked_log_dir_is_never_followed(self, scratch_root: Path, tmp_path: Path) -> None:
+        victim_dir = tmp_path / "victim"
+        victim_dir.mkdir()
+        (victim_dir / "kiro-chat.log").write_bytes(b"v" * (self.CAP + 1))
+        path = sc.allocate_scratch("linked")
+        (path / sc.KIRO_CLI_LOG_SUBDIR).symlink_to(victim_dir)
+
+        assert self._cap() == 0
+        assert (victim_dir / "kiro-chat.log").stat().st_size == self.CAP + 1
+
+    def test_symlinked_scratch_child_is_never_followed(
+        self, scratch_root: Path, tmp_path: Path
+    ) -> None:
+        victim = tmp_path / "victim" / sc.KIRO_CLI_LOG_SUBDIR
+        victim.mkdir(parents=True)
+        (victim / "kiro-chat.log").write_bytes(b"v" * (self.CAP + 1))
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        (scratch_root / "evil").symlink_to(victim.parent)
+
+        assert self._cap() == 0
+        assert (victim / "kiro-chat.log").stat().st_size == self.CAP + 1
+
+    def test_planted_rotated_name_is_unlinked_not_written_through(
+        self, scratch_root: Path, tmp_path: Path
+    ) -> None:
+        victim = tmp_path / "victim.txt"
+        victim.write_bytes(b"precious")
+        log_dir = self._log_dir(scratch_root)
+        (log_dir / "kiro-chat.log").write_bytes(b"x" * (self.CAP + 1))
+        (log_dir / "kiro-chat.log.1").symlink_to(victim)
+
+        assert self._cap() == 1
+        assert victim.read_bytes() == b"precious"
+        rotated = log_dir / "kiro-chat.log.1"
+        assert not rotated.is_symlink() and rotated.read_bytes() == b"x" * self.KEEP
+
+    def test_truncate_still_bounds_when_tail_copy_fails(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        log_dir = self._log_dir(scratch_root)
+        log = log_dir / "kiro-chat.log"
+        log.write_bytes(b"x" * (self.CAP + 1))
+
+        def boom(*_args, **_kwargs):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(sc, "_write_rotated", boom)
+
+        assert self._cap() == 1
+        assert log.stat().st_size == 0
+        assert not (log_dir / "kiro-chat.log.1").exists()
+
+    def test_linked_root_caps_nothing(self, scratch_root: Path, tmp_path: Path) -> None:
+        real = tmp_path / "real"
+        (real / "s" / sc.KIRO_CLI_LOG_SUBDIR).mkdir(parents=True)
+        (real / "s" / sc.KIRO_CLI_LOG_SUBDIR / "kiro-chat.log").write_bytes(b"x" * (self.CAP + 1))
+        scratch_root.parent.mkdir(parents=True, exist_ok=True)
+        scratch_root.symlink_to(real)
+
+        assert self._cap() == 0

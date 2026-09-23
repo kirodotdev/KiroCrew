@@ -38,10 +38,13 @@ def _recipe(tmp_path: Path, **kw) -> pr.GitHubPRRecipe:
 
 def test_push_refuses_before_git_when_repository_safety_changed(tmp_path: Path) -> None:
     clone = tmp_path / "clone"
-    subprocess.run(["git", "init", "-q", str(clone)], check=True)
+    # ``cwd=tmp_path`` on every test-side git: the child must never inherit pytest's
+    # working directory (the checkout).
+    subprocess.run(["git", "init", "-q", str(clone)], check=True, cwd=str(tmp_path))
     subprocess.run(
         ["git", "-C", str(clone), "config", "diff.external", "/attacker/host-code"],
         check=True,
+        cwd=str(tmp_path),
     )
     recipe = _recipe(tmp_path)
     recipe._git = MagicMock()  # type: ignore[method-assign]
@@ -671,7 +674,11 @@ class TestEveryPushPathScansContent:
 
         def git(*args: str) -> subprocess.CompletedProcess:
             return subprocess.run(
-                ["git", "-C", str(tmp_path), *args], capture_output=True, text=True, env=env
+                ["git", "-C", str(tmp_path), *args],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=str(tmp_path),
             )
 
         git("init", "-q", "-b", "main", ".")
@@ -951,11 +958,12 @@ class TestAFailedDiffIsNeverVacuouslyClean:
         """Pins the premise the guard rests on, so a git behavior change is caught here."""
         import subprocess
 
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, cwd=str(tmp_path))
         proc = subprocess.run(
             ["git", "-C", str(tmp_path), "diff", "no-such-branch..HEAD"],
             capture_output=True,
             text=True,
+            cwd=str(tmp_path),
         )
         assert proc.returncode != 0
         assert proc.stdout == ""
@@ -981,13 +989,14 @@ class TestCloneCannotReachTheRemoteAtAll:
         from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
 
         up, work = tmp_path / "upstream.git", tmp_path / "work"
-        subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True)
-        subprocess.run(["git", "clone", "-q", str(up), str(work)], capture_output=True)
+        cwd = str(tmp_path)  # never pytest's own working directory (the checkout)
+        subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True, cwd=cwd)
+        subprocess.run(["git", "clone", "-q", str(up), str(work)], capture_output=True, cwd=cwd)
         for k, v in (("user.email", "t@e"), ("user.name", "t")):
-            subprocess.run(["git", "-C", str(work), "config", k, v], check=True)
+            subprocess.run(["git", "-C", str(work), "config", k, v], check=True, cwd=cwd)
         (work / "a.txt").write_text("x")
-        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(work), "commit", "-qm", "init"], check=True)
+        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True, cwd=cwd)
+        subprocess.run(["git", "-C", str(work), "commit", "-qm", "init"], check=True, cwd=cwd)
 
         clone_setup._disable_push(work)
 
@@ -995,22 +1004,27 @@ class TestCloneCannotReachTheRemoteAtAll:
             ["git", "-C", str(work), "remote", "get-url", "origin"],
             capture_output=True,
             text=True,
+            cwd=cwd,
         ).stdout.strip()
         assert "DISABLED" in fetch.upper(), "the FETCH url is a live push target"
 
         by_name = subprocess.run(
-            ["git", "-C", str(work), "push", "origin", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(work), "push", "origin", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
         )
         by_url = subprocess.run(
             ["git", "-C", str(work), "push", fetch, "HEAD:refs/heads/probe"],
             capture_output=True,
             text=True,
+            cwd=cwd,
         )
         assert by_name.returncode != 0
         assert by_url.returncode != 0
         # The decisive assertion: nothing reached the remote.
         branches = subprocess.run(
-            ["git", "-C", str(up), "branch"], capture_output=True, text=True
+            ["git", "-C", str(up), "branch"], capture_output=True, text=True, cwd=cwd
         ).stdout.strip()
         assert branches == "", f"a push escaped the sandbox: {branches!r}"
 
@@ -1041,22 +1055,26 @@ class TestTrustedPublisherStillWorksAfterNeutralizing:
         )
 
         up, work = tmp_path / "up.git", tmp_path / "work"
-        subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True)
-        subprocess.run(["git", "clone", "-q", str(up), str(work)], capture_output=True)
+        cwd = str(tmp_path)  # never pytest's own working directory (the checkout)
+        subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True, cwd=cwd)
+        subprocess.run(["git", "clone", "-q", str(up), str(work)], capture_output=True, cwd=cwd)
         for k, v in (("user.email", "t@e"), ("user.name", "t")):
-            subprocess.run(["git", "-C", str(work), "config", k, v], check=True)
+            subprocess.run(["git", "-C", str(work), "config", k, v], check=True, cwd=cwd)
         (work / "a.txt").write_text("x")
-        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(work), "commit", "-qm", "init"], check=True)
+        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True, cwd=cwd)
+        subprocess.run(["git", "-C", str(work), "commit", "-qm", "init"], check=True, cwd=cwd)
         # A real upstream base, so the pre-push content scan's diff resolves.
         subprocess.run(
             ["git", "-C", str(work), "push", "-q", "origin", "HEAD:refs/heads/main"],
             capture_output=True,
+            cwd=cwd,
         )
-        subprocess.run(["git", "-C", str(work), "fetch", "-q", "origin"], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(work), "fetch", "-q", "origin"], capture_output=True, cwd=cwd
+        )
         (work / "b.txt").write_text("fix")
-        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(work), "commit", "-qm", "the fix"], check=True)
+        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True, cwd=cwd)
+        subprocess.run(["git", "-C", str(work), "commit", "-qm", "the fix"], check=True, cwd=cwd)
 
         clone_setup._disable_push(work)
 
@@ -1070,7 +1088,7 @@ class TestTrustedPublisherStillWorksAfterNeutralizing:
         ok, note = recipe._push_fix_branch(branch="auto-improvement/bug-abc123")
         assert ok is True, note
         branches = subprocess.run(
-            ["git", "-C", str(up), "branch"], capture_output=True, text=True
+            ["git", "-C", str(up), "branch"], capture_output=True, text=True, cwd=cwd
         ).stdout
         assert "auto-improvement/bug-abc123" in branches
 
@@ -1086,8 +1104,9 @@ class TestTrustedPublisherStillWorksAfterNeutralizing:
         )
 
         up, work = tmp_path / "up.git", tmp_path / "work"
-        subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True)
-        subprocess.run(["git", "clone", "-q", str(up), str(work)], capture_output=True)
+        cwd = str(tmp_path)  # never pytest's own working directory (the checkout)
+        subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True, cwd=cwd)
+        subprocess.run(["git", "clone", "-q", str(up), str(work)], capture_output=True, cwd=cwd)
         clone_setup._disable_push(work)
         recipe = GitHubPRRecipe(
             user="u", clone_path=work, pr_queue_dir=tmp_path / "q", base_ref="origin/main"
@@ -1186,18 +1205,22 @@ class TestPushedBranchActuallyContainsTheFix:
         import subprocess
 
         up, work = tmp_path / "up.git", tmp_path / "w"
-        subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True)
-        subprocess.run(["git", "clone", "-q", str(up), str(work)], capture_output=True)
+        cwd = str(tmp_path)  # never pytest's own working directory (the checkout)
+        subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True, cwd=cwd)
+        subprocess.run(["git", "clone", "-q", str(up), str(work)], capture_output=True, cwd=cwd)
         for k, v in (("user.email", "t@e"), ("user.name", "t")):
-            subprocess.run(["git", "-C", str(work), "config", k, v], check=True)
+            subprocess.run(["git", "-C", str(work), "config", k, v], check=True, cwd=cwd)
         (work / "a.txt").write_text("original\n")
-        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(work), "commit", "-qm", "init"], check=True)
+        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True, cwd=cwd)
+        subprocess.run(["git", "-C", str(work), "commit", "-qm", "init"], check=True, cwd=cwd)
         subprocess.run(
             ["git", "-C", str(work), "push", "-q", "origin", "HEAD:refs/heads/main"],
             capture_output=True,
+            cwd=cwd,
         )
-        subprocess.run(["git", "-C", str(work), "fetch", "-q", "origin"], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(work), "fetch", "-q", "origin"], capture_output=True, cwd=cwd
+        )
         return up, work
 
     def test_a_committed_fix_reaches_the_pushed_branch(self, tmp_path) -> None:
@@ -1209,11 +1232,13 @@ class TestPushedBranchActuallyContainsTheFix:
         )
 
         up, work = self._repo(tmp_path)
+        cwd = str(tmp_path)
         (work / "a.txt").write_text("FIXED\n")
-        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True, cwd=cwd)
         subprocess.run(
             ["git", "-C", str(work), "commit", "-qm", "wip(auto-improvement): staging c1"],
             check=True,
+            cwd=cwd,
         )
         clone_setup._disable_push(work)
 
@@ -1230,6 +1255,7 @@ class TestPushedBranchActuallyContainsTheFix:
             ["git", "-C", str(up), "show", "auto-improvement/bug-abc:a.txt"],
             capture_output=True,
             text=True,
+            cwd=cwd,
         ).stdout
         assert got.strip() == "FIXED", f"the drafted branch does not carry the fix: {got!r}"
 
@@ -1238,13 +1264,20 @@ class TestPushedBranchActuallyContainsTheFix:
         import subprocess
 
         up, work = self._repo(tmp_path)
+        cwd = str(tmp_path)
         (work / "a.txt").write_text("FIXED\n")
-        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)  # staged, NOT committed
+        subprocess.run(
+            ["git", "-C", str(work), "add", "-A"], check=True, cwd=cwd
+        )  # staged, NOT committed
         subprocess.run(
             ["git", "-C", str(work), "push", "-q", str(up), "HEAD:refs/heads/staged-probe"],
             capture_output=True,
+            cwd=cwd,
         )
         got = subprocess.run(
-            ["git", "-C", str(up), "show", "staged-probe:a.txt"], capture_output=True, text=True
+            ["git", "-C", str(up), "show", "staged-probe:a.txt"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
         ).stdout
         assert got.strip() == "original", "staging alone must not be mistaken for a commit"

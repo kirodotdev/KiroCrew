@@ -7,11 +7,19 @@
  *     ../temp-screenshots/tool-output-clamp
  *
  * The assertion carries the evidence: a 120 000-character tool result goes
- * through the real `sseToolResult` reducer, and the Output panel must show the
- * head, the `…(N characters truncated — …)` marker exactly once with whole
- * source lines on both sides of it, and the tail — with the sentinel line from
- * the dropped middle absent. A frame that merely looks like a long output
- * would prove nothing, so the probe reads the rendered text first.
+ * through the real `sseToolResult` reducer, which stores head + tail plus a
+ * structural seam (`output_cut`), and the Output panel must render the
+ * `…(N characters truncated — …)` marker at that seam exactly once, with whole
+ * source lines on both sides of it, the head above, the tail below — and the
+ * sentinel line from the dropped middle absent. A frame that merely looks like
+ * a long output would prove nothing, so the probe reads the rendered text first.
+ * The marker is the panel's own render, so the probe also checks that no
+ * dialog sits over the frame before each shot.
+ *
+ * Frames `edit-<theme>.png` cover the other clamped surface (`?row=edit`): an
+ * edit-kind row whose long-line create diff is clamped. The store must record
+ * `input_cut`, the row must render the truncated SUMMARY chip (`≥+N · diff
+ * truncated`) and no patch card, and the Input pane must show the marker.
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
@@ -19,9 +27,10 @@ import { mkdirSync } from 'node:fs'
 const BASE = process.argv[2] || 'http://127.0.0.1:6841'
 const OUT = process.argv[3] || '../temp-screenshots/tool-output-clamp'
 // `store.chatSlice.truncated_chars` in i18n/locales/en.manual.json, with the
-// elided-character count interpolated. Anchored to the line so a source row
-// that merely mentions the word cannot count as a marker.
-const MARKER_RE = /^…\((\d+) characters truncated — full output on reload\)$/m
+// elided-character count interpolated in the locale's digit grouping
+// (`84,080`). Anchored to the line so a source row that merely mentions the
+// word cannot count as a marker.
+const MARKER_RE = /^…\(([\d,]+) characters truncated — reopen the session to see the full output\)$/m
 // Mirrors TOOL_OUTPUT_MAX_CHARS in store/chatSlice.ts; the marker line fits
 // inside the 4 000-character slack the head + tail slices leave under it.
 const CEILING = 64_000
@@ -67,7 +76,7 @@ for (const theme of ['dark', 'light']) {
     return {
       length: text.length,
       markers: hits.length,
-      count: first ? Number(first[1]) : -1,
+      count: first ? Number(first[1].replace(/,/g, '')) : -1,
       headLength: at > 0 ? at - 1 : -1,
       tailLength: at >= 0 ? text.length - (at + markerLen + 1) : -1,
       lineBefore,
@@ -91,6 +100,12 @@ for (const theme of ['dark', 'light']) {
   check(`${theme} tail survives`, probe.hasTail, '')
   check(`${theme} elided middle is gone`, !probe.hasSentinel, '')
   check(`${theme} no page errors`, errors.length === 0, errors.join(' | ').slice(0, 200))
+  // The marker lives in its own span inside the panel's <pre>; a frame with a
+  // dialog over it would still pass the text probes above.
+  const dialogs = await page.locator('[role="dialog"]').count()
+  check(`${theme} no dialog over the frame`, dialogs === 0, `dialogs=${dialogs}`)
+  const markerSpans = await page.locator('[data-capture-root] [data-testid="tool-payload-truncated"]').count()
+  check(`${theme} marker is the panel's own span`, markerSpans === 1, `spans=${markerSpans}`)
 
   // Scroll the marker to the middle of the Output panel so the frame shows
   // head above, tail below, and the marker between them.
@@ -119,6 +134,79 @@ for (const theme of ['dark', 'light']) {
 
   await page.locator('[data-capture-root]').screenshot({ path: `${OUT}/${theme}.png` })
   console.log(`wrote ${OUT}/${theme}.png`)
+  await ctx.close()
+}
+
+// ---- edit row: clamped diff -> summary chip, never a complete-looking card
+for (const theme of ['dark', 'light']) {
+  const ctx = await browser.newContext({
+    viewport: { width: 900, height: 720 },
+    deviceScaleFactor: 2,
+    colorScheme: theme,
+  })
+  const page = await ctx.newPage()
+  const errors = []
+  page.on('pageerror', e => errors.push(String(e)))
+
+  await page.goto(`${BASE}/capture/tool-output-clamp.html?theme=${theme}&row=edit`, { waitUntil: 'networkidle' })
+  const root = page.locator('[data-capture-root][data-row="edit"]')
+  await root.waitFor({ timeout: 15000 })
+  await page.locator('[data-capture-root] pre').first().waitFor({ timeout: 15000 })
+  await page.waitForTimeout(600)
+
+  const rawLength = Number(await root.getAttribute('data-raw-length'))
+  const cutJson = await root.getAttribute('data-input-cut')
+  const cut = cutJson ? JSON.parse(cutJson) : null
+  const summaryChips = await page.locator('[data-testid="tool-diff-summary-chip"]').count()
+  const cardChips = await page.locator('[data-testid="tool-diff-chip"]').count()
+  const cardToggles = await page.locator('[data-diff-toggle]').count()
+  const chipText = summaryChips ? await page.locator('[data-testid="tool-diff-summary-chip"]').first().textContent() : ''
+  const paneText = await page.locator('[data-capture-root] pre').first().textContent()
+  const markerSpans = await page.locator('[data-capture-root] [data-testid="tool-payload-truncated"]').count()
+  const dialogs = await page.locator('[role="dialog"]').count()
+
+  check(`edit ${theme} raw diff is over the ceiling`, rawLength > CEILING, `raw=${rawLength}`)
+  // Rendered pane = stored text with the marker + one newline spliced in, and
+  // the stored text = head + one seam newline + tail. So raw = head + count +
+  // tail, i.e. the seam's count must be exactly what the raw diff lost.
+  const markerLen = ((paneText || '').match(MARKER_RE) || [''])[0].length
+  const storedLength = (paneText || '').length - markerLen - 1
+  const headPlusTail = storedLength - 1
+  check(`edit ${theme} store recorded input_cut`, !!cut && cut.at > 0 && cut.count === rawLength - headPlusTail, `cut=${JSON.stringify(cut)} raw=${rawLength} head+tail=${headPlusTail}`)
+  check(`edit ${theme} row shows the summary chip`, summaryChips === 1, `summary=${summaryChips}`)
+  check(`edit ${theme} chip is flagged truncated`, /diff truncated/.test(chipText || ''), JSON.stringify(chipText))
+  check(`edit ${theme} no patch card is promoted`, cardChips === 0 && cardToggles === 0, `card=${cardChips} toggles=${cardToggles}`)
+  check(`edit ${theme} Input pane shows the marker once`, markerSpans === 1 && MARKER_RE.test(paneText || ''), `spans=${markerSpans}`)
+  check(`edit ${theme} elided middle is gone`, !(paneText || '').includes('ELIDED_SENTINEL'), '')
+  check(`edit ${theme} no dialog over the frame`, dialogs === 0, `dialogs=${dialogs}`)
+  check(`edit ${theme} no page errors`, errors.length === 0, errors.join(' | ').slice(0, 200))
+
+  // Scroll the Input pane to the seam so the frame shows chip + marker.
+  await page.locator('[data-capture-root] pre').first().evaluate((el, [src, flags]) => {
+    const text = el.textContent || ''
+    const at = text.search(new RegExp(src, flags))
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    let seen = 0
+    let node = walker.nextNode()
+    while (node) {
+      const len = node.textContent?.length ?? 0
+      if (seen + len > at) {
+        const range = document.createRange()
+        range.setStart(node, at - seen)
+        range.setEnd(node, at - seen)
+        const rect = range.getBoundingClientRect()
+        const box = el.getBoundingClientRect()
+        el.scrollTop += rect.top - box.top - box.height / 2
+        break
+      }
+      seen += len
+      node = walker.nextNode()
+    }
+  }, [MARKER_RE.source, MARKER_RE.flags])
+  await page.waitForTimeout(150)
+
+  await root.screenshot({ path: `${OUT}/edit-${theme}.png` })
+  console.log(`wrote ${OUT}/edit-${theme}.png`)
   await ctx.close()
 }
 

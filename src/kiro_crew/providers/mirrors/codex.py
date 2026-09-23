@@ -16,16 +16,26 @@ re-derivation apply unchanged. What is codex-specific is what this module adds o
 top, and both rules were MEASURED against a real ``codex-acp`` rather than
 inferred (``test/test_codex_session_mcp.py::test_real_codex_acp_accepts_the_crew_stdio_element``):
 
-1. **An element whose transport the agent did not advertise fails the WHOLE
-   request.** ``codex-acp`` 1.11.0 answers ``session/new`` with ``-32600 Invalid
-   request`` / *"Codex doesn't support MCP SSE transport protocol"*, so one such
-   entry costs the session every other server too. The filter reads the
-   advertisement from THIS session's ``initialize``
-   (``agentCapabilities.mcpCapabilities``, which 1.11.0 answers as ``{"acp":
-   false, "http": true, "sse": false}``) rather than from a constant, so a
-   version that gains or loses a transport needs no edit here — see
-   :func:`drop_unadvertised_transports`. Stdio is exempt because ACP states
-   every agent MUST support it.
+1. **What an element whose transport the agent did not advertise costs is
+   keyed on the element's SHAPE, and both answers are measured.** ``codex-acp``
+   1.11.0 advertises ``agentCapabilities.mcpCapabilities`` as ``{"acp": false,
+   "http": true, "sse": false}``. An ``sse`` element that parses as its
+   transport -- one carrying the schema-required ``headers`` array, which is
+   the shape Crew's translation emits -- is refused with ``-32600`` (``Codex
+   doesn't support MCP SSE transport protocol``), and the refusal fails the
+   WHOLE ``session/new``: every server in the array lost over one entry. An
+   ``sse`` element that does NOT parse as its transport (the same element
+   without ``headers``) falls to the untagged variant and is accepted with an
+   ordinary ``sessionId``, as a deliberately meaningless ``{"type":
+   "nonsense-type"}`` control is: no error reaches the client, and the session
+   comes up carrying a server the adapter never wired. Either way the array
+   sent is not the array honoured, which makes
+   :func:`drop_unadvertised_transports` load-bearing from both directions: on
+   Crew's own array it keeps one unsupported entry from costing the session,
+   and on a malformed one it is the only check at all. It reads the
+   advertisement from THIS session's ``initialize`` rather than from a
+   constant, so a version that gains or loses a transport needs no edit here.
+   Stdio is exempt because ACP states every agent MUST support it.
 2. **The child MCP process inherits almost nothing**, so Crew's control plane
    carries its identity on the element -- and ONLY the control plane does, because
    an element the spec describes is one whose command, args and env the spec chose.
@@ -39,12 +49,15 @@ inferred (``test/test_codex_session_mcp.py::test_real_codex_acp_accepts_the_crew
    element, or Crew's own control plane comes up unable to name the session it
    belongs to.
 
-The SCOPE of that first rule is as load-bearing as the rule, because the wide
-reading of it argues for projecting nothing at all. A malformed stdio element —
-one missing ``command``, or an array member that is not an object — does NOT fail
-``session/new``: the request succeeds and the bad element is dropped. ``sse`` is
-the only fatal shape, and it fails with ``-32600`` rather than the ``-32602`` an
-unadvertised transport invites you to assume.
+The SCOPE of that first rule is as load-bearing as the rule, because a fatal
+reading of it argues for projecting nothing at all. What IS fatal is narrow and
+named: a schema-complete element of an unadvertised transport. A malformed stdio
+element — one missing ``command``, or an array member that is not an object —
+leaves ``session/new`` succeeding with the bad element dropped, and a bare
+unadvertised ``sse`` element leaves it succeeding with that element accepted and
+unwired. So the projection narrows the array rather than withholding it, and the
+narrowing has to be exact in both directions: an entry it lets through either
+costs the session outright or costs one tool that nothing downstream reports.
 """
 
 from __future__ import annotations
@@ -92,16 +105,24 @@ def drop_unadvertised_transports(
     constant would make a released adapter that gains ``sse``, or drops ``http``,
     silently wrong here; asking the session removes the whole class.
 
-    Why this is not tidiness: an unsupported element does not degrade to "that one
-    server is missing". codex-acp answers ``-32600 Invalid request`` for the WHOLE
-    ``session/new``, so one bad element costs the session every other server — and
-    the array is the only channel Crew has onto that session.
+    Why this is not tidiness: what codex-acp does with an element whose transport
+    it declares unsupported depends on the element's shape, and neither answer is
+    one a client can live with. A schema-complete element (an ``sse`` entry with
+    its ``headers`` array, the shape Crew emits) is refused with ``-32600`` and the
+    refusal fails the WHOLE ``session/new``. A bare one falls to the untagged
+    variant and is accepted: ``session/new`` succeeds, and the server it names is
+    never wired, so a client trusting ``mcpCapabilities`` to be enforced gets a
+    healthy-looking session with a silently absent tool. This filter is therefore
+    what keeps one unsupported entry from costing the session, and the only guard
+    that the array Crew sends is the array the adapter honours — and the array is
+    the only channel Crew has onto that session.
 
     **An unknown advertisement keeps stdio only.** The fail-safe direction, and not
     an arbitrary one: ACP requires every agent to support stdio, so it is the one
     transport that cannot be refused, while anything else with no positive claim
-    behind it risks the whole request. Callers pass what ``initialize`` returned; an
-    empty mapping means the handshake has not been read yet.
+    behind it risks being accepted and left unwired. Callers pass what
+    ``initialize`` returned; an empty mapping means the handshake has not been
+    read yet.
 
     Pure and in-memory by construction — its caller is the shared ``session/new``
     site, which must add no scheduling or failure point to any backend's
@@ -116,9 +137,8 @@ def drop_unadvertised_transports(
             continue
         logger.warning(
             "codex session MCP: dropping server %r — this session's agent did not advertise "
-            "the %r transport (mcpCapabilities=%r), and codex-acp answers session/new with "
-            "-32600 for the WHOLE request on one such entry, which would cost this session "
-            "every other server",
+            "the %r transport (mcpCapabilities=%r); left in, a schema-complete entry fails "
+            "the whole session/new with -32600 and a bare one is accepted and never wired",
             element.get("name"),
             transport,
             dict(claims),
@@ -126,7 +146,7 @@ def drop_unadvertised_transports(
     return out
 
 
-def _identity_env(session_key: str, channel_id: str) -> dict[str, str]:
+def _identity_env(session_key: str, channel_id: str, session_token: str = "") -> dict[str, str]:
     """The env Crew's own control plane needs, resolved for this session.
 
     Every value here is something a claude MCP child gets for free by inheriting
@@ -137,7 +157,9 @@ def _identity_env(session_key: str, channel_id: str) -> dict[str, str]:
     key added there for one backend and missed by a copy here would leave this
     control plane silently unable to do whatever the key enabled.
     """
-    return control_plane_identity_env(session_key, channel_id, label="codex")
+    return control_plane_identity_env(
+        session_key, channel_id, label="codex", session_token=session_token
+    )
 
 
 def _with_env(element: dict[str, Any], extra: Mapping[str, str]) -> dict[str, Any]:
@@ -220,6 +242,7 @@ def codex_elements(
     *,
     session_key: str = "",
     channel_id: str = "",
+    session_token: str = "",
 ) -> list[dict[str, Any]]:
     """Apply codex's spelling and identity rules to a translated array.
 
@@ -254,7 +277,11 @@ def codex_elements(
     credential on a spec element this is an ordinary naming clash, not a privilege
     question.
     """
-    identity = _identity_env(session_key, channel_id) if session_key or channel_id else {}
+    identity = (
+        _identity_env(session_key, channel_id, session_token)
+        if session_key or channel_id or session_token
+        else {}
+    )
     claimed: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for element in elements:
@@ -292,6 +319,7 @@ def codex_projection(
     work_dir: object = None,
     session_key: str = "",
     channel_id: str = "",
+    session_token: str = "",
 ) -> SessionProjection:
     """The whole codex array -- spec translation AND pooled stubs -- plus the deny set.
 
@@ -344,7 +372,9 @@ def codex_projection(
             )
             continue
         kept.append(element)
-    out: list[dict[str, Any]] = codex_elements(kept, session_key=session_key, channel_id=channel_id)
+    out: list[dict[str, Any]] = codex_elements(
+        kept, session_key=session_key, channel_id=channel_id, session_token=session_token
+    )
     for stub in stub_elements:
         if not isinstance(stub, Mapping):
             continue
@@ -374,6 +404,12 @@ def codex_projection(
     return SessionProjection(
         params={"mcpServers": out},
         denied_tools=denied,
+        # Recorded for the caller, not acted on differently here: this backend's
+        # ``PerToolDeny`` is ``PER_CALL`` and ``denied_tools`` above carries every
+        # switched-off pair, control plane included, so a name here stays refusable at
+        # permission time even when something re-adds it.
+        disabled_servers=projection.disabled_servers,
+        restricted_servers=projection.restricted,
         derived_spec_snapshot=projection.derived_spec_snapshot,
     )
 
@@ -391,8 +427,9 @@ class CodexMirror(AgentConfigMirror):
                 "acp.session_mcp.session_mcp_servers and then narrowed by this "
                 "module three ways. (1) An entry whose transport THIS session's "
                 "agent did not advertise is dropped (drop_unadvertised_transports, "
-                "reading initialize's mcpCapabilities), because codex-acp answers "
-                "-32600 for the WHOLE request rather than skipping one server. "
+                "reading initialize's mcpCapabilities), because codex-acp accepts "
+                "such an entry silently and never wires it, so this filter is the only "
+                "guard that the array Crew sends is the array the adapter honours. "
                 "(2) A third-party server whose spec narrows it per tool is "
                 "omitted, not forwarded un-narrowed, and a narrowed CONTROL-PLANE "
                 "tool is refused at the approval request instead -- see "
@@ -533,6 +570,7 @@ class CodexMirror(AgentConfigMirror):
         work_dir: object = None,
         session_key: str = "",
         channel_id: str = "",
+        session_token: str = "",
         **kwargs: object,
     ) -> dict[str, object]:
         """The wire face: the ``mcpServers`` array for this codex session.
@@ -581,6 +619,7 @@ class CodexMirror(AgentConfigMirror):
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            session_token=session_token,
         ).params
 
     def session_projection(
@@ -592,6 +631,7 @@ class CodexMirror(AgentConfigMirror):
         work_dir: object = None,
         session_key: str = "",
         channel_id: str = "",
+        session_token: str = "",
         **kwargs: object,
     ) -> SessionProjection:
         """The structured face: :func:`codex_projection`, with ``kwargs`` ignored as
@@ -604,4 +644,5 @@ class CodexMirror(AgentConfigMirror):
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            session_token=session_token,
         )

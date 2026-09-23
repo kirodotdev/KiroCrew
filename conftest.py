@@ -435,6 +435,84 @@ def _redirect_bytecode_cache() -> None:
     os.environ["PYTHONPYCACHEPREFIX"] = candidate
 
 
+class _AsyncFixtureScanGate:
+    """Run pytest-asyncio's fixture scan only when a fixture was registered since.
+
+    pytest-asyncio 0.20.3 hooks ``pytest_pycollect_makeitem`` and, for EVERY test
+    function name it sees, walks EVERY fixture definition the session has registered
+    so far to wrap the async ones (``_preprocess_async_fixtures``). Fixtures already
+    wrapped are skipped by a set lookup, but the ~1,400 synchronous ones are
+    re-inspected with ``asyncio.iscoroutinefunction`` on each call. That is
+    O(tests x fixtures): cProfile of a ``--collect-only`` over this suite (112,246
+    tests) counted 87,244 scans x ~1,420 fixtures = 123.8 million coroutine checks,
+    1,098 of the 1,285 profiled seconds -- 85% of collection. Every xdist worker pays
+    it in full, and under coverage instrumentation each check costs ~2.3x more, which
+    is what made the CI shards' ~33-minute "collection" phase.
+
+    The scan's result only changes when a fixture is ADDED, and pytest funnels every
+    registration -- conftest, module, class, unittest, plugin -- through
+    ``FixtureManager._register_fixture``. So this wraps that one method to raise a
+    dirty flag, and lets the scan through only while the flag is up. A scan on a clean
+    flag would iterate the same definitions and find nothing new: the async marker
+    (``_force_asyncio_fixture``) is set by the decorator at definition time and
+    ``asyncio_mode`` is fixed for the run, so the skip is behaviour-preserving.
+
+    Pinned to the plugin version it patches: upstream's own fix for this (v0.25.1,
+    then v1.0.0) sits behind the v0.23 event-loop-scope rework this suite has not
+    migrated to. When pytest-asyncio moves, delete this class and the install below.
+    """
+
+    def __init__(self, scan) -> None:
+        self._scan = scan
+        self.dirty = True
+        self.scans = 0
+
+    def mark_dirty(self) -> None:
+        self.dirty = True
+
+    def __call__(self, config, processed_fixturedefs) -> None:
+        if not self.dirty:
+            return
+        self._scan(config, processed_fixturedefs)
+        self.scans += 1
+        self.dirty = False
+
+
+def _gate_pytest_asyncio_fixture_scan() -> None:
+    """Install :class:`_AsyncFixtureScanGate` once per process (each xdist worker)."""
+    try:
+        import pytest_asyncio.plugin as pa
+    except ImportError:  # pragma: no cover - plugin absent; nothing to gate
+        return
+    from _pytest.fixtures import FixtureManager
+
+    scan = getattr(pa, "_preprocess_async_fixtures", None)
+    register = getattr(FixtureManager, "_register_fixture", None)
+    if isinstance(scan, _AsyncFixtureScanGate):
+        return  # already installed (pytest_configure re-entered in-process)
+    if scan is None or register is None:
+        # Both seams are private to their packages. A version that renamed either
+        # must not turn into a crash before collection; it turns into the slow
+        # collection this gate exists to remove, said out loud so the pin is revisited.
+        warnings.warn(
+            "pytest-asyncio fixture-scan gate not installed: a private seam moved "
+            "(pytest_asyncio.plugin._preprocess_async_fixtures / "
+            "_pytest.fixtures.FixtureManager._register_fixture); collection will be slow",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    gate = _AsyncFixtureScanGate(scan)
+
+    @functools.wraps(register)
+    def _register_fixture(self, *args, **kwargs):
+        gate.mark_dirty()
+        return register(self, *args, **kwargs)
+
+    FixtureManager._register_fixture = _register_fixture
+    pa._preprocess_async_fixtures = gate
+
+
 def _root_can_create_real_symlink() -> bool:
     """Probe real-link capability for tests collected outside ``test/`` too.
 
@@ -1403,11 +1481,13 @@ def pytest_make_collect_report(collector):
     above turns it into, so an emitter is caught whether or not it reached the host.
     ``reset_for_testing()`` then drops what was built (stopping an exporter thread if
     one exists), so the next module starts clean and the attribution stays per-module.
-    Recorded per worker under xdist: every worker collects the whole tree.
+    Fail the collection report on the detecting worker: file shards do not all
+    collect the test that asserts the record, and xdist forwards collection errors
+    to the controller even when that worker executes no tests.
     """
     provider = _metrics_provider_module()
     built_before = bool(provider is not None and getattr(provider, "_ever_built", False))
-    yield
+    outcome = yield
     if not isinstance(collector, pytest.Module):
         return
     provider = _metrics_provider_module()
@@ -1421,6 +1501,13 @@ def pytest_make_collect_report(collector):
         IMPORT_TIME_METRIC_EMITTERS.append(collector.nodeid)
     with contextlib.suppress(Exception):
         provider.reset_for_testing()
+    report = outcome.get_result()
+    if not report.failed:
+        report.outcome = "failed"
+        report.longrepr = (
+            f"Import-time metric emission: {IMPORT_TIME_METRIC_EMITTERS[-1]}. "
+            "Build the value inside the test or fixture instead."
+        )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -1428,8 +1515,10 @@ def pytest_configure(config: pytest.Config) -> None:
     _refuse_a_real_data_home()
     _pin_telemetry_off_for_the_process()
     _prefer_short_tmp_base()
+    _install_short_tmp_root()
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
+    _gate_pytest_asyncio_fixture_scan()
     global _SESSION_CWD
     try:
         _SESSION_CWD = os.getcwd()
@@ -1991,8 +2080,9 @@ def _restore_log_record_factory():
     installing over the already-installed wrapper captured it as its own base factory.
 
     **Sharding hides this class, so the floor cannot rely on a full-suite run to find it.**
-    ``ci.yml`` slices the suite into duration-balanced pytest-split groups and a leak only
-    damages tests in the SAME process, so PR CI usually cannot observe it at all; the
+    ``ci.yml`` assigns whole files to Linux/Windows shards before import (macOS keeps
+    pytest-split groups), and a leak only damages tests in the SAME process, so PR CI
+    usually cannot observe it at all; the
     release job runs the suite whole and is otherwise the first place it appears -- as
     failures in files unrelated to the cause, long after the diff merged. Restoring here
     removes the class outright rather than improving the odds of noticing it.
@@ -2288,12 +2378,18 @@ def pytest_collection_modifyitems(config, items):
     a junction, silently dropping the Windows behavior those tests exist to
     cover.  Exact collection markers leave every non-link path untouched.
 
-    The lists live in ``test/windows-expected-failures.txt`` and
-    ``test/macos-expected-failures.txt`` -- one unparametrized node id per line,
-    captured from the first CI runs on that OS. Each is a burn-down backlog: fixed
+    The lists live in ``test/windows-expected-failures.txt``,
+    ``test/macos-expected-failures.txt`` and
+    ``test/codebuild-expected-failures.txt`` -- one node id per line, captured from
+    the first CI runs on that OS or runner. Each is a burn-down backlog: fixed
     tests get their line deleted, and anything NOT on the list still fails the
-    job, so the line holds for the tests that pass today. Both go through the same
-    ``_apply_tracked_gap_list`` matcher; do not add a third mechanism.
+    job, so the line holds for the tests that pass today. All three go through the
+    same ``_apply_tracked_gap_list`` matcher; do not add a fourth mechanism.
+
+    Two of the three are keyed on the OS and the third on the runner, because the
+    environment it describes is a Linux one that ``sys.platform`` cannot tell from
+    the hosted Linux shards passing the same tests in the same run. See
+    :func:`on_self_hosted_runner`.
 
     Lives HERE rather than in ``test/conftest.py`` because the lists already name node
     ids under ``src/kiro_crew/apps/builtins/auto_improvement/tests/``, and a hook rooted
@@ -2332,15 +2428,41 @@ def pytest_collection_modifyitems(config, items):
         _apply_tracked_gap_list(items, "windows-expected-failures.txt", "Windows")
     elif pc.IS_MACOS:
         _apply_tracked_gap_list(items, "macos-expected-failures.txt", "macOS")
+    elif on_self_hosted_runner():
+        _apply_tracked_gap_list(
+            items, "codebuild-expected-failures.txt", "self-hosted Linux runner"
+        )
+
+
+def on_self_hosted_runner() -> bool:
+    """Whether this run is on a self-hosted CI runner rather than a hosted one.
+
+    The third gap list is keyed on the RUNNER rather than the OS, because the
+    environment that fails those tests is a Linux one: no IPv6 loopback, no ``link``
+    on the filesystem, and an unprivileged user whose resolved home is ``/root``.
+    ``sys.platform`` cannot tell it from the hosted Linux shards that pass the same
+    tests in the same run, so the list would either apply everywhere or nowhere.
+
+    ``RUNNER_ENVIRONMENT`` is GitHub's own answer to that question, and ``ci.yml``
+    already gates this job's non-root boundary assertion on the same value
+    (``runner.environment == 'self-hosted'``). Keying off it reuses the signal the
+    workflow already treats as identifying the runner instead of inventing a second
+    one, and needs nothing added to the job's environment.
+
+    Absent outside CI, so a developer machine reads as hosted and applies no list --
+    which is right: a local run has none of the three constraints.
+    """
+    return os.environ.get("RUNNER_ENVIRONMENT") == "self-hosted"
 
 
 def _apply_tracked_gap_list(items, listname: str, platform_label: str) -> None:
     """Mark every collected item named in ``test/<listname>`` as a STRICT xfail.
 
-    ONE mechanism serves both OS gap lists. macOS reuses it rather than growing a
-    second matcher, so the node-id spelling rule (``_base_nodeid``: no ``[params]``,
-    no ``@group``) and the burn-down semantics -- anything NOT listed still fails
-    the job -- are identical on both platforms by construction.
+    ONE mechanism serves all three gap lists. macOS and the self-hosted Linux runner
+    reuse it rather than growing a second matcher, so the node-id spelling rule
+    (``_base_nodeid``: no ``[params]``, no ``@group``) and the burn-down semantics --
+    anything NOT listed still fails the job -- are identical for every list by
+    construction.
 
     **``xfail(strict=True)``, not ``skip``, because these files call themselves a
     burn-down backlog and say "fix the test and DELETE the line".** A skip does not
@@ -2482,6 +2604,69 @@ def _create_tmp_root(parent: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(tempfile.mkdtemp(prefix=_tmp_root_prefix_for_run(), dir=parent))
 
 
+#: Env var carrying this run's SHORT temp root, so xdist workers reuse the controller's.
+_SHORT_TMP_ROOT_ENV = "KIROCREW_TEST_SHORT_TMP_ROOT"
+
+#: The temp roots THIS process created, captured at creation. The bytecode-mirror prune
+#: reads this instead of ``tempfile.gettempdir()``, which by session teardown has been
+#: restored to the platform temp root -- a mirror shared with every concurrent run.
+_RUN_TEMP_ROOTS: list[str] = []
+
+#: Set only in the process that CREATED the short root, so a worker never removes it.
+_SHORT_TMP_ROOT_OWNED: str | None = None
+
+
+def _install_short_tmp_root() -> None:
+    """Mint one run-owned SHORT temp root and publish it for the whole run.
+
+    A handful of fixtures cannot use ``tmp_path``: an ``AF_UNIX`` ``sun_path`` caps the
+    bind/connect STRING at 108 bytes on Linux and 104 on macOS, and a path asserted in
+    message metadata must not trip ``redact_credentials()`` (a macOS ``tmp_path`` carries
+    high-entropy directory ids that do). Those fixtures reached for a literal ``/tmp``,
+    which put ~40 anonymous ``/tmp/tmpXXXX`` and ``/tmp/kcsock-XXXX`` directories on the
+    host, owned by nobody: the residue guard's allow-list and the hygiene probe both
+    recognise the ``kc-pytest-<user>-<pid>-`` stem and nothing else, so a stray directory
+    spelled any other way names no run and no test.
+
+    ``tempfile.gettempdir()`` cannot serve here, which is the whole reason this root
+    exists separately: under a long ``TMPDIR`` -- the run's own isolated base, a harness
+    that pins ``TMPDIR`` under the checkout -- ``<base>/kcsock-xxxxxxxx/gw-prewarm.sock``
+    is already past ``sun_path`` before a filename is appended (measured at 122 bytes
+    against the 108-byte cap), and ``test_mcp_gateway_transport``'s ``_SUN_PATH_BUDGET``
+    test goes red. So the root is created under the PLATFORM temp root, where the path is
+    short by construction, and carries the run's own stem so it is attributable.
+
+    Created in ``pytest_configure`` and published through the environment: an xdist worker
+    is a child of the controller, inherits the variable, and therefore shares the one root
+    instead of minting its own. Only the creating process removes it (``_SHORT_TMP_ROOT_OWNED``).
+    """
+    global _SHORT_TMP_ROOT_OWNED
+    if os.environ.get(_SHORT_TMP_ROOT_ENV):
+        return  # an xdist worker (or a nested session): the controller already made it
+    parent = None if os.name == "nt" else "/tmp"
+    if parent is not None and not os.path.isdir(parent):
+        parent = None  # unusual POSIX host; the platform default still satisfies both rules
+    try:
+        root = tempfile.mkdtemp(prefix=f"{_tmp_root_prefix_for_run()}short-", dir=parent)
+    except OSError:
+        return  # no short root available; short_tmp_base() falls back to its old behaviour
+    # No chmod: ``mkdtemp`` already creates the directory 0o700, which is what this root
+    # needs in a world-writable temp dir. Setting it again only invites a permissions
+    # linter to argue about a mode the stdlib picked.
+    os.environ[_SHORT_TMP_ROOT_ENV] = root
+    _SHORT_TMP_ROOT_OWNED = root
+
+
+def _remove_short_tmp_root() -> None:
+    """Remove the short root, but only in the process that created it."""
+    global _SHORT_TMP_ROOT_OWNED
+    root, _SHORT_TMP_ROOT_OWNED = _SHORT_TMP_ROOT_OWNED, None
+    if root:
+        shutil.rmtree(root, ignore_errors=True)
+        if os.environ.get(_SHORT_TMP_ROOT_ENV) == root:
+            del os.environ[_SHORT_TMP_ROOT_ENV]
+
+
 #: Env vars ``tempfile`` consults, so a CHILD process inherits the redirect too.
 #: A test that spawns a helper which writes to its temp dir would otherwise put
 #: that file in the real ``/tmp``, where nothing prunes it.
@@ -2588,6 +2773,43 @@ def _remove_tree(path: pathlib.Path) -> bool:
     return _pc.rmtree_force(path)
 
 
+def _stop_git_discovery_above_the_temp_roots(base, tmp_path_factory) -> None:
+    """Fence git's repository discovery at this run's temp roots.
+
+    A test that builds "a directory that is not a repository" under ``tmp_path`` is
+    asserting a property of the HOST unless something bounds git's upward walk: when the
+    temp root sits inside a checkout -- an operator with ``TMPDIR=./tmp``, a harness that
+    pins its scratch under the worktree -- ``git rev-parse`` climbs out of ``tmp_path`` and
+    answers about the enclosing repository instead. The 2026-09-20 sweep measured 66 tests
+    failing exactly that way across two clusters, and the shape is worse in a LINKED
+    worktree, where the ``.git`` the walk finds is a FILE and a marker-based probe declines
+    before the arm under test ever runs.
+
+    ``GIT_CEILING_DIRECTORIES`` is git's own seam for this and is read by every ``git``
+    child the suite spawns, so one write here covers the production helpers a test cannot
+    reach. Per-site fixtures still exist and are still correct -- they document intent, and
+    they cover the walks this cannot fence (an ``install.sh`` marker search, a nested pytest
+    session's ``rootdir``) -- but this is what keeps the NEXT test from inheriting the
+    checkout by default. Absolute, symlink-resolved paths: git ignores a ceiling entry that
+    is not both.
+    """
+    entries: list[str] = []
+    for candidate in (base, tmp_path_factory.getbasetemp(), os.environ.get(_SHORT_TMP_ROOT_ENV)):
+        if not candidate:
+            continue
+        try:
+            resolved = os.path.realpath(str(candidate))
+        except OSError:  # pragma: no cover - unreadable temp root
+            continue
+        if resolved not in entries:
+            entries.append(resolved)
+    existing = os.environ.get("GIT_CEILING_DIRECTORIES")
+    if existing:
+        entries.append(existing)
+    if entries:
+        os.environ["GIT_CEILING_DIRECTORIES"] = os.pathsep.join(entries)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_tempfile_base(tmp_path_factory):
     """Give the run its own ``tempfile`` base, then report and remove what leaked.
@@ -2661,10 +2883,21 @@ def _isolate_tempfile_base(tmp_path_factory):
     previous_env = {name: os.environ.get(name) for name in _TMP_ENV_VARS}
     parent = pathlib.Path(tempfile.gettempdir())
     base = _create_tmp_root(parent)
+    # Record the root at CREATION. The bytecode-mirror prune runs from
+    # ``pytest_sessionfinish``, which is AFTER this fixture's finalizer has restored
+    # ``tempfile.tempdir``: reading ``tempfile.gettempdir()` there resolves to the platform
+    # temp root, and pruning that mirror would delete every concurrent run's bytecode.
+    _RUN_TEMP_ROOTS.append(str(base))
     _redirect_tempfile_base(base)
+    previous_ceiling = os.environ.get("GIT_CEILING_DIRECTORIES")
+    _stop_git_discovery_above_the_temp_roots(base, tmp_path_factory)
     try:
         yield base
     finally:
+        if previous_ceiling is None:
+            os.environ.pop("GIT_CEILING_DIRECTORIES", None)
+        else:
+            os.environ["GIT_CEILING_DIRECTORIES"] = previous_ceiling
         tempfile.tempdir = previous_tempdir
         for name, value in previous_env.items():
             if value is None:
@@ -3286,12 +3519,14 @@ def _isolate_subagents_dir(_isolation_dirs, _floor_monkeypatch):
     stub agent folders into the operator's real ``~/.kirocrew/subagents/``. On the
     next gateway start, orphan reconciliation sweeps those stubs and floods the
     logs with "lost to gateway restart" warnings (e.g. tasks ``t`` / ``ls /tmp``).
-    Redirecting the module global gives every test an isolated, empty registry.
+    The registry lives beneath its own per-test home so sibling protected
+    identity records are isolated too, including runs with repeated ids.
     """
+
     monkeypatch = _floor_monkeypatch
     monkeypatch.setattr(
         "kiro_crew.subagent_persistence._SUBAGENTS_DIR",
-        _isolation_dirs("subagents"),
+        _isolation_dirs("subagents") / "subagents",
     )
 
 
@@ -3944,6 +4179,47 @@ def _drain_windows_proactor_finalizers() -> None:
     atexit.register(_final_gc_pass)
 
 
+def _prune_bytecode_mirror_of_this_runs_temp_roots(session: pytest.Session) -> None:
+    """Drop the ``sys.pycache_prefix`` mirror trees keyed on THIS run's temp roots.
+
+    :func:`_redirect_bytecode_cache` sends every ``.pyc`` to a per-user cache mirror, and
+    its "the cache persists so warm imports stay warm" argument holds for sources in the
+    CHECKOUT, whose absolute paths are stable. It does not hold for a source under
+    ``tmp_path`` or the run's isolated temp base: those paths are new on every run, so the
+    mirror gains one dead tree per run that nothing ever reads and nothing owns. Measured
+    on one developer host before this guard: 14,816 orphaned ``.pyc`` files, 5.3 GB, across
+    161 dead run roots.
+
+    The suite compiles throwaway sources deliberately (``load_app_module``, a skill script
+    imported by path, a packaging step's precompile), so the answer is not to stop writing
+    bytecode -- it is that the writer must own the retirement of what it wrote. Scoped to
+    the roots this run created, so a concurrent run's mirror is never touched.
+    """
+    prefix = getattr(sys, "pycache_prefix", None)
+    if not prefix:
+        return
+    roots: list[str] = []
+    try:
+        roots.append(str(session.config._tmp_path_factory.getbasetemp()))  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - no basetemp was ever materialised
+        pass
+    for candidate in (*_RUN_TEMP_ROOTS, os.environ.get(_SHORT_TMP_ROOT_ENV) or ""):
+        if candidate:
+            roots.append(candidate)
+    for root in roots:
+        try:
+            absolute = os.path.abspath(root)
+        except OSError:  # pragma: no cover - unreadable cwd
+            continue
+        # The mirror path is the prefix plus the source's absolute path with its leading
+        # separator dropped; on Windows the drive colon is replaced the same way CPython
+        # does, so the join is done from the parts rather than by string surgery.
+        drive, tail = os.path.splitdrive(absolute)
+        mirrored = os.path.join(prefix, drive.replace(":", "") + tail.lstrip(os.sep))
+        if os.path.isdir(mirrored):
+            shutil.rmtree(mirrored, ignore_errors=True)
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Fail the run when the suite left new, non-ignored entries at the root.
 
@@ -3968,6 +4244,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         xdist_budget.release_worker_slots()
     except ImportError:  # pragma: no cover - partial checkout
         pass
+
+    _remove_short_tmp_root()
+    _prune_bytecode_mirror_of_this_runs_temp_roots(session)
 
     # ── Windows ProactorEventLoop teardown cleanup (#4764) ─────────────────
     # On Windows + Python 3.12, asyncio.run() creates and closes a

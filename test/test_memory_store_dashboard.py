@@ -50,6 +50,7 @@ from aiohttp import streams, web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import memory_backup, memory_stores
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import loader as loader_mod
 from kiro_crew.config.loader import config_dir
 from kiro_crew.context import ContextBuilder
@@ -945,7 +946,13 @@ async def test_dashboard_backup_uses_configured_retention(env, keep, remaining):
     config_path = env.home / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["memory"] = {"backup_enabled": False, "backup_keep": keep}
-    config_path.write_text(json.dumps(config), encoding="utf-8")
+    # The seed above LOADED the config, and a load of this minimal document
+    # performs its write-back migration -- an atomic replace of ``config.json``.
+    # On Windows an AV or indexer handle on the just-replaced file makes the
+    # next open-for-write a sharing violation (``PermissionError``), so this
+    # write goes through the production writer, off the loop, where its rename
+    # retries that window instead of failing on it.
+    await asyncio.to_thread(atomic_write, config_path, json.dumps(config))
     loader_mod._invalidate_config_cache()
     assert loader_mod.KiroCrewConfig.load().memory.backup_keep == keep
     assert loader_mod.KiroCrewConfig.load().memory.backup_keep == keep

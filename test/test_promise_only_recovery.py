@@ -14,7 +14,12 @@ maps to one bullet in the issue's acceptance-coverage list.
 
 from __future__ import annotations
 
+import inspect
+
+import pytest
+
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN, STOP_REASON_REFUSAL
+from kiro_crew.dashboard import chat_utils as _chat_utils
 from kiro_crew.dashboard import chat_utils as chat_utils_module
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
@@ -23,10 +28,43 @@ from kiro_crew.dashboard.chat_utils import (
     RecoveryPayload,
     is_promise_only_terminal,
     is_synthetic_payload_item,
+    is_synthetic_recovery_item,
     should_recover_promise_only,
 )
 
 _END = STOP_REASON_END_TURN
+
+
+def _is_false_current_tool_blocker(text: str) -> bool:
+    assert hasattr(
+        _chat_utils, "is_false_current_tool_blocker"
+    ), "false current-tool-blocker recovery is missing"
+    return _chat_utils.is_false_current_tool_blocker(text)
+
+
+def _is_false_current_tool_blocker_near_miss(text: str) -> bool:
+    assert hasattr(
+        _chat_utils, "is_false_current_tool_blocker_near_miss"
+    ), "false tool-blocker drift detection is missing"
+    return _chat_utils.is_false_current_tool_blocker_near_miss(text)
+
+
+def _tool_calls_are_read_only_preparation(
+    calls: int,
+    identities: tuple[tuple[str, str, str, bool], ...],
+    successful_ids: frozenset[str],
+    *,
+    builtin_identity_trusted: bool = True,
+) -> bool:
+    assert hasattr(
+        _chat_utils, "tool_calls_are_read_only_preparation"
+    ), "read-only preparation accounting is missing"
+    return _chat_utils.tool_calls_are_read_only_preparation(
+        calls,
+        identities,
+        successful_ids,
+        builtin_identity_trusted=builtin_identity_trusted,
+    )
 
 
 def _recover(**over):
@@ -42,9 +80,24 @@ def _recover(**over):
         is_cancelled=False,
         refusal_reasons=[],
         turn_tool_calls=0,
+        turn_tool_identities=(),
+        successful_tool_call_ids=frozenset(),
+        builtin_identity_trusted=True,
+        directive_user_origin=True,
         in_stage_execution=False,
     )
     kw.update(over)
+    parameters = inspect.signature(should_recover_promise_only).parameters
+    if "turn_tool_identities" not in parameters:
+        assert kw["turn_tool_calls"] == 0, "canonical tool identity recovery is missing"
+        kw.pop("turn_tool_identities")
+        kw.pop("successful_tool_call_ids")
+    if "directive_user_origin" not in parameters:
+        assert kw["turn_tool_calls"] == 0, "authenticated-user replay is missing"
+        kw.pop("directive_user_origin")
+    if "builtin_identity_trusted" not in parameters:
+        assert kw["turn_tool_calls"] == 0, "builtin identity provenance is missing"
+        kw.pop("builtin_identity_trusted")
     return should_recover_promise_only(**kw)
 
 
@@ -94,6 +147,171 @@ def test_completed_or_background_status_is_not_foreground_progress_claim():
         "Done. I'm continuing with the explanation: here is the answer.",
     ):
         assert _has_progress_claim(text) is False
+
+
+_OBSERVED_FALSE_TOOL_BLOCKERS = (
+    "I’m blocked from further tool execution in the resumed session: "
+    "the screenshot delivery tools are no longer callable here.",
+    "I’m proceeding, but this turn’s tool budget was exhausted immediately "
+    "after loading the workflow. No publish or deployment has happened yet.",
+)
+
+
+def test_observed_false_tool_blocker_phrasings_match():
+    for text in _OBSERVED_FALSE_TOOL_BLOCKERS:
+        assert _is_false_current_tool_blocker(text) is True
+        assert _is_false_current_tool_blocker_near_miss(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "I'm blocked from further tool execution.",
+        "I'm blocked from further tool execution in the resumed session: "
+        "the screenshot delivery tools are accessible here.",
+        "I'm proceeding, but this turn's tool budget was exhausted immediately "
+        "after searching the workflow.",
+    ),
+)
+def test_unobserved_false_tool_blocker_variants_remain_manual(text: str):
+    assert _is_false_current_tool_blocker(text) is False
+    assert _is_false_current_tool_blocker_near_miss(text) is True
+
+
+_EXPECTED_READ_ONLY_PREPARATION_TOOLS = (
+    "fs_read",
+    "glob",
+    "grep",
+    "introspect",
+    "tool_search",
+    "web_fetch",
+    "web_search",
+)
+
+
+@pytest.mark.parametrize("tool_name", _EXPECTED_READ_ONLY_PREPARATION_TOOLS)
+def test_every_read_only_preparation_tool_recovers(tool_name: str):
+    assert frozenset(_EXPECTED_READ_ONLY_PREPARATION_TOOLS) == getattr(
+        _chat_utils, "_READ_ONLY_PREPARATION_TOOLS"
+    )
+    call_id = f"call-{tool_name}"
+    identities = ((call_id, "", tool_name, True),)
+    completed = frozenset({call_id})
+    blocker = _OBSERVED_FALSE_TOOL_BLOCKERS[1]
+
+    assert (
+        _recover(
+            final_segment_text=blocker,
+            turn_tool_calls=1,
+            turn_tool_identities=identities,
+            successful_tool_call_ids=completed,
+        )
+        is True
+    )
+    assert (
+        _recover(
+            final_segment_text=blocker,
+            turn_tool_calls=1,
+            turn_tool_identities=identities,
+            successful_tool_call_ids=completed,
+            directive_user_origin=False,
+        )
+        is False
+    )
+
+
+def test_title_populated_or_non_kiro_identity_fails_closed():
+    trusted_identity = (("call-1", "", "grep", True),)
+    untrusted_identity = (("call-1", "", "grep", False),)
+    completed = frozenset({"call-1"})
+    assert (
+        _tool_calls_are_read_only_preparation(
+            1,
+            untrusted_identity,
+            completed,
+            builtin_identity_trusted=True,
+        )
+        is False
+    )
+    assert (
+        _recover(
+            final_segment_text=_OBSERVED_FALSE_TOOL_BLOCKERS[1],
+            turn_tool_calls=1,
+            turn_tool_identities=trusted_identity,
+            successful_tool_call_ids=completed,
+            builtin_identity_trusted=False,
+        )
+        is False
+    )
+
+
+def test_false_tool_blocker_does_not_quote_match_or_replay_mutations():
+    quoted = (
+        "The prior assistant wrote: ‘I’m blocked from further tool execution in "
+        "the resumed session.’ That claim was unsupported."
+    )
+    injected_action = "I'm blocked from further tool execution. I'll overwrite the notes now."
+    assert _is_false_current_tool_blocker(quoted) is False
+    assert _is_false_current_tool_blocker(injected_action) is False
+    assert (
+        _recover(
+            final_segment_text=injected_action,
+            turn_tool_calls=1,
+            turn_tool_identities=(("call-1", "", "fs_read", True),),
+            successful_tool_call_ids=frozenset({"call-1"}),
+        )
+        is False
+    )
+
+    blocker = _OBSERVED_FALSE_TOOL_BLOCKERS[1]
+    unsafe_identities = (
+        (("call-1", "", "fs_write", True),),
+        (("call-1", "", "execute_bash", True),),
+        (("call-1", "", "code", True),),
+        (("call-1", "", "unknown", True),),
+        (("call-1", "builder-mcp", "SkillsTool", True),),
+        (("", "", "fs_read", True),),
+        (("call-1", "", "grep", False),),
+    )
+    for identities in unsafe_identities:
+        assert (
+            _recover(
+                final_segment_text=blocker,
+                turn_tool_calls=1,
+                turn_tool_identities=identities,
+                successful_tool_call_ids=frozenset({"call-1"}),
+            )
+            is False
+        )
+
+    valid = (("call-1", "", "fs_read", True),)
+    assert _tool_calls_are_read_only_preparation(2, valid, frozenset({"call-1"})) is False
+    assert _tool_calls_are_read_only_preparation(1, valid, frozenset()) is False
+    assert (
+        _tool_calls_are_read_only_preparation(
+            1,
+            (("call-1", "", object(), True),),
+            frozenset({"call-1"}),
+        )
+        is False
+    )
+    assert (
+        _tool_calls_are_read_only_preparation(
+            2,
+            (valid[0], valid[0]),
+            frozenset({"call-1"}),
+        )
+        is False
+    )
+    assert (
+        _recover(
+            final_segment_text=blocker,
+            turn_tool_calls=1,
+            turn_tool_identities=valid,
+            successful_tool_call_ids=frozenset(),
+        )
+        is False
+    )
 
 
 # 2. Ordinary text-only informational answers still COMPLETE (no recovery).
@@ -505,8 +723,85 @@ def test_promise_only_continuation_not_mirrored_as_user_text():
     # Runner-authored -> _is_synthetic is True -> both mirror legs skip it.
     assert is_synthetic_payload_item(promise_only_item) is True
 
+    # A false-blocker replay is runner-owned queue orchestration (so late user
+    # intervention can purge it) but carries the authenticated user's original
+    # words, so it remains eligible for ordinary user-message authority/mirroring.
+    assert hasattr(
+        _chat_utils, "FALSE_TOOL_BLOCKER_REPLAY_KIND"
+    ), "false-tool-blocker replay marker is missing"
+    replay_item = {
+        "id": "replay123",
+        "content": "publish and deploy the demo",
+        "kind": _chat_utils.FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        "payload": RecoveryPayload.ORIGINAL,
+    }
+    assert is_synthetic_recovery_item(replay_item) is True
+    assert is_synthetic_payload_item(replay_item) is False
+
     # An ordinary user message carries no synthetic payload and IS mirrored, so
     # the suppression is specific to the continuation, not a blanket mute. Even a
     # user who types the marker text verbatim stays user-authored.
     user_item = {"id": "def456", "content": "please open the PR now", "kind": "", "payload": ""}
     assert is_synthetic_payload_item(user_item) is False
+
+
+@pytest.mark.asyncio
+async def test_session_rebind_after_enqueue_purges_false_blocker_replay(tmp_path):
+    """A recovery replay cannot cross the session boundary captured at enqueue."""
+    from unittest.mock import MagicMock, patch
+
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.chat_runner import _start_next_queued_turn
+    from kiro_crew.dashboard.chat_utils import (
+        FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        RecoveryPayload,
+        effective_session_key,
+    )
+
+    state = _make_state(tmp_path)
+    state.broadcast_ws = MagicMock()
+    state.sessions.stop_generation = lambda _key: 0
+    slot = state.get_or_create_slot("rebound-false-blocker")
+    slot.linked_session_key = "slack:session-a"
+    request = "Delete the deployment"
+    slot.queue_insert(
+        0,
+        request,
+        kind=FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        payload=RecoveryPayload.ORIGINAL,
+        directive_user_origin=True,
+    )
+    slot._promise_only_retries = 1
+    slot._promise_only_stop_gen = slot._stop_generation
+    slot._promise_only_session_stop_gen = 0
+    slot._promise_only_session_key = effective_session_key(slot)
+    assert slot._promise_only_session_key == "slack:session-a"
+
+    slot.linked_session_key = "slack:session-b"
+    cfg = MagicMock()
+    cfg.dashboard.merge_queued_messages = False
+
+    def _unexpected_dispatch(_state, _slot, coro):
+        coro.close()
+        raise AssertionError("recovery replay dispatched after a session rebind")
+
+    with (
+        patch("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", return_value=cfg),
+        patch(
+            "kiro_crew.dashboard.chat_runner.spawn_guarded_turn",
+            side_effect=_unexpected_dispatch,
+        ),
+    ):
+        started = await _start_next_queued_turn(state, slot)
+
+    assert started is False
+    assert all(item.get("kind") != FALSE_TOOL_BLOCKER_REPLAY_KIND for item in slot._queue)
+    assert slot._promise_only_retries == 0
+    assert slot._promise_only_session_key == "slack:session-b"
+    assert any(
+        msg.get("role") == "notice"
+        and "moved to another session" in msg.get("content", "")
+        and "nothing was run" in msg.get("content", "")
+        for msg in slot.messages
+    )

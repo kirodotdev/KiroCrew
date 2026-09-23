@@ -28,8 +28,12 @@ from chat_test_helpers import _make_state
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_KNOWN,
 )
@@ -39,13 +43,29 @@ from kiro_crew.providers.base import LLMProvider
 
 
 class TestCompactCapabilitySet:
-    def test_membership_is_kiro_and_claude_only(self) -> None:
+    def test_membership_is_the_harnesses_that_answer_the_prompt(self) -> None:
         """Opting a harness in is a deliberate edit with evidence (H6).
 
-        KAS stays out until it acts on the /compact prompt; granting it here
-        would re-introduce the 300s strand this set exists to prevent.
+        KAS stays out because it does not act on the ``/compact`` prompt;
+        granting it here would re-introduce the 300s strand this set exists to
+        prevent. codex is in because codex-acp 1.11.0 advertises ``compact`` and
+        answers the ``/compact`` prompt once the compaction is done. Every harness
+        that joined is held to the same bar, and
+        ``test_compaction_other_backends`` carries the evidence per harness.
         """
-        assert ACP_BACKENDS_COMPACT == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
+        assert ACP_BACKENDS_COMPACT == frozenset(
+            {
+                ACP_BACKEND_KIRO,
+                ACP_BACKEND_CLAUDE,
+                ACP_BACKEND_CODEX,
+                ACP_BACKEND_OPENCODE,
+            }
+        )
+        # pi and goose are absent on the evidence CLASS, not on the feature: their
+        # source says inline and no capture confirms it. See
+        # ``test_compaction_other_backends``.
+        assert ACP_BACKEND_PI not in ACP_BACKENDS_COMPACT
+        assert ACP_BACKEND_GOOSE not in ACP_BACKENDS_COMPACT
         assert ACP_BACKEND_KAS not in ACP_BACKENDS_COMPACT
 
     def test_subset_of_known_backends(self) -> None:

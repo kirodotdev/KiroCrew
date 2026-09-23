@@ -19,6 +19,10 @@ import { Badge } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { framablePreviewUrl, safeHttpUrl } from '../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
+import { useDirectDeploy } from '../hooks/useDirectDeploy'
+import DirectDeployFlow from './DirectDeployFlow'
 import { copyToClipboard } from '../utils/clipboard'
 import type { Artifact, WebAppMetadata } from '../types'
 
@@ -355,7 +359,18 @@ export default function WebAppArtifactCard({
   const navigate = useNavigate()
   // Whether this installation may deploy to a public cloud URL at all. Gates the
   // not-deployed hero CTA below.
-  const cloudDeployEnabled = useCloudDeploymentEnabled()
+  // Two independent conditions, both required before the deploy CTA appears:
+  // the platform must permit cloud deployment at all, and the operator must have
+  // opted into the Artifact Deploy preview. Everything else on the card (preview,
+  // architecture, cost) renders either way -- withholding information about the
+  // artifact would be gating the wrong thing.
+  //
+  // Both hooks are called unconditionally and combined afterwards. Writing this
+  // as `useCloudDeploymentEnabled() && usePreviewFlag(...)` would short-circuit
+  // the second call and break the hook order this component depends on.
+  const platformAllowsDeploy = useCloudDeploymentEnabled()
+  const deployPreview = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
+  const cloudDeployEnabled = platformAllowsDeploy && deployPreview
   // Deploy-time profile picker: registered profiles from the Artifact Deploy
   // app's control plane. Empty selection = the registry default; the choice is
   // baked into the seed prompt so the skill runs `--profile <choice>` and
@@ -378,11 +393,16 @@ export default function WebAppArtifactCard({
   // beats iframing the remote deployment — no dependency on remote frame
   // headers, CDN propagation, or the deployment even existing.
   const { base: previewBase, remoteFramable } = useAppPreview(artifact.slug, !!meta)
+  // The direct deploy. Its `needsAgent` flag is what turns the button below into
+  // the chat hand-off — and only after the backend has said this app has no built
+  // static root to publish, so the honest label appears instead of a "Deploy"
+  // button that silently opens a chat (#12816).
+  const deployFlow = useDirectDeploy(artifact.slug)
+  const needsAgent = deployFlow.needsAgent
   // Deploy launches a FRESH chat session that auto-runs the artifact-deploy skill
   // on this artifact — the same __mc_chat_launch mechanism ChatPage consumes (new
-  // session + auto-send). A fresh session is the isolation boundary, so no
-  // subagent is needed: the agent adapts + deploys + debugs inline there. The
-  // prompt is phrased to trigger the artifact-deploy skill.
+  // session + auto-send). Now the FALLBACK for an app the direct path cannot
+  // publish, plus the redeploy affordance on an expired card.
   const openDeployChat = useCallback(() => {
     const chosen = deployProfile || meta?.deploy_target?.profile || defaultProfile
     ;(window as unknown as { __mc_chat_launch?: { message: string; ts: number } }).__mc_chat_launch = {
@@ -440,9 +460,18 @@ export default function WebAppArtifactCard({
             </div>
             <Badge variant="aim">{i18nT('components.webAppArtifactCard.not_deployed')}</Badge>
           </div>
-          <p className="text-sm text-muted mt-3 mb-4">
-            {i18nT('components.webAppArtifactCard.not_deployed_yet_deploy_to_your_own_aws_account')}
-          </p>
+          {/* The preview pointer is only true when the preview is the ONLY thing in
+              the way. On an edition where the platform itself withholds cloud
+              deployment, turning the flag on unlocks nothing, so naming it would
+              send the reader to a setting that cannot help them. That case gets
+              the app's draft information and no deploy copy at all. */}
+          {(cloudDeployEnabled || platformAllowsDeploy) && (
+            <p className="text-sm text-muted mt-3 mb-4">
+              {cloudDeployEnabled
+                ? i18nT('components.webAppArtifactCard.not_deployed_yet_deploy_to_your_own_aws_account')
+                : i18nT('components.webAppArtifactCard.deployment_available_under_feature_previews')}
+            </p>
+          )}
           <div className="flex items-center gap-2 flex-wrap">
             {/* Only the deploy ACTION is withheld when the platform disallows cloud
                 deployment — the card's preview, architecture and metadata above stay,
@@ -462,25 +491,46 @@ export default function WebAppArtifactCard({
               />
             )}
             {cloudDeployEnabled && (
-            <button
-              type="button"
-              onClick={openDeployChat}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium bg-accent text-accent-fg hover:bg-accent-hover cursor-pointer transition-all border-none"
-              title={i18nT('components.webAppArtifactCard.deploy_this_app_to_your_aws_account')}
-              aria-label={i18nT('components.webAppArtifactCard.deploy')}
-            >
-              <Rocket size={14} aria-hidden="true" />
-              {i18nT('components.webAppArtifactCard.deploy')}
-            </button>
+              needsAgent ? (
+                <button
+                  type="button"
+                  onClick={openDeployChat}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer transition-all bg-transparent"
+                  title={i18nT('components.directDeploy.deploy_via_agent')}
+                  aria-label={i18nT('components.directDeploy.deploy_via_agent')}
+                >
+                  <Rocket size={14} aria-hidden="true" />
+                  {i18nT('components.directDeploy.deploy_via_agent')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={deployFlow.busy}
+                  onClick={() => void deployFlow.start(deployProfile || defaultProfile)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium bg-accent text-accent-fg hover:bg-accent-hover cursor-pointer transition-all border-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={i18nT('components.webAppArtifactCard.deploy_this_app_to_your_aws_account')}
+                  aria-label={i18nT('components.webAppArtifactCard.deploy')}
+                >
+                  <Rocket size={14} aria-hidden="true" />
+                  {deployFlow.phase.kind === 'checking'
+                    ? i18nT('components.publishHub.checking')
+                    : deployFlow.phase.kind === 'deploying'
+                      ? i18nT('components.webAppArtifactCard.deploying')
+                      : i18nT('components.webAppArtifactCard.deploy')}
+                </button>
+              )
             )}
             {cloudDeployEnabled && (
             <span className="text-[10px] text-muted">
-              {registeredProfiles.length > 0
+              {needsAgent
                 ? i18nT('components.webAppArtifactCard.opens_a_new_chat_session_to_run_the_deploy')
-                : i18nT('components.webAppArtifactCard.opens_a_new_chat_session_to_run_the_deploy_add_a')}
+                : registeredProfiles.length > 0
+                  ? i18nT('components.directDeploy.deploys_from_here_confirm_gated')
+                  : i18nT('components.webAppArtifactCard.opens_a_new_chat_session_to_run_the_deploy_add_a')}
             </span>
             )}
           </div>
+          {cloudDeployEnabled && <DirectDeployFlow slug={artifact.slug} flow={deployFlow} profile={deployProfile || defaultProfile} />}
         </div>
 
         {previewBase && (

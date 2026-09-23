@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from typing import Callable
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.cron import CronJob, CronSchedule, CronService
 from kiro_crew.dashboard.handlers.cron import api_cron_run
 
 
@@ -143,3 +145,116 @@ class TestApiCronRun:
             gate.set()
         # Exactly one run was started despite both requests passing the lookup.
         state.crons.run_job.assert_called_once_with("j1")
+
+
+async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:
+    """Poll the loop until *predicate* holds; the handler starts its run as a
+    background task, so the test has to let that task get through its
+    off-loop store read before inspecting the service."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not met before the poll deadline")
+        await asyncio.sleep(0.01)
+
+
+class TestApiCronRunStaleFinishedTask:
+    """A tracked task that has already finished is not a run in flight.
+
+    ``_executing`` and ``_running_tasks`` are released by ``_run_job_isolated``'s
+    ``finally``. A run whose task ends without reaching it leaves both populated
+    with nothing on that path to clear them, and a guard that trusts the markers
+    alone answers ``POST /api/crons/{id}/run`` with 409 "job is already running"
+    for that job until the reaper sweep meets the finished task, while
+    ``crons.json`` and the in-flight directory show it idle. The route must not
+    wait for that sweep. These tests run the handler against a REAL
+    ``CronService`` so the guard's self-heal is exercised, not mocked away.
+    """
+
+    @staticmethod
+    def _service(tmp_path: Path) -> tuple[CronService, CronJob]:
+        svc = CronService(base_dir=tmp_path)
+        job = _make_job("j1")
+        svc._jobs = [job]
+        svc._save()
+        return svc, job
+
+    @staticmethod
+    def _state(svc: CronService) -> MagicMock:
+        state = MagicMock()
+        state.crons = svc
+        state.push_refresh = MagicMock()
+        return state
+
+    @pytest.mark.asyncio
+    async def test_finished_task_left_in_the_maps_does_not_refuse_a_manual_run(
+        self, tmp_path: Path
+    ) -> None:
+        svc, job = self._service(tmp_path)
+
+        async def _died_before_cleanup() -> None:
+            raise RuntimeError("run ended without reaching its finally")
+
+        # The state a run leaves behind when its task ends ahead of the
+        # try/finally: a finished task still stored, the job still "executing",
+        # its start stamps still claimed.
+        stale = asyncio.get_running_loop().create_task(_died_before_cleanup())
+        await asyncio.gather(stale, return_exceptions=True)
+        assert stale.done()
+        svc._running_tasks[job.id] = stale
+        svc._executing.add(job.id)
+        svc._job_start_times[job.id] = time.time() - 60
+        svc._job_start_monotonic[job.id] = time.monotonic() - 60
+        assert svc.is_running(job.id)
+
+        state = self._state(svc)
+        with patch.object(svc, "_run_job_isolated", new=AsyncMock(return_value=None)) as run:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/crons/j1/run")
+                body = await resp.json()
+                assert resp.status == 200, (
+                    "a finished task left in _running_tasks must not refuse a manual run: "
+                    f"got {resp.status} {body}"
+                )
+                # The handler returns before run_job has read the store off-loop;
+                # let the real run_job get through its own _executing claim.
+                await _wait_until(lambda: run.await_count == 1)
+                await _wait_until(lambda: job.id not in svc._executing)
+
+        assert run.await_args is not None
+        assert run.await_args.args[0].id == job.id
+        # Every trace of the dead run is gone, and the new run released its own.
+        assert job.id not in svc._running_tasks
+        assert job.id not in svc._executing
+        assert job.id not in svc._job_start_times
+        assert job.id not in svc._job_start_monotonic
+
+    @pytest.mark.asyncio
+    async def test_live_task_still_refuses_a_manual_run(self, tmp_path: Path) -> None:
+        """The self-heal must be keyed on ``done()``: a run that is genuinely
+        in flight keeps the 409 and keeps its task handle untouched."""
+        svc, job = self._service(tmp_path)
+        gate = asyncio.Event()
+
+        async def _still_running() -> None:
+            await gate.wait()
+
+        live = asyncio.get_running_loop().create_task(_still_running())
+        svc._running_tasks[job.id] = live
+        svc._executing.add(job.id)
+
+        state = self._state(svc)
+        try:
+            with patch.object(svc, "_run_job_isolated", new=AsyncMock(return_value=None)) as run:
+                async with TestClient(TestServer(_make_app(state))) as client:
+                    resp = await client.post("/api/crons/j1/run")
+                    assert resp.status == 409
+                    body = await resp.json()
+            assert body["error"] == "job is already running"
+            assert svc._running_tasks[job.id] is live
+            assert job.id in svc._executing
+            assert not live.done()
+            run.assert_not_awaited()
+        finally:
+            gate.set()
+            await live

@@ -118,6 +118,7 @@ def opencode_elements(
     *,
     session_key: str = "",
     channel_id: str = "",
+    session_token: str = "",
 ) -> list[dict[str, Any]]:
     """Apply opencode's identity rule to an already-translated array.
 
@@ -166,8 +167,10 @@ def opencode_elements(
     Pure and in-memory.
     """
     identity = (
-        control_plane_identity_env(session_key, channel_id, label="opencode")
-        if session_key or channel_id
+        control_plane_identity_env(
+            session_key, channel_id, label="opencode", session_token=session_token
+        )
+        if session_key or channel_id or session_token
         else {}
     )
     out: list[dict[str, Any]] = []
@@ -233,6 +236,7 @@ def opencode_projection(
     work_dir: object = None,
     session_key: str = "",
     channel_id: str = "",
+    session_token: str = "",
 ) -> SessionProjection:
     """The whole opencode array -- spec translation AND pooled stubs.
 
@@ -305,7 +309,7 @@ def opencode_projection(
             continue
         kept.append(element)
     out: list[dict[str, Any]] = opencode_elements(
-        kept, session_key=session_key, channel_id=channel_id
+        kept, session_key=session_key, channel_id=channel_id, session_token=session_token
     )
     for stub in stub_elements:
         if not isinstance(stub, Mapping):
@@ -333,7 +337,14 @@ def opencode_projection(
         # gained one.
         out.append(without_stdio_tag(dict(stub)))
     return SessionProjection(
-        params={"mcpServers": out}, derived_spec_snapshot=projection.derived_spec_snapshot
+        params={"mcpServers": out},
+        # The restriction half of ``withheld`` above, identity half excluded: an
+        # identity-bound name is withheld from the spec-described element precisely so
+        # Crew can author its own, while these names must not come back at all -- this
+        # transport has no deny channel, so the withhold IS the enforcement.
+        disabled_servers=projection.disabled_servers,
+        restricted_servers=projection.restricted | narrowed_plane,
+        derived_spec_snapshot=projection.derived_spec_snapshot,
     )
 
 
@@ -518,6 +529,7 @@ class OpenCodeMirror(AgentConfigMirror):
         work_dir: object = None,
         session_key: str = "",
         channel_id: str = "",
+        session_token: str = "",
         **kwargs: object,
     ) -> dict[str, object]:
         """The wire face: the ``mcpServers`` array for this opencode session.
@@ -563,6 +575,7 @@ class OpenCodeMirror(AgentConfigMirror):
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            session_token=session_token,
         ).params
 
     def session_projection(
@@ -574,6 +587,7 @@ class OpenCodeMirror(AgentConfigMirror):
         work_dir: object = None,
         session_key: str = "",
         channel_id: str = "",
+        session_token: str = "",
         **kwargs: object,
     ) -> SessionProjection:
         """The structured face: :func:`opencode_projection`, with ``kwargs`` ignored
@@ -588,4 +602,5 @@ class OpenCodeMirror(AgentConfigMirror):
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            session_token=session_token,
         )

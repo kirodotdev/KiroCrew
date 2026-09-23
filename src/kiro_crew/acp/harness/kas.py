@@ -1,7 +1,7 @@
 """The KAS relay, reached through kiro-cli's own ACP transport.
 
-KAS shares kiro-cli's binary and its ``_kiro.dev`` notification vocabulary, and
-differs from it on four things that matter.
+KAS shares kiro-cli's binary, but reports MCP readiness through session-scoped
+``_kiro/mcp/status`` and ``_kiro/tools/didChange`` snapshots.
 
 It takes no ``--agent`` flag, so the agent definition travels on every session
 start and has to be re-sent on resume. Its ``protocolVersion`` is an integer, not
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,11 @@ from typing import Any
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import kas_agents as kas_agents_mod
-from kiro_crew.acp.harness._common import KIRO_FAMILY_ALIASES, MembershipHarness
+from kiro_crew.acp.harness._common import (
+    KIRO_FAMILY_ALIASES,
+    MembershipHarness,
+    apply_mandatory_mcps_env,
+)
 from kiro_crew.acp.harness.base import (
     NotificationAliases,
     SessionExtras,
@@ -38,7 +43,9 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     KAS_CLIENT_CAPABILITIES,
+    METHOD_KAS_MCP_STATUS,
     METHOD_KAS_SESSION_DELETE,
+    METHOD_KAS_TOOLS_CHANGED,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
@@ -94,15 +101,27 @@ class KasHarness(MembershipHarness):
         return SpawnPlan(argv=build_kas_argv(kas_bin, host_auth=host_auth), host_auth=host_auth)
 
     def apply_spawn_env(self, env: dict[str, str]) -> None:
-        """Take the API key OUT of the child's environment.
+        """Take the API key OUT of the child's environment, and exempt Crew's own
+        MCP servers from Tool Search deferral.
 
         The relay expects an OIDC bearer from the callback, not a Crew API key,
         and an ambient key would be sent with the wrong token type. Removing it
         is the positive action here, not an omission.
+
+        The exemption applies here for the same reason this harness speaks
+        kiro-cli's notification dialect: the relay IS kiro-cli. Crew launches it as
+        ``kiro-cli acp --agent-engine v3`` (:func:`acp.kas_transport.build_kas_argv`),
+        the same ``acp`` subcommand the kiro path uses, and that subcommand reads the
+        variable unconditionally -- the read is not gated on ``--agent-engine``. KAS
+        is in fact the more exposed of the two: it takes Tool Search over the
+        ``initialize`` wire and defers every MCP spec whenever the setting is on,
+        with no token threshold to stay under. Rules and rationale:
+        :func:`apply_mandatory_mcps_env`.
         """
         from kiro_crew.config.loader import strip_kiro_cli_api_key
 
         strip_kiro_cli_api_key(env)
+        apply_mandatory_mcps_env(env)
 
     @property
     def verifies_agent_activation(self) -> bool:
@@ -131,6 +150,7 @@ class KasHarness(MembershipHarness):
         work_dir: str | Path | None,
         mcp_gateway_overlay: Any = None,
         member_dispatch: bool = False,
+        session_key: str = "",
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -185,7 +205,24 @@ class KasHarness(MembershipHarness):
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
                 # the overlay that answers which servers those are.
-                stubbed = session_servers_mod.injection_server_names(mcp_gateway_overlay, agent)
+                stubbed = session_servers_mod.injection_server_names(
+                    mcp_gateway_overlay,
+                    agent,
+                    # Deliberately UNSCOPED. The projection above is built from
+                    # ``paths.kiro_agents_dir()`` alone, so the agent this session
+                    # runs is the user-level one even when the checkout declares a
+                    # file of the same name -- KAS refuses a project-only agent at
+                    # session start rather than projecting it
+                    # (``agent_discovery.project_agent_files``). Handing the
+                    # checkout to a name-keyed lookup over that same user-level
+                    # directory would collapse this set to empty, project the
+                    # user-level servers un-subtracted, and run them outside the
+                    # broker: no pool, no caller-identity attribution, no
+                    # governance. ``agent_sdk.backends.overlay_project_scope``
+                    # answers ``{}`` for this host on the injection half for
+                    # the same reason.
+                    work_dir=None,
+                )
             except Exception:
                 # Empty is the SAFE direction: it declares a stubbed server twice
                 # (the injection still wins) rather than withholding one nothing
@@ -216,6 +253,7 @@ class KasHarness(MembershipHarness):
                     spec,
                     stub_server_names=stubbed,
                     member_dispatch=member_dispatch,
+                    session_key=session_key,
                 ),
                 snapshot,
             )
@@ -272,7 +310,12 @@ class KasHarness(MembershipHarness):
 
     @property
     def notification_aliases(self) -> NotificationAliases:
-        return KIRO_FAMILY_ALIASES
+        return replace(
+            KIRO_FAMILY_ALIASES,
+            mcp_init=KIRO_FAMILY_ALIASES.mcp_init
+            + (METHOD_KAS_MCP_STATUS, METHOD_KAS_TOOLS_CHANGED),
+            mcp_readiness=True,
+        )
 
     # ── Seam 6: teardown ──
 

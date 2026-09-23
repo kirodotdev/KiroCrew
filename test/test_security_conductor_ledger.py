@@ -2831,3 +2831,218 @@ class TestLessonsRebuildKeepsWhatWasThere:
         creates = re.findall(r"CREATE TABLE[^(]*\(\{LESSONS_COLUMNS\}\)", source)
         assert len(creates) == 2, creates
         assert "source_policy_block TEXT" in mod.LESSONS_COLUMNS
+
+
+class TestTheBehaviourKindIsDeclaredAndStorable:
+    """``test`` is a golden-path kind, and the table has to agree with the CLI.
+
+    Declaring it in ``GOLDEN_PATH_KINDS`` alone was not enough: the ``golden_paths``
+    table carries a CHECK constraint spelling the kinds as literals, SQLite has no
+    ALTER for a CHECK, and the ``CREATE TABLE IF NOT EXISTS`` ladder leaves an
+    existing table in its old shape -- so the first ``propose-golden-path --kind
+    test`` against a live ledger died with an IntegrityError traceback instead of a
+    sentence. The rebuild is what these tests are about, and the property that
+    matters most is that it is LOSSLESS: an approved golden path is cited by id, and
+    renumbering would point a recorded human approval at a different operation.
+    """
+
+    #: The table exactly as it shipped before the kind existed, so the migration runs
+    #: against the real old shape rather than a guess at it.
+    LEGACY_TABLE = """CREATE TABLE golden_paths (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL CHECK (kind IN ('shell', 'flow', 'cron')),
+        surface TEXT NOT NULL,
+        command_or_flow TEXT NOT NULL,
+        platform TEXT NOT NULL CHECK (platform IN ('any', 'posix', 'windows'))
+            DEFAULT 'any',
+        reason TEXT NOT NULL,
+        source_finding_id INTEGER REFERENCES findings(id),
+        approved_by TEXT,
+        ts TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1
+    )"""
+
+    def propose(self, mod, db: Path, kind: str, command: str) -> int:
+        return run(
+            mod,
+            db,
+            "propose-golden-path",
+            "--kind",
+            kind,
+            "--surface",
+            "S10 cron + scripts",
+            "--command",
+            command,
+            "--platform",
+            "any",
+            "--reason",
+            "a behaviour this fix must keep alive",
+        )
+
+    def a_legacy_ledger(self, mod, db: Path) -> None:
+        """A ledger whose ``golden_paths`` predates the kind, with an approved row in it.
+
+        The id counter is left ABOVE the surviving maximum, which is what the RFC's
+        retirement-by-hand leaves behind and what a rebuild must not walk back.
+        """
+        conn = mod.connect(db)
+        try:
+            mod.init_schema(conn)
+            with conn:
+                conn.execute("DROP TABLE golden_paths")
+                conn.execute(self.LEGACY_TABLE)
+                conn.execute(
+                    "INSERT INTO golden_paths (id, kind, surface, command_or_flow, platform,"
+                    " reason, approved_by, ts, active)"
+                    " VALUES (4, 'shell', 'gh-read', 'gh pr view 1 --json state', 'any',"
+                    " 'reading a PR state', 'operator', '2026-01-01T00:00:00+00:00', 1)"
+                )
+                conn.execute(
+                    "INSERT INTO sqlite_sequence (name, seq) SELECT 'golden_paths', 9"
+                    " WHERE NOT EXISTS"
+                    " (SELECT 1 FROM sqlite_sequence WHERE name = 'golden_paths')"
+                )
+                conn.execute("UPDATE sqlite_sequence SET seq = 9 WHERE name = 'golden_paths'")
+        finally:
+            conn.close()
+
+    def test_a_behaviour_row_can_be_proposed(self, mod, db, capsys) -> None:
+        assert self.propose(mod, db, "test", "test/test_governance_policy.py") == 0
+        body = out_json(capsys)
+        # Proposed rows are inert: activation is the human's verb and nothing else's.
+        assert body == {"id": body["id"], "created": True, "active": 0}
+
+    def test_an_undeclared_kind_is_still_refused_with_a_sentence(self, mod, db, capsys) -> None:
+        assert self.propose(mod, db, "unit", "test/test_governance_policy.py") == 2
+        assert "unknown kind" in capsys.readouterr().err
+
+    def test_every_stored_check_is_derived_from_its_own_constant(self, mod, db) -> None:
+        """The CLI's screen and the table's CHECK must not be two lists.
+
+        They were for golden-path kinds, and that is how a kind the parser accepted
+        became a kind the storage layer refused. Lessons kinds and verdict roles carried
+        the same shape, so all three are asserted here rather than the one that broke.
+        """
+        conn = mod.connect(db)
+        try:
+            mod.init_schema(conn)
+            stored = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table'"  # wokeignore:rule=master
+                " AND name = 'golden_paths'"
+            ).fetchone()["sql"]
+        finally:
+            conn.close()
+        for kind in mod.GOLDEN_PATH_KINDS:
+            assert f"'{kind}'" in stored
+        for table, constants in (("lessons", mod.LESSON_KINDS), ("verdicts", mod.ROLES)):
+            conn = mod.connect(db)
+            try:
+                mod.init_schema(conn)
+                sql = conn.execute(
+                    "SELECT sql FROM sqlite_master"  # wokeignore:rule=master
+                    " WHERE type = 'table' AND name = ?",
+                    (table,),
+                ).fetchone()["sql"]
+            finally:
+                conn.close()
+            for value in constants:
+                assert f"'{value}'" in sql, (table, value)
+
+    def test_a_legacy_table_is_rebuilt_on_open_and_only_once(self, mod, db) -> None:
+        self.a_legacy_ledger(mod, db)
+        conn = mod.connect(db)
+        try:
+            assert mod._golden_paths_needs_rebuild(conn) is True
+            mod.init_schema(conn)
+            assert mod._golden_paths_needs_rebuild(conn) is False
+        finally:
+            conn.close()
+
+    def test_the_rebuild_keeps_every_row_its_id_the_counter_and_the_indexes(self, mod, db) -> None:
+        self.a_legacy_ledger(mod, db)
+        conn = mod.connect(db)
+        try:
+            mod.init_schema(conn)
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT id, kind, command_or_flow, approved_by, active FROM golden_paths"
+                )
+            ]
+            counter = conn.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'golden_paths'"
+            ).fetchone()["seq"]
+            indexes = sorted(
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"  # wokeignore:rule=master
+                    " AND tbl_name = 'golden_paths' AND name NOT LIKE 'sqlite_%'"
+                )
+            )
+        finally:
+            conn.close()
+        assert rows == [
+            {
+                "id": 4,
+                "kind": "shell",
+                "command_or_flow": "gh pr view 1 --json state",
+                "approved_by": "operator",
+                "active": 1,
+            }
+        ]
+        assert int(counter) == 9, "the id counter was walked back, so an id can be reissued"
+        assert indexes == ["golden_paths_active", "golden_paths_identity"]
+
+    def test_the_new_kind_is_storable_after_the_rebuild(self, mod, db, capsys) -> None:
+        self.a_legacy_ledger(mod, db)
+        assert self.propose(mod, db, "test", "test/test_governance_policy.py") == 0
+        assert out_json(capsys)["active"] == 0
+
+    def test_storage_still_refuses_an_undeclared_kind_after_the_rebuild(self, mod, db) -> None:
+        """The rebuild must widen the constraint, never drop it.
+
+        Anything that can reach this database can INSERT directly, so the CHECK is the
+        guarantee and the CLI's screen is only the courteous message.
+        """
+        self.a_legacy_ledger(mod, db)
+        conn = mod.connect(db)
+        try:
+            mod.init_schema(conn)
+            with pytest.raises(Exception) as caught:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO golden_paths (kind, surface, command_or_flow, platform,"
+                        " reason, ts) VALUES ('unit', 's', 'c', 'any', 'r', '2026-01-01')"
+                    )
+        finally:
+            conn.close()
+        assert "CHECK constraint failed" in str(caught.value)
+
+    def test_a_database_already_in_shape_is_left_alone(self, mod, db) -> None:
+        """The probe is a SHAPE test, not a version test, so an ordinary open rebuilds
+        nothing -- and an interrupted upgrade finds the same work still to do."""
+        run(mod, db, "init")
+        conn = mod.connect(db)
+        try:
+            assert mod._golden_paths_needs_rebuild(conn) is False
+        finally:
+            conn.close()
+
+    def test_a_behaviour_row_validates_in_a_corpus_file(self, mod) -> None:
+        """The committed corpus and the import are judged by the one validator."""
+        rows = mod.load_golden_path_corpus(
+            json.dumps(
+                {
+                    "golden_paths": [
+                        {
+                            "kind": "test",
+                            "surface": "S7 secrets + governance ceiling",
+                            "command_or_flow": "test/test_governance_policy.py::test_x",
+                            "platform": "any",
+                            "reason": "single-tier governance must resolve as before",
+                        }
+                    ]
+                }
+            )
+        )
+        assert rows[0]["kind"] == "test"

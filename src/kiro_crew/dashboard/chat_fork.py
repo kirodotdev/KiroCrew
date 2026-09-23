@@ -16,6 +16,7 @@ from kiro_crew.dashboard.chat_utils import (
     history_corpus_unreadable,
     slot_history_key,
 )
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
@@ -53,40 +54,41 @@ def drop_persisted_tail_prefix(full_disk: list[dict], tail: list[dict]) -> list[
     return _drop_persisted_tail_prefix(full_disk, tail)
 
 
-def _fork_private_memory_store(session_key: str, agent: str, recorded_store: str) -> str:
-    """A fork inherits private authority from its parent, never from copied rows."""
-    from kiro_crew.member_memory_auth import read_private_session_store
-    from kiro_crew.memory_stores import UnknownMemoryStore, require_member_memory_store
+def _fork_execution_context(
+    session_key: str,
+    agent: str,
+    recorded_store: str,
+    memory_mode: str,
+):
+    """Capture the parent's execution without opening learned memory."""
+    from kiro_crew.execution_context import (
+        ExecutionContext,
+        MemoryStoreRef,
+        read_session_execution,
+    )
+    from kiro_crew.memory_stores import UnknownMemoryStore, require_memory_store
 
-    protected = read_private_session_store(session_key)
-    config = KiroCrewConfig.load()
-    selected = agent or config.default_agent
-    if selected not in config.agents:
-        if protected or recorded_store not in ("", "default"):
-            raise UnknownMemoryStore("The fork source's member binding is unavailable")
-        return ""
-    store = require_member_memory_store(config, selected)
-    if recorded_store and recorded_store != store:
+    execution = read_session_execution(session_key)
+    if execution is None:
+        cfg = KiroCrewConfig.load()
+        store = require_memory_store(
+            recorded_store or "default", config=cfg, require_directory=False
+        )
+        if getattr(cfg.memory_stores.get(store), "memory_version", 1) == 2:
+            raise UnknownMemoryStore("The fork source's execution identity is unavailable")
+        execution = ExecutionContext(None, MemoryStoreRef(store), "template", agent or "kirocrew")
+    if recorded_store and (recorded_store or "default") != execution.store.store_id:
         raise UnknownMemoryStore("The fork source's recorded memory binding has changed")
-    record = config.memory_stores.get(store)
-    if record is not None and record.memory_version == 2:
-        if protected != store:
-            raise UnknownMemoryStore(
-                "The fork source has no verified assignment to this member's private memory"
-            )
-        return store
-    if protected:
-        raise UnknownMemoryStore("The fork source retains a different private memory assignment")
-    return ""
+    return execution.with_mode(memory_mode)
 
 
-def _bind_private_fork_memory(source: tuple[str, str, str], child_key: str, store: str) -> None:
-    from kiro_crew.member_memory_auth import bind_private_session_store
+def _bind_fork_execution(source, child_key: str, execution) -> None:
+    from kiro_crew.execution_context import bind_session_execution
     from kiro_crew.memory_stores import UnknownMemoryStore
 
-    if _fork_private_memory_store(*source) != store:
-        raise UnknownMemoryStore("The fork source's private memory assignment changed")
-    bind_private_session_store(child_key, store)
+    if _fork_execution_context(*source) != execution:
+        raise UnknownMemoryStore("The fork source's execution changed")
+    bind_session_execution(child_key, execution)
 
 
 async def api_chat_slot_fork(request: web.Request) -> web.Response:
@@ -156,6 +158,32 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             # (CWE-204). The true reason is recorded server-side via SEL above.
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
+    # The child inherits the parent's mode, so the parent's value is what the
+    # slot constructor validates against ``VALID_MEMORY_MODES``. The API checks
+    # the field on the way in, but rehydration copies the transcript header's
+    # ``memory_mode`` onto the slot as written, so a hand-edited or partially
+    # written header can leave an unrecognised value on a live parent. That
+    # value is refused HERE, with a code and before any child exists, rather
+    # than raising out of ``_ChatSlot.__init__`` as a 500. Fail closed: a mode
+    # this code cannot read is a memory boundary it cannot honour.
+    inherited_memory_mode = slot.memory_mode
+    if inherited_memory_mode not in VALID_MEMORY_MODES:
+        sel().log_api_access(
+            caller=request_app or "dashboard",
+            operation="chat.slot_fork",
+            outcome="denied",
+            source="dashboard",
+            resources=f"slot={name},memory_mode={inherited_memory_mode!r}",
+            error="source slot memory_mode is not a recognised mode",
+        )
+        return web.json_response(
+            {
+                "error": "the source session's memory mode is not recognised",
+                "code": "fork_source_memory_mode_invalid",
+            },
+            status=409,
+        )
+
     source_memory_identity = (
         effective_session_key(slot),
         slot.agent,
@@ -164,19 +192,18 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         slot_history_key(slot),
     )
 
-    # Incognito and temporary sessions fork like any other. Nothing about a fork
-    # engages what those modes actually guarantee -- no consolidation or lessons
-    # (``is_restricted``), no memory-context injection (``blocks_reads``) -- and
-    # the transcript being copied is already on disk: ``_save_slot_to_history``
-    # has no ``memory_mode`` gate, so the parent's JSONL holds it for tab recovery
-    # (see docs/system-specs/modules/history.md). A refusal here would buy no
-    # privacy; it would only force the user to reselect the mode and lose the
-    # conversation.
-    #
-    # The one thing a fork must never do is LOOSEN the mode: copying an incognito
-    # transcript into a persistent slot would hand content the user marked
-    # no-write to consolidation. So the child inherits the parent's mode below,
-    # and the request body carries no way to pick one.
+    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+    try:
+        inherited_execution = await asyncio.to_thread(
+            _fork_execution_context, *source_memory_identity[:4]
+        )
+    except (OSError, ValueError) as exc:
+        return _store_unavailable_response(source_memory_identity[2], exc)
+
+    # Restricted forks copy only the live conversation and inherit the parent's
+    # mode before any row is copied. Neither branch persists restricted bodies,
+    # and the request cannot loosen the inherited mode.
     if request.body_exists:
         try:
             body = await request.json()
@@ -874,32 +901,6 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     else:
         fork_mode = slot.mode
 
-    # The child inherits the parent's mode, so the parent's value is what the
-    # slot constructor validates against ``VALID_MEMORY_MODES``. The API checks
-    # the field on the way in, but rehydration copies the transcript header's
-    # ``memory_mode`` onto the slot as written, so a hand-edited or partially
-    # written header can leave an unrecognised value on a live parent. That
-    # value is refused HERE, with a code and before any child exists, rather
-    # than raising out of ``_ChatSlot.__init__`` as a 500. Fail closed: a mode
-    # this code cannot read is a memory boundary it cannot honour.
-    inherited_memory_mode = slot.memory_mode
-    if inherited_memory_mode not in VALID_MEMORY_MODES:
-        sel().log_api_access(
-            caller=request_app or "dashboard",
-            operation="chat.slot_fork",
-            outcome="denied",
-            source="dashboard",
-            resources=f"slot={name},memory_mode={inherited_memory_mode!r}",
-            error="source slot memory_mode is not a recognised mode",
-        )
-        return web.json_response(
-            {
-                "error": "the source session's memory mode is not recognised",
-                "code": "fork_source_memory_mode_invalid",
-            },
-            status=409,
-        )
-
     from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
     from kiro_crew.memory_stores import UnknownMemoryStore
 
@@ -913,9 +914,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         )
 
     try:
-        inherited_store = await asyncio.to_thread(
-            _fork_private_memory_store, *source_memory_identity[:3]
-        )
+        inherited_store = inherited_execution.store.legacy_name
+        inherited_memory_mode = inherited_execution.memory_mode
         if not _source_identity_unchanged():
             raise UnknownMemoryStore("The fork source changed while its memory was verified")
     except (OSError, ValueError) as exc:
@@ -940,20 +940,22 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         # origin conjunct in state.py still excludes app-token callers.
         count_user_session=True,
     )
-    if inherited_store:
+    if inherited_execution is not None:
         try:
-            # The destination is still empty: no transcript can grant this pin,
-            # and the unchanged first-turn guard will verify it on continuation.
+            # Bind the frozen identity and strict mode while the child is empty.
             await drained_to_thread(
-                _bind_private_fork_memory,
-                source_memory_identity[:3],
+                _bind_fork_execution,
+                source_memory_identity[:4],
                 effective_session_key(new_slot),
-                inherited_store,
+                inherited_execution,
             )
             if not _source_identity_unchanged():
                 raise UnknownMemoryStore("The fork source changed before its history was copied")
             new_slot.memory_store = inherited_store
         except BaseException as exc:
+            from kiro_crew.execution_context import clear_session_execution
+
+            clear_session_execution(effective_session_key(new_slot))
             state._slots.pop(new_slot.key, None)
             state._restricted_keys.discard(effective_session_key(new_slot))
             if isinstance(exc, (OSError, ValueError)):
@@ -961,6 +963,14 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             raise
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
+    # Inherited beside the model it belongs to: the constructor takes `model` and
+    # the routing choice is the other half of the same answer, so a fork of an
+    # "Auto (Jev)" session that arrived pinned would run the parent's next turns
+    # on a model the parent had explicitly stopped choosing by hand.
+    # Inheriting is arming a SECOND routed session, so it answers to the same owner
+    # predicate as the arm itself: this route is gated on app ownership, which an
+    # allow-listed non-owner passes for a slot the owner armed.
+    new_slot.jev_route = slot.jev_route and is_owner_dashboard_request(request)
     # Inherit the active project directory so the fork keeps the parent's working
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.

@@ -1,0 +1,36 @@
+# Smoke: the Task Runner page (/projects; the old /tasks path redirects here)
+# opens on its composer -- a left column with a "New Task" button and the runs
+# list, and a main pane with a Compose / From Spec / From YAML mode row above a
+# "Describe your task..." textarea with "Plan" and "Run" beneath it. Both
+# buttons stay disabled until the textarea has text, so typing is the one thing
+# that visibly changes the pane, and clearing the text is the cheapest way to
+# "cancel": it puts the pane back exactly as it opened without planning or
+# running anything. The scenario never clicks "Plan" or "Run" -- either one
+# calls a model, costs money and leaves a run behind in the list, and the lane's
+# gateway has no agent budget for it. The tester types, reads the enabled
+# buttons, clears the field with Ctrl+A / Backspace and reads them disabled
+# again; the runs column is read at the start and the end so a run that
+# appeared in between would fail the last expectation.
+name: taskrunner-projects-page-compose
+tier: smoke
+feature: task-runner
+user_story: >-
+  As a user, I want to describe a task in the Task Runner composer, so that I
+  can plan or run it as a multi-step job when I am ready.
+docs_url: docs/feature-map/README.md
+summary: Open the Task Runner composer, type a one-line task, then clear it without planning or running
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /projects
+steps:
+  - You are on the Task Runner page. Read the heading "Task Runner", the left column with its "New Task" button and the runs list beneath it (note whether it reads "No runs yet" or lists runs), and the main pane's mode row with "Compose", "From Spec" and "From YAML". Do not scroll or click anything yet.
+  - Make sure "Compose" is the selected mode (click it if it is not). Click into the textarea whose placeholder reads "Describe your task..." and type exactly "Summarise the README of this repository in three bullet points". Do NOT press Enter and do NOT click "Plan" or "Run".
+  - Read the two buttons under the textarea, "Plan" and "Run"; they should now be enabled. Then, with the cursor still in the textarea, press Ctrl+A and then Backspace to clear the text. Read the pane and the runs column again.
+expectations:
+  - The page heading still reads "Task Runner" and the "Compose" mode is selected.
+  - The "Describe your task..." textarea is empty again and the "Plan" and "Run" buttons under it are disabled, exactly as when the page opened.
+  - In the screenshot taken right after you typed, the textarea contained "Summarise the README of this repository in three bullet points" and "Plan" and "Run" were enabled.
+  - The runs list in the left column shows the same entries it showed at the start (no new run appeared) and no red error banner is visible anywhere on the page.
+max_steps: 8
+max_seconds: 240

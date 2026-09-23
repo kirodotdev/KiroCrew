@@ -89,9 +89,52 @@ test("win/linux: File menu is first with Settings… and quit", () => {
   assert.strictEqual(template[0].label, "File");
   const [settings, sep, quit] = template[0].submenu;
   assert.strictEqual(settings.label, "Settings…");
-  assert.strictEqual(settings.accelerator, "CmdOrCtrl+,");
   assert.strictEqual(sep.type, "separator");
   assert.strictEqual(quit.role, "quit");
+});
+
+// Regression pin for #9824: on Windows/Linux, Ctrl is the comma key for
+// Chinese/Japanese IMEs, so a REGISTERED Settings accelerator on Ctrl+, eats the
+// comma before the IME sees it and CJK users cannot type one at all. The bare
+// `accelerator === undefined` this replaces was a PROXY for "nothing is
+// registered"; these two invariants assert that property directly, so a caption
+// that helps the user is allowed while the hazard stays impossible. Off macOS the
+// caption may carry no Ctrl-class modifier in ANY spelling (checked by rule, so a
+// spelling nobody listed still fails), and a caption that is present must be
+// display-only. `registerAccelerator` is a Linux/Windows option, so an
+// unregistered caption cannot eat a keystroke on the platforms this pin covers,
+// while still telling the user where the chord went.
+// A prose comment saying so is exactly the guarantee that failed once already
+// (#9555 swept the in-page binding to Ctrl+, over #783's deliberate Alt+,); this
+// test is the guarantee. macOS keeps Cmd+, — a mac comma is not a Ctrl chord, so
+// it is unaffected. src/lib/shortcutRegistry.ts owns the chord itself; the
+// caption asserted here must keep matching the Alt+, it resolves off macOS.
+const CTRL_CLASS_MODIFIER = /(^|\+)(CmdOrCtrl|CommandOrControl|Ctrl|Control|Cmd|Command)(\+|$)/;
+
+test("win/linux: Settings… shows Alt+, display-only, no Ctrl chord (CJK IME comma, #9824)", () => {
+  const { deps } = makeDeps({ isMac: false });
+  const settings = findItem(buildMenuTemplate(deps), (i) => i.label === "Settings…");
+  assert.ok(settings, "Settings… present off macOS");
+  assert.strictEqual(settings.accelerator, "Alt+,", "caption is the in-page chord");
+  assert.doesNotMatch(
+    settings.accelerator,
+    CTRL_CLASS_MODIFIER,
+    "no Ctrl-class modifier off macOS, in any spelling",
+  );
+  assert.strictEqual(
+    settings.registerAccelerator,
+    false,
+    "displayed only — the menu must claim no key off macOS",
+  );
+});
+
+test("mac: Settings… keeps the Cmd+, accelerator (a mac comma is not a Ctrl chord)", () => {
+  const { deps } = makeDeps({ isMac: true });
+  const settings = findItem(buildMenuTemplate(deps), (i) => i.label === "Settings…");
+  assert.strictEqual(settings.accelerator, "CmdOrCtrl+,");
+  // registerAccelerator is a Linux/Windows option; leaving it unset keeps the
+  // macOS accelerator a real binding rather than a caption.
+  assert.strictEqual(settings.registerAccelerator, undefined);
 });
 
 test("win/linux: Help menu is last with About", () => {

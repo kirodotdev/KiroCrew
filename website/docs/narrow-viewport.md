@@ -55,7 +55,7 @@ the difference is whether the heading can ever have a sibling above it:
 Measured at 390px with `website/scripts/capture-side-panel-pane-inset.mjs`, which reports
 the divider→first-in-flow-box distance per tab: all 31 renderable tabs across the three
 pages now read 12px. Residual differences in where the first *pixel* lands (21px on
-Connections, on Developer > System, on Settings > Remote Instances) are a control's own internal
+Connections, on Developer > System, on Settings > Remote Crew) are a control's own internal
 padding — a sub-tab's or a segmented button's tap target — not stacked page padding, and
 tightening those would shrink a touch target.
 
@@ -138,11 +138,10 @@ screenshot viewer in `pages/AppDetailPage.tsx`. Each one needs its own gesture: 
 diagram viewer without one is unmagnifiable by any gesture, because its content is
 fit-scaled vector whose labels are smallest at exactly the state it opens in. Checking the
 documented example is not enough — count the instances, because a rule reads as satisfied
-when its example obeys it. The image and diagram viewers
-share `hooks/usePinchZoom.ts` (contact tracking, focal anchoring, pan clamping),
-so a further such surface gets the gesture by using the hook rather than by
-re-deriving the math — and `touch-none` on the transform target is what opts it out
-of the root's `pan-x pan-y`.
+when its example obeys it. All three viewers share `hooks/usePinchZoom.ts`
+(contact tracking, focal anchoring, pan clamping), so a further such surface gets the
+gesture by using the hook rather than by re-deriving the math. `touch-none` on the
+transform target is what opts it out of the root's `pan-x pan-y`.
 
 **A trackpad is a third input class, not a touchscreen.** A trackpad pinch emits no
 pointer events at all, so it reaches none of the contact-tracking code: Blink
@@ -190,12 +189,10 @@ labels come out the same apparent size.
 
 The guard that enforces this sweeps **both** `components/**` and `pages/**`, because
 a magnify overlay can live in either and a population scoped to one directory counts
-instances of a set it has itself narrowed. `AppDetailPage.tsx` is carried in that
-guard as a named, issue-linked exception rather than excluded by the glob: an
-exception a reader can see is a debt with an owner, a glob boundary is not. Giving it
-the gesture is tracked separately because its overlay also owns arrow-key navigation
-between screenshots and click-to-dismiss, so a pinch there has to be reconciled with
-a prev/next seam the other two do not have.
+instances of a set it has itself narrowed. All three viewers now satisfy the hook
+requirement directly. `AppDetailPage.screenshotLightbox.zoom.test.tsx` separately pins
+the screenshot viewer's reconciliation with arrow-key navigation, paging, and
+click-to-dismiss — the prev/next seam the other two do not have.
 
 Code blocks take the other legitimate route and scroll
 horizontally instead. And note what is *not* lost — the OS Display Zoom setting sits

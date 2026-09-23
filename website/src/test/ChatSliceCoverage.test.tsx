@@ -248,7 +248,7 @@ describe('chatSlice prototype-pollution guards', () => {
     store.dispatch(setActiveSlot('real'))
     for (const bad of POISON) {
       store.dispatch(setStopPressedAt({ slotId: bad, ts: 1 }))
-      store.dispatch(setSlotStatusDetail({ slot: bad, kind: 'tool', text: 't', ts: 1 }))
+      store.dispatch(setSlotStatusDetail({ slot: bad, kind: 'tool', purpose: 't', ts: 1 }))
       store.dispatch(sseContextUsage({ slot: bad, pct: 50, window_tokens: 100 }))
       store.dispatch(hydrateSlotMessages({ slot: bad, messages: [{ role: 'user', content: 'x' } as ChatMessage] }))
       store.dispatch(appendSlotMessage({ slot: bad, message: { role: 'user', content: 'x' } as ChatMessage }))
@@ -1060,17 +1060,19 @@ describe('chatSlice thunks', () => {
     await store.dispatch(fetchHistory(true))
     expect(chat(store).history.map(s => s.key)).toEqual(['s1', 's2'])
     expect(chat(store).historyOffset).toBe(2)
-    expect(apiMock.sessions).toHaveBeenLastCalledWith(30, 1, false, true)
+    expect(apiMock.sessions).toHaveBeenLastCalledWith(30, 1, false, true, true)
   })
 
-  it('asks the server to exclude sessions already open as tabs', async () => {
+  it('asks the server to exclude sessions already open as tabs, and machine runs', async () => {
     // Older sessions is the complement of the tab list above it. The exclusion
     // has to happen server-side: historyOffset advances by the row count
-    // received, so dropping rows on the client desynchronises paging.
+    // received, so dropping rows on the client desynchronises paging. The fifth
+    // argument is `user_only`: a subagent or workflow transcript has no title, so
+    // it would render its own storage key as the row label in this pane.
     apiMock.sessions.mockResolvedValueOnce({ sessions: [], has_more: false })
     const store = makeStore()
     await store.dispatch(fetchHistory(false))
-    expect(apiMock.sessions).toHaveBeenLastCalledWith(30, 0, false, true)
+    expect(apiMock.sessions).toHaveBeenLastCalledWith(30, 0, false, true, true)
   })
 
   it('drops the resumed row from history so the pane stops listing it', async () => {

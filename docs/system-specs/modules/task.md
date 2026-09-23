@@ -3,8 +3,9 @@
 ## Overview
 
 The task module (`kiro_crew/task.py`) provides a state machine for
-tracking individual messages through their lifecycle. Each Slack message
-or CLI prompt becomes a `Task` with validated state transitions.
+tracking individual Slack messages through their lifecycle. The Slack handler
+creates one `Task` per handled message; CLI prompt handling does not use this
+state machine.
 
 ## Task States
 

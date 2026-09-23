@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from kiro_crew.dashboard import chat, handlers, session_export, session_transfer
+from kiro_crew.dashboard import chat, chat_threads, handlers, session_export, session_transfer
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
     api_issue_source,
@@ -103,6 +103,12 @@ def register(app: web.Application) -> None:
     # Note — visible transcript line + silent next-turn context, no LLM turn
     app.router.add_post("/api/chat/slots/{slot}/note", chat.api_chat_slot_note)
     app.router.add_post("/api/chat/slots/{slot}/fork", chat.api_chat_slot_fork)
+    # Reply threads on a crewmate chat message. The literal ``/threads`` summary
+    # is registered before the ``{mid}`` pattern that would otherwise capture
+    # "threads" as an id, per this module's ordering rule.
+    app.router.add_get("/api/chat/threads", chat_threads.api_chat_threads_summary)
+    app.router.add_get("/api/chat/threads/{mid}", chat_threads.api_chat_thread_detail)
+    app.router.add_post("/api/chat/threads/{mid}/reply", chat_threads.api_chat_thread_reply)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/close", handlers.api_side_close)

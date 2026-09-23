@@ -36,7 +36,7 @@ import shutil
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from kiro_crew import platform_compat
@@ -97,6 +97,15 @@ class SampleReport:
     duration: float
     interval: float
     truncated_stacks: int = 0
+    #: Thread ident -> number of ticks in which that thread had a Python frame.
+    #: ``counts`` folds every thread into one histogram, which is what a
+    #: flamegraph wants but loses thread identity — so a caller asking "which
+    #: thread was running Python, and how often" could not answer it without
+    #: sampling a second time, at double the cost and on a different cadence.
+    #: Filled from the same pass as ``counts``. Note what it does NOT mean: a
+    #: thread blocked in a syscall still has a frame, so this is "runnable in
+    #: Python", not "on CPU" and not "held the GIL".
+    per_thread_samples: dict[int, int] = field(default_factory=dict)
 
     @property
     def effective_rate(self) -> float:
@@ -166,6 +175,7 @@ class StackSampler:
             )
         self._interval = interval
         self._counts: collections.Counter[str] = collections.Counter()
+        self._per_thread: collections.Counter[int] = collections.Counter()
         self._samples = 0
         self._truncated = 0
         self._stop = threading.Event()
@@ -183,6 +193,7 @@ class StackSampler:
             if not folded:
                 continue
             self._counts[folded] += 1
+            self._per_thread[tid] += 1
             if truncated:
                 self._truncated += 1
         self._samples += 1
@@ -234,6 +245,7 @@ class StackSampler:
             duration=max(0.0, self._stopped_at - self._started_at),
             interval=self._interval,
             truncated_stacks=self._truncated,
+            per_thread_samples=dict(self._per_thread),
         )
 
     def __enter__(self) -> "StackSampler":
@@ -392,18 +404,27 @@ def pyspy_path() -> str | None:
     return shutil.which("py-spy")
 
 
-def pyspy_argv(pid: int, seconds: int, output: Path, rate: int) -> list[str]:
+def pyspy_argv(
+    pid: int, seconds: int, output: Path, rate: int, *, gil: bool = False
+) -> list[str]:
     """Build the py-spy argv for attaching to *pid*.
 
     ``--format raw`` emits folded stacks, matching :func:`render_folded`, so both
     sampling strategies produce one interchangeable artifact format. Returned
     rather than executed so the CLI owns spawning (and so this stays testable
     without a real py-spy).
+
+    *gil* adds ``--gil``, which keeps only the traces that were holding the GIL.
+    That is the one measurement in this repository that names GIL *holders*
+    rather than inferring contention from how long a waiter waited, so it answers
+    a question no in-process sampler can. Off by default: the flag discards every
+    trace blocked in a syscall, which is the wrong profile for ordinary CPU
+    attribution.
     """
     binary = pyspy_path()
     if binary is None:
         raise FileNotFoundError("py-spy is not installed")
-    return [
+    argv = [
         binary,
         "record",
         "--pid",
@@ -414,9 +435,11 @@ def pyspy_argv(pid: int, seconds: int, output: Path, rate: int) -> list[str]:
         str(rate),
         "--format",
         "raw",
-        "--output",
-        str(output),
     ]
+    if gil:
+        argv.append("--gil")
+    argv += ["--output", str(output)]
+    return argv
 
 
 def pyspy_attach_failure_hint() -> str:

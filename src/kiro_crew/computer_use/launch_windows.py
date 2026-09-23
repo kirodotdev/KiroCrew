@@ -169,6 +169,20 @@ _OWNER_SECURITY_INFORMATION = 0x00000001
 #: about to REFUSE (a successful create is the rejection).
 _WRITE_PROBE_NAME = ".kirocrew-launch-write-probe"
 
+#: ``FILE_FLAG_DELETE_ON_CLOSE``, which makes the KERNEL remove the write probe when
+#: its handle closes -- including the close that process teardown performs, so a run
+#: killed while the probe is open leaves nothing behind. 0 on a platform without the
+#: flag, which keeps :func:`_directory_is_writable` one code path everywhere: this
+#: module only ever runs in production on Windows, but its probe is exercised by the
+#: POSIX test shards too, and there the explicit unlink below remains the remover.
+_O_DELETE_ON_CLOSE = getattr(os, "O_TEMPORARY", 0)
+
+
+def _open_self_removing_probe(path: str, flags: int) -> int:
+    """``open`` opener that adds delete-on-close to the probe's exclusive create."""
+    return os.open(path, flags | _O_DELETE_ON_CLOSE)
+
+
 #: Executables that are refused as launch targets regardless of where they live.
 #:
 #: **This is not a security boundary and must not be read as one.** The real
@@ -562,11 +576,43 @@ def _directory_is_writable(directory: str) -> bool:
     error other than the permission denial that means "no". An unreadable or vanished
     directory is not evidence that a binary in it is trustworthy, and this predicate is
     only ever consulted to decide whether to START A PROCESS.
+
+    **The probe removes itself, rather than being removed afterwards.** The directories
+    this walks are the operator's real install trees, so a create followed by a separate
+    unlink leaves a window in which a named file of ours sits in ``C:\\Program Files`` —
+    measured: with the removal step withheld, the probe stays on disk, and an explicit
+    unlink is best-effort besides (a failure only logs). ``FILE_FLAG_DELETE_ON_CLOSE``
+    puts the removal in the kernel, which performs it when the handle closes and therefore
+    also when the process is torn down, so on that path no interruption can leave litter.
+    Measured on Windows: killed with the handle open, a plain probe survives and this one
+    does not. The fallback path below keeps the ordinary best-effort unlink and therefore
+    keeps that window — it is reached only where delete-on-close is refused, and the
+    correct ANSWER matters more there than the cleanup guarantee.
+
+    The delete-on-close create is attempted FIRST and falls back to a plain one, because
+    ``DELETE`` is a separate permission from create: a directory that grants creates could
+    refuse delete-on-close, and concluding "unwritable" from that would TRUST a binary
+    sitting somewhere this user can write — the one wrong answer this predicate must never
+    give. So the fallback keeps the ANSWER identical to a plain create everywhere, and the
+    kernel-backed removal is an improvement where it is available, never a new refusal.
+    (Measured across the real ``Program Files`` and ``System32`` trees on an elevated host,
+    the two creates agreed everywhere; the fallback guards the case that measurement
+    cannot enumerate, not one that was observed.)
     """
     probe = os.path.join(directory, _WRITE_PROBE_NAME)
+    self_removing = _O_DELETE_ON_CLOSE != 0
     try:
-        with open(probe, "xb"):
-            pass
+        try:
+            with open(probe, "xb", opener=_open_self_removing_probe):
+                pass
+        except PermissionError:
+            if not self_removing:
+                raise
+            # Create may be permitted where delete-on-close is not; ask the plain
+            # question before reporting a denial, and take back the removal.
+            self_removing = False
+            with open(probe, "xb"):
+                pass
     except (PermissionError, FileNotFoundError, NotADirectoryError):
         # PermissionError is the answer we want: the directory refused the write.
         # The other two mean the directory is not there to write to, which is equally
@@ -577,6 +623,9 @@ def _directory_is_writable(directory: str) -> bool:
         # that, so fail closed.
         return True
     except OSError:
+        return True
+    if self_removing:
+        # The handle's close already removed it; an unlink here would race that.
         return True
     try:
         os.unlink(probe)

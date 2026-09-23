@@ -18,8 +18,11 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, MutableMapping, Set
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.agent_scratch import SharedScratchJoinError
+from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.metrics.sessions import (
     END_REASON_RECYCLED,
     discard_session_start,
@@ -47,6 +50,8 @@ class _BackgroundRuntime(Protocol):
 
     pid: int | None
     acp_backend: str
+    #: The session tree's ``$KIROCREW_SCRATCH`` directory; a replacement inherits it.
+    work_scratch_dir: Path | None
 
     def is_alive(self) -> bool: ...
 
@@ -113,6 +118,13 @@ class BackgroundRuntimeState:
     runtime: _BackgroundRuntime | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     draining: list[_BackgroundRuntime] = field(default_factory=list)
+    #: The ``$KIROCREW_SCRATCH`` tree the sessions on the ``_bg`` runtime use,
+    #: recorded from every runtime observed in the slot and handed to each
+    #: replacement. State, not a call-local: a stale runtime is detached and
+    #: the slot cleared BEFORE its replacement spawns, so a replacement that
+    #: fails to spawn would otherwise leave the next call with no runtime to
+    #: read the tree from, and its replacement would start an empty one.
+    inherited_scratch: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,7 +332,7 @@ class BackgroundSessionRuntime:
                 remaining.append(runtime)
                 continue
             try:
-                await runtime.kill(expected=True)  # drained displacement teardown
+                await runtime.kill(expected=True, reason="drained displacement teardown")
                 logger.info("Reaped a drained displaced _bg runtime (PID %s)", runtime.pid)
             except Exception:
                 logger.warning("Failed to reap a drained _bg runtime; will retry", exc_info=True)
@@ -349,6 +361,8 @@ class BackgroundSessionRuntime:
         self,
         runtime: _BackgroundRuntime,
         cause: str,
+        *,
+        park_only: bool = False,
     ) -> None:
         """Free the ``_bg`` slot, killing or parking ``runtime`` per its load.
 
@@ -357,13 +371,22 @@ class BackgroundSessionRuntime:
         until its handles drain. ``cause`` is the operator-facing attribution and
         is logged with every outcome: a staleness recycle and a backend flap have
         different remedies, so the two must never read alike.
+
+        ``park_only`` parks even an idle runtime instead of killing it here. The
+        periodic sweep uses it, because that caller's idle reading can be one
+        statement stale: ``get_bg_session`` pins the runtime under this lock,
+        RELEASES the lock, and only then calls ``create_session`` -- which is
+        where ``_session_inits_in_flight`` is raised. Killing inside that window
+        would surface as ``AcpRuntimeDead`` on a caller that did nothing wrong.
+        Parking cannot: the reaper re-probes on a later tick, by which time the
+        pinned start has either registered (busy -- it stays parked) or failed.
         """
         logger = self._deps.logger
         try:
             busy = runtime.has_active_or_initializing_sessions()
         except Exception:
             busy = True
-        if busy:
+        if busy or park_only:
             logger.info(
                 "Parking the _bg runtime (PID %s) to drain — %s",
                 runtime.pid,
@@ -386,7 +409,7 @@ class BackgroundSessionRuntime:
                 cause,
             )
             try:
-                await runtime.kill(expected=True)  # deliberate displacement teardown
+                await runtime.kill(expected=True, reason="deliberate displacement teardown")
             except Exception:
                 logger.warning(
                     "Displacement kill failed; parking the runtime for the reaper",
@@ -415,6 +438,64 @@ class BackgroundSessionRuntime:
             if configured is None or cached_backend == configured:
                 return
             await self._owner._displace_bg_runtime_locked(runtime, cached_backend, configured)
+
+    async def reap_idle_stale_bg_runtime(self) -> bool:
+        """Retire the shared background runtime once it is idle AND stale.
+
+        The staleness ceilings (``_DEFAULT_MAX_AGE_SECS`` 6 h,
+        ``_DEFAULT_MAX_RSS_MB`` 500 MiB) were only ever evaluated on the REUSE
+        path in :meth:`get_bg_session`, and the shared runtime's pid is shielded
+        from the orphan sweep for its whole life. A runtime that stops being
+        reused is therefore never asked the question again and never reaped by
+        anything else: it lives until the gateway restarts. Observed on an
+        operator host: 11 agent runtimes holding 6.0 GB, six of them 14.5 h old
+        and five of those over the 500 MiB ceiling, against 4 live slots.
+
+        This is the periodic caller that asks the question off the reuse path, so
+        a runtime nobody is calling is still bounded. It only ever retires a
+        runtime with NO active or initializing session, and it PARKS rather than
+        kills (see ``park_only`` on :meth:`_detach_bg_runtime_locked`), so a
+        co-tenant session can never be dropped by it. Returns True when the slot
+        was freed.
+        """
+        logger = self._deps.logger
+        async with self._bg_runtime_lock:
+            if self._owner._closing:
+                # Same gate as every other park: a shutdown has already swept
+                # past, so parking now would strand a shielded process.
+                return False
+            runtime = self._bg_runtime
+            if runtime is None or not runtime.is_alive():
+                return False
+            try:
+                if runtime.has_active_or_initializing_sessions():
+                    return False
+            except Exception:
+                # Fail toward preserving work: a probe that cannot answer must
+                # not retire a runtime whose handles may be live.
+                logger.debug("idle-stale sweep: session probe failed", exc_info=True)
+                return False
+            try:
+                stale_reason = await runtime._is_stale()
+            except Exception:
+                logger.debug("idle-stale sweep: staleness probe failed", exc_info=True)
+                return False
+            if not stale_reason:
+                return False
+            # Re-read the slot: the awaited staleness probe releases the event
+            # loop, and a concurrent displacement may have replaced or cleared it
+            # while we were off it. Retiring on the stale reading of a runtime
+            # other than the one in the slot would park somebody else's live
+            # process.
+            if self._bg_runtime is not runtime:
+                return False
+            # ``_detach_bg_runtime_locked`` clears the slot itself on every path.
+            await self._detach_bg_runtime_locked(
+                runtime,
+                f"idle and stale by {stale_reason} (periodic sweep)",
+                park_only=True,
+            )
+            return True
 
     async def _provider_backed_bg_session(self) -> object:
         """Return the shared provider-backed background-session adapter."""
@@ -467,6 +548,16 @@ class BackgroundSessionRuntime:
                     )
                 await self._owner._reap_drained_bg_runtimes_locked()
                 runtime = self._bg_runtime
+                # The runtime this call may replace, read before any detach
+                # clears the slot: its work directory is what every replacement
+                # inherits (see the spawn below). Kept on the STATE, not in a
+                # local: a detach followed by a failed replacement spawn leaves
+                # the slot empty for the next call, which must still hand the
+                # tree on. Read the way this block reads ``acp_backend``; a
+                # value that is not a path is no inheritance.
+                predecessor_scratch = getattr(runtime, "work_scratch_dir", None)
+                if isinstance(predecessor_scratch, Path):
+                    self.state.inherited_scratch = predecessor_scratch
                 configured_backend_raw = self._owner._configured_bg_backend_raw()
                 configured_backend = (
                     configured_backend_raw
@@ -517,14 +608,80 @@ class BackgroundSessionRuntime:
                                 "get_bg_session: dead _bg runtime kill failed",
                                 exc_info=True,
                             )
-                    runtime = AcpRuntime(
-                        agent=self._deps.runtime_agent,
-                        sandbox_mode=getattr(self._owner._cfg.agent, "sandbox", "auto"),
-                        acp_backend=configured_backend,
-                        expect_mcp_reports=False,
-                    )
-                    await runtime.spawn()
-                    self._bg_runtime = runtime
+                    agent_cfg = self._owner._cfg.agent
+
+                    # The replacement takes over the sessions the previous
+                    # runtime served, so it takes over their work directory
+                    # too: without this a recycle (age, RSS, backend flap, a
+                    # crash) hands every session on the runtime an EMPTY
+                    # ``$KIROCREW_SCRATCH`` mid-task, and the files it staged
+                    # for its subagents are masked from the new process.
+                    # The successor joins the directory's owner marker beside
+                    # the draining predecessor at spawn; a swept directory is
+                    # dropped there.
+                    def build_runtime(shared_scratch: Path | None) -> Any:
+                        return AcpRuntime(
+                            agent=self._deps.runtime_agent,
+                            sandbox_mode=getattr(agent_cfg, "sandbox", "auto"),
+                            acp_backend=configured_backend,
+                            expect_mcp_reports=False,
+                            shared_scratch=shared_scratch,
+                            # Same operator choice the foreground provider threads
+                            # in; on a wire-settings host the runtime sends it
+                            # explicitly (gated on the background agent's own
+                            # loader grant) rather than leaving it to the host's
+                            # default.
+                            tool_search=ToolSearchSettings.from_config(
+                                getattr(agent_cfg, "tool_search", True),
+                                getattr(agent_cfg, "tool_search_min_pct", None),
+                                getattr(agent_cfg, "tool_search_min_tokens", None),
+                            ),
+                        )
+
+                    replacement = build_runtime(self.state.inherited_scratch)
+                    try:
+                        await replacement.spawn()
+                    except SharedScratchJoinError:
+                        # Only the INHERITED tree's marker: the spawner raises
+                        # this subclass at its adopt site alone, so a failure on
+                        # the replacement's OWN marker (plain
+                        # ScratchBoundaryError) propagates with the inherit kept
+                        # -- that tree still holds the sessions' staged work and
+                        # says nothing about why the own marker was tampered.
+                        abandoned = self.state.inherited_scratch
+                        if abandoned is None:
+                            raise
+                        # The inherited tree is mounted read-write into every
+                        # agent process the predecessor served, so its owner
+                        # marker can be replaced with a link from inside the
+                        # sandbox. The spawn refused to join it (the right
+                        # answer for that spawn); keeping the inherit would make
+                        # EVERY replacement refuse the same way and leave the
+                        # ``_bg`` slot without a runtime for good. Abandon the
+                        # inherit instead: the sessions lose their staged files
+                        # to the tampering, the tree stays on disk for a human,
+                        # and the slot recovers.
+                        self.state.inherited_scratch = None
+                        logger.warning(
+                            "get_bg_session: the inherited work directory %r could not be "
+                            "joined; abandoning it so the background runtime can be "
+                            "replaced (its files stay on disk, unowned)",
+                            abandoned.name,
+                            exc_info=True,
+                        )
+                        replacement = build_runtime(None)
+                        await replacement.spawn()
+                    self._bg_runtime = replacement
+                    # Recorded NOW, off the live runtime, not at the next
+                    # acquisition: a backend switch retires the runtime through
+                    # _retire_stale_backend_bg_runtime without another call
+                    # reading it as a predecessor, and a tree nobody remembered
+                    # is swept an hour after its owner exits -- switching back
+                    # would start empty. Also the truth when the inherit was
+                    # dropped (swept) or abandoned: the tree this runtime HAS.
+                    live_tree = getattr(replacement, "work_scratch_dir", None)
+                    if isinstance(live_tree, Path):
+                        self.state.inherited_scratch = live_tree
                 # Pinned under the lock: use the selected object even if a later
                 # displacement changes the shared slot.
                 selected = self._bg_runtime if runtime_capable else None

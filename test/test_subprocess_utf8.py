@@ -65,3 +65,95 @@ class TestUtf8TextMapping:
         ]
         result = subprocess.run(argv, capture_output=True, **UTF8_TEXT)
         assert result.stdout == "ok \ufffd\ufffd end\n"
+
+
+class TestUtf8Stdout:
+    """``utf8_stdout`` is the bytes-mode counterpart of ``UTF8_TEXT``: same
+    UTF-8-with-replacement policy, WITHOUT the universal-newline translation
+    text mode hard-enables. A ``\\r`` in a child's output is content there
+    (git prints paths byte-for-byte), so the decode must preserve it."""
+
+    def test_carriage_return_survives_the_decode(self):
+        from kiro_crew.subprocess_utf8 import utf8_stdout
+
+        assert utf8_stdout(b"wt\rcr/.git\n") == "wt\rcr/.git\n"
+
+    def test_crlf_is_not_collapsed(self):
+        from kiro_crew.subprocess_utf8 import utf8_stdout
+
+        assert utf8_stdout(b"path\r\n") == "path\r\n"
+
+    def test_str_passes_through_for_test_stand_ins(self):
+        from kiro_crew.subprocess_utf8 import utf8_stdout
+
+        assert utf8_stdout("already decoded\r\n") == "already decoded\r\n"
+
+    def test_none_is_the_empty_answer(self):
+        from kiro_crew.subprocess_utf8 import utf8_stdout
+
+        assert utf8_stdout(None) == ""
+
+    def test_malformed_bytes_degrade_to_replacement(self):
+        from kiro_crew.subprocess_utf8 import utf8_stdout
+
+        assert utf8_stdout(b"a\xffb") == "a\ufffdb"
+
+    def test_real_child_output_keeps_its_cr(self):
+        """End-to-end: a bytes-mode capture decoded by utf8_stdout hands the
+        caller the child's ``\\r`` intact, where ``UTF8_TEXT`` (text mode)
+        would have rewritten it to ``\\n``. The child writes through
+        ``sys.stdout.buffer`` so its OWN text-mode stdout cannot translate
+        the ``\\n`` to ``\\r\\n`` on Windows before the capture ever sees it --
+        this test pins the parent-side decode, not the child's platform."""
+        from kiro_crew.subprocess_utf8 import utf8_stdout
+
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'a\\rb\\n')",
+            ],
+            capture_output=True,
+            env=_CHILD_UTF8_ENV,
+        )
+        assert done.returncode == 0
+        assert utf8_stdout(done.stdout) == "a\rb\n"
+
+
+class TestUtf8PathStdout:
+    """``utf8_path_stdout`` decodes a child's PATH answer so it round-trips.
+
+    ``"replace"`` rewrites a non-UTF-8 byte to U+FFFD, which ``os.fsencode``
+    cannot restore -- an ``os.lstat`` on the decoded string then inspects a
+    different path than the child printed. ``surrogateescape`` (PEP 383) is
+    the round-trip decode the ``os`` layer itself uses.
+    """
+
+    def test_non_utf8_byte_becomes_a_lone_surrogate(self):
+        from kiro_crew.subprocess_utf8 import utf8_path_stdout
+
+        assert utf8_path_stdout(b"/tmp/repo-\xff/.git\n") == "/tmp/repo-\udcff/.git\n"
+
+    @pytest.mark.skipif(os.name == "nt", reason="fsencode uses surrogatepass on Windows")
+    def test_round_trips_through_fsencode_on_posix(self):
+        """The exact property the classifier's ``lstat`` depends on: fsencode
+        of the decoded path is byte-identical to what git printed."""
+        from kiro_crew.subprocess_utf8 import utf8_path_stdout
+
+        raw = b"/tmp/repo-\xff/.git"
+        assert os.fsencode(utf8_path_stdout(raw)) == raw
+
+    def test_carriage_return_survives_the_decode(self):
+        from kiro_crew.subprocess_utf8 import utf8_path_stdout
+
+        assert utf8_path_stdout(b"wt\rcr/.git\n") == "wt\rcr/.git\n"
+
+    def test_str_passes_through_for_test_stand_ins(self):
+        from kiro_crew.subprocess_utf8 import utf8_path_stdout
+
+        assert utf8_path_stdout("already decoded\n") == "already decoded\n"
+
+    def test_none_is_the_empty_answer(self):
+        from kiro_crew.subprocess_utf8 import utf8_path_stdout
+
+        assert utf8_path_stdout(None) == ""

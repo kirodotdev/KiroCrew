@@ -15,7 +15,7 @@ const http = require("http");
 const { app, ipcMain } = require("electron");
 const Store = require("electron-store");
 const { seedRenamedStore } = require("../store-rename");
-const { parseMochiEnabled, enabledOrTrust, hostDisabledMeansTeardown } = require("./instanceGate");
+const { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown } = require("./instanceGate");
 const {
   SELF_INSTANCE,
   MACHINE_STORE_DEFAULTS,
@@ -250,13 +250,21 @@ function connectInstance(instanceId, auth, { timeoutMs = 15000 } = {}) {
  * CACHED because the reconcile tick is 5s and this request crosses an SSH
  * tunnel. Enabled-ness only changes when a human flips it in an App Store, so a
  * minute of staleness is invisible; a round trip every 5s is not.
+ *
+ * TRI-STATE, like mochiEnabledState: "enabled" | "disabled" | "unknown". A
+ * non-answer over a tunnel that just came back up is the common case on a
+ * network reconnect, and it is neither a "no" (which would move the pet) nor a
+ * "yes" (which used to CREATE an overlay for a disabled app — see
+ * remoteEnabledState). Only definite answers are cached.
  */
 const REMOTE_ENABLED_TTL_MS = 60_000;
 const remoteEnabledCache = new Map();
 
 async function remoteMochiEnabled(instanceId, localPort, token) {
   const cached = remoteEnabledCache.get(instanceId);
-  if (cached && Date.now() - cached.at < REMOTE_ENABLED_TTL_MS) return cached.enabled;
+  if (cached && Date.now() - cached.at < REMOTE_ENABLED_TTL_MS) {
+    return remoteEnabledState(cached.enabled);
+  }
 
   const enabled = await new Promise((resolve) => {
     const req = http.request(
@@ -279,10 +287,10 @@ async function remoteMochiEnabled(instanceId, localPort, token) {
     req.end();
   });
 
-  // A non-answer is NOT cached and NOT read as disabled — see enabledOrTrust.
-  if (enabled === null) return enabledOrTrust(enabled);
+  // A non-answer is NOT cached and NOT read as disabled — or as enabled.
+  if (enabled === null) return remoteEnabledState(enabled);
   remoteEnabledCache.set(instanceId, { at: Date.now(), enabled });
-  return enabledOrTrust(enabled);
+  return remoteEnabledState(enabled);
 }
 
 /**
@@ -492,7 +500,14 @@ async function resolveMochiTarget(choice) {
     mochiInstanceLog(`petInstance "${choice}" is not usable — showing this computer's Mochi`);
     return self;
   }
-  if (!(await remoteMochiEnabled(choice, conn.localPort, conn.token))) {
+  const remoteMochi = await remoteMochiEnabled(choice, conn.localPort, conn.token);
+  if (remoteMochi === "unknown") {
+    // Same discipline as `!conn.known`: a slow or garbled reply from a tunnel
+    // that just came back must neither move the pet nor invent an enabled one.
+    mochiInstanceLog(`petInstance "${choice}" did not say whether Mochi is on — leaving Mochi where it is`);
+    return { keep: true };
+  }
+  if (remoteMochi === "disabled") {
     mochiInstanceLog(`petInstance "${choice}" has Mochi turned off — showing this computer's Mochi`);
     return self;
   }
@@ -814,6 +829,7 @@ async function reconcileMochi() {
   const {
     openPetWindow,
     closePetWindow,
+    isPetWindowOpen,
     rearmBlankedOverlays,
     hasBlankedOverlay,
     setPetWindowsHidden,
@@ -863,12 +879,21 @@ async function reconcileMochi() {
   // matters for the teardown decision is the one already showing.
   const shownInstanceId = target.keep ? mochiPetInstanceId : target.instanceId;
   // On `keep` we do not know, and not-knowing must never destroy anything — the
-  // same discipline as enabledState's "unknown". A definite resolve onto self
-  // means the remote is gone, and `hostDisabledMeansTeardown` handles self.
-  const shownStillUsable = target.keep ? true : target.instanceId !== SELF_INSTANCE;
+  // same discipline as enabledState's "unknown". It must never CREATE anything
+  // either: "keep" is only meaningful for a window that exists, so on a
+  // non-answer the pet is "still usable" exactly when one is already open. A
+  // definite resolve onto self means the remote is gone, and
+  // `hostDisabledMeansTeardown` handles self.
+  const shownStillUsable = target.keep ? isPetWindowOpen() : target.instanceId !== SELF_INSTANCE;
 
   if (state === "disabled" && hostDisabledMeansTeardown(shownInstanceId, shownStillUsable)) {
     closePetWindow();
+    // Nothing is shown now, so say so. Leaving the remote's id here would let a
+    // later non-answer read as "keep the remote pet" and open one for a host
+    // that has Mochi switched off.
+    mochiPetBaseUrl = BACKEND_URL;
+    mochiPetToken = "";
+    mochiPetInstanceId = SELF_INSTANCE;
     // Hide the panel rather than orphan an opaque always-on-top rectangle over
     // the desktop; re-enable restores it if it was visible.
     hidePanelOnDisable();

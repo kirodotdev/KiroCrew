@@ -27,22 +27,24 @@ import json
 import os
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew import name_grant
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
@@ -57,9 +59,10 @@ from kiro_crew.trust_patterns import canonical_non_shell_trust_key, exact_trust_
 
 def _slot(key: str = "chat-cov-1") -> _ChatSlot:
     slot = _ChatSlot(key)
-    # Titled on purpose: an untitled slot makes the end-of-turn cycle spawn
-    # _maybe_auto_title, which is a real LLM path. maybe_refresh_title (the
-    # titled branch) self-guards and returns without a call.
+    # Titled on purpose: the end-of-turn cycle routes titling through
+    # title_then_refresh, and a titled slot makes both halves self-guard
+    # (_maybe_auto_title no-ops, maybe_refresh_title returns not-due) without
+    # a real LLM call.
     slot._titled = True
     return slot
 
@@ -78,6 +81,10 @@ def _state(tmp_path, **kwargs) -> DashboardState:
     # truthy, so every busy-probe would read "turn in flight" on an idle state.
     sessions.get_provider = MagicMock(return_value=None)
     sessions.resumable_sid = MagicMock(return_value=None)
+    # Production answers a plain string, "" when the allocation selected nothing.
+    # Left as a bare MagicMock it would answer a truthy object, which the runner
+    # would store as the slot's requested model and hand to the crew-log emitter.
+    sessions.allocation_requested_model = MagicMock(return_value="")
     sessions.remove = AsyncMock()
     sessions.record_failure = AsyncMock()
     sessions.remove_if_unclaimed = AsyncMock(return_value=False)
@@ -114,6 +121,7 @@ def _permission(
     tool_kind: str = "execute",
     request_id: str = "req-cov-1",
     *,
+    tool_call_id: str | None = None,
     is_shell: bool = True,
     tool_name: str = "",
     mcp_server_name: str = "",
@@ -125,11 +133,35 @@ def _permission(
         tool_kind=tool_kind,
         tool_input=tool_input,
         request_id=request_id,
+        tool_call_id=tool_call_id,
         is_shell=is_shell,
         tool_name=tool_name,
         mcp_server_name=mcp_server_name,
         raw_tool_params=raw_tool_params,
     )
+
+
+def _coding_tool_call(
+    tool_call_id: str = "tc-wt-1",
+    *,
+    tool_kind: str = "edit",
+    tool_name: str = "fs_write",
+    mcp_server_name: str = "",
+) -> LLMEvent:
+    """A coding-shaped tool call."""
+    return LLMEvent(
+        kind=EVENT_TOOL_CALL,
+        title="Writing the file",
+        tool_call_id=tool_call_id,
+        tool_kind=tool_kind,
+        tool_name=tool_name,
+        mcp_server_name=mcp_server_name,
+    )
+
+
+def _statusless_coding_tool_call(tool_call_id: str = "tc-wt-1") -> LLMEvent:
+    """A kiro-cli one-way coding call with no wire status."""
+    return _coding_tool_call(tool_call_id)
 
 
 def _runner_state(tmp_path, *, hook_store=None, context_builder=None):
@@ -181,7 +213,7 @@ def _quiet_sel():
         yield mock_sel
 
 
-async def _drive(state, slot, message: str = "hello") -> None:
+async def _drive(state, slot, message: str = "hello", *, _turn_actor: str = "") -> None:
     """Run exactly one turn and leave no task behind.
 
     ``_empty_response_retries`` is pre-spent on purpose. A turn that streams no
@@ -193,7 +225,7 @@ async def _drive(state, slot, message: str = "hello") -> None:
     """
     slot._empty_response_retries = 2
     with _quiet_sel():
-        await chat_runner._run_chat(state, slot, message)
+        await chat_runner._run_chat(state, slot, message, _turn_actor=_turn_actor)
     await _settle(slot)
 
 
@@ -231,11 +263,12 @@ async def test_memory_refusal_preserves_diagnostic_without_initialization_recove
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("damaged_record", [False, True])
-async def test_private_session_cannot_dispatch_as_legacy_after_unsigned_binding_loss(
+async def test_canonical_member_context_outranks_slot_alias_and_corruption_refuses(
     tmp_path, monkeypatch, damaged_record
 ):
-    from kiro_crew import member_memory_auth
+    from kiro_crew import execution_context, member_memory_auth
     from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.history import ConversationLog
     from kiro_crew.memory_stores import provision_member_memory
 
     state, client = _runner_state(tmp_path)
@@ -251,82 +284,22 @@ async def test_private_session_cannot_dispatch_as_legacy_after_unsigned_binding_
         cfg.save()
         member_memory_auth.bind_private_session_store(key, store)
         if damaged_record:
-            member_memory_auth._session_binding_path(key).unlink()
+            ConversationLog().update_metadata(key, {"execution_context": {"member_id": 7}})
         return store
 
     store = await asyncio.to_thread(seed)
-    read_threads = []
-    original = member_memory_auth.read_private_session_store
-
-    def read_binding(session_key):
-        read_threads.append(threading.get_ident())
-        return original(session_key)
-
-    monkeypatch.setattr(member_memory_auth, "read_private_session_store", read_binding)
+    client.stream = MagicMock(return_value=_async_iter([_complete()]))
     await _drive(state, slot)
-
-    state.sessions.get_or_create.assert_not_awaited()
-    client.stream.assert_not_called()
-    assert read_threads and threading.get_ident() not in read_threads
-    assert slot.memory_store == ""
-    assert state.conversation_log.get_metadata(key).get("memory_store") is None
-    error = next(row for row in slot.messages if row["role"] == "error")
-    assert error["meta"]["code"] == "memory_unavailable"
-    assert (
-        "private memory assignment" in error["content"]
-        or "binding is unreadable" in error["content"]
-    )
-    if not damaged_record:
-        assert await asyncio.to_thread(original, key) == store
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("old_context", ["history", "native", "unsaved"])
-async def test_cli_opt_in_cannot_promote_an_existing_v1_conversation(
-    tmp_path, old_context, monkeypatch
-):
-    import argparse
-
-    from kiro_crew.cli_commands import _handle_agent
-    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
-    from kiro_crew.member_memory_auth import read_private_session_store
-
-    patch_private_memory_supported(monkeypatch)
-    state, client = _runner_state(tmp_path)
-    slot = _slot("legacy-before-opt-in")
-    slot.agent = "reviewer"
-    key = chat_runner.effective_session_key(slot)
-    if old_context == "history":
-        await asyncio.to_thread(state.conversation_log.append, key, "assistant", "V1 history")
-    elif old_context == "native":
-        state.sessions.resumable_sid.return_value = "v1-native-session"
+    if damaged_record:
+        state.sessions.get_or_create.assert_not_awaited()
+        client.stream.assert_not_called()
+        error = next(row for row in slot.messages if row["role"] == "error")
+        assert error["meta"]["code"] == "memory_unavailable"
+        assert "execution context" in error["content"]
     else:
-        slot.append("assistant", "Unflushed V1 answer", "msg msg-a")
-
-    def opt_in():
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig()
-        cfg.save()
-        _handle_agent(
-            argparse.Namespace(
-                agent_action="update",
-                name="reviewer",
-                kiro_agent=None,
-                workspace=None,
-                memory_store=None,
-                provision_memory=True,
-            )
-        )
-
-    await asyncio.to_thread(opt_in)
-    await _drive(state, slot)
-    error = next(row for row in slot.messages if row["role"] == "error")
-    assert error["meta"]["code"] == "memory_unavailable"
-    assert "new conversation" in error["content"]
-    state.sessions.get_or_create.assert_not_awaited()
-    client.stream.assert_not_called()
-    assert await asyncio.to_thread(read_private_session_store, key) is None
-    assert state.conversation_log.get_metadata(key).get("memory_store") in (None, "")
+        state.sessions.get_or_create.assert_awaited_once()
+        assert slot.memory_store == store
+        assert execution_context.read_session_execution(key).store.store_id == store
 
 
 @pytest.mark.asyncio
@@ -721,12 +694,15 @@ class TestSnapshotHelpers:
         target = tmp_path / "note.txt"
         target.write_text("hello\n", newline="\n")
 
-        assert chat_runner._safe_read_snapshot(str(target)) == "hello\n"
+        snapshot = chat_runner._safe_read_snapshot(str(target))
+        assert snapshot is not None
+        assert snapshot.content == "hello\n"
 
     def test_truncate_snapshot_marks_the_cut(self):
         out = chat_runner._truncate_snapshot("x" * (chat_runner._MAX_SNAPSHOT + 10))
 
-        assert out.endswith(f"... (truncated at {chat_runner._MAX_SNAPSHOT} chars)")
+        assert out.content.endswith(f"... (truncated at {chat_runner._MAX_SNAPSHOT} chars)")
+        assert out.truncated is True
 
     def test_reconstruct_declines_when_neither_state_is_plausible(self, tmp_path):
         """Ambiguous disk content must decline rather than fabricate a before."""
@@ -778,7 +754,7 @@ class TestSnapshotHelpers:
 
         got = chat_runner._snapshot_write_target({"command": "create", "path": str(target)})
 
-        assert got == {"path": str(target), "content": ""}
+        assert got == {"path": str(target), "content": "", "truncated": False}
 
 
 class TestFlushFileChanges:
@@ -1194,13 +1170,13 @@ class TestMarkKiroSignedOut:
         chat_runner._mark_kiro_signed_out(state)
 
 
-class TestDeliverAuthErrorToSlack:
+class TestDeliverLinkedSlackMessage:
     @pytest.mark.asyncio
     async def test_no_slack_client_is_a_noop(self, tmp_path):
         state = _state(tmp_path)
         state.slack_client = None
 
-        await chat_runner._deliver_auth_error_to_slack(
+        await chat_runner._deliver_linked_slack_message(
             state, _slot(), state.sessions, "dashboard:x", "signed out"
         )
 
@@ -1209,7 +1185,7 @@ class TestDeliverAuthErrorToSlack:
         state = _state(tmp_path)
         state.slack_client = AsyncMock()
 
-        await chat_runner._deliver_auth_error_to_slack(
+        await chat_runner._deliver_linked_slack_message(
             state, _slot(), state.sessions, "dashboard:x", "signed out"
         )
 
@@ -1221,7 +1197,7 @@ class TestDeliverAuthErrorToSlack:
         state.slack_client = AsyncMock()
         state.sessions.get_slack_link = MagicMock(return_value=("111.222", "C123"))
 
-        await chat_runner._deliver_auth_error_to_slack(
+        await chat_runner._deliver_linked_slack_message(
             state, _slot(), state.sessions, "dashboard:x", "signed out"
         )
 
@@ -1236,7 +1212,7 @@ class TestDeliverAuthErrorToSlack:
         slot._slack_thread_ts = "1.2"
         slot._slack_channel = "C1"
 
-        await chat_runner._deliver_auth_error_to_slack(
+        await chat_runner._deliver_linked_slack_message(
             state, slot, state.sessions, "dashboard:x", "signed out"
         )
 
@@ -2639,6 +2615,99 @@ class TestStartNextQueuedTurn:
         assert len(slot._queue) == 1
 
     @pytest.mark.asyncio
+    async def test_run_now_bypasses_the_child_hold_for_the_selected_message(self, tmp_path):
+        """The explicit card action runs one selected user message beside child work."""
+        state, slot = _state(tmp_path), _slot()
+        q1 = slot.queue_append("first")
+        q2 = slot.queue_append("second")
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["agent-1"]))
+
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load") as load,
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(
+                chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())
+            ) as run_chat,
+        ):
+            load.return_value.dashboard.merge_queued_messages = False
+            started = await chat_runner._start_next_queued_turn(
+                state,
+                slot,
+                allow_user_during_subagents=True,
+                required_queue_id=q2,
+            )
+
+        assert started is True
+        assert spawn.call_count == 1
+        assert run_chat.call_args.args[2] == "second"
+        assert [item["id"] for item in slot._queue] == [q1]
+
+    @pytest.mark.asyncio
+    async def test_run_now_never_merges_unselected_cards(self, tmp_path):
+        """The selected card runs alone even when ordinary queue merging is on."""
+        state, slot = _state(tmp_path), _slot()
+        q1 = slot.queue_append("first")
+        q2 = slot.queue_append("selected")
+        q3 = slot.queue_append("third")
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["agent-1"]))
+
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load") as load,
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(
+                chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())
+            ) as run_chat,
+        ):
+            load.return_value.dashboard.merge_queued_messages = True
+            started = await chat_runner._start_next_queued_turn(
+                state,
+                slot,
+                allow_user_during_subagents=True,
+                required_queue_id=q2,
+            )
+
+        assert started is True
+        assert spawn.call_count == 1
+        assert run_chat.call_args.args[2] == "selected"
+        assert [item["id"] for item in slot._queue] == [q1, q3]
+
+    @pytest.mark.asyncio
+    async def test_run_now_starts_nothing_when_the_selected_card_is_gone(self, tmp_path):
+        """Selection identity prevents a stale click from starting another card."""
+        state, slot = _state(tmp_path), _slot()
+        qid = slot.queue_append("another card")
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["agent-1"]))
+
+        started = await chat_runner._start_next_queued_turn(
+            state,
+            slot,
+            allow_user_during_subagents=True,
+            required_queue_id="missing",
+        )
+
+        assert started is False
+        assert [item["id"] for item in slot._queue] == [qid]
+
+    @pytest.mark.asyncio
+    async def test_run_now_does_not_bypass_an_active_stage(self, tmp_path):
+        """The override is narrow: an orchestrator stage still owns dispatch."""
+        state, slot = _state(tmp_path), _slot()
+        q1 = slot.queue_append("stage-owned first")
+        q2 = slot.queue_append("wait for the stage")
+        slot._in_stage_execution = True
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["agent-1"]))
+
+        started = await chat_runner._start_next_queued_turn(
+            state,
+            slot,
+            allow_user_during_subagents=True,
+            required_queue_id=q2,
+        )
+
+        assert started is False
+        assert [item["id"] for item in slot._queue] == [q1, q2]
+
+    @pytest.mark.asyncio
     async def test_reset_notice_is_emitted_for_a_stopping_slot(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         slot.queue_append("next please")
@@ -2873,7 +2942,7 @@ class TestFinishQueueCycle:
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._synthesis_inflight is True
@@ -2898,7 +2967,7 @@ class TestFinishQueueCycle:
             patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
             patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()),
         ):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._synthesis_inflight is True
@@ -2922,7 +2991,7 @@ class TestFinishQueueCycle:
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush:
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
         flush.assert_not_called()
         if slot.task is not None:
@@ -2935,7 +3004,7 @@ class TestFinishQueueCycle:
         state2.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(type(slot2), "flush_deferred_notes", return_value=0) as flush2:
-            chat_runner._finish_queue_cycle(state2, slot2)
+            await chat_runner._finish_queue_cycle(state2, slot2)
             await asyncio.sleep(0)
         flush2.assert_called_once()
         if slot2.task is not None:
@@ -2957,7 +3026,7 @@ class TestFinishQueueCycle:
         assert state._slots.get(slot.key) is None
 
         with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._deferred_notes == [], "the held note was discarded on close"
@@ -2976,9 +3045,9 @@ class TestFinishQueueCycle:
 
         with (
             patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
-            patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()),
+            patch.object(chat_runner, "title_then_refresh", new=AsyncMock()),
         ):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         flush.assert_called_once()
@@ -2987,8 +3056,8 @@ class TestFinishQueueCycle:
     async def test_idle_cycle_emits_done_and_refreshes_the_sidebar(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 
-        with patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+        with patch.object(chat_runner, "title_then_refresh", new=AsyncMock()):
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot.messages[-1]["role"] == "done"
@@ -4373,17 +4442,16 @@ class TestRunChatPlanGate:
 
 
 def _bindings(*, kiro_agent, resolved_alias, requested_resolved):
-    """A minimal ResolvedBindings stand-in for the app-agent dispatch guard.
-
-    Only the fields ``_run_chat`` reads off the resolve result are populated;
-    ``model`` is a real ``str`` so ``normalize_agent_model`` stays happy.
-    """
-    return SimpleNamespace(
+    """Real bindings for a materialized app template or its cold fallback."""
+    return ResolvedBindings(
+        workspace_dir=Path("workspace"),
         kiro_agent=kiro_agent,
         resolved_alias=resolved_alias,
         memory_store_name="default",
+        effective_memory_config={},
         model="",
         requested_resolved=requested_resolved,
+        selection_kind="template" if requested_resolved else "member",
     )
 
 
@@ -4677,3 +4745,407 @@ class TestSessionClosingQuietAbort:
             "error card in the chat slot"
         )
         state.sessions.record_failure.assert_not_awaited()
+
+
+class TestRunChatWakaTimeCodingAccounting:
+    @staticmethod
+    def _wakatime_config():
+        config = chat_runner.KiroCrewConfig.load()
+        config.wakatime.enabled = True
+        config.wakatime.send_heartbeats = True
+        return config
+
+    @pytest.mark.asyncio
+    async def test_statusless_coding_call_demotes_when_permission_is_denied(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        tool_call_id = "tc-wt-denied"
+        _set_stream(
+            client,
+            [
+                _coding_tool_call(tool_call_id),
+                _permission(
+                    title="Writing the file",
+                    tool_kind="edit",
+                    tool_call_id=tool_call_id,
+                    is_shell=False,
+                ),
+                _complete(),
+            ],
+        )
+
+        def _deny_when_registered() -> None:
+            future = slot._approval_futures.get("req-cov-1")
+            if future is not None and not future.done():
+                future.set_result("rejected")
+
+        state.push_slots_update.side_effect = _deny_when_registered
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        client.reject_tool.assert_awaited_once_with("req-cov-1")
+        note_activity.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_statusless_coding_call_counts_after_permission_is_approved(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        tool_call_id = "tc-wt-approved"
+        _set_stream(
+            client,
+            [
+                _coding_tool_call(tool_call_id),
+                _permission(
+                    title="Writing the file",
+                    tool_kind="edit",
+                    tool_call_id=tool_call_id,
+                    is_shell=False,
+                ),
+                _complete(),
+            ],
+        )
+
+        def _approve_when_registered() -> None:
+            future = slot._approval_futures.get("req-cov-1")
+            if future is not None and not future.done():
+                future.set_result("approved")
+
+        state.push_slots_update.side_effect = _approve_when_registered
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        note_activity.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_statusless_coding_call_without_permission_stays_counted(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        _set_stream(client, [_statusless_coding_tool_call(), _complete()])
+
+        config = self._wakatime_config()
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=config,
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_not_awaited()
+        note_activity.assert_called_once()
+        assert note_activity.call_args.kwargs["config"] is config
+
+    @pytest.mark.asyncio
+    async def test_many_auto_approved_coding_calls_keep_one_turn_bit(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        events = [_statusless_coding_tool_call(f"tc-wt-{i}") for i in range(500)]
+        _set_stream(client, [*events, _complete()])
+
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        # Per-call ids are not retained: any number of successful coding calls
+        # collapses to one bounded bit and one turn-level heartbeat.
+        note_activity.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_denied_pending_id_is_drained_before_a_later_decision(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        tool_call_id = "tc-wt-drained"
+        _set_stream(
+            client,
+            [
+                _coding_tool_call(tool_call_id),
+                _permission(
+                    request_id="req-wt-deny",
+                    tool_call_id=tool_call_id,
+                    tool_kind="edit",
+                    is_shell=False,
+                ),
+                # No second tool call: if the first decision failed to drain the
+                # pending id, this unrelated duplicate approval would count it.
+                _permission(
+                    request_id="req-wt-later",
+                    tool_call_id=tool_call_id,
+                    tool_kind="read",
+                    is_shell=False,
+                ),
+                _complete(),
+            ],
+        )
+
+        def _decide_when_registered() -> None:
+            deny = slot._approval_futures.get("req-wt-deny")
+            if deny is not None and not deny.done():
+                deny.set_result("rejected_once")
+            approve = slot._approval_futures.get("req-wt-later")
+            if approve is not None and not approve.done():
+                approve.set_result("approved")
+
+        state.push_slots_update.side_effect = _decide_when_registered
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        note_activity.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_collapsed_coding_id_cannot_be_counted_by_unrelated_approval(self, tmp_path):
+        from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        coding_tool_call_id = "AKIAIOSFODNN7EXAMPLE"
+        _set_stream(
+            client,
+            [
+                # This non-coding call records the literal redaction tag as the
+                # first raw source. The distinct credential-shaped coding id
+                # redacts to the same key and therefore collapses its identity.
+                LLMEvent(
+                    kind=EVENT_TOOL_CALL,
+                    title="Reading the file",
+                    tool_call_id=REDACTED_CREDENTIAL_TAG,
+                    tool_kind="read",
+                    tool_name="fs_read",
+                ),
+                _coding_tool_call(coding_tool_call_id),
+                # An unrelated approval under the collapsed key must not consume
+                # and count the coding call. Its own denial follows afterward.
+                _permission(
+                    request_id="req-wt-unrelated",
+                    tool_call_id=REDACTED_CREDENTIAL_TAG,
+                    tool_kind="read",
+                    is_shell=False,
+                ),
+                _permission(
+                    request_id="req-wt-deny",
+                    tool_call_id=coding_tool_call_id,
+                    tool_kind="edit",
+                    is_shell=False,
+                ),
+                _complete(),
+            ],
+        )
+
+        def _decide_when_registered() -> None:
+            approve = slot._approval_futures.get("req-wt-unrelated")
+            if approve is not None and not approve.done():
+                approve.set_result("approved")
+            deny = slot._approval_futures.get("req-wt-deny")
+            if deny is not None and not deny.done():
+                deny.set_result("rejected_once")
+
+        state.push_slots_update.side_effect = _decide_when_registered
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-wt-unrelated")
+        client.reject_tool.assert_awaited_once_with("req-wt-deny")
+        note_activity.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_restored_queued_turn_does_not_emit_heartbeat(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        _set_stream(client, [_statusless_coding_tool_call(), _complete()])
+        slot._empty_response_retries = 2
+
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            _quiet_sel(),
+        ):
+            await chat_runner._run_chat(
+                state,
+                slot,
+                "hello",
+                _turn_provenance_restored=True,
+            )
+        await _settle(slot)
+
+        note_activity.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mcp_name_fallback_is_not_used_by_chat_runner(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        _set_stream(
+            client,
+            [
+                _coding_tool_call(
+                    tool_kind="",
+                    tool_name="write",
+                    mcp_server_name="third-party-mcp",
+                ),
+                _complete(),
+            ],
+        )
+
+        with patch.object(chat_runner, "note_coding_activity") as note_activity:
+            await _drive(state, slot)
+
+        note_activity.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_many_undecided_pending_coding_ids_stay_capped(self, tmp_path, caplog):
+        # A flood of pending coding calls whose permission decision never
+        # arrives must not grow the retained set without bound: past the cap the
+        # key is dropped and tallied, and one summary is emitted at turn end
+        # (never a line per drop). The undecided calls reached no gating denial,
+        # so the turn does count as coding activity — the point of this test is
+        # the bound and the single summary, not suppression.
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        over_cap = chat_runner._MAX_TCID_SOURCES + 50
+        events = [_coding_tool_call(f"tc-wt-pending-{i}") for i in range(over_cap)]
+        _set_stream(client, [*events, _complete()])
+
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            caplog.at_level("WARNING", logger=chat_runner.logger.name),
+        ):
+            await _drive(state, slot)
+
+        # Exactly one shed summary for the whole turn, not one line per dropped
+        # call — the amplified-log finding.
+        shed = [r for r in caplog.records if "wakatime pending-coding cap" in r.message]
+        assert len(shed) == 1
+        assert "shed" in shed[0].message
+        # Unguarded execution counts once for the turn.
+        note_activity.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mcp_edit_kind_still_emits_heartbeat(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        _set_stream(
+            client,
+            [
+                _coding_tool_call(
+                    tool_kind="edit",
+                    tool_name="anything",
+                    mcp_server_name="third-party-mcp",
+                ),
+                _complete(),
+            ],
+        )
+
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        note_activity.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_uses_project_captured_at_turn_start(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        project_at_start = str(tmp_path / "project-a")
+        project_after_switch = str(tmp_path / "project-b")
+        slot.project = project_at_start
+
+        async def _events():
+            yield _statusless_coding_tool_call()
+            slot.project = project_after_switch
+            yield _complete()
+
+        client.stream = MagicMock(return_value=_events())
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot)
+
+        assert slot.project == project_after_switch
+        note_activity.assert_called_once()
+        assert note_activity.call_args.args[0] == project_at_start
+
+    @pytest.mark.asyncio
+    async def test_injected_turn_does_not_emit_heartbeat(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        client.mcp_session_report = MagicMock(return_value=None)
+        slot = _slot()
+        _set_stream(client, [_statusless_coding_tool_call(), _complete()])
+
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
+            await _drive(state, slot, _turn_actor="cron")
+
+        note_activity.assert_not_called()

@@ -457,9 +457,31 @@ class TestExecuteSuccessResetsCounter:
             return None  # gateway cancelled branch: no bookkeeping, no last_status
 
         svc._on_job = cancelled_shape
-        svc._cancelled_jobs.add(job.id)
+        meta = (0.0, "scheduled")  # the marker keys on this tuple's identity
+        svc._cancelled_jobs.mark(job.id, meta)
         try:
-            asyncio.run(svc._execute(job))
+            asyncio.run(svc._execute(job, meta))
         finally:
-            svc._cancelled_jobs.discard(job.id)
+            svc._cancelled_jobs.consume(job.id, meta)
         assert job.consecutive_failures == 3
+
+    def test_another_runs_cancel_marker_does_not_suppress_the_reset(self, tmp_path: Path) -> None:
+        # The marker is keyed by run, not by job: one left by a cancelled prior
+        # run whose finalizer is still pending is not THIS run's, so a clean
+        # return from this run still resets the counter.
+        svc = CronService(base_dir=tmp_path)
+        job = self._job()
+        job.consecutive_failures = 3
+
+        async def succeeding(j: CronJob) -> None:
+            return None
+
+        svc._on_job = succeeding
+        prior_run = (0.0, "manual")
+        this_run = (1.0, "manual")
+        svc._cancelled_jobs.mark(job.id, prior_run)
+        try:
+            asyncio.run(svc._execute(job, this_run))
+        finally:
+            svc._cancelled_jobs.consume(job.id, prior_run)
+        assert job.consecutive_failures == 0

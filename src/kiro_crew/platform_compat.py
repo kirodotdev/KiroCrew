@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes.util
+import enum
 import errno
 import functools
+import importlib
 import io
 import ipaddress
 import logging
@@ -22,13 +24,17 @@ import pathlib
 import platform
 import shutil
 import signal
+import site
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import types
 import zlib
+from asyncio import subprocess as aio_subprocess
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, NamedTuple, Optional, Sequence
@@ -66,6 +72,20 @@ def _ensure_utf8_process_environment() -> None:
     os.environ.update(_UTF8_PROCESS_ENV)
 
 
+def reexec_launcher(launcher: str, args: Sequence[str]) -> None:
+    """Re-enter a validated stable launcher, preserving its dispatch pathname.
+
+    The launcher, not the core, replaces version-specific environment values.
+    Windows execv joins its arguments without quoting, so quote each token for
+    the native CRT parser. POSIX receives the original argument vector directly.
+    """
+    _ensure_utf8_process_environment()
+    argv = [launcher, *args]
+    if IS_WINDOWS:
+        argv = [subprocess.list2cmdline([arg]) for arg in argv]
+    os.execv(launcher, argv)
+
+
 def reexec_python_module(module: str, args: Sequence[str], executable: str | None = None) -> None:
     """Replace this process with ``<executable> -m module``.
 
@@ -87,7 +107,133 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
     _ensure_utf8_process_environment()
     resolved = executable or sys.executable
     argv0 = ntpath.basename(resolved) if IS_WINDOWS else resolved
-    os.execv(resolved, [argv0, "-m", module, *args])
+    argv = isolated_python_argv("-m", module, *args, executable=resolved)
+    argv[0] = argv0
+    os.execv(resolved, argv)
+
+
+def execv_target_available(path: str) -> bool:
+    """Whether ``execv`` has a file here it may attempt. Two metadata syscalls.
+
+    Distinct from ``is_executable_file`` further down, which answers a different
+    question: that one decides whether to treat a file as a runnable HOOK, and on
+    Windows it accepts a regular file by extension because there is no execute bit
+    to read. A restart target is not a hook -- the process image itself depends on
+    the answer, and an extension decides nothing -- so this asks only the two things
+    the kernel will also ask, and reports on Windows whatever ``os.access`` does
+    there.
+
+    Kept beside the exec family because callers on the event loop must hand BOTH
+    syscalls to a worker thread in ONE hop: a pathname on a stalled network mount
+    blocks each of them, so offloading one and leaving the other inline still
+    freezes the loop.
+    """
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+#: Exit status for a process replacement that failed after the final drain. The
+#: generic failure code, matching the gateway's other unrecoverable exits; the
+#: distinguishing signal is the CRITICAL log line, not a private number a
+#: supervisor would have to be taught.
+_POST_DRAIN_EXEC_FAILURE_EXIT = 1
+
+# Ceiling on the event log's exit flush, covering the wait for a worker as well as the
+# work. ``eventlog_hooks.drain_for_shutdown`` bounds the work itself at
+# SHUTDOWN_DRAIN_SECONDS (5.0s); what no inner ceiling can bound is the queue wait for
+# a thread to run on. Derived as that inner bound plus one second, the same rule
+# ``cli.drain_log_queue_before_hard_exit`` applies to its own flush, so the two exit
+# drains do not drift apart on a number nobody chose.
+_EXIT_FLUSH_DEADLINE_SECS = 6.0
+
+
+async def exit_after_failed_restart_exec(target: str | None) -> None:
+    """Exit this process after a restart exec failed past the point of no return.
+
+    Lives beside the two ``reexec_*`` functions because it is their partner: it
+    answers the one outcome neither of them can, and a future reader editing
+    either exec sees it here.
+
+    Both update-restart paths reach their exec only after ``close_all()``, which
+    makes the exec the last reversible instruction they have. Every session is
+    already torn down, the final history save already ran, and the tree on disk
+    is already the NEW version while this process image is still the old one.
+
+    Callers validate the target BEFORE the drain, and that is what keeps the
+    ordinary failures out of here -- but validating cannot make an exec
+    infallible. The target can be replaced between the check and the call, and a
+    file that is present and carries the exec bit can still be the wrong
+    architecture, a truncated image, or a script whose interpreter is missing.
+    The kernel is the authority on every one of those and reports them as
+    ``OSError`` from ``execv`` itself, so the exec site is the only place they
+    can be answered -- and answering them by returning is what left a gateway
+    alive with nothing to serve.
+
+    Answer by exiting. A surviving process here serves nothing it can serve
+    honestly: its sessions are gone, and its code and the install on disk are
+    different versions.
+    It also holds the port, so the operator's own relaunch would fail to bind on
+    top of it. Exiting makes the failure visible to whatever started this
+    gateway, frees the port for that relaunch, and cannot serve the version skew.
+    Reopening admission instead would not substitute: the sessions closed by
+    ``close_all()`` do not come back, and the skew would then be served.
+
+    Exits through ``os._exit``, which runs no ``atexit`` handler -- so the two
+    bounded flushes the force-exit signal handler performs are repeated here for
+    the same reason: the CRITICAL line is the whole diagnosis, and it is queued,
+    not yet on disk. Both are best-effort; a wedged disk must delay this exit,
+    never hold it. Unlike that signal handler, which cannot await, both run on a
+    worker thread: waiting for a wedged log write on the event loop would hold every
+    remaining task -- and the port this exit exists to release -- for the length of
+    their own timeouts.
+
+    Off-loop alone does not make the wait bounded, so the event log's flush also
+    carries a deadline and runs on the dedicated subprocess pool rather than the
+    default executor. ``asyncio.to_thread`` queues against a pool every other
+    ``to_thread`` in the process shares: saturated, the await never resumes and the
+    exit this function exists to perform simply never happens -- the loop is free,
+    which is what the inner ceiling guarantees, but the process still serves nothing
+    on a port it never releases. A deadline around the flush, plus a pool kept
+    separate for calls that can block on a wedged kernel resource, is what makes "a
+    wedged disk must delay this exit, never hold it" true of the wait and not only of
+    the work.
+
+    The ``gateway.log`` tail is not spelled out again here.
+    :func:`kiro_crew.cli.drain_log_queue_before_hard_exit` is the shared async
+    hard-exit drain for that queue -- same pool, its own outer deadline, and it never
+    raises -- so every hard-exit path keeps one spelling and one ceiling for it.
+    """
+    logger.critical(
+        "Gateway restart could not replace this process (target %r); exiting instead of "
+        "serving with every session closed and an install this image does not match. "
+        "Repair the install and start the gateway again.",
+        target or sys.executable,
+        exc_info=True,
+    )
+    from kiro_crew.cli import drain_log_queue_before_hard_exit
+
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _drain_event_log_for_exit
+            ),
+            timeout=_EXIT_FLUSH_DEADLINE_SECS,
+        )
+    except Exception:
+        # Also the deadline: TimeoutError is an Exception, and a fatal exit must never
+        # be blocked by bookkeeping or logging.
+        pass
+    # The gateway.log tail has its own async hard-exit drain, which already offloads to
+    # this pool under its own deadline and already never raises. Calling it keeps one
+    # spelling and one ceiling for that queue across every hard-exit path.
+    await drain_log_queue_before_hard_exit()
+    os._exit(_POST_DRAIN_EXEC_FAILURE_EXIT)
+
+
+def _drain_event_log_for_exit() -> None:
+    """Flush the member event log's queue. Off-loop; bounded inside the module."""
+    from kiro_crew import eventlog_hooks
+
+    eventlog_hooks.drain_for_shutdown()
 
 
 # Python's os.rename() replaces an existing empty directory on POSIX. Directory
@@ -97,21 +243,93 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
 # can advertise the capability honestly and fail closed everywhere else.
 _RENAME_NOREPLACE_FN: Any = None
 _RENAME_NOREPLACE_FLAG = 0
+
+#: ``SYS_renameat2`` numbers per ``platform.machine()``. The syscall has existed
+#: in Linux since 3.15 (2014), but the glibc *wrapper* symbol was only added in
+#: glibc 2.28. On glibc 2.26/2.27 (e.g. Amazon Linux 2) the kernel supports the
+#: call yet ``getattr(libc, "renameat2")`` raises ``AttributeError`` — so we
+#: reach the kernel directly through the generic ``syscall()`` entry point,
+#: which every glibc exposes, keyed by this table. Numbers are arch-stable ABI.
+_SYS_RENAMEAT2_BY_MACHINE: dict[str, int] = {
+    "x86_64": 316,
+    "i386": 353,
+    "i686": 353,
+    "aarch64": 276,
+    "armv7l": 382,
+    "armv6l": 382,
+    "ppc64le": 357,
+    "ppc64": 357,
+    "s390x": 347,
+    "riscv64": 276,
+}
+
+
+def _build_renameat2_via_syscall(libc: "ctypes.CDLL") -> Any:
+    """Return a renameat2(2) callable via the raw ``syscall()`` seam, or None.
+
+    Used only when the glibc ``renameat2`` wrapper symbol is absent but the
+    running kernel supports the syscall (glibc 2.26/2.27 on a modern kernel).
+    The returned callable matches the wrapper's 5-argument shape
+    ``(olddirfd, oldpath, newdirfd, newpath, flags)`` and preserves errno so
+    :func:`rename_noreplace`'s EEXIST / ENOSYS handling is unchanged. Returns
+    ``None`` when the architecture's syscall number is unknown, so the caller
+    still fails closed rather than issuing a wrong-numbered syscall.
+    """
+    nr = _SYS_RENAMEAT2_BY_MACHINE.get(platform.machine())
+    if nr is None:
+        return None
+    try:
+        _syscall = libc.syscall
+    except AttributeError:
+        return None
+    _syscall.restype = ctypes.c_long
+    # syscall() is variadic; ctypes needs the long syscall number typed, and the
+    # trailing args are passed positionally with the same ctypes types the
+    # wrapper used. c_long for the number, then int/char_p/int/char_p/uint.
+    _syscall.argtypes = [
+        ctypes.c_long,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+
+    def _renameat2(
+        olddirfd: int,
+        oldpath: bytes,
+        newdirfd: int,
+        newpath: bytes,
+        flags: int,
+    ) -> int:
+        return _syscall(nr, olddirfd, oldpath, newdirfd, newpath, flags)
+
+    return _renameat2
+
+
 if IS_LINUX or IS_MACOS:
     try:
         _rename_libc = ctypes.CDLL(None, use_errno=True)
         _rename_symbol = "renameat2" if IS_LINUX else "renameatx_np"
-        _RENAME_NOREPLACE_FN = getattr(_rename_libc, _rename_symbol)
-        _RENAME_NOREPLACE_FN.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        _RENAME_NOREPLACE_FN.restype = ctypes.c_int
-        _RENAME_NOREPLACE_FLAG = 1 if IS_LINUX else 4
-    except (AttributeError, OSError):
+        try:
+            _RENAME_NOREPLACE_FN = getattr(_rename_libc, _rename_symbol)
+            _RENAME_NOREPLACE_FN.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            _RENAME_NOREPLACE_FN.restype = ctypes.c_int
+        except AttributeError:
+            # glibc < 2.28 lacks the renameat2 wrapper symbol. On Linux the
+            # syscall itself is available on any kernel >= 3.15, so reach it
+            # directly; macOS has no such fallback (renameatx_np is the only
+            # path), so it stays None and fails closed there.
+            _RENAME_NOREPLACE_FN = _build_renameat2_via_syscall(_rename_libc) if IS_LINUX else None
+        if _RENAME_NOREPLACE_FN is not None:
+            _RENAME_NOREPLACE_FLAG = 1 if IS_LINUX else 4
+    except OSError:
         _RENAME_NOREPLACE_FN = None
 
 RENAME_NOREPLACE_AVAILABLE: bool = _RENAME_NOREPLACE_FN is not None
@@ -214,6 +432,44 @@ def is_bundled_interpreter() -> bool:
     at runtime; never re-inline the sentinel at a call site.
     """
     return BUNDLED_BACKEND_DIST_DIRNAME in Path(sys.executable).resolve().parts
+
+
+_PYTHON_OPTIONS_WITH_VALUES: frozenset[str] = frozenset({"-W", "-X", "--check-hash-based-pycs"})
+
+
+def isolated_python_argv(
+    *args: str,
+    executable: str | os.PathLike[str] | None = None,
+    force_isolation: bool = False,
+) -> list[str]:
+    """Argv for a Kiro Crew-owned Python child with bundle-safe user-site policy.
+
+    ``-s`` is the narrow control: it removes the user site while preserving
+    ``PYTHONPATH``, the working-directory import path, and every other
+    environment setting internal app and MCP launchers rely on. A caller that
+    already chose ``-I`` keeps that stronger contract unchanged. Non-bundled
+    parents that currently allow the user site preserve that policy because
+    Kiro Crew itself may have been installed there. Only callers that supply
+    the child's import path through ``PYTHONPATH`` or a script/entry path may
+    set ``force_isolation``. This helper is for Kiro Crew-owned processes and
+    installers, not user scripts or project tools.
+    """
+    resolved = os.fspath(executable or sys.executable)
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--" or arg.startswith(("-m", "-c")) or not arg.startswith("-"):
+            break
+        if arg in ("-s", "-I") or (
+            arg.startswith("-")
+            and not arg.startswith(("--", "-W", "-X"))
+            and ("s" in arg[1:] or "I" in arg[1:])
+        ):
+            return [resolved, *args]
+        i += 2 if arg in _PYTHON_OPTIONS_WITH_VALUES else 1
+    if not force_isolation and not is_bundled_interpreter() and site.ENABLE_USER_SITE is True:
+        return [resolved, *args]
+    return [resolved, "-s", *args]
 
 
 # ── macOS TCC-protected home subdirectories ──
@@ -538,17 +794,112 @@ else:
 #  - OFF the loop (cron, app backends — threads/subprocesses): the wait must
 #    cover a legitimately long holder that can hold the lock across a
 #    multi-second operation, and a waiter there must NOT give up and race it. So
-#    use a generous ceiling that no real hold approaches, matching POSIX's "wait
-#    for the lock" as closely as a bounded spin can.
+#    use a generous ceiling that no real hold approaches.
 #  - ON the loop (e.g. bridges._mcp_lock during app enable): a spin-sleep would
 #    freeze chat/heartbeat, so that path never sleeps at all (single-shot).
-_WIN_LOCK_POLL_SECS = 0.01
+_LOCK_POLL_SECS = 0.01
+# Backoff cap for the POSIX poll. A kernel-blocking acquire sleeps at zero cost,
+# so a flat 10ms poll would add ~30k pointless wakeups across the full ceiling;
+# doubling up to this bound keeps the first polls tight (a holder finishing a
+# sub-second critical section is still seen at once) and makes a long wait cheap.
+_LOCK_POLL_MAX_SECS = 0.25
 # Generous off-loop ceiling: longer than any legitimate hold, short enough that
 # a truly stuck/permission-denied fd still fails.
-_WIN_LOCK_TIMEOUT_SECS = 300.0
+_LOCK_TIMEOUT_SECS = 300.0
+
+# The ceiling is not Windows-only. ``fcntl.flock`` has no timeout argument, so an
+# unbounded POSIX acquire waits on a stuck holder without limit -- and on the boot
+# path that is a gateway which never binds its port and logs nothing, which reads
+# as a slow start rather than a failure. Both platforms refuse past this same
+# ceiling, so the failure is reportable. ``_WIN_*`` are aliases of these names.
+_WIN_LOCK_POLL_SECS = _LOCK_POLL_SECS
+_WIN_LOCK_TIMEOUT_SECS = _LOCK_TIMEOUT_SECS
 
 
-def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -> bool:
+def _lock_timeout_message(timeout: float, *, exclusive: bool = True) -> str:
+    """The one refusal string both platforms raise when the ceiling is hit.
+
+    Names the ceiling and the reason. A caller that catches this as best-effort
+    work has nothing else to report, so this message is the only evidence of WHY
+    the critical section was declined.
+    """
+    kind = "exclusive" if exclusive else "shared"
+    return (
+        f"could not acquire {kind} file lock within {timeout:g}s "
+        "(a holder is stuck); refusing to proceed unserialized"
+    )
+
+
+def _posix_acquire_blocking(
+    fd: int,
+    mode: int,
+    *,
+    timeout: float | None = None,
+) -> bool:
+    """POSIX bounded lock acquire: poll ``LOCK_NB`` until free or *timeout*.
+
+    Returns True if the lock was taken, False if the ceiling was reached.
+
+    ``fcntl.flock`` takes no timeout, so polling the non-blocking code is the only
+    way to bound the wait -- the same shape :func:`_win_acquire_blocking` uses, for
+    the same reason: a stuck holder must not be waited on without limit.
+
+    Retries cover contention ONLY. ``EAGAIN``/``EACCES``/``EWOULDBLOCK`` mean
+    another holder has it; any other errno is about this fd and propagates at
+    once, so a real defect is not reported as a stuck holder at the ceiling.
+
+    NEVER polls on the asyncio event-loop thread, matching
+    :func:`_win_acquire_blocking`: ``time.sleep`` there would freeze chat and
+    heartbeat for the whole wait, and a freeze long enough to miss a heartbeat is
+    a supervisor kill. On the loop the acquire is single-shot -- take it if free,
+    else refuse at once -- so a caller fails closed instead of stalling every
+    other session. Off the loop, which is where the lock is normally taken, it
+    polls to the ceiling as a real wait.
+
+    The sleep BACKS OFF from ``_LOCK_POLL_SECS`` to ``_LOCK_POLL_MAX_SECS``: a
+    flat 10ms poll would wake ~30k times across the full ceiling for no benefit,
+    while a kernel-blocking acquire wakes not at all. The first polls stay tight,
+    so a holder finishing its sub-second critical section is picked up promptly,
+    and a long wait settles into a cheap idle.
+    """
+    nb_mode = mode | fcntl.LOCK_NB
+
+    def _try_once() -> bool:
+        try:
+            fcntl.flock(fd, nb_mode)
+            return True
+        except OSError as exc:
+            # Only "someone holds it" is retryable. EBADF/EINVAL and friends are
+            # real errors about THIS fd and must surface now, not at the ceiling.
+            if exc.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                raise
+            return False
+
+    try:
+        asyncio.get_running_loop()
+        on_loop = True
+    except RuntimeError:
+        on_loop = False
+    if on_loop:
+        # Single attempt only -- a poll-sleep here blocks the event loop.
+        return _try_once()
+
+    ceiling = _LOCK_TIMEOUT_SECS if timeout is None else timeout
+    deadline = time.monotonic() + ceiling
+    delay = _LOCK_POLL_SECS
+    while True:
+        if _try_once():
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        # Never sleep past the deadline, so the refusal lands at the ceiling
+        # rather than up to one backed-off interval after it.
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, _LOCK_POLL_MAX_SECS)
+
+
+def _win_acquire_blocking(fd: int, *, timeout: float = _LOCK_TIMEOUT_SECS) -> bool:
     """Windows blocking lock acquire: spin on LK_NBLCK until free or timeout.
 
     Returns True if the lock was taken, False if it could not be.
@@ -586,7 +937,7 @@ def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -
             return True
         if time.monotonic() >= deadline:
             return False
-        time.sleep(_WIN_LOCK_POLL_SECS)
+        time.sleep(_LOCK_POLL_SECS)
 
 
 @contextlib.contextmanager
@@ -596,27 +947,43 @@ def file_lock(
     exclusive: bool = True,
     required: bool = False,
     wait: bool = True,
+    timeout: float | None = None,
 ) -> Iterator[None]:
     """Acquire an advisory lock on ``fd`` for the duration of the block.
 
-    POSIX: ``fcntl.flock(LOCK_EX|LOCK_SH)`` with ``LOCK_UN`` release.
+    POSIX: ``fcntl.flock(LOCK_EX|LOCK_SH)`` with ``LOCK_UN`` release, acquired by
+    polling the non-blocking code up to ``_LOCK_TIMEOUT_SECS``. ``flock`` itself
+    takes no timeout, and an unbounded wait on a stuck holder is not a wait but a
+    hang: on the boot path it leaves a gateway that binds no port and logs
+    nothing, which no supervisor or health check can act on.
     Windows: ``msvcrt.locking`` on the first byte, acquired by spinning on the
-    non-blocking code up to ``_WIN_LOCK_TIMEOUT_SECS`` — because msvcrt's own
+    non-blocking code up to ``_LOCK_TIMEOUT_SECS`` — because msvcrt's own
     "blocking" code gives up after ~10s with EDEADLOCK, which cannot be treated
     as a wait. ``msvcrt`` has no shared mode, so a shared request is satisfied
     with an exclusive lock (correctness over concurrency — readers genuinely
     serialize with the holder, but never see torn writes).
 
-    On Windows the acquire is single-shot when called on the asyncio event-loop
-    thread (a spin-sleep there would freeze chat/heartbeat) and a bounded poll
-    up to the timeout otherwise; either way, if the lock cannot be taken
+    On BOTH platforms, if the lock cannot be taken within the ceiling
     ``file_lock`` FAILS CLOSED — it raises rather than entering the critical
     section unserialized, since proceeding lock-less is the exact fail-open that
-    loses writes. The timeout is a safety ceiling against a stuck holder, not a
-    normal wait (every in-tree critical section is a sub-second read + atomic
-    rename). ``required`` is kept for call-site intent and does not change
-    the outcome (both paths refuse to proceed without the lock). On POSIX the
-    acquire blocks until the lock is free.
+    loses writes. On BOTH platforms the acquire is additionally single-shot when
+    called on the asyncio event-loop thread: a poll-sleep there would freeze chat
+    and heartbeat for the whole wait, and a freeze long enough to miss a heartbeat
+    is a supervisor kill, so a contended on-loop caller is refused at once and
+    fails closed rather than stalling every other session. The timeout is a safety
+    ceiling against a stuck holder, not a normal wait. ``required`` is kept for
+    call-site intent and does not change the outcome (both paths refuse to proceed
+    without the lock).
+
+    *timeout* overrides that ceiling for a caller whose critical section is
+    legitimately long, and must be set by any caller that can hold the lock past
+    ``_LOCK_TIMEOUT_SECS``. The default suits the common case — a sub-second read
+    plus an atomic rename — but it is NOT an upper bound on every in-tree holder:
+    ``frontend._staging_lock`` spans an ``npm run build`` plus an install, so a
+    default ceiling would refuse a contender while the holder is still working
+    rather than because it is stuck. A ceiling shorter than the holder's real
+    work turns a wait into a spurious refusal, which is the failure this
+    parameter exists to prevent.
 
     *wait* is for a caller whose work is OPTIONAL and retried later, and which
     may run on the event-loop thread: with ``wait=False`` the acquire is
@@ -639,8 +1006,20 @@ def file_lock(
         if not wait:
             # BlockingIOError (an OSError) when held: same fail-closed contract
             # as the Windows branch, reported by the platform rather than by us.
-            mode |= fcntl.LOCK_NB
-        fcntl.flock(fd, mode)
+            fcntl.flock(fd, mode | fcntl.LOCK_NB)
+        elif not _posix_acquire_blocking(fd, mode, timeout=timeout):
+            # Past the ceiling the holder is stuck, not busy. Refuse LOUDLY
+            # rather than wait on it without limit: an unbounded wait here leaves
+            # a boot with no port bound and no log line, while a raise is
+            # something the caller can report and recover from -- the gateway
+            # boot path logs it at ERROR, prints the repair command, and still
+            # binds its port.
+            raise OSError(
+                _lock_timeout_message(
+                    _LOCK_TIMEOUT_SECS if timeout is None else timeout,
+                    exclusive=exclusive,
+                )
+            )
         try:
             yield
         finally:
@@ -656,19 +1035,21 @@ def file_lock(
         # strictly safer, and callers already run under `with`, so the fd is
         # cleaned up. `required` is kept for call-site intent and does not
         # change the outcome — both paths refuse to proceed lock-less.
-        timeout = _WIN_LOCK_TIMEOUT_SECS if wait else 0.0
-        # Called with no keyword on the waiting path, so the default-argument
-        # call shape existing tests stub out is preserved.
-        acquired = _win_acquire_blocking(fd) if wait else _win_acquire_blocking(fd, timeout=0.0)
+        ceiling = 0.0 if not wait else (_LOCK_TIMEOUT_SECS if timeout is None else timeout)
+        # The waiting path with no explicit ceiling is called with no keyword, so
+        # the default-argument call shape existing tests stub out is preserved.
+        if not wait:
+            acquired = _win_acquire_blocking(fd, timeout=0.0)
+        elif timeout is None:
+            acquired = _win_acquire_blocking(fd)
+        else:
+            acquired = _win_acquire_blocking(fd, timeout=timeout)
         if not acquired:
             if not wait:
                 # Held right now. BlockingIOError so the caller can tell this
                 # from the stuck-holder ceiling below, matching POSIX LOCK_NB.
                 raise BlockingIOError("file lock is held; not waiting for it")
-            raise OSError(
-                f"could not acquire exclusive file lock within {timeout:g}s "
-                "(a holder is stuck); refusing to proceed unserialized"
-            )
+            raise OSError(_lock_timeout_message(ceiling, exclusive=exclusive))
         try:
             yield
         finally:
@@ -713,22 +1094,22 @@ def acquire_lock(fd: int, *, exclusive: bool = True) -> None:
     """Low-level lock acquire for the acquire-now / release-later fd-handoff
     pattern (where a context manager does not fit).
 
-    POSIX: ``fcntl.flock`` (blocks until free). Windows: single-shot on the
-    asyncio loop thread, else a bounded poll up to ``_WIN_LOCK_TIMEOUT_SECS``
-    (see :func:`_win_acquire_blocking`). If the lock cannot be taken it FAILS
+    POSIX and Windows both wait up to ``_LOCK_TIMEOUT_SECS`` off the asyncio loop
+    thread and are both single-shot on it: POSIX polls ``fcntl.flock`` with
+    ``LOCK_NB`` (:func:`_posix_acquire_blocking`), Windows polls ``msvcrt.locking``
+    (:func:`_win_acquire_blocking`). If the lock cannot be taken it FAILS
     CLOSED — raises rather than letting the caller proceed unserialized — since
     a stuck holder past the ceiling is an error, not a routine wait, and
     proceeding lock-less is the fail-open that loses writes. Pair every call
     with :func:`release_lock` on the same ``fd``.
     """
     if IS_POSIX:
-        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not _posix_acquire_blocking(fd, mode):
+            raise OSError(_lock_timeout_message(_LOCK_TIMEOUT_SECS, exclusive=exclusive))
         return
     if not _win_acquire_blocking(fd):
-        raise OSError(
-            f"could not acquire file lock within {_WIN_LOCK_TIMEOUT_SECS:g}s "
-            "(a holder is stuck); refusing to proceed unserialized"
-        )
+        raise OSError(_lock_timeout_message(_LOCK_TIMEOUT_SECS))
 
 
 def release_lock(fd: int) -> None:
@@ -1012,15 +1393,23 @@ _DARWIN_VNODE_INFO_PATH_SIZE = _DARWIN_VNODE_INFO_SIZE + _DARWIN_MAXPATHLEN
 _DARWIN_PROC_VNODEPATHINFO_SIZE = 2 * _DARWIN_VNODE_INFO_PATH_SIZE
 
 # ``proc_pidinfo(PROC_PIDTBSDINFO)`` fills a ``proc_bsdinfo`` struct whose
-# start-time pair lives at fixed offsets: 12 leading uint32 fields (48 bytes),
-# ``pbi_comm[16]`` + ``pbi_name[32]`` (96), then 6 more 4-byte fields (120),
-# then ``pbi_start_tvsec`` / ``pbi_start_tvusec`` as two uint64s (120 / 128,
-# struct size 136). Only those two matter here; the total size doubles as the
-# layout check.
+# parent pid and start-time pair live at fixed offsets. ``pbi_ppid`` is the
+# fifth uint32 (16), followed later by ``pbi_start_tvsec`` and
+# ``pbi_start_tvusec`` as two uint64s (120 / 128, struct size 136). The total
+# size doubles as the layout check.
 _DARWIN_PROC_PIDTBSDINFO = 3
 _DARWIN_PROC_BSDINFO_SIZE = 136
+_DARWIN_PBI_PPID_OFFSET = 16
 _DARWIN_PBI_START_TVSEC_OFFSET = 120
 _DARWIN_PBI_START_TVUSEC_OFFSET = 128
+
+
+class ProcessStartIdentity(NamedTuple):
+    """A process start ID and parent PID captured by one kernel read."""
+
+    start_id: str
+    ppid: int
+
 
 # ``proc_pidinfo(PROC_PIDTASKINFO)`` fills a ``proc_taskinfo`` struct that opens
 # with six uint64 fields — ``pti_virtual_size``, ``pti_resident_size``,
@@ -1095,18 +1484,14 @@ def _darwin_process_cwd(pid: int) -> str | None:
         return None
 
 
-def _darwin_process_start_microtime(pid: int) -> str | None:
-    """macOS start time of *pid* via ``libproc``, at microsecond resolution.
+def _darwin_process_start_identity(pid: int) -> ProcessStartIdentity | None:
+    """Read macOS start ID and PPID atomically from one ``proc_bsdinfo``.
 
     ``proc_pidinfo(PROC_PIDTBSDINFO)`` needs no entitlement for a same-uid
-    process and never spawns a subprocess. The value is the absolute wall-clock
-    start instant (``pbi_start_tvsec`` / ``pbi_start_tvusec``), so it stays
-    unique across reboots and is six decimal orders finer than the 1s ``ps -o
-    lstart=`` probe — fine enough that a recycled PID cannot alias within the
-    same second. The kernel reports how many bytes it filled; anything other
-    than the exact struct size means the layout assumed by the offsets above no
-    longer matches, so the answer is refused rather than sliced out of the
-    wrong place (same rule as the cwd probe).
+    process and never spawns a subprocess. Reading both fields from this one
+    kernel-filled struct prevents a recycled pid from pairing old parentage
+    with a new process identity. The start instant is absolute wall time at
+    microsecond resolution, six decimal orders finer than ``ps -o lstart=``.
     """
     lib = _darwin_libproc_handle()
     if lib is None:
@@ -1123,17 +1508,29 @@ def _darwin_process_start_microtime(pid: int) -> str | None:
         if filled != _DARWIN_PROC_BSDINFO_SIZE:
             return None
         # Both x86_64 and arm64 macOS are little-endian.
+        ppid = int.from_bytes(
+            buf.raw[_DARWIN_PBI_PPID_OFFSET : _DARWIN_PBI_PPID_OFFSET + 4],
+            "little",
+        )
         sec = int.from_bytes(
-            buf.raw[_DARWIN_PBI_START_TVSEC_OFFSET:_DARWIN_PBI_START_TVUSEC_OFFSET], "little"
+            buf.raw[_DARWIN_PBI_START_TVSEC_OFFSET:_DARWIN_PBI_START_TVUSEC_OFFSET],
+            "little",
         )
         usec = int.from_bytes(
-            buf.raw[_DARWIN_PBI_START_TVUSEC_OFFSET:_DARWIN_PROC_BSDINFO_SIZE], "little"
+            buf.raw[_DARWIN_PBI_START_TVUSEC_OFFSET:_DARWIN_PROC_BSDINFO_SIZE],
+            "little",
         )
         if sec <= 0:
             return None
-        return f"{sec}.{usec:06d}"
+        return ProcessStartIdentity(f"{sec}.{usec:06d}", ppid)
     except Exception:
         return None
+
+
+def _darwin_process_start_microtime(pid: int) -> str | None:
+    """macOS start time of *pid* via the atomic ``proc_bsdinfo`` reader."""
+    identity = _darwin_process_start_identity(pid)
+    return identity.start_id if identity is not None else None
 
 
 def _darwin_process_cpu_nanos(pid: int) -> int | None:
@@ -1189,6 +1586,40 @@ _DARWIN_PIDPATH_MAXSIZE = 4 * _DARWIN_MAXPATHLEN
 _DARWIN_CTL_KERN = 1
 _DARWIN_KERN_PROCARGS2 = 49
 _DARWIN_PROCARGS_BUFSIZE = 64 * 1024
+
+# The environment sits AFTER argv in that same record, so the environ probe
+# cannot share the argv probe's bound: the kernel truncates silently, and a
+# process with a long argv -- a recursively self-appending launcher is exactly
+# that shape -- would have its environment cut off and read as "no marker",
+# failing closed on the very process an identity gate most needs to place. Sized
+# at the kernel's own ``ARG_MAX`` ceiling on argv plus environment instead, so
+# truncation is impossible rather than merely unlikely.
+_DARWIN_PROCARGS_ENV_BUFSIZE = 1024 * 1024
+
+# ``sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)`` answers for a ZOMBIE where
+# ``proc_pidinfo`` refuses: the kernel walks its zombie list for this query as
+# well as the live one, and a zombie's ``proc`` still carries its start instant.
+# The record is a ``kinfo_proc`` whose leading ``extern_proc`` holds the same
+# ``p_start`` the ``PROC_PIDTBSDINFO`` probe reports -- ``p_starttime`` (offset
+# 0: int64 seconds, int32 microseconds) -- and the BSD state code ``p_stat``
+# (offset 36; ``SZOMB`` above). The kernel writes exactly ``sizeof(kinfo_proc)``
+# bytes per process, 648 on every 64-bit macOS; any other length means the
+# layout these offsets assume does not hold, so the answer is refused rather
+# than sliced out of the wrong place (the rule the libproc probes follow). A pid
+# that does not exist is not an error: the call succeeds with a zero-length
+# answer. ``KERN_PROC_PGRP`` lists every member of a process group the same way.
+_DARWIN_KERN_PROC = 14
+_DARWIN_KERN_PROC_PID = 1
+_DARWIN_KERN_PROC_PGRP = 2
+_DARWIN_KINFO_PROC_SIZE = 648
+_DARWIN_KP_START_TVSEC_OFFSET = 0
+_DARWIN_KP_START_TVUSEC_OFFSET = 8
+_DARWIN_KP_STAT_OFFSET = 36
+_DARWIN_KP_PID_OFFSET = 40
+# Headroom for processes that join a group between the size query and the read,
+# doubled on each of the retries a still-growing group is given.
+_DARWIN_KINFO_PGRP_SLACK = 16
+_DARWIN_KINFO_PGRP_ATTEMPTS = 4
 
 # ``proc_listchildpids`` writes ``pid_t`` values and returns HOW MANY it wrote.
 # A childless parent and a pid that does not exist both answer 0, so a caller
@@ -1375,6 +1806,199 @@ def darwin_process_argv(pid: int) -> list[str] | None:
         return None
 
 
+def darwin_process_environ(pid: int) -> list[bytes] | None:
+    """Exec-time environment of *pid* via ``sysctl KERN_PROCARGS2``, or None.
+
+    Returns the raw ``KEY=VALUE`` entries. ``None`` means the record could not
+    be read or parsed -- never an empty list for an unreadable process, so a
+    caller can tell "no such variable" apart from "could not look".
+
+    Same-uid processes only, and no entitlement or elevated privilege for our
+    own: the same kernel record and the same permission contract
+    :func:`darwin_process_argv` already reads. The environment here is the
+    kernel's copy fixed at exec, which is why it is ownership evidence a
+    process cannot forge for another, unlike anything on disk.
+
+    The ``argc`` argv entries are skipped BY COUNT, empty strings included, so
+    an *argument* that merely looks like an environment entry can never be read
+    as one -- the point of the read is that a user's own shell can reproduce any
+    argv.
+    """
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    try:
+        mib = (ctypes.c_int * 3)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROCARGS2, pid)
+        buf = ctypes.create_string_buffer(_DARWIN_PROCARGS_ENV_BUFSIZE)
+        size = ctypes.c_size_t(_DARWIN_PROCARGS_ENV_BUFSIZE)
+        if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buf.raw[: size.value]
+        if len(raw) < 4:
+            return None
+        argc = struct.unpack_from("<i", raw, 0)[0]
+        if argc <= 0:
+            return None
+        rest = raw[4:]
+        exe_end = rest.find(b"\0")
+        if exe_end < 0:
+            return None
+        rest = rest[exe_end:].lstrip(b"\0")
+        entries = [token for token in rest.split(b"\0")[argc:] if token]
+        # No entries past argv is a record whose environment is missing, not a
+        # process running with an empty one: every exec'd process has some.
+        return entries or None
+    except Exception:
+        return None
+
+
+class DarwinKinfoProc(NamedTuple):
+    """One process as ``sysctl KERN_PROC`` describes it -- zombies included.
+
+    ``start_id`` is formatted exactly as :func:`get_process_start_id` formats
+    the libproc answer for the same process, so the two are comparable: both
+    read the kernel's ``p_start`` instant.
+    """
+
+    pid: int
+    zombie: bool
+    start_id: str
+
+
+def _darwin_kinfo_proc_parse(raw: bytes) -> DarwinKinfoProc | None:
+    """One ``kinfo_proc`` record, or None when its start instant is implausible."""
+    sec = struct.unpack_from("<q", raw, _DARWIN_KP_START_TVSEC_OFFSET)[0]
+    usec = struct.unpack_from("<i", raw, _DARWIN_KP_START_TVUSEC_OFFSET)[0]
+    stat = struct.unpack_from("<b", raw, _DARWIN_KP_STAT_OFFSET)[0]
+    pid = struct.unpack_from("<i", raw, _DARWIN_KP_PID_OFFSET)[0]
+    if sec <= 0 or usec < 0 or pid <= 0:
+        return None
+    return DarwinKinfoProc(pid=pid, zombie=stat == _DARWIN_SZOMB, start_id=f"{sec}.{usec:06d}")
+
+
+_darwin_kinfo_size_mismatch_logged = False
+
+
+def _darwin_kinfo_query(selector: int, arg: int, capacity: int) -> bytes | None:
+    """Raw ``sysctl KERN_PROC/<selector>/<arg>`` bytes, or None when unreadable.
+
+    Empty bytes is a real answer ("no such process / empty group"); None is
+    "could not ask". A result that is not a whole number of records means the
+    struct size assumed by the offsets is wrong, and is refused the same way --
+    with one warning per process, because that refusal silently disables every
+    zombie reader on this host and the teardown falls back to waiting out its
+    grace on an exited leader. The callers poll, so it is not logged per call.
+    """
+    global _darwin_kinfo_size_mismatch_logged
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    try:
+        mib = (ctypes.c_int * 4)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROC, selector, arg)
+        buf = ctypes.create_string_buffer(capacity)
+        size = ctypes.c_size_t(capacity)
+        if libc.sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buf.raw[: size.value]
+        if len(raw) % _DARWIN_KINFO_PROC_SIZE:
+            if not _darwin_kinfo_size_mismatch_logged:
+                _darwin_kinfo_size_mismatch_logged = True
+                logger.warning(
+                    "sysctl KERN_PROC returned %d bytes, not a multiple of the %d-byte "
+                    "kinfo_proc this build expects; the macOS zombie readers are "
+                    "disabled and an exited provider root is read as still running",
+                    len(raw),
+                    _DARWIN_KINFO_PROC_SIZE,
+                )
+            return None
+        return raw
+    except Exception:
+        return None
+
+
+def darwin_kinfo_proc(pid: int) -> DarwinKinfoProc | None:
+    """``sysctl KERN_PROC_PID`` facts for *pid*, or None when it cannot be read.
+
+    Unlike :func:`darwin_process_facts` this ANSWERS for a zombie, which is the
+    one state the teardown code needs to see: an exited-but-unreaped child still
+    owns its pid (and, for a group leader, its pgid), and its identity must stay
+    readable so the reaper can prove the pid was not recycled before waiting on
+    it. None covers "gone" and "unreadable" alike; callers that must tell those
+    apart use :func:`darwin_pid_is_zombie`.
+    """
+    if pid <= 0:
+        return None
+    raw = _darwin_kinfo_query(_DARWIN_KERN_PROC_PID, pid, _DARWIN_KINFO_PROC_SIZE)
+    if not raw:
+        return None
+    facts = _darwin_kinfo_proc_parse(raw)
+    if facts is None or facts.pid != pid:
+        return None
+    return facts
+
+
+def darwin_pid_is_zombie(pid: int) -> bool | None:
+    """Whether *pid* is a zombie: True / False, or None when it cannot be read.
+
+    "Gone" is reported as None by :func:`darwin_kinfo_proc`; here it is
+    distinguished, because a caller asking "has this process finished running"
+    needs a pid the kernel does not list to read as finished, not as unknown.
+    """
+    if pid <= 0:
+        return None
+    raw = _darwin_kinfo_query(_DARWIN_KERN_PROC_PID, pid, _DARWIN_KINFO_PROC_SIZE)
+    if raw is None:
+        return None
+    if not raw:
+        return True  # the kernel has no such process: it exited and was reaped
+    facts = _darwin_kinfo_proc_parse(raw)
+    if facts is None or facts.pid != pid:
+        return None
+    return facts.zombie
+
+
+def darwin_pgroup_members(pgid: int) -> list[DarwinKinfoProc] | None:
+    """Every process the kernel lists in group *pgid*, or None when unreadable.
+
+    Zombies are included and flagged, so a caller can tell a group that is
+    genuinely empty from one held open only by its retained zombie leader --
+    ``killpg(pgid, 0)`` cannot make that distinction. Sized by a first query
+    with slack for processes that join between the two calls. A group that
+    outgrows the slack fails the read (``ENOMEM``), and that failure is retried
+    with the slack doubled each time rather than reported: the caller reads None
+    as "cannot prove the group is ours" and withholds the group SIGKILL, so a
+    tree forking fast enough during the teardown must not be able to make its
+    own group unreadable. An answer still overflowing after the last attempt is
+    refused (None) rather than returned truncated.
+    """
+    if pgid <= 0:
+        return None
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    mib = (ctypes.c_int * 4)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROC, _DARWIN_KERN_PROC_PGRP, pgid)
+    slack = _DARWIN_KINFO_PGRP_SLACK
+    for _attempt in range(_DARWIN_KINFO_PGRP_ATTEMPTS):
+        try:
+            size = ctypes.c_size_t(0)
+            if libc.sysctl(mib, 4, None, ctypes.byref(size), None, 0) != 0:
+                return None
+        except Exception:
+            return None
+        raw = _darwin_kinfo_query(
+            _DARWIN_KERN_PROC_PGRP, pgid, size.value + slack * _DARWIN_KINFO_PROC_SIZE
+        )
+        if raw is not None:
+            members: list[DarwinKinfoProc] = []
+            for start in range(0, len(raw), _DARWIN_KINFO_PROC_SIZE):
+                facts = _darwin_kinfo_proc_parse(raw[start : start + _DARWIN_KINFO_PROC_SIZE])
+                if facts is not None:
+                    members.append(facts)
+            return members
+        slack *= 2
+    return None
+
+
 def process_cwd(pid: int) -> str | None:
     """Current working directory of *pid*, or None when no source can answer.
 
@@ -1478,6 +2102,41 @@ _DARWIN_OFF_START_TVSEC = 120
 _DARWIN_OFF_START_TVUSEC = 128
 
 
+def get_process_start_identity(
+    pid: int, *, proc_root: Path | None = None
+) -> ProcessStartIdentity | None:
+    """Return ``(start_id, ppid)`` from one per-pid kernel record.
+
+    Linux reads both fields from one ``/proc/<pid>/stat`` value. macOS reads
+    both from one ``PROC_PIDTBSDINFO`` value. Other platforms return ``None``;
+    callers that can tolerate the coarser ``ps`` fallback must bracket it
+    separately so process recycling cannot join parentage from one process to
+    the identity of another.
+    """
+    if pid <= 0:
+        return None
+    if sys.platform == "linux":
+        stat_path = (
+            Path(f"/proc/{pid}/stat") if proc_root is None else proc_root / str(pid) / "stat"
+        )
+        try:
+            stat_data = stat_path.read_text(encoding="utf-8", errors="replace")
+            close_paren = stat_data.rfind(")")
+            if close_paren < 0:
+                return None
+            fields = stat_data[close_paren + 2 :].split()
+            ppid = int(fields[1])
+            start_id = fields[19]
+            if ppid < 0 or not start_id.isdigit():
+                return None
+            return ProcessStartIdentity(start_id, ppid)
+        except (OSError, ValueError, IndexError):
+            return None
+    if sys.platform == "darwin":
+        return _darwin_process_start_identity(pid)
+    return None
+
+
 def get_process_start_id(pid: int) -> str | None:
     """Return a stable per-process start-time identity string, or ``None``.
 
@@ -1506,41 +2165,67 @@ def get_process_start_id(pid: int) -> str | None:
     if sys.platform == "win32":
         return process_start_time(pid)
     if sys.platform == "linux":
-        try:
-            stat_data = Path(f"/proc/{pid}/stat").read_text()
-            # comm (field 2) may contain spaces/parens — parse after the LAST ')'
-            close_paren = stat_data.rfind(")")
-            if close_paren < 0:
-                return None
-            return stat_data[close_paren + 2 :].split()[19]
-        except Exception:
-            return None
+        identity = get_process_start_identity(pid)
+        return identity.start_id if identity is not None else None
     if sys.platform == "darwin":
         try:
-            path = ctypes.util.find_library("proc")
-            if path is None:
-                return None
-            lib = ctypes.CDLL(path)
-            lib.proc_pidinfo.argtypes = [
-                ctypes.c_int,
-                ctypes.c_int,
-                ctypes.c_uint64,
-                ctypes.c_void_p,
-                ctypes.c_int,
-            ]
-            lib.proc_pidinfo.restype = ctypes.c_int
-            buf = ctypes.create_string_buffer(_DARWIN_BSDINFO_SIZE)
-            ret = lib.proc_pidinfo(pid, 3, 0, buf, _DARWIN_BSDINFO_SIZE)  # PROC_PIDTBSDINFO=3
-            if ret <= 0:
-                return None
-            sec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVSEC)[0]
-            usec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVUSEC)[0]
-            if sec == 0:
-                return None  # implausible — treat as unknown rather than a value
-            return f"{sec}.{usec:06d}"
-        except Exception:
+            start = _darwin_libproc_start_id(pid)
+        except _DarwinLibprocUnavailable:
+            # No libproc at all is an unrecognised host, not a zombie: the
+            # identity stays unknown, and identity-sensitive callers refuse.
             return None
+        if start is not None:
+            return start
+        # libproc refuses a zombie outright, yet a zombie still owns its pid and
+        # must stay identifiable: the teardown compares this value before it
+        # waits on the exited leader, and an unreadable identity would leave
+        # that zombie unreaped for good. sysctl reads the same ``p_start`` from
+        # the kernel's zombie list, in the same format.
+        facts = darwin_kinfo_proc(pid)
+        return facts.start_id if facts is not None else None
     return None
+
+
+class _DarwinLibprocUnavailable(Exception):
+    """``libproc`` could not be loaded -- distinct from it refusing one pid."""
+
+
+def _darwin_libproc_start_id(pid: int) -> str | None:
+    """macOS start instant of *pid* via ``proc_pidinfo``, or None when refused.
+
+    Refused for a zombie (the kernel has no task to describe) and for another
+    user's process alike; :func:`get_process_start_id` owns the zombie fallback.
+    Raises :class:`_DarwinLibprocUnavailable` when the library itself cannot be
+    loaded, so the caller can tell "this pid was refused" (fall back) from
+    "nothing here can be asked" (no identity).
+    """
+    try:
+        path = ctypes.util.find_library("proc")
+        lib = ctypes.CDLL(path) if path is not None else None
+    except Exception:
+        lib = None
+    if lib is None:
+        raise _DarwinLibprocUnavailable
+    try:
+        lib.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        buf = ctypes.create_string_buffer(_DARWIN_BSDINFO_SIZE)
+        ret = lib.proc_pidinfo(pid, 3, 0, buf, _DARWIN_BSDINFO_SIZE)  # PROC_PIDTBSDINFO=3
+        if ret <= 0:
+            return None
+        sec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVSEC)[0]
+        usec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVUSEC)[0]
+        if sec == 0:
+            return None  # implausible — treat as unknown rather than a value
+        return f"{sec}.{usec:06d}"
+    except Exception:
+        return None
 
 
 def process_namespaces_match(pid: int, reference_pid: int) -> bool | None:
@@ -1721,6 +2406,122 @@ def _macos_tcp_peer_pid(server: tuple[str, int], client: tuple[str, int]) -> int
     return next(iter(owners)) if len(owners) == 1 else None
 
 
+class _WindowsTcpOwnerRow(NamedTuple):
+    """One row from a Windows TCP owner-PID table."""
+
+    state: int
+    local_address: bytes
+    local_scope_id: int
+    local_port: int
+    remote_address: bytes
+    remote_scope_id: int
+    remote_port: int
+    pid: int
+
+
+_WINDOWS_TCP_TABLE_OWNER_PID_LISTENER = 3
+_WINDOWS_TCP_TABLE_OWNER_PID_CONNECTIONS = 4
+_WINDOWS_TCP_STATE_LISTEN = 2
+_WINDOWS_TCP_STATE_ESTABLISHED = 5
+_WINDOWS_TCP_TABLE_MAX_BYTES = 8 * 1024 * 1024
+_WINDOWS_ERROR_INSUFFICIENT_BUFFER = 122
+
+
+def _windows_tcp_owner_rows(
+    ipv6: bool,
+    table_class: int,
+) -> list[_WindowsTcpOwnerRow] | None:
+    """Read one Windows TCP owner-PID table, or ``None`` on uncertainty."""
+    if not IS_WINDOWS or table_class not in {
+        _WINDOWS_TCP_TABLE_OWNER_PID_LISTENER,
+        _WINDOWS_TCP_TABLE_OWNER_PID_CONNECTIONS,
+    }:
+        return None
+    row_format = struct.Struct("<16sII16sIIII") if ipv6 else struct.Struct("<I4sI4sII")
+    try:
+        iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)  # type: ignore[attr-defined]
+        query = iphlpapi.GetExtendedTcpTable
+        query.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.BOOL,
+            wintypes.ULONG,
+            ctypes.c_int,
+            wintypes.ULONG,
+        ]
+        query.restype = wintypes.DWORD
+        size = wintypes.DWORD()
+        family = 23 if ipv6 else 2  # Windows AF_INET6 / AF_INET.
+        if (
+            query(None, ctypes.byref(size), False, family, table_class, 0)
+            != _WINDOWS_ERROR_INSUFFICIENT_BUFFER
+        ):
+            return None
+        for _ in range(3):
+            if not 4 <= size.value <= _WINDOWS_TCP_TABLE_MAX_BYTES:
+                return None
+            buffer = ctypes.create_string_buffer(size.value)
+            result = query(
+                buffer,
+                ctypes.byref(size),
+                False,
+                family,
+                table_class,
+                0,
+            )
+            if result == _WINDOWS_ERROR_INSUFFICIENT_BUFFER:
+                continue
+            if result != 0 or not 4 <= size.value <= len(buffer):
+                return None
+            raw = buffer.raw[: size.value]
+            count = struct.unpack_from("<I", raw)[0]
+            if 4 + count * row_format.size > len(raw):
+                return None
+            rows: list[_WindowsTcpOwnerRow] = []
+            for index in range(count):
+                fields = row_format.unpack_from(raw, 4 + index * row_format.size)
+                if ipv6:
+                    (
+                        local_address,
+                        local_scope_id,
+                        local_port_raw,
+                        remote_address,
+                        remote_scope_id,
+                        remote_port_raw,
+                        state,
+                        pid,
+                    ) = fields
+                else:
+                    (
+                        state,
+                        local_address,
+                        local_port_raw,
+                        remote_address,
+                        remote_port_raw,
+                        pid,
+                    ) = fields
+                    local_scope_id = remote_scope_id = 0
+                # Ports occupy the first two bytes of a DWORD in network order.
+                local_port = int.from_bytes(struct.pack("<I", local_port_raw)[:2], "big")
+                remote_port = int.from_bytes(struct.pack("<I", remote_port_raw)[:2], "big")
+                rows.append(
+                    _WindowsTcpOwnerRow(
+                        int(state),
+                        bytes(local_address),
+                        int(local_scope_id),
+                        local_port,
+                        bytes(remote_address),
+                        int(remote_scope_id),
+                        remote_port,
+                        int(pid),
+                    )
+                )
+            return rows
+    except (AttributeError, OSError, TypeError, ValueError, struct.error):
+        logger.debug("Cannot read Windows TCP owner-PID table", exc_info=True)
+    return None
+
+
 def get_tcp_peer_pid(
     server_endpoint: tuple[str, int], client_endpoint: tuple[str, int]
 ) -> int | None:
@@ -1769,78 +2570,39 @@ def get_tcp_peer_pid(
                 )
                 for address in addresses
             ]
-            row_format = struct.Struct("<16sII16sIIII")
         else:
             packed = [address.packed for address in addresses]
-            row_format = struct.Struct("<I4sI4sII")
-
-        iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)  # type: ignore[attr-defined]
-        query = iphlpapi.GetExtendedTcpTable
-        query.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(wintypes.DWORD),
-            wintypes.BOOL,
-            wintypes.ULONG,
-            ctypes.c_int,
-            wintypes.ULONG,
-        ]
-        query.restype = wintypes.DWORD
-        size = wintypes.DWORD()
-        # TCP_TABLE_OWNER_PID_CONNECTIONS = 4. Windows AF_INET6 = 23.
-        family = 23 if ipv6 else 2
-        if query(None, ctypes.byref(size), False, family, 4, 0) != 122:
+        rows = _windows_tcp_owner_rows(
+            ipv6,
+            _WINDOWS_TCP_TABLE_OWNER_PID_CONNECTIONS,
+        )
+        if rows is None:
             return None
-        for _ in range(3):
-            if not 4 <= size.value <= 8 * 1024 * 1024:
-                return None
-            buffer = ctypes.create_string_buffer(size.value)
-            result = query(buffer, ctypes.byref(size), False, family, 4, 0)
-            if result == 122:  # Table grew between the sizing and read calls.
-                continue
-            if result != 0 or not 4 <= size.value <= len(buffer):
-                return None
-            raw = buffer.raw[: size.value]
-            count = struct.unpack_from("<I", raw)[0]
-            if 4 + count * row_format.size > len(raw):
-                return None
-            matches = []
-            for index in range(count):
-                fields = row_format.unpack_from(raw, 4 + index * row_format.size)
-                if ipv6:
-                    (
-                        local,
-                        local_scope,
-                        local_port,
-                        remote,
-                        remote_scope,
-                        remote_port,
-                        state,
-                        pid,
-                    ) = fields
-                    if local_scope or remote_scope:
-                        continue  # Loopback endpoints do not need a scope zone.
-                else:
-                    state, local, local_port, remote, remote_port, pid = fields
-                # Ports occupy the first two bytes of a DWORD in network order.
-                local_port = int.from_bytes(struct.pack("<I", local_port)[:2], "big")
-                remote_port = int.from_bytes(struct.pack("<I", remote_port)[:2], "big")
-                if (
-                    state == 5
-                    and pid > 0
-                    and local == packed[1]
-                    and local_port == client_endpoint[1]
-                    and remote == packed[0]
-                    and remote_port == server_endpoint[1]
-                ):
-                    matches.append(int(pid))
-            return matches[0] if len(matches) == 1 else None
-    except (AttributeError, OSError, TypeError, ValueError, struct.error):
+        matches = [
+            row.pid
+            for row in rows
+            if row.state == _WINDOWS_TCP_STATE_ESTABLISHED
+            and row.pid > 0
+            and row.local_scope_id == 0
+            and row.remote_scope_id == 0
+            and row.local_address == packed[1]
+            and row.local_port == client_endpoint[1]
+            and row.remote_address == packed[0]
+            and row.remote_port == server_endpoint[1]
+        ]
+        return matches[0] if len(matches) == 1 else None
+    except (OSError, TypeError, ValueError):
         logger.debug("Cannot verify loopback TCP peer PID", exc_info=True)
     return None
 
 
-def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> list[int]:
-    """Return a breadth-first descendant list from a PID -> PPID snapshot."""
+def _descendants_from_parent_map(
+    root_pid: int, parent_map: dict[int, int], *, limit: int | None = None
+) -> list[int]:
+    """Return a breadth-first descendant list from a PID -> PPID snapshot.
+
+    Sibling PIDs are in ascending order; ``limit`` bounds the result.
+    """
 
     result: list[int] = []
     frontier = [root_pid]
@@ -1848,8 +2610,10 @@ def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> l
     while frontier:
         parents = set(frontier)
         frontier = []
-        for child_pid, parent_pid in parent_map.items():
+        for child_pid, parent_pid in sorted(parent_map.items()):
             if parent_pid in parents and child_pid not in seen:
+                if limit is not None and len(seen) >= limit:
+                    raise _WindowsTreeOverflow("Windows cleanup identity capacity exceeded")
                 seen.add(child_pid)
                 result.append(child_pid)
                 frontier.append(child_pid)
@@ -1946,6 +2710,85 @@ def _windows_system_dirs() -> tuple[str, ...]:
             seen.add(fallback.casefold())
             dirs.append(fallback)
     return tuple(dirs) + tuple(os.path.join(d, "WindowsPowerShell", "v1.0") for d in dirs)
+
+
+#: ``FOLDERID_Documents`` — the Known Folder PowerShell derives ``$PROFILE``
+#: from (``Environment.GetFolderPath(MyDocuments)``). Read through the shell API
+#: rather than ``%USERPROFILE%\Documents`` because the folder is redirectable
+#: (OneDrive, roaming profiles, group policy) and PowerShell follows the
+#: redirection, so a guess from the environment would check the wrong place.
+_FOLDERID_DOCUMENTS = "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}"
+
+#: ``(sub-directory, file)`` pairs under Documents that Windows PowerShell 5.1
+#: reads before running a ``-Command``. This is the shell kiro-cli spawns, so
+#: this is the profile set that matters here. The two files are the all-hosts
+#: ``profile.ps1`` and its host-specific companion. PowerShell 7 (``pwsh``) has
+#: its own profiles under ``Documents\PowerShell``; kiro-cli does not spawn it,
+#: so those files never run before the command and are deliberately not listed.
+_POWERSHELL_USER_PROFILES = (
+    ("WindowsPowerShell", "profile.ps1"),
+    ("WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
+)
+
+
+def windows_documents_dir() -> str | None:
+    """The user's Documents Known Folder, or ``None`` when Windows cannot say.
+
+    ``None`` is the fail-closed answer for every caller: a check that needs to
+    know what is in Documents cannot proceed on a guess.
+    """
+
+    if not IS_WINDOWS:
+        return None
+    try:
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", ctypes.c_uint32),
+                ("Data2", ctypes.c_uint16),
+                ("Data3", ctypes.c_uint16),
+                ("Data4", ctypes.c_uint8 * 8),
+            ]
+
+        text = _FOLDERID_DOCUMENTS.strip("{}")
+        parts = text.split("-")
+        guid = _GUID()
+        guid.Data1 = int(parts[0], 16)
+        guid.Data2 = int(parts[1], 16)
+        guid.Data3 = int(parts[2], 16)
+        tail = bytes.fromhex(parts[3] + parts[4])
+        guid.Data4 = (ctypes.c_uint8 * 8)(*tail)
+        out = ctypes.c_wchar_p()
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        ole32 = ctypes.windll.ole32  # type: ignore[attr-defined]
+        result = shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(out))
+        if result != 0 or not out.value:
+            return None
+        try:
+            return str(out.value)
+        finally:
+            ole32.CoTaskMemFree(out)
+    except Exception:
+        return None
+
+
+def windows_powershell_profile_paths() -> tuple[str, ...] | None:
+    """Every per-user PowerShell profile path, or ``None`` when Documents is unknown.
+
+    These are the scripts PowerShell runs BEFORE the command it was handed,
+    unless it was started with ``-NoProfile``. They live under the user's own
+    Documents folder, so whatever can write as the user -- an agent included --
+    can write them, and a function defined there shadows any program name. A
+    caller that vouches for a program by name has to know none of them exist.
+    Existence is the caller's question; this only names where to look.
+    """
+
+    documents = windows_documents_dir()
+    if documents is None:
+        return None
+    return tuple(
+        os.path.join(documents, subdir, filename) for subdir, filename in _POWERSHELL_USER_PROFILES
+    )
 
 
 # Names already probed for the diagnostic below, so the message costs one PATH
@@ -2052,6 +2895,300 @@ def trusted_system_bin(name: str) -> str | None:
                 return candidate
     _log_tool_outside_trusted_dirs(name, directories)
     return None
+
+
+#: The install prefix :data:`_TRUSTED_SYSTEM_BIN_DIRS` deliberately omits. It is
+#: the default ``--bin-dir`` of AWS's own CLI installers, so a tool resolved ONLY
+#: from here is common — but on an Intel macOS with Homebrew this same directory
+#: is owned by the console user, which is exactly the "a same-uid process can
+#: supply the binary" hole the trusted lookup exists to close. Membership alone
+#: therefore proves nothing; :func:`trusted_aws_bin` gates it on ownership.
+_LOCAL_SYSTEM_BIN_DIR = "/usr/local/bin"
+
+#: Set once the ``/usr/local/bin/aws`` copy has been declined and logged.
+_UNTRUSTED_AWS_BIN_LOGGED = False
+
+
+#: Hard stop on symlink expansion while resolving one path. Linux's own limit is
+#: 40; a path needing more than that is a loop or an attack rather than an install
+#: layout, and an unbounded walk would hang instead of answering.
+_MAX_SYMLINK_HOPS = 40
+
+
+def _root_owned_entry(path: str) -> bool:
+    """*path* is root-owned, and no non-root principal can write it.
+
+    Two instruments, because the mode bits alone are an incomplete answer.
+    ``st_uid`` plus the group and world write bits cover the POSIX permission
+    model; ``os.access(..., effective_ids=True)`` covers what that model cannot
+    express — a POSIX ACL's named-user entry (``user:me:w``) does not appear in
+    ``st_mode`` at all, since the group bits show the ACL *mask* rather than the
+    entry, so a mode-only check calls a root-owned ``0755`` path safe while the
+    account this gate defends against can rewrite it. ``faccessat(AT_EACCESS)``
+    evaluates the full ACL, which is why :data:`_ACCESS_HONOURS_EFFECTIVE_IDS`
+    gates that arm rather than a bare ``os.access``: without ``faccessat`` the
+    call would answer about the real ids only and the ACL arm would be silently
+    absent.
+
+    The ACL arm cannot run as root, and that is why running as root DECLINES rather
+    than accepts. As root ``os.access`` answers True for essentially everything, so
+    the arm has no signal — and the entry it would have caught is one granting a
+    NON-root user write, which is precisely the case root must not execute. Treating
+    "cannot establish" as "safe" on a path about to be exec'd as root would turn the
+    strongest caller into the least protected one. The cost is bounded and visible: a
+    root-run diagnostic loses only this ``/usr/local/bin`` fallback, since
+    :func:`trusted_system_bin` does not route through here, and its caller reports the
+    decline rather than silently resolving nothing.
+
+    Not to be confused with :func:`path_writable_by_current_user`, which answers
+    the opposite question ("could this account write it") over two LEXICAL chains
+    and rounds unknown to writable. That shape cannot see a mid-chain symlink hop,
+    which is why :func:`_is_root_owned_path` walks :func:`traversed_components` and
+    calls this per entry instead of delegating wholesale.
+
+    ``os.stat`` rather than ``os.lstat`` on purpose: every caller has already
+    established that *path* is not a symlink, so the two agree, and ``os.stat`` is
+    the call the rest of this module's ownership checks use.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    if st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return False
+    if not IS_POSIX:
+        return True
+    if 0 in (os.getuid(), os.geteuid()):
+        return False
+    if _ACCESS_HONOURS_EFFECTIVE_IDS and os.access(path, os.W_OK, effective_ids=True):
+        return False
+    return True
+
+
+def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
+    """Every directory a component-by-component walk to *path* passes through, then the target.
+
+    Resolves *path* one COMPONENT at a time, expanding each symlink it meets — a
+    directory component's as much as the final name's — and records every
+    directory the walk actually reads, on the original side and on each expanded
+    target's side alike, followed by the final resolved target. Visit order, each
+    entry once. No ownership or permission question is asked here: this is the
+    ENUMERATION that any executable-trust predicate must ask its question over,
+    kept separate so that callers with different questions ("root's alone to
+    change", "not another uid's", "not writable by this process") share the walk
+    rather than each spelling a weaker one.
+
+    Two shorter shapes were tried for this enumeration and both were bypassable,
+    which is why every caller must use this one rather than either:
+
+    * ``realpath`` and then walk the result collapses the chain, so
+      ``/usr/local/bin/aws -> /tmp/link -> /usr/bin/aws`` yields ``/usr/bin`` and
+      its ancestors with ``/tmp`` — the one directory where the retarget
+      happens — never named;
+    * walking ``os.path.dirname`` / ``Path.parents`` lexically misses a symlinked
+      COMPONENT, because ``os.stat`` follows symlinks while ``dirname`` does not:
+      for ``/usr/local/bin -> /opt/x/bin`` the target's own parent ``/opt/x``,
+      which can replace it wholesale, is never visited.
+
+    Every lexical ancestor of the fully resolved target is in the result (the
+    walk builds the target's path one directory at a time, and each directory is
+    recorded before a name is joined onto it), so a question asked over this list
+    is asked over a superset of ``resolved.parents`` plus the target. Symlinks
+    met on the way are deliberately absent: their mode is meaningless (0777 on
+    Linux) and they cannot be edited in place, only replaced, which the directory
+    holding them — present in the result — already governs.
+
+    POSIX path semantics (``os.sep``-rooted); Windows callers keep their own
+    ACL-driven chains and must not route through here.
+
+    ``None`` on any ``OSError`` and on any path needing more than
+    :data:`_MAX_SYMLINK_HOPS` expansions. The fail direction is "could not
+    enumerate", never a shorter list: a caller that treats ``None`` as anything
+    but a refusal is answering a question it did not ask.
+    """
+    text = os.fspath(path)
+    if not os.path.isabs(text):
+        text = os.path.abspath(text)
+    # Reversed, so `pop()` yields the next component and a symlink's own components
+    # can be pushed on to be consumed before the rest of the original path.
+    pending = text.split(os.sep)
+    pending.reverse()
+    resolved = os.sep
+    hops = 0
+    visited: dict[str, None] = {}
+    while pending:
+        name = pending.pop()
+        if name in ("", os.curdir):
+            continue
+        if name == os.pardir:
+            resolved = os.path.dirname(resolved)
+            continue
+        # About to read `resolved` as a directory, so it is one the walk depends
+        # on. Recorded here rather than after descending, so the target side of
+        # an expanded symlink is covered by the same line.
+        visited[resolved] = None
+        candidate = os.path.join(resolved, name)
+        try:
+            is_link = os.path.islink(candidate)
+        except OSError:
+            return None
+        if not is_link:
+            resolved = candidate
+            continue
+        hops += 1
+        if hops > _MAX_SYMLINK_HOPS:
+            return None
+        try:
+            target = os.readlink(candidate)
+        except OSError:
+            return None
+        if os.path.isabs(target):
+            resolved = os.sep
+        pending.extend(reversed(target.split(os.sep)))
+    visited[resolved] = None
+    return [Path(component) for component in visited]
+
+
+def _is_root_owned_path(path: str) -> bool:
+    """True when nothing on the way to *path*'s target is another uid's to change.
+
+    :func:`_root_owned_entry` asked over :func:`traversed_components` — every
+    directory the walk reads and the final target. A directory has to be
+    root-owned with no group or world write bit, because replacing an entry needs
+    write on its DIRECTORY rather than on the entry, and a group-writable
+    directory is writable by more than root whoever owns it. The final target has
+    to satisfy the same rule as a file, since a writable regular file can be
+    edited in place without touching any directory.
+
+    POSIX semantics. Windows callers do not reach it (:func:`trusted_aws_bin`
+    answers ``None`` there before the gate).
+
+    A walk that cannot be enumerated (``None``) answers ``False``. The fail
+    direction is "decline", never "assume".
+    """
+    components = traversed_components(path)
+    if components is None:
+        return False
+    return all(_root_owned_entry(str(component)) for component in components)
+
+
+def _local_aws_bin_candidate() -> str | None:
+    """The ``/usr/local/bin/aws`` file, if there is an executable one. No gate."""
+    if IS_WINDOWS:
+        return None
+    candidate = os.path.join(_LOCAL_SYSTEM_BIN_DIR, "aws")
+    if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+        return None
+    return candidate
+
+
+def _is_native_program(path: str) -> bool:
+    """*path*'s own bytes ARE the program: not a script naming an interpreter.
+
+    A ``#!`` line hands execution to a DIFFERENT file, and which file that is lives
+    in the script's CONTENT — so the ownership walk, which validates the path, says
+    nothing about it. A root-owned wrapper whose shebang points into a user-writable
+    tree is not exotic: ``sudo pip install awscli`` against a pyenv or
+    home-directory Python produces exactly that.
+
+    Rather than validate the interpreter — and then its libraries, and then its own
+    module search path, a set with no end — the fallback simply does not trust a
+    script. The case it exists for is unaffected: AWS CLI v2's installer ships a
+    native executable, reached through the symlink this resolver already follows.
+
+    A read failure answers ``False``: unreadable is not shown-to-be-safe.
+    """
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) != b"#!"
+    except OSError:
+        return False
+
+
+def _local_aws_bin_is_trusted(candidate: str) -> bool:
+    """Every condition the ``/usr/local/bin`` fallback requires, in ONE place.
+
+    One predicate because two callers ask it — the resolver and the
+    decline-reporter — and a resolver that accepted what the reporter called
+    refused (or the reverse) would state two contradictory facts about one file.
+    That has already gone wrong once on this path, so the conditions live together
+    rather than being spelled out twice.
+    """
+    return _is_root_owned_path(candidate) and _is_native_program(candidate)
+
+
+def trusted_aws_bin() -> str | None:
+    """The ``aws`` executable to spawn, or ``None`` if there is none to trust.
+
+    :func:`trusted_system_bin` plus a ``/usr/local/bin`` fallback, the same shape
+    as :func:`trusted_git_bin` — one tool-specific resolver owning that tool's
+    install-location knowledge, so its callers state a tool and not a search
+    policy. The fallback exists because ``/usr/local/bin`` is the default
+    ``--bin-dir`` of AWS's own installers, and a lookup that missed it made the
+    doctor report "no AWS CLI" on a perfectly ordinary host.
+
+    It is NOT a loosening. The directory is not in
+    :data:`_TRUSTED_SYSTEM_BIN_DIRS` and must not be: on an Intel macOS the
+    Homebrew prefix IS ``/usr/local``, owned by the console user, so membership
+    alone would let a same-uid process supply every pinned tool. The copy is
+    accepted only when :func:`_is_root_owned_path` finds it, its realpath and
+    every directory above both owned by root and not group/world-writable.
+
+    ``None`` on Windows for the fallback half (the directory is a POSIX
+    convention), and ``None`` when the gate declines — the same "unavailable"
+    answer as an absent CLI, which callers already handle. A caller that must
+    tell the two apart asks :func:`aws_bin_declined_on_ownership`.
+    """
+    global _UNTRUSTED_AWS_BIN_LOGGED
+
+    system_copy = trusted_system_bin("aws")
+    if system_copy:
+        return system_copy
+    candidate = _local_aws_bin_candidate()
+    if candidate is None:
+        return None
+    if not _local_aws_bin_is_trusted(candidate):
+        if not _UNTRUSTED_AWS_BIN_LOGGED:
+            # Once per process, matching `_log_tool_outside_trusted_dirs`: a
+            # caller may probe several times in one run, and the verdict
+            # cannot change between them.
+            _UNTRUSTED_AWS_BIN_LOGGED = True
+            logger.warning(
+                "%s is not root-owned or sits under a writable directory — declining to run it",
+                candidate,
+            )
+        return None
+    return candidate
+
+
+def aws_bin_declined_on_ownership() -> str | None:
+    """The ``/usr/local/bin/aws`` that :func:`trusted_aws_bin` REFUSED, if any.
+
+    ``None`` when there is no such copy, and ``None`` when the gate accepts the
+    one there is. For a caller that must tell an operator "you have this tool,
+    and I will not run it" apart from "you do not have this tool" — two different
+    facts, where reporting the second while the first holds is a confident wrong
+    answer, not a cost of the gate.
+
+    Worth knowing how ordinary the decline is: Debian policy has directories
+    under ``/usr/local`` owned ``root:staff`` mode ``2775``, so on a stock Debian
+    or Ubuntu host the gate declines by DEFAULT and the fallback never fires.
+    That degradation is intended — a member of ``staff`` can replace the binary,
+    which is the hole the gate exists to close, and loosening it to accept a
+    group-writable directory would forfeit the property outright. What is not
+    acceptable is a diagnostic that reads the decline as absence.
+
+    ``None`` as well when :func:`trusted_system_bin` found a copy, because then no
+    decline explains anything: the resolver succeeded, and a caller reporting "the
+    local copy was refused" would be offering that as the reason for some later,
+    unrelated failure.
+    """
+    if trusted_system_bin("aws"):
+        return None
+    candidate = _local_aws_bin_candidate()
+    if candidate is None or _local_aws_bin_is_trusted(candidate):
+        return None
+    return candidate
 
 
 def trusted_system_path() -> str | None:
@@ -2207,29 +3344,445 @@ def tool_outside_trusted_dirs(name: str) -> str | None:
 
 
 def _posix_process_parent_map() -> dict[int, int]:
-    """Return one ``ps`` PID -> PPID snapshot; empty when enumeration fails."""
+    """Return the PID -> PPID view of the shared POSIX process snapshot."""
 
-    if IS_WINDOWS:
+    processes = _posix_process_snapshot()
+    if processes is None:
         return {}
+    return {process_pid: process.ppid for process_pid, process in processes.items()}
+
+
+class ProcessIdentitySource(enum.Enum):
+    """The encoding and reader that produced a process-start identity."""
+
+    ATOMIC = "atomic"
+    WINDOWS = "windows"
+    LSTART = "lstart"
+
+
+class ProcessDescendantIdentity(NamedTuple):
+    """A descendant PID bound to its parent, start identity, and source."""
+
+    pid: int
+    ppid: int
+    start_time: str
+    source: ProcessIdentitySource = ProcessIdentitySource.ATOMIC
+
+
+class _ProcessStartOrder(enum.Enum):
+    """Creation order for one process ancestry edge."""
+
+    LATER = "later"
+    EARLIER = "earlier"
+    INCONCLUSIVE = "inconclusive"
+
+
+def _process_start_order(
+    child_token: str,
+    parent_token: str,
+) -> _ProcessStartOrder:
+    """Compare process-start identities without collapsing uncertainty."""
+
+    def _numeric_parts(token: str) -> tuple[int, str] | None:
+        whole, separator, fraction = token.partition(".")
+        if not whole.isdigit() or (separator and not fraction.isdigit()):
+            return None
+        return int(whole), fraction
+
+    child_numeric = _numeric_parts(child_token)
+    parent_numeric = _numeric_parts(parent_token)
+    if child_numeric is not None or parent_numeric is not None:
+        if child_numeric is None or parent_numeric is None:
+            return _ProcessStartOrder.INCONCLUSIVE
+        child_whole, child_fraction = child_numeric
+        parent_whole, parent_fraction = parent_numeric
+        if child_whole > parent_whole:
+            return _ProcessStartOrder.LATER
+        if child_whole < parent_whole:
+            return _ProcessStartOrder.EARLIER
+        width = max(len(child_fraction), len(parent_fraction))
+        child_fraction = child_fraction.ljust(width, "0")
+        parent_fraction = parent_fraction.ljust(width, "0")
+        if child_fraction > parent_fraction:
+            return _ProcessStartOrder.LATER
+        if child_fraction < parent_fraction:
+            return _ProcessStartOrder.EARLIER
+        return _ProcessStartOrder.INCONCLUSIVE
+
+    try:
+        child_time = time.strptime(child_token, "%a %b %d %H:%M:%S %Y")[:6]
+        parent_time = time.strptime(parent_token, "%a %b %d %H:%M:%S %Y")[:6]
+    except ValueError:
+        return _ProcessStartOrder.INCONCLUSIVE
+    if child_time > parent_time:
+        return _ProcessStartOrder.LATER
+    if child_time < parent_time:
+        return _ProcessStartOrder.EARLIER
+    return _ProcessStartOrder.INCONCLUSIVE
+
+
+class _PosixProcessSnapshotRow(NamedTuple):
+    """One parsed POSIX process row; identity may be unavailable."""
+
+    ppid: int
+    start_time: str | None
+
+
+def _linux_direct_child_pids(pid: int, proc_root: Path) -> list[int] | None:
+    """Return direct children from this pid's kernel ``children`` files."""
+    task_root = proc_root / str(pid) / "task"
+    try:
+        tasks = list(task_root.iterdir())
+    except OSError:
+        return None
+    children: set[int] = set()
+    read_any = False
+    for task in tasks:
+        if not task.name.isdigit():
+            continue
+        try:
+            raw = (task / "children").read_text(encoding="ascii")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        read_any = True
+        try:
+            children.update(int(token) for token in raw.split())
+        except ValueError:
+            return None
+    return sorted(children) if read_any else None
+
+
+def _direct_child_pids_for_identity_walk(pid: int, proc_root: Path | None) -> list[int] | None:
+    """Return direct children without scanning unrelated host processes."""
+    if IS_LINUX:
+        root = proc_root if proc_root is not None else Path("/proc")
+        return _linux_direct_child_pids(pid, root)
+    if sys.platform == "darwin":
+        return darwin_child_pids(pid)
+    return None
+
+
+def _atomic_process_descendant_identities(
+    root_pid: int, proc_root: Path | None
+) -> list[ProcessDescendantIdentity] | None:
+    """Walk descendants whose parentage and start ID share one kernel read."""
+
+    def _identity(pid: int) -> ProcessStartIdentity | None:
+        if IS_LINUX:
+            root = proc_root if proc_root is not None else Path("/proc")
+            return get_process_start_identity(pid, proc_root=root)
+        return get_process_start_identity(pid)
+
+    root_identity = _identity(root_pid)
+    if root_identity is None:
+        return None
+    frontier = [(root_pid, root_identity)]
+    seen = {root_pid}
+    descendants: list[ProcessDescendantIdentity] = []
+    index = 0
+    while index < len(frontier):
+        parent_pid, expected_parent = frontier[index]
+        index += 1
+        children = _direct_child_pids_for_identity_walk(parent_pid, proc_root)
+        if children is None:
+            return None
+        # The child list belongs to the expected parent only if that parent kept
+        # the same kernel identity across the enumeration.
+        if _identity(parent_pid) != expected_parent:
+            return None
+        for child_pid in children:
+            if child_pid in seen or child_pid <= 0:
+                continue
+            child_identity = _identity(child_pid)
+            # The child-list row and identity read must describe one stable task.
+            # Disappearance or reparenting makes the whole walk inconclusive.
+            if child_identity is None or child_identity.ppid != parent_pid:
+                return None
+            start_order = _process_start_order(
+                child_identity.start_id,
+                expected_parent.start_id,
+            )
+            if start_order is _ProcessStartOrder.INCONCLUSIVE:
+                return None
+            if start_order is _ProcessStartOrder.EARLIER:
+                continue
+            seen.add(child_pid)
+            descendants.append(
+                ProcessDescendantIdentity(
+                    child_pid,
+                    child_identity.ppid,
+                    child_identity.start_id,
+                )
+            )
+            frontier.append((child_pid, child_identity))
+    return descendants
+
+
+def _posix_process_snapshot() -> dict[int, _PosixProcessSnapshotRow] | None:
+    """Parse one trusted ``ps`` snapshot without aborting on malformed rows."""
+    if IS_WINDOWS:
+        return None
     ps_bin = trusted_system_bin("ps")
     if ps_bin is None:
-        return {}
+        return None
     try:
-        out = subprocess.check_output(
-            [ps_bin, "-Ao", "pid=,ppid="], timeout=5, stderr=subprocess.DEVNULL
+        output = subprocess.check_output(
+            [ps_bin, "-Ao", "pid=,ppid=,lstart="],
+            timeout=5,
+            stderr=subprocess.DEVNULL,
         ).decode(errors="replace")
     except (OSError, subprocess.SubprocessError):
-        return {}
-    parent_map: dict[int, int] = {}
-    for line in out.splitlines():
-        parts = line.split()
+        return None
+    processes: dict[int, _PosixProcessSnapshotRow] = {}
+    for line in output.splitlines():
+        parts = line.split(maxsplit=2)
         if len(parts) < 2:
             continue
         try:
-            parent_map[int(parts[0])] = int(parts[1])
+            process_pid = int(parts[0])
+            parent_pid = int(parts[1])
         except ValueError:
             continue
-    return parent_map
+        if process_pid <= 0 or parent_pid < 0:
+            continue
+        start_time = parts[2].strip() if len(parts) == 3 else ""
+        processes[process_pid] = _PosixProcessSnapshotRow(
+            parent_pid,
+            start_time or None,
+        )
+    return processes
+
+
+def _posix_process_identity_map(
+    root_pid: int | None = None,
+) -> dict[int, ProcessDescendantIdentity] | None:
+    """Keep stable identities; require a complete first-snapshot root subtree."""
+    before = _posix_process_snapshot()
+    if before is None:
+        return None
+    after = _posix_process_snapshot()
+    if after is None:
+        return None
+    if root_pid is not None and root_pid in before:
+        parent_map = {pid: row.ppid for pid, row in before.items()}
+        root_subtree = [root_pid, *_descendants_from_parent_map(root_pid, parent_map)]
+        if any(
+            before[pid].start_time is None or after.get(pid) != before[pid] for pid in root_subtree
+        ):
+            return None
+    return {
+        process_pid: ProcessDescendantIdentity(
+            process_pid,
+            process.ppid,
+            process.start_time,
+            ProcessIdentitySource.LSTART,
+        )
+        for process_pid, process in before.items()
+        if process.start_time is not None and after.get(process_pid) == process
+    }
+
+
+def _ordered_posix_descendant_identities(
+    root_pid: int,
+    identities: Mapping[int, ProcessDescendantIdentity],
+) -> list[ProcessDescendantIdentity] | None:
+    """Return ordered fallback descendants, preserving uncertain edges."""
+    parent_map = {process_pid: identity.ppid for process_pid, identity in identities.items()}
+    admitted = {root_pid}
+    descendants: list[ProcessDescendantIdentity] = []
+    for process_pid in _descendants_from_parent_map(root_pid, parent_map):
+        identity = identities[process_pid]
+        parent = identities.get(identity.ppid)
+        if identity.ppid not in admitted or parent is None:
+            continue
+        start_order = _process_start_order(
+            identity.start_time,
+            parent.start_time,
+        )
+        if start_order is _ProcessStartOrder.INCONCLUSIVE:
+            return None
+        if start_order is _ProcessStartOrder.EARLIER:
+            continue
+        admitted.add(process_pid)
+        descendants.append(identity)
+    return descendants
+
+
+def _windows_chain_to_root(
+    candidate_pid: int,
+    root_pid: int,
+    parent_map: dict[int, int],
+) -> tuple[int, ...] | None:
+    """Return candidate-to-root PIDs, empty when foreign, or none on a cycle."""
+    chain: list[int] = []
+    seen: set[int] = set()
+    current = candidate_pid
+    while current != root_pid:
+        if current in seen:
+            return None
+        seen.add(current)
+        parent = parent_map.get(current)
+        if type(parent) is not int or parent <= 0:
+            return ()
+        chain.append(current)
+        current = parent
+    chain.append(root_pid)
+    return tuple(chain)
+
+
+def _windows_process_descendant_identities(
+    root_pid: int,
+    candidate_pids: set[int] | None = None,
+) -> list[ProcessDescendantIdentity] | None:
+    """Return creation-time-bound Windows descendants or listener candidates.
+
+    Toolhelp supplies PID-to-PPID edges but no process identity. Take the edge
+    snapshot twice and bracket it with the query-only creation-time primitive.
+    Each candidate must keep the same candidate-to-root chain, including every
+    edge and creation ID. A strictly earlier child is excluded; an equal or
+    unparseable order makes that candidate inconclusive. Unrelated helper
+    siblings may appear or disappear without invalidating a stable listener
+    owner's chain.
+    """
+    try:
+        first_map = _windows_process_parent_map()
+        if root_pid not in first_map:
+            return None
+        if candidate_pids is None:
+            candidates = _descendants_from_parent_map(root_pid, first_map)
+        else:
+            candidates = sorted(
+                process_pid
+                for process_pid in candidate_pids
+                if type(process_pid) is int and process_pid > 1 and process_pid != root_pid
+            )
+        first_chains = {
+            process_pid: _windows_chain_to_root(process_pid, root_pid, first_map)
+            for process_pid in candidates
+        }
+        tracked = {root_pid}
+        for chain in first_chains.values():
+            if chain:
+                tracked.update(chain)
+        first_ids = {process_pid: get_process_start_id(process_pid) for process_pid in tracked}
+
+        second_map = _windows_process_parent_map()
+        if root_pid not in second_map:
+            return None
+        second_chains = {
+            process_pid: _windows_chain_to_root(process_pid, root_pid, second_map)
+            for process_pid in candidates
+        }
+        second_ids = {process_pid: get_process_start_id(process_pid) for process_pid in tracked}
+    except Exception:
+        return None
+
+    first_root_id = first_ids.get(root_pid)
+    second_root_id = second_ids.get(root_pid)
+    if (
+        not isinstance(first_root_id, str)
+        or not first_root_id
+        or second_root_id != first_root_id
+        or first_map[root_pid] != second_map[root_pid]
+    ):
+        return None
+
+    identities: list[ProcessDescendantIdentity] = []
+    inconclusive = False
+    for candidate_pid in candidates:
+        first_chain = first_chains[candidate_pid]
+        second_chain = second_chains[candidate_pid]
+        if first_chain is None or second_chain is None:
+            inconclusive = True
+            continue
+        if first_chain != second_chain:
+            if first_chain or second_chain:
+                inconclusive = True
+            continue
+        if not first_chain:
+            continue
+        if any(
+            not isinstance(first_ids.get(process_pid), str)
+            or not first_ids[process_pid]
+            or second_ids.get(process_pid) != first_ids[process_pid]
+            for process_pid in first_chain
+        ):
+            inconclusive = True
+            continue
+        creation_order_valid = True
+        creation_order_inconclusive = False
+        for child_pid, parent_pid in zip(first_chain, first_chain[1:]):
+            child_start = first_ids.get(child_pid)
+            parent_start = first_ids.get(parent_pid)
+            if not isinstance(child_start, str) or not isinstance(parent_start, str):
+                creation_order_inconclusive = True
+                break
+            start_order = _process_start_order(child_start, parent_start)
+            if start_order is _ProcessStartOrder.INCONCLUSIVE:
+                creation_order_inconclusive = True
+                break
+            if start_order is _ProcessStartOrder.EARLIER:
+                creation_order_valid = False
+                break
+        if creation_order_inconclusive:
+            inconclusive = True
+            continue
+        if not creation_order_valid:
+            continue
+        start_id = first_ids[candidate_pid]
+        if not isinstance(start_id, str):
+            inconclusive = True
+            continue
+        identities.append(
+            ProcessDescendantIdentity(
+                candidate_pid,
+                first_map[candidate_pid],
+                start_id,
+            )
+        )
+    if identities:
+        return identities
+    return None if inconclusive else []
+
+
+def process_descendant_identities(
+    pid: int,
+    *,
+    proc_root: Path | None = None,
+    candidate_pids: set[int] | None = None,
+) -> list[ProcessDescendantIdentity] | None:
+    """Return descendants with start identity bound atomically to parentage.
+
+    Linux and macOS walk only the root's current descendants. Each candidate
+    pid's start ID and PPID come from one ``/proc/<pid>/stat`` or
+    ``PROC_PIDTBSDINFO`` kernel record. A strictly later child is accepted, a
+    strictly earlier child is excluded, and equal or unparseable order is
+    inconclusive. Windows validates each requested listener candidate's complete
+    listener candidate's complete ancestry chain across two Toolhelp snapshots;
+    unrelated siblings do not invalidate that proof. With no candidates it
+    returns every independently stable descendant chain. If the native POSIX
+    path is unavailable, other POSIX hosts fall back to two whole-process ``ps``
+    snapshots and retain only rows whose parentage and one-second ``lstart``
+    identity are unchanged.
+    """
+    if type(pid) is not int or pid <= 1:
+        return []
+    if IS_WINDOWS:
+        return _windows_process_descendant_identities(pid, candidate_pids)
+    if IS_LINUX or sys.platform == "darwin":
+        descendants = _atomic_process_descendant_identities(pid, proc_root)
+        if descendants is not None:
+            return descendants
+    if not IS_POSIX:
+        return []
+    identities = _posix_process_identity_map(pid)
+    if identities is None:
+        return None
+    if pid not in identities:
+        return []
+    return _ordered_posix_descendant_identities(pid, identities)
 
 
 def process_descendants(pid: int) -> list[int]:
@@ -2333,9 +3886,11 @@ def created_after(child_token: str, parent_token: str) -> bool:
     that process alone rather than act on a guess.
 
     Lives HERE, beside the primitive whose staleness it compensates for, because
-    three callers need the same rule and a second spelling of it is how they drift:
-    the pod backend's ``stop``, ``pod.runtime.port_owner``, and the test harness's
-    Windows teardown. All three reach it through
+    three callers need the same Boolean rule: the pod backend's ``stop``,
+    ``pod.runtime.port_owner``, and the test harness's Windows teardown. This thin
+    wrapper validates their numeric FILETIME domain, then delegates ordering to
+    the shared tri-state core so no second comparison implementation can drift.
+    All three reach it through
     :func:`attributed_descendants`, which applies this comparison to EVERY
     parent-child edge -- applying it with only the ROOT's token admits a stale orphan
     sitting under a recycled INTERMEDIATE pid, which also postdates the root.
@@ -2345,9 +3900,52 @@ def created_after(child_token: str, parent_token: str) -> bool:
     root handle; this is the token-only form for callers that do not.
     """
     try:
-        return int(child_token) > int(parent_token)
+        child_numeric = str(int(child_token))
+        parent_numeric = str(int(parent_token))
     except ValueError:
         return False
+    return _process_start_order(child_numeric, parent_numeric) is _ProcessStartOrder.LATER
+
+
+def short_path_name(path: str) -> str:
+    """Return *path*'s Windows 8.3 short form via ``GetShortPathNameW``, or ``""``.
+
+    ``""`` covers every unavailable case alike: a non-Windows host, a path that
+    does not exist, a volume with 8.3 name generation disabled, or the API
+    erroring — this function never raises, and the failing error code goes to
+    DEBUG so an operator can tell those cases apart. The API can also succeed
+    by returning the input spelling unchanged (the volume keeps no separate
+    short alias); that is returned as-is, and whether the spelling is usable
+    is the caller's question.
+
+    Two-call size protocol: the first call (NULL buffer) answers the required
+    buffer length INCLUDING the terminating NUL; the second call writes the
+    string and answers its length EXCLUDING the NUL, so a second answer >= the
+    first means the buffer was too small (the path changed between calls) and
+    the result cannot be trusted.
+    """
+    try:
+        # getattr, not an attribute reference: ``ctypes.WinDLL`` is
+        # Windows-only in typeshed (see the mypy note above), and getattr is
+        # also the seam the cross-platform protocol test injects a fake
+        # kernel32 through.
+        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        needed = kernel32.GetShortPathNameW(path, None, 0)
+        if not needed:
+            get_last_error = getattr(ctypes, "get_last_error", None)
+            logger.debug(
+                "GetShortPathNameW(%r) failed: error %s",
+                path,
+                get_last_error() if callable(get_last_error) else "unknown",
+            )
+            return ""
+        buf = ctypes.create_unicode_buffer(needed)
+        written = kernel32.GetShortPathNameW(path, buf, needed)
+        if not written or written >= needed:
+            return ""
+        return buf.value
+    except Exception:
+        return ""
 
 
 def _windows_process_parent_map() -> dict[int, int]:
@@ -2382,6 +3980,8 @@ def _windows_process_parent_map() -> dict[int, int]:
                 raise OSError("Windows first process enumeration failed")
             result: dict[int, int] = {}
             while True:
+                if len(result) >= _WINDOWS_CLEANUP_SNAPSHOT_LIMIT:
+                    raise _WindowsTreeOverflow("Windows cleanup process snapshot capacity exceeded")
                 result[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
                 if callable(set_last_error):
                     set_last_error(0)
@@ -2475,7 +4075,10 @@ def duplicate_asyncio_process_handle(process: object) -> int | None:
         transport = getattr(process, "_transport", None)
         get_extra_info = getattr(transport, "get_extra_info", None)
         popen = get_extra_info("subprocess") if callable(get_extra_info) else None
-        source_value = int(getattr(popen, "_handle", 0))
+        source = getattr(popen, "_handle", None)
+        if not isinstance(source, int):
+            return None
+        source_value = int(source)
         if source_value <= 0:
             return None
 
@@ -2525,8 +4128,17 @@ _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS = 0.25
 _WINDOWS_EXIT_FILETIME_POLL_SECS = 0.002
 
 
-def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None] | None:
-    """Return ``(pid, creation_time, exit_time)`` for an exact process handle."""
+def _windows_process_handle_identity(
+    handle: int, *, await_exit_time: bool = True
+) -> tuple[int, int, int | None] | None:
+    """Return ``(pid, creation_time, exit_time)`` for an exact process handle.
+
+    ``await_exit_time=False`` answers with the creation half alone: liveness is
+    not decided, the exit FILETIME is neither awaited nor reported, and the third
+    element is ``None`` by construction. That mode performs no wait and no sleep,
+    so it is safe to call from the asyncio event loop; a caller that must certify
+    a process has exited needs the exit bound and keeps the default.
+    """
 
     if not IS_WINDOWS or type(handle) is not int or handle <= 0:
         return None
@@ -2575,16 +4187,43 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
             )
         ):
             return None
+
+        def _filetime_value(value: "wintypes.FILETIME") -> int:
+            return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+
+        if not await_exit_time:
+            # Creation-only: the caller asks which process object this pid names,
+            # and the creation FILETIME answers that on its own. Skipping the exit
+            # half keeps this read free of the wait and the poll below, which is
+            # what lets an event-loop caller use it directly.
+            creation_only = _filetime_value(creation)
+            return (pid, creation_only, None) if creation_only > 0 else None
+        # A process may exit with code 259, the value STILL_ACTIVE reserves, so
+        # GetExitCodeProcess alone cannot decide liveness: such a child reads back
+        # as running for as long as a handle to it is held, and a drain waiting for
+        # its exit never finishes while its reservation stays charged. A zero-timeout
+        # wait answers from the object's signal state, which carries no collision:
+        # a signalled process object is a terminated one. Handles opened for query
+        # alone lack SYNCHRONIZE and cannot be waited on; those callers read identity
+        # without draining anything, so they keep the exit-code reading rather than
+        # losing the answer, and every handle a drain retains is opened to wait.
         still_active = 259
-        active = exit_code.value == still_active
+        wait_object_0 = 0x00000000
+        wait_timeout = 0x00000102
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        waited = int(kernel32.WaitForSingleObject(process_handle, 0))
+        if waited == wait_object_0:
+            active = False
+        elif waited == wait_timeout:
+            active = True
+        else:
+            active = exit_code.value == still_active
         # The exit FILETIME is not defined for a live process. If the status
         # says the process exited, read the times again after that observation
         # so the returned exit bound belongs to the terminated object.
         if not active and not _read_times():
             return None
-
-        def _filetime_value(value: "wintypes.FILETIME") -> int:
-            return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
 
         creation_value = _filetime_value(creation)
         exit_value = _filetime_value(exit_)
@@ -2731,13 +4370,22 @@ def descendant_termination_handles(
         return {}
     if type(root_handle) is not int or root_handle <= 0:
         raise ValueError("descendant_termination_handles: exact root handle required")
+    if retained_handles is not None and len(retained_handles) > _WINDOWS_CLEANUP_IDENTITY_LIMIT:
+        raise _WindowsTreeOverflow("Windows cleanup retained identity capacity exceeded")
     retained = dict(retained_handles or {})
     root_identity = _windows_process_handle_identity(root_handle)
     if root_identity is None or root_identity[0] != pid:
         raise ValueError("descendant_termination_handles: root handle identity mismatch")
 
     first_map = _windows_process_parent_map()
-    first = set(_descendants_from_parent_map(pid, first_map))
+    first = set(_descendants_from_parent_map(pid, first_map, limit=_WINDOWS_CLEANUP_IDENTITY_LIMIT))
+    # Check the union without allocating an oversized union or opening a child.
+    count = len(retained) + (pid not in retained)
+    for child in first:
+        if child not in retained:
+            count += 1
+            if count > _WINDOWS_CLEANUP_IDENTITY_LIMIT:
+                raise _WindowsTreeOverflow("Windows cleanup identity capacity exceeded")
     opened: dict[int, int] = {}
     try:
         unopened: set[int] = set()
@@ -2931,14 +4579,541 @@ def close_process_handle(handle: int) -> None:
         kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
+_WINDOWS_TREE_REAP_TIMEOUT_SECS = 5.0
+_WINDOWS_TREE_REAP_POLL_SECS = 0.01
+_PENDING_WINDOWS_TREE_RETRY_LIMIT = 8
+
+
+# Separate cleanup bookkeeping budget, not a pool, RSS, or Job limit. Sixty-four
+# physical trees leave room beyond ordinary concurrent ACP starts; 4096 exact
+# identities per tree allow build/browser fan-out without unbounded retention.
+_WINDOWS_CLEANUP_ROOT_LIMIT = 64
+_WINDOWS_CLEANUP_IDENTITY_LIMIT = 4096
+# Toolhelp includes unrelated host processes. Bound that temporary input too,
+# before retention; an incomplete snapshot cannot prove a tree empty.
+_WINDOWS_CLEANUP_SNAPSHOT_LIMIT = 65536
+
+# The interpreters the capture bindings are measured against, quoted verbatim in
+# the refusals so the operator is told which ones work rather than only that
+# theirs does not.
+_WINDOWS_CAPTURE_MEASURED_VERSIONS = "CPython 3.12, 3.13 or 3.14"
+
+
+class WindowsCleanupCapacityError(OSError):
+    """Cleanup admission refused, or an owned tree needs manual handling."""
+
+
+class _WindowsTreeOverflow(WindowsCleanupCapacityError):
+    """A snapshot/identity bound prevented complete lineage observation."""
+
+
+class _PendingWindowsTreeCleanup:
+    """One reservation, from before physical spawn through verified retirement."""
+
+    __slots__ = (
+        "handles",
+        "key",
+        "lock",
+        "retired",
+        "root_pid",
+        "signalled",
+        "terminally_scanned",
+        "manual_required",
+        "raw_root_pin",
+        "retire_app_tracking",
+    )
+
+    def __init__(
+        self, root_handle: int = 0, identity: tuple[int, int, int | None] = (0, 0, None)
+    ) -> None:
+        self.root_pid = identity[0]
+        self.key = identity[:2]
+        self.handles = {self.root_pid: root_handle} if root_handle else {}
+        self.terminally_scanned: set[int] = set()
+        self.signalled: set[int] = set()
+        self.lock = threading.Lock()
+        self.retired = False
+        self.manual_required = False
+        # Only a subprocess.Handle (an int with Close/__del__), NEVER Popen or
+        # its transport. Keeps the original pin on duplicate/identity failure.
+        self.raw_root_pin: int | None = None
+        self.retire_app_tracking = False
+
+
+_PENDING_WINDOWS_TREE_CLEANUPS: dict[tuple[int, int], _PendingWindowsTreeCleanup] = {}
+_PENDING_WINDOWS_TREE_CLEANUPS_LOCK = threading.RLock()
+_WINDOWS_TREE_ADMISSIONS: set[_PendingWindowsTreeCleanup] = set()
+
+
+def reserve_windows_tree_cleanup(
+    key: tuple[int, int] | None = None,
+) -> _PendingWindowsTreeCleanup:
+    """Atomically admit a physical tree, or reuse its already charged identity."""
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if key is not None:
+            for state in _WINDOWS_TREE_ADMISSIONS:
+                if state.key == key:
+                    return state
+                if state.root_pid == key[0] and state.key[1] == 0:
+                    raise OSError("Windows original root identity is pending verification")
+        manual = sorted(
+            state.root_pid for state in _WINDOWS_TREE_ADMISSIONS if state.manual_required
+        )
+        if manual:
+            # The refusal outlives the tree that caused it, so the text has to
+            # carry the cause and the remedy: an operator meeting it hours later
+            # sees only a failed session start, and the log line that named the
+            # root has scrolled away. Naming every quarantined root is bounded by
+            # the same root admission limit that bounds the registry.
+            roots = ", ".join(str(pid) for pid in manual)
+            raise WindowsCleanupCapacityError(
+                "Windows session start refused: cleanup of the process tree rooted at "
+                f"pid {roots} could not be accounted for, so its surviving processes must "
+                "be ended by hand; starts resume after this gateway restarts"
+            )
+        if len(_WINDOWS_TREE_ADMISSIONS) >= _WINDOWS_CLEANUP_ROOT_LIMIT:
+            raise WindowsCleanupCapacityError("Windows cleanup root capacity exhausted")
+        state = _PendingWindowsTreeCleanup()
+        if key is not None:
+            state.key = key
+        _WINDOWS_TREE_ADMISSIONS.add(state)
+        return state
+
+
+def release_windows_tree_reservation(state: _PendingWindowsTreeCleanup) -> None:
+    """Refund only an empty reservation. Pins/manual debt cannot be discarded."""
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if state.handles or state.raw_root_pin is not None or state.manual_required:
+            return
+        _WINDOWS_TREE_ADMISSIONS.discard(state)
+        state.retired = True
+
+
+def _manual_windows_tree(state: _PendingWindowsTreeCleanup) -> None:
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if not state.manual_required:
+            state.manual_required = True
+            logger.error(
+                "Windows cleanup manual-handling-required: root=%d retained=%d; "
+                "new physical starts refused; this is not OS isolation",
+                state.root_pid,
+                len(state.handles),
+            )
+
+
+async def _bind_windows_cleanup_process(
+    state: _PendingWindowsTreeCleanup, process: asyncio.subprocess.Process
+) -> None:
+    """Capture the original suspended child before any cancellable resume work.
+
+    The exact handle is pinned into ``state.handles`` synchronously, before the
+    single await, so a cancellation that lands while the identity is being read
+    still leaves this child retained for maintenance rather than dropped.
+
+    The identity read is the one step that goes off the loop. A child that has
+    already exited reads back as exited-with-no-exit-FILETIME until the kernel
+    publishes that value, and ``_windows_process_handle_identity`` polls for it
+    for up to ``_WINDOWS_EXIT_FILETIME_TIMEOUT_SECS``. This runs during session
+    start on a loop that is serving every other session, so a child that dies
+    the instant it resumes must not stall them: the wait belongs on
+    :func:`kiro_crew.executors.subprocess_executor`, the same pool the rest of
+    this module's spawn-adjacent waits use.
+    """
+    state.root_pid = process.pid
+    state.key = (process.pid, 0)
+    transport = getattr(process, "_transport", None)
+    popen = transport.get_extra_info("subprocess") if transport is not None else None
+    raw = getattr(popen, "_handle", None)
+    if isinstance(raw, int):
+        state.raw_root_pin = raw
+    handle = duplicate_asyncio_process_handle(process)
+    if handle is None and isinstance(raw, int):
+        # Borrow the original reference-counted Handle if duplication failed.
+        # It must never be explicitly closed while Popen can still use it.
+        handle = int(raw)
+    elif handle is not None:
+        state.raw_root_pin = None
+    setattr(process, "_windows_cleanup_state", state)
+    if handle is not None:
+        state.handles[process.pid] = handle
+        identity = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _windows_process_handle_identity, handle
+        )
+        if identity is not None and identity[0] == process.pid:
+            with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+                state.key = identity[:2]
+            return
+    else:
+        # An unsupported transport with no original pin has no retry authority.
+        _manual_windows_tree(state)
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        _PENDING_WINDOWS_TREE_CLEANUPS[state.key] = state
+    raise OSError("Windows original child pin/identity unavailable")
+
+
+async def create_windows_cleanup_owned_process(factory: Any) -> asyncio.subprocess.Process:
+    """Charge before spawning; cancellation waits for the child's ownership handoff.
+
+    The factory is invoked only after reservation and is never cancelled by its
+    waiter. An OS-spawn failure has no returned child; a returned child is pinned
+    before the factory task settles, even when the caller has been cancelled.
+    POSIX invokes the factory directly and has no cleanup admission policy.
+    """
+    if not IS_WINDOWS:
+        return await factory()
+    state = reserve_windows_tree_cleanup()
+
+    async def launch() -> asyncio.subprocess.Process:
+        process = await factory(windows_cleanup_owner=state)
+        await _bind_windows_cleanup_process(state, process)
+        return process
+
+    creation = launch()
+    try:
+        task = asyncio.ensure_future(creation)
+    except BaseException:
+        creation.close()
+        release_windows_tree_reservation(state)
+        raise
+    cancelled = False
+    try:
+        while True:
+            try:
+                process = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+                if task.done():
+                    process = task.result()
+                    break
+    except BaseException:
+        if state.handles:
+            # Creation capture precedes transport initialization. No returned
+            # Process is needed to retain this exact child for maintenance.
+            with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+                _PENDING_WINDOWS_TREE_CLEANUPS[state.key] = state
+        release_windows_tree_reservation(state)
+        raise
+    if cancelled:
+        # This child never reaches its caller; cleanup owns it independently.
+        with contextlib.suppress(OSError):
+            await terminate_windows_asyncio_tree(process)
+        raise asyncio.CancelledError
+    return process
+
+
+async def finish_windows_cleanup_owned_spawn(factory: Any) -> Any:
+    """Drain the resume worker before cancellation can race tree retirement."""
+    if not IS_WINDOWS:
+        return await factory()
+    task = asyncio.ensure_future(factory())
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.done():
+                result = task.result()
+                break
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+def _drain_windows_process_tree(state: _PendingWindowsTreeCleanup) -> bool:
+    """Advance one exact-handle tree; retain every handle when the pass fails."""
+
+    if state.manual_required:
+        raise WindowsCleanupCapacityError("Windows tree requires manual handling")
+    if state.key[1] == 0:
+        identity = _windows_process_handle_identity(state.handles[state.root_pid])
+        if identity is None or identity[0] != state.root_pid:
+            raise OSError("Windows process-tree root identity unavailable")
+        with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+            if _PENDING_WINDOWS_TREE_CLEANUPS.get(state.key) is state:
+                del _PENDING_WINDOWS_TREE_CLEANUPS[state.key]
+            state.key = identity[:2]
+            _PENDING_WINDOWS_TREE_CLEANUPS[state.key] = state
+    deadline = time.monotonic() + _WINDOWS_TREE_REAP_TIMEOUT_SECS
+    while True:
+        for pid, handle in tuple(state.handles.items()):
+            if pid in state.terminally_scanned:
+                continue
+            if time.monotonic() >= deadline:
+                raise OSError("Windows process tree did not drain before the deadline")
+            before = _windows_process_handle_identity(handle)
+            if before is None or before[0] != pid:
+                raise OSError(f"Windows process-tree identity unreadable: {pid}")
+            state.handles.update(descendant_termination_handles(pid, state.handles, handle))
+            after = _windows_process_handle_identity(handle)
+            if after is None or after[:2] != before[:2]:
+                raise OSError(f"Windows process-tree identity changed or unreadable: {pid}")
+            if before[2] is not None and after[2] is not None:
+                state.terminally_scanned.add(pid)
+            elif after[2] is None and pid not in state.signalled:
+                terminate_process_handle(handle)
+                state.signalled.add(pid)
+        if state.terminally_scanned == set(state.handles):
+            return True
+        time.sleep(_WINDOWS_TREE_REAP_POLL_SECS)
+
+
+def _advance_owned_windows_tree(
+    state: _PendingWindowsTreeCleanup,
+    *,
+    try_only: bool = False,
+) -> tuple[bool, bool]:
+    """Return ``(drained, completed_here)`` and retire a verified handle set.
+
+    A completed drain retires the tree's PID-file records and protected-PID
+    shield BEFORE any handle is closed and while ``state.lock`` is still held, so
+    the retirement runs while the root handle still pins the old incarnation — a
+    recycled pid cannot slip in between the close and the untrack. A retirement
+    that raises leaves the state un-retired and its handles open, so the receipt
+    survives for the next tick rather than being lost with the handles.
+
+    ``try_only`` acquires ``state.lock`` non-blockingly: a state already draining
+    on another caller returns ``(False, False)`` untouched so a maintenance sweep
+    rotates it behind its peers instead of blocking the whole pass on one busy
+    tree. Caller-initiated cleanup leaves it False and keeps its serialization.
+    """
+
+    handles_to_close: tuple[int, ...] = ()
+    completed_here = False
+    if try_only:
+        acquired = state.lock.acquire(blocking=False)
+        if not acquired:
+            return False, False
+    else:
+        state.lock.acquire()
+    try:
+        if state.retired:
+            return True, False
+        try:
+            result = _drain_windows_process_tree(state)
+        except _WindowsTreeOverflow:
+            _manual_windows_tree(state)
+            raise
+        if result:
+            try:
+                # circular import: session_pid imports this module at its own top,
+                # so the tracking retirement it owns can only be reached in-function.
+                from kiro_crew.session_pid import retire_windows_tree_tracking
+
+                retire_windows_tree_tracking(state.root_pid)
+                if state.retire_app_tracking:
+                    # circular import: apps.backend also imports this module at its top.
+                    from kiro_crew.apps.backend import retire_windows_app_tracking
+
+                    retire_windows_app_tracking(*state.key)
+            except Exception:
+                logger.warning(
+                    "Windows exact-handle tree retirement failed for PID %d; "
+                    "retaining pinned handles for retry",
+                    state.root_pid,
+                    exc_info=True,
+                )
+                return False, False
+            state.retired = True
+            completed_here = True
+            handles_to_close = tuple(state.handles.values())
+            # The state remains locked and charged until all pins close.
+            for handle in handles_to_close:
+                if state.raw_root_pin is None or handle != int(state.raw_root_pin):
+                    close_process_handle(handle)
+            state.handles.clear()
+            state.signalled.clear()
+            state.terminally_scanned.clear()
+            state.raw_root_pin = None
+            with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+                if _PENDING_WINDOWS_TREE_CLEANUPS.get(state.key) is state:
+                    del _PENDING_WINDOWS_TREE_CLEANUPS[state.key]
+                release_windows_tree_reservation(state)
+    finally:
+        state.lock.release()
+    return result, completed_here
+
+
+def terminate_windows_process_tree_owned(
+    root_handle: int,
+    *,
+    reservation: _PendingWindowsTreeCleanup | None = None,
+) -> bool:
+    """Drain an exact handle, retaining failed ownership for maintenance.
+
+    An unadmitted caller at capacity retains ownership of its input handle;
+    capacity refusal never closes it. PID-based callers reserve before opening.
+    """
+    if not IS_WINDOWS:
+        close_process_handle(root_handle)
+        raise ValueError("Windows process-tree termination requires Windows")
+    identity = _windows_process_handle_identity(root_handle)
+    if identity is None:
+        # Even an unidentifiable imported handle must not be consumed at full
+        # capacity. Its caller keeps ownership when admission is refused.
+        empty = reserve_windows_tree_cleanup() if reservation is None else reservation
+        if empty.handles:
+            raise OSError("Windows process-tree root identity unavailable")
+        close_process_handle(root_handle)
+        release_windows_tree_reservation(empty)
+        raise OSError("Windows process-tree root identity unavailable")
+    key = identity[:2]
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        existing = next((item for item in _WINDOWS_TREE_ADMISSIONS if item.key == key), None)
+        if existing is not None:
+            if reservation is not None and reservation is not existing:
+                release_windows_tree_reservation(reservation)
+            state = existing
+        else:
+            state = reserve_windows_tree_cleanup(key) if reservation is None else reservation
+        if state.key == (0, 0):
+            state.key = key
+    with state.lock:
+        if state.retired:
+            close_process_handle(root_handle)
+            return state.root_pid > 0
+        if not state.handles:
+            state.root_pid = identity[0]
+            state.key = key
+            state.handles[state.root_pid] = root_handle
+        elif state.key != key:
+            raise ValueError("Windows cleanup reservation identity mismatch")
+        elif state.handles[state.root_pid] != root_handle:
+            close_process_handle(root_handle)
+        with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+            _PENDING_WINDOWS_TREE_CLEANUPS[key] = state
+    drained, _ = _advance_owned_windows_tree(state)
+    return drained
+
+
+def retry_pending_windows_process_trees(
+    limit: int = _PENDING_WINDOWS_TREE_RETRY_LIMIT,
+) -> tuple[int, ...]:
+    """Advance a finite, fair snapshot of process-owned failed Windows drains.
+
+    Each selected tree gets one attempt. Failures remain visible and move behind
+    their peers, so a permanently denied tree cannot starve a healthy one. A tree
+    already draining on another caller is skipped non-blockingly and rotated
+    behind its peers, so one busy entry cannot hold up the whole sweep. This is
+    same-process maintenance, not crash recovery; it acquires no PID authority.
+    Returns the exact root PIDs whose handle-verified drains completed AND whose
+    tracking retirement succeeded.
+    """
+    if not IS_WINDOWS or type(limit) is not int or limit <= 0:
+        return ()
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        selected = [
+            (key, state)
+            for key, state in _PENDING_WINDOWS_TREE_CLEANUPS.items()
+            if not state.manual_required
+        ][:limit]
+    completed: list[int] = []
+    for key, state in selected:
+        try:
+            _, completed_here = _advance_owned_windows_tree(state, try_only=True)
+            if completed_here:
+                completed.append(state.root_pid)
+            else:
+                # Busy trees and failed metadata writes both yield to peers.
+                # Fully retired entries have already left the registry.
+                with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+                    if _PENDING_WINDOWS_TREE_CLEANUPS.get(key) is state:
+                        del _PENDING_WINDOWS_TREE_CLEANUPS[key]
+                        _PENDING_WINDOWS_TREE_CLEANUPS[key] = state
+        except Exception as exc:
+            logger.warning(
+                "Windows exact-handle tree cleanup remains pending for PID %d (%s)",
+                state.root_pid,
+                exc,
+            )
+            with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+                if _PENDING_WINDOWS_TREE_CLEANUPS.get(key) is state:
+                    del _PENDING_WINDOWS_TREE_CLEANUPS[key]
+                    _PENDING_WINDOWS_TREE_CLEANUPS[key] = state
+    return tuple(completed)
+
+
+async def terminate_windows_asyncio_tree(process: asyncio.subprocess.Process) -> bool:
+    """Drain the original asyncio Windows process tree even after root exit.
+
+    asyncio's transport retains the original Popen in its extra-info mapping.
+    Duplicate that handle and transfer its ownership to process-local cleanup
+    state before draining. The exact root and every observed intermediary then
+    outlive provider/client GC after a failed pass. Repeated caller cancellation
+    is re-delivered only after the current cleanup attempt settles.
+    """
+    candidate = getattr(process, "_windows_cleanup_state", None)
+    admitted = isinstance(candidate, _PendingWindowsTreeCleanup)
+    state: _PendingWindowsTreeCleanup
+    handle: int | None
+    if isinstance(candidate, _PendingWindowsTreeCleanup):
+        state = candidate
+        handle = None
+        # Publish cleanup debt before executor submission: a rejected worker
+        # must still leave the original pins reachable by maintenance after GC.
+        with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+            if not state.retired:
+                _PENDING_WINDOWS_TREE_CLEANUPS[state.key] = state
+    else:
+        state = reserve_windows_tree_cleanup()
+        handle = duplicate_asyncio_process_handle(process)
+        if handle is None:
+            release_windows_tree_reservation(state)
+            raise OSError("Cannot retain the original Windows runtime process handle")
+
+    def drain() -> bool:
+        if admitted:
+            result, _ = _advance_owned_windows_tree(state)
+        else:
+            assert handle is not None
+            result = terminate_windows_process_tree_owned(handle, reservation=state)
+        if not result:
+            raise OSError("Windows tree tracking retirement did not complete")
+        return result
+
+    async def cleanup() -> bool:
+        loop = asyncio.get_running_loop()
+        try:
+            worker = loop.run_in_executor(subprocess_executor(), drain)
+        except BaseException:
+            if handle is not None:
+                # Executor submission never transferred this duplicate.
+                close_process_handle(handle)
+                release_windows_tree_reservation(state)
+            raise
+        result = await asyncio.shield(worker)
+        await asyncio.wait_for(process.wait(), timeout=_WINDOWS_TREE_REAP_TIMEOUT_SECS)
+        return result
+
+    task = asyncio.ensure_future(cleanup())
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.done():
+                result = task.result()
+                break
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 def process_matches(pid: int, needles: tuple[str, ...]) -> bool:
     """Return True iff *pid*'s command line / image name contains any *needle*.
 
     Used to guard against PID recycling before killing a tracked process.
     Linux: ``/proc/<pid>/cmdline``. macOS: ``ps -o command=``.
-    Windows: the image name from ``CreateToolhelp32Snapshot`` (full command
-    line is not cheaply available; the ``.exe`` name suffices for matching
-    ``kiro-cli`` / ``claude``). Returns False on any failure.
+    Windows: the image name from ``CreateToolhelp32Snapshot`` (the full command
+    line is not cheaply available). A harness hosted by an interpreter reads as
+    that interpreter's image there — a Node-hosted ACP adapter is ``node.exe`` —
+    so a needle naming the adapter itself cannot match on Windows, and a caller
+    that needs a per-harness answer reads a recorded start identity instead
+    (``get_process_start_id``). Returns False on any failure.
     """
     try:
         if sys.platform == "linux":
@@ -2963,6 +5138,21 @@ def process_matches(pid: int, needles: tuple[str, ...]) -> bool:
     except Exception:
         return False
     return False
+
+
+def process_image_name(pid: int) -> str:
+    """The process image (exe) name for *pid* on Windows, ``""`` anywhere else.
+
+    Exposed because an image name is the only per-process identity Windows offers
+    cheaply, and a caller that wants to compare it EXACTLY cannot use
+    :func:`process_matches`, whose Windows arm is a substring test. Off Windows the
+    answer is ``""`` rather than a POSIX equivalent: the platforms that have a real
+    command line should read that instead of a name that would drop the interpreter
+    distinction.
+    """
+    if not IS_WINDOWS:
+        return ""
+    return _win_process_image_name(pid) or ""
 
 
 def _win_process_image_name(pid: int) -> str | None:
@@ -3157,37 +5347,48 @@ def loopback_owner_pids(listeners: list[PortListener]) -> list[int]:
     return list(dict.fromkeys(e.pid for e in covering))
 
 
-def find_port_listeners(port: int) -> list[PortListener]:
-    """Return (pid, local address) for each LISTEN socket on TCP *port*.
+def probe_port_listeners(
+    port: int, *, process_pid: int | None = None
+) -> tuple[list[PortListener], bool]:
+    """Return LISTEN sockets on *port* and whether the lookup completed.
 
-    Best-effort, deduped on (pid, address, family), never raises. POSIX asks
-    ``lsof -nP -iTCP:<port> -sTCP:LISTEN -Fptn`` (field output per socket:
-    ``p<pid>``, ``t<IPv4|IPv6>``, ``n<addr>:<port>``); Windows parses
-    ``netstat -ano`` (no lsof; netstat ships in-box), matching rows whose
-    local address ends in ``:<port>`` and whose state is LISTENING. Returns
-    ``[]`` on any failure (callers treat "no listener found" as "nothing to
-    stop"; use listening_pid_tool_available() to tell a genuine empty result
-    apart from the tool being absent).
+    POSIX asks ``lsof -nP -iTCP:<port> -sTCP:LISTEN -Fptn``. When
+    *process_pid* is supplied it adds ``-a -p <pid>`` so lsof inspects only that
+    process. Exit 1 with no stdout or stderr is lsof's ordinary completed "no
+    matches" answer. A diagnostic, timeout, execution error, unavailable binary,
+    or any other nonzero exit is not a completed lookup. Windows parses
+    ``netstat -ano`` and requires a zero exit; it has no PID-scoped command mode.
+
+    The status bit is for security-sensitive callers that must distinguish a
+    completed empty answer from an operational failure. Ordinary callers should
+    use :func:`find_port_listeners`, which preserves the existing best-effort
+    ``[]``-on-any-failure contract.
     """
     if IS_POSIX:
         lsof_bin = trusted_system_bin("lsof")
         if lsof_bin is None:
-            return []
+            return [], False
         try:
+            argv = [lsof_bin, "-nP"]
+            if process_pid is not None:
+                argv.extend(["-a", "-p", str(process_pid)])
+            argv.extend([f"-iTCP:{port}", "-sTCP:LISTEN", "-Fptn"])
             out = subprocess.check_output(
                 # -n/-P keep addresses and ports numeric so the field parse
                 # below never sees a resolved host or service name; the t
                 # (type) field carries the family, without which the two
                 # wildcard binds are indistinguishable (both print ``*``).
-                [lsof_bin, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fptn"],
+                argv,
                 text=True,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 timeout=_LSOF_TIMEOUT_SECS,
             )
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode == 1 and not exc.output and not exc.stderr:
+                return [], True
+            return [], False
         except (FileNotFoundError, subprocess.SubprocessError, OSError):
-            # CalledProcessError included: lsof exits non-zero when nothing
-            # matches the filter, which is the ordinary "port is free" answer.
-            return []
+            return [], False
         suffix = f":{port}"
         listeners: list[PortListener] = []
         seen: set[PortListener] = set()
@@ -3209,7 +5410,7 @@ def find_port_listeners(port: int) -> list[PortListener]:
                 if entry not in seen:
                     seen.add(entry)
                     listeners.append(entry)
-        return listeners
+        return listeners, True
     # Windows: netstat -ano. Lines look like:
     #   TCP    127.0.0.1:7777         0.0.0.0:0    LISTENING    17152   (IPv4)
     #   TCP    [::1]:7777             [::]:0       LISTENING    17152   (IPv6)
@@ -3222,7 +5423,7 @@ def find_port_listeners(port: int) -> list[PortListener]:
     # port suffix match already handles both families uniformly.
     netstat_bin = trusted_system_bin("netstat")
     if netstat_bin is None:
-        return []
+        return [], False
     try:
         out = subprocess.check_output(
             [netstat_bin, "-ano"],
@@ -3239,7 +5440,7 @@ def find_port_listeners(port: int) -> list[PortListener]:
             creationflags=_SUBPROCESS_NO_WINDOW,
         )
     except (FileNotFoundError, subprocess.SubprocessError, OSError, ValueError):
-        return []
+        return [], False
     suffix = f":{port}"
     listeners = []
     seen = set()
@@ -3283,6 +5484,136 @@ def find_port_listeners(port: int) -> list[PortListener]:
             if entry not in seen:
                 seen.add(entry)
                 listeners.append(entry)
+    return listeners, True
+
+
+def _linux_loopback_listener_inodes(port: int, proc_root: Path) -> set[str] | None:
+    """LISTEN socket inodes on *port* that can answer IPv4 loopback.
+
+    ``/proc/net/tcp`` stores IPv4 addresses little-endian. ``tcp6`` stores each
+    32-bit word little-endian. The browser child is asked to bind 127.0.0.1, but
+    wildcard and IPv4-mapped wildcard-compatible rows are included because a
+    successful loopback health probe can reach them too.
+    """
+    v4_addresses = {"00000000", "0100007F"}
+    v6_addresses = {
+        "0" * 32,
+        "0000000000000000FFFF00000100007F",
+    }
+    inodes: set[str] = set()
+    completed = False
+    for name, accepted_addresses in (("tcp", v4_addresses), ("tcp6", v6_addresses)):
+        try:
+            rows = (proc_root / "net" / name).read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        completed = True
+        for row in rows.splitlines()[1:]:
+            fields = row.split()
+            if len(fields) <= 9 or fields[3].upper() != "0A":
+                continue
+            try:
+                address, port_hex = fields[1].rsplit(":", 1)
+                bound_port = int(port_hex, 16)
+            except (ValueError, IndexError):
+                continue
+            if bound_port == port and address.upper() in accepted_addresses:
+                inode = fields[9]
+                if inode.isdigit() and int(inode) > 0:
+                    inodes.add(inode)
+    return inodes if completed else None
+
+
+def _windows_loopback_listener_owner_pids(port: int) -> set[int] | None:
+    """Owner PIDs for Windows listeners that can answer IPv4 loopback."""
+    if not IS_WINDOWS or type(port) is not int or not 1 <= port <= 65535:
+        return None
+    listeners: list[PortListener] = []
+    for ipv6 in (False, True):
+        rows = _windows_tcp_owner_rows(
+            ipv6,
+            _WINDOWS_TCP_TABLE_OWNER_PID_LISTENER,
+        )
+        if rows is None:
+            return None
+        family = "6" if ipv6 else "4"
+        for row in rows:
+            if (
+                row.state != _WINDOWS_TCP_STATE_LISTEN
+                or row.pid <= 0
+                or row.local_scope_id != 0
+                or row.local_port != port
+            ):
+                continue
+            try:
+                address = str(ipaddress.ip_address(row.local_address))
+            except ValueError:
+                continue
+            listeners.append(PortListener(row.pid, address, family))
+    return set(loopback_owner_pids(listeners))
+
+
+def process_owns_loopback_listener(
+    pid: int, port: int, *, proc_root: Path | None = None
+) -> bool | None:
+    """Whether *pid* owns a LISTEN socket that can answer 127.0.0.1:*port*.
+
+    ``True`` and ``False`` are completed per-process observations. ``None``
+    means this host cannot make the observation, so callers may use a separate
+    child-specific proof without mistaking probe failure for non-ownership.
+
+    Linux compares socket inodes from ``/proc/net/tcp{,6}`` with symlink targets
+    under ``/proc/<pid>/fd``. Other POSIX hosts run the existing listener parser
+    with lsof scoped by ``-a -p <pid>``. Windows reads the IPv4 and IPv6 owner-PID
+    listener tables in-process with ``GetExtendedTcpTable``; it never needs
+    ``netstat`` for this per-process decision.
+    """
+    if type(pid) is not int or pid <= 0 or type(port) is not int or not 1 <= port <= 65535:
+        return None
+    if IS_WINDOWS:
+        owners = _windows_loopback_listener_owner_pids(port)
+        return None if owners is None else pid in owners
+    if IS_LINUX:
+        root = proc_root if proc_root is not None else Path("/proc")
+        listener_inodes = _linux_loopback_listener_inodes(port, root)
+        if listener_inodes is None:
+            return None
+        if not listener_inodes:
+            return False
+        try:
+            descriptors = list((root / str(pid) / "fd").iterdir())
+        except OSError:
+            return None
+        readable = 0
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            readable += 1
+            if target.startswith("socket:[") and target.endswith("]"):
+                if target[8:-1] in listener_inodes:
+                    return True
+        if descriptors and readable == 0:
+            return None
+        return False
+
+    if not IS_POSIX:
+        return None
+    listeners, completed = probe_port_listeners(port, process_pid=pid)
+    if not completed:
+        return None
+    return pid in loopback_owner_pids(listeners)
+
+
+def find_port_listeners(port: int) -> list[PortListener]:
+    """Return LISTEN sockets on *port*, or ``[]`` on any lookup failure.
+
+    Best-effort, deduped on ``(pid, address, family)``, and never raises. Use
+    :func:`probe_port_listeners` when a caller must distinguish a completed
+    empty lookup from an operational failure.
+    """
+    listeners, _completed = probe_port_listeners(port)
     return listeners
 
 
@@ -3704,6 +6035,23 @@ def pid_exists(pid: int) -> bool:
 _START_TIME_PS_TIMEOUT = 2
 
 
+def _process_lstart(pid: int) -> str | None:
+    """Read the one-second ``ps -o lstart=`` identity encoding."""
+    ps_bin = trusted_system_bin("ps")
+    if ps_bin is None:
+        return None
+    try:
+        out = subprocess.check_output(
+            [ps_bin, "-o", "lstart=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=_START_TIME_PS_TIMEOUT,
+        )
+        # STRICT decode. A lossy one can alias two unreadable identities.
+        return out.decode().strip() or None
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        return None
+
+
 def process_start_time(pid: int) -> str | None:
     """Stable identity for WHEN *pid* started, or ``None`` when unreadable.
 
@@ -3746,29 +6094,33 @@ def process_start_time(pid: int) -> str | None:
         if handle is None:
             return None
         try:
-            identity = _windows_process_handle_identity(handle)
+            identity = _windows_process_handle_identity(handle, await_exit_time=False)
         finally:
             _close_process_handle(handle)
         # (pid, creation_time, exit_time) -- only the creation half is an
-        # identity; exit_time moves as the process dies.
+        # identity; exit_time moves as the process dies. Asking for the creation
+        # half alone keeps this read non-blocking, which is the contract
+        # :func:`get_process_start_id` publishes to its event-loop callers.
         return str(identity[1]) if identity is not None else None
-    ps_bin = trusted_system_bin("ps")
-    if ps_bin is None:
-        return None
-    try:
-        out = subprocess.check_output(
-            [ps_bin, "-o", "lstart=", "-p", str(pid)],
-            stderr=subprocess.DEVNULL,
-            timeout=_START_TIME_PS_TIMEOUT,
-        )
-        # STRICT decode. A lossy one would turn unreadable bytes into a
-        # non-empty string, so the caller would accept garbage as a confirmed
-        # identity -- and two different processes whose output both decoded to
-        # replacement characters would compare equal. Undecodable output means
-        # the probe cannot be trusted, which is the None case.
-        return out.decode().strip() or None
-    except (OSError, UnicodeError, subprocess.SubprocessError):
-        return None
+    return _process_lstart(pid)
+
+
+def process_start_id_for_source(pid: int, source: ProcessIdentitySource) -> str | None:
+    """Re-read *pid* with the same identity source used at capture time.
+
+    There is deliberately no fallback between sources. ``WINDOWS`` reads
+    process creation time through the query-only process handle; ``ATOMIC`` uses
+    the native high-resolution start-ID reader, and ``LSTART`` uses ``ps``. If
+    that source is now unavailable, the identity is inconclusive rather than
+    compared against a token with a different encoding or resolution.
+    """
+    if source is ProcessIdentitySource.ATOMIC:
+        return get_process_start_id(pid)
+    if source is ProcessIdentitySource.WINDOWS:
+        return process_start_time(pid)
+    if source is ProcessIdentitySource.LSTART:
+        return _process_lstart(pid)
+    return None
 
 
 #: (pid, token) cache for :func:`own_process_start_time`. Keyed by PID rather
@@ -4136,51 +6488,44 @@ def _close_process_handle(handle: int) -> None:
         logger.debug("CloseHandle failed for process handle %d", handle, exc_info=True)
 
 
-def kill_process_tree_pinned(pid: int, expected_start_time: str, sig: int = SIGTERM) -> bool:
-    """Kill *pid*'s tree only while its verified identity is PINNED OPEN.
+def kill_process_tree_pinned(
+    pid: int, expected_start_time: str, sig: int = SIGTERM, *, app_tracking: bool = False
+) -> bool:
+    """Drain *pid*'s Windows tree only after pinning its creation identity.
 
-    :func:`kill_process_tree` addresses the target by PID, and on Windows it
-    does so from a separate ``taskkill`` process. A caller that merely read the
-    start time first has released every handle by then, so between the check and
-    the terminate the process can exit and Windows can recycle the PID onto an
-    unrelated process -- which ``taskkill /T /F /PID`` would then tear down with
-    its whole tree. The check is only as good as the window after it.
-
-    Windows keeps a process ID reserved for as long as ANY handle to the process
-    object remains open, so holding the query handle that verified the identity
-    across the terminate is what makes the PID still mean the same process when
-    ``taskkill`` resolves it. That is the guarantee this function adds, and the
-    only reason it exists.
-
-    Returns ``False`` -- WITHOUT invoking any kill -- when the handle cannot be
-    opened or the identity does not match *expected_start_time*. Callers must
-    treat that as "identity unconfirmed, do not reap", the same fail-safe the
-    start-time comparison already gives them. On a match it delegates to
-    :func:`kill_process_tree` and propagates its exceptions unchanged, so
-    ``except (ProcessLookupError, OSError)`` handlers keep firing as before.
-
-    POSIX is deliberately untouched: it delegates straight through, because
-    ``os.killpg`` is issued in-process by the same interpreter that did the
-    check and there is no handle to hold. The residual probe-to-signal window
-    there is the pre-existing one the callers already mitigate by re-confirming
-    identity before the destructive escalation.
+    Returns False without signalling when the original object cannot be opened
+    or its creation time does not match. On Windows an exited root may still
+    anchor surviving descendants; the exact-handle drain verifies their full
+    lifetime chains and confirms exit, raising on unknown or incomplete cleanup.
+    SIGTERM and SIGKILL both use Windows hard termination, as with taskkill /F.
+    POSIX continues to delegate to kill_process_tree unchanged.
     """
     if not IS_WINDOWS:
         return kill_process_tree(pid, sig)
-    handle = _open_process_query_handle(pid)
-    if handle is None:
-        return False
     try:
-        identity = _windows_process_handle_identity(handle)
-        # (pid, creation_time, exit_time) -- the creation half is the identity.
-        if identity is None or str(identity[1]) != expected_start_time:
-            return False
-        # The handle stays open for the whole call: taskkill resolves the PID
-        # while this process object is still referenced, so the PID cannot have
-        # been recycled onto a different process in between.
-        return kill_process_tree(pid, sig)
-    finally:
-        _close_process_handle(handle)
+        key = (pid, int(expected_start_time))
+    except (TypeError, ValueError):
+        return False
+    state = reserve_windows_tree_cleanup(key)
+    with state.lock:
+        if state.retired:
+            return state.root_pid > 0
+        if not state.handles:
+            try:
+                handle = open_process_termination_handle(pid, expected_start_time)
+            except BaseException:
+                release_windows_tree_reservation(state)
+                raise
+            if handle is None:
+                release_windows_tree_reservation(state)
+                return False
+            state.root_pid = pid
+            state.handles[pid] = handle
+        state.retire_app_tracking |= app_tracking
+        with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+            _PENDING_WINDOWS_TREE_CLEANUPS[key] = state
+    drained, _ = _advance_owned_windows_tree(state)
+    return drained
 
 
 def kill_pid_pinned(pid: int, expected_start_time: str, sig: int = SIGTERM) -> bool:
@@ -5341,6 +7686,30 @@ def restrict_dir_to_owner(path: str | os.PathLike) -> None:
     _apply_owner_only_dacl(path, inherit=True)
 
 
+def path_volume_is_remote(path: str | os.PathLike) -> bool | None:
+    """Is *path* on a NETWORK volume? True, False for local, None for unknown.
+
+    The Windows half of "which kind of filesystem holds this file", for a caller
+    that already answers the question from ``/proc/mounts`` or ``statfs``
+    elsewhere: Windows exposes no mount table, so the volume ROOT's drive type
+    is the source (:func:`windows_acl.volume_is_remote`, ``GetDriveTypeW``),
+    which reports a UNC root and a mapped network drive alike as remote.
+
+    None -- never False -- for every case where nothing was established: off
+    Windows, where the caller has its own mount-table source and must not read
+    this as "local"; a volume the OS reports as ``DRIVE_UNKNOWN`` or
+    ``DRIVE_NO_ROOT_DIR``; and a failed query. Root-only, so it costs no SMB
+    round trip and is safe for a path that does not exist yet.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        return windows_acl.volume_is_remote(path)
+    except (windows_acl.AclUnavailable, OSError, ValueError):
+        logger.debug("could not classify the volume holding a path", exc_info=True)
+        return None
+
+
 def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
     """Apply an owner-only DACL to *path* in-process. Windows-only.
 
@@ -6007,11 +8376,106 @@ def _proc_status_rss_kb(pid: int) -> int:
     return -1
 
 
+def _parse_ppid(stat: bytes) -> "int | None":
+    """The parent pid from raw ``/proc/<pid>/stat`` bytes, or None on a parse error.
+
+    Splits after the final ``)`` for the same reason :func:`_parse_cpu_jiffies`
+    does: ``comm`` may contain spaces and parens. ppid is field 4 (1-indexed),
+    index 1 of the post-comm tokens.
+    """
+    try:
+        rparen = stat.rindex(b")")
+        return int(stat[rparen + 2 :].split()[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def proc_child_map() -> "dict[int, list[int]] | None":
+    """Every live process's children, from ONE pass over ``/proc``. Linux only.
+
+    For the caller that needs the subtrees of MANY roots at once. Asking the
+    kernel per root (:func:`_proc_children`) costs one read per THREAD of every
+    process visited, so a runtime carrying twenty threads is twenty reads and a
+    sampler walking forty roots pays that on each of them. A parent map is one
+    read per process on the host and answers every root from memory. Measured on
+    a 1713-process host sampling 40 session trees of 734 processes in total:
+    11296 children reads taking 432ms against 1717 ``stat`` reads taking 70ms,
+    both routes returning the same 40 trees.
+
+    The two routes agree for a process whose parent is alive, by construction:
+    ``task/<tid>/children`` is the kernel's child list and ``stat``'s ppid is its
+    inverse. Where they part, this map is the more complete of the two -- the
+    child list is documented as reliable only for a frozen task, so a live tree
+    can come back short through it. A process reparented after its parent died is
+    outside both: its ppid becomes 1 and no surviving parent lists it.
+
+    ``None`` -- off Linux, and when ``/proc`` cannot be listed -- means "walk the
+    roots yourself", never "this host has no processes": an empty map would read
+    as every tree being the root alone.
+
+    Two host-wide snapshots already exist and neither is used here, for a
+    measured reason each:
+
+    * :func:`_posix_process_parent_map` spawns ``ps -Ao pid=,ppid=``. Its edges
+      agree with this map exactly (measured on a 1743-process host: 335 parents
+      in both, zero whose child sets differ), but it costs 122-129ms against
+      66-86ms for this pass, and it puts a subprocess spawn on a 5-second
+      browser poll. ``_get_rss_tree_mb``'s own note records the same choice for
+      the same reason: the Linux branch reads ``/proc`` directly and never
+      spawns.
+    * :func:`parent_pid` parses one pid's ppid out of the same ``stat`` line, but
+      through ``read_text``, so a process whose ``comm`` is not valid UTF-8 --
+      any process may set its own name to arbitrary bytes with
+      ``prctl(PR_SET_NAME)`` -- raises and is reported as unknown. In a map that
+      would drop that process AND every descendant behind it from a caller's
+      tree, silently. :func:`_parse_ppid` reads bytes, so it answers. The
+      difference is pinned by a test.
+
+    Blocking: one read per process on the host. Executor thread, never the loop.
+    """
+    if not IS_LINUX:
+        return None
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    children: dict[int, list[int]] = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            # Exited between the listing and the open: it is in no live tree.
+            continue
+        ppid = _parse_ppid(raw)
+        if ppid is not None:
+            children.setdefault(ppid, []).append(int(name))
+    return children
+
+
+def proc_cpu_jiffies_for_pids(pids: "list[int]") -> int:
+    """Sum utime+stime (clock ticks) over pids already walked.
+
+    The counterpart of :func:`proc_subtree_sample` for a caller that ALREADY
+    holds the subtree, so the tree is not enumerated a second time to reach a
+    total over the same processes. Each pid is read exactly as the walker reads
+    it (:func:`_proc_cpu_jiffies`), so the figure is the walker's figure over
+    that set and not a second definition of it.
+    """
+    return sum(_proc_cpu_jiffies(p) for p in pids)
+
+
 def _proc_children(pid: int) -> list[int]:
     """Direct child PIDs of *pid* via ``/proc/<pid>/task/<tid>/children``.
 
     Uses the kernel-provided children list (``CONFIG_PROC_CHILDREN``), so no
     ``pgrep``/full-table scan. Returns ``[]`` if the file is unavailable.
+
+    Per-root: it reads one ``children`` file per THREAD of *pid*. A caller that
+    needs many roots' trees in one pass should build
+    :func:`proc_child_map` instead.
     """
     kids: list[int] = []
     task_dir = f"/proc/{pid}/task"
@@ -6689,6 +9153,25 @@ def raise_nofile_soft_limit(target: int) -> None:
         logger.debug("Could not raise RLIMIT_NOFILE", exc_info=True)
 
 
+def nofile_soft_limit() -> int:
+    """This process's open-file soft limit, or ``0`` where there is none.
+
+    POSIX: ``resource.getrlimit(RLIMIT_NOFILE)`` soft value; ``RLIM_INFINITY``
+    reads as ``0``. Windows: ``0`` — there is no per-process descriptor rlimit
+    (see :func:`raise_nofile_soft_limit`), so a caller sizing an fd budget from
+    this value leaves the dimension unbounded, which matches the platform.
+    """
+    if not IS_POSIX:
+        return 0
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError, ImportError):
+        return 0
+    if soft == resource.RLIM_INFINITY:
+        return 0
+    return max(0, int(soft))
+
+
 # ---------------------------------------------------------------------------
 # Windows Job objects — the cgroup-v2-scope analogue
 # ---------------------------------------------------------------------------
@@ -7024,3 +9507,143 @@ def ensure_owner_rwx_dirs(root: str | os.PathLike) -> None:
                 dirnames.remove(dname)
                 continue
             _add_owner_rwx(entry)
+
+
+def windows_tree_cleanup_pending(pid: int, start: str | None) -> bool:
+    """A pending pin outranks numeric liveness, including a dead root PID."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        key = (pid, int(start)) if start is not None else None
+    except (TypeError, ValueError):
+        return False
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if key is None:
+            return any(state.root_pid == pid for state in _PENDING_WINDOWS_TREE_CLEANUPS.values())
+        return key in _PENDING_WINDOWS_TREE_CLEANUPS
+
+
+async def _create_windows_subprocess_owned(
+    owner: _PendingWindowsTreeCleanup, program: str, *args: str, limit: int = 2**16, **kwargs: Any
+) -> asyncio.subprocess.Process:
+    """Run CPython's subprocess implementation with per-call creation capture.
+
+    Only this call sees the substituted native API and transport constructors.
+    The interpreter's functions, globals, event loop and Popen stay untouched.
+    Capture happens at CreateProcess return, BEFORE _close_pipe_fds, Handle
+    publication, thread-handle close, proactor registration or pipe connection.
+    """
+    # Private Windows APIs have no Linux typeshed declarations. Runtime identity
+    # checks below refuse a different transport implementation before creation.
+    windows_events: Any = importlib.import_module("asyncio.windows_events")
+    windows_utils: Any = importlib.import_module("asyncio.windows_utils")
+    loop = asyncio.get_running_loop()
+    make_transport = getattr(getattr(loop, "_make_subprocess_transport"), "__func__", None)
+    subprocess_exec = getattr(loop.subprocess_exec, "__func__", None)
+    if (
+        make_transport is not windows_events.ProactorEventLoop._make_subprocess_transport
+        or subprocess_exec is not asyncio.BaseEventLoop.subprocess_exec
+    ):
+        raise RuntimeError(
+            "Windows session start refused: this interpreter does not expose the CPython "
+            "Proactor subprocess path the tree-cleanup capture binds to; run the gateway on "
+            f"a measured interpreter ({_WINDOWS_CAPTURE_MEASURED_VERSIONS})"
+        )
+    execute_child = getattr(subprocess.Popen, "_execute_child")
+    start_transport = windows_events._WindowsSubprocessTransport._start
+    if (
+        not {"_winapi", "CreateProcess", "Handle"}.issubset(execute_child.__code__.co_names)
+        or not {"windows_utils", "Popen"}.issubset(start_transport.__code__.co_names)
+        or "_WindowsSubprocessTransport" not in make_transport.__code__.co_names
+    ):
+        # Same reasoning as the quarantine refusal: an operator meeting this sees a
+        # failed session start and no context, and the remedy is not guessable from
+        # the shape names. The interpreter is the whole cause, so it is the remedy.
+        raise RuntimeError(
+            "Windows session start refused: this interpreter's private subprocess bindings "
+            "differ from the shapes the tree-cleanup capture is measured against; run the "
+            f"gateway on a measured interpreter ({_WINDOWS_CAPTURE_MEASURED_VERSIONS})"
+        )
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if owner not in _WINDOWS_TREE_ADMISSIONS or owner.retired or owner.handles:
+            raise RuntimeError("Windows subprocess requires an unused cleanup reservation")
+
+    def clone(function: Any, **bindings: Any) -> Any:
+        cloned = types.FunctionType(
+            function.__code__,
+            dict(function.__globals__, **bindings),
+            function.__name__,
+            function.__defaults__,
+            function.__closure__,
+        )
+        cloned.__kwdefaults__ = function.__kwdefaults__
+        return cloned
+
+    native = getattr(subprocess, "_winapi")
+    handle_type = getattr(subprocess, "Handle")
+
+    class CreationAPI:
+        def __init__(self) -> None:
+            self.thread_pin: Any = None
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(native, name)
+
+        def CloseHandle(self, value: int) -> None:
+            if self.thread_pin is not None and int(self.thread_pin) == value:
+                self.thread_pin.Close()
+                self.thread_pin = None
+            else:
+                native.CloseHandle(value)
+
+        def CreateProcess(self, *values: Any, **options: Any) -> Any:
+            result = native.CreateProcess(*values, **options)
+            hp, ht, pid, _tid = result
+            # Record the raw exact process value before wrapping handles: even
+            # a later wrapper/setup exception must leave the reservation owed.
+            owner.root_pid = pid
+            owner.key = (pid, 0)
+            owner.handles[pid] = hp
+            # If pipe-fd cleanup raises before CPython closes ht, this local
+            # reference-counted pin closes it when the failed launch unwinds.
+            self.thread_pin = handle_type(ht)
+            # Keep the reference-counted object itself. Popen receives THIS
+            # object below, not a second Handle owning the same native value.
+            pin = handle_type(hp)
+            owner.raw_root_pin = pin
+            return result
+
+    def shared_handle(value: int) -> Any:
+        if owner.raw_root_pin is not None and int(owner.raw_root_pin) == value:
+            return owner.raw_root_pin
+        return handle_type(value)
+
+    class OwnedPopen(windows_utils.Popen):
+        _execute_child = clone(
+            getattr(subprocess.Popen, "_execute_child"), _winapi=CreationAPI(), Handle=shared_handle
+        )
+
+    class OwnedTransport(windows_events._WindowsSubprocessTransport):
+        _start = clone(
+            windows_events._WindowsSubprocessTransport._start,
+            windows_utils=types.SimpleNamespace(Popen=OwnedPopen),
+        )
+
+    class SpawnLoop:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(loop, name)
+
+        _make_subprocess_transport = staticmethod(
+            types.MethodType(
+                clone(make_transport, _WindowsSubprocessTransport=OwnedTransport),
+                loop,
+            )
+        )
+
+    def protocol_factory() -> Any:
+        return aio_subprocess.SubprocessStreamProtocol(limit=limit, loop=loop)
+
+    transport, protocol = await subprocess_exec(
+        SpawnLoop(), protocol_factory, program, *args, **kwargs
+    )
+    return aio_subprocess.Process(transport, protocol, loop)

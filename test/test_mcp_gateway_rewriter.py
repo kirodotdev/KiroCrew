@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
 from kiro_crew.mcp_gateway import rewriter
 from kiro_crew.mcp_gateway.hashing import expand_stub_flags, is_secret_env_key
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
@@ -76,6 +77,28 @@ class TestSettingsInjection:
         out = _injectable_settings_servers(spec, frozenset([alias]))
         # Keyed by the RAW name, because the caller filters raw-keyed src_servers.
         assert set(out) == {"npm:@playwright/mcp"}
+
+    @pytest.mark.parametrize("value", [True, "true", 1, {}], ids=repr)
+    def test_a_muted_settings_server_is_never_injected(self, value: object) -> None:
+        """Same class as the per-agent wrap guard, same fail-closed reading.
+
+        A settings server injected as a stub is a LIVE server in every agent's
+        overlay, so reading only a literal ``True`` here re-enabled a globally
+        muted server for every agent at once — the wider blast radius of the two.
+        """
+        spec = {"mcpServers": {"muted-mcp": {"command": sys.executable, "disabled": value}}}
+        assert _injectable_settings_servers(spec, frozenset(["muted-mcp"])) == {}
+
+    def test_a_registry_governed_settings_server_is_never_injected(self) -> None:
+        """Wider blast radius than the per-agent case: a settings server enters
+        EVERY agent's overlay, so one injected stub would un-govern it
+        everywhere."""
+        spec = {"mcpServers": {"governed-mcp": {"command": sys.executable, "type": "registry"}}}
+        assert _injectable_settings_servers(spec, frozenset(["governed-mcp"])) == {}
+
+    def test_an_unmuted_settings_server_is_still_injected(self) -> None:
+        spec = {"mcpServers": {"live-mcp": {"command": sys.executable, "disabled": False}}}
+        assert set(_injectable_settings_servers(spec, frozenset(["live-mcp"]))) == {"live-mcp"}
 
     def test_http_server_is_never_injected_even_when_listed(self) -> None:
         """HTTP/SSE needs no stub and merges globally; injecting it would gain
@@ -164,6 +187,115 @@ def test_disabled_poolable_server_is_not_wrapped(tmp_path: Path) -> None:
     assert _WRAPPER_MARKER not in entry  # never wrapped into a live stub
     assert "poolable" not in entry  # internal hint stripped
     assert entry.get("command") == "some-mcp"  # original launch left intact
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, {}, [], None], ids=repr)
+def test_a_non_boolean_mute_is_not_wrapped_either(tmp_path: Path, value: object) -> None:
+    """The mute is read fail-closed, through the shared launch-decision predicate.
+
+    Reading only a literal ``True`` here was not a cosmetic difference: a wrapped
+    entry carries the wrapper marker, ``session_servers.injection_server_names``
+    collects exactly those names, and the session projections subtract a stubbed
+    name BEFORE their own mute check -- so an entry the spec silenced with a
+    non-boolean value was injected at session level as a live server. The value is
+    also unforwardable on its own terms, since both spec schemas type it boolean.
+    """
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {"muted": {"command": sys.executable, "disabled": value}},
+    }
+    new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"muted"}))
+    entry = new_spec["mcpServers"]["muted"]
+
+    assert wrapped == 0
+    assert _WRAPPER_MARKER not in entry
+    assert entry.get("disabled") == value
+
+
+def test_a_registry_governed_server_is_not_wrapped(tmp_path: Path) -> None:
+    """A catalog-governed entry has nothing here to pool.
+
+    In registry access mode the client resolves it by map key and supplies the
+    catalog's own command, so a stub is overridden; outside that mode the marked
+    entry is the one the client drops. Wrapping it only made the name a "stubbed
+    name" the session projections subtract, which is how the entry reached a
+    session as a live local process with the marker governing nothing.
+    """
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {"governed": {"command": sys.executable, "type": "registry"}},
+    }
+    new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"governed"}))
+    entry = new_spec["mcpServers"]["governed"]
+
+    assert wrapped == 0
+    assert _WRAPPER_MARKER not in entry
+    assert entry.get("type") == "registry", "the marker must survive for the client's filter"
+    assert entry.get("command") == sys.executable
+
+
+def test_a_plain_type_does_not_block_pooling(tmp_path: Path) -> None:
+    """Guard against over-correction: ``type: stdio`` is not a registry marker."""
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {"live": {"command": sys.executable, "type": "stdio"}},
+    }
+    _, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"live"}))
+    assert wrapped == 1
+
+
+def test_an_explicit_false_is_not_a_mute(tmp_path: Path) -> None:
+    """Fail-closed must not swallow the spelling that means "enabled"."""
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {"live": {"command": sys.executable, "disabled": False}},
+    }
+    new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"live"}))
+
+    assert wrapped == 1
+    assert new_spec["mcpServers"]["live"].get(_WRAPPER_MARKER) is True
+
+
+class TestTheRegistryPredicate:
+    """One reading of the marker for every site that decides a launch."""
+
+    def test_the_marker_is_recognized(self) -> None:
+        assert mcp_entry_is_registry_governed({"command": "x", "type": "registry"}) is True
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"command": "x"},
+            {"command": "x", "type": "stdio"},
+            {"command": "x", "type": "Registry"},
+            {"command": "x", "type": True},
+            "",
+            None,
+        ],
+        ids=repr,
+    )
+    def test_anything_else_is_not(self, entry: object) -> None:
+        """Exact match, not a case-insensitive or truthy one: the value is the
+        client's own discriminator and only ``"registry"`` means anything to it."""
+        assert mcp_entry_is_registry_governed(entry) is False
+
+
+class TestTheMutePredicate:
+    """One reading of ``disabled`` for every site that decides a launch."""
+
+    @pytest.mark.parametrize("value", [True, "true", "false", 1, 0, {}, [], None], ids=repr)
+    def test_anything_but_a_literal_false_is_a_mute(self, value: object) -> None:
+        assert mcp_entry_is_muted({"command": "x", "disabled": value}) is True
+
+    @pytest.mark.parametrize("entry", [{"command": "x"}, {"command": "x", "disabled": False}])
+    def test_absent_or_false_is_not(self, entry: dict) -> None:
+        assert mcp_entry_is_muted(entry) is False
+
+    @pytest.mark.parametrize("entry", ["", None, [], 0])
+    def test_a_non_entry_is_not_a_mute(self, entry: object) -> None:
+        """A malformed entry is handled by the caller that skips it, not read as a
+        restriction it never expressed."""
+        assert mcp_entry_is_muted(entry) is False
 
 
 def test_enabled_listed_server_is_still_wrapped(tmp_path: Path) -> None:
@@ -562,6 +694,14 @@ def test_rewriter_calls_restrict_to_owner_on_windows(tmp_path: Path, monkeypatch
     # Simulate Windows: IS_POSIX=False, IS_WINDOWS=True.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_POSIX", False)
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    # The spec read and the source fingerprint both go through the hardened
+    # no-reparse open, which under the simulated flag would call the real Win32
+    # API; this test is about the lockdown of what gets WRITTEN, so read the
+    # fixture plainly at both seams.
+    monkeypatch.setattr(
+        "kiro_crew.agent_discovery._read_spec_bytes", lambda real: Path(real).read_bytes()
+    )
+    monkeypatch.setattr("kiro_crew.hooks.safe_read_file_bytes", lambda raw: Path(raw).read_bytes())
     # Forwarding ON or the env-declaring fixture is declassified and no sidecar
     # write happens at all.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.forward_declared_env_enabled", lambda: True)
@@ -812,6 +952,12 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
 
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_POSIX", False)
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    # Same as the lockdown test above: keep the hardened spec read and source
+    # fingerprint off the real Win32 open the simulated flag would select.
+    monkeypatch.setattr(
+        "kiro_crew.agent_discovery._read_spec_bytes", lambda real: Path(real).read_bytes()
+    )
+    monkeypatch.setattr("kiro_crew.hooks.safe_read_file_bytes", lambda raw: Path(raw).read_bytes())
     with (
         patch(
             "kiro_crew.mcp_gateway.rewriter.platform_compat.restrict_to_owner",
@@ -1005,3 +1151,424 @@ def test_placeholder_source_env_mirrors_the_forwarder_filters(monkeypatch) -> No
             if not (is_secret_env_key(k) or is_credential_env_key(k))
         }
     )
+
+
+# ── cmd.exe-safe launch argv (Windows cmd.exe quote-stripping) ──
+#
+# kiro-cli spawns MCP entries on Windows through ``cmd.exe /C``. A launch line
+# whose command is quoted (a ``Program Files`` interpreter) survives only
+# cmd's exactly-two-quotes special case; one more quoted element strips the
+# outer pair and the interpreter becomes ``C:\Program``. Every stub flag
+# already rides inside the base64url envelope, so the wrapped entry's
+# ``command`` is the one element that must be normalised to a metacharacter-
+# free spelling (the 8.3 short form). These tests construct the hazardous
+# input directly, so they assert the invariant on every platform.
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cmd_safe_state():
+    """Reset the per-element residual-hazard warning latch between tests."""
+    rewriter._reset_cmd_unsafe_warnings()
+    yield
+    rewriter._reset_cmd_unsafe_warnings()
+
+
+def _program_files_interpreter(tmp_path: Path) -> str:
+    """A real executable whose path sits under a directory with a space."""
+    exe_dir = tmp_path / "Program Files" / "Kiro Crew"
+    exe_dir.mkdir(parents=True)
+    exe = exe_dir / "python"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_wrapped_argv_is_cmd_safe_under_a_spaced_interpreter_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Every element of a wrapped entry's launch argv is free of cmd.exe
+    metacharacters when a short form exists for the interpreter path."""
+    exe = _program_files_interpreter(tmp_path)
+    short = exe.replace("Program Files", "PROGRA~1").replace("Kiro Crew", "KIROCR~1")
+    monkeypatch.setattr(sys, "executable", exe)
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", lambda p: short)
+
+    spec = {"name": "agent-a", "mcpServers": {"svc": {"command": exe}}}
+    new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"svc"}))
+    entry = new_spec["mcpServers"]["svc"]
+
+    assert wrapped == 1
+    for element in (entry["command"], *entry["args"]):
+        assert not rewriter._CMD_UNSAFE.intersection(element), element
+    assert entry["command"] == short
+
+
+def test_wrapped_command_kept_and_warned_when_no_short_form_exists(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    """8.3 generation can be disabled per volume: the original path is kept
+    (same file, still launchable by non-cmd spawners) and the residual hazard
+    is logged ONCE with the remedy, so the failure is diagnosable instead of
+    silent and a fleet of wrapped servers does not bury the diagnosis."""
+    import logging
+
+    exe = _program_files_interpreter(tmp_path)
+    monkeypatch.setattr(sys, "executable", exe)
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", lambda p: "")
+
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {"svc": {"command": exe}, "svc2": {"command": exe}},
+    }
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
+        new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"svc", "svc2"}))
+
+    assert wrapped == 2
+    for name in ("svc", "svc2"):
+        # original preserved, never a broken form
+        assert new_spec["mcpServers"][name]["command"] == exe
+    residual = [r.getMessage() for r in caplog.records if "metacharacter" in r.getMessage()]
+    # Once per distinct hazardous element, not once per wrapped server -- and
+    # the line names the remedy, not just the measurement.
+    assert len(residual) == 1, residual
+    assert "8.3" in residual[0]
+
+
+def test_short_form_still_unsafe_falls_back_to_the_original(monkeypatch) -> None:
+    """A short form that itself carries a metacharacter is not an improvement;
+    the original spelling is kept for the guard to report."""
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr(
+        "kiro_crew.platform_compat.short_path_name", lambda p: r"C:\PROGRA%1\py.exe"
+    )
+    original = r"C:\Program Files\py.exe"
+    assert rewriter._cmd_safe_command(original) == original
+
+
+def test_cmd_safe_command_reresolves_short_form_on_every_call(monkeypatch) -> None:
+    """A removed 8.3 alias cannot remain cached across broker rewrites."""
+    original = r"C:\Program Files\py.exe"
+    short_forms = iter((r"C:\PROGRA~1\py.exe", r"C:\PROGRA~2\py.exe"))
+    calls: list[str] = []
+
+    def _next_short_form(path: str) -> str:
+        calls.append(path)
+        return next(short_forms)
+
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", _next_short_form)
+
+    assert rewriter._cmd_safe_command(original) == r"C:\PROGRA~1\py.exe"
+    assert rewriter._cmd_safe_command(original) == r"C:\PROGRA~2\py.exe"
+    assert calls == [original, original]
+
+
+def test_parenthesised_path_is_normalised_too(monkeypatch) -> None:
+    """``(`` and ``)`` are cmd.exe grouping characters and become live the
+    moment quote-stripping unquotes the line -- ``C:\\Program Files (x86)\\``
+    is the everyday spelling of this hazard."""
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr(
+        "kiro_crew.platform_compat.short_path_name", lambda p: r"C:\PROGRA~2\py.exe"
+    )
+    assert rewriter._cmd_safe_command(r"C:\Program Files (x86)\py.exe") == r"C:\PROGRA~2\py.exe"
+    assert rewriter._cmd_safe_command(r"C:\Kiro(dev)\py.exe") == r"C:\PROGRA~2\py.exe"
+
+
+def test_delayed_expansion_path_is_normalised_too(monkeypatch) -> None:
+    """``!NAME!`` spans are expanded when cmd.exe delayed expansion is enabled."""
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", lambda p: r"C:\TOOLS~1\py.exe")
+    assert rewriter._cmd_safe_command(r"C:\Tools!beta\py.exe") == r"C:\TOOLS~1\py.exe"
+
+
+def test_cmd_safe_command_is_inert_on_posix() -> None:
+    """POSIX spawns never route through cmd.exe: a spaced path is untouched."""
+    if rewriter.platform_compat.IS_WINDOWS:
+        pytest.skip("POSIX-only behaviour")
+    assert rewriter._cmd_safe_command("/opt/has space/python") == "/opt/has space/python"
+
+
+def test_already_safe_command_is_returned_unchanged(monkeypatch) -> None:
+    """A metacharacter-free path is never rewritten -- no API call, no churn in
+    the overlay bytes (the rewrite fingerprint depends on them)."""
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+
+    def _boom(path: str) -> str:
+        raise AssertionError("short-path resolution must not run for safe paths")
+
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", _boom)
+    assert rewriter._cmd_safe_command(r"C:\Python312\python.exe") == r"C:\Python312\python.exe"
+
+
+class _FakeKernel32:
+    """``GetShortPathNameW`` with the documented two-call size protocol:
+    call one (NULL buffer) answers the length INCLUDING the NUL, call two
+    fills the buffer and answers the length EXCLUDING it."""
+
+    def __init__(self, short: str | None, *, lie_on_second_call: bool = False):
+        self._short = short
+        self._lie = lie_on_second_call
+
+    def GetShortPathNameW(self, path, buf, buflen):  # noqa: N802 - Win32 name
+        if self._short is None:
+            return 0
+        if buf is None:
+            return len(self._short) + 1
+        if self._lie:
+            return buflen  # "buffer too small": answer >= the size passed in
+        buf.value = self._short
+        return len(self._short)
+
+
+def _fake_windll(kernel32: _FakeKernel32):
+    def factory(name: str, **kwargs):
+        assert name == "kernel32"
+        assert kwargs.get("use_last_error") is True
+        return kernel32
+
+    return factory
+
+
+def test_short_path_name_two_call_protocol(monkeypatch) -> None:
+    """The buffer protocol runs on CI everywhere: a regression here would
+    return '' on every Windows host and silently disable the launch fix."""
+    import ctypes
+
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        _fake_windll(_FakeKernel32(r"C:\PROGRA~1\py.exe")),
+        raising=False,
+    )
+    assert platform_compat.short_path_name(r"C:\Program Files\py.exe") == r"C:\PROGRA~1\py.exe"
+
+
+def test_short_path_name_returns_empty_on_api_failure(monkeypatch) -> None:
+    """A zero-length first answer (path missing, API error) is '' -- never a
+    fabricated path, never an exception."""
+    import ctypes
+
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(ctypes, "WinDLL", _fake_windll(_FakeKernel32(None)), raising=False)
+    assert platform_compat.short_path_name(r"C:\gone\py.exe") == ""
+
+
+def test_short_path_name_returns_empty_when_buffer_reported_too_small(
+    monkeypatch,
+) -> None:
+    """A second answer >= the allocated size means the result cannot be
+    trusted (the path changed between calls): '' rather than a torn value."""
+    import ctypes
+
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        _fake_windll(_FakeKernel32(r"C:\PROGRA~1\py.exe", lie_on_second_call=True)),
+        raising=False,
+    )
+    assert platform_compat.short_path_name(r"C:\Program Files\py.exe") == ""
+
+
+@pytest.mark.skipif(not rewriter.platform_compat.IS_WINDOWS, reason="Windows API")
+def test_cmd_safe_command_contract_on_real_windows(tmp_path: Path) -> None:
+    """On a real Windows kernel the result is either a metacharacter-free
+    spelling of the same file, or the original unchanged (a volume without
+    8.3 aliases may make GetShortPathNameW fail OR succeed with the long
+    spelling; both must degrade to the original, never a broken form)."""
+    spaced = tmp_path / "short name probe"
+    spaced.mkdir()
+    target = spaced / "probe.txt"
+    target.write_text("x")
+    got = rewriter._cmd_safe_command(str(target))
+    if got != str(target):
+        assert os.path.exists(got)
+        assert not rewriter._CMD_UNSAFE.intersection(got)
+
+
+def _unencoded_json_reads(source: str) -> list[int]:
+    """Line numbers of ``json.loads(<path>.read_text(...))`` with no encoding."""
+    import ast
+
+    found: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if ast.unparse(node.func) not in ("json.loads", "json.load"):
+            continue
+        if not node.args:
+            continue
+        inner = node.args[0]
+        if not isinstance(inner, ast.Call):
+            continue
+        if not ast.unparse(inner.func).endswith(".read_text"):
+            continue
+        if not any(k.arg == "encoding" for k in inner.keywords):
+            found.append(inner.lineno)
+    return found
+
+
+class TestRewriterDecodesJsonAsUtf8:
+    """Agent specs and the global settings file are UTF-8 JSON written by
+    somebody else -- a user, an editor, the Kiro IDE -- so the rewriter decodes
+    them as UTF-8 rather than as the host's text code page.
+
+    Two harms follow from a code-page decode. Where the bytes are undecodable
+    the read raises ``UnicodeDecodeError``, which is a ``ValueError`` and so
+    matches neither the ``OSError`` arm (transient: keep the previous overlay)
+    nor the ``json.JSONDecodeError`` arm (deterministic: skip this agent) --
+    it leaves ``rewrite_agents`` entirely and takes the whole pass down, not
+    just the one offending agent. Where the bytes are decodable under the code
+    page but mean something else, nothing raises and the mojibake is written
+    into the overlay that spawns the backend.
+    """
+
+    @staticmethod
+    def _unrepresentable_char() -> str:
+        """A character the host's text code page cannot encode, or ``""``.
+
+        Picked against the live code page rather than hardcoded: which
+        characters survive depends on the host (cp1252 cannot take the CJK
+        one, cp950 cannot take the accented one), and a UTF-8 host encodes
+        every candidate -- the case with no divergence to show.
+        """
+        import locale
+
+        code_page = locale.getpreferredencoding(False)
+        for candidate in ("張", "é", "Ж", "क"):
+            try:
+                candidate.encode(code_page)
+            except UnicodeEncodeError:
+                return candidate
+        return ""
+
+    def test_agent_spec_round_trips_a_character_outside_the_code_page(self, tmp_path: Path) -> None:
+        import locale
+
+        from kiro_crew.mcp_gateway.rewriter import rewrite_agents
+
+        needle = self._unrepresentable_char()
+        if not needle:
+            pytest.skip("this host's code page encodes every probe character")
+        # Guard the guard: a representable needle passes against a code-page
+        # decode too, which would make this test prove nothing.
+        with pytest.raises(UnicodeEncodeError):
+            needle.encode(locale.getpreferredencoding(False))
+
+        source_dir = tmp_path / "agents"
+        source_dir.mkdir()
+        spec = {
+            "name": f"agent-{needle}",
+            "mcpServers": {
+                "myserver": {
+                    "command": sys.executable,
+                    "args": [f"kirocrew-{needle}-arg"],
+                    "poolable": True,
+                }
+            },
+        }
+        # Written the way an editor or the Kiro IDE writes it: UTF-8 bytes,
+        # non-ASCII literal rather than escaped.
+        (source_dir / "agent.json").write_text(
+            json.dumps(spec, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        overlay_dir = tmp_path / "overlay"
+        rewrite_agents(
+            source_dir=source_dir,
+            overlay_dir=overlay_dir,
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            sandbox_mode="auto",
+            approval_mode="interactive",
+            stub_servers=frozenset(["myserver"]),
+        )
+
+        overlay = overlay_dir / "agent.json"
+        assert overlay.is_file(), "the agent produced no overlay at all"
+        # Compare decoded VALUES, not raw bytes: the overlay writer escapes
+        # non-ASCII, so the literal character is absent from the file text
+        # whether or not the source decoded correctly.
+        written = json.dumps(json.loads(overlay.read_text(encoding="utf-8")), ensure_ascii=False)
+        assert needle in written, (
+            "the overlay lost a character the source spec carried, so the "
+            "source was decoded as the host code page instead of UTF-8"
+        )
+
+    def test_undecodable_agent_spec_skips_only_that_agent(self, tmp_path: Path) -> None:
+        """Bytes that are not valid UTF-8 degrade to the documented skip.
+
+        Pinning the read to UTF-8 removes the common trigger but not this one:
+        a genuinely corrupt file still raises ``UnicodeDecodeError``, and that
+        is a ``ValueError``, so it matches neither the ``OSError`` arm nor a
+        bare ``json.JSONDecodeError`` arm. Unhandled, it leaves
+        ``rewrite_agents`` and abandons every OTHER agent in the same pass --
+        the blast radius this asserts against. Runs on every platform, because
+        the bytes are invalid under UTF-8 rather than under a code page.
+        """
+        from kiro_crew.mcp_gateway.rewriter import rewrite_agents
+
+        source_dir = tmp_path / "agents"
+        source_dir.mkdir()
+        good = {
+            "name": "healthy",
+            "mcpServers": {"myserver": {"command": sys.executable, "poolable": True}},
+        }
+        (source_dir / "healthy.json").write_text(json.dumps(good), encoding="utf-8")
+        # 0x81 is a continuation byte with no lead byte: invalid UTF-8 anywhere.
+        (source_dir / "corrupt.json").write_bytes(b'{"name": "\x81\x81", "mcpServers": {}}')
+
+        overlay_dir = tmp_path / "overlay"
+        rewrite_agents(
+            source_dir=source_dir,
+            overlay_dir=overlay_dir,
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            sandbox_mode="auto",
+            approval_mode="interactive",
+            stub_servers=frozenset(["myserver"]),
+        )
+
+        assert (overlay_dir / "healthy.json").is_file(), (
+            "one undecodable spec took down the whole rewrite pass; the healthy "
+            "agent beside it got no overlay"
+        )
+
+    def test_every_json_read_pins_utf8(self) -> None:
+        """A ratchet, because the defect is one omitted keyword and reads clean.
+
+        The behavioural test above only diverges on a host whose code page is
+        not UTF-8, so on a UTF-8 runner it passes either way. This one fails
+        everywhere, which is what stops a re-added bare ``read_text()``
+        reaching a release through a green Linux shard. It also covers the
+        settings-file read, which has no cheap behavioural harness.
+        """
+        from kiro_crew.mcp_gateway import rewriter as rw
+
+        source = Path(rw.__file__).read_text(encoding="utf-8")
+        offenders = _unencoded_json_reads(source)
+        assert offenders == [], (
+            "rewriter.py decodes JSON with the host code page at line(s) "
+            f"{offenders}; pass encoding='utf-8' -- these files are UTF-8 "
+            "JSON written by an editor, the Kiro IDE, or this module itself"
+        )
+
+    def test_the_ratchet_can_actually_fail(self) -> None:
+        """A scan that matches nothing passes for the wrong reason."""
+        assert _unencoded_json_reads(
+            "import json\nfrom pathlib import Path\nx = json.loads(Path('a').read_text())\n"
+        ) == [3]
+        assert (
+            _unencoded_json_reads(
+                "import json\nfrom pathlib import Path\n"
+                "x = json.loads(Path('a').read_text(encoding='utf-8'))\n"
+            )
+            == []
+        )

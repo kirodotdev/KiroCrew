@@ -11,7 +11,7 @@ vi.mock('../pages/aidlc/TaskDetailPanel', () => ({ default: () => <div data-test
 
 const mockRun = (overrides: Partial<ProjectRun> = {}): ProjectRun => ({
   task_id: 'run-1', name: 'Test Run', running: false, status: 'completed',
-  steps: 3, completed: 3, failed: 0, skipped: 0, current_step: 3,
+  tasks: 3, completed: 3, failed: 0, skipped: 0, current_task: 3,
   spec: 'test.md', spec_name: 'Test', error: '',
   tokens_used: 1000, replan_count: 0,
   started_at: Date.now() / 1000 - 60, finished_at: Date.now() / 1000,

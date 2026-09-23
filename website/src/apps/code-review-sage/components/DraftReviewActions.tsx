@@ -10,9 +10,9 @@ import { Send } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { api } from '../../../api/client'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { i18nT } from '../../../i18n/t'
-import { OWNER_SETTINGS_TARGET, pullRequestErrorDetails } from '../../../utils/pullRequestErrors'
-import { SettingsLink } from '../../../components/SettingsLink'
+import { pullRequestErrorDetails } from '../../../utils/pullRequestErrors'
 
 const PUBLISH_EVENTS = ['COMMENT', 'REQUEST_CHANGES', 'APPROVE'] as const
 type PublishEvent = (typeof PUBLISH_EVENTS)[number]
@@ -271,22 +271,18 @@ export default function DraftReviewActions(
         </>
       )}
       {err && (
-        <div className="text-danger text-xs mt-2">
-          {/* Lead with what failed, then the provider's words — the same shape as the
-              post button's failure, so an irreversible action is not the one place that
-              shows bare HTTP text. */}
-          <span className="font-medium">
-            {i18nT('apps.codeReviewSage.components.draftReviewActions.publish_failed')}
-          </span>{' '}
-          <span className="break-words font-normal opacity-90">{err}</span>
-          {errDetails?.ownerNotConfigured && (
-            <>
-              {' '}
-              <SettingsLink {...OWNER_SETTINGS_TARGET}>
-                {i18nT('components.pullRequestPanel.open_slack_settings')}
-              </SettingsLink>
-            </>
-          )}
+        <div className="mt-2">
+          {/* The shared surface, not a hand-written red line: a publish rejection on
+              the one irreversible action here is exactly where the structured
+              context and the agent hand-off are worth having. Block, not inline:
+              the title, a provider sentence and the hand-off do not fit one row in
+              this bar's width — measured, they wrap to one word per line. */}
+          <ErrorNotice
+            title={i18nT('apps.codeReviewSage.components.draftReviewActions.publish_failed')}
+            message={err}
+            askAgent
+            askAgentLabel={i18nT('apps.codeReviewSage.components.draftReviewActions.ask_agent_about_this_failure')}
+          />
         </div>
       )}
     </div>

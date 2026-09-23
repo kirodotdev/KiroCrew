@@ -33,6 +33,12 @@ jobs:
     if: >-
       github.event.issue.pull_request != null
       && startsWith(github.event.comment.body, '/ai-review override ')
+    # NOT routed to the CodeBuild fleet -- same class of bug as
+    # issue-summary.yml/issue-triage.yml: this fires on `issue_comment`, any
+    # commenter can trigger it (in-job permission validation is what
+    # actually gates the override, not the trigger), and a non-collaborator
+    # commenter's dispatch is rejected by the AWS webhook's actor allowlist,
+    # queuing the job forever instead of running it.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -298,7 +304,7 @@ jobs:
 
           #                workflow             label      fork check-run name / external-id lane / fork workflow
           if [ "$TARGET" = "fable" ] || [ "$TARGET" = "all" ]; then
-            rerun_reviewer "claude-review.yml" "Fable 5" "Opus 4.8 Review" "opus" "fork-opus-review.yml"
+            rerun_reviewer "claude-review.yml" "Fable 5" "Opus 5 Review" "opus" "fork-opus-review.yml"
           fi
           if [ "$TARGET" = "gpt" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "codex-review.yml" "GPT 5.6" "GPT 5.6 Review" "gpt" "fork-gpt-review.yml"

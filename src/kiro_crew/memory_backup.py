@@ -280,31 +280,46 @@ def back_up_all_stores(
     *,
     now: datetime | None = None,
     should_stop: Callable[[], bool] | None = None,
-    private_only: bool = False,
+    force: bool = False,
 ) -> dict[str, int]:
-    """Back up and prune active stores, optionally limited to private V2 stores.
+    """Back up and prune every active store: the default, named V1 and active V2.
+
+    The default store is the one every install has and the one that cannot be
+    rebuilt from anywhere else, so it is never left to a manual copy: the
+    unattended sweep and the CLI both go through this one loop.
 
     FAIL SOFT PER STORE, and that is the whole reason the loop is here rather than at
     the caller: one unreadable silo must not cost the default store its backup. Counted
     rather than raised so the periodic caller can log a number without a try of its own,
     and so a store that starts failing is visible as a non-zero count.
+
+    ``force`` takes the copy even when the newest one is inside
+    :data:`MIN_BACKUP_INTERVAL_HOURS`. The interval exists to stop a restart loop
+    collapsing the retention window on a TIMER; a caller about to rewrite the install
+    needs a copy of the store as it is now, not one from up to a day ago.
     """
-    from kiro_crew import member_memory_backup
     from kiro_crew.memory_startup import require_memory_prepared, require_memory_ready
 
     require_memory_prepared()
     result = {"backed_up": 0, "skipped": 0, "pruned": 0, "failed": 0}
     stamp = now or datetime.now(timezone.utc)
-    for path in _stores_to_back_up():
+    stores = _stores_to_back_up()
+    # An active name the resolve-then-confirm could not turn into a path is a store this
+    # pass did NOT copy, and the loop below never sees it. Counted here so ONE number
+    # answers "did every active store get a copy": a caller that needs all-or-nothing
+    # otherwise has to infer the omission from the backup directory.
+    result["failed"] = max(0, len(active_store_names()) - len(stores))
+    for path in stores:
         if should_stop is not None and should_stop():
             break
         try:
-            if private_only and not member_memory_backup.is_member_store(path):
-                result["skipped"] += 1
-                continue
             require_memory_ready(named_store_of_db(path))
             existing = list_backups(path)
-            if existing and _age_hours(existing[0], stamp) < MIN_BACKUP_INTERVAL_HOURS:
+            if (
+                not force
+                and existing
+                and _age_hours(existing[0], stamp) < MIN_BACKUP_INTERVAL_HOURS
+            ):
                 result["skipped"] += 1
                 continue
             if backup_store(path, now=stamp) is None:
@@ -352,7 +367,7 @@ def newest_backup(store: str = DEFAULT_MEMORY_STORE) -> Path | None:
 
 
 def _require_v1_restore_database(db: sqlite3.Connection, store: str) -> None:
-    """Accept legacy memory shapes without importing private ownership."""
+    """Accept Global and named V1 shapes without importing a member database."""
     from kiro_crew import memory_schema
 
     lineage = memory_schema.detect_lineage(db)
@@ -360,17 +375,8 @@ def _require_v1_restore_database(db: sqlite3.Connection, store: str) -> None:
         store != DEFAULT_MEMORY_STORE and lineage == memory_schema.LINEAGE_CREW
     ):
         raise ValueError("V1 restore requires a V1 memory database")
-    has_meta = db.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type IN ('table', 'view') AND name='memory_meta'"
-    ).fetchone()
-    if (
-        has_meta
-        and db.execute(
-            "SELECT 1 FROM memory_meta WHERE key IN (?, ?) LIMIT 1",
-            (memory_schema.PRIVATE_MEMORY_VERSION_META_KEY, memory_schema.OWNER_MEMBER_META_KEY),
-        ).fetchone()
-    ):
-        raise ValueError("V1 restore requires a V1 memory database without private ownership")
+    if db.execute("SELECT 1 FROM sqlite_schema WHERE name='member_database'").fetchone():
+        raise ValueError("V1 restore cannot install a member memory database")
 
 
 def restore_from_backup(backup: Path, store: str = DEFAULT_MEMORY_STORE) -> Path:

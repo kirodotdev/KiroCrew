@@ -11,6 +11,7 @@ they explain structure and rationale and link out to
 | [dashboard-iframe-hosts.md](dashboard-iframe-hosts.md) | The four dashboard iframe hosts, their differing sandboxes, why they are not interchangeable, and how to add a panel tab kind. |
 | [app-platform-trust-model.md](app-platform-trust-model.md) | Why an enabled app runs in-process with the gateway's privileges, the confinement that does apply, and what each layer is worth. |
 | [followup-suggestions-trust-model.md](followup-suggestions-trust-model.md) | The gates behind the follow-up card: argument validation, the branch-name filter, and the sandboxed `git` invocation. |
+| [context-management.md](context-management.md) | What reaches the model's context: the first-turn block order and its budgets, what repeats per turn, a sub-agent's scope, why a custom agent sees no skills, and how a crew member's session is built. |
 | [security-deep-dive.md](security-deep-dive.md) | The security model as a whole: threat model, trust boundaries, and how the layers compose. |
 | [resource-protection.md](resource-protection.md) | Process limits, sandbox resource controls, and rate limiting. |
 

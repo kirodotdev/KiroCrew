@@ -406,7 +406,9 @@ class TestSupervisorLifecycle:
         assert second[OVERLAY_KEY_POINTS][-1] == [1400.0, 800.0]
 
     @pytest.mark.asyncio
-    async def test_spawn_argv_is_fixed_and_module_based(self, enabled, spawned):
+    async def test_spawn_argv_is_fixed_and_module_based(
+        self, enabled, spawned, nonbundled_python_without_user_site
+    ):
         """Nothing agent-supplied may enter the argv.
 
         The only agent-influenced values in this subsystem are numeric coordinates,
@@ -415,8 +417,8 @@ class TestSupervisorLifecycle:
         overlay = CursorOverlay()
         await overlay.move_to(1.0, 1.0)
         argv = spawned["argv"][0]
-        assert argv[1:] == ("-m", OVERLAY_MODULE)
-        assert "kiro_crew.computer_use" in argv[2]
+        assert argv[1:] == ("-s", "-m", OVERLAY_MODULE)
+        assert "kiro_crew.computer_use" in argv[3]
 
     @pytest.mark.asyncio
     async def test_spawn_uses_the_platform_compat_isolation_flags(self, enabled, spawned):

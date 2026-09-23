@@ -547,6 +547,83 @@ async def test_the_digest_is_read_once_per_load_not_once_per_session(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_the_load_path_records_the_digest_stage(monkeypatch, tmp_path):
+    """The stage has to be recorded from PRODUCTION, not only from a test.
+
+    `record_hash` existing is not the same as it being called: with no caller the
+    payload reports `hash_ms: 0` forever while the surface claims a load is split
+    into hash / load / first-decode. That is the shape a reviewer caught, and this
+    asserts the wiring rather than the recorder.
+    """
+    from kiro_crew.stt import telemetry as telemetry_mod
+
+    monkeypatch.setattr(engine_mod, "_engine", None)
+    monkeypatch.setattr(engine_mod, "probe", lambda: engine_mod.Availability(True))
+    payload = b"weights"
+    model = models.WhisperModel("base", len(payload), hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(models, "resolve", lambda name: model)
+    (tmp_path / model.filename).write_bytes(payload)
+    monkeypatch.setattr(models, "store", lambda: models.ModelStore())
+    monkeypatch.setattr(
+        engine_mod.WhisperEngine, "_build_model", staticmethod(lambda key: _FakeModel())
+    )
+    monkeypatch.setattr(telemetry_mod, "_recorder", telemetry_mod.Recorder())
+
+    eng = engine_mod.WhisperEngine()
+    assert (await eng.ensure_loaded("base", "en")).ok
+    snapshot = telemetry_mod.recorder().snapshot()
+    # The COUNTER is the wiring: it moves only when the load path calls the recorder,
+    # which is the thing that was missing. Deliberately NOT asserting `hash_ms > 0`:
+    # this fixture hashes a 7-byte payload, and on Windows `time.monotonic()` advances
+    # in ~15.6 ms steps, so a correctly-recorded stage legitimately measures 0.0 there.
+    # A duration assertion would be testing the clock's resolution, not the wiring.
+    assert snapshot["hashes"] == 1, snapshot
+    # And folded onto the load it belongs to rather than left pending or misattributed,
+    # which is what keying the pending slot by model buys.
+    assert snapshot["last_load"]["model"] == "base"
+    assert "hash_ms" in snapshot["last_load"], snapshot["last_load"]
+
+
+@pytest.mark.asyncio
+async def test_a_first_run_download_is_not_filed_as_digest_time(monkeypatch, tmp_path):
+    """`ensure` both downloads and verifies, and only one of those recurs.
+
+    On a first run the interval around it is 1.6 GB of network time, so recording it
+    as `hash_ms` would put a number in the load's digest stage that says nothing about
+    hashing -- and the stage exists to name the cost paid on EVERY load. A download is
+    its own stage with its own progress surface.
+    """
+    from kiro_crew.stt import telemetry as telemetry_mod
+
+    monkeypatch.setattr(engine_mod, "_engine", None)
+    monkeypatch.setattr(engine_mod, "probe", lambda: engine_mod.Availability(True))
+    payload = b"weights"
+    model = models.WhisperModel("base", len(payload), hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(models, "resolve", lambda name: model)
+    # ABSENT when the load starts, and written by the "download" the store performs.
+    monkeypatch.setattr(models, "is_present", lambda m: False)
+
+    async def _ensure(m):
+        (tmp_path / m.filename).write_bytes(payload)
+        return tmp_path / m.filename
+
+    store = models.ModelStore()
+    monkeypatch.setattr(store, "ensure", _ensure)
+    monkeypatch.setattr(models, "store", lambda: store)
+    monkeypatch.setattr(
+        engine_mod.WhisperEngine, "_build_model", staticmethod(lambda key: _FakeModel())
+    )
+    monkeypatch.setattr(telemetry_mod, "_recorder", telemetry_mod.Recorder())
+
+    eng = engine_mod.WhisperEngine()
+    assert (await eng.ensure_loaded("base", "en")).ok
+    snapshot = telemetry_mod.recorder().snapshot()
+    assert snapshot["hashes"] == 0, snapshot
+
+
+@pytest.mark.asyncio
 async def test_a_failed_download_is_reported_not_raised(monkeypatch, tmp_path):
     """A websocket handler must be able to turn this into a status frame."""
     monkeypatch.setattr(models, "models_dir", lambda: tmp_path)

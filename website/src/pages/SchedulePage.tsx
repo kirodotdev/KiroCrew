@@ -1128,7 +1128,7 @@ export default function SchedulePage() {
                 onEnter: () => { if (confirmArmed && !batchDeleting) runBatchDelete() },
               })}
               placeholder={BULK_DELETE_TOKEN}
-              className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm text-text outline-none focus-visible:border-accent"
+              className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm text-text outline-hidden focus-visible:border-accent"
             />
             {/* askAgent on: the only input here is the typed confirm token,
                 which is a safety gesture, not a draft worth protecting — the
@@ -1465,7 +1465,7 @@ function TemplateUpdatedNotice({ job }: { job: CronJob }) {
   })
   if (!update || dismissed) return null
   const dismiss = () => {
-    try { localStorage.setItem(key, '1') } catch { /* private mode: just hide for this view */ }
+    safeSetItem(key, '1')
     setDismissed(true)
   }
   return (

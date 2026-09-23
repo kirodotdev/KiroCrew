@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from conftest import make_dir_link
-from kiro_crew import security
+from kiro_crew import sandbox, security
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, workspace_dir_for
 from kiro_crew.config.paths import ensure_data_home
 from kiro_crew.memory import INDEX_DB_FILE, MemoryStore, workspace_dir
@@ -30,7 +30,9 @@ from kiro_crew.memory_stores import (
     memory_store_dir_for,
     memory_store_name_defect,
     memory_stores_root,
+    require_member_memory_store,
     resolve_store_path,
+    unusable_legacy_binding,
     usable_store_names,
     validate_memory_store_name,
 )
@@ -261,6 +263,83 @@ class TestMalformedAndDeclaredIsUndeclaredForResolution:
             resolve_store_path("Bad_Name")
         with pytest.raises(UnknownMemoryStore):
             memory_index_path_for("Bad_Name")
+
+
+class TestUnusableLegacyBindingIsTheOneMovableBinding:
+    """``unusable_legacy_binding`` names the binding the immutability rules protect nothing on.
+
+    A member bound to a name the shape rule refuses is dead on every surface: each
+    turn raises at ``require_member_memory_store``, and so did the two repairs,
+    because both validated the binding they were about to replace. The predicate
+    answers the name's own defect for exactly that shape and ``None`` for every
+    binding that still guards something.
+    """
+
+    @staticmethod
+    def _config(binding: object, record: dict | None) -> KiroCrewConfig:
+        stores: dict = {"work": {}}
+        if record is not None and isinstance(binding, str):
+            stores[binding] = record
+        _write_config(
+            {
+                "agents": {
+                    "crew": {"kiro_agent": "kirocrew", "memory_store": binding},
+                    "peer": {"kiro_agent": "kirocrew", "memory_store": "work"},
+                },
+                "default_agent": "crew",
+                "memory_stores": stores,
+            }
+        )
+        return KiroCrewConfig.load()
+
+    @pytest.mark.parametrize("binding", ["Bad_Name", "AMS-CA-Patterns", "../escape"])
+    def test_a_declared_unowned_v1_record_on_a_malformed_name_is_movable(self, binding) -> None:
+        cfg = self._config(binding, {})
+        assert binding in cfg.memory_stores, "the loader keeps the operator's line"
+        assert unusable_legacy_binding(cfg, "crew") == memory_store_name_defect(binding)
+
+    def test_an_undeclared_malformed_name_is_movable_too(self) -> None:
+        cfg = self._config("Bad_Name", None)
+        assert "Bad_Name" not in cfg.memory_stores
+        assert unusable_legacy_binding(cfg, "crew") == "not lowercase"
+
+    def test_a_non_string_binding_is_the_same_class(self) -> None:
+        """A hand-edited ``null`` never resolved either; the answer is its defect."""
+        cfg = self._config(None, None)
+        assert unusable_legacy_binding(cfg, "crew") == "not a string"
+
+    def test_a_record_claiming_private_ownership_is_not_movable(self) -> None:
+        """Ownership cannot be verified for a store with no path; refusing adopts nothing."""
+        cfg = self._config("Bad_Name", {"owner_member": "crew", "memory_version": 2})
+        assert unusable_legacy_binding(cfg, "crew") is None
+
+    @pytest.mark.parametrize("record", [{"owner_member": "other"}, {"memory_version": 2}])
+    def test_a_half_claimed_record_is_not_movable(self, record) -> None:
+        cfg = self._config("Bad_Name", record)
+        assert unusable_legacy_binding(cfg, "crew") is None
+
+    @pytest.mark.parametrize("binding", ["work", DEFAULT_MEMORY_STORE])
+    def test_a_usable_name_is_never_movable(self, binding) -> None:
+        """A live V1 binding stays exactly where the owner left it."""
+        cfg = self._config(binding, {} if binding == "work" else None)
+        assert unusable_legacy_binding(cfg, "crew") is None
+
+    def test_an_unknown_member_answers_none(self) -> None:
+        cfg = self._config("Bad_Name", {})
+        assert unusable_legacy_binding(cfg, "ghost") is None
+
+    def test_it_is_the_exact_complement_of_the_runtime_refusal(self) -> None:
+        """The predicate is true precisely where every turn already fails on the name.
+
+        Pins the two halves to each other: a binding the predicate calls movable is
+        one ``require_member_memory_store`` refuses for its NAME (not for a missing
+        directory or a lost manifest), so the repair can never open a path the
+        resolvers would have admitted.
+        """
+        cfg = self._config("Bad_Name", {})
+        with pytest.raises(UnknownMemoryStore, match="invalid memory store name 'Bad_Name'"):
+            require_member_memory_store(cfg, "crew", require_directory=False)
+        assert unusable_legacy_binding(cfg, "crew") == "not lowercase"
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +623,39 @@ class TestNamedStoresAreFenced:
         assert MEMORY_STORES_DIR_NAME in security._CREW_SECRET_LEAVES
         for prefix in security.crew_home_prefixes():
             assert f"{prefix}/{MEMORY_STORES_DIR_NAME}" in security.sensitive_home_dirs()
+
+    def test_sandbox_preparation_creates_only_an_empty_named_store_root(self) -> None:
+        _write_config({"memory_stores": {"default": {}, "work": {}}})
+        config_path = config_dir() / "config.json"
+        config_before = config_path.read_bytes()
+        root = memory_stores_root()
+        assert not root.exists()
+
+        created = sandbox._materialize_sealable_ceilings()
+
+        assert str(root) in created
+        assert list(root.iterdir()) == []
+        assert config_path.read_bytes() == config_before
+        assert not (config_dir() / MEMORY_DB_FILE).exists()
+        assert not workspace_dir().exists()
+
+    def test_sandbox_preparation_preserves_an_existing_named_v1_root_link(self, tmp_path) -> None:
+        _write_config({"memory_stores": {"work": {}}})
+        target = tmp_path / "named-memory"
+        target.mkdir()
+        store = target / "work"
+        store.mkdir()
+        database = store / MEMORY_DB_FILE
+        database.write_bytes(b"existing V1 database bytes")
+        root = memory_stores_root()
+        make_dir_link(root, target)
+
+        created = sandbox._materialize_sealable_ceilings()
+
+        assert str(root) not in created
+        assert root.resolve() == target.resolve()
+        assert database.read_bytes() == b"existing V1 database bytes"
+        assert MEMORY_STORES_DIR_NAME not in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
 
     @pytest.mark.parametrize(
         "leaf",

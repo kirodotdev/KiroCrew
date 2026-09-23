@@ -20,6 +20,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from body_stream_helpers import BodyStreamPayload
+from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.dashboard.handlers import mcp as h
 
@@ -34,6 +35,14 @@ def _req(body: object) -> web.Request:
         headers={"Content-Length": str(len(raw))},
         payload=BodyStreamPayload(raw),
     )
+    # The route is owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``): the predicate reads
+    # the claims the token-auth middleware publishes plus ``state.owner_id``, and
+    # ``owner_id == ""`` with the signed local bootstrap subject ``local-app`` is
+    # the standalone-local owner shape.
+    app["state"] = NoConfiguredOwner()
+    req["user"] = "local-app"
+    req["app"] = ""
     return req
 
 

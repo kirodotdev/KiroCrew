@@ -12,10 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from member_memory_helpers import patch_private_memory_supported
 
 from conftest import make_dir_link
-from kiro_crew import memory_schema
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
@@ -25,7 +23,6 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.sections import MemoryStoreConfig
 from kiro_crew.memory_stores import (
-    MEMBER_MEMORY_MANIFEST,
     MemberAlreadyExists,
     UnknownMemoryStore,
     memory_store_dir_for,
@@ -37,7 +34,7 @@ from kiro_crew.memory_stores import (
     require_memory_store,
     resolve_store_path,
 )
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import read_member_database_identity
 
 
 def _new_member(name: str = "reviewer") -> tuple[KiroCrewConfig, str]:
@@ -104,7 +101,13 @@ class TestPrivateOwnership:
         cfg, store = _new_member()
         persist_member_config(cfg, "reviewer", create=True)
         root = memory_store_dir_for(store)
-        assert {p.name for p in root.iterdir()} == {MEMBER_MEMORY_MANIFEST, "memory.db"}
+        assert {p.name for p in root.iterdir()} <= {
+            "memory",
+            "memory.db",
+            "memory.db-wal",
+            "memory.db-shm",
+        }
+        assert (root / "memory.db").is_file()
         assert (home / "memory.db").read_bytes() == b"existing-v1-database"
         assert (home / "lessons.jsonl").read_text(encoding="utf-8") == "global lessons"
         loaded = KiroCrewConfig.load()
@@ -117,28 +120,7 @@ class TestPrivateOwnership:
     def test_private_database_carries_durable_store_and_owner_identity(self):
         _cfg, store = _new_member()
         database = memory_stores_root() / store / "memory.db"
-        with sqlite3.connect(database) as db:
-            meta = dict(db.execute("SELECT key, value FROM memory_meta").fetchall())
-        assert meta[memory_schema.PRIVATE_MEMORY_VERSION_META_KEY] == "2"
-        assert meta[memory_schema.STORE_NAME_META_KEY] == store
-        assert meta[memory_schema.OWNER_MEMBER_META_KEY] == "reviewer"
-
-    @pytest.mark.parametrize("replacement", [None, "someone-else"])
-    def test_raw_private_database_open_refuses_lost_or_changed_manifest(self, replacement):
-        _cfg, store = _new_member()
-        manifest = memory_stores_root() / store / MEMBER_MEMORY_MANIFEST
-        if replacement is None:
-            manifest.unlink()
-        else:
-            manifest.write_text(
-                json.dumps({"owner_member": replacement, "memory_version": 2}),
-                encoding="utf-8",
-            )
-
-        raw = VectorMemoryStore(db_path=memory_stores_root() / store / "memory.db")
-        with pytest.raises(ValueError, match="ownership is missing or does not match"):
-            raw.init()
-        raw.close()
+        assert read_member_database_identity(database) == (_cfg.agents["reviewer"].member_id, store)
 
     def test_members_have_distinct_stores_even_when_names_share_a_slug(self):
         cfg, first = _new_member("Code Review")
@@ -147,6 +129,64 @@ class TestPrivateOwnership:
         assert first != second
         assert require_member_memory_store(cfg, "Code Review") == first
         assert require_member_memory_store(cfg, "Code-Review") == second
+        assert cfg.agents["Code Review"].member_id != cfg.agents["Code-Review"].member_id
+
+    @pytest.mark.parametrize("replacement", ["Code Review", "Code-Review"])
+    def test_deleted_member_identity_stays_reserved_by_retained_store(self, replacement):
+        from kiro_crew.execution_context import (
+            member_config_for_id,
+            resolve_member_execution,
+            validate_execution,
+        )
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.vector_memory import open_member_database
+
+        global_db = config_dir() / "memory.db"
+        global_db.write_bytes(b"existing-global-v1")
+        cfg, old_store = _new_member("Code Review")
+        persist_member_config(cfg, "Code Review", create=True)
+        captured = resolve_member_execution(cfg, "Code Review")
+        old_path = memory_stores_root() / old_store / "memory.db"
+        old_db = open_member_database(old_path, member_id=captured.member_id, store_id=old_store)
+        try:
+            MemoryStore(
+                workspace=old_path.parent, memory_version=2, vector_store=old_db
+            ).append_history("The retired member remembers aurora.")
+        finally:
+            old_db.close()
+        old_bytes = old_path.read_bytes()
+
+        # Member deletion retains the store declaration and its learned data.
+        def delete_member(data):
+            del data["agents"]["Code Review"]
+            return data
+
+        update_config_locked(mutate=delete_member)
+        cfg = KiroCrewConfig.load()
+        cfg.agents[replacement] = KiroCrewAgentConfig()
+        new_store = provision_member_memory(cfg, replacement)
+        persist_member_config(cfg, replacement, create=True)
+        loaded = KiroCrewConfig.load()
+        new_id = loaded.agents[replacement].member_id
+
+        with pytest.raises(UnknownMemoryStore, match="identity is missing"):
+            member_config_for_id(loaded, captured.member_id)
+        assert new_id != captured.member_id
+        assert new_store != old_store
+        assert loaded.memory_stores[old_store].owner_member_id == captured.member_id
+        assert validate_execution(captured) == captured
+        assert old_path.read_bytes() == old_bytes
+        new_path = memory_stores_root() / new_store / "memory.db"
+        assert read_member_database_identity(new_path) == (new_id, new_store)
+        new_db = open_member_database(new_path, member_id=new_id, store_id=new_store)
+        try:
+            assert not MemoryStore(
+                workspace=new_path.parent, memory_version=2, vector_store=new_db
+            ).read_recent_history()
+        finally:
+            new_db.close()
+        assert global_db.read_bytes() == b"existing-global-v1"
+        assert memory_store_version("default") == 1
 
     def test_selecting_member_as_default_does_not_grant_global_memory(self):
         cfg, store = _new_member()
@@ -179,6 +219,51 @@ class TestPrivateOwnership:
         assert refreshed[first]["owner_avatar"] == {"kind": "image", "v": 33}
         assert refreshed[second]["owner_avatar"] == rows[second]["owner_avatar"]
         assert require_member_memory_store(KiroCrewConfig.load(), "Code Review") == first
+
+    def test_deleted_member_store_is_not_listed_for_the_picker(self):
+        """The store record stays (its member id is reserved), but no route can
+        read it, so listing it hands the picker a row whose every click is a 503."""
+        from kiro_crew.dashboard.handlers.memory_admin import _list_stores_blocking
+
+        cfg, store = _new_member("reviewer")
+        persist_member_config(cfg, "reviewer", create=True)
+        assert store in {row["name"] for row in _list_stores_blocking()}
+
+        def delete_member(data):
+            del data["agents"]["reviewer"]
+            return data
+
+        update_config_locked(mutate=delete_member)
+        names = {row["name"] for row in _list_stores_blocking()}
+        assert store not in names and "default" in names
+        assert store in KiroCrewConfig.load().memory_stores  # reservation intact
+
+    @pytest.mark.parametrize("junk", [[], {"id": 1}, 7, None])
+    def test_non_string_identities_in_config_never_crash_the_picker(self, junk):
+        """config.json is hand-editable: a ``member_id: []`` (or a junk
+        ``owner_member_id``) is kept as written so the resolvers refuse it and
+        doctor can show it, but the picker must not hash it into an unhashable
+        TypeError that turns ``/api/memory/stores`` into a 500."""
+        from kiro_crew.dashboard.handlers.memory_admin import _list_stores_blocking
+
+        cfg, store = _new_member("reviewer")
+        persist_member_config(cfg, "reviewer", create=True)
+
+        def corrupt(data):
+            data["agents"]["reviewer"]["member_id"] = junk
+            data["agents"]["bystander"] = {"member_id": junk}
+            data["memory_stores"][store]["owner_member_id"] = junk
+            return data
+
+        update_config_locked(mutate=corrupt)
+        loaded = KiroCrewConfig.load()
+        assert loaded.agents["reviewer"].member_id == junk
+        assert loaded.agents["bystander"].member_id == junk
+        assert loaded.memory_stores[store].owner_member_id == junk
+        names = {row["name"] for row in _list_stores_blocking()}
+        # A damaged identity is not a living owner, so the record is omitted
+        # like a deleted member's store; the default store still lists.
+        assert store not in names and "default" in names
 
     def test_mcp_advisory_binding_does_not_open_hidden_files_but_runtime_does(self):
         cfg, store = _new_member()
@@ -219,7 +304,7 @@ class TestPrivateOwnership:
         assert resolve_agent_bindings(cfg).memory_store_name == binding
         assert require_member_memory_store(cfg, "reviewer") == binding
         assert database.read_bytes() == before
-        assert not (root / MEMBER_MEMORY_MANIFEST).exists()
+        assert not (root / "member-memory.json").exists()
 
     @pytest.mark.parametrize("binding", ["default", "legacy"])
     def test_legacy_advisory_resolution_does_not_probe_private_or_database_files(
@@ -234,72 +319,24 @@ class TestPrivateOwnership:
         def unexpected(*args):
             raise AssertionError("configuration resolution opened memory files")
 
-        monkeypatch.setattr(stores.os, "scandir", unexpected)
         monkeypatch.setattr(stores, "_require_legacy_store_files", unexpected)
         result = resolve_agent_bindings(cfg, "reviewer", validate_memory_files=False)
         assert result.memory_store_name == binding
 
-    def test_conflicting_private_declaration_refuses_advisory_without_archive_io(self, monkeypatch):
-        import kiro_crew.memory_stores as stores
-
-        cfg, _store = _new_member()
-        cfg.agents["reviewer"].memory_store = "default"
-
-        def unexpected(*args):
-            raise AssertionError("configuration resolution read a retirement marker")
-
-        monkeypatch.setattr(stores, "_member_archive_record", unexpected)
-        with pytest.raises(UnknownMemoryStore, match="private memory declaration"):
-            resolve_agent_bindings(cfg, "reviewer", validate_memory_files=False)
-
-    @pytest.mark.parametrize("damage", ["manifest", "database", "record", "owner", "version"])
+    @pytest.mark.parametrize("damage", ["database", "record", "owner", "version"])
     def test_private_damage_is_never_classified_as_legacy(self, damage):
         cfg, store = _new_member()
         root = memory_stores_root() / store
-        if damage == "manifest":
-            (root / MEMBER_MEMORY_MANIFEST).unlink()
-        elif damage == "database":
+        if damage == "database":
             (root / "memory.db").write_bytes(b"invalid")
         elif damage == "record":
             del cfg.memory_stores[store]
         elif damage == "owner":
-            cfg.memory_stores[store].owner_member = ""
+            cfg.memory_stores[store].owner_member_id = ""
         else:
             cfg.memory_stores[store].memory_version = 1
         with pytest.raises(UnknownMemoryStore):
             resolve_agent_bindings(cfg, "reviewer")
-
-    @pytest.mark.parametrize("member", ["reviewer", "r" * 1100])
-    @pytest.mark.parametrize("matching_owner", [True, False])
-    def test_custom_store_database_owner_survives_lost_manifest_and_declaration(
-        self, member, matching_owner
-    ):
-        owner = member if matching_owner else member + "-other"
-        cfg = KiroCrewConfig.load()
-        cfg.agents[member] = KiroCrewAgentConfig()
-        cfg.save()
-        root = memory_stores_root() / "custom-private"
-        root.mkdir(parents=True)
-        database = root / "memory.db"
-        connection = sqlite3.connect(database)
-        try:
-            connection.execute("CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT)")
-            connection.execute(
-                "INSERT INTO memory_meta VALUES (?, ?)",
-                (memory_schema.OWNER_MEMBER_META_KEY, owner),
-            )
-            connection.commit()
-        finally:
-            connection.close()
-        before = database.read_bytes()
-        if matching_owner:
-            with pytest.raises(UnknownMemoryStore, match="retains private memory evidence"):
-                resolve_agent_bindings(cfg, member)
-            with pytest.raises(UnknownMemoryStore, match="retains private memory evidence"):
-                provision_member_memory(cfg, member)
-        else:
-            assert resolve_agent_bindings(cfg, member).memory_store_name == "default"
-        assert database.read_bytes() == before
 
     def test_unrelated_nonregular_database_never_opens_sqlite(self, monkeypatch):
         cfg = KiroCrewConfig.load()
@@ -324,73 +361,26 @@ class TestPrivateOwnership:
             raise AssertionError("nonregular database reached SQLite")
 
         monkeypatch.setattr(sqlite3, "connect", forbidden)
-        with pytest.raises(UnknownMemoryStore, match="exclusive regular file"):
+        with pytest.raises(UnknownMemoryStore, match="unreadable"):
             resolve_agent_bindings(cfg, "reviewer")
 
-    @pytest.mark.parametrize("keep_manifest", [True, False])
-    def test_unowned_declaration_cannot_downgrade_private_database(self, keep_manifest):
+    def test_unowned_declaration_cannot_downgrade_private_database(self):
         cfg, store = _new_member()
         root = memory_stores_root() / store
-        if not keep_manifest:
-            (root / MEMBER_MEMORY_MANIFEST).unlink()
         cfg.memory_stores[store] = MemoryStoreConfig()
         before = (root / "memory.db").read_bytes()
-        with pytest.raises(UnknownMemoryStore, match="private"):
+        with pytest.raises(UnknownMemoryStore, match="member"):
             require_memory_store(store, config=cfg)
         assert (root / "memory.db").read_bytes() == before
 
-    @pytest.mark.parametrize(
-        "evidence", ["declaration", "manifest", "damaged_manifest", "empty_manifest"]
-    )
-    def test_lost_private_member_binding_cannot_use_or_initialize_v1(self, evidence):
-        cfg, store = _new_member()
-        persist_member_config(cfg, "reviewer", create=True)
-        cfg.agents["reviewer"].memory_store = "default"
-        if evidence != "declaration":
-            del cfg.memory_stores[store]
-        if evidence == "damaged_manifest":
-            (memory_stores_root() / store / MEMBER_MEMORY_MANIFEST).unlink()
-        elif evidence == "empty_manifest":
-            (memory_stores_root() / store / MEMBER_MEMORY_MANIFEST).write_text(
-                "{}", encoding="utf-8"
-            )
-        cfg.save()
-
-        def delete_binding(data):
-            data["agents"]["reviewer"].pop("memory_store")
-            return data
-
-        update_config_locked(mutate=delete_binding)
-        cfg = KiroCrewConfig.load()
-        for operation in (require_member_memory_store, provision_member_memory):
-            with pytest.raises(UnknownMemoryStore, match="private"):
-                operation(cfg, "reviewer")
-        assert cfg.agents["reviewer"].memory_store == "default"
-
     def test_corrupt_peer_does_not_disable_legacy_members_or_global(self):
         cfg, peer = _new_member("other")
-        (memory_stores_root() / peer / MEMBER_MEMORY_MANIFEST).write_text(
-            "{invalid", encoding="utf-8"
-        )
+        (memory_stores_root() / peer / "memory.db").write_text("{invalid", encoding="utf-8")
         cfg.agents["reviewer"] = KiroCrewAgentConfig()
         assert require_member_memory_store(cfg, "reviewer") == "default"
         assert require_member_memory_store(cfg, "default") == "default"
         with pytest.raises(UnknownMemoryStore):
             require_member_memory_store(cfg, "other")
-
-    def test_archived_generation_does_not_rebind_recreated_member(self):
-        from kiro_crew.memory_stores import archive_member_memory_store
-
-        cfg, old = _new_member()
-        persist_member_config(cfg, "reviewer", create=True)
-        assert archive_member_memory_store(old, "reviewer")
-        cfg.agents["reviewer"].memory_store = "default"
-        cfg.save()
-        assert require_member_memory_store(cfg, "reviewer") == "default"
-        fresh = provision_member_memory(cfg, "reviewer")
-        assert fresh != old
-        assert require_member_memory_store(cfg, "reviewer") == fresh
-        assert (memory_stores_root() / old / "memory.db").exists()
 
     @pytest.mark.parametrize("owner,version", [("other", 2), ("reviewer", 1)])
     def test_owned_invalid_binding_never_advertises_initialization(self, owner, version):
@@ -414,23 +404,12 @@ class TestPrivateOwnership:
     def test_missing_directory_is_not_recreated_on_resolution(self):
         cfg, store = _new_member()
         root = memory_stores_root() / store
-        (root / MEMBER_MEMORY_MANIFEST).unlink()
-        (root / "memory.db").unlink()
-        root.rmdir()
-        with pytest.raises(UnknownMemoryStore, match="missing or unreadable"):
+        import shutil
+
+        shutil.rmtree(root)
+        with pytest.raises(UnknownMemoryStore, match="missing"):
             require_member_memory_store(cfg, "reviewer")
         assert not root.exists()
-
-    def test_unreadable_directory_does_not_fall_back(self, monkeypatch):
-        cfg, store = _new_member()
-        import kiro_crew.memory_stores as stores
-
-        def denied(_):
-            raise PermissionError("access denied")
-
-        monkeypatch.setattr(stores.os, "scandir", denied)
-        with pytest.raises(UnknownMemoryStore, match="access denied"):
-            require_memory_store(store, config=cfg)
 
     @pytest.mark.parametrize("missing", [True, False])
     def test_missing_or_invalid_database_is_not_recreated(self, missing):
@@ -444,22 +423,14 @@ class TestPrivateOwnership:
             require_member_memory_store(cfg, "reviewer")
         assert database.exists() is not missing
 
-    def test_corrupt_or_wrong_ownership_manifest_refuses_execution(self):
-        cfg, store = _new_member()
-        manifest = memory_stores_root() / store / MEMBER_MEMORY_MANIFEST
-        for payload in ("{bad", json.dumps({"owner_member": "someone-else", "memory_version": 2})):
-            manifest.write_text(payload, encoding="utf-8")
-            with pytest.raises(UnknownMemoryStore):
-                require_member_memory_store(cfg, "reviewer")
-
     def test_store_link_to_another_member_is_refused(self):
         cfg, store = _new_member()
         cfg.agents["other"] = KiroCrewAgentConfig()
         other = provision_member_memory(cfg, "other")
         root = memory_stores_root() / store
-        (root / MEMBER_MEMORY_MANIFEST).unlink()
-        (root / "memory.db").unlink()
-        root.rmdir()
+        import shutil
+
+        shutil.rmtree(root)
         make_dir_link(root, memory_stores_root() / other)
         with pytest.raises(UnknownMemoryStore, match="refusing a link"):
             require_member_memory_store(cfg, "reviewer")
@@ -528,7 +499,7 @@ class TestPrivateOwnership:
 def owner_crud_app(monkeypatch):
     import kiro_crew.dashboard.handlers.agents as handlers
 
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request", lambda _: True
     )
@@ -568,8 +539,8 @@ class TestMemberMemoryUserFlows:
             )
             assert (set(root.iterdir()) if root.exists() else set()) == before
             response = await client.put("/api/agents/reviewer", json={"provision_memory": True})
-            assert response.status == 200, await response.text()
-            assert (await response.json())["new_conversation_required"] is True
+            assert response.status == 400, await response.text()
+            assert (await response.json())["code"] == "member_memory_creation_only"
 
     @pytest.mark.asyncio
     async def test_create_edit_and_refuse_rebinding(self, owner_crud_app):
@@ -607,14 +578,14 @@ class TestMemberMemoryUserFlows:
                 == "default"
             )
             response = await client.put("/api/agents/reviewer", json={"provision_memory": True})
-            assert response.status == 200, await response.text()
+            assert response.status == 400, await response.text()
         loaded = await asyncio.to_thread(KiroCrewConfig.load)
         await asyncio.to_thread(require_member_memory_store, loaded, "reviewer")
 
     def test_cli_creates_private_memory_and_refuses_rebinding(self, capsys, monkeypatch):
         from kiro_crew.cli_commands import _handle_agent
 
-        patch_private_memory_supported(monkeypatch)
+        pass  # Member routing does not depend on OS isolation.
         _handle_agent(
             argparse.Namespace(
                 agent_action="create",
@@ -640,79 +611,108 @@ class TestMemberMemoryUserFlows:
         assert "cannot be rebound" in capsys.readouterr().err
 
     @pytest.mark.asyncio
-    async def test_opt_in_retires_v1_provider_and_opens_fresh_verified_member_thread(
-        self, owner_crud_app, tmp_path
+    @pytest.mark.parametrize("awaiting_approval", [False, True])
+    async def test_open_active_private_thread_reuses_assignment_without_interrupting(
+        self, owner_crud_app, tmp_path, monkeypatch, awaiting_approval
     ):
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock
 
         from chat_test_helpers import _make_state
 
-        from kiro_crew.dashboard.handlers.members import api_member_thread
+        from kiro_crew.dashboard.handlers import members as handlers
         from kiro_crew.member_memory_auth import read_private_session_store
-        from kiro_crew.members import (
-            DM_SLOT_MODE,
-            member_slot_key,
-            read_dm_binding_for_slot,
-            write_dm_binding,
-        )
 
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig()
-        cfg.save()
+        cfg, store = await asyncio.to_thread(_new_member)
+        await asyncio.to_thread(persist_member_config, cfg, "reviewer", create=True)
         state = _make_state(tmp_path)
         owner_crud_app["state"] = state
-        owner_crud_app.router.add_post("/api/members/{slug}/thread", api_member_thread)
-        old_slot = state.get_or_create_slot(
-            member_slot_key("reviewer"), agent="reviewer", mode=DM_SLOT_MODE
-        )
-        write_dm_binding("reviewer", member="reviewer", slot_key=old_slot.key)
-        old_key = f"dashboard:{old_slot.key}"
-        log = state.conversation_log
-        await asyncio.to_thread(log.append, old_key, "user", "V1 roadmap")
-        await asyncio.to_thread(log.append, old_key, "assistant", "V1 answer")
-        old_bytes = log._path(old_key).read_bytes()
-        provider = MagicMock(has_active_turn=MagicMock(return_value=False))
-        state.sessions.get_provider = MagicMock(return_value=provider)
-
-        async def retire(key, *, skip_if_busy):
-            assert key == old_key and skip_if_busy
-            assert old_slot.memory_store == "default"
-            assert old_slot._memory_assignment_from_history
-            state.sessions.get_provider.return_value = None
-            return True
-
-        state.sessions.reset = AsyncMock(side_effect=retire)
+        owner_crud_app.router.add_post("/api/members/{slug}/thread", handlers.api_member_thread)
+        pin = AsyncMock(wraps=handlers.pin_private_agent_store)
+        monkeypatch.setattr(handlers, "pin_private_agent_store", pin)
         async with TestClient(TestServer(owner_crud_app)) as client:
-            response = await client.put("/api/agents/reviewer", json={"provision_memory": True})
-            assert response.status == 200, await response.text()
-            result = await response.json()
-            assert result["new_conversation_required"] is True
             response = await client.post("/api/members/reviewer/thread")
             assert response.status == 200, await response.text()
-            new_slot_key = (await response.json())["slot_key"]
-            assert new_slot_key != old_slot.key
-            new_key = f"dashboard:{new_slot_key}"
-            assert read_private_session_store(new_key) == result["memory_store"]
-            assert read_private_session_store(old_key) is None
-            assert state._slots[new_slot_key].messages == []
-            assert read_dm_binding_for_slot(old_slot.key) is None
-            assert read_dm_binding_for_slot(new_slot_key)["member"] == "reviewer"
-            # Reopening the committed private generation restores only its own history.
-            await asyncio.to_thread(log.append, new_key, "assistant", "Private answer")
-            await asyncio.to_thread(
-                log.update_metadata,
-                new_key,
-                {"agent": "reviewer", "mode": DM_SLOT_MODE, "memory_store": result["memory_store"]},
-            )
-            state._slots.pop(new_slot_key)
+            first = await response.json()
+            slot = state._slots[first["slot_key"]]
+            key = f"dashboard:{slot.key}"
+            pin.reset_mock()
+            task = asyncio.current_task()
+            approval = asyncio.get_running_loop().create_future()
+            slot.task = task
+            if awaiting_approval:
+                slot._approval_futures["pending-test"] = approval
+            original_history_flag = slot._memory_assignment_from_history
+            try:
+                response = await client.post("/api/members/reviewer/thread")
+                assert response.status == 200, await response.text()
+                assert await response.json() == first
+                assert slot.task is task
+                assert not approval.done()
+                assert slot.memory_store == store
+                assert slot._memory_assignment_from_history == original_history_flag
+                assert await asyncio.to_thread(read_private_session_store, key) == store
+                pin.assert_not_awaited()
+            finally:
+                slot.task = None
+                slot._approval_futures.pop("pending-test", None)
+                approval.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "invalid", ["missing", "different", "unreadable", "slot_store", "linked"]
+    )
+    async def test_open_active_private_thread_refuses_unverified_identity(
+        self, owner_crud_app, tmp_path, monkeypatch, invalid
+    ):
+        from unittest.mock import AsyncMock
+
+        from chat_test_helpers import _make_state
+
+        from kiro_crew import member_memory_auth
+        from kiro_crew.dashboard.handlers import members as handlers
+
+        cfg, store = await asyncio.to_thread(_new_member)
+        await asyncio.to_thread(persist_member_config, cfg, "reviewer", create=True)
+        state = _make_state(tmp_path)
+        owner_crud_app["state"] = state
+        owner_crud_app.router.add_post("/api/members/{slug}/thread", handlers.api_member_thread)
+        async with TestClient(TestServer(owner_crud_app)) as client:
             response = await client.post("/api/members/reviewer/thread")
             assert response.status == 200, await response.text()
-            assert (await response.json())["slot_key"] == new_slot_key
-            messages = state._slots[new_slot_key].messages
-            assert any("Private answer" in row.get("content", "") for row in messages)
-            assert all("V1" not in row.get("content", "") for row in messages)
-        state.sessions.reset.assert_awaited_once()
-        assert log._path(old_key).read_bytes() == old_bytes
+            slot = state._slots[(await response.json())["slot_key"]]
+            key = f"dashboard:{slot.key}"
+            real_read = member_memory_auth.read_private_session_store
+
+            def read(session_key):
+                if session_key == key:
+                    if invalid == "missing":
+                        return None
+                    if invalid == "different":
+                        return "another-private-store"
+                    if invalid == "unreadable":
+                        raise OSError("protected identity is unreadable")
+                return real_read(session_key)
+
+            monkeypatch.setattr(member_memory_auth, "read_private_session_store", read)
+            pin = AsyncMock(wraps=handlers.pin_private_agent_store)
+            monkeypatch.setattr(handlers, "pin_private_agent_store", pin)
+            if invalid == "slot_store":
+                slot.memory_store = "another-private-store"
+            if invalid == "linked":
+                slot.linked_session_key = "dashboard:unrelated"
+            original_store = slot.memory_store
+            original_link = slot.linked_session_key
+            slot.task = asyncio.current_task()
+            try:
+                response = await client.post("/api/members/reviewer/thread")
+                assert response.status == (503 if invalid == "unreadable" else 409)
+                assert slot.running
+                assert slot.memory_store == original_store
+                assert slot.linked_session_key == original_link
+                assert await asyncio.to_thread(real_read, key) == store
+                pin.assert_not_awaited()
+            finally:
+                slot.task = None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("busy", ["turn", "children"])
@@ -738,8 +738,8 @@ class TestMemberMemoryUserFlows:
         try:
             async with TestClient(TestServer(owner_crud_app)) as client:
                 response = await client.put("/api/agents/reviewer", json={"provision_memory": True})
-                assert response.status == 409, await response.text()
-                assert (await response.json())["code"] == "member_memory_busy"
+                assert response.status == 400, await response.text()
+                assert (await response.json())["code"] == "member_memory_creation_only"
             assert KiroCrewConfig.load().agents["reviewer"].memory_store == "default"
             state.sessions.reset.assert_not_awaited()
         finally:

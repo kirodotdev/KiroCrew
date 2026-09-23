@@ -501,7 +501,7 @@ describe('card containment', () => {
     // a hairline on the top edge alone — an INSET ring is the one indicator
     // its own clipping cannot swallow (WCAG 2.4.7). Each class is pinned
     // literally — dropping any one silently removes the indicator.
-    expect(body.classList.contains('focus-visible:outline-none')).toBe(true)
+    expect(body.classList.contains('focus-visible:outline-hidden')).toBe(true)
     expect(body.classList.contains('focus-visible:ring-2')).toBe(true)
     expect(body.classList.contains('focus-visible:ring-inset')).toBe(true)
     expect(body.classList.contains('focus-visible:ring-accent')).toBe(true)

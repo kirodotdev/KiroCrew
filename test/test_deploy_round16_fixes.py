@@ -9,10 +9,20 @@ F6: API-only server registers deploy routes
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
+from conftest import _find_posix_test_shell
 from kiro_crew.deploy import webapp_types
+
+
+def _bash():
+    shell = _find_posix_test_shell() if os.name == "nt" else shutil.which("bash")
+    assert shell, "Syntax checks require native Git Bash on Windows or Bash on POSIX"
+    return shell
+
 
 # ─── F1: reaper.sh OAC uses fullmatch not startswith ────────────────────────
 
@@ -117,8 +127,8 @@ class TestF5ReaperRetryOnFailure:
     def test_reaper_sh_bash_syntax_valid(self):
         """bash -n validates reaper.sh syntax."""
         result = subprocess.run(
-            ["bash", "-n", str(_REAPER_SH)],
-            capture_output=True, text=True,
+            [_bash(), "-n", str(_REAPER_SH)],
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
         assert result.returncode == 0, f"bash -n failed: {result.stderr}"
 
@@ -160,13 +170,16 @@ class TestF3IdentityWiring:
         src = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers.py"
         text = src.read_text(encoding="utf-8")
         assert 'event_type="edited"' in text
-        assert "_persist_dist_id" in text
+        # Renamed from _persist_dist_id: the same best-effort writeback now also
+        # persists public_url/profile/region/lifecycle, so a dashboard deploy
+        # flips its own card instead of relying on the agent to do it.
+        assert "_persist_deployment" in text
 
     def test_writeback_flows_result_distribution_id(self):
         from pathlib import Path
         src = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers.py"
         text = src.read_text(encoding="utf-8")
-        idx = text.index("_persist_dist_id")
+        idx = text.index("_persist_deployment")
         window = text[idx - 500: idx + 900]
         assert 'result.get("distribution_id")' in window or \
                'result.get("distribution_id", "")' in window

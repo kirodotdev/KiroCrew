@@ -1,0 +1,31 @@
+# Tests that cannot pass on the self-hosted Linux CI runner -- one pytest node id
+# per line. Blank lines and #-comments are ignored.
+#
+# Applied by conftest.py::pytest_collection_modifyitems (rootdir) through the same
+# _apply_tracked_gap_list matcher that applies windows-expected-failures.txt and
+# macos-expected-failures.txt: each listed test is marked a STRICT xfail there and
+# runs normally on every GitHub-hosted runner. Do not add a fourth mechanism.
+#
+# WHICH RUNNER: the matcher keys off RUNNER_ENVIRONMENT == "self-hosted", which is
+# GitHub's own answer and the same value ci.yml already gates this job's non-root
+# boundary assertion on. Fleet routing can select multiple backend shards.
+# The IPv6 case has required native hosted coverage; ordinary fleet shards exclude
+# its capability marker rather than relying on this expected-failure entry.
+#
+# WHY A NODE-ID LIST AND NOT A COLLECT-IGNORE: the whole-file lists are the blunt
+# tool, and one of these files holds over 300 tests that pass there. Each entry
+# below names ONE test, and the parametrized entry names ONE parametrization,
+# because the other parametrizations of that test pass on the same runner.
+#
+# STRICT xfail, so the list cannot silently rot: a listed test that still fails is
+# green, and one that starts PASSING fails the job with XPASS -- which is the signal
+# to delete its line. Anything NOT listed still fails the job.
+#
+# Entries are pytest node ids -- file, class, function -- spelled with `/`. A line
+# WITHOUT `[` covers every parametrization of that test; a line WITH `[` matches only
+# the parametrization it names. No @group suffix. Additions require a reason in the
+# PR, grouped under a `# reason` heading so the reasons can be rebuilt from this file.
+
+# The runner has no IPv6 loopback: binding ::1 raises OSError [Errno 99], "Cannot
+# assign requested address". The other parametrizations bind IPv4 and pass.
+test/test_platform_compat.py::test_native_tcp_peer_identifies_client_process_not_server[10-::1]

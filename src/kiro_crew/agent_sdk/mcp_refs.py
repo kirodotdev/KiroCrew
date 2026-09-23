@@ -10,12 +10,14 @@ then claude-agent-acp, then codex, which is in that state on a plain build today
 
 A mirror is the FIX for one backend. This is the DETECTOR, and it is worth being
 exact about its reach rather than claiming the tidier thing: the resolver is
-provider-neutral, but the runtime call site is ``AcpClient``'s ``session/new`` /
-``session/load`` composition, so it covers kiro-cli, claude and codex. **KAS runs
-on ``AcpRuntime``, which composes its array elsewhere and never reaches this
-detector** -- so a KAS session's refs are checked only by ``kirocrew doctor``, and
-wiring that second transport is a separate change. Saying "all of them" here would
-be the same kind of unexamined claim the mirrors folder exists to stop.
+provider-neutral, and it is evaluated at BOTH session-establishment transports --
+``AcpClient``'s ``session/new`` / ``session/load`` composition (one process per
+session: claude) and ``AcpRuntime``'s (the shared process: kiro-cli, KAS, codex).
+Each evaluates it against the array that actually went on the wire, after the
+harness's own narrowing, so a ref is never read as satisfied by a server the wire
+did not carry. Saying "all of them" is earned here by a test per transport that
+pins every roster hand-off to a guard call, not by assertion -- the unexamined
+claim about backend coverage is the defect the mirrors folder exists to stop.
 
 **It lives in the SDK rather than in the ACP layer because the question is not an
 ACP question.** Given a spec, the server array a session is about to receive and
@@ -26,14 +28,17 @@ imports :mod:`kiro_crew.acp`; the ACP layer's own logging wrapper
 (:mod:`kiro_crew.acp.mcp_ref_guard`) and the runtime call sites import THIS.
 
 **Who satisfies a ref depends on the backend, and there are exactly two
-answers.** kiro-cli is handed ``--agent`` and reads the spec itself, so for it a
-ref is satisfied by the spec's OWN ``mcpServers`` definition -- Crew passes that
-backend an empty array by design, and reading its refs against the wire would
-report every single one as unresolved on the healthiest install there is. Every
-other harness reads no agent file, so the wire array is the whole MCP surface of
-the session and the only thing that can satisfy a ref. A session-injected broker
-stub satisfies a ref on either backend, because it arrives on the wire under the
-same name as the entry it wraps.
+answers, told apart by membership in ``ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE``.** A
+member mounts the spec's own ``mcpServers`` by a channel other than the array --
+kiro-cli is handed ``--agent`` and reads the spec itself; KAS receives the spec's
+servers as a projected agent definition in ``_meta`` -- so for it a ref is
+satisfied by the spec's OWN definition, and the array it gets carries broker
+stubs at most. Reading a member's refs against the wire would report every single
+one as unresolved on the healthiest install there is. Every other harness mounts
+exactly the array it is sent, so the wire array is the whole MCP surface of the
+session and the only thing that can satisfy a ref. A session-injected broker stub
+satisfies a ref on either kind, because it arrives on the wire under the same
+name as the entry it wraps.
 
 **Two ref spellings are not server refs and must not be reported.** A bare tool
 name (``fs_read``, ``execute_bash``) carries no ``@`` and names a built-in.
@@ -53,7 +58,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
 
 #: The ``tools`` entry that grants every DEFINED MCP server. It defines none, so
 #: it is neither a ref nor a satisfier here. Only the bare ``*``: this repo's own
@@ -181,10 +186,12 @@ def unresolved_server_refs(spec: Any, wire_servers: Any, *, backend: str) -> lis
     if not refs:
         return []
     satisfied = set(wire_server_names(wire_servers))
-    if backend == ACP_BACKEND_KIRO:
-        # kiro-cli resolves --agent and loads the spec's own servers, which is why
-        # Crew passes it an empty array. Judging its refs against the wire alone
-        # would report every ref on the healthiest install there is.
+    if backend in ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE:
+        # These hosts mount the spec's own servers by a channel other than the
+        # array -- kiro-cli loads them itself from ``--agent``, KAS receives them as
+        # a projected agent definition in ``_meta`` -- so the array carries broker
+        # stubs at most. Judging their refs against the wire alone would report
+        # every ref on the healthiest install there is.
         satisfied |= _spec_server_names(spec)
     return sorted(
         f"{_MCP_PREFIX}{name}"

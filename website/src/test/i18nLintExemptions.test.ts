@@ -186,6 +186,17 @@ describe('the autolink template placeholder is exempt', () => {
   })
 })
 
+describe('the goal loop kill-switch placeholder is exempt', () => {
+  it('stays quiet on the exact wire token', async () => {
+    expect(await lint(`export const STOP_FILE_TOKEN = '{{STOP_FILE}}'`)).toEqual([])
+  })
+
+  it('still reports prose that carries the token, and any other double-braced word', async () => {
+    const messages = await lint(`export const PROBE = ['To halt the loop, create {{STOP_FILE}}', '{{OTHER_FILE}}']`)
+    expect(messages).toHaveLength(2)
+  })
+})
+
 describe('diagnostic log sentinels are exempt', () => {
   it('stays quiet on the bare sentinels', async () => {
     // Real site: lib/paneLog.ts. The reader is whoever greps gateway-launch.log

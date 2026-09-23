@@ -1,4 +1,5 @@
 import type { Report, Screen } from './types'
+import { mdImageDest } from '../../utils/fileTokens'
 
 /**
  * The critic persona and method, carried by the prompt rather than by an agent.
@@ -67,7 +68,13 @@ export const IMAGES_PROMPT = (paths: string[], brief?: string, method?: string, 
       : '') +
     SCHEMA(multi) + '\n\n' +
     'The screens, in order:\n' +
-    paths.map((p, i) => (multi ? 'Step ' + (i + 1) + ':\n' : '') + '![screen](' + p + ')').join('\n\n') + '\n\n' +
+    // `mdImageDest`, not the raw path: `send` POSTs this prompt to /api/chat, so
+    // this line IS the transcript's image markup, read back by a CommonMark
+    // parser. The upload endpoint returns a server-native absolute path, which a
+    // bare destination cannot carry -- it ends at the first space, and a
+    // backslash before ASCII punctuation is an escape. Same producer every other
+    // attachment surface uses, and an identity on a plain POSIX path.
+    paths.map((p, i) => (multi ? 'Step ' + (i + 1) + ':\n' : '') + '![screen](' + mdImageDest(p) + ')').join('\n\n') + '\n\n' +
     'For "screens", use these exact paths in this order: ' + JSON.stringify(paths) + '. ' +
     'Give each a label of ONE or TWO plain words naming the screen (e.g. "Cart", "Shipping", ' +
     '"Payment", "Confirmation"). No parentheses, no state descriptions, max 18 characters.'

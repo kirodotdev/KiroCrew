@@ -237,11 +237,11 @@ describe('chat sidebar — session row memo boundary', () => {
     for (const k of Object.keys(counts)) delete counts[k]
 
     act(() => {
-      // A server-supplied status kind passes its text through verbatim
-      // (toolStatusLabel), so the assertion is independent of the
-      // simplifiedToolNames preference.
+      // A server-supplied status (a `thinking` phase whose label is not the
+      // fixed literal) passes its label through verbatim (toolStatusLabel), so
+      // the assertion is independent of the simplifiedToolNames preference.
       store.dispatch(setSlotStatusDetail({
-        slot: 'k-b', kind: 'status', text: 'Poking the build', ts: 1,
+        slot: 'k-b', kind: 'thinking', label: 'Poking the build', ts: 1,
       }))
     })
 

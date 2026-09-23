@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import FolderConfigModal from '../components/FolderConfigModal'
+import { ApiError } from '../api/apiError'
 import { ChatFolder } from '../types'
 
 vi.mock('../api/client', () => ({
@@ -130,13 +131,30 @@ describe('FolderConfigModal', () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ color: '#ef4444' }))
   })
 
-  it('has no icon preview — a folder carries no icon, only a palette color', () => {
+  it('renders the icon controls with the default glyph preview', () => {
     open()
-    // The emoji/icon system was removed; the palette swatch row is the only
-    // identity affordance, so a glyph preview would advertise a control that
-    // does not exist.
-    expect(screen.queryByTestId('folder-config-preview')).toBeNull()
+    // Preview shows the default folder glyph until an emoji is typed; the
+    // input is empty (empty = keep the default glyph, no generation).
+    expect(screen.getByTestId('folder-config-icon-preview')).toBeTruthy()
+    expect((screen.getByTestId('folder-config-icon') as HTMLInputElement).value).toBe('')
+    // Auto-generate is an edit-mode affordance; the create modal has no
+    // generation path — an empty icon keeps the default glyph.
+    expect(screen.queryByTestId('folder-config-icon-regenerate')).toBeNull()
     expect(screen.getByTestId('folder-config-color-reset')).toBeTruthy()
+  })
+
+  it('submits a typed emoji as the icon', () => {
+    const { onSubmit } = open()
+    fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Rockets' } })
+    fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: '🚀' } })
+    fireEvent.click(screen.getByTestId('folder-config-submit'))
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ icon: '🚀', regenerateIcon: false }))
+  })
+
+  it('previews the typed emoji in place of the default glyph', () => {
+    open()
+    fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: '🚀' } })
+    expect(screen.getByTestId('folder-config-icon-preview').textContent).toBe('🚀')
   })
 
 
@@ -346,6 +364,76 @@ describe('FolderConfigModal', () => {
     })
   })
 
+  describe('icon rejection is field-anchored (issue #7992)', () => {
+    // The server 400s a non-single-emoji icon with code `icon_invalid`. That
+    // used to render as the raw English server text in the modal's TOP alert,
+    // naming no field. It now renders localized, AT the Icon field.
+    const iconReject = () => vi.fn().mockRejectedValue(
+      new ApiError(400, 'icon must be a single emoji',
+        '{"error": "icon must be a single emoji", "code": "icon_invalid"}'))
+
+    it('renders the localized error at the Icon field, not the top alert', async () => {
+      render(
+        <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={iconReject()} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: 'abc' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      const fieldErr = await screen.findByTestId('folder-config-icon-error')
+      // The localized catalog string, not the server's raw body text.
+      expect(fieldErr.textContent).toContain('Use a single emoji, or leave the field empty for the default folder icon.')
+      // The generic top alert stays down: this failure has a field to point at.
+      expect(screen.queryByTestId('folder-config-error')).toBeNull()
+    })
+
+    it('clears the field error as soon as the user edits the icon', async () => {
+      render(
+        <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={iconReject()} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: 'abc' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await screen.findByTestId('folder-config-icon-error')
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: '🚀' } })
+      expect(screen.queryByTestId('folder-config-icon-error')).toBeNull()
+    })
+
+    it('routes regenerate_icon_invalid to the top alert, not the field', async () => {
+      // A request-shape error (non-boolean `regenerate_icon`) the modal can
+      // never produce — but if it ever arrives, the field hint "must be a
+      // single emoji" would misdescribe an empty field the user never typed
+      // in. It stays in the generic top alert.
+      const onSubmit = vi.fn().mockRejectedValue(
+        new ApiError(400, 'regenerate_icon must be a boolean',
+          '{"error": "regenerate_icon must be a boolean", "code": "regenerate_icon_invalid"}'))
+      const f = folder('f1', { name: 'Payments' })
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      fireEvent.click(screen.getByTestId('folder-config-icon-regenerate'))
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await screen.findByTestId('folder-config-error')
+      expect(screen.queryByTestId('folder-config-icon-error')).toBeNull()
+    })
+
+    it('keeps every other failure in the top alert with no field error', async () => {
+      const onSubmit = vi.fn().mockRejectedValue(
+        new ApiError(400, 'project_dir must be an existing directory',
+          '{"error": "project_dir must be an existing directory", "code": "project_dir_invalid"}'))
+      render(
+        <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await screen.findByTestId('folder-config-error')
+      expect(screen.queryByTestId('folder-config-icon-error')).toBeNull()
+    })
+  })
+
   describe('round-2 review findings', () => {
     it('does not re-seed when the folder object identity changes mid-failure', async () => {
       // GPT blocking: the re-seed effect was keyed on the `folder` OBJECT. A
@@ -471,6 +559,87 @@ describe('FolderConfigModal', () => {
       expect(t).toContain('projectDir')
       expect(t).toContain('defaultAgent')
       expect(t).not.toContain('name')
+    })
+
+    it('seeds the icon from the folder and reports an icon edit', async () => {
+      const iconFolder = folder('f2', { name: 'Rockets', icon: '🚀' })
+      const onSubmit = vi.fn().mockResolvedValue(undefined)
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={iconFolder} folders={[iconFolder]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      expect((screen.getByTestId('folder-config-icon') as HTMLInputElement).value).toBe('🚀')
+      // Clearing falls back to the default glyph — '' is a real instruction.
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: '' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      const draft = onSubmit.mock.calls[0][0]
+      expect(draft.touched).toEqual(['icon'])
+      expect(draft.icon).toBe('')
+      expect(draft.regenerateIcon).toBe(false)
+    })
+
+    it('Auto-generate arms regenerateIcon and restores the seeded icon value', async () => {
+      // The backend rejects icon + regenerate_icon in one request, so arming
+      // regenerate must also discard a manual edit — and vice versa.
+      const iconFolder = folder('f2', { name: 'Rockets', icon: '🚀' })
+      const onSubmit = vi.fn().mockResolvedValue(undefined)
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={iconFolder} folders={[iconFolder]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: '🧪' } })
+      fireEvent.click(screen.getByTestId('folder-config-icon-regenerate'))
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      const draft = onSubmit.mock.calls[0][0]
+      expect(draft.regenerateIcon).toBe(true)
+      // The manual edit was discarded, so a caller keying on touched cannot
+      // accidentally send both icon and regenerate_icon.
+      expect(draft.icon).toBe('🚀')
+      expect(draft.touched).toContain('icon')
+    })
+
+    it('typing after Auto-generate disarms the pending regenerate', async () => {
+      const iconFolder = folder('f2', { name: 'Rockets', icon: '🚀' })
+      const onSubmit = vi.fn().mockResolvedValue(undefined)
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={iconFolder} folders={[iconFolder]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      fireEvent.click(screen.getByTestId('folder-config-icon-regenerate'))
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: '🧪' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      const draft = onSubmit.mock.calls[0][0]
+      expect(draft.regenerateIcon).toBe(false)
+      expect(draft.icon).toBe('🧪')
+    })
+
+    it('an armed regenerate renders an empty input, matching the default-glyph preview', () => {
+      // While armed, the preview falls back to the default glyph; if the input
+      // kept showing the old emoji the preview would stop previewing the input.
+      const iconFolder = folder('f2', { name: 'Rockets', icon: '🚀' })
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={iconFolder} folders={[iconFolder]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={vi.fn()} />
+      )
+      fireEvent.click(screen.getByTestId('folder-config-icon-regenerate'))
+      expect((screen.getByTestId('folder-config-icon') as HTMLInputElement).value).toBe('')
+    })
+
+    it('edit mode shows the cleared-state hint only when the field is emptied', () => {
+      // Empty means the default glyph in both modes; the edit-mode cleared
+      // state keeps its own hint so clearing an existing icon is visibly
+      // acknowledged rather than silently reverting.
+      const iconFolder = folder('f2', { name: 'Rockets', icon: '🚀' })
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={iconFolder} folders={[iconFolder]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={vi.fn()} />
+      )
+      expect(screen.queryByText(/Empty keeps the default folder icon/)).toBeNull()
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: '' } })
+      expect(screen.getByText(/Empty keeps the default folder icon/)).toBeTruthy()
     })
 
   })

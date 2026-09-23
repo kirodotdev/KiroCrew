@@ -47,7 +47,7 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
   return (
     <div className="space-y-3">
       {banner}
-      <textarea aria-label={placeholder} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-none transition-colors focus-ring resize-y min-h-[120px]" rows={rows} placeholder={placeholder} value={text} onChange={e => setText(e.target.value)} disabled={disabled} />
+      <textarea aria-label={placeholder} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-hidden transition-colors focus-ring resize-y min-h-[120px]" rows={rows} placeholder={placeholder} value={text} onChange={e => setText(e.target.value)} disabled={disabled} />
       <div className="flex gap-2 items-center flex-wrap">
         <input type="file" aria-label={i18nT('pages.projectsPage.upload_a_file')} accept={accept} onChange={onUpload} disabled={disabled} className="text-sm text-muted file:mr-2 file:py-1 file:px-3 file:rounded-md file:border file:border-border file:bg-bg-elevated file:text-text file:text-sm file:cursor-pointer" />
         <SendBtn onClick={onRun} disabled={!text.trim() || disabled}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</SendBtn>
@@ -422,7 +422,7 @@ export default function ProjectsPage() {
       {runs.map(r => {
         const name = r.name || r.spec_name || r.task_id
         const icon: ReactNode = r.running ? <RefreshCw className="lucide-inline" /> : r.status === 'completed' ? <CheckCircle className="lucide-inline" /> : r.status === 'failed' ? <XCircle className="lucide-inline" /> : r.status === 'cancelled' ? <Square className="lucide-inline" /> : r.status === 'planned' ? <ClipboardList className="lucide-inline" /> : <Square className="lucide-inline" />
-        const pct = r.steps > 0 ? Math.round((r.completed / r.steps) * 100) : 0
+        const pct = r.tasks > 0 ? Math.round((r.completed / r.tasks) * 100) : 0
         const isActive = selectedRun?.task_id === r.task_id
         return (
           <div
@@ -437,7 +437,7 @@ export default function ProjectsPage() {
             <span className="text-[14px]">{icon}</span>
             <div className="flex-1 min-w-0">
               <div className="text-[13px] font-semibold text-text-strong truncate">{name}</div>
-              <div className="text-[11px] text-muted">{r.task_id} · {r.completed}/{r.steps} · {r.running ? 'running' : r.status}</div>
+              <div className="text-[11px] text-muted">{r.task_id} · {r.completed}/{r.tasks} · {r.running ? 'running' : r.status}</div>
             </div>
             {/* Auto-approve indicator. Gated on the LIVE grant (matches the
                 run-detail toggle sync effect at line 225: "Reflect only a
@@ -531,7 +531,7 @@ export default function ProjectsPage() {
       </div>
       {mode === 'compose' ? (
         <div className="space-y-3">
-          <textarea aria-label={i18nT('pages.projectsPage.describe_your_task')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-body outline-none transition-colors focus-ring resize-y min-h-[80px]" rows={3} placeholder={i18nT('pages.projectsPage.describe_your_task_2')} value={userInput} onChange={e => setUserInput(e.target.value)} disabled={isRefining || anyPlanning} />
+          <textarea aria-label={i18nT('pages.projectsPage.describe_your_task')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-body outline-hidden transition-colors focus-ring resize-y min-h-[80px]" rows={3} placeholder={i18nT('pages.projectsPage.describe_your_task_2')} value={userInput} onChange={e => setUserInput(e.target.value)} disabled={isRefining || anyPlanning} />
           <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
             {!isRefining && <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={refine} disabled={!userInput.trim() || anyPlanning}><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.refine_into_spec')}</button>}
             {!isRefining && <button className={`inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-md border border-accent bg-transparent text-accent text-sm font-semibold cursor-pointer font-body hover:bg-accent hover:text-accent-fg transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}>{anyPlanning ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} {i18nT('pages.projectsPage.plan')}</button>}
@@ -562,7 +562,7 @@ export default function ProjectsPage() {
           <ErrorNotice variant="inline" title={i18nT('pages.projectsPage.error')} message={refineError} className="mt-1" testId="projects-refine-error" />
           {(refined || isRefining) && (
             <div>
-              <textarea aria-label={i18nT('pages.projectsPage.refined_spec')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-none transition-colors focus-ring resize-y min-h-[120px]" rows={8} value={refined} onChange={e => setRefined(e.target.value)} readOnly={isRefining} />
+              <textarea aria-label={i18nT('pages.projectsPage.refined_spec')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-hidden transition-colors focus-ring resize-y min-h-[120px]" rows={8} value={refined} onChange={e => setRefined(e.target.value)} readOnly={isRefining} />
               {!isRefining && refined && (
                 <div className="flex flex-col sm:flex-row gap-2 mt-2">
                   <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(refined, 'spec')} disabled={anyPlanning}><ClipboardList className="lucide-inline" /> {i18nT('pages.projectsPage.plan_from_spec')}</button>
@@ -640,7 +640,7 @@ export default function ProjectsPage() {
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
               {editingName ? (
-                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} {...ime.bindComposition({ onBlur: () => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { void runAction(() => api.renameTaskRun(selectedRun.task_id, v), load) }; setEditingName(false) } })} onKeyDown={e => {
+                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-hidden min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} {...ime.bindComposition({ onBlur: () => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { void runAction(() => api.renameTaskRun(selectedRun.task_id, v), load) }; setEditingName(false) } })} onKeyDown={e => {
                   if (e.key === 'Enter') {
                     // Early-return BEFORE the blur: a committing IME Enter must not commit.
                     if (ime.isComposing(e)) return

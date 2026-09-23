@@ -1,6 +1,6 @@
 ---
 name: web-preview
-description: Emit a hidden preview marker so Kiro Crew's right-panel "Browser" tab opens with a Load-preview card for the URL when you start a local web server for the user to preview. Use whenever you start a dev server or static server so the user can see a site/app you're working on (Vite, Next, `npm run dev`, `python -m http.server`, etc.).
+description: Emit a hidden preview marker so the right-panel Browser tab opens a Load-preview card for a local server URL. Use whenever you start a dev or static server the user should see (Vite, Next, `npm run dev`, `python -m http.server`, etc.).
 triggers: preview, live preview, dev server, serve, http.server, npm run dev, run the site, run the app, view in browser, see the site, localhost
 ---
 

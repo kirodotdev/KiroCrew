@@ -71,7 +71,7 @@ Layer 4  Output ....... credential redaction + URL exfil scan + streaming redact
 Layer 3  Validation ... typed MCP tool schemas, unicode normalization, length caps
 Layer 2  Command ...... denied-command rules + sensitive-bash + exfil shapes
 Layer 1  Filesystem ... resolved-path gate (read block + wider write block)
-Layer 0  OS sandbox ... namespace (Linux) / Seatbelt (macOS), opt-in
+Layer 0  OS sandbox ... namespace (Linux) / Seatbelt (macOS), default auto where supported
 
 Across all layers: request auth (dashboard tokens, CSRF, Host allowlist),
                    Slack owner lock + workspace origin check,
@@ -146,6 +146,29 @@ Two properties are load-bearing at the architecture level:
   the audit cannot be written, the delegation is refused. Kiro Crew's own Seatbelt
   takes the spawn on macOS; Windows returns to its no-backend fail-closed policy.
 
+**The crew-home masks do NOT apply on the delegated path, and that is a stated
+residual rather than an oversight.** Kiro Crew's built-in HIDDEN leaves — the
+credential homes, `.env`, `live_target.json`, `inbound-spool`, `whatsapp`,
+`tasks`, `scratch` — are applied by Kiro Crew's OWN launcher (bind mounts on
+Linux, Seatbelt on macOS). A delegated spawn returns before that launcher runs
+(`wrap_argv` → `_delegate_to_kiro_internal_sandbox`), so inside a delegated child
+a shell can open any of them. The residual is the same for every leaf and is not
+specific to any one of them; only the caller-supplied `extra_hidden_dirs` /
+`extra_visible_dirs` / `extra_writable_dirs` / `extra_expose_files` disable
+delegation, because those are the restrictions a caller asked for explicitly and
+the delegated sandbox cannot prove it enforces. Member memory does not add
+another sandbox delegation restriction.
+
+Extending the same test to the built-in leaves is the obvious remedy and it is the
+WRONG one: on Windows every first-party kiro-cli spawn would fall to the
+no-backend path, which is unconfined — strictly worse than a delegated sandbox
+that happens not to mask the crew home. So the coherent fix is at the delegation
+layer (teach the delegated sandbox the leaf set, or refuse the leaves' contents at
+a boundary the delegated child still crosses), not at the mask list. Until then,
+Layers 1, 2 and 4 are what cover these paths on those two platforms, and a NEW
+leaf inherits exactly this residual: adding one strictly improves Linux and
+non-delegated macOS, and changes nothing on the delegated paths.
+
 **Launcher shims are deliberately not bypassed on the delegated path.** On that
 path the shim is part of `kiro-cli`'s own sandbox mechanism, so resolving past it
 would defeat the delegated layer. Where an edition needs a managed launcher
@@ -218,90 +241,50 @@ than through the shared gate, so real functionality is unaffected.
 Each leaf is registered under every known data-home prefix, so a not-yet-migrated
 legacy home is fenced identically to the current `~/.kiro/crew`.
 
-### One crew's memory is fenced from another's; its OWN memory is not
+### Member memory routing and path guidance
 
-`memory_stores/` — the root holding one subdirectory per named memory store — is on
-the same read+write block. A named store is one crew's private memory silo, and
-crossing that boundary is both the primary harm (reading another crew's preferences
-and lessons) and a steering channel (rewriting them changes that crew's future
-turns). Same-UID file modes cannot draw the line, because the agent's file tools run
-as the owner of every store on disk.
+Memory V2 assigns one stable member to one managed SQLite store. It separates
+learning ownership rather than promising that same-host agents cannot read each
+other's files. Member-specific OS views, hardlink scans, process ancestry proofs,
+HMAC capabilities and duplicate protected grants are not part of this contract.
+The host sandbox, credentials, HTTP/MCP authentication, owner/app permissions,
+audit integrity and mandatory enterprise rules retain their independent duties.
 
-**The default store is deliberately outside the fence, and this asymmetry is a
-decision rather than an oversight.** `is_sensitive_path("~/.kiro/crew/memory.db")` is
-False; `is_sensitive_path("~/.kiro/crew/memory_stores/work/memory.db")` is True. The
-reason is that the default store is the agent's OWN memory — recalling it is the
-product working — and fencing it would change behaviour for every existing install,
-which the named-store split is required not to do. A later reader who finds the
-inconsistency uncomfortable should leave it: making it symmetric in the tightening
-direction breaks the default path, and in the loosening direction removes the whole
-control. The ratchet that makes either attempt go red is
-`test/test_memory_stores.py`, which asserts the default store's answers unchanged
-beside the fenced store's.
+Built-in file tools continue to guard `memory_stores/` against accidental raw
+access and database/sidecar writes. Globbed project instructions skip managed
+memory state. Ordinary Linux and macOS sandbox rules expose the named-store root
+read-only: built-in writes run in the gateway, so sandboxed code needs no direct
+write access. Linux prepares an absent root as an empty directory for its mount;
+this creates no database or member configuration. Reads remain possible across
+members. This is write integrity where the ordinary sandbox is active, not a
+same-host confidentiality or universal integrity guarantee. Sandbox-off execution,
+external host tools and pre-existing writable aliases remain outside that rule.
+Existing named V1 root links remain supported; the Global V1 paths are unchanged.
 
-The keystone-reader rule applies with full force here: a legitimate reader of a
-named store opens the path directly, and a reader that does not is what gets fixed —
-never the fence, since relaxing `is_sensitive_path` for one caller unfences the subtree
-for every tool caller.
+Authenticated internal memory calls capture the session's canonical execution
+record once and carry that binding into background work. An unknown member or
+unavailable selected database never falls back to Global. Templates and projects
+do not change ownership. Explicit cross-member delegation uses the target's
+existing store and the normal delegation permissions. It does not copy learning.
 
-`MemoryStore`'s ordinary read path does plain reads and never enters the gate, so it
-opens a named store's markdown the way it already opens its own tree. So does
-`security.scan_memory`, which is the reason the rule matters rather than an exception to
-it: the injection audit has to read every declared silo — a silo's directive tier goes
-into that crew's prompt — and it does so by resolving `resolve_store_path` and opening
-the file, one store at a time, with every finding labelled by store. It opens the silo's
-`lessons.jsonl` the same way, and that tier is the one an audit cannot skip: a
-silo-bound crew's corrections land there exactly when the silo has no vector store, so
-scanning vector files alone would hand a clean verdict to an install whose only
-prompt-injected tier was never read.
-`learn.LessonStore` does enter it, refusing a sensitive `base_dir` — and its fallback is
-a WRITE target, so without a carve-out every crew's corrections append to the one global
-`lessons.jsonl`, misfiled rather than merely lost. `_is_owned_store_root` admits a DIRECT
-child of the stores root as a directory the class owns, and refuses `profiles/`, the
-stores root itself, and any nested path.
+The dashboard's explicit `?store=` parameter remains owner-only. The middleware's
+user claim is distinct from internal transport authentication and from app-token
+scope; a bound memory tool does not acquire owner privileges. Local owner-token
+bootstrap still requires positive host provenance or a live backend launched by
+this gateway. Its OS identity checks remain shared host authorization, independent
+of which member stores exist. On Linux, a CLI peer in a different user or mount
+namespace is refused unless it is a live application backend tracked by this
+gateway. This intentional owner-token bootstrap restriction applies even with no
+members;
+cross-namespace CLI login from containers, Snap or Flatpak is not claimed as
+verified.
 
-One reader stays refused, deliberately: `MemoryStore._guarded_entry` reads through
-`hooks.safe_read_file_bytes_nolink`, whose resolved-path check is `is_sensitive_path`, so
-a named store answers with empty entries there. Nothing reaches it — its only callers are
-two `kirocrew memory` CLI verbs anchored on the default store — and `security.md` records
-it so a per-store export surface is a deliberate act rather than a surprise.
-
-**The dashboard now reads and writes a fenced silo, and what keeps an agent out of it is
-an identity check rather than the file gate.** The store-scoped `/api/memory/*` routes
-take an optional `?store=<name>`; the gateway opens that store directly, as a keystone
-reader. The control is that the parameter's PRESENCE takes the dashboard owner gate,
-which requires the dashboard-user claim (`request["app"] == ""`, so an App Kit token is
-out) plus a `request["user"]` that `token_auth_middleware` publishes on the
-cookie/query-token path alone and never on its `X-Internal-Secret` branch. So an agent,
-an MCP tool and a subagent — all of which authenticate as the installation and hold no
-user identity — cannot name a store at all, and are excluded because they have nothing to
-present rather than by a test for what they are. Omitting the parameter answers from the
-global store, including on `carve`; an unverified `X-Session-Key` never selects a silo. The full argument,
-including why an undeclared name is a 404 rather than a degrade onto the operator's own
-memory, is in [security](../system-specs/modules/security.md).
-
-**Losing ancestry does not grant host authority.** Private API identity uses
-gateway-owned process-start bindings, but a missing ancestor record cannot
-prove that a process was never private. For unbound Linux peers the gateway
-requires matching user and mount namespace identities; on macOS it requires a
-positive unsandboxed Seatbelt result. Both kernel restrictions survive
-reparenting. Unreadable or unsupported provenance fails closed. A descendant
-whose private binding cannot be recovered receives no member access and cannot
-downgrade to Global V1 or exchange the shared local secret for an owner token.
-The checks need no process-local ancestry cache to survive a gateway restart.
-
-Sandboxed V1 runtimes retain explicit trusted V1 process records; Linux peers
-must remain in the recorded runtime's namespaces. Those records preserve normal
-V1 MCP access without becoming member proofs or owner-bootstrap authority.
-Native Windows cannot launch private runtimes and keeps the existing V1 flow.
-On macOS a sandboxed app without a trusted runtime record must bootstrap through
-the host login-link CLI; failure to query Seatbelt never counts as unsandboxed.
-
-**Do not weaken this when editing the path or bash matchers.** Write and extract
-verbs must stay covered: a bash command that merely *names* a write-protected
-leaf is refused, verb-independently, because an enumerated write-verb allowlist is
-inherently bypassable (quoted redirects, `cp`, a Python `open(..., 'w')`, or any
-novel verb).
+Trusted storage APIs validate the selected database's member/store identity and
+use SQLite transactions. The injection audit reads each member's SQLite lessons
+and labels findings by store; V2 has no writable JSONL learning fallback. Global
+V1 keeps its existing Markdown/JSONL behavior. See
+[security](../system-specs/modules/security.md#member-memory-boundaries) and
+[memory](../system-specs/modules/memory-skills-hooks.md) for the detailed contract.
 
 ### Audited internal carve-out
 
@@ -354,8 +337,8 @@ granted).
 
 ## Layer 3: Input validation (`validation.py`)
 
-Every MCP tool call is checked against a declarative `FieldSpec` + `ToolSchema`
-before the handler sees it: NFC unicode normalization with hidden-character
+Every Kiro Crew-owned MCP tool call is checked against a declarative
+`FieldSpec` + `ToolSchema` before the handler sees it: NFC unicode normalization with hidden-character
 stripping (control, format and surrogate code points, preserving `\n`/`\r`/`\t`
 plus the four shaping marks in `_ALLOWED_FORMAT` when they sit next to non-ASCII
 text; private-use code points are deliberately kept, because Nerd Font and
@@ -429,6 +412,16 @@ proceed when their audit cannot be written. The one documented exception is the
 nested-sandbox passthrough, which has no safe alternative (the kernel denies a
 re-wrap by design) and would otherwise couple every in-sandbox spawn to SEL
 health; it logs loudly and proceeds, still confined by the outer boundary.
+
+That exception has one carve-out, and only one: a **cron script child** whose
+audit write fails with `ENOSYS`. That errno means the child inherited a seccomp
+filter from a sandbox torn down underneath it, so it can neither audit nor
+persist anything it goes on to do, and nobody is watching it -- its parent
+records the run as ok either way. Such a child refuses instead of proceeding
+(`sandbox.refuse_unaudited_on_dead_fs`, gated on a marker the cron launcher puts
+in the child's environment AND on that errno). Everything else, including the
+gateway's own spawns and any other audit failure, keeps the log-and-proceed
+posture above. `test_sandbox_cron_child_audit.py` pins both halves.
 
 ## Governance: the enterprise ceiling
 
@@ -564,10 +557,10 @@ text is framed as explicitly untrusted data with a SEL event on every drop.
 
 | Control | Implementation |
 |---|---|
-| XSS prevention | DOMPurify on all rendered HTML content |
-| Safe DOM APIs | `createElement` + `textContent` for error fallbacks |
-| Mermaid | `securityLevel: 'strict'` (iframe sandbox), so an injected diagram cannot execute JS |
-| No `innerHTML` | React text children rather than HTML string construction |
+| HTML/SVG sanitization | Model-authored Markdown, highlighted code, Mermaid, SVG and icon markup pass through DOMPurify before a controlled HTML sink |
+| Executable document isolation | Widgets and other executable `srcdoc` content use sandboxed iframes plus restrictive CSP rather than DOMPurify, which would strip their scripts |
+| Safe DOM APIs | Ordinary text and error fallbacks use React text children or `createElement` + `textContent` |
+| Mermaid | `securityLevel: 'strict'`, followed by sanitization, so an injected diagram cannot execute JS |
 | No regex linkification | React elements via `.split()` |
 
 ## Credential file handling
@@ -627,11 +620,12 @@ credential stores, and blocking the whole home directory would make the agent
 useless for its normal work. An agent write there is therefore a real persistence
 vector, mitigated only by the approval gate and the destructive-command rules.
 
-**Resource ceilings depend on the platform.** The cgroup v2 scope that bounds
-fork bombs and memory balloons requires Linux with cgroup delegation; where it is
-unavailable (macOS, older Linux, no user session) it is a no-op with a loud
-warning and only the file-descriptor limit applies. See
-[`resource-protection.md`](resource-protection.md).
+**Resource ceilings depend on the platform.** Linux uses cgroup v2 for
+subtree process and memory ceilings when delegation is available. Windows ACP
+agent trees instead use Job Object process-count and memory limits (with process,
+not thread, semantics). macOS and Linux hosts without delegation have no hard
+per-subtree process/memory ceiling; they retain the file-descriptor cap and
+post-failure reapers. See [`resource-protection.md`](resource-protection.md).
 
 **Launcher self-poisoning by the same user is accepted, not defended (CWE-345;
 tracked as CWE-778 by

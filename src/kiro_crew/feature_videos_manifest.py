@@ -191,6 +191,13 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 #: whole.
 _RELEASE_RE = re.compile(r"^\d{1,5}(?:\.\d{1,5}){0,3}$")
 
+#: The two Windows error codes that mean "not there": ``ERROR_FILE_NOT_FOUND`` and
+#: ``ERROR_PATH_NOT_FOUND``. Read through ``getattr(exc, "winerror", None)``, the
+#: shape this repository already uses for a platform-specific code
+#: (:mod:`kiro_crew.platform_log_append`, :mod:`kiro_crew.mcp_gateway.transport`),
+#: because the attribute exists only on the Windows ``OSError``.
+_WIN_NOT_FOUND = (2, 3)
+
 _CLIP_SUFFIX = ".mp4"
 _POSTER_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 
@@ -513,6 +520,16 @@ def _create_release_dir_held(root: Path, release: str) -> int:
     point), verified the same way, and the release folder is created by name UNDER
     that held handle — the root cannot be swapped while it is open — then pinned
     and refused if it is a link, junction or file.
+
+    Creating the folder and opening it are two calls, so a removal can land between
+    them. It is REPORTED, not re-attempted: the actor that removes a release folder
+    here is the cache's own eviction, and re-creating what it just cleaned would
+    fight it. BOTH branches translate that report to carry the whole path, for
+    opposite reasons: the descriptor branch's ``openat`` names only the relative
+    leaf, which reads as a working-directory bug (GH-12043), and the by-path branch
+    goes through ``CreateFileW``, whose ``WinError`` carries no ``filename`` and no
+    path at all. Review asked for the second claim to be measured rather than
+    asserted, and measuring it is what found it.
     """
     what_root = "feature-video cache root"
     if pinned_fs.supports_pinned_walk():
@@ -539,9 +556,37 @@ def _create_release_dir_held(root: Path, release: str) -> int:
                 os.mkdir(release, 0o700, dir_fd=root_fd)
             except FileExistsError:
                 pass
+            except FileNotFoundError as exc:
+                # The pinned ROOT is gone, so there is nothing to create the release
+                # folder in. Reported with the whole path: the errno carries only the
+                # relative name the syscall was given.
+                raise FileNotFoundError(
+                    errno.ENOENT,
+                    "the feature-video cache root was removed while the release folder "
+                    "was being created in it",
+                    str(root / release),
+                ) from exc
             try:
                 return os.open(release, pinned_fs.dir_flags(), dir_fd=root_fd)
             except OSError as exc:
+                if exc.errno == errno.ENOENT:
+                    # The folder existed a syscall ago and is gone now: the mirror of
+                    # the ``FileExistsError`` tolerated above, which was handled while
+                    # this was not (GH-12043). Reported rather than re-created, because
+                    # the actor that removes a release folder here is the cache's own
+                    # eviction (:func:`kiro_crew.feature_videos_cache.evict` deletes
+                    # whole release folders), and re-making what an eviction just
+                    # cleaned would fight it. Every caller already contains an
+                    # ``OSError`` as "the cache is unavailable" and asks again on its
+                    # next pass, which re-creates the folder if it is still wanted --
+                    # so the retry lives there, where it can see that intent, rather
+                    # than here.
+                    raise FileNotFoundError(
+                        errno.ENOENT,
+                        "the feature-video release folder was removed between its "
+                        "creation and its open",
+                        str(root / release),
+                    ) from exc
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise CacheDirRefused(
                         "refusing to write through a symlinked feature-video release "
@@ -555,6 +600,27 @@ def _create_release_dir_held(root: Path, release: str) -> int:
         except NotADirectoryError as exc:
             raise CacheDirRefused(
                 f"refusing to write through a symlinked feature-video release folder: {path}"
+            ) from exc
+        except OSError as exc:
+            # The same removal window as the descriptor branch above, reported the
+            # same way -- and it needs its own translation for the opposite reason.
+            # That branch's ``openat`` names the bare leaf; this one goes through
+            # ``CreateFileW`` and the ``WinError`` it raises carries NO ``filename``
+            # at all and no path in its message, so without this the operator is
+            # told only that "the system cannot find the file specified".
+            #
+            # Matched on the CONDITION, not on the class. CPython maps a not-found
+            # ``winerror`` onto ``FileNotFoundError``, but nothing here needs to
+            # depend on that: review asked whether the subclass really arrives on a
+            # real Windows host, and a translation that silently never fires is worse
+            # than one errno test. Anything that is not a not-found propagates
+            # unchanged, exactly as it did before.
+            if exc.errno != errno.ENOENT and getattr(exc, "winerror", None) not in _WIN_NOT_FOUND:
+                raise
+            raise FileNotFoundError(
+                errno.ENOENT,
+                "the feature-video release folder was removed between its creation " "and its open",
+                str(path),
             ) from exc
     finally:
         os.close(root_fd)

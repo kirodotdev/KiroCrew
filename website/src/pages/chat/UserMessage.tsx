@@ -14,6 +14,8 @@ import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pas
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import InfoTip from '../../components/InfoTip'
+import SteerDecisionLine from './SteerDecisionLine'
+import { readSteerRecord } from './decisionRecord'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
 // The chat transcript is virtualized, so a row can remount when scrolled away and
 // back; without this guard the entrance would replay every time. Module-level set
@@ -101,6 +103,12 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // answered at all. That is the least confirmed a steer can be, so letting it
   // fall through to the legacy case would show the success badge at exactly the
   // moment nothing is known, which is the claim this change exists to stop.
+  // The receipt for a send whose mid-turn handling Jev chose (`steer: "auto"`,
+  // `decisions/points/message_steer.py`). Read off this row's own meta, which is
+  // what both doors carry -- the live `steer_push` / `queue_push` reconcile and a
+  // row reloaded from history -- so the line survives a reload without a fetch.
+  // Absent on every ordinary send, and that absence is what draws nothing.
+  const steerDecision = readSteerRecord((meta as { decisions_strip?: unknown } | undefined)?.decisions_strip)
   const steerState = (meta as { steerState?: string } | undefined)?.steerState
   const steerOptimistic = !!(meta as { optimistic?: boolean } | undefined)?.optimistic
   const isSteer = !hideSteerBadge
@@ -222,6 +230,12 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     e.preventDefault()
   }, [meta])
 
+  const canEditResend = !!(canEdit && onEditResend)
+
+  // Declared before the editing early-return so hook order stays stable across
+  // the read-only and editing renders.
+  const handleDoubleClick = useCallback(() => { startEdit() }, [startEdit])
+
   if (editing) {
     return (
       <div data-role="user" className="group/msg flex flex-col items-end max-w-full">
@@ -231,15 +245,19 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             bubble it replaces, capped at 550px or the column, whichever is
             smaller. No JS measurement. */}
         <div
-          className="edit-grow user-bubble px-4 py-2 text-sm leading-6 rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] outline outline-2 -outline-offset-2 outline-accent/60"
+          className="edit-grow user-bubble px-4 py-2 leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] outline-solid outline-2 -outline-offset-2 outline-accent/60 focus-within:outline-accent"
           data-replicated-value={draft}
-          style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+          style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}
         >
           <textarea
             ref={taRef}
             rows={1}
             aria-label={i18nT('pages.chat.userMessage.edit_message')}
-            className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-none text-sm leading-6"
+            // focus-cue-ok: the cue is the wrapping .edit-grow frame above, which
+            // paints a 2px accent outline for the whole edit session; a second
+            // ring on the textarea would double-paint the one control.
+            className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-hidden leading-relaxed"
+            style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}
             value={draft}
             onChange={e => setDraft(e.target.value)}
             {...ime.bindComposition()}
@@ -267,7 +285,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
 
   const bubble = (
     // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md
-    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-2 text-sm leading-6 rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+    // Disable is safe: the keyboard-accessible edit path is the aria-labelled
+    // pencil button in the action row below, not this bubble.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+    <div ref={userRef} onCopy={handleCopy} onDoubleClick={canEditResend ? handleDoubleClick : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {/* `messageTs` FIRST, `clientTs` only as a fallback. The opposite order is
           correct for the audio key above, which wants the optimistic bubble's own
           identity, but this value is COMPARED against server-clock slot mint
@@ -299,6 +320,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-semibold text-accent mb-1 pr-1">
             <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
           </div>
+          {/* WHO chose this, when the sender did not. Below the badge that says
+              what happened, because the badge is the outcome and this is the
+              decision behind it. */}
+          {steerDecision && <SteerDecisionLine record={steerDecision} />}
           <motion.div
             /* Same width cap as the bubble, not just max-w-full: this wrapper
                sits between the content column and the bubble, and a percentage
@@ -361,6 +386,12 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
               <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.turn_ended_before_this_applied_runs_as_its_own_message')}
             </div>
           )}
+          {/* A queued send has no badge of its own here, so on this arm the line
+              is the only thing that says the handling was decided rather than
+              chosen. Drawn in both arms rather than above them: the confirmed-steer
+              arm wraps its bubble in an animated box, and a line inside that box
+              would slide in with it as though it were part of the message. */}
+          {steerDecision && <SteerDecisionLine record={steerDecision} />}
           {bubble}
         </>
       )}

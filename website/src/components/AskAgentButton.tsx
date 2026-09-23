@@ -68,7 +68,9 @@ export default function AskAgentButton({
   variant = 'link',
   hard = false,
   onHandoff,
+  label,
   className = '',
+  tone = 'danger',
 }: {
   report?: ErrorReport
   message?: string
@@ -87,7 +89,24 @@ export default function AskAgentButton({
    * every caller.
    */
   onHandoff?: () => void
+  /**
+   * Overrides the shared "Ask the agent" label.
+   *
+   * For a surface that stacks SEVERAL notices, where the default leaves every
+   * hand-off looking like the same affordance and nothing says which failure
+   * each one carries. The reports genuinely differ -- each has its own
+   * endpoint, status and code -- so the label is the only part that was
+   * indistinguishable. Pass a full localized label, not a fragment to append.
+   */
+  label?: string
   className?: string
+  /**
+   * Link tint. `danger` (default) for placement inside an error surface;
+   * `warn` for a WARNING surface (the pre-approval findings box) — a
+   * danger-red link inside an amber box dresses a not-yet-failed state in
+   * error color. Only affects the `link` variant.
+   */
+  tone?: 'danger' | 'warn'
 }) {
   // Render only needs to know whether there is anything to offer. The report is
   // resolved at CLICK time, not here, because of an ordering hazard in the
@@ -105,9 +124,13 @@ export default function AskAgentButton({
   const base = 'inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors'
   const skin = variant === 'solid'
     ? 'px-4 py-1.5 rounded-lg text-[13px] font-medium bg-accent text-accent-fg border-none hover:opacity-90'
-    // Danger-tinted, not muted grey: inside a red alert a grey link reads as
-    // unrelated chrome. Underline marks it as the action in the banner.
-    : 'text-[12px] font-medium text-danger/80 hover:text-danger bg-transparent border-none p-0 underline decoration-danger/30 hover:decoration-danger underline-offset-2'
+    // Surface-tinted, not muted grey: inside an alert a grey link reads as
+    // unrelated chrome. Underline marks it as the action in the banner. The
+    // tint follows the surface (danger in an error banner, warn in the
+    // pre-approval warning box) so the link never escalates its host.
+    : tone === 'warn'
+      ? 'text-[12px] font-medium text-warn/80 hover:text-warn bg-transparent border-none p-0 underline decoration-warn/30 hover:decoration-warn underline-offset-2'
+      : 'text-[12px] font-medium text-danger/80 hover:text-danger bg-transparent border-none p-0 underline decoration-danger/30 hover:decoration-danger underline-offset-2'
 
   return (
     <button
@@ -117,7 +140,7 @@ export default function AskAgentButton({
       onClick={onClick}
     >
       <Sparkles size={13} aria-hidden="true" />
-      {i18nT('components.askAgent.ask_the_agent')}
+      {label ?? i18nT('components.askAgent.ask_the_agent')}
     </button>
   )
 }

@@ -34,12 +34,22 @@ def _isolate_config_dir(tmp_path, monkeypatch):
         monkeypatch.setattr(f"kiro_crew.dashboard.{module}.config_dir", lambda: tmp_path)
 
 
+class _StageManager:
+    def running_agents_for(self, _parent: str) -> list[dict]:
+        return []
+
+    async def has_pending_work_for_async(self, _parent: str) -> bool:
+        return False
+
+    async def wait_for_parent_reports(self, _parent: str, _owner: str = "") -> bool:
+        return False
+
+
 def _make_state():
     state = MagicMock()
     state.broadcast_ws = MagicMock()
     state.push_slots_update = MagicMock()
-    state.subagents = MagicMock()
-    state.subagents.running_agents_for = MagicMock(return_value=[])
+    state.subagents = _StageManager()
     return state
 
 
@@ -63,6 +73,9 @@ def _stage_texts(monkeypatch, texts):
     stage_box = {"n": 0}
 
     async def _mock_run_chat(state, slot, message, **kwargs):
+        callback = kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         idx = stage_box["n"]
         stage_box["n"] += 1
         if idx < len(texts):
@@ -192,9 +205,32 @@ async def test_completion_summary_truncates_the_excerpt_at_120_chars(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_completion_summary_falls_back_to_done_for_blank_result(monkeypatch):
-    """Preservation: an empty result file yields '— done', not a crash."""
-    slot = await _run_plan(monkeypatch, ["First"], [""])
+async def test_completion_summary_falls_back_to_done_for_blank_result(monkeypatch, tmp_path):
+    """Preservation: an empty result FILE yields '— done', not a crash.
+
+    The blank file is produced by the write half to isolate the excerpt fallback
+    from stage-turn behavior. A stage now advances when its turn returns without
+    raising, including when it captured no assistant text.
+    """
+    from kiro_crew.dashboard import chat_orchestrator
+    from kiro_crew.dashboard.chat import _stage_loop
+
+    state = _make_state()
+    slot = _make_slot(["First"])
+    _stage_texts(monkeypatch, ["alpha done"])
+
+    real_write = chat_orchestrator._write_stage_result
+
+    def _write_then_blank(slot_key, stage_num, raw_parts):
+        path = real_write(slot_key, stage_num, raw_parts)
+        (tmp_path / "sessions" / slot_key / f"stage_{stage_num}_result.md").write_text(
+            "", encoding="utf-8"
+        )
+        return path
+
+    monkeypatch.setattr(chat_orchestrator, "_write_stage_result", _write_then_blank)
+
+    await _stage_loop(state, slot, auto_run=True)
 
     assert _completion_message(slot).splitlines()[1] == "  Stage 1: First — done"
 

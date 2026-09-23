@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Goal, Radar, X } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
@@ -36,6 +36,17 @@ interface Props {
   /** Structured body supplied by that shell; omitted to render the legacy editor. */
   content?: ReactNode
 }
+
+/**
+ * The kill-switch placeholder the server substitutes at FIRE time
+ * (`render_nudge_message` in `dashboard/handlers/autonudge.py` replaces it with
+ * the loop's `stop_sentinel_path`). It must travel to `/api/autonudge`
+ * verbatim -- substituting it in the form would leave the server nothing to
+ * replace -- so the textarea keeps the raw token and the help line under it
+ * explains what the token becomes (#10458). `DEFAULT_MSG` below ends with this
+ * exact spelling; a test pins that the template still carries it.
+ */
+export const STOP_FILE_TOKEN = '{{STOP_FILE}}'
 
 const DEFAULT_MSG = `Your north star is in north_star.md, roadmap in roadmap.md, tasks in tasks.md. Pick the single highest-leverage next step toward the goal and execute it. Update tasks.md. Post a blocker ONCE if genuinely stuck. To halt the loop, create {{STOP_FILE}}`
 
@@ -327,6 +338,14 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  the schedule line renders, so the button and the text can never disagree. */
   const cycleAlreadyDue =
     countdownText === i18nT('components.autoNudgePopover.next_cycle_due')
+  /** Help line under the goal textarea while it carries the raw kill-switch
+   *  token; '' otherwise. See the JSX comment at the render site (#10458). */
+  const stopFileHelp = message.includes(STOP_FILE_TOKEN)
+    ? loop && loop.stop_sentinel_path === ''
+      ? i18nT('components.autoNudgePopover.stop_file_help_none', { token: STOP_FILE_TOKEN })
+      : i18nT('components.autoNudgePopover.stop_file_help', { token: STOP_FILE_TOKEN })
+    : ''
+  const stopFileHelpId = useId()
 
   const cycleText = loopCycleText(loop)
 
@@ -478,7 +497,24 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           rows={6}
           className="w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text"
           placeholder={i18nT('components.autoNudgePopover.describe_what_you_want_the_agent_to_accomplish')}
+          aria-describedby={stopFileHelp ? stopFileHelpId : undefined}
         />
+        {stopFileHelp ? (
+          /* Display-only explanation of the raw token above (#10458). The
+             textarea keeps `{{STOP_FILE}}` because the server substitutes it
+             when each nudge is sent; only the human reading the form needed
+             telling what it turns into. Shown while the goal text carries the
+             token, so a custom goal without it gets no orphan help line. The
+             empty-sentinel arm reads the ARMED loop's record: a loop that
+             carries an explicitly empty `stop_sentinel_path` has nothing to
+             substitute, so the honest line is that the token goes out blank
+             and Stop loop is the way to halt it. The path itself is never
+             rendered: the websocket frame withholds it and this surface has no
+             owner gate. */
+          <p id={stopFileHelpId} className="text-muted text-[11px] leading-relaxed -mt-2 mb-3">
+            {stopFileHelp}
+          </p>
+        ) : null}
 
         <div className="flex flex-col gap-3 mb-3 sm:flex-row">
           <div className="flex-1">

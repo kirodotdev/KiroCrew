@@ -173,6 +173,73 @@ describe('ToolCallLine simplifiedToolNames', () => {
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
     expect(screen.getByText('List files in src')).toBeTruthy()
   })
+
+  it('labels a purpose-less shell pill from the command when the title is an argument digest', () => {
+    // kiro-cli titles a purpose-less bash call with a `, `-joined digest of
+    // the command's own argument fragments (`--title, Three, …`). Every
+    // fragment occurs verbatim in the command, so R0.0 does not take it as
+    // the model's description; the classifier refuses the `$PY` head, so the
+    // row shows the command itself in the code face.
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const soup = '--title, Three, …'
+    const cmd = 'cd ~/backend && $PY ledger.py ticket-log --id P1 --title "Three"'
+    const msg = toolMsg({ content: `🔧 ${soup}`, meta: { tool_call_id: 'tc_8' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{
+          type: 'tool', text: soup, tool_call_id: 'tc_8', output: 'ok', ts: 1,
+          is_shell: true, input: JSON.stringify({ command: cmd }),
+        }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    expect(screen.getByText(cmd).className).toContain('font-mono')
+    expect(screen.queryByText(/--title, Three/)).toBeNull()
+  })
+
+  it('cuts a flood-length purpose-less command to its first 80 characters, keeping the whole command on hover', () => {
+    // The digest of a one-binary command names nothing the raw prefix does
+    // not, so the row keeps the raw first line (cut on the 80-char rule) and
+    // the tooltip carries the full command; the argument soup never shows.
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const cmd = `python3 ledger.py ticket-log --text "${'x'.repeat(300)}"`
+    const msg = toolMsg({ content: '🔧 --text, x…', meta: { tool_call_id: 'tc_9' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{
+          type: 'tool', text: '--text, x…', tool_call_id: 'tc_9', output: 'ok', ts: 1,
+          is_shell: true, input: JSON.stringify({ command: cmd }),
+        }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    const pill = screen.getByText(/^python3 ledger\.py ticket-log --text "x+…$/)
+    expect(pill.textContent?.length).toBeLessThanOrEqual(81)
+    expect(screen.getByRole('button', { name: /Show details/i }).getAttribute('title')).toBe(cmd)
+    expect(screen.queryByText('--text, x…')).toBeNull()
+  })
+
+  it('prefers the agent-authored purpose over the command', () => {
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const msg = toolMsg({ content: '🔧 --id, P1, …', meta: { tool_call_id: 'tc_10' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{
+          type: 'tool', text: '--id, P1, …', tool_call_id: 'tc_10', output: 'ok', ts: 1,
+          is_shell: true, purpose: 'Log the root cause to the ticket ledger',
+          input: JSON.stringify({ command: 'python3 ledger.py ticket-log --id P1' }),
+        }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    expect(screen.getByText('Log the root cause to the ticket ledger')).toBeTruthy()
+  })
 })
 
 describe('ToolCallLine inline expansion', () => {
@@ -368,6 +435,7 @@ describe('ToolCallLine inline expansion', () => {
         messages: [msg, pendingPerm],
         toolLog: [{ type: 'tool', text: 'echo hello', purpose: 'Say hello', tool_call_id: 'tc_1', input: 'echo "hi"', ts: 1 }],
         slotRunning: true,
+        activeSlot: 'A',
       } as unknown as ChatState,
     })
     const { rerender } = renderWithProviders(<ToolCallLine message={msg} running={true} />, { store })
@@ -375,7 +443,7 @@ describe('ToolCallLine inline expansion', () => {
     let btn = screen.getByRole('button', { name: /Awaiting approval/i })
     expect(btn.getAttribute('aria-expanded')).toBe('true')
     // Approval resolves through the proper redux action so the selector picks it up
-    store.dispatch(resolveByApprovalId({ id: 'app-1', decision: 'approved' }))
+    store.dispatch(resolveByApprovalId({ id: 'app-1', slot: 'A', decision: 'approved' }))
     rerender(<ToolCallLine message={msg} running={true} />)
     // Auto-collapse on resolve is rAF-deferred — wait for the next frame to flush.
     await waitFor(() => {

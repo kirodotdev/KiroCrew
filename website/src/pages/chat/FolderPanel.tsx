@@ -331,7 +331,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
           aria-label={t('pages.chat.folderPanel.search_files')}
           spellCheck={false}
           autoComplete="off"
-          className="min-w-0 flex-1 bg-transparent border-none outline-none text-[12px] text-text placeholder:text-muted"
+          className="min-w-0 flex-1 bg-transparent border-none outline-hidden text-[12px] text-text placeholder:text-muted"
         />
         {treeMode && query && (
           // The same box does two different things in the two bodies: a recursive

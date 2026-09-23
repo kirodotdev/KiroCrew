@@ -46,6 +46,7 @@ function makeSpec(
   const spec: BotChannelSpec = {
     name: 'Telegram',
     queryKey: `test-${withForum ? 'forum' : 'plain'}-${Math.random()}`,
+    namespace: 'telegram',
     logo: <span />,
     description: 'desc',
     host: 'api.telegram.org',

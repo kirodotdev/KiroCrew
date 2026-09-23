@@ -34,7 +34,7 @@ is Autopilot") so the model recognizes user references to *autopilot* /
 | `dashboard/chat_runner.py` | `_run_chat` (one LLM turn) plus the end-of-turn plan detector that arms the gate |
 | `dashboard/chat_title.py` | `_reset_auto_run_for_new_plan`, `_extract_and_redact_plan_metadata`, `_rephrase_plan_lite` |
 | `dashboard/chat_handlers.py` | `api_chat` typed-`go` / typed-stop detection, post-escalation guidance reset |
-| `dashboard/chat_folders.py` | `api_chat_slot_mode`, whose `_VALID_MODES` also admits `"crew"` — see Slot modes below |
+| `dashboard/chat_folders.py` | `api_chat_slot_mode` and its `_VALID_MODES` allowlist — see Slot modes below |
 | `dashboard/state.py` | `_ChatSlot` plan state and the `mode` / `surface` wire fields |
 | `config/prompt-orchestrator.md` | System prompt: plan format, stage execution, delegation, escalation |
 | `slack/gateway.py` | `_subagent_done` orchestration guard: per-task failures, per-stage rounds, escalation text |
@@ -44,7 +44,7 @@ is Autopilot") so the model recognizes user references to *autopilot* /
 
 ## Slot modes
 
-`api_chat_slot_mode`'s `_VALID_MODES` admits three values, and Autopilot owns
+`api_chat_slot_mode`'s `_VALID_MODES` admits two values, and Autopilot owns
 exactly one of them:
 
 | `mode` | Meaning |
@@ -52,14 +52,16 @@ exactly one of them:
 | `""` | Ordinary chat. No plan machinery. |
 | `"orchestrator"` | Autopilot — everything in this spec. |
 
-A third value, `"crew"` (Crew Mode), existed until it retired in favour of the
-Crew Members page; a slot persisted under it is restored as `""`. Its record is
-in [crew-mode.md](crew-mode.md) § "Retired: Crew Mode".
+The former `"crew"` value (Crew Mode) retired in favour of the Crew Members
+page and is no longer accepted by `_VALID_MODES`; a slot persisted under it is
+restored as `""`. Its record is in [crew-mode.md](crew-mode.md) § "Retired: Crew
+Mode".
 
 ## Slot State
 
-All of these live on `_ChatSlot` (`dashboard/state.py`) and are **in-memory
-only**; none is serialized by `to_dict()` or written to the history meta line.
+All of these live on `_ChatSlot` (`dashboard/state.py`). `mode` is serialized
+and written to the history meta line; the remaining plan-execution fields are
+in-memory only.
 
 | Attribute | Type | Purpose |
 |-----------|------|---------|
@@ -71,6 +73,7 @@ only**; none is serialized by `to_dict()` or written to the history meta line.
 | `_plan_stage_count` | `int` (property) | `len(_stage_titles)` |
 | `_auto_run` | `bool` | "Go All" was chosen: stage gates are skipped |
 | `_in_stage_execution` | `bool` | True only while `_stage_loop` drives a turn; gates the plan detector |
+| `stage_boundary` | `StageBoundary` | Atomically owns the pending stage, provider consumption, exact retry, continuation obligation, Stop-preservation generation, parent keys, recovery counters, and queue-ownership generation |
 
 `surface` is emitted alongside `mode` in the slots payload as a forward-compat
 alias (identical today) so a future backend can split nav destination from mode
@@ -113,10 +116,46 @@ On a planning turn, at end of turn (the plan-detector block in `dashboard/chat_r
 1. `validate_plan_format(text)` checks three things: the `📋 Plan for:` header,
    `Stage N:` lines with strictly sequential numbering, and the `[OPTION: Go |
    … | Cancel]` footer (`context_management.validate_plan_format`).
-2. No header but `looks_like_plan(text)` matches (at least two
-   `Phase|Step|Stage|Part N:` style lines, `context_management.looks_like_plan`):
-   `_rephrase_plan_lite(..., might_not_be_plan=True)` asks the model to either
-   reformat it or answer `NOT_A_PLAN`, in which case nothing is armed.
+2. No header but `looks_like_plan(text)` matches
+   (`context_management.looks_like_plan`): `_rephrase_plan_lite(...,
+   might_not_be_plan=True)` asks the model to either reformat it or answer
+   `NOT_A_PLAN`, in which case nothing is armed.
+
+   The pre-filter is a RUN of numbered lines, not a match count, and
+   `_ordered_plan_runs` takes THREE readings of the text: the stage-line shape
+   alone, the bold-item shape alone, and the two merged in document order.
+
+   No single reading serves every real plan. A plan states its stages and numbers
+   its substeps under them — `Stage 1: Setup` / `1. **Install**` /
+   `2. **Configure**` / `Stage 2: Build` — and in the merged reading those
+   substeps carry the count past 2, so `Stage 2` no longer continues its own run
+   and a plan plainly written as a plan scores 1. Each shape therefore keeps a
+   reading where the other's numbering cannot reach it. The merged reading is for
+   the case neither isolated one sees: a model writing ONE sequence in both
+   shapes, `Stage 1: Survey` then `2. **Build**`.
+
+   A run qualifies at `_PLAN_STAGE_RUN_MIN` (2) when it is stage lines, or is
+   merged and holds at least one stage line; a run of bold items alone needs
+   `_PLAN_BOLD_LIST_MIN` (3). The bold-only shape carries no stage vocabulary at
+   all, and two bold items is the commonest shape of ordinary prose
+   (`1. **Yes** …` / `2. **No** …`), which is why the merged reading is offered
+   the shorter threshold only when a stage line is in it.
+
+   Both patterns are `re.IGNORECASE`: a model writes `1. **setup the repo**` as
+   readily as `1. **Setup the repo**`, and a case-sensitive `[A-Z]` made every
+   lowercase-led bold plan invisible.
+
+   The run taken is the LONGEST one starting at 1, anywhere in the text, not the
+   run at its head — one stray `Step 3:`-shaped sentence above the plan (a line
+   about the code, a quoted log) otherwise zeroed the score of the plan below it.
+
+   It stays deliberately loose — genuinely plan-shaped prose is the LLM's call —
+   but a false positive costs a 2–8 s round trip on the background session, so
+   three shapes that used to count as two matches do not: an excerpt starting
+   mid-list (`3. **Alpha**` / `4. **Beta**`), the same line repeated in two worked
+   examples (`Step 1:` … `Step 1:`), and an unordered enumeration. Same
+   sequential-from-1 reading `validate_plan_format` already applies to a real
+   plan, one stage earlier.
 3. Header present but invalid: `_rephrase_plan_lite` retries the format once.
    If the result is still invalid, `strip_plan_markers` removes the markers and
    the turn degrades to ordinary chat.
@@ -131,6 +170,16 @@ session rather than the slot's own, releases it in a `finally`, and calls
 `sessions.recycle_background()`: repeated rephrases would otherwise bloat that
 child until a mid-stream recycle killed an in-flight call and blocked every
 chat queued behind it.
+
+`rephrase_plan` caps its input at `REPHRASE_INPUT_MAX_CHARS` (4000) before either
+prompt is built. The `[...truncated N chars...]` marker is budgeted INSIDE that
+cap and the remaining 25 % head + 75 % tail split is taken from what is left, so
+the number in the name is the ceiling on what the model actually receives rather
+than on the source text alone. The turn handed to it can be a whole long answer that merely ENDS in
+something plan-shaped, and the call's only job is to reshape a header and a stage
+list. Tail-heavy because a plan appended to an explanation sits at the end. The
+cap is far above any real plan on purpose: the result REPLACES the turn text when
+it validates, so a cap a plan could reach would silently shorten the transcript.
 
 **Fallback arm.** `assistant_text` is reset at each tool-call boundary, so a
 plan emitted before further tool calls is gone by the final segment. A separate
@@ -165,14 +214,28 @@ gate is what makes the stop control actually stop the plan.
   `_stage_loop(state, slot, auto_run=False)`.
 - **Go All** additionally sets `slot._auto_run = True`, logs an
   `auto_run_enabled` SEL event, and starts the loop with `auto_run=True`.
-- **Cancel** stops the tracker, clears `_auto_run`, cancels this slot's running
-  sub-agent tasks, appends `🛑 Plan cancelled.` and broadcasts `chat_done`. It
+- **Cancel** stops the tracker, clears `_auto_run`, cancels this boundary's exact
+  `(parent, owner)` sub-agent work—including spawn-approval waits—across every
+  captured parent, appends `🛑 Plan cancelled.` and broadcasts `chat_done`. It
   never invokes the LLM.
 - If the slot is already running, `Go`/`Go All` are queued
   (`{"ok": true, "queued": true}`).
 
 Typing `go` / `go all` in the chat box reaches the same loop through `api_chat`
-(`dashboard/chat_handlers.api_chat`).
+(`dashboard/chat_handlers.api_chat`). The OpenAI-compatible
+`/v1/chat/completions` path uses `slot.running` for named-slot admission, so it
+refuses unrelated requests throughout stage settlement even while no child turn
+occupies `slot.task`. Executing and cancelling conflicts return `409` with
+`error.type: slot_busy` and `code: slot_busy`. A paused gate has different
+remediation, so it returns `409` with `error.type: slot_busy` and
+`code: stage_gate_paused`; its message directs the client to continue from the
+dashboard with Go because the OpenAI-compatible endpoint cannot submit that
+action. The top-level `code` mirrors `error.code` in both cases.
+
+| Named-slot state | HTTP | `error.type` | `code` | Client action |
+|---|---:|---|---|---|
+| Turn executing or cancellation settling | 409 | `slot_busy` | `slot_busy` | Retry after the slot becomes idle. |
+| Autopilot stage gate paused | 409 | `slot_busy` | `stage_gate_paused` | Continue from the dashboard with Go. |
 
 **Widget-origin refusal.** `go`/`go all` is the only privilege escalation
 reachable from chat *text* (it flips the slot into unattended per-stage
@@ -247,14 +310,58 @@ entry.
    instruction. It is appended as a hidden user message (`auto-go` class) and
    passed to `_run_chat`. An exception from `_run_chat` clears `_auto_run`,
    posts a stage-error notice, logs `auto_run_stage_error`, and breaks.
-7. **Wait for the stage's sub-agents.** Polls
-   `state.subagents.running_agents_for("dashboard:<slot>")` every 2s, up to 150
-   rounds (5 minutes), broadcasting a `chat_status` count every 10 polls. This
-   is **fail-closed**: a missing manager, or `running_agents_for` returning
-   `None` either before or during polling, stops auto-run with a notice and a
-   `auto_run_subagent_check_failed` SEL event rather than silently skipping
-   verification. Exhausting the 150 rounds stops auto-run with
+7. **Wait for the stage's sub-agents.** Registers one
+   `SubagentManager.completion_event(parent_key)` for every immutable parent key
+   captured by the boundary, pulsed once per terminal report from
+   `_subagent_done`, and re-reads `running_agents_for` on each wake. Each event is
+   a PULSE, not state: the loop CLEARS every event before re-reading, so a
+   completion landing between the read and the wait still returns at once
+   instead of being dropped. `_SA_FALLBACK_SECS` (5 s) bounds each wait because
+   an event is explicitly not a guarantee — a run can
+   reach a terminal state on a path that never announces (shutdown's
+   `cancel_all`) — and the plan-Cancel handler pulses the event itself so a cancel
+   is not waiting out that interval. Registration is released in a `finally`;
+   the manager's waiter table is fused at `_MAX_COMPLETION_WAITERS` (64), past
+   which a caller gets a detached event and degrades to its own fallback rather
+   than growing the table.
+
+   This replaces a 2 s poll, which cost the wave up to two seconds of latency and
+   ran the O(n) `running_agents_for` scan on a timer whether anything had happened
+   or not. The ceiling is unchanged in value and now stated in wall clock rather
+   than rounds: `min(stage_timeout // 2, _SA_MAX_WAIT_SECS)` — half the stage
+   budget, capped at 15 minutes — so it no longer moves when the poll interval
+   does. The `chat_status` count is re-broadcast every `_SA_STATUS_EVERY_SECS`
+   (20 s). Still **fail-closed**: a missing manager, or `running_agents_for`
+   returning `None` either before or during the wait, stops auto-run with a notice
+   and an `auto_run_subagent_check_failed` SEL event rather than silently skipping
+   verification. Exhausting the ceiling stops auto-run with
    `auto_run_subagent_timeout`.
+
+   **Settlement invariants.** These ids are stable; code comments and review
+   findings cite them bare, and the named tests decide if prose and behavior
+   disagree.
+
+   | Id | Guarantees | Pinned by | Constrains |
+   |---|---|---|---|
+   | S1 | Only completion or recovery rows tagged with the active `StageBoundary.owner` run inside that stage. A tagged completion routes status, stage delivery, and delivery settlement by its exact captured `(parent, owner-generation)`, independent of alias arm time. A retry preserves its prior owner only while that exact boundary remains active; after release it joins the current parent route and never revives the stale owner. Only untagged runs use the parent/latest compatibility fallback; canonical is used when no alias has an active owner. Foreign rows remain queued until stage execution ends. | `test_autopilot_stage_completion_handoff.py::test_stage_settlement_consumes_only_owned_completion`, `::test_active_stage_holds_foreign_completion_until_boundary_exit`, `test_handlers_messaging_coverage.py::TestApiSpawnRetry::test_stage_boundary_owner_prefers_active_alias_over_inactive_canonical`, `::test_stage_boundary_slot_falls_back_to_canonical_without_active_owner`, `test_slack_gateway.py::TestSubagentDone::test_dashboard_completion_routes_to_exact_run_owner`, `::test_retry_after_released_boundary_routes_to_live_canonical_slot` | `chat_utils.py` (`owned_stage_delivery_entry`), `chat_orchestrator.py` (`_settle_stage_delivery`), `chat_runner.py` (`_start_next_queued_turn`), `dashboard/handlers/messaging.py` (`_stage_boundary_slot_for_parent`, `api_spawn_retry`), `state.py` (`StageBoundary.generation`), `slack/gateway.py` (`_subagent_done`) |
+   | S2 | Consumed but interrupted stage work retains its exact retry or continuation obligation until successful settlement and capture; queueing or prompt consumption alone never discharges it. | `test_autopilot_stage_completion_handoff.py::test_unrelated_completion_does_not_suppress_consumed_stage_continuation`, `::test_exact_preconsumption_recovery_finishes_before_stage_advance` | `state.py` (`StageBoundary.continuation_required`, `preserve`), `chat_orchestrator.py` (`_queue_consumed_stage_resume`, `_settle_stage_delivery`) |
+   | S3 | Each `(parent, owner-generation)` keeps its own bounded failed-report payload bucket. Rows are frozen compact snapshots—never live `SubagentInfo` records—and all retained rows share one `_REPORT_FAILURE_BYTE_BUDGET`; each bucket admits at most `_REPORT_FAILURES_PER_PARENT_CAP` rows and variable delivery text is capped at 64 KiB. A source-derived test enumerates every `SubagentInfo` field read by `_report_terminal_impl`, `_subagent_done`, and their report helpers, then requires the snapshot field set to match exactly. If the row cap or process budget refuses a snapshot, the exact live `StageBoundary.report_retention_refused` stores `row_cap` or `byte_budget`; no global sentinel, refusal count, scope map, or collapse record exists. That boundary stays failed closed until its own discard clears the flag, while an unrelated boundary discard changes nothing. Retained snapshots can redeliver. Slot teardown discards only exact parent/owner pairs from the closing boundary generation. Finished-run deletion fences an active report task, then redelivers debt for the matching live boundary or discards only that exact inactive boundary before removing the record. | `test_subagent_reap_race.py::test_retained_report_payload_caps_text_bytes_and_redelivers`, `::test_report_failure_snapshot_fields_match_terminal_consumers`, `::test_saturated_report_scope_blocks_only_itself_until_discard`, `::test_report_failure_byte_budget_rejects_only_the_new_row`, `::test_report_retention_refusal_is_boundary_local`, `::test_report_failure_refusals_are_boundary_local`, `::test_slot_teardown_discards_exact_failure_scopes_for_its_boundary`, `::test_slot_teardown_preserves_sibling_alias_failure_scope`, `::test_aborted_slot_teardown_preserves_failure_scopes`, `::test_saturated_report_payload_boundary_stays_blocked_until_discard`, `::test_settle_before_delete_waits_for_inflight_terminal_report`, `::test_settle_before_delete_keeps_run_until_report_delivery_succeeds`, `test_autopilot_stage_completion_handoff.py::test_failed_delivery_pause_reaches_transcript_and_linked_channel`, `test_handlers_messaging_coverage.py::TestApiSpawnDelete::test_managed_delete_settlement_uses_one_public_manager_seam`, `::test_delete_scopes_settlement_to_the_deleted_runs_owner` | `state.py` (`StageBoundary.report_retention_refused`, `StageBoundary.clear`), `subagent.py` (`_ReportFailureSnapshot`, `_REPORT_FAILURE_BYTE_BUDGET`, `_truncate_report_failure_text`, `_admit_report_failure`, `_report_retention_refusal`, `discard_report_failure_scopes`, `settle_before_delete`), `slack/gateway.py` (`_report_failure_boundary`, `_subagent_done`), `chat_handlers.py` (`close_slot`), `chat_orchestrator.py` (`_settle_stage_delivery`, `_halt_plan`), `chat_runner.py` (`_deliver_linked_slack_message`, `_deliver_cross_surface_reply`), `dashboard/handlers/messaging.py` (`api_spawn_delete`) |
+   | S4 | One accepted Go owns one three-retrigger recovery budget across all of its stages; stage arm and clear preserve the count and the next accepted Go resets it. | `test_autopilot_stage_completion_handoff.py::test_recovery_retriggers_accumulate_across_stages_for_one_go` | `state.py` (`StageBoundary.recovery_retrigger_count`), `chat_handlers.py` and `chat_orchestrator.py` (Go admission), `slack/gateway.py` (retrigger gate) |
+   | S5 | Plan cancellation captures every exact `(parent, StageBoundary.owner)` scope and atomically reserves the full parent set, or records a boundary-local cap refusal, before controller teardown or any store await. In the same synchronous decision, every matching live, completed-unrouted, or watcher-held record becomes `user_stopped` and `_stage_boundary_cancelled`; retained report debt and queued follow-ups are removed, and owned follow-up watchers are cancelled. Parent-end teardown uses the same delivery classification: `_stage_boundary_cancelled` is `PARKS_WHEN_SET`, while `pending_followups` is `NOT_DELIVERY_STATE` and is instead cleared with its watcher synchronously before the retired session key can be reused. The gateway still accounts a racing batch member but re-checks revocation at each completion handoff, so no digest, parent route, channel injection, continuation dispatch, or watcher re-arm survives cancellation. It cancels work across every captured parent, including children parked on spawn approval, without touching another owner under the same parent. Durable queued-row reads and writes run on `TaskStore.run`. Within one process, if the store is unavailable, that exact scope remains held after the UI boundary releases: refill and fair-pick refuse its rows while sibling owners remain eligible, the halt is visible in the transcript and mirrored to linked channels, and the next pump settlement pass retries the durable cancel in insertion order. The manager retains at most `_PENDING_BOUNDARY_CANCELLATION_SCOPE_CAP` exact scopes and caps each stored failure at `_PENDING_BOUNDARY_CANCELLATION_FAILURE_MAX_CHARS`; it reserves every parent alias for one stage atomically. When the set cannot fit, `StageBoundary.cancellation_hold_refused` records `pending_scope_cap` with the overflow count, matching live owners are revoked, and the stage boundary remains closed until a later Cancel can reserve the full set. This hold is process-local. After restart, the TaskStore boot reconciler returns an ownerless `ADMITTED` row to `QUEUED`; before the first refill inserts any stage-tagged persisted row, refill resolves its `(parent, owner)` against live boundaries and durably cancels the row when that exact boundary no longer exists. Untagged rows retain ordinary restart redispatch. A boundary-owned claim revalidates its durable generation and exact cancellation authority immediately before registration, with no intervening await on the successful path. If that post-claim store step is unavailable, the process-local `_retained_claims` map keeps the admitted generation and reserved slot; the next pump settlement pass retries it before ordinary refill, and only registration or a durable refusal consumes or releases the reservation. If cancellation refuses a still-owned admitted generation, the writer thread cancels it, publishes the neutral queued-stop report, and returns its reservation; no admitted-but-unregistered task remains. It publishes one terminal stop and hands the oldest surviving queued turn to exactly one owner only after active stage work has stopped. | `test_session.py::TestParentEndCancelsItsChildren::test_parent_end_cancels_owned_followup_without_recreating_session`, `::test_the_delivery_parked_states_are_enumerated_from_the_producers`, `::test_every_parked_state_makes_the_delivery_parked`, `test_taskq_admission_integration.py::test_boundary_cancel_scope_cap_bounds_failures_and_retries_in_order`, `::test_boundary_cancel_scope_reservation_is_atomic_across_parent_aliases`, `test_plan_cancel_race.py::test_active_stage_cancel_scope_cap_keeps_boundary_and_blocks_dispatch`, `test_taskq_admission_integration.py::test_claim_revalidation_outage_retains_generation_and_slot_until_retry`, `::test_boundary_cancel_refuses_completion_before_store_settlement`, `::test_boundary_cancel_revokes_completed_unrouted_owner_before_store_settlement`, `test_slack_gateway.py::TestSubagentDoneStoppedClassification::test_boundary_cancelled_completion_is_not_routed`, `::test_completed_owner_revoked_while_report_waits_is_not_routed`, `test_spawn_followup.py::TestFollowUpDelivery::test_boundary_cancel_drops_completed_owners_queued_followup`, `test_plan_cancel_race.py::test_plan_cancel_revokes_every_captured_parent_before_boundary_clear`, `::test_stage_cancel_store_failure_surfaces_mirrored_halt_notice`, `::test_active_stage_cancel_releases_boundary_and_hands_off_once`, `::test_concurrent_cancels_start_only_one_queued_turn`, `test_subagent_scale.py::TestBatchIdentity::test_stop_boundary_includes_approval_waiters_and_preserves_sibling`, `test_taskq_admission_integration.py::test_cancel_for_boundary_reaches_only_its_store_rows`, `::test_cancel_for_boundary_store_io_runs_off_the_loop_thread`, `::test_boundary_cancel_store_failure_blocks_dispatch_until_retry_tick`, `::test_boundary_cancel_after_claim_before_registration_refuses_start`, `::test_boundary_cancel_marker_after_claim_releases_and_stops_row`, `::test_restart_refill_cancels_row_from_gone_stage_boundary` | `chat_orchestrator.py` (`_cancel_stage_subagents`, `_release_cancelled_plan_boundary`, `_cancel_release_owns_handoff`), `subagent.py` (`DELIVERY_ROUTING_FIELDS`, `delivery_is_parked`, `cancel_for_boundary`, `_pending_boundary_cancellations`, `_retained_claims`, `_stage_boundary_cancelled`, `_followup_watcher_infos`), `subagent_manager/cancellation.py` (`snapshot_teardown_children_impl`, `cancel_for_boundary_impl`, `retry_pending_boundary_cancellations_impl`), `subagent_manager/continuation.py` (`_arm_followup_watcher_impl`, `_deliver_followups_impl`), `subagent_manager/admission/pump.py` (`claim_and_start`, `retry_retained_claims`), `subagent_manager/admission/taskq_bridge.py` (`taskq_cancel_boundary_async`, `_reconcile_refill_boundaries_async`), `subagent_manager/admission/fairness.py` (`pick_window_index`), `slack/gateway.py` (`_subagent_done`) |
+
+   Every Autopilot halt appends through the same transcript-feed seam the dashboard renders and mirrors to a linked Slack or non-Slack channel.
+
+   The queue-aware probe includes accepted spawns not yet registered as running,
+   completed inner runs whose outer report-registration task remains live, active
+   report tasks, retained report debt, owned delivery rows and delivery counters.
+   Capture requires two clean event-loop passes over those sources. The provider
+   consumption callback decides whether an interrupted stage reruns or continues;
+   auth and refusal retries preserve their enqueue-time system provenance. A
+   pending boundary contributes to `slot.running` until guarded Go or Cancel
+   releases it. Execution-only consumers use `turn_running`, while destructive
+   history edits (regenerate, variant switching, and edit-resend) use `running`
+   so they cannot rewrite the transcript reserved for the next stage, as
+   specified in [session.md](session.md).
 8. **Capture the stage result**, split across the thread boundary.
    `_collect_stage_result_parts` walks the assistant messages back to this
    stage's separator **on the loop**, because `slot.messages` is live state the
@@ -295,11 +402,19 @@ plus re-plan arm again. Unless the loop paused, it appends `done` and broadcasts
 
 ### Previous-stage context
 
-`_previous_result_paths` inlines up to 2000 bytes per prior stage (30% head,
-70% tail, split in **binary** mode so head and tail budgets are in the same
-units as the size check) and always emits the full path so the model can read
-the rest with its file tools. A result file whose path is sensitive
-(`security.is_sensitive_path`) contributes its path only, never its content.
+`_previous_result_paths` inlines up to 2000 bytes for each of the last
+`_PREV_FULL_STAGES` (3) prior stages (30% head, 70% tail, split in **binary** mode
+so head and tail budgets are in the same units as the size check). Every EARLIER
+stage contributes one headline instead — its first non-separator line, read from
+the first `_PREV_HEADLINE_BYTES` (512) of the file. Each stage always emits its
+full path, so nothing the model could reach before is out of reach; it opens an
+older result with its file tools.
+
+Inlining every prior stage made the context grow with the stage index — ~18 KB by
+stage 10 — and re-read every earlier file at each boundary, on the worker the
+`asyncio.to_thread` hop exists to protect. A result file whose path is sensitive
+(`security.is_sensitive_path`) contributes its path only, never its content or its
+headline.
 
 ## Failure Handling and Escalation
 
@@ -356,15 +471,19 @@ mid-plan is not read as a control command; the Cancel and Stop buttons are
 unconditional.
 
 **Two flags, two meanings — every advancement gate reads both.** Stop sets
-`slot._stopping`: the slot is being torn down, so nothing on it may keep running.
-Cancel and the typed stop words set `tracker.stopped` and leave `_stopping`
-alone: the slot stays alive and usable, and only the plan ends. A gate reading
-one flag therefore observes only half the stops, and the window that matters is
-`_run_chat` — the loop's longest await, so the likeliest place for a cancel to
-land, and the point it would otherwise resume from straight into the next stage
-against a revoked approval. `_orchestration_stopped(slot, tracker)` is the single
-predicate all four gates (top-of-iteration, post-`_run_chat`, the sub-agent poll
-condition, and pre-capture) call, so the two channels cannot drift apart again.
+`slot._stopping` for session teardown; plan Cancel and typed stop set
+`tracker.stopped` while leaving the slot usable. `_orchestration_stopped` reads
+both flags plus the monotonic stop generation at every advancement and settlement
+gate, so a Stop that resolves back to idle still revokes the controller entry that
+observed it.
+
+Settlement invariant S2 decides whether interrupted stage input reruns or first
+settles its retained continuation. Settlement invariant S5 owns plan-cancellation
+release and successor handoff. Before that release, Cancel revokes subagents under
+the legacy `dashboard:<slot>` key and every parent key captured by the boundary,
+then drops only tagged Go approvals, the exact retry and delivery rows owned by
+the cancelled generation. Foreign-generation completions and ordinary queued user
+messages survive for the one successor handoff.
 
 The inverse — having Cancel set `slot._stopping` — is deliberately **not** what
 this does: that flag carries teardown semantics for paths outside the stage loop,
@@ -400,8 +519,9 @@ orchestrator prompt in order: `~/.kiro/crew/prompt-orchestrator.md`, then
 prompt if none exists. `ContextBuilder` passes the slot's mode through on the
 first message of a session, so
 switching mode takes effect on the next fresh session, and
-`{{MAX_SUBAGENTS}}` in the prompt is substituted with the live resolved
-concurrency cap.
+`{{MAX_SUBAGENTS}}` in the prompt is substituted with the execution cap in
+force (`resource_status.adaptive_exec_cap`), or with the configured ceiling
+labelled as one when no controller runs in the process.
 
 The bundled prompt is self-contained and replaces, rather than appends to, the
 normal prompt. Its planning contract is explicit: a plan request in any language
@@ -470,8 +590,14 @@ however long the plan runs.
   silence it used to get. See [the stage loop](#execution-the-stage-loop).
 - Mode cannot be switched while the slot is running: `api_chat_slot_mode`
   returns `409`.
-- Sub-agent wait is capped at 5 minutes per stage; a longer fan-out stops
-  auto-run with a possibly-incomplete-results notice rather than waiting.
+- Sub-agent wait is capped at half the stage budget, 15 minutes at most; a
+  longer fan-out stops auto-run with a possibly-incomplete-results notice rather
+  than waiting.
+- A stage advances when its turn returns without raising. Whether the stage
+  actually produced work is NOT judged: deciding it needs a signal that survives
+  a tool-only turn, a transient empty turn, a refused permission-gated call, an
+  unrelated successor turn and an unanswered question, and no such signal exists
+  yet. Tracked as P2-1 on #1783.
 
 ## Testing
 
@@ -479,6 +605,9 @@ however long the plan runs.
 |------|----------|
 | Tracker limits, timeout, `timeout_human`, caps, stale-session cleanup | `test/test_context_management.py` |
 | Round cap enforced on the dashboard path; stage entry spends no round | `test/test_stage_round_cap_enforced.py` |
+| The plan pre-filter still sees lowercase, mixed-shape and stray-numbered plans | `test/test_plan_detection_breadth.py` |
+| The wave wait is event-driven, its fallback still bounds it, and the waiter table is fused | `test/test_autopilot_wave_wait_event.py` |
+| Only the last three prior stages are inlined | `test/test_autopilot_previous_stage_context.py` |
 | Whole-plan watchdog, the 75% notice, budget loading for a tracker the loop did not build | `test/test_plan_duration_watchdog.py` |
 | Config load off the loop thread, and the cancel/stop windows it opens | `test/test_orchestrator_config_load_off_loop.py` |
 | A plan with no stages is refused out loud rather than silently skipped | `test/test_expired_plan_is_refused.py` |

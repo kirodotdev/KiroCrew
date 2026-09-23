@@ -2,7 +2,15 @@ import { useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 
-/** sessionId → shell-ready WebSocket. Each terminal tab owns one entry. */
+/**
+ * sessionId → shell-ready WebSocket. Each terminal tab owns one entry.
+ *
+ * This is the EXECUTION tier: a socket lands here only once the backend's
+ * `ready` frame says the shell has reached its first prompt, because releasing a
+ * whole command line before then can hand it to a login profile still blocked in
+ * `read`. Characters the user is TYPING need no such barrier and must not be
+ * gated on this map -- see `getTerminalInputWs`.
+ */
 const registry = new Map<string, WebSocket>()
 /** Per-session one-shot shell-ready listeners. */
 const readyListeners = new Map<string, Set<() => void>>()
@@ -141,9 +149,21 @@ export function sendToTerminalSession(sessionId: string, code: string): boolean 
  * Send raw bytes to a terminal session WITHOUT appending a newline — used by
  * inline path completion to type an accepted suggestion into the shell's line
  * editor. Returns false if that session has no open socket.
+ *
+ * Uses the TYPING tier, so it works on a session whose readiness hook a login
+ * profile replaced (#7657). Newline-terminated dispatch keeps using the
+ * ready-gated tier; see `getTerminalInputWs` for why the two differ.
  */
 export function sendRawToTerminalSession(sessionId: string, data: string): boolean {
-  const ws = getTerminalWs(sessionId)
+  // Submitting a line is the one thing this tier must be unable to do, since
+  // that is what lets it type before `ready`: a carriage return or newline
+  // reaching a profile still blocked in `read` is the exact loss the barrier
+  // exists to prevent. Callers already refuse a filesystem name holding either
+  // one (`isSafeName`), so this is the tier's own invariant, not a filter -- a
+  // future caller that loses that check fails closed here instead of executing
+  // something.
+  if (/[\r\n]/.test(data)) return false
+  const ws = getTerminalInputWs(sessionId)
   if (!ws) return false
   try {
     ws.send(new TextEncoder().encode(data))
@@ -197,6 +217,39 @@ interface Conn {
   displaced: boolean
 }
 const conns = new Map<string, Conn>()
+
+/**
+ * The session's live socket for TYPING, or null if it has none.
+ *
+ * Terminal input arrives in two tiers whose safety needs are not the same, and
+ * the `ready` frame bounds only one of them:
+ *
+ * - EXECUTION (`getTerminalWs`) -- a whole newline-terminated line released on
+ *   the user's behalf. It waits for `ready`, because a line submitted while a
+ *   login profile is still blocked in `read` is consumed by that `read`:
+ *   executed never, reported sent.
+ * - TYPING (this) -- characters put into the shell's line editor, submitting
+ *   nothing. No barrier applies: a human is watching the screen, and
+ *   `term.onData` already writes hand-typed keystrokes to this very socket
+ *   without consulting the registry.
+ *
+ * Serving both from the ready-gated registry is #7657. The `ready` frame rides
+ * an inherited `PROMPT_COMMAND` hook; a login profile that ASSIGNS that variable
+ * replaces the hook, so the frame never arrives for the life of that session,
+ * and inline path completion went dead there while the same characters typed by
+ * hand still reached the shell.
+ *
+ * Either map may hold the socket: `connect` owns it, and `registry` is the
+ * subset that has also cleared the execution barrier (the same object, in the
+ * connection manager's path). Ownership is enforced server-side regardless -- the
+ * gateway drops input frames from a socket that no longer owns the PTY.
+ */
+export function getTerminalInputWs(sessionId: string): WebSocket | null {
+  for (const ws of [conns.get(sessionId)?.ws, registry.get(sessionId)]) {
+    if (ws && ws.readyState === WebSocket.OPEN) return ws
+  }
+  return null
+}
 
 /* ── Per-session connection status, published to the terminal view ──
  * The status lives on the Conn but is surfaced through its own listener set so

@@ -73,4 +73,22 @@ describe('connectInstanceInto pane journal', () => {
     await expect(connectInstanceInto(vi.fn() as never, 'shizuka', 'auto-connect')).rejects.toBe(err)
     expect(lines).toEqual(['[pane] warm-failed id=shizuka via=auto-connect error="502 tunnel down"'])
   })
+
+  it('a fargate answer (connected, turn URL, no token) never warms a pane', async () => {
+    // The gateway hands back a live forward with a turn URL and deliberately no
+    // token: there is no dashboard behind that port. A pane rendered from it
+    // would iframe a JSON API, so the only correct outcome is no warm entry.
+    const lines = captureInfo()
+    const dispatch = vi.fn()
+    connectInstance.mockResolvedValue({
+      state: 'connected',
+      local_port: 7790,
+      turn_url: 'http://127.0.0.1:7790/v1/chat/completions',
+    })
+    await connectInstanceInto(dispatch as never, 'fargate-crew')
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(lines).toEqual([
+      '[pane] warm-declined id=fargate-crew via=select state=connected hasPort=true hasToken=false',
+    ])
+  })
 })

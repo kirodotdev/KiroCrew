@@ -155,7 +155,10 @@ def session_ledger_read(name: str, args: dict[str, Any]) -> str:
     if not any(state.get(k) for k in ("goal", "phase", "next", "tried", "artifacts")):
         return (
             "This session has no work ledger yet. Use session_ledger_record "
-            "to start one when doing long-horizon work."
+            "to start one when doing long-horizon work. If recording answers "
+            "crew_log_unavailable, the ledger is kept in this session's crew log "
+            "and that log is off: start the gateway with KIROCREW_CREW_LOG=1 "
+            "(the env var is the only setting; there is no config key)."
         )
     return json.dumps({"state": state, "events": events}, indent=2)
 
@@ -188,7 +191,17 @@ def session_ledger_record(name: str, args: dict[str, Any]) -> str:
         return f"Error: {api_err}"
     state = d.get("state") or {}
     phase = state.get("phase") or "(unset)"
-    return f"Recorded. phase={phase} next={state.get('next') or '(unset)'}"
+    line = f"Recorded. phase={phase} next={state.get('next') or '(unset)'}"
+    if d.get("durable") is False:
+        # The route answers this when the crew log's writer had not taken the append by
+        # the time the call returned. The record is correct and the next update
+        # supersedes it, but the caller is usually about to rely on surviving a restart,
+        # so it is told rather than left to assume the write is on disk.
+        line += (
+            " (NOT yet on disk: the log writer was still busy, so this update may not "
+            "survive a restart -- record it again if that matters)"
+        )
+    return line
 
 
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {

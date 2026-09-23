@@ -17,7 +17,13 @@ a widget-capable renderer that skips the helper fails that test.
 Channels declaring ``max_buttons=0`` render no widget and route the whole
 trailer through :func:`render_options_as_text`, which reaches the same helper
 with zero widget slots: every choice becomes a numbered line the user answers by
-typing, rather than being deleted along with the trailer.
+typing, rather than being deleted along with the trailer. Four channels deliver the
+numbered list -- Weixin, iMessage and Feishu through this function, WeCom through
+its own streaming-aware copy (see below) -- and
+``test/test_options_cap_contract.py`` drives each one. WhatsApp declares ``max_buttons=0`` and does NOT: its renderer strips a
+complete trailer (``whatsapp/turn_renderer.py::_strip_options``) and the choices
+are lost, which is a gap rather than a position -- so a ``0`` here is not on its
+own a promise that the list survives.
 
 Webex is the widget channel that ALSO always ships the numbered text: it declares
 Adaptive Card actions, but the inbound half of a press rides an undocumented
@@ -44,7 +50,12 @@ from kiro_crew.constants import (
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 
 # Abstract output event kinds.
 TEXT_CHUNK = "text_chunk"
@@ -368,6 +379,31 @@ def redaction_notice(cred_count: int, url_count: int) -> str:
     )
 
 
+def count_redaction_tags(text: str) -> tuple[int, int]:
+    """Count both redaction placeholder kinds in delivered text.
+
+    Returns ``(cred_count, url_count)`` — the two arguments
+    :func:`redaction_notice` takes, in its order. Every delivery surface that
+    posts a notice needs the same two tallies over the text that actually
+    shipped, and each kind counts differently: a credential tag is a CLOSED set
+    of constant strings (``CREDENTIAL_REDACTION_TAGS``), matched exactly and
+    summed so an encoded-credential-only answer is not missed, while the URL
+    tag interpolates the redacted domain and so has no constant form — it is
+    counted by ``EXFILTRATION_REDACTION_TAG_PREFIX`` prefix, never by equality.
+
+    One shared counter exists so a surface cannot adopt half the tally: a
+    site that counts credentials but forgets the URL prefix (or vice versa)
+    posts a notice worded for the wrong remedy, which is the gap the two-kind
+    notice closes. Count from the DELIVERED text rather than a redactor's
+    warnings list: chunked surfaces redact on the way out, so re-redacting the
+    assembled answer reports nothing while the placeholders are plainly
+    visible in what shipped.
+    """
+    cred_count = sum(text.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
+    url_count = text.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+    return cred_count, url_count
+
+
 def _choice_display_safe(text: str, capabilities: TransportCapabilities | None) -> str:
     """The choice-label display sink, target-aware when the target is known.
 
@@ -578,10 +614,16 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
 def render_options_as_text(text: str, capabilities: TransportCapabilities) -> str:
     """Rewrite a trailing ``[OPTIONS:]`` trailer in *text* as numbered text.
 
-    The whole trailer handling for a channel that renders no widget, so every
-    channel that renders none shares one implementation instead of a copy each.
+    The whole trailer handling for a channel that renders no widget, so a channel
+    that renders none shares one implementation instead of keeping a copy each.
     Returns the body only; the widget half of :func:`apply_options_cap` has
     nothing to keep at ``max_buttons == 0``.
+
+    Three of the five zero-widget channels call it: Weixin, iMessage and Feishu.
+    WeCom reaches the same outcome through its own ``_render_options_as_text``, for
+    the ``hide_partial`` reason below, so it does not call this one. WhatsApp is the
+    channel that reaches the outcome NOWHERE: its renderer strips the trailer
+    instead, so its choices never arrive here or anywhere.
 
     Parsing is :func:`split_options_trailer`, at its buffered default: this path's
     callers do not stream — they buffer a whole turn and send once — so an

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { frecencyScore, recordUse, _clearUsageForTest, type UsageMap } from './frecency'
-import { rankRootRows, type RootRow } from './rootIndex'
+import { rankRootRows, ROOT_GROUPS, type RootRow } from './rootIndex'
 
 /**
  * Unit tests for the Command Bar root index and its frecency ranking.
@@ -139,6 +139,82 @@ describe('rankRootRows', () => {
     expect(rankRootRows(rows, '', {}, 0)).toHaveLength(2)
     // Typed: they rank normally, up to the usual per-group cap.
     expect(rankRootRows(rows, 'setting', {}, 0)).toHaveLength(6)
+  })
+
+  it('opens on commands and apps, with settings behind them', () => {
+    // The whole point of the settings idle cap: what a launcher LEADS WITH is a
+    // product decision, and with no usage every score ties so the alphabet would
+    // otherwise decide. This pins the opening page's composition, not just the cap.
+    const rows: RootRow[] = []
+    for (let i = 0; i < 4; i++) {
+      rows.push(row({ id: `app${i}`, title: `Alpha app ${i}`, group: 'apps' }))
+      rows.push(row({ id: `set${i}`, title: `Beta setting ${i}`, group: 'settings' }))
+      rows.push(row({ id: `cmd${i}`, title: `Zulu command ${i}`, group: 'commands' }))
+    }
+    const groups = rankRootRows(rows, '', {}, 0).map(r => r.group)
+    // Commands lead despite sorting last alphabetically; settings are held to two.
+    expect(groups.slice(0, 4)).toEqual(['commands', 'commands', 'commands', 'commands'])
+    expect(groups.filter(g => g === 'settings')).toHaveLength(2)
+  })
+
+  it('carries no folders group, so the folder list cannot reach the first page', () => {
+    // The corpus is reached through a `view` row, and this is the structural half of
+    // that decision: with no group to file them under, a future caller cannot push
+    // folder rows into the root without first reopening the question.
+    expect(ROOT_GROUPS).not.toContain('folders')
+  })
+
+  it('leads with the sessions that need the reader, then the ones they were last in', () => {
+    // Group order is the product decision, and `recent` sits between the two things
+    // it is not: a session waiting on the reader outranks one they merely left, and
+    // both outrank a command they would otherwise have to go looking for.
+    const rows = [
+      row({ id: 'c', title: 'Alpha command', group: 'commands' }),
+      row({ id: 'r', title: 'Zulu session', group: 'recent' }),
+      row({ id: 'a', title: 'Mike session', group: 'attention' }),
+    ]
+    expect(rankRootRows(rows, '', {}, 0).map(r => r.group)).toEqual([
+      'attention',
+      'recent',
+      'commands',
+    ])
+  })
+
+  it('keeps an idle-ordered group in its own order, against the alphabet', () => {
+    // "The last three sessions" is only true in the order the caller supplied. Every
+    // score ties on an empty query, so the alphabetical tiebreak would otherwise
+    // reorder them into a list that is no longer about recency at all. An
+    // idle-ordered group is exempt from it and keeps the order it was supplied in.
+    const rows = [
+      row({ id: 'first', title: 'Zulu', group: 'recent' }),
+      row({ id: 'second', title: 'Alpha', group: 'recent' }),
+      row({ id: 'third', title: 'Mike', group: 'recent' }),
+    ]
+    expect(rankRootRows(rows, '', {}, 0).map(r => r.id)).toEqual(['first', 'second', 'third'])
+  })
+
+  it('keeps an idle-ordered group in its own order, against frecency too', () => {
+    // The stronger half. A session opened from the bar eight times last week earns a
+    // boost that would lift it over the one the reader just left — which is the one
+    // fact this group exists to report, so the boost has to be declined here.
+    const now = 10 * DAY
+    const rows = [
+      row({ id: 'just-left', title: 'Just left', group: 'recent' }),
+      row({ id: 'habitual', title: 'Habitual', group: 'recent' }),
+    ]
+    const usage: UsageMap = { habitual: { count: 8, last: now } }
+    expect(rankRootRows(rows, '', usage, now).map(r => r.id)).toEqual(['just-left', 'habitual'])
+  })
+
+  it('ranks an idle-ordered row on its match once a query narrows the list', () => {
+    // Idle only: typing a session's name must find it, and at that point the row is
+    // an ordinary candidate. A row whose title cannot match is dropped like any
+    // other, so idle order is not a way to stay on screen.
+    const rows = [
+      row({ id: 'alpha', title: 'Alpha', group: 'recent' }),
+      row({ id: 'beta', title: 'Beta', group: 'recent' }),
+    ]
+    expect(rankRootRows(rows, 'bet', {}, 0).map(r => r.id)).toEqual(['beta'])
   })
 })
 

@@ -19,7 +19,13 @@ superseded-by: []
 > that document owns the rule, and this one keeps only the reasoning that
 > produced it.
 
-- Status: partial — PRs ① and ② are shipped and load-bearing: the shared turn pipeline lives at `messaging/dispatch.py` and **4 of 7 channels** drive turns through it (weixin, wecom, webex, teams). PRs ③ (registry + `ChannelDescriptor`/`ChannelHooks`, the 9→1 seam collapse), ④ (telegram + discord adoption) and ⑤ (Feishu) are unstarted, and all nine hand-edited seams are still hand-edited. Slack is out of scope by §2 principle 4. The §9 amendment is only partly honored: rule 5 (address-agnostic pipeline) is pinned in code, but rule 1 (`session_key` as the control-plane address) and rule 4 (one builder/parser) are unstarted. Measured effect: dispatcher lines went 3,796 → 3,455, not the predicted ~1,300, because the reduction depended on PR ④ — discord actually grew ~355 lines.
+- Status: partial — the descriptor registry and shared lifecycle now ship in
+  `src/kiro_crew/channels.py` and `src/kiro_crew/messaging/registry.py`, with ten
+  built-in channels registered. The shared `messaging/dispatch.py` pipeline is
+  widely adopted, but Slack, Discord, and Telegram retain channel-specific turn
+  seams, and descriptor-driven config schemas plus a generic settings UI remain
+  incomplete. The sections below preserve the migration's original measurements
+  and decisions rather than describing every later landing.
 - Author: zezhexu
 - Created: 2026-07-28
 - Related: rfc-federated-app-platform.md (frontend loading + registry this RFC rides), PR #572 + PR #627 (the parallel channel landings that produced the 9-file conflict set cited below), `kiro_crew/apps/module_loader.py` (SEC-012 trust model this RFC adopts)

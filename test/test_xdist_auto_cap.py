@@ -14,6 +14,20 @@ import pytest
 
 from kiro_crew import resource_status as rs
 
+
+async def _spawn_without_windows_cleanup_capture(factory):
+    """Run the spawn factory the way the POSIX branch of the seam does.
+
+    On Windows the client spawns through
+    ``platform_compat.create_windows_cleanup_owned_process``, which reserves a
+    cleanup slot and pins the real child's exact handles at creation. A mocked
+    spawn owns no real child, so there is nothing to pin, and the capture would
+    aim Win32 handle calls at a ``MagicMock``. The capacity contract has its own
+    tests; these two ask only what environment the spawn is handed.
+    """
+    return await factory()
+
+
 # ── compute_xdist_auto_workers ───────────────────────────────────────────────
 
 
@@ -37,14 +51,34 @@ from kiro_crew import resource_status as rs
     ],
 )
 def test_compute_clamping(available_gb: float, cpu_count: int, expected: int) -> None:
-    assert rs.compute_xdist_auto_workers(available_gb, cpu_count) == expected
+    # per_worker_gb pinned to 1.0: this is about the clamp arithmetic, not the
+    # platform-aware default, which would make the expected values depend on the
+    # host OS.
+    assert rs.compute_xdist_auto_workers(available_gb, cpu_count, per_worker_gb=1.0) == expected
 
 
 def test_compute_respects_overrides() -> None:
-    # 2 GB per worker halves the memory-bound count relative to the default.
+    # 2 GB per worker halves the memory-bound count relative to per_worker=1.0.
     assert rs.compute_xdist_auto_workers(8.0, 16, per_worker_gb=2.0) == 2
     # A full share doubles it.
-    assert rs.compute_xdist_auto_workers(8.0, 16, share=1.0) == 8
+    assert rs.compute_xdist_auto_workers(8.0, 16, per_worker_gb=1.0, share=1.0) == 8
+
+
+def test_compute_default_per_worker_is_platform_aware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no explicit per_worker_gb, the reservation follows the platform.
+
+    A full-suite worker holds ~1.5 GB on Linux but 14.9-16.1 GB on macOS, so the
+    default divisor is not one number. Sized identically to the local ``-n auto``
+    budget (``xdist_budget``) so the two subsystems size a worker identically.
+    """
+    monkeypatch.setattr(rs.sys, "platform", "darwin", raising=False)
+    # 64 GB free, 16 CPUs: macOS reserves 16 GB/worker → floor(64*0.5/16) = 2.
+    assert rs.compute_xdist_auto_workers(64.0, 16) == 2
+    monkeypatch.setattr(rs.sys, "platform", "linux", raising=False)
+    # Same host on Linux reserves 3 GB/worker → floor(64*0.5/3) = 10.
+    assert rs.compute_xdist_auto_workers(64.0, 16) == 10
 
 
 # ── _xdist_cap_config ────────────────────────────────────────────────────────
@@ -97,15 +131,16 @@ def test_inject_fixed_cap() -> None:
     assert env[rs.XDIST_AUTO_ENV] == "6"
 
 
-def test_inject_auto_computes_from_probe() -> None:
+def test_inject_auto_computes_from_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     env: dict[str, str] = {}
+    monkeypatch.setattr(rs, "_resolve_xdist_per_worker_gb", lambda: 1.0)
     with (
         _with_raw_config({}),
         patch.object(rs, "_read_available_gb", return_value=8.0),
         patch("os.cpu_count", return_value=16),
     ):
         rs.inject_xdist_auto_cap(env)
-    assert env[rs.XDIST_AUTO_ENV] == "4"  # floor(8 * 0.5 / 1.0)
+    assert env[rs.XDIST_AUTO_ENV] == "4"  # floor(8 * 0.5 / 1)
 
 
 def test_inject_auto_fails_open_when_probe_unavailable() -> None:
@@ -138,13 +173,16 @@ async def test_spawn_env_carries_xdist_cap(tmp_path, monkeypatch) -> None:
     from kiro_crew.acp.client import AcpClient
 
     monkeypatch.delenv(rs.XDIST_AUTO_ENV, raising=False)
+    monkeypatch.setattr(rs, "_resolve_xdist_per_worker_gb", lambda: 1.0)
     client = AcpClient(work_dir=tmp_path, session_key="k")
     with (
         patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
-        patch(
-            "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
-        ),
+        patch("kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)),
         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        patch(
+            "kiro_crew.platform_compat.create_windows_cleanup_owned_process",
+            side_effect=_spawn_without_windows_cleanup_capture,
+        ),
         patch("kiro_crew.session._track_pid"),
         patch("kiro_crew.session._track_session_pid"),
         _with_raw_config({}),
@@ -173,10 +211,12 @@ async def test_spawn_env_leaves_preset_xdist_cap_alone(tmp_path, monkeypatch) ->
     client = AcpClient(work_dir=tmp_path, session_key="k")
     with (
         patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
-        patch(
-            "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
-        ),
+        patch("kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)),
         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        patch(
+            "kiro_crew.platform_compat.create_windows_cleanup_owned_process",
+            side_effect=_spawn_without_windows_cleanup_capture,
+        ),
         patch("kiro_crew.session._track_pid"),
         patch("kiro_crew.session._track_session_pid"),
         _with_raw_config({"resource_limits": {"xdist_auto_cap": 9}}),

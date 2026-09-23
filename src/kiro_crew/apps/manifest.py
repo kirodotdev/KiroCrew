@@ -773,6 +773,9 @@ class Permissions:
     network: bool = False
     memory: str = ""  # "", "app-scoped", or "shared"
     cron: bool = False
+    #: May send turns, choose response options, approve or deny pending tool
+    #: requests, and change approval modes for user-owned sessions.
+    sessionApproval: bool = False  # noqa: N815
     #: May spawn a background agent through the host's subagent manager.
     #: Declared rather than implicit so "which apps can start an agent" is
     #: auditable from the manifest instead of from an app's import graph.
@@ -803,6 +806,8 @@ class Permissions:
             d["memory"] = self.memory
         if self.cron:
             d["cron"] = True
+        if self.sessionApproval:
+            d["sessionApproval"] = True
         if self.spawn:
             d["spawn"] = True
         if self.jobs:
@@ -832,6 +837,7 @@ class Permissions:
             network=data.get("network") is True,
             memory=str(data.get("memory", "")),
             cron=data.get("cron") is True,
+            sessionApproval=data.get("sessionApproval") is True,  # noqa: N815
             spawn=data.get("spawn") is True,
             jobs=data.get("jobs") is True,
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
@@ -2688,6 +2694,41 @@ class AppManifest:
             # so rewriting it on a signed app redirects that dispatch while every visible
             # character of the row, and the signature, stay exactly as published.
             body["contributes"] = self.contributes.to_dict()
+        setup_d = self.setup.to_dict()
+        if setup_d:
+            # `onInstall`/`onUpdate`/`onUninstall`/`onEnable`/`onDisable` are shell
+            # text `run_lifecycle_script` hands to `/bin/bash -c`. The string IS the
+            # program -- no file in the package has to exist for it to run -- so a
+            # manifest-only rewrite of a published app buys execution outright. Same
+            # reason `crons` is covered one clause up: vetting bounds the SYNTAX of
+            # what runs, only the signature authenticates PUBLISHER INTENT.
+            # Included only when non-empty so manifests signed before setup was
+            # covered keep producing the identical payload.
+            body["setup"] = setup_d
+        if self.mcpServers:
+            # Each entry's `command`/`args`/`env` is written into the agent config
+            # kiro-cli reads and SPAWNS (`bridges._register_mcp_servers`). Like
+            # `setup`, the executed argv lives in the manifest itself, so this is the
+            # one part of a signed app whose program an attacker could swap with the
+            # signature still verifying.
+            # Included only when non-empty so manifests signed before mcpServers was
+            # covered keep producing the identical payload.
+            body["mcpServers"] = dict(self.mcpServers)
+        backend_d = self.backend.to_dict()
+        if backend_d:
+            # `hooks.*` names a module:callable `module_loader.load_app_module`
+            # imports INTO THE GATEWAY PROCESS, and `entryPoint` + `type` select the
+            # file and interpreter `_start_app_backend_body` spawns. These are
+            # selectors rather than literal argv, so repointing one at a module that
+            # already sits in an otherwise untouched package is enough -- and a
+            # manifest-only tamper is precisely what the signature is the sole
+            # detector for.
+            # The whole canonical dict, not the executed keys alone: cherry-picking
+            # leaves `port`/`healthCheck`/`routes` as residue an attacker may still
+            # move, and one guard is smaller than four.
+            # Included only when non-empty so manifests signed before backend was
+            # covered keep producing the identical payload.
+            body["backend"] = backend_d
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------

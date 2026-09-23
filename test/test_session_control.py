@@ -24,6 +24,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import chat_delivery as cd
+from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
@@ -474,27 +475,27 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
     """The append-only log must not claim a steer cut a turn that never got it.
 
     ``steered`` only means the client accepted the write. If the turn ends during
-    the await, the teardown requeues the text and it runs LATER -- so a
-    ``message/steered`` written on the RPC's return is a permanent false statement
-    about a turn, and the body would also be logged twice once the requeue path
-    records it.
+    the await, the teardown requeues the text and it runs LATER -- so a steer entry
+    written on the RPC's return is a permanent false statement about a turn, and the
+    body would also be logged twice once the requeue path records it. That is why the
+    vocabulary carries no steer type at all.
 
     Exactly one entry, and it is ``message/queued``: the requeue moves the text
     straight into the slot queue without passing the append that records a queued
     message, so this is the only place that can record it at all.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("KIROCREW_SESSION_LEDGER", "1")
+    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     import json
 
-    from kiro_crew import ledger as lg
-    from kiro_crew import session_ledger_emit
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import emit as crew_log_emit
 
-    session_ledger_emit.reset_caches()
+    crew_log_emit.reset_caches()
     sid = "sess-steer-requeue"
-    session_ledger_emit.on_session_opened(sid, agent="kirocrew", slot="chat-1")
-    session_ledger_emit.on_turn_started(sid, 1, "user")
-    assert session_ledger_emit.flush()
+    crew_log_emit.on_session_opened(sid, agent="kirocrew", slot="chat-1")
+    crew_log_emit.on_turn_started(sid, 1, "user")
+    assert crew_log_emit.flush()
 
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
@@ -515,19 +516,18 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
     outcome = await cd.steer_into_running_turn(state, slot, "run this instead")
 
     assert outcome == cd.STEER_REQUEUED
-    assert session_ledger_emit.flush()
+    assert crew_log_emit.flush()
     body = [
         json.loads(line)
-        for line in lg.ledger_path("session", sid).read_text(encoding="utf-8").splitlines()[1:]
+        for line in lg.crew_log_path("session", sid).read_text(encoding="utf-8").splitlines()[1:]
     ]
-    mine = [e for e in body if e["type"] in ("message/steered", "message/queued")]
+    # Every message-domain entry, not one named type: an entry claiming the turn
+    # received the steer would be caught whatever it was called.
+    mine = [e for e in body if e["type"].startswith("message/")]
     assert len(mine) == 1, f"expected one entry for one message, got {[e['type'] for e in mine]}"
     assert mine[0]["type"] == "message/queued"
     assert mine[0]["data"]["source"] == "steer"
-    assert not [
-        e for e in body if e["type"] == "message/steered"
-    ], "a requeued steer was recorded as having cut the turn"
-    session_ledger_emit.reset_caches()
+    crew_log_emit.reset_caches()
 
 
 @pytest.mark.asyncio
@@ -806,8 +806,11 @@ class TestTheRoutesRequireTheInternalSecret:
         request.method = method
         request.headers = {"X-Session-Key": _key(caller)}
         request.query = {"target": "chat-2"}
+        # Both marks together are what an internal caller on the unix socket
+        # arrives with: the secret admits it, and the kernel peer attestation is
+        # what lets a session-scoped route act on the key it declares.
         request.get = lambda key, default=None: (
-            True if (key == "internal_auth" and internal) else default
+            True if (key in ("internal_auth", "peer_verified") and internal) else default
         )
 
         async def _json():
@@ -998,6 +1001,22 @@ class TestTheRoutesRequireTheInternalSecret:
 
         assert resp.status == 400
         assert self._body(resp)["code"] == "message_required"
+
+    def test_send_rejects_a_steer_that_is_not_a_boolean(self, tmp_path):
+        """`steer` decides whether the message cuts into a running turn, so the
+        route type-checks it instead of reading truthiness: the string "false" is
+        truthy, and coercing it would interrupt a turn for a caller that asked for
+        the queue."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/send")
+
+        async def _json():
+            return {"target": "chat-2", "message": "hello", "steer": "false"}
+
+        req.json = _json
+        resp = asyncio.run(handlers_sc.api_session_control_send(req))
+
+        assert resp.status == 400
+        assert self._body(resp)["code"] == "invalid_steer"
 
     def test_send_renders_a_refusal_as_its_status_not_a_500(self, tmp_path, monkeypatch):
         """A SessionControlError from send comes back as its own refusal, the same
@@ -1963,7 +1982,7 @@ def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypa
 
     out = asyncio.run(_drive())
 
-    assert out == {"ok": True, "target": "chat-2", "started": True}
+    assert out == {"ok": True, "target": "chat-2", "started": True, "steered": False}
     assert ran["slot"] == "chat-2"
     assert ran["prompt"].startswith("[sent by session ")
     assert ran["prompt"].endswith("do the thing")
@@ -2063,6 +2082,696 @@ def test_send_to_a_busy_target_queues_instead_of_racing(tmp_path):
 
     assert out["started"] is False
     assert any("queued message" in q.get("content", "") for q in target._queue)
+
+
+# ── session_send: the mid-turn steer arm ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_steer_cuts_into_the_running_turn_instead_of_queueing(tmp_path):
+    """`steer=True` on a busy target delivers NOW, and delivers exactly once.
+
+    The real ``steer_into_running_turn`` runs here against a steer-capable client,
+    because the whole value of the arm is that the target reads the text during
+    the turn — a stubbed helper would assert the wiring and prove nothing about
+    the delivery. The queue must stay EMPTY: a steered message that is also queued
+    runs twice.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="stop, that file is already fixed",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    assert out["started"] is False
+    assert not target._queue, "a steered message must not ALSO be queued"
+    rows = [m for m in target.messages if "already fixed" in m.get("content", "")]
+    assert len(rows) == 1, "a steered delivery leaves exactly one transcript row"
+    # Provenance rides on the TEXT, so it reaches the target agent and the reader
+    # alike: this is what keeps an injected steer from posing as human typing.
+    injected = target._acp_client.steer.await_args.args[0]
+    assert injected.startswith("[sent by session ")
+    assert rows[0]["content"].startswith("[sent by session ")
+
+
+@pytest.mark.asyncio
+async def test_a_steer_the_client_cannot_take_falls_back_to_the_queue(tmp_path):
+    """Steering is best-effort; the message is not.
+
+    With no steer-capable client on the slot the helper answers UNAVAILABLE, and
+    the message must land on the queue rather than be dropped — the caller is told
+    it queued, so it never reads a silent loss as a delivery.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="check the other branch first",
+        steer=True,
+    )
+
+    assert out["steered"] is False
+    assert out["started"] is False
+    assert any("check the other branch first" in q.get("content", "") for q in target._queue)
+
+
+@pytest.mark.asyncio
+async def test_a_steer_requeued_by_the_teardown_is_not_queued_a_second_time(tmp_path):
+    """The turn ended during the steer RPC and its teardown requeued the text.
+
+    It WILL run, so taking the queue arm as well would deliver it twice. The
+    requeue is reproduced the way ``_requeue_unconsumed_steers`` does it: the
+    pending entry becomes a queue entry carrying the steer's delivery id.
+
+    Mutation guard: treating REQUEUED like UNAVAILABLE leaves two entries.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _teardown_requeues(msg):
+        target._pending_steers.remove(msg)
+        target._queue.append(
+            {
+                "id": "q-requeued",
+                "content": msg,
+                "meta": {"steer_delivery_id": target._steer_delivery_ids[msg]},
+            }
+        )
+        return True
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_teardown_requeues)
+    target._acp_client = client
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="use the other fixture",
+        steer=True,
+    )
+
+    assert out["steered"] is False
+    assert out["started"] is False
+    assert len(target._queue) == 1, "the requeued entry is the delivery; do not add another"
+
+
+@pytest.mark.asyncio
+async def test_the_queue_fallback_re_runs_the_gate_after_the_steer_rpc(tmp_path):
+    """The steer RPC is a suspension, so the gate that admitted the send is stale.
+
+    The queue arm stamps the containment holding at APPEND time for the drain to
+    re-assert. If the target gains a channel link while the RPC is in flight, an
+    unchecked fallback would record that link as "held at admission" and the drain
+    would then read a widened audience as the authorized one. So the fallback
+    re-authorizes and the send is refused instead.
+
+    Mutation guard: drop the re-gate and this queues the message.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _link_then_fail(_msg):
+        # The window this test is about: the target becomes channel-linked while
+        # the steer RPC is suspended, and the RPC then fails to place the text.
+        target.linked_session_key = "telegram:9001"
+        return False
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_link_then_fail)
+    target._acp_client = client
+
+    with pytest.raises(sc.SessionControlError) as err:
+        await sc.send_to_target(
+            state,
+            caller_session_key=_key(caller),
+            target="chat-2",
+            message="land it on the branch",
+            steer=True,
+        )
+
+    assert err.value.code == "linked_session_target"
+    assert not target._queue, "a target the gate now refuses must not hold the message"
+
+
+@pytest.mark.asyncio
+async def test_a_same_key_replacement_during_the_rpc_is_refused(tmp_path):
+    """The re-gate compares slot IDENTITY, not its key string.
+
+    A target closed and resumed during the steer RPC comes back as a FRESH slot
+    object under the same name. Delivery below uses the object this call captured,
+    so a key-string comparison passes while the message lands on the replaced
+    object -- gone from the live session, with `ok: True` reported to the caller.
+
+    Mutation guard: compare `regated.key != slot.key` instead of identity and this
+    queues the message onto the detached slot.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _replace_then_fail(_msg):
+        # Close and resume under the same name: `get_or_create_slot` mints a new
+        # object, so `regated` and the captured `slot` differ while both keys read
+        # "chat-2". The RPC then fails to place the text, taking the queue arm.
+        state._slots.pop("chat-2", None)
+        _busy(_peer_target(state, "chat-2", caller))
+        return False
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_replace_then_fail)
+    target._acp_client = client
+
+    with pytest.raises(sc.SessionControlError) as err:
+        await sc.send_to_target(
+            state,
+            caller_session_key=_key(caller),
+            target="chat-2",
+            message="land it on the live session",
+            steer=True,
+        )
+
+    assert err.value.code == "target_moved"
+    assert not target._queue, "the replaced slot must not hold the message"
+    assert not state._slots["chat-2"]._queue, "nor may the live replacement"
+
+
+@pytest.mark.asyncio
+async def test_a_mirror_linked_during_the_rpc_stops_the_steered_turn(tmp_path, monkeypatch):
+    """A successful steer whose audience changed under it does not get to keep going.
+
+    `STEER_STEERED` means kiro-cli acknowledged consumption, so the text cannot be
+    recalled and the fallback arm's refusal is unavailable. What is still
+    preventable is the turn's REMAINING output: `_deliver_cross_surface_reply`
+    resolves the mirror live at reply-delivery time, so a mirror linked while the
+    RPC was suspended would receive a reply shaped by a peer's text that
+    `authorize_target` would have refused outright.
+
+    Success semantics are kept deliberately -- the delivery did happen, and
+    reporting `ok: False` would invite a retry that double-sends -- so the stop is
+    recorded in the audit trail instead.
+
+    Mutation guard: drop the post-RPC comparison and the turn runs on.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    stops: list[dict] = []
+
+    async def _fake_stop(_state, _slot, **kwargs):
+        stops.append({"slot": _slot.key, **kwargs})
+        return {"stopped": True}
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", _fake_stop)
+
+    async def _mirror_then_accept(_msg):
+        # The window: an operator attaches an outbound mirror while the steer RPC is
+        # suspended on stdin.drain(). The gate that admitted this send saw none.
+        state.sessions.set_mirror_link(_key(target), "C0FFEE", "1758.0001")
+        return True
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_mirror_then_accept)
+    target._acp_client = client
+
+    audits: list[dict] = []
+    monkeypatch.setattr(sc, "_audit", lambda **kw: audits.append(kw))
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="the audience changed under this one",
+        steer=True,
+    )
+
+    assert out["ok"] is True, "the delivery happened; a retry-inducing failure would double-send"
+    assert out["steered"] is True
+    assert stops, "a changed audience must stop the turn it was steered into"
+    assert stops[0]["slot"] == "chat-2"
+    assert stops[0]["escalate"] is False, "one automatic decision, not a person pressing again"
+    assert stops[0]["source"] == "session_send_steer_containment"
+
+    allowed = [a for a in audits if a.get("outcome") == "allowed"]
+    assert allowed, "the send is still recorded as allowed"
+    assert "mirrored" in allowed[-1]["detail"]["steer_stopped_on"]
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_audience_leaves_the_steered_turn_alone(tmp_path, monkeypatch):
+    """The stop is for a real change only, never the ordinary successful steer.
+
+    Without this the guard above would be indistinguishable from "every peer steer
+    cancels the turn it lands in", which would make the feature useless.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    stops: list[dict] = []
+
+    async def _fake_stop(_state, _slot, **kwargs):
+        stops.append({"slot": _slot.key, **kwargs})
+        return {"stopped": True}
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", _fake_stop)
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(return_value=True)
+    target._acp_client = client
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="nothing moved under this one",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    assert not stops, "an unchanged audience must not cancel the target's turn"
+
+
+@pytest.mark.asyncio
+async def test_a_peer_steer_does_not_inherit_the_composers_linked_exemption(tmp_path):
+    """A requeued peer steer is plain queued speech, not the session owner's.
+
+    `directive_user_origin` exempts a queue entry from the drain's LINKED drop
+    because "the author typed into the session's own surface". That is the composer;
+    a `session_send` steer has no such author. The slot cannot tell the two callers
+    apart, so the requeue reads the provenance the caller recorded instead of
+    deriving it.
+
+    Mutation guard: restore `directive_user_origin=not bool(slot._app)` and the
+    entry comes back exempt.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    text = "requeued by the teardown"
+    # What `steer_into_running_turn` records before it suspends, for a peer send.
+    target._steer_user_origin[text] = False
+    target._pending_steers.append(text)
+
+    cr._requeue_unconsumed_steers(state, target)
+
+    entry = next(q for q in target._queue if q["content"] == text)
+    # Read exactly as the drain reads it (`q.get(...) is True`): the repository
+    # omits the key for a falsy flag, and absent means not exempt.
+    assert (
+        entry.get("_directive_user_origin") is not True
+    ), "a peer's steer must face the LINKED drop like any other queued prompt"
+    assert sc.newly_held_constraints(
+        {"linked": True},
+        entry.get("meta"),
+        directive_user_origin=entry.get("_directive_user_origin") is True,
+    ) == ["linked"], "and the drain must actually drop it once a link appears"
+
+
+@pytest.mark.asyncio
+async def test_a_composer_steer_keeps_its_linked_exemption(tmp_path):
+    """The other half: the composer's own steer is still designed behaviour.
+
+    Its author typed into this session's surface, so linking the session is that
+    owner's deliberate act and dropping their already-typed text would destroy user
+    speech on a supported flow.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    text = "typed into this session's own composer"
+    target._steer_user_origin[text] = True
+    target._pending_steers.append(text)
+
+    cr._requeue_unconsumed_steers(state, target)
+
+    entry = next(q for q in target._queue if q["content"] == text)
+    assert entry.get("_directive_user_origin") is True
+    assert (
+        sc.newly_held_constraints(
+            {"linked": True},
+            entry.get("meta"),
+            directive_user_origin=entry.get("_directive_user_origin") is True,
+        )
+        == []
+    ), "the owner linking their own session must not destroy what they already typed"
+
+
+@pytest.mark.asyncio
+async def test_a_requeued_steer_keeps_the_admission_the_gate_cleared(tmp_path):
+    """The requeued entry is stamped with the SEND's containment, not the teardown's.
+
+    The requeue runs in the turn's teardown, past the steer RPC's suspension. Reading
+    the slot there folds a mirror linked during that suspension into the entry's
+    admission baseline, after which `newly_held_constraints` sees nothing new and the
+    drain forwards the output to an audience `authorize_target` refuses outright. The
+    stamp has to come from the moment the gate cleared the send.
+
+    Mutation guard: stamp `containment_meta(state, slot)` at the requeue and the
+    drain reads the widened audience as admitted, so the entry survives.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    text = "requeued while the audience widened"
+    # What `send_to_target` records before the RPC: the target was UNMIRRORED when its
+    # gate cleared. Then the mirror appears while the RPC is suspended.
+    target._steer_admissions[text] = sc.containment_meta(state, target)
+    target._steer_user_origin[text] = False
+    state.sessions.set_mirror_link(_key(target), "C0FFEE", "1758.0002")
+    target._pending_steers.append(text)
+
+    cr._requeue_unconsumed_steers(state, target)
+
+    entry = next(q for q in target._queue if q["content"] == text)
+    recorded = entry["meta"][sc.QUEUED_CONTAINMENT_META_KEY]
+    assert recorded["mirrored"] is False, "the gate cleared an UNMIRRORED target"
+    assert sc.newly_held_constraints(
+        sc.containment_snapshot(state, target, on_probe_failure=True),
+        entry.get("meta"),
+        directive_user_origin=entry.get("_directive_user_origin") is True,
+    ) == ["mirrored"], "so the drain must see the mirror as newly held and drop it"
+
+
+@pytest.mark.asyncio
+async def test_the_send_records_its_admission_before_the_rpc_suspends(tmp_path, monkeypatch):
+    """End of the wire: `send_to_target` hands its gate's snapshot to the steer.
+
+    Asserted from INSIDE the RPC, which is the only vantage point where "before the
+    suspension" is observable. Without this the requeue's stamp would be correct in
+    isolation and never reach it from the send.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    seen: dict = {}
+
+    async def _inspect_then_accept(msg):
+        seen["recorded"] = target._steer_admissions.get(msg)
+        seen["origin"] = target._steer_user_origin.get(msg)
+        return True
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_inspect_then_accept)
+    target._acp_client = client
+
+    await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="check what the gate handed over",
+        steer=True,
+    )
+
+    assert seen["recorded"] is not None, "the send must record the containment it cleared"
+    assert seen["recorded"][sc.QUEUED_CONTAINMENT_META_KEY]["mirrored"] is False
+    assert seen["origin"] is False, "and mark the text as not the session's own human's"
+
+
+@pytest.mark.asyncio
+async def test_a_requeued_steer_with_no_recorded_admission_carries_no_baseline(tmp_path):
+    """No stamp means no containment key, not a slot read at teardown.
+
+    The requeue has exactly ONE source for the baseline. Reading the slot as a
+    fallback would reintroduce the hole for whichever caller omitted the stamp, and
+    the LINKED exemption would not cover it: a new outbound mirror is never exempt,
+    because the author does not control mirror links. An entry with no key lands on
+    the drain's documented fail-closed floor instead, checked against every
+    currently held constraint.
+
+    Mutation guard: restore `else containment_meta(state, slot)` and the entry comes
+    back stamped with the widened audience.
+    """
+    state = _make_state(tmp_path)
+    slot = _busy(state.get_or_create_slot("chat-1"))
+
+    text = "registered without a stamp"
+    slot._pending_steers.append(text)
+    state.sessions.set_mirror_link(_key(slot), "C0FFEE", "1758.0003")
+
+    cr._requeue_unconsumed_steers(state, slot)
+
+    entry = next(q for q in slot._queue if q["content"] == text)
+    assert sc.QUEUED_CONTAINMENT_META_KEY not in (
+        entry.get("meta") or {}
+    ), "an unstamped entry must not be handed a baseline built at teardown"
+    assert "mirrored" in sc.newly_held_constraints(
+        sc.containment_snapshot(state, slot, on_probe_failure=True), entry.get("meta")
+    ), "so the drain checks it against the current constraints and drops it"
+
+
+@pytest.mark.asyncio
+async def test_an_inter_stage_send_queues_instead_of_racing_the_plan(tmp_path):
+    """Between a plan's stages the target is busy even though `running` says no.
+
+    Each stage's `_run_chat` closes its own turn, so `slot.running` reads False in
+    the gap while the plan is still live. Handing the prompt to a gate that read
+    `running` alone started a SECOND turn racing the plan, with no recovery once two
+    turns own the same slot. Every producer that must not do that reads
+    `slot.running or slot._in_stage_execution`, and `enqueue_or_run_prompt` -- the
+    admission point this path delivers through -- now does too, so this path needs no
+    branch of its own.
+
+    Mutation guard: drop `or self._in_stage_execution` from the gate in
+    `state.enqueue_or_run_prompt` and this starts a turn.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    # The inter-stage shape exactly: no task in flight, plan still executing.
+    target.task = None
+    target._in_stage_execution = True
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="do not race the plan",
+    )
+
+    assert out["started"] is False, "a mid-plan send must not start a turn"
+    assert target.task is None, "and must not have created one"
+    entry = next(q for q in target._queue if q["content"].endswith("do not race the plan"))
+    assert sc.QUEUED_CONTAINMENT_META_KEY in (
+        entry.get("meta") or {}
+    ), "the held prompt still carries its admission stamp for the drain"
+
+
+@pytest.mark.asyncio
+async def test_a_changed_audience_withholds_the_cross_surface_reply(tmp_path, monkeypatch):
+    """The stop cannot outrun the turn, so the fence is what actually holds.
+
+    `_deliver_cross_surface_reply` runs from the turn's own completion path and
+    resolves the mirror live, so a turn that finishes while this send is suspended on
+    `stdin.drain()` would publish to the new audience before any post-RPC check
+    resumes -- and a sent reply cannot be recalled. The token is therefore added
+    BEFORE the RPC and kept when a constraint newly holds, so the turn withholds its
+    cross-surface leg regardless of who wins the race.
+
+    Mutation guard: drop the pre-RPC `add`, or discard on the changed path, and the
+    fence is empty here.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _fake_stop(_state, _slot, **kwargs):
+        return {"stopped": True}
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", _fake_stop)
+
+    fence_during_rpc: list[int] = []
+
+    async def _mirror_then_accept(_msg):
+        # Observed from inside the RPC: the fence is already up before the window
+        # this test is about can open.
+        fence_during_rpc.append(len(target._steer_audience_fences))
+        state.sessions.set_mirror_link(_key(target), "C0FFEE", "1758.0004")
+        return True
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_mirror_then_accept)
+    target._acp_client = client
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="the audience widened under this one",
+        steer=True,
+    )
+
+    assert fence_during_rpc == [1], "the admission must be recorded before the RPC"
+    assert out["steered"] is True
+    assert target._steer_audience_fences, "the record is retained for the whole turn"
+    assert (
+        cr.cross_surface_withheld(state, target) is True
+    ), "and the publisher, asked at delivery, withholds the cross-surface leg"
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_audience_still_gets_its_cross_surface_reply(tmp_path):
+    """The fence is a hold, not a mute: an ordinary steer must not cost a mirror copy.
+
+    Without this the safe direction would be indistinguishable from "any peer steer
+    silences the target's channel audience for that turn".
+
+    Mutation guard: stop discarding the token on the unchanged path and this fails.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(return_value=True)
+    target._acp_client = client
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="nothing moved under this one",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    assert target._steer_audience_fences, (
+        "the record is retained even when nothing moved: a mirror could still be "
+        "bound before the reply publishes"
+    )
+    assert (
+        cr.cross_surface_withheld(state, target) is False
+    ), "but an unchanged audience gets its cross-surface reply, at no cost"
+
+
+@pytest.mark.asyncio
+async def test_the_reply_leg_consults_the_fence_before_publishing(tmp_path):
+    """The predicate the turn's cross-surface leg is gated on, and the gate itself.
+
+    Two halves, because either alone can be green while the feature is broken: the
+    decision must be right, and the call site must actually ask it. The source check
+    is a ratchet rather than a behavioural assertion -- `_run_chat` is not unit
+    -testable at this seam -- and it pins the one line that makes the fence load
+    -bearing.
+    """
+    state = _make_state(tmp_path)
+    slot = _busy(_peer_target(state, "chat-2", _slot(state, "chat-1")))
+
+    assert cr.cross_surface_withheld(state, slot) is False, "no peer steer, publish"
+    slot._steer_audience_fences["tok"] = sc.containment_meta(state, slot)
+    assert (
+        cr.cross_surface_withheld(state, slot) is False
+    ), "a recorded steer alone withholds nothing: the comparison is exact"
+    state.sessions.set_mirror_link(_key(slot), "C0FFEE", "1758.0005")
+    assert (
+        cr.cross_surface_withheld(state, slot) is True
+    ), "a constraint that newly holds since that admission withholds the leg"
+
+    src = Path(cr.__file__).read_text(encoding="utf-8")
+    deliver_calls = [
+        line
+        for line in src.splitlines()
+        if "await _deliver_cross_surface_reply(" in line and not line.strip().startswith("#")
+    ]
+    assert len(deliver_calls) == 1, (
+        "one channel-neutral call site only; a second would need its own fence "
+        f"check: {deliver_calls}"
+    )
+    # EVERY cross-surface publication asks, not just the channel-neutral leg: Slack
+    # is an audience too, and it resolves its thread owner live. Four sites -- the
+    # channel-neutral reply, the Slack reply, the mid-turn tool stream, and the
+    # teardown's final task append, which would otherwise publish a title whose
+    # in-progress append was withheld.
+    asks = src.count("cross_surface_withheld(state, slot)")
+    assert asks == 4, f"expected four fenced publication sites, found {asks}"
+
+
+@pytest.mark.asyncio
+async def test_steer_on_an_idle_target_just_starts_the_turn(tmp_path, monkeypatch):
+    """An idle slot has no turn to cut into, so `steer` changes nothing.
+
+    The steer path is not merely unused here, it is never entered: on an idle slot
+    the turn-scoped client is already cleared, so entering it would hand the text
+    to nothing.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    entered: list[str] = []
+
+    async def _never(_state, _slot, message):
+        entered.append(message)
+        return cd.STEER_UNAVAILABLE
+
+    monkeypatch.setattr(cd, "steer_into_running_turn", _never)
+
+    async def _fake_run_chat(_state, _slot, _prompt):
+        return None
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="pick this up",
+        steer=True,
+    )
+    await asyncio.sleep(0)
+
+    assert out["started"] is True
+    assert out["steered"] is False
+    assert entered == [], "an idle target must not reach the steer path"
+    assert not target._queue
+
+
+@pytest.mark.asyncio
+async def test_a_busy_target_still_queues_when_steer_is_not_asked_for(tmp_path):
+    """The default is unchanged: no `steer`, no injection, even with a live client.
+
+    Mutation guard: defaulting the flag on turns every existing caller's send into
+    a mid-turn interruption.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state, caller_session_key=_key(caller), target="chat-2", message="after this turn"
+    )
+
+    assert out["steered"] is False
+    assert out["started"] is False
+    assert target._acp_client.steer.await_count == 0
+    assert any("after this turn" in q.get("content", "") for q in target._queue)
 
 
 def test_send_to_a_remote_bound_target_is_refused_not_run_locally(tmp_path, monkeypatch):
@@ -2234,6 +2943,300 @@ def test_created_session_inherits_the_callers_workspace(tmp_path, monkeypatch):
         ).key
         == created["target"]
     )
+
+
+@pytest.fixture
+def private_dispatch(tmp_path, monkeypatch):
+
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.memory_stores import provision_member_memory
+
+    cfg = KiroCrewConfig.load()
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="write")
+    store = provision_member_memory(cfg, "writer")
+    cfg.save()
+    state = _make_state(tmp_path)
+    from kiro_crew.history import ConversationLog
+
+    state.conversation_log = ConversationLog()
+    caller = _slot(state, "chat-conductor")
+    return state, caller, store
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+def test_create_refuses_unreadable_delegation_identity(private_dispatch, monkeypatch, error_type):
+    state, caller, _store = private_dispatch
+    before = set(state._slots)
+
+    def unavailable(*args):
+        raise error_type("/private/identity/path")
+
+    monkeypatch.setattr(sc, "read_session_execution", unavailable)
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert exc.value.code == "memory_unavailable"
+    assert "/private/identity/path" not in str(exc.value)
+    assert set(state._slots) == before
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_private_creator_keeps_its_memory(private_dispatch, explicit):
+    from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+
+    state, caller, store = private_dispatch
+    caller.agent = "writer"
+    caller.memory_store = store
+    bind_private_session_store(_key(caller), store)
+    state.conversation_log.update_metadata(_key(caller), {"memory_store": store})
+    created = asyncio.run(
+        sc.create_session(
+            state, caller_session_key=_key(caller), agent="writer" if explicit else ""
+        )
+    )
+    child = state.get_slot(created["target"])
+    assert child.memory_store == store
+    assert read_private_session_store(_key(child)) == store
+
+
+@pytest.mark.parametrize("changed_field", ["agent", "memory_store", "linked_session_key"])
+def test_create_rechecks_caller_identity_after_delegation(
+    private_dispatch, monkeypatch, changed_field
+):
+    state, caller, _store = private_dispatch
+    original = sc.read_session_execution
+    before = set(state._slots)
+    threads = []
+
+    async def exercise():
+        loop = asyncio.get_running_loop()
+        changed = threading.Event()
+
+        def check(key):
+            threads.append(threading.get_ident())
+            result = original(key)
+
+            def mutate():
+                setattr(caller, changed_field, "changed-selection")
+                changed.set()
+
+            loop.call_soon_threadsafe(mutate)
+            assert changed.wait(5)
+            return result
+
+        monkeypatch.setattr(sc, "read_session_execution", check)
+        with pytest.raises(sc.SessionControlError) as exc:
+            await asyncio.wait_for(
+                sc.create_session(state, caller_session_key=_key(caller), agent="writer"), 10
+            )
+        assert exc.value.code == "caller_memory_changed"
+
+    asyncio.run(exercise())
+    assert set(state._slots) == before
+    assert threads and threading.get_ident() not in threads
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_created_private_worker_can_start_after_birth_history(private_dispatch, tmp_path, restored):
+    from kiro_crew.dashboard.chat_runner import _require_session_memory_assignment
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state, caller, store = private_dispatch
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    child = state.get_slot(created["target"])
+    key = _key(child)
+    log = state.conversation_log
+    assert log.has_log(key), "the test must exercise the persisted-at-birth path"
+    if restored:
+        log = ConversationLog()
+    # The first turn confirms the protected assignment written before birth
+    # metadata. Reopening the log must not be what grants that assignment.
+    _require_session_memory_assignment(key, store)
+    assert read_private_session_store(key) == store
+    assert log.get_metadata(key)["memory_store"] == store
+
+
+def test_private_worker_assignment_precedes_birth_history(private_dispatch, monkeypatch):
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state, caller, store = private_dispatch
+    log = state.conversation_log
+    real_update = log.update_metadata
+    assignments = []
+    loop_threads = []
+
+    def persist(key, metadata):
+        loop_threads.append(threading.get_ident())
+        assignments.append(read_private_session_store(key))
+        return real_update(key, metadata)
+
+    monkeypatch.setattr(log, "update_metadata", persist)
+    asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert assignments == [store]
+    assert loop_threads and threading.get_ident() not in loop_threads
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_created_template_keeps_namespace_after_member_discovery(tmp_path, monkeypatch, explicit):
+
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, resolve_agent_bindings
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import provision_member_memory
+    from kiro_crew.session_agent_selection import resolve_session_agent_bindings
+
+    template = "dispatched-template"
+    monkeypatch.setattr(
+        loader,
+        "_materialized_kiro_agent",
+        lambda name, project_dir=None: template if name == template else "",
+    )
+    cfg = KiroCrewConfig.load()
+    assert template not in cfg.agents
+    cfg.save()
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-conductor", agent=template)
+    created = asyncio.run(
+        sc.create_session(
+            state,
+            caller_session_key=_key(caller),
+            agent=template if explicit else "",
+        )
+    )
+    child = state.get_slot(created["target"])
+    key = _key(child)
+    assert state.conversation_log.get_metadata(key)["agent"] == template
+
+    # Discovery imports the same template as a private roster member before
+    # this empty conversation's first turn. The earlier choice must survive.
+    cfg = KiroCrewConfig.load()
+    cfg.agents[template] = KiroCrewAgentConfig(kiro_agent=template)
+    member_store = provision_member_memory(cfg, template)
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    assert resolve_agent_bindings(cfg, template, child.project).memory_store_name == member_store
+    chosen = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, key, template, child.project
+    )
+    assert chosen.memory_store_name in ("", "default")
+    assert chosen.selection_kind == "template"
+    assert read_private_session_store(key) is None
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.parametrize("started_turn", [False, True])
+def test_failed_private_birth_retains_its_permanent_assignment(
+    private_dispatch, monkeypatch, preexisting, started_turn
+):
+    from kiro_crew.dashboard.chat_runner import _require_session_memory_assignment
+    from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
+    from kiro_crew.session_agent_selection import session_agent_selection_kind
+
+    state, caller, store = private_dispatch
+    before = set(state._slots)
+    child_name = "chat-failed-private-birth"
+    key = f"dashboard:{child_name}"
+    monkeypatch.setattr("kiro_crew.dashboard.state._mint_slot_key", lambda *args: child_name)
+    if preexisting:
+        bind_private_session_store(key, store)
+
+    def fail_history(requested_key, metadata):
+        assert requested_key == key
+        assert read_private_session_store(key) == store
+        if started_turn:
+            _require_session_memory_assignment(key, store)
+            state._slots[child_name].append("user", "work already started", "msg msg-u")
+        raise OSError("birth metadata could not be written")
+
+    monkeypatch.setattr(state.conversation_log, "update_metadata", fail_history)
+    with pytest.raises(OSError, match="birth metadata"):
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert set(state._slots) == (before | {child_name} if started_turn else before)
+    # The birth was authorized and its slot was already addressable. History
+    # failure cannot prove no turn consumed this identity, so the lifetime pin
+    # must remain; neither Global nor another member may adopt the key later.
+    assert read_private_session_store(key) == store
+    assert session_agent_selection_kind(key, "writer") == "member"
+    _require_session_memory_assignment(key, store)
+    for other in ("default", "another-member-store"):
+        with pytest.raises(UnknownMemoryStore, match="memory assignment"):
+            _require_session_memory_assignment(key, other)
+
+
+def test_cancelled_private_birth_drains_before_returning(private_dispatch, monkeypatch):
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.session_agent_selection import session_agent_selection_kind
+
+    state, caller, store = private_dispatch
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    keys = []
+    real_update = state.conversation_log.update_metadata
+
+    def blocked_history(key, metadata):
+        keys.append(key)
+        entered.set()
+        assert release.wait(5), "the test must release the birth writer"
+        try:
+            return real_update(key, metadata)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(state.conversation_log, "update_metadata", blocked_history)
+
+    async def exercise():
+        task = asyncio.create_task(
+            sc.create_session(state, caller_session_key=_key(caller), agent="writer")
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), "cancellation must not abandon the history writer"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+            assert finished.is_set()
+        finally:
+            release.set()
+            if not task.done():
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(exercise())
+    assert len(keys) == 1
+    key = keys[0]
+    child = next(slot for slot in state._slots.values() if _key(slot) == key)
+    assert child._created_by == caller.key
+    assert state.conversation_log.get_metadata(key)["memory_store"] == store
+    assert read_private_session_store(key) == store
+    assert session_agent_selection_kind(key, "writer") == "member"
+
+
+@pytest.mark.parametrize("prior_context", ["history", "native"])
+def test_private_worker_creation_cannot_adopt_an_old_session(
+    private_dispatch, monkeypatch, prior_context
+):
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    state, caller, _store = private_dispatch
+    before = set(state._slots)
+    child_name = "chat-private-worker-collision"
+    key = f"dashboard:{child_name}"
+    monkeypatch.setattr("kiro_crew.dashboard.state._mint_slot_key", lambda *args: child_name)
+    if prior_context == "history":
+        state.conversation_log.append(key, "user", "Existing conversation", agent="default")
+    else:
+        state.sessions.resumable_sid.side_effect = lambda requested: (
+            "old-native-session" if requested == key else None
+        )
+    with pytest.raises(UnknownMemoryStore, match="new conversation"):
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert read_private_session_store(key) is None
+    assert set(state._slots) == before
 
 
 def test_create_checks_the_workspace_binding_even_when_no_agent_is_named(tmp_path, monkeypatch):
@@ -3015,7 +4018,7 @@ def _agent_resolves(monkeypatch, workspace: str) -> None:
     monkeypatch.setattr(
         sc,
         "resolve_agent_bindings",
-        lambda cfg, agent_name=None, project_dir=None: dataclasses.replace(
+        lambda cfg, agent_name=None, project_dir=None, **kwargs: dataclasses.replace(
             real(cfg, None, project_dir), requested_resolved=True
         ),
     )
@@ -3039,7 +4042,7 @@ def test_an_agent_name_that_does_not_resolve_is_refused(tmp_path, monkeypatch):
 
     real = sc.resolve_agent_bindings
 
-    def _unresolved(cfg, agent_name=None, project_dir=None):
+    def _unresolved(cfg, agent_name=None, project_dir=None, **kwargs):
         bindings = real(cfg, None, project_dir)
         return dataclasses.replace(bindings, requested_resolved=False)
 
@@ -3069,7 +4072,7 @@ def test_the_binding_is_resolved_with_the_childs_project_dir(tmp_path, monkeypat
 
     real = sc.resolve_agent_bindings
 
-    def _record(cfg, agent_name=None, project_dir=None):
+    def _record(cfg, agent_name=None, project_dir=None, **kwargs):
         seen["project_dir"] = project_dir
         return dataclasses.replace(real(cfg, None, project_dir), requested_resolved=True)
 
@@ -3265,6 +4268,193 @@ def test_a_created_slot_records_the_caller_that_asked_for_it(tmp_path, monkeypat
     # ceiling silently never binds.
     assert getattr(child, "_created_by", "") == caller.key
     assert state.creator_slot_count(caller.key) == 1
+
+
+def test_the_creator_session_id_is_frozen_at_mint_not_read_live(tmp_path, monkeypatch):
+    """The child's parent lineage must cite the creator that was live AT MINT.
+
+    The creator SID is stamped on the child at ``session_create`` time, from the
+    live caller handle. If instead it were read live at the child's first turn,
+    a creator slot closed and replaced in between (a distinct handle with its own
+    session id) would make the child cite the REPLACEMENT's crew log -- and that id
+    lands in the append-only, immutable ``session/opened`` entry with no recovery.
+
+    Mutation guard: re-read the creator SID live at emit (from the current slot
+    handle) and this test reddens, because the replacement below carries a
+    different session id than the one frozen at mint.
+    """
+    from unittest.mock import MagicMock
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    creator_client = MagicMock()
+    creator_client.session_id = "acp-sess-creator-at-mint"
+    caller._acp_client = creator_client
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+
+    # Frozen at mint from the live caller handle, and witnessed by this process.
+    assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
+    assert getattr(child, "_lineage_minted", False) is True
+
+    # The sid is NOT written into the birth metadata: the transcript is a file an
+    # agent's file tools can edit, so nothing read back from it may become the
+    # gateway-authored crew-log lineage. Only the attribution rides the metadata,
+    # for the ownership boundary.
+    written = state.conversation_log.get_metadata(sc.slot_history_key(child))
+    assert written.get("created_by") == caller.key
+    assert "created_by_sid" not in written
+
+    # Now the creator's handle is replaced with a distinct session id -- the exact
+    # window the finding names. The frozen value on the child must NOT follow it.
+    replacement = MagicMock()
+    replacement.session_id = "acp-sess-replacement"
+    caller._acp_client = replacement
+    assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
+
+
+def test_a_slot_nobody_minted_in_this_process_carries_no_lineage_witness(tmp_path):
+    """A slot that was not created through ``session_create`` in THIS process --
+    a person's own tab, a fork, a restore -- has no lineage witness, whatever its
+    ``_created_by`` says. The crew-log ``session/opened.parent`` write is gated on
+    the witness, so restored or hand-edited attribution never becomes lineage.
+
+    Mutation guard: default the flag to True, or set it on the plain
+    ``get_or_create_slot`` path, and this test reddens.
+    """
+    state = _make_state(tmp_path)
+    plain = _slot(state, "chat-9")
+    plain._created_by = "chat-1"  # what a restore from transcript metadata sets
+    assert getattr(plain, "_lineage_minted", False) is False
+    assert getattr(plain, "_created_by_sid", "") == ""
+
+
+def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
+    """``_crew_log_lineage`` is the one seam between the slot and the crew-log
+    ``session/opened.parent`` write. It yields the creator only when this process
+    minted the slot; attribution that arrived any other way -- restored from a
+    transcript an agent's file tools can edit, or set by hand -- yields nothing,
+    so the emitter writes no ``parent`` and no metadata edit can forge lineage.
+
+    Mutation guard: drop the witness check and the second case reddens; read the
+    sid live instead of the frozen field and the first case reddens.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.chat_runner import _crew_log_lineage
+
+    minted = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-sess-creator-at-mint", _lineage_minted=True
+    )
+    assert _crew_log_lineage(minted) == ("chat-1", "acp-sess-creator-at-mint")
+
+    restored = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-forged-by-editing-the-transcript"
+    )
+    assert _crew_log_lineage(restored) == ("", "")
+    restored_explicit = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-sess-x", _lineage_minted=False
+    )
+    assert _crew_log_lineage(restored_explicit) == ("", "")
+
+    minted_without_handle = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="", _lineage_minted=True
+    )
+    assert _crew_log_lineage(minted_without_handle) == ("chat-1", "")
+
+
+def test_the_opened_entry_records_the_session_class_from_the_live_slot(monkeypatch):
+    """``_crew_log_class`` is the seam between the slot and the ``class`` write.
+
+    The facts a reader needs to decide whether one session may read this one's crew
+    log, taken at the moment the log is opened because the reader that asks is
+    usually asking about a session that has since closed. A cron tab's link is not a
+    channel: it names the job's own run and republishes to nobody, which is the
+    exemption ``CRON_LINK_PREFIX`` carries wherever that boundary is enforced.
+
+    Mutation guard: drop the cron exemption and the third case reddens; drop the
+    mirror probe and the fourth reddens; let the probe's exception escape and the
+    fifth reddens instead of recording a channel.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import session_control as sc
+    from kiro_crew.dashboard.chat_runner import _crew_log_class
+    from kiro_crew.dashboard.session_control import CRON_LINK_PREFIX
+
+    mirrored: dict[str, bool] = {"value": False}
+    monkeypatch.setattr(sc, "_has_channel_mirror", lambda state, slot: mirrored["value"])
+    state = SimpleNamespace()
+
+    plain = SimpleNamespace(memory_mode="persistent", _app="", linked_session_key="", key="chat-9")
+    assert _crew_log_class(state, plain) == ("persistent", "", False)
+
+    owned = SimpleNamespace(
+        memory_mode="incognito", _app="travel-desk", linked_session_key="", key="chat-9"
+    )
+    assert _crew_log_class(state, owned) == ("incognito", "travel-desk", False)
+
+    cron = SimpleNamespace(
+        memory_mode="persistent", _app="", linked_session_key=f"{CRON_LINK_PREFIX}nightly", key="c"
+    )
+    assert _crew_log_class(state, cron) == ("persistent", "", False)
+
+    linked = SimpleNamespace(
+        memory_mode="persistent", _app="", linked_session_key="slack:C123", key="chat-9"
+    )
+    assert _crew_log_class(state, linked) == ("persistent", "", True)
+
+    # An OUTBOUND mirror lives in the session store rather than on the slot, so a
+    # slot with an empty link can still be republishing every turn.
+    mirrored["value"] = True
+    assert _crew_log_class(state, plain) == ("persistent", "", True)
+
+    # A probe that cannot answer at all records a channel rather than recording
+    # "unpublished": opening a log must not raise, and the safe direction costs a
+    # dispatcher one refusal it can ask about.
+    def _raises(state, slot):
+        raise RuntimeError("no store")
+
+    monkeypatch.setattr(sc, "_has_channel_mirror", _raises)
+    assert _crew_log_class(state, plain) == ("persistent", "", True)
+
+
+def test_an_oversize_creator_session_id_is_dropped_at_mint_not_retained(tmp_path, monkeypatch):
+    """The creator sid is backend-authored, so it is bounded where it is RETAINED.
+
+    An id past ``MAX_ACP_SESSION_ID_LEN`` is not stored on the child -- dropped,
+    never truncated, so it cannot push the child's ``session/opened`` entry over
+    the crew log's size cap and lose the whole entry. The sid is optional: absent
+    is a legal record, a clipped id would be a wrong one. (The sid never reaches
+    the birth metadata in any case; the bound is about the in-memory slot and the
+    entry it feeds.)
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    creator_client = MagicMock()
+    creator_client.session_id = "s" * (MAX_ACP_SESSION_ID_LEN + 1)
+    caller._acp_client = creator_client
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert getattr(child, "_created_by_sid", "") == ""
+    # Still a witnessed mint: the slot half of the lineage is recorded, sid absent.
+    assert getattr(child, "_lineage_minted", False) is True
+    written = state.conversation_log.get_metadata(sc.slot_history_key(child))
+    assert "created_by_sid" not in written
+    # The attribution itself is unaffected: the slot key is ours, not the backend's.
+    assert getattr(child, "_created_by", "") == caller.key
 
 
 def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
@@ -3589,15 +4779,15 @@ def test_the_delivery_path_never_claims_a_turn_consumed_a_steer(tmp_path, monkey
     """The steer RPC proves the bytes left, not that any turn received them.
 
     A steer reported delivered can still be sitting pending when its turn ends, and
-    that turn's teardown requeues it to a LATER turn. A `message/steered` written
-    from here would already be on disk saying the earlier turn received it, and an
+    that turn's teardown requeues it to a LATER turn. A ledger entry written from
+    here would already be on disk saying the earlier turn received it, and an
     append-only entry cannot be moved the way the transcript row can. So this path
-    writes no ledger entry at all; the `steering_consumed` echo owns that fact.
+    writes no ledger entry at all, which is why the vocabulary carries no steer type.
 
     Mutation guard: recording the delivered case here -- from a live ordinal or any
     other guess -- reddens this.
     """
-    from kiro_crew import session_ledger_emit
+    from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard import chat_delivery
 
     state = _make_state(tmp_path)
@@ -3605,17 +4795,21 @@ def test_the_delivery_path_never_claims_a_turn_consumed_a_steer(tmp_path, monkey
     text = "use the other branch"
     slot._acp_client = _steerable(accepted=True)
 
-    steered_at: list[int] = []
+    appended: list[str] = []
     queued_for: list[str] = []
-    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
+    # Spied on the shared write seam rather than on one entry point, so an entry
+    # written under ANY type is caught rather than only a steer-shaped one.
     monkeypatch.setattr(
-        session_ledger_emit, "on_message_steered", lambda *a, **kw: steered_at.append(1)
+        crew_log_emit,
+        "_write",
+        lambda _sid, entry_type, *a, **kw: appended.append(entry_type),
     )
     monkeypatch.setattr(
-        session_ledger_emit, "on_message_queued", lambda sid, **_kw: queued_for.append(sid)
+        crew_log_emit, "on_message_queued", lambda sid, **_kw: queued_for.append(sid)
     )
     # A turn IS running, so a guess would have had something plausible to record.
-    monkeypatch.setattr(session_ledger_emit, "live_turn", lambda _sid: 13)
+    monkeypatch.setattr(crew_log_emit, "live_turn", lambda _sid: 13)
 
     def _consume_inside_the_rpc(*_a, **_kw):
         # The running turn takes the registration, which is what makes the
@@ -3629,7 +4823,7 @@ def test_the_delivery_path_never_claims_a_turn_consumed_a_steer(tmp_path, monkey
     result = asyncio.run(chat_delivery.steer_into_running_turn(state, slot, text))
 
     assert result == chat_delivery.STEER_STEERED
-    assert steered_at == [], "the delivery path must not assert consumption"
+    assert appended == [], "the delivery path must not assert consumption"
     assert queued_for == [], "and it is not a queued message either"
 
 
@@ -3644,7 +4838,7 @@ def test_a_stop_race_that_only_expects_a_requeue_records_nothing(tmp_path, monke
 
     Mutation guard: recording the queued outcome here reddens this.
     """
-    from kiro_crew import session_ledger_emit
+    from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard import chat_delivery
 
     state = _make_state(tmp_path)
@@ -3653,10 +4847,8 @@ def test_a_stop_race_that_only_expects_a_requeue_records_nothing(tmp_path, monke
     slot._acp_client = _steerable(accepted=True)
 
     queued: list[str] = []
-    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
-    monkeypatch.setattr(
-        session_ledger_emit, "on_message_queued", lambda sid, **_kw: queued.append(sid)
-    )
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(crew_log_emit, "on_message_queued", lambda sid, **_kw: queued.append(sid))
 
     def _stop_without_requeueing(*_a, **_kw):
         # A stop lands while the steer is still registered, and nothing has moved
@@ -3685,7 +4877,7 @@ def test_a_requeued_steer_is_recorded_as_a_queued_message(tmp_path, monkeypatch)
 
     Mutation guard: recording `send_id` reddens this, because the two differ here.
     """
-    from kiro_crew import session_ledger_emit
+    from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard import chat_delivery
 
     state = _make_state(tmp_path)
@@ -3694,9 +4886,9 @@ def test_a_requeued_steer_is_recorded_as_a_queued_message(tmp_path, monkeypatch)
     slot._acp_client = _steerable(accepted=True)
 
     queued: list[dict] = []
-    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
     monkeypatch.setattr(
-        session_ledger_emit, "on_message_queued", lambda sid, **kw: queued.append(dict(kw))
+        crew_log_emit, "on_message_queued", lambda sid, **kw: queued.append(dict(kw))
     )
     seen: dict[str, str] = {}
 
@@ -4266,3 +5458,263 @@ def test_close_slot_runs_the_pre_pop_check_synchronously_after_retirement(tmp_pa
     # second retirement is needed because the check itself suspends nothing.
     assert order == ["retire", "check"], order
     assert slot.key not in state._slots  # closed
+
+
+@pytest.mark.asyncio
+async def test_a_failed_containment_stop_still_reports_the_delivery(tmp_path, monkeypatch):
+    """A stop that raises must not turn a consumed steer into a reported failure.
+
+    By the time the containment stop runs, `STEER_STEERED` means kiro-cli has already
+    taken the text: the turn will act on it whatever happens next. The stop only
+    narrows what that turn goes on to publish. If it raises and the exception escapes,
+    the caller is told the send failed for text that was in fact delivered, and the
+    obvious client response -- send it again -- delivers the same message twice.
+
+    Containment does not depend on the stop succeeding: the audience fence recorded
+    before the RPC stays on the slot, and the publisher consults it at delivery.
+
+    Mutation guard: drop the `try/except` around `stop_slot_turn` and this raises
+    instead of returning, and the audit loses `steer_containment_stop_failed`.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _exploding_stop(_state, _slot, **kwargs):
+        raise RuntimeError("session was already gone")
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", _exploding_stop)
+
+    audits: list[dict] = []
+    monkeypatch.setattr(sc, "_audit", lambda **kw: audits.append(kw))
+
+    client = MagicMock()
+    client.supports_steer = True
+
+    async def _steer_then_replace_the_slot(*_a, **_kw):
+        # A change the code names explicitly: the slot object behind this key is
+        # swapped while the RPC is suspended, so the turn holding the text belongs
+        # to a session the name has stopped resolving to. Chosen over binding a
+        # mirror because it needs no session-store fixture to be deterministic.
+        state._slots["chat-2"] = _peer_target(state, "chat-2-replacement", caller)
+        return True
+
+    client.steer = _steer_then_replace_the_slot
+    target._acp_client = client
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="the turn already has this",
+        steer=True,
+    )
+
+    assert out["ok"] is True, "a delivered steer must not be reported as failed"
+    assert out["steered"] is True, "the turn consumed the text; say so"
+    sends = [a for a in audits if a.get("operation") == "send"]
+    assert sends, "the successful delivery must still be audited"
+    detail = sends[-1]["detail"]
+    assert detail.get("steer_containment_stop_failed") is True, (
+        "a stop that raised must be visible in the trail, not swallowed: " f"{detail}"
+    )
+    assert detail.get("steer_stopped_on"), "the constraint that newly held must be named"
+
+
+@pytest.mark.asyncio
+async def test_a_rolled_over_turn_is_not_cancelled_by_containment(tmp_path, monkeypatch):
+    """The stop must reach the turn this text entered, not whichever runs later.
+
+    `slot.running` is true for ANY turn. If the steered turn ends while the RPC is
+    suspended and a queued prompt starts the next one, an unguarded stop cancels work
+    that never received this steer -- someone else's turn, killed for a constraint
+    that has nothing to do with it. `_turn_generation` increments on every task
+    assignment, so comparing it identifies the turn across the suspension.
+
+    The steered turn is over by then, so nothing is lost by not stopping it: whatever
+    it published is published, and the fence still withholds the legs of the turn that
+    holds it.
+
+    Mutation guard: drop the generation comparison and the stop fires here.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    stops: list[str] = []
+
+    async def _fake_stop(_state, _slot, **kwargs):
+        stops.append(_slot.key)
+        return {"stopped": True}
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", _fake_stop)
+
+    audits: list[dict] = []
+    monkeypatch.setattr(sc, "_audit", lambda **kw: audits.append(kw))
+
+    client = MagicMock()
+    client.supports_steer = True
+
+    async def _steer_then_roll_the_turn(*_a, **_kw):
+        # The turn that took the text finishes and the next one starts, which is what
+        # a queue drain does between turns. Driven through the same setter the runtime
+        # uses so the generation moves exactly as it would in production.
+        target.task = asyncio.current_task()
+        # ...and an audience change, so the stop would otherwise fire.
+        state._slots["chat-2"] = _peer_target(state, "chat-2-replacement", caller)
+        return True
+
+    client.steer = _steer_then_roll_the_turn
+    target._acp_client = client
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="this belonged to the turn that already ended",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    assert not stops, f"a successor turn must not be cancelled: {stops}"
+    detail = [a for a in audits if a.get("operation") == "send"][-1]["detail"]
+    assert "turn_rolled_over_stop_skipped" in detail["steer_stopped_on"], (
+        "the skipped stop must be visible in the trail rather than looking like a "
+        f"containment that never triggered: {detail}"
+    )
+
+
+def test_the_post_rpc_regate_warms_the_config_first():
+    """The fallback gate sits after an await, so it needs its own warm.
+
+    `authorize_target` reaches `session_control_enabled`, which on a cache invalidated
+    by a config edit runs `KiroCrewConfig.load()` synchronously and stalls the shared
+    loop for every other session. The warm at the top of `send_to_target` predates the
+    steer RPC, so the suspension voids its guarantee -- which is the reopened hole
+    `prewarm_enabled_check`'s own docstring describes.
+
+    Asserted on source order because what is being guarded is the function's own
+    `await`, which a runtime probe cannot observe without racing it.
+
+    Mutation guard: delete the second warm and the regate is the first thing after
+    the RPC again.
+    """
+    src = Path(sc.__file__).read_text(encoding="utf-8")
+    send = src[src.index("async def send_to_target") :]
+    send = send[: send.index("\ndef read_messages")]
+    rpc_at = send.index("await steer_into_running_turn(")
+    regate_at = send.index("regated = authorize_target(")
+    warm_at = send.index("await prewarm_enabled_check()", rpc_at)
+    assert rpc_at < warm_at < regate_at, (
+        "the post-RPC regate must be preceded by its own prewarm: "
+        f"rpc={rpc_at} warm={warm_at} regate={regate_at}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_inter_stage_append_persists_before_returning_success(tmp_path):
+    """An acknowledged prompt must not live only in memory.
+
+    A mid-plan send queues the prompt and the function then returns a success
+    receipt. Until the plan's drain reaches it the queue is its only record, so a
+    restart inside the ordinary flush interval loses a message the sender was told had
+    landed. Every other producer that appends and reports success writes immediately.
+
+    Asserted on BEHAVIOUR, not on the order of two lines in this module's source: the
+    append and the write both moved into `state.enqueue_or_run_prompt` when the
+    inter-stage branch here was deleted in favour of the central gate, and a
+    source-text pin would have reported that as a lost guarantee rather than a moved
+    one. What the sender is owed is the write, wherever it is started from.
+
+    Mutation guard: remove the `start_queue_persist` call from
+    `enqueue_or_run_prompt`'s queue branch and no write starts here.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    # The inter-stage shape exactly: no task in flight, plan still executing.
+    target.task = None
+    target._in_stage_execution = True
+    flushed: list = []
+    state.flush_slot_now = lambda slot: flushed.append(slot)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="acknowledged, so it must be durable",
+    )
+
+    assert out["started"] is False, "the prompt was queued, so a receipt was given"
+    # Started, not awaited, and it runs in an executor.
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if flushed:
+            break
+    assert flushed == [target], (
+        "the immediate queue write must have been started for the slot whose queue "
+        f"now holds the acknowledged prompt: {flushed}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_requeue_onto_a_replaced_slot_is_refused_not_reported_as_sent(
+    tmp_path, monkeypatch
+):
+    """A requeue that lands on a detached slot must not report success.
+
+    `STEER_REQUEUED` means the turn ended under the RPC and its teardown moved the
+    text onto THIS slot object's queue. If the key stopped resolving to this object
+    in that window -- the target closed and recreated -- that queue belongs to
+    something no drain will reach, so the prompt is gone. Reporting `queued` for it
+    tells the sender their words are waiting when they are not, and the sender has
+    no way to find out.
+
+    The sibling arms both guard this: the steered arm records `slot_replaced` and
+    the fallback arm re-runs the gate. This arm was the gap.
+
+    Mutation guard: drop the identity check and this returns ok instead of raising.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    client = MagicMock()
+    client.supports_steer = True
+
+    async def _requeue_then_replace_the_slot(*_a, **_kw):
+        # The teardown's requeue, then the close-and-recreate that detaches the
+        # object holding it. Ordered this way because that is the sequence the
+        # finding describes: the text is already on the old queue when the key
+        # moves.
+        target._pending_steers.clear()
+        state._slots["chat-2"] = _peer_target(state, "chat-2-replacement", caller)
+        return True
+
+    client.steer = _requeue_then_replace_the_slot
+    target._acp_client = client
+
+    # Patched on chat_delivery, NOT on sc: `send_to_target` imports this name
+    # through a deferred import inside the function, so a patch on the importing
+    # module is never consulted.
+    import kiro_crew.dashboard.chat_delivery as cd
+
+    async def _fake_steer(*_a, **_kw):
+        await _requeue_then_replace_the_slot()
+        return cd.STEER_REQUEUED
+
+    monkeypatch.setattr(cd, "steer_into_running_turn", _fake_steer)
+
+    with pytest.raises(sc.SessionControlError) as caught:
+        await sc.send_to_target(
+            state,
+            caller_session_key=_key(caller),
+            target="chat-2",
+            message="this was requeued onto a slot that no longer exists",
+            steer=True,
+        )
+
+    assert caught.value.code == "target_moved", (
+        "a requeue onto a detached slot must be refused as target_moved, not "
+        f"reported as delivered: {caught.value.code}"
+    )

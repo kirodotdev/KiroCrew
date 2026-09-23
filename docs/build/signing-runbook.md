@@ -32,8 +32,9 @@ sign      (ubuntu)  flatten artifacts, attest wheel/sdist/AppImage provenance,
                     extract the .app, run packaging/signing/sign.sh
                     -> signed/<channel>/<version>/<AppSlug>.zip
   |
-notarize  (macOS)   notarytool submit --wait, stapler staple, spctl gate,
-                    build a DMG from the STAPLED app, sign the DMG via a second
+notarize  (macOS)   notarize.sh submit + bounded polling with transient-error
+                    retries, stapler staple, spctl gate, build a DMG from the
+                    STAPLED app, sign the DMG via a second
                     CDSigner task, notarize + staple + gate the DMG, attest the
                     DMG, attach the gated artifact to the run
   |

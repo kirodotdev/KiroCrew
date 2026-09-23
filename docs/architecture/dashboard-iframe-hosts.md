@@ -1,23 +1,37 @@
 # Dashboard iframe hosts — which one to use
 
-The dashboard embeds third-party content in **four** different iframe hosts. They look interchangeable and are not: each one picked a different `sandbox` for a different trust level, and two of them make *opposite* assumptions about whether the frame is allowed to talk back.
+This note covers four core interactive iframe hosts. The dashboard also has
+static renderers and app-specific frames, so this list is not exhaustive. These
+four look interchangeable and are not: each has a different sandbox posture
+(including no `sandbox` on remote-instance panes), and two make *opposite*
+assumptions about whether the frame may talk back.
 
 Pick a host from this table. **Do not widen an existing host's sandbox to make it fit a new use** — that is the failure mode this document exists to prevent.
 
 | Host | `sandbox` | Content it is for | Frame → host messages |
 |---|---|---|---|
-| `WebPreviewPanel.tsx` (the **Browser** tab) | `allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads` | A URL selected in the preview panel | none |
+| `WebPreviewPanel.tsx` (the **Browser** tab) | `allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads` | An explicitly loaded loopback preview or the loopback Playwright CLI dashboard; Electron browsing can use a native Chromium view instead | none |
 | `WidgetFrame.tsx` (`<mcwidget>`, artifacts) | `allow-scripts allow-popups allow-popups-to-escape-sandbox` | **LLM-emitted HTML** | **Defended against.** A malicious emitted `<script>` can `postMessage`, so the host treats inbound messages as hostile |
 | `McpAppFrame.tsx` (the **App** tab) | `allow-scripts allow-forms` | **MCP-server-supplied HTML** (`srcDoc`) | **Required and trusted-by-capability.** SEP-1865 JSON-RPC bridge; the host holds a `callback_secret` |
-| `InstancesViewport.tsx` | (remote Kiro Crew instances) | another instance's dashboard | n/a |
+| `InstancesViewport.tsx` | none | another instance's dashboard | n/a |
 
 ## The two axes
 
 Trust level and connectedness are **independent**, which is why no host can be reused for another's job:
 
-- `WebPreviewPanel` is the **most** privileged (`allow-same-origin` — it can reach dashboard origin) because it loads a URL selected in the preview panel. Never put server-supplied or model-supplied HTML in it.
+- `WebPreviewPanel` has the most permissive iframe sandbox. `allow-same-origin`
+  preserves the loaded page's real origin; it does not bypass the browser's
+  same-origin policy. The host isolates a preview target that would otherwise
+  match the dashboard origin, and external browsing uses the native or
+  Playwright-dashboard transport instead. Never put server-supplied or
+  model-supplied `srcDoc` HTML in this host.
 - `McpAppFrame` is the **least** privileged (no `allow-same-origin`, no popups) *and* the **most** connected. It is the only host with a live bidirectional bridge, and it is null-origin precisely because it must be. Note this is a deliberate divergence from SEP-1865, which mandates a two-frame *sandbox proxy* whose outer frame carries `allow-same-origin`; the trade and what it costs an app are documented in [MCP Apps](../../src/kiro_crew/docs/mcp-apps.md#deviations-from-sep-1865). Do not "fix" the sandbox attribute to match the spec without reading that section.
 - `WidgetFrame` is closest to `McpAppFrame` on content, but is built on the opposite bridge assumption. Reusing it for an MCP App would mean adopting a host that is designed to distrust exactly the messages the App protocol needs.
+- `InstancesViewport` deliberately has no `sandbox` attribute: it embeds an
+  authenticated remote Kiro Crew dashboard rather than emitted `srcDoc`.
+  Browser origin isolation and the instance connection boundary, not iframe
+  sandbox flags, separate it from the local dashboard. Do not reuse that
+  posture for untrusted HTML.
 
 ## The rule that constrains all of them: an iframe cannot be moved
 
@@ -29,6 +43,27 @@ Two consequences that have already cost real debugging time here:
 - **Unmount-to-hide loses state.** For a null-origin frame with no storage there is nothing to restore from, so an unmount discards the user's work. `InstancesViewport.tsx` and `SidePanel.tsx` both solve this the same way: keep the frame mounted and toggle `display`. Follow that precedent.
 
 If a feature needs content to *appear* somewhere else, restyle the stable container — do not move the node.
+
+## The other rule: a refused frame is indistinguishable from a healthy one
+
+A cross-origin frame whose document was blocked by `X-Frame-Options` or CSP `frame-ancestors` is, from the embedding page, **not detectable**. It fires `load` exactly as a healthy frame does, and fires it *sooner*. Measured with the parent cross-origin to the target, which is the real configuration here (dashboard on one port, dev server on another):
+
+| target | Chromium `load` | Firefox `load` | `error` | readable `contentDocument` | resource timing |
+|---|---|---|---|---|---|
+| healthy page | 7 ms | 21 ms | never | no | status 0 |
+| `X-Frame-Options: DENY` | 4 ms | 127 ms | never | no | status 0 |
+| `X-Frame-Options: SAMEORIGIN` | 4 ms | 55 ms | never | no | status 0 |
+| CSP `frame-ancestors 'none'` | 4 ms | 56 ms | never | no | status 0 |
+| healthy but slow server (3 s) | 3008 ms | 3012 ms | never | no | status 0 |
+
+Comparing every field between a refused frame and a healthy one yields **no discriminating field, in either engine**. Two consequences:
+
+- **A load-timeout heuristic is inverted, not merely unreliable.** A refusal reports `load` in 4 ms against 3008 ms for a healthy cold dev server, so any threshold that catches the refusal also fires on a slow start. The false positive is worse than the blank frame it was meant to explain.
+- **`useSilentLoadWatch` cannot cover it.** Its verdict is "`load` never arrived", and here `load` always arrives.
+
+The only signal that separates the two is a console CSP violation, which a page cannot read, and which `X-Frame-Options` does not emit at all. A server-side frameability probe would answer it exactly, at the cost of an outbound-fetch endpoint and its SSRF surface.
+
+So `WebPreviewPanel.tsx` does not detect this state. It carries a standing note above every frame instead, and the note is worded and marked as a note rather than as a status, because it is shown over healthy previews too. Do not replace it with a timer.
 
 ## Adding a new panel tab kind
 

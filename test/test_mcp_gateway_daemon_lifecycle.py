@@ -61,6 +61,7 @@ class TestCodeFingerprint:
                 ["git", "-C", str(tmp_path), *args],
                 check=True,
                 capture_output=True,
+                cwd=tmp_path,
                 env=env,
                 **UTF8_TEXT,
             )
@@ -138,13 +139,22 @@ class TestCodeFingerprint:
         (root / "m.py").write_text("v = 0\n", encoding="utf-8")
         assert cf.fingerprint_of(root).startswith("mtime:")
 
-    def test_two_checkouts_of_different_code_disagree(self, tmp_path: Path) -> None:
+    def test_two_checkouts_of_different_code_disagree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The mtime rule is the one under test, so it is selected through the
+        # seam that chooses it (no trusted git -> no git branch) rather than by
+        # assuming the fixtures are "not git trees": git discovers UPWARD, and a
+        # temp root under a checkout (a developer's `TMPDIR=./tmp`) makes both
+        # directories answer with that checkout's HEAD -- identical fingerprints
+        # for different code.
+        monkeypatch.setattr(cf, "trusted_git_bin", lambda: None)
         a = tmp_path / "a"
         b = tmp_path / "b"
         for root in (a, b):
             root.mkdir()
             (root / "m.py").write_text("v = 0\n", encoding="utf-8")
-        # Not git trees, so the mtime rule applies: give them distinct mtimes.
+        # Distinct mtimes are what the rule digests.
         os.utime(a / "m.py", ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
         os.utime(b / "m.py", ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
         assert cf.fingerprint_of(a) != cf.fingerprint_of(b)
@@ -240,11 +250,51 @@ class TestOwnerLivenessSweeper:
 
     @pytest.mark.asyncio
     async def test_no_baseline_disables_the_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An owner that EXISTS but will not report a start time is unknown, not gone.
+
+        Nothing to compare against, so the check stands down and the daemon
+        keeps serving. ``_pid_exists`` is True here on purpose: that is what
+        makes the unreadable start time inconclusive rather than a conclusion.
+        """
+        stop = asyncio.Event()
+        monkeypatch.setattr(gw, "_process_start_time", lambda pid: None)
+        monkeypatch.setattr(gw, "_pid_exists", lambda pid: True)
+        await asyncio.wait_for(gw._owner_liveness_sweeper(4242, 0.01, stop), timeout=5)
+        assert not stop.is_set()
+
+    @pytest.mark.asyncio
+    async def test_an_owner_already_gone_at_arm_time_stops_the_daemon(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The regression: no baseline AND no owner is gone, not unknown.
+
+        The listening socket is bound and advertised before this sweeper first
+        runs, so a contended host can lose the owner inside that gap. Standing
+        the check down there retires the only mechanism that would ever end
+        this daemon, so it outlives its owner indefinitely. A conclusive
+        ``pid_exists`` miss must take the same graceful drain path a later
+        conclusive miss takes.
+        """
         stop = asyncio.Event()
         monkeypatch.setattr(gw, "_process_start_time", lambda pid: None)
         monkeypatch.setattr(gw, "_pid_exists", lambda pid: False)
         await asyncio.wait_for(gw._owner_liveness_sweeper(4242, 0.01, stop), timeout=5)
-        assert not stop.is_set()
+        assert stop.is_set(), "a daemon whose owner is already gone must not serve on"
+
+    @pytest.mark.asyncio
+    async def test_arm_time_stop_does_not_wait_out_a_probe_interval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The arm-time conclusion is reached before the first probe sleep.
+
+        A long interval must not delay it: the sweeper already knows the owner
+        is gone, so there is nothing to wait for.
+        """
+        stop = asyncio.Event()
+        monkeypatch.setattr(gw, "_process_start_time", lambda pid: None)
+        monkeypatch.setattr(gw, "_pid_exists", lambda pid: False)
+        await asyncio.wait_for(gw._owner_liveness_sweeper(4242, 3600.0, stop), timeout=5)
+        assert stop.is_set()
 
     def test_the_manager_names_itself_as_owner(self, tmp_path: Path) -> None:
         """The argv the manager builds carries this process's PID."""

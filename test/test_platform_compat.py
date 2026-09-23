@@ -11,6 +11,7 @@ output we can assert directly), and the process-helper return contracts.
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import json
 import logging
@@ -31,12 +32,19 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import platform_compat as pc
+from kiro_crew import windows_acl
 
 
 @pytest.mark.skipif(
     sys.platform not in {"win32", "linux", "darwin"}, reason="supported kernel identity contract"
 )
-@pytest.mark.parametrize("family, host", [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")])
+@pytest.mark.parametrize(
+    "family, host",
+    [
+        (socket.AF_INET, "127.0.0.1"),
+        pytest.param(socket.AF_INET6, "::1", marks=pytest.mark.ipv6_required),
+    ],
+)
 def test_native_tcp_peer_identifies_client_process_not_server(family, host):
     with socket.socket(family) as listener:
         listener.settimeout(10)
@@ -143,7 +151,7 @@ class TestPlatformFlags:
 
 
 class TestReexecPythonModule:
-    def test_windows_uses_space_free_argv0(self, monkeypatch):
+    def test_windows_uses_space_free_argv0(self, monkeypatch, nonbundled_python_without_user_site):
         executable = (
             r"C:\Users\alice\AppData\Local\Programs\KiroCrew Nightly"
             r"\resources\backend-dist\kirocrew-backend\python.exe"
@@ -160,13 +168,15 @@ class TestReexecPythonModule:
         assert calls == [
             (
                 executable,
-                ["python.exe", "-m", "kiro_crew", "gateway", "--port", "5476"],
+                ["python.exe", "-s", "-m", "kiro_crew", "gateway", "--port", "5476"],
             )
         ]
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
-    def test_posix_preserves_full_argv0_and_pins_utf8(self, monkeypatch):
+    def test_posix_preserves_full_argv0_and_pins_utf8(
+        self, monkeypatch, nonbundled_python_without_user_site
+    ):
         executable = "/opt/Kiro Crew/bin/python3"
         calls = []
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
@@ -177,7 +187,7 @@ class TestReexecPythonModule:
 
         pc.reexec_python_module("kiro_crew", ["gateway"])
 
-        assert calls == [(executable, [executable, "-m", "kiro_crew", "gateway"])]
+        assert calls == [(executable, [executable, "-s", "-m", "kiro_crew", "gateway"])]
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
@@ -381,6 +391,72 @@ class TestRenameNoReplace:
         with pytest.raises(NotImplementedError):
             pc.rename_noreplace("source", "target", src_dir_fd=-1, dst_dir_fd=-1)
 
+    def test_syscall_fallback_builds_working_callable_on_known_arch(self, tmp_path, monkeypatch):
+        # Verify marshalling on every host. Linux additionally exercises the
+        # native syscall, independent of which libc path import-time chose.
+        host_machine = pc.platform.machine()
+        calls = []
+
+        def syscall(*args):
+            calls.append(args)
+            ctypes.set_errno(errno.EEXIST)
+            return -1
+
+        for machine, number in pc._SYS_RENAMEAT2_BY_MACHINE.items():
+            with monkeypatch.context() as patcher:
+                patcher.setattr(pc.platform, "machine", lambda: machine)
+                fn = pc._build_renameat2_via_syscall(types.SimpleNamespace(syscall=syscall))
+                assert fn is not None
+                assert fn(11, b"first", 12, b"published", 1) == -1
+                assert calls[-1] == (number, 11, b"first", 12, b"published", 1)
+                assert syscall.restype is ctypes.c_long
+                assert syscall.argtypes == [
+                    ctypes.c_long,
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_uint,
+                ]
+                assert ctypes.get_errno() == errno.EEXIST
+        assert len(calls) == len(pc._SYS_RENAMEAT2_BY_MACHINE)
+        if not pc.IS_LINUX or host_machine not in pc._SYS_RENAMEAT2_BY_MACHINE:
+            # Portable marshalling above still runs; never issue a Linux
+            # syscall against another OS or guess an unmapped syscall number.
+            return
+        libc = ctypes.CDLL(None, use_errno=True)
+        fn = pc._build_renameat2_via_syscall(libc)
+        assert fn is not None
+
+        first = tmp_path / "first"
+        first.mkdir()
+        (first / "payload").write_text("published")
+        parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            rc = fn(parent_fd, b"first", parent_fd, b"published", 1)  # RENAME_NOREPLACE
+            assert rc == 0
+            assert (tmp_path / "published" / "payload").read_text() == "published"
+
+            # Occupied destination must refuse (EEXIST), not clobber.
+            (tmp_path / "loser").mkdir()
+            ctypes.set_errno(0)
+            rc = fn(parent_fd, b"loser", parent_fd, b"published", 1)
+            assert rc != 0
+            assert ctypes.get_errno() == errno.EEXIST
+        finally:
+            os.close(parent_fd)
+
+    def test_syscall_fallback_returns_none_on_unknown_arch(self, monkeypatch):
+        # An unmapped architecture must fail closed rather than issue a
+        # wrong-numbered syscall.
+        monkeypatch.setattr(pc.platform, "machine", lambda: "totally-made-up-arch")
+
+        class UnavailableLibc:
+            def __getattr__(self, name):
+                raise AssertionError(f"unknown architecture must not access libc.{name}")
+
+        assert pc._build_renameat2_via_syscall(UnavailableLibc()) is None
+
 
 class TestProcessHelpers:
     def test_pid_exists_true_for_self(self):
@@ -536,6 +612,74 @@ class TestFindListeningPids:
                 assert os.getpid() in pids
         finally:
             s.close()
+
+    def test_linux_per_process_probe_runs_on_every_runner(self, tmp_path, monkeypatch):
+        proc_root = tmp_path / "proc"
+        (proc_root / "net").mkdir(parents=True)
+        (proc_root / "4242" / "fd").mkdir(parents=True)
+        (proc_root / "4242" / "fd" / "7").touch()
+        (proc_root / "net" / "tcp").write_text(
+            "header\n"
+            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000 1000 0 12345\n",
+            encoding="ascii",
+        )
+        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[12345]")
+
+        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is True
+
+    def test_windows_listener_probe_marks_browser_capable(self, monkeypatch):
+        """Use real Windows/Darwin attribution there; both synthetic shapes elsewhere."""
+        from kiro_crew.browser_cli import view as browser_view
+
+        def _assert_capable(port: int) -> None:
+            assert pc.process_owns_loopback_listener(os.getpid(), port) is True
+            browser_view._invalidate_listener_lookup_self_test_cache()
+            try:
+                assert browser_view._listener_lookup_functional() is True
+                assert browser_view._structurally_blind_listener_attribution() is False
+            finally:
+                browser_view._invalidate_listener_lookup_self_test_cache()
+
+        if sys.platform in {"win32", "darwin"}:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                _assert_capable(int(listener.getsockname()[1]))
+            return
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(
+            pc,
+            "_windows_loopback_listener_owner_pids",
+            lambda port: {os.getpid()},
+        )
+        _assert_capable(45613)
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "listening_pid_tool", lambda: "lsof")
+        monkeypatch.setattr(
+            pc,
+            "trusted_system_bin",
+            lambda name: "/usr/bin/lsof" if name == "lsof" else None,
+        )
+        monkeypatch.setattr(
+            pc,
+            "probe_port_listeners",
+            lambda port, process_pid=None: (
+                [pc.PortListener(os.getpid(), "127.0.0.1", "4")],
+                True,
+            ),
+        )
+        _assert_capable(45613)
 
 
 class TestProcessCommandLine:
@@ -761,6 +905,71 @@ class TestUtf8Console:
         assert errors == []
 
 
+def _wire_mapping(buf: mmap.mmap, length: int) -> bool:
+    """Pin *buf*'s pages resident with ``mlock``; True when the kernel agreed.
+
+    Faulting a page in does not keep it in the resident set. Under memory
+    pressure macOS hands anonymous pages to its compressor the moment they
+    are touched, and a compressed page is not counted by
+    ``task_info().resident_size`` -- so on a loaded 3-shard runner a 128 MB
+    mapping that was written end to end read back as a 40 MB rise, and the
+    "rose while held" precondition below failed on a reading that was
+    exactly what ``ps -o rss=`` showed. Wired pages cannot be compressed or
+    evicted, which turns "how much of the mapping is resident" from the
+    kernel's discretion into a fixed quantity for the duration of the sample.
+
+    Best-effort by design: ``RLIMIT_MEMLOCK`` is unlimited on macOS but a few
+    megabytes on a stock Linux, where the call fails with ``ENOMEM`` and the
+    plain fault-in is enough because Linux does not compress anonymous pages.
+    Windows has no ``mlock``. Whatever happens, the mapping is still faulted
+    in by the caller; the return value only records which case ran so a
+    failing sample says so.
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        mlock = libc.mlock
+    except (AttributeError, OSError):
+        return False
+    mlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    mlock.restype = ctypes.c_int
+    # ``from_buffer`` takes an export on the mapping; it must be dropped
+    # before ``buf.close()`` or the close raises BufferError.
+    view = ctypes.c_char.from_buffer(buf)
+    try:
+        addr = ctypes.addressof(view)
+    finally:
+        del view
+    return mlock(addr, length) == 0
+
+
+def _measure_rss_release():
+    """Sample one real mapping's lifetime in the calling process."""
+    chunk = 128 * 1024 * 1024
+    page = 4096
+    baseline = pc.proc_rss_bytes()
+    buf = mmap.mmap(-1, chunk)
+    try:
+        wired = _wire_mapping(buf, chunk)
+        for offset in range(0, chunk, page):  # fault the pages in
+            buf[offset] = 1
+        while_held = pc.proc_rss_bytes()
+        peak_while_held = pc.proc_peak_rss_bytes()
+    finally:
+        buf.close()
+    after_free = pc.proc_rss_bytes()
+    peak_after = pc.proc_peak_rss_bytes()
+    return {
+        "baseline": baseline,
+        "while_held": while_held,
+        "peak_while_held": peak_while_held,
+        "after_free": after_free,
+        "peak_after": peak_after,
+        "wired": wired,
+    }
+
+
 class TestResourceShims:
     def test_proc_rss_bytes_nonnegative(self):
         # Returns this process's RSS (>0 normally) or 0 on failure — never raises.
@@ -773,7 +982,7 @@ class TestResourceShims:
         # watchdog's RSS ceiling.
         assert pc.proc_rss_bytes() > 0
 
-    def test_proc_rss_bytes_falls_back_down_when_memory_is_released(self):
+    def test_proc_rss_bytes_falls_back_down_when_memory_is_released(self, tmp_path):
         """The reading must be CURRENT residency, not the high-water mark.
 
         Reported symptom: the dashboard's per-process memory figure only ever
@@ -790,22 +999,63 @@ class TestResourceShims:
         agreeing exactly with ``ps -o rss=`` — a correct reading judged against an
         allocator's discretion rather than against the property under test.
         Closing a mapping unmaps immediately on Linux, macOS and Windows alike.
+
+        RSS covers the whole process: unrelated allocations released by a prior
+        test's threads or finalizers can cancel out this mapping's growth.
+        A fresh interpreter removes that inherited state, not OS variability.
+
+        The mapping is also WIRED where the platform allows (``mlock``), because
+        faulting a page in does not keep it resident: under memory pressure the
+        macOS compressor takes touched anonymous pages straight out of the
+        resident set, and on a loaded 3-shard runner the 128 MB mapping read back
+        as a 40 MB rise -- a correct reading that failed the "rose while held"
+        precondition. Wired pages are the one thing the kernel cannot compress or
+        evict, so the rise is the mapping's size rather than the compressor's
+        mood. ``samples["wired"]`` records whether the lock took, so a failure
+        here says which case it measured.
         """
+        import kiro_crew
+
+        root = Path(__file__).resolve().parents[1]
+        source_root = root / "src"
+        assert Path(kiro_crew.__file__).resolve().parent == source_root / "kiro_crew"
+        assert Path(pc.__file__).resolve() == source_root / "kiro_crew" / "platform_compat.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import json, sys; from pathlib import Path; "
+                "sys.path[:0] = sys.argv[1:]; "
+                "import kiro_crew, test_platform_compat as probe; "
+                "assert Path(kiro_crew.__file__).resolve().parent "
+                "== Path(sys.argv[1]) / 'kiro_crew'; "
+                "assert Path(probe.pc.__file__).resolve() "
+                "== Path(sys.argv[1]) / 'kiro_crew' / 'platform_compat.py'; "
+                "assert Path(probe.__file__).resolve() "
+                "== Path(sys.argv[2]) / 'test_platform_compat.py'; "
+                "print(json.dumps(probe._measure_rss_release()))",
+                str(source_root),
+                str(root / "test"),
+                str(root),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        samples = json.loads(result.stdout)
+        baseline = samples["baseline"]
+        while_held = samples["while_held"]
+        peak_while_held = samples["peak_while_held"]
+        after_free = samples["after_free"]
         chunk = 128 * 1024 * 1024
-        page = 4096
-        baseline = pc.proc_rss_bytes()
-        buf = mmap.mmap(-1, chunk)
-        try:
-            for offset in range(0, chunk, page):  # fault the pages in
-                buf[offset] = 1
-            while_held = pc.proc_rss_bytes()
-            peak_while_held = pc.proc_peak_rss_bytes()
-        finally:
-            buf.close()
-        after_free = pc.proc_rss_bytes()
 
         # Rose by most of the buffer while it was resident.
-        assert while_held - baseline > chunk // 2
+        assert while_held - baseline > chunk // 2, samples
         # And gave a real part of it back. Deliberately relative to `while_held`
         # rather than an absolute `baseline + chunk // 2` ceiling: how much the
         # OS actually returns on free is its decision, not ours. Windows keeps
@@ -814,13 +1064,13 @@ class TestResourceShims:
         # absolute ceiling failed there on a reading that was behaving correctly.
         # A peak-based implementation cannot pass this at any tolerance, because
         # it returns a number that has not moved at all.
-        assert after_free < while_held - chunk // 8
+        assert after_free < while_held - chunk // 8, samples
         # The decisive property, and the one the bug got wrong: after a free the
         # CURRENT reading must be strictly below the peak. `ru_maxrss` returns
         # exactly the peak here, so this is the assertion that fails for it.
-        assert after_free < peak_while_held
+        assert after_free < peak_while_held, samples
         # The peak, by contrast, is not allowed to fall.
-        assert pc.proc_peak_rss_bytes() >= peak_while_held
+        assert samples["peak_after"] >= peak_while_held, samples
 
     def test_proc_peak_rss_bytes_reads_the_same_unit_as_the_current_reading(self):
         # The property under test is the UNIT, not the ordering: ru_maxrss is KiB on
@@ -1867,17 +2117,366 @@ class TestAttributedDescendants:
 
 
 class TestProcessDescendants:
-    def test_descendants_from_parent_map_walks_full_tree(self):
+    def test_descendants_from_parent_map_sorts_siblings_and_walks_full_tree(self):
         parent_map = {
-            11: 10,
-            12: 11,
             13: 10,
+            12: 11,
+            11: 10,
             14: 12,
             99: 1,
             10: 14,
         }
 
         assert pc._descendants_from_parent_map(10, parent_map) == [11, 13, 12, 14]
+
+    def test_linux_descendant_identities_walk_only_the_root_subtree(self, tmp_path, monkeypatch):
+        proc_root = tmp_path / "proc"
+        process_rows = (
+            (10, 1, "100"),
+            (11, 10, "110"),
+            (12, 11, "120"),
+            (13, 10, "130"),
+            (99, 1, "990"),
+        )
+        children = {10: "11 13", 11: "12", 12: "", 13: "", 99: ""}
+        for process, parent, start_time in process_rows:
+            process_root = proc_root / str(process)
+            task_root = process_root / "task" / str(process)
+            task_root.mkdir(parents=True)
+            fields = ["S", str(parent), *(["0"] * 17), start_time]
+            (process_root / "stat").write_text(
+                f"{process} (test process) {' '.join(fields)}\n",
+                encoding="utf-8",
+            )
+            (task_root / "children").write_text(children[process], encoding="ascii")
+        real_read_text = Path.read_text
+        stat_reads: list[int] = []
+
+        def _track_reads(path: Path, *args, **kwargs):
+            if path.name == "stat":
+                stat_reads.append(int(path.parent.name))
+            return real_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _track_reads)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pc.subprocess,
+            "check_output",
+            lambda *args, **kwargs: pytest.fail("procfs discovery must not spawn ps"),
+        )
+
+        identities = pc.process_descendant_identities(10, proc_root=proc_root)
+
+        assert identities == [
+            pc.ProcessDescendantIdentity(11, 10, "110"),
+            pc.ProcessDescendantIdentity(13, 10, "130"),
+            pc.ProcessDescendantIdentity(12, 11, "120"),
+        ]
+        assert 99 not in stat_reads
+
+    def test_atomic_identity_walk_excludes_orphan_older_than_recycled_parent(self, monkeypatch):
+        identities = {
+            10: pc.ProcessStartIdentity("100", 1),
+            11: pc.ProcessStartIdentity("300", 10),
+            12: pc.ProcessStartIdentity("200", 11),
+        }
+        children = {10: [11], 11: [12], 12: []}
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pc,
+            "_direct_child_pids_for_identity_walk",
+            lambda pid, proc_root: children[pid],
+        )
+        monkeypatch.setattr(
+            pc,
+            "get_process_start_identity",
+            lambda pid, proc_root=None: identities[pid],
+        )
+
+        assert pc.process_descendant_identities(10) == [pc.ProcessDescendantIdentity(11, 10, "300")]
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            pytest.param(None, id="unreadable-parent"),
+            pytest.param(
+                pc.ProcessStartIdentity("recycled", 10),
+                id="recycled-parent",
+            ),
+        ],
+    )
+    def test_atomic_identity_walk_parent_instability_is_inconclusive(
+        self,
+        monkeypatch,
+        replacement,
+    ):
+        root = pc.ProcessStartIdentity("100", 1)
+        child = pc.ProcessStartIdentity("200", 10)
+        child_reads = iter((child, replacement))
+        children = {10: [11], 11: [12]}
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pc,
+            "_direct_child_pids_for_identity_walk",
+            lambda pid, proc_root: children[pid],
+        )
+
+        def _identity(pid, proc_root=None):
+            if pid == 10:
+                return root
+            if pid == 11:
+                return next(child_reads)
+            return pc.ProcessStartIdentity("300", 11)
+
+        monkeypatch.setattr(pc, "get_process_start_identity", _identity)
+        monkeypatch.setattr(pc, "_posix_process_identity_map", lambda root_pid=None: None)
+
+        assert pc.process_descendant_identities(10) is None
+
+    @pytest.mark.parametrize(
+        "late_identity",
+        [
+            pytest.param(None, id="vanished"),
+            pytest.param(
+                pc.ProcessStartIdentity("200", 99),
+                id="reparented",
+            ),
+        ],
+    )
+    def test_atomic_identity_walk_child_instability_is_inconclusive(
+        self,
+        monkeypatch,
+        late_identity,
+    ):
+        root = pc.ProcessStartIdentity("100", 1)
+        stable_child = pc.ProcessStartIdentity("200", 10)
+        children = {10: [11, 12], 11: [], 12: []}
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pc,
+            "_direct_child_pids_for_identity_walk",
+            lambda pid, proc_root: children[pid],
+        )
+        monkeypatch.setattr(
+            pc,
+            "get_process_start_identity",
+            lambda pid, proc_root=None: {
+                10: root,
+                11: stable_child,
+                12: late_identity,
+            }[pid],
+        )
+        monkeypatch.setattr(pc, "_posix_process_identity_map", lambda root_pid=None: None)
+
+        assert pc.process_descendant_identities(10) is None
+
+    def test_posix_fallback_excludes_orphan_older_than_recycled_parent(self, monkeypatch):
+        snapshot = {
+            10: pc._PosixProcessSnapshotRow(1, "Mon Jan  1 00:00:00 2024"),
+            11: pc._PosixProcessSnapshotRow(10, "Mon Jan  1 00:00:02 2024"),
+            12: pc._PosixProcessSnapshotRow(11, "Mon Jan  1 00:00:01 2024"),
+        }
+        snapshots = iter((snapshot, snapshot))
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "_posix_process_snapshot", lambda: next(snapshots))
+
+        assert pc.process_descendant_identities(10) == [
+            pc.ProcessDescendantIdentity(
+                11,
+                10,
+                "Mon Jan  1 00:00:02 2024",
+                pc.ProcessIdentitySource.LSTART,
+            )
+        ]
+
+    def test_process_start_order_is_three_way(self):
+        order = pc._ProcessStartOrder
+
+        assert pc._process_start_order("200", "100") is order.LATER
+        assert pc._process_start_order("100", "200") is order.EARLIER
+        assert pc._process_start_order("100", "100") is order.INCONCLUSIVE
+        assert (
+            pc._process_start_order(
+                "Mon Jan  1 00:00:01 2024",
+                "Mon Jan  1 00:00:00 2024",
+            )
+            is order.LATER
+        )
+        assert (
+            pc._process_start_order(
+                "Mon Jan  1 00:00:00 2024",
+                "Mon Jan  1 00:00:00 2024",
+            )
+            is order.INCONCLUSIVE
+        )
+        assert pc._process_start_order("unknown", "tokens") is order.INCONCLUSIVE
+
+    def test_created_after_wraps_the_shared_process_start_order(self, monkeypatch):
+        calls = []
+
+        def _order(child_token, parent_token):
+            calls.append((child_token, parent_token))
+            return pc._ProcessStartOrder.LATER
+
+        monkeypatch.setattr(pc, "_process_start_order", _order)
+
+        assert pc.created_after("200", "100") is True
+        assert calls == [("200", "100")]
+
+    def test_posix_fallback_same_second_edge_is_inconclusive(self, monkeypatch):
+        snapshot = {
+            10: pc._PosixProcessSnapshotRow(1, "Mon Jan  1 00:00:00 2024"),
+            11: pc._PosixProcessSnapshotRow(10, "Mon Jan  1 00:00:00 2024"),
+        }
+        snapshots = iter((snapshot, snapshot))
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "_posix_process_snapshot", lambda: next(snapshots))
+
+        assert pc.process_descendant_identities(10) is None
+
+    def test_windows_identity_walk_excludes_orphan_older_than_recycled_parent(self, monkeypatch):
+        parent_map = {10: 1, 11: 10, 12: 11}
+        maps = iter((parent_map, parent_map))
+        start_ids = {10: "100", 11: "300", 12: "200"}
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(maps))
+        monkeypatch.setattr(pc, "get_process_start_id", start_ids.__getitem__)
+
+        assert pc.process_descendant_identities(10) == [pc.ProcessDescendantIdentity(11, 10, "300")]
+
+    def test_posix_parent_map_derives_from_the_shared_process_snapshot(self, monkeypatch):
+        processes = {
+            10: pc._PosixProcessSnapshotRow(1, "root"),
+            11: pc._PosixProcessSnapshotRow(10, "child"),
+        }
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/ps")
+        monkeypatch.setattr(pc, "_posix_process_snapshot", lambda: processes)
+        monkeypatch.setattr(
+            pc.subprocess,
+            "check_output",
+            lambda *args, **kwargs: pytest.fail("the parent map must not run a second ps parser"),
+        )
+
+        assert pc._posix_process_parent_map() == {10: 1, 11: 10}
+
+    def test_posix_fallback_requires_identity_stable_across_snapshots(self, monkeypatch):
+        runs: list[list[str]] = []
+        output = (
+            b"10 1 Mon Jan  1 00:00:00 2024\n"
+            b"11 10 Mon Jan  1 00:00:01 2024\n"
+            b"12 11 Mon Jan  1 00:00:02 2024\n"
+        )
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/ps")
+        monkeypatch.setattr(
+            pc,
+            "get_process_start_id",
+            lambda pid: pytest.fail("the fallback must not resolve every host pid"),
+        )
+
+        def _capture(argv, **kwargs):
+            runs.append(list(argv))
+            return output
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _capture)
+
+        assert pc.process_descendant_identities(10) == [
+            pc.ProcessDescendantIdentity(
+                11,
+                10,
+                "Mon Jan  1 00:00:01 2024",
+                pc.ProcessIdentitySource.LSTART,
+            ),
+            pc.ProcessDescendantIdentity(
+                12,
+                11,
+                "Mon Jan  1 00:00:02 2024",
+                pc.ProcessIdentitySource.LSTART,
+            ),
+        ]
+        assert runs == [
+            ["/usr/bin/ps", "-Ao", "pid=,ppid=,lstart="],
+            ["/usr/bin/ps", "-Ao", "pid=,ppid=,lstart="],
+        ]
+
+    @pytest.mark.parametrize(
+        "scenario",
+        ["root-recycled", "child-reparented"],
+    )
+    def test_posix_fallback_rejects_root_subtree_drift(self, monkeypatch, scenario):
+        before = {
+            10: pc._PosixProcessSnapshotRow(1, "root-old"),
+            11: pc._PosixProcessSnapshotRow(10, "child-old"),
+        }
+        after = {
+            10: pc._PosixProcessSnapshotRow(
+                1,
+                "root-new" if scenario == "root-recycled" else "root-old",
+            ),
+            11: pc._PosixProcessSnapshotRow(
+                99 if scenario == "child-reparented" else 10,
+                "child-old",
+            ),
+        }
+        snapshots = iter((before, after))
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "_posix_process_snapshot", lambda: next(snapshots))
+
+        assert pc.process_descendant_identities(10) is None
+
+    @pytest.mark.parametrize("recycled", [False, True], ids=["stable", "recycled"])
+    def test_windows_descendant_identities_are_creation_time_bound(self, monkeypatch, recycled):
+        parent_map = {10: 1, 11: 10}
+        maps = iter((parent_map, parent_map))
+        reads = {10: 0, 11: 0}
+
+        def _start_id(pid: int) -> str:
+            reads[pid] += 1
+            if pid == 10:
+                return "100"
+            if recycled and reads[pid] > 1:
+                return "300"
+            return "200"
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(maps))
+        monkeypatch.setattr(pc, "get_process_start_id", _start_id)
+
+        identities = pc.process_descendant_identities(10)
+
+        if recycled:
+            assert identities is None
+        else:
+            assert identities == [pc.ProcessDescendantIdentity(11, 10, "200")]
 
     @pytest.mark.asyncio
     async def test_descendant_termination_handles_async_is_empty_on_posix(self):
@@ -2451,6 +3050,10 @@ class TestWindowsHandleIdentityExitFiletimeRace:
             GetProcessId=_Fn(lambda _handle: cls.FAKE_PID),
             GetProcessTimes=_Fn(_get_process_times),
             GetExitCodeProcess=_Fn(_get_exit_code),
+            # Liveness is decided by a zero-timeout wait on the process object,
+            # because exit code 259 collides with STILL_ACTIVE. This fake's
+            # process has exited, so its object is signalled: WAIT_OBJECT_0.
+            WaitForSingleObject=_Fn(lambda _handle, _millis: 0x00000000),
         )
 
     def test_identity_retries_until_exit_filetime_is_published(self, monkeypatch):
@@ -2494,6 +3097,38 @@ class TestWindowsHandleIdentityExitFiletimeRace:
 
         # 4242 is the pid the fake handle reports, so the root identity matches.
         assert pc.descendant_termination_handles(4242, {}, 8001) == {}
+
+    def test_start_time_read_answers_without_sleeping(self, monkeypatch):
+        # get_process_start_id documents itself as non-blocking and safe to call
+        # from the event loop, and callers take it at its word from coroutines. A
+        # pid whose exit FILETIME never publishes must therefore answer from the
+        # creation half immediately: any sleep on this path stalls every other
+        # task on the loop for the poll's whole bound.
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        fake = self._kernel32([0] * 500)
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: fake)
+        monkeypatch.setattr(pc, "_open_process_query_handle", lambda _pid: 5)
+        monkeypatch.setattr(pc, "_close_process_handle", lambda _handle: None)
+
+        slept: list[float] = []
+        monkeypatch.setattr(pc.time, "sleep", lambda secs: slept.append(secs))
+
+        assert pc.process_start_time(self.FAKE_PID) == "100"
+        assert slept == []
+
+    def test_exit_bound_caller_still_waits_for_the_published_filetime(
+        self,
+        monkeypatch,
+    ):
+        # The creation-only mode is opt-in: a caller that must certify an exit
+        # keeps the default, so the drain's exit bound stays a real published
+        # FILETIME rather than the first unpublished read.
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        fake = self._kernel32([0, 0, 888])
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: fake)
+        monkeypatch.setattr(pc.time, "sleep", lambda _s: None)
+
+        assert pc._windows_process_handle_identity(5) == (self.FAKE_PID, 100, 888)
 
 
 class TestKillSubprocessPosix:
@@ -2788,6 +3423,40 @@ class TestRestrictToOwnerArgvOnLinux:
         monkeypatch.setattr(pc.os, "chmod", lambda p, m: modes.append(m))
         pc.restrict_dir_to_owner(tmp_path)
         assert modes == [0o700], modes
+
+
+class TestPathVolumeIsRemote:
+    """The Windows half of "which kind of filesystem holds this", on Linux.
+
+    Nothing was established is None, never False: a caller that reads a failed
+    query as "local" is the case this tri-state exists to prevent.
+    """
+
+    def test_off_windows_the_answer_is_unknown(self, monkeypatch, tmp_path):
+        # POSIX callers have their own mount-table source, so the answer here is
+        # "nothing established". The branch is named rather than inherited from the
+        # host: on Windows this same call reaches a real volume and correctly reports
+        # a local one, which is a different fact from the one under test.
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.path_volume_is_remote(tmp_path) is None
+
+    @pytest.mark.parametrize("verdict", [True, False, None])
+    def test_the_windows_volume_verdict_is_passed_through(self, monkeypatch, verdict):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.windows_acl, "volume_is_remote", lambda p: verdict)
+        assert pc.path_volume_is_remote("Z:\\kiro") is verdict
+
+    @pytest.mark.parametrize(
+        "exc", [windows_acl.AclUnavailable("no api"), OSError("call failed"), ValueError("root")]
+    )
+    def test_a_failed_query_is_unknown(self, monkeypatch, exc):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _boom(_path):
+            raise exc
+
+        monkeypatch.setattr(pc.windows_acl, "volume_is_remote", _boom)
+        assert pc.path_volume_is_remote("Z:\\kiro") is None
 
 
 class TestChmodShimsApply:
@@ -3174,10 +3843,45 @@ class TestFindListeningPidsErrors:
             pc.PortListener(222, "192.168.1.5", "4"),
         ]
 
-    def test_posix_lookup_is_bounded_by_a_timeout(self, monkeypatch):
-        # A wedged lsof (stale mount, jammed process table) must degrade to
-        # "no listener found" instead of hanging every port->PID caller: the
-        # spawn carries a timeout, and its expiry folds into [].
+    def test_posix_no_match_is_a_completed_empty_probe(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/lsof")
+
+        def _no_match(argv, **kwargs):
+            raise subprocess.CalledProcessError(1, argv, output="")
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _no_match)
+        listeners, completed = pc.probe_port_listeners(7777)
+        assert listeners == []
+        assert completed is True
+
+    def test_posix_stderr_only_exit_is_not_completed_nonownership(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/lsof")
+        captured: dict = {}
+
+        def _failure(argv, **kwargs):
+            captured["stderr"] = kwargs.get("stderr")
+            raise subprocess.CalledProcessError(
+                1,
+                argv,
+                output="",
+                stderr="permission denied",
+            )
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _failure)
+
+        listeners, completed = pc.probe_port_listeners(7777, process_pid=4242)
+
+        assert listeners == []
+        assert completed is False
+        assert captured["stderr"] is subprocess.PIPE
+
+    def test_posix_lookup_timeout_is_not_a_completed_probe(self, monkeypatch):
         if not pc.IS_POSIX:
             pytest.skip("POSIX lsof branch")
         captured: dict = {}
@@ -3188,8 +3892,152 @@ class TestFindListeningPidsErrors:
             raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
 
         monkeypatch.setattr(pc.subprocess, "check_output", _capture)
-        assert pc.find_port_listeners(7777) == []
+        listeners, completed = pc.probe_port_listeners(7777)
+        assert listeners == []
+        assert completed is False
         assert captured["kwargs"].get("timeout") == pc._LSOF_TIMEOUT_SECS
+
+    def test_linux_process_listener_probe_matches_the_child_socket_inode(
+        self, tmp_path, monkeypatch
+    ):
+        proc_root = tmp_path / "proc"
+        (proc_root / "net").mkdir(parents=True)
+        (proc_root / "4242" / "fd").mkdir(parents=True)
+        (proc_root / "4242" / "fd" / "7").touch()
+        (proc_root / "net" / "tcp").write_text(
+            "header\n"
+            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000 1000 0 12345\n",
+            encoding="ascii",
+        )
+        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[12345]")
+
+        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is True
+
+    def test_linux_process_listener_probe_rejects_an_inode_the_child_does_not_hold(
+        self, tmp_path, monkeypatch
+    ):
+        proc_root = tmp_path / "proc"
+        (proc_root / "net").mkdir(parents=True)
+        (proc_root / "4242" / "fd").mkdir(parents=True)
+        (proc_root / "4242" / "fd" / "7").touch()
+        (proc_root / "net" / "tcp").write_text(
+            "header\n"
+            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000 1000 0 12345\n",
+            encoding="ascii",
+        )
+        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[99999]")
+
+        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is False
+
+    def test_posix_process_listener_probe_scopes_lsof_to_the_child_pid(self, monkeypatch):
+        captured: dict = {}
+        blob = "p4242\ntIPv4\nn127.0.0.1:7777\n"
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/lsof")
+
+        def _capture(argv, **kwargs):
+            captured["argv"] = list(argv)
+            return blob
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _capture)
+
+        assert pc.process_owns_loopback_listener(4242, 7777) is True
+        assert captured["argv"] == [
+            "/usr/bin/lsof",
+            "-nP",
+            "-a",
+            "-p",
+            "4242",
+            "-iTCP:7777",
+            "-sTCP:LISTEN",
+            "-Fptn",
+        ]
+
+    def test_windows_listener_owner_pids_use_in_process_tcp_tables(self, monkeypatch):
+        rows = {
+            False: [
+                types.SimpleNamespace(
+                    state=2,
+                    local_address=bytes([127, 0, 0, 1]),
+                    local_scope_id=0,
+                    local_port=7777,
+                    pid=4242,
+                ),
+                types.SimpleNamespace(
+                    state=2,
+                    local_address=bytes([0, 0, 0, 0]),
+                    local_scope_id=0,
+                    local_port=7777,
+                    pid=7777,
+                ),
+            ],
+            True: [
+                types.SimpleNamespace(
+                    state=2,
+                    local_address=bytes(16),
+                    local_scope_id=0,
+                    local_port=7777,
+                    pid=8888,
+                )
+            ],
+        }
+        calls = []
+
+        def _rows(ipv6, table_class):
+            calls.append((ipv6, table_class))
+            return rows[ipv6]
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_tcp_owner_rows", _rows, raising=False)
+
+        assert pc._windows_loopback_listener_owner_pids(7777) == {4242}
+        assert calls == [(False, 3), (True, 3)]
+
+        rows[True] = None
+        assert pc._windows_loopback_listener_owner_pids(7777) is None
+
+    @pytest.mark.parametrize(
+        ("owners", "expected"),
+        [
+            pytest.param({4242}, True, id="owned"),
+            pytest.param({7777}, False, id="foreign"),
+            pytest.param(None, None, id="table-failure"),
+        ],
+    )
+    def test_windows_process_listener_probe_uses_owner_pid_table(
+        self,
+        monkeypatch,
+        owners,
+        expected,
+    ):
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc,
+            "_windows_loopback_listener_owner_pids",
+            lambda port: owners,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            pc,
+            "probe_port_listeners",
+            lambda *args, **kwargs: pytest.fail("netstat must not be used"),
+        )
+
+        assert pc.process_owns_loopback_listener(4242, 7777) is expected
 
     def _fake_netstat(self, blob: str):
         """Return a fake subprocess.check_output that returns *blob*."""
@@ -3198,6 +4046,19 @@ class TestFindListeningPidsErrors:
             return blob
 
         return _run
+
+    def test_windows_lookup_error_is_not_a_completed_probe(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        _fake_windows_bins(monkeypatch)
+
+        def _boom(*args, **kwargs):
+            raise OSError("netstat unavailable")
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _boom)
+        listeners, completed = pc.probe_port_listeners(7777)
+        assert listeners == []
+        assert completed is False
 
     def test_windows_finds_ipv6_listener_via_netstat(self, monkeypatch):
         # Regression:. Windows netstat -ano prints IPv6 LISTEN rows
@@ -3297,6 +4158,7 @@ class TestFindListeningPidsErrors:
             pc.PortListener(55, "192.168.1.5", "4"),
         ]
 
+    @pytest.mark.ipv6_required
     @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows netstat branch")
     def test_windows_finds_real_ipv6_loopback_listener(self):
         # End-to-end guard on a live host: bind AF_INET6 to ::1 at an ephemeral
@@ -4006,6 +4868,931 @@ def test_trusted_system_bin_resolves_outside_fhs(tmp_path, monkeypatch):
     assert platform_compat.trusted_system_bin("definitely-not-a-system-tool") == str(tool)
 
 
+def _root_owned_everywhere_except(*user_owned: Path):
+    """An ``os.stat`` that presents the filesystem as root's, bar *user_owned*.
+
+    Every directory on the way to a fixture -- ``/``, the temp root, ``tmp_path``
+    -- answers as root-owned with no group or world write bit, so a fixture BELOW
+    ``tmp_path`` can stand in for a system directory; the named paths keep their
+    real ``st_uid`` so a user-owned directory is still a user-owned directory.
+    Faked rather than read from ``/usr/bin``, because that directory's ownership
+    is a property of the RUNNER: a sandboxed or user-namespaced host presents it
+    as another uid's, and the world-writable temp root under which fixtures live
+    (``/tmp``, mode 1777) puts ``S_IWOTH`` on an ancestor. Either fails the gate
+    for a property of the machine rather than of the code.
+    """
+    real_stat = os.stat
+    keep = {os.path.realpath(str(p)) for p in user_owned}
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) in keep:
+            return st
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    return fake_stat
+
+
+def test_root_owned_path_accepts_a_system_dir_and_rejects_a_user_one(tmp_path, monkeypatch):
+    """The gate that makes the ``/usr/local/bin`` fallback safe.
+
+    The system directory is a fixture presented as root's through ``os.stat`` --
+    see ``_root_owned_everywhere_except`` for why it is not ``/usr/bin`` -- while
+    the user directory keeps its REAL ownership, so the two verdicts turn on the
+    one property that separates them.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    leaf = user_dir / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", _root_owned_everywhere_except(user_dir))
+
+    assert platform_compat._is_root_owned_path(str(system_bin)) is True
+    # The user directory is the test user's, so it fails on ownership alone.
+    assert platform_compat._is_root_owned_path(str(user_dir)) is False
+    # ... and a root-owned leaf under it still fails, because the directory is
+    # what governs replacing the file.
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+
+
+def test_root_owned_path_declines_a_root_leaf_under_a_writable_directory(tmp_path, monkeypatch):
+    """The ancestor walk is load-bearing, not belt-and-braces.
+
+    Replacing a file needs write on its DIRECTORY, not on the file, so a
+    root-owned binary under a uid-writable directory can be swapped for anything.
+    Only the walk can see that: the leaf itself passes every check.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    leaf = tmp_path / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) != os.path.realpath(str(leaf)):
+            return st
+        # Only the leaf is presented as root's; every directory above it keeps
+        # the test user's real ownership.
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+
+
+def test_root_owned_path_declines_a_group_writable_component(tmp_path, monkeypatch):
+    """Ownership is not enough: group/world write is writable by more than root."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        # Present every component as root-owned, and the leaf as group-writable,
+        # so only the mode bits can decide the verdict.
+        mode = st.st_mode | (stat.S_IWGRP if str(path).endswith("aws") else 0)
+        return os.stat_result((mode, st.st_ino, st.st_dev, st.st_nlink, 0, 0) + tuple(st)[6:])
+
+    leaf = tmp_path / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+
+
+def test_root_owned_path_declines_an_acl_write_grant(tmp_path, monkeypatch):
+    """Mode bits cannot express an ACL, so ownership algebra alone is incomplete.
+
+    A root-owned ``0755`` path carrying a POSIX.1e or macOS ACL entry that grants a
+    named user write passes every ``st_mode`` test while being writable by exactly
+    the principal this gate defends against. ``os.access`` is what sees it, because
+    the kernel evaluates ACLs and this function cannot.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    leaf = tmp_path / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        # Everything root-owned with clean mode bits, so ONLY the access probe can
+        # decide. Creating a real ACL is not portable, so the kernel's answer is
+        # what gets stubbed -- the same answer it gives on a real ACL grant.
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    # The ACL arm needs faccessat; pin it so the test does not silently pass on a
+    # platform where the arm is absent.
+    monkeypatch.setattr(platform_compat, "_ACCESS_HONOURS_EFFECTIVE_IDS", True)
+
+    def acl_grants_write(path, mode, *, effective_ids=False, **kw):
+        # Answers True ONLY for the `effective_ids=True` form, because that is the
+        # only one that evaluates a full ACL -- the bare call asks about the real
+        # ids and would report this path unwritable, silently dropping the arm.
+        return effective_ids and str(path) == str(leaf)
+
+    monkeypatch.setattr(os, "access", acl_grants_write)
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+
+    # Running AS root the arm has no signal -- `os.access` answers True for
+    # essentially everything there -- so the verdict is DECLINE, not accept. The
+    # entry the arm would have caught grants a NON-root user write, which is exactly
+    # what root must not execute, and "cannot establish" must not round to "safe" on
+    # a path about to be exec'd as root. REAL or effective: a process holding either
+    # id can regain it, so either one being root is enough to reach this.
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+
+    # And with NO ACL at all, a root REAL id still declines: that is what makes the
+    # union load-bearing rather than decorative, since the effective id alone would
+    # fall through to the arm, get a clean answer, and accept.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+
+    # On a platform without faccessat the arm must be SKIPPED, not attempted: the
+    # `effective_ids=True` form raises there, and nothing wraps this call, so the
+    # exception would leave `trusted_aws_bin` and take `doctor` down with it.
+    def refuse_effective_ids(path, mode, *, effective_ids=False, **kw):
+        if effective_ids:
+            raise NotImplementedError("faccessat unavailable on this platform")
+        return False
+
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(platform_compat, "_ACCESS_HONOURS_EFFECTIVE_IDS", False)
+    monkeypatch.setattr(os, "access", refuse_effective_ids)
+    assert platform_compat._is_root_owned_path(str(leaf)) is True
+
+
+def test_aws_bin_declined_is_none_when_the_system_copy_won(monkeypatch):
+    """No decline explains anything once the resolver has succeeded.
+
+    Reporting "the local copy was refused" while `/usr/bin/aws` is what got used
+    offers that refusal as the cause of some later, unrelated failure.
+    """
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: "/usr/bin/aws")
+    monkeypatch.setattr(platform_compat, "_local_aws_bin_candidate", lambda: "/usr/local/bin/aws")
+    monkeypatch.setattr(platform_compat, "_is_root_owned_path", lambda path: False)
+    assert platform_compat.aws_bin_declined_on_ownership() is None
+
+
+def test_root_owned_path_accepts_an_absolute_symlink_through_root_owned_dirs(tmp_path, monkeypatch):
+    """An ABSOLUTE symlink target must resolve from ``/``, not from the current dir.
+
+    This is the AWS installer's real layout -- ``/usr/local/bin/aws`` is an absolute
+    symlink into its own versioned tree. Resolving such a target relative to where
+    the walk happens to be produces a path that does not exist, the gate declines,
+    and the whole fallback is dead code on exactly the hosts it was added for. So
+    this is the positive case: every component root-owned, verdict True.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    versioned = tmp_path / "aws-cli" / "v2" / "bin"
+    versioned.mkdir(parents=True)
+    target = versioned / "aws"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    prefix = tmp_path / "bin"
+    prefix.mkdir()
+    entry = prefix / "aws"
+    entry.symlink_to(target)  # absolute, as pathlib writes it from an absolute path
+
+    assert os.path.isabs(os.readlink(str(entry)))
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    #
+    # The group/world write bits are cleared for the same reason the uid is faked:
+    # `tmp_path` sits under the temp root, and on a host whose temp root is the
+    # world-writable `/tmp` (mode 1777) an ANCESTOR carries `S_IWOTH`, so the gate
+    # declines for a property of the runner rather than of the code. That is what
+    # made this test pass locally under a 0755 scratch root and fail on CI.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(entry)) is True
+
+    # And a RELATIVE target resolves from the link's own directory, not from `/`.
+    # `/bin -> usr/bin` is the familiar example; resetting to the root for a
+    # relative target produces a path that does not exist and declines everything.
+    sibling = prefix / "aws-relative"
+    sibling.symlink_to(os.path.relpath(str(target), str(prefix)))
+    assert not os.path.isabs(os.readlink(str(sibling)))
+    assert platform_compat._is_root_owned_path(str(sibling)) is True
+
+
+def test_root_owned_path_declines_a_writable_ancestor_of_a_symlinked_component(
+    tmp_path, monkeypatch
+):
+    """A symlinked DIRECTORY component must be resolved, not walked lexically.
+
+    ``os.stat`` follows symlinks but ``os.path.dirname`` does not, so a lexical
+    parent walk over ``/usr/local/bin/aws`` where ``bin -> /opt/x/bin`` visits
+    ``/usr/local`` and never ``/opt/x`` -- the directory that can replace the target
+    wholesale. Only resolving component by component reaches it.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    real_bin = holder / "bin"
+    real_bin.mkdir()
+    leaf = real_bin / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+    (prefix / "bin").symlink_to(real_bin)
+    entry = prefix / "bin" / "aws"
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) == os.path.realpath(str(holder)):
+            # The ONE component left as the test user's: the symlink target's own
+            # parent, which no lexical walk over `entry` ever names.
+            return st
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(entry)) is False
+
+
+def test_root_owned_path_accepts_a_real_system_binary(tmp_path, monkeypatch):
+    """The gate must still say yes to an ordinary root-owned install.
+
+    A predicate that refuses everything satisfies every rejection test above while
+    making the whole fallback dead. The positive case is a REGULAR-FILE binary
+    reached through plain directories (no symlink on the chain, which the
+    absolute-symlink test covers): every component root-owned, verdict True.
+    Presented through ``os.stat`` rather than read from ``/usr/bin/env`` -- see
+    ``_root_owned_everywhere_except`` for why the real directory cannot serve.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX layout
+        pytest.skip("POSIX filesystem layout")
+
+    system_bin = tmp_path / "usr" / "bin"
+    system_bin.mkdir(parents=True)
+    env_bin = system_bin / "env"
+    env_bin.write_bytes(b"\x7fELF-not-a-script\n")
+    env_bin.chmod(0o755)
+
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", _root_owned_everywhere_except())
+
+    assert platform_compat._is_root_owned_path(str(system_bin)) is True
+    assert platform_compat._is_root_owned_path(str(env_bin)) is True
+
+
+def test_root_owned_path_declines_a_group_writable_directory_on_the_chain(tmp_path, monkeypatch):
+    """A DIRECTORY's mode bits matter, not only its owner.
+
+    This is the stock-Debian case: `/usr/local/bin` is root-owned there and mode
+    ``2775``, so anyone in ``staff`` can replace the entry. Owner-only checking
+    would accept it.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    leaf = holder / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        # Everything is root-owned, and the one DIRECTORY on the chain is
+        # group-writable, so only the directory mode check can decide.
+        mode = st.st_mode
+        if os.path.realpath(str(path)) == os.path.realpath(str(holder)):
+            mode |= stat.S_IWGRP
+        return os.stat_result((mode, st.st_ino, st.st_dev, st.st_nlink, 0, 0) + tuple(st)[6:])
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+
+
+def test_root_owned_path_walks_past_the_immediate_parent(tmp_path, monkeypatch):
+    """The walk goes all the way up, not one level.
+
+    A root-owned parent inside a uid-writable GRANDparent is still replaceable:
+    whoever owns the grandparent can swap the parent directory wholesale. Checking
+    only the immediate parent would accept it.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    grandparent = tmp_path / "outer"
+    grandparent.mkdir()
+    parent = grandparent / "inner"
+    parent.mkdir()
+    leaf = parent / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) == os.path.realpath(str(grandparent)):
+            # The ONE component left as the test user's, two levels up from the
+            # leaf, so only a full walk can reach it.
+            return st
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(leaf)) is False
+
+
+def test_root_owned_path_declines_a_writable_hop_in_the_middle_of_a_chain(tmp_path, monkeypatch):
+    """The hop walk is load-bearing: both endpoints can be root's while a hop is not.
+
+    ``/usr/local/bin/aws -> /tmp/link -> /usr/bin/aws`` is the shape. Checking only
+    the literal path and its fully-resolved target passes it end to end: the
+    literal walk visits ``/usr/local/bin``, the resolved walk visits ``/usr/bin``,
+    and ``/tmp`` -- the one directory where the retarget actually happens -- is
+    never looked at. Whoever can write that directory chooses what executes.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    target = trusted / "real"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    middle = writable / "hop"
+    middle.symlink_to(target)
+    entry = trusted / "aws"
+    entry.symlink_to(middle)
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) == os.path.realpath(str(writable)):
+            # The ONE component left as the test user's. Both ENDPOINTS of the
+            # chain and every directory above them are presented as root's, so
+            # nothing but the hop walk can reach this directory.
+            return st
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(entry)) is False
+
+
+def test_root_owned_path_declines_a_symlink_loop(tmp_path, monkeypatch):
+    """A cycle answers False rather than spinning: an unbounded walk is a hang."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    first.symlink_to(second)
+    second.symlink_to(first)
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(first)) is False
+
+
+def _hop_chain(tmp_path):
+    """``trusted/aws -> writable/hop -> trusted/real``: the mid-chain hop shape."""
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    target = trusted / "real"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    middle = writable / "hop"
+    middle.symlink_to(target)
+    entry = trusted / "aws"
+    entry.symlink_to(middle)
+    return entry, middle, writable, target
+
+
+def _symlinked_component_chain(tmp_path):
+    """``prefix/bin -> holder/bin``, entry ``prefix/bin/aws``: the symlinked-directory shape."""
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    real_bin = holder / "bin"
+    real_bin.mkdir()
+    leaf = real_bin / "aws"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+    (prefix / "bin").symlink_to(real_bin)
+    return prefix / "bin" / "aws", prefix, holder, leaf
+
+
+def test_traversed_components_of_a_symlink_free_path_is_its_lexical_chain(tmp_path):
+    """Without a symlink the walk names exactly ``resolved.parents`` plus the target.
+
+    This is the measurement behind "strictly widening": a caller that asked its
+    question over the lexical chain asks it over the very same directories here
+    whenever no symlink is involved, in root-first order with the target last.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX path semantics
+        pytest.skip("POSIX path semantics")
+
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    leaf = (holder / "aws").resolve()
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+
+    assert platform_compat.traversed_components(leaf) == [*reversed(leaf.parents), leaf]
+    assert platform_compat.traversed_components(str(leaf)) == [*reversed(leaf.parents), leaf]
+
+
+def test_traversed_components_visits_a_hop_in_the_middle_of_a_chain(tmp_path):
+    """Both endpoints' chains are named AND the directory holding the hop.
+
+    Neither ``realpath`` then ``.parents`` nor a lexical walk over the entry names
+    ``writable``; the component walk records it because it reads it. The symlinks
+    themselves are absent: their mode is meaningless and the directory holding
+    them governs their replacement.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    entry, middle, writable, target = _hop_chain(tmp_path)
+    resolved = target.resolve()
+
+    components = platform_compat.traversed_components(entry)
+
+    assert components is not None
+    assert components[-1] == resolved
+    assert writable.resolve() in components
+    assert set(resolved.parents) <= set(components), "every lexical ancestor of the target"
+    assert set(entry.resolve().parents) <= set(components)
+    assert middle not in components and entry not in components
+    assert len(components) == len(set(components)), "each directory once"
+
+
+def test_traversed_components_visits_both_sides_of_a_symlinked_directory_component(tmp_path):
+    """``prefix/bin -> holder/bin``: the link's own parent AND the target's parent are named.
+
+    A lexical walk over the entry names ``prefix`` and never ``holder``; a lexical
+    walk over the collapsed path names ``holder`` and never ``prefix``. Either
+    directory's owner can choose what the entry resolves to, so both are here.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    entry, prefix, holder, leaf = _symlinked_component_chain(tmp_path)
+
+    components = platform_compat.traversed_components(entry)
+
+    assert components is not None
+    assert components[-1] == leaf.resolve()
+    assert prefix.resolve() in components
+    assert holder.resolve() in components
+    assert (holder / "bin").resolve() in components
+    assert prefix / "bin" not in components, "the symlink itself is not a component"
+
+
+def test_traversed_components_is_none_on_a_symlink_loop(tmp_path):
+    """A cycle answers ``None``, never a partial list: unknown is not a shorter walk."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    first.symlink_to(second)
+    second.symlink_to(first)
+
+    assert platform_compat.traversed_components(first) is None
+
+
+def test_traversed_components_is_none_when_a_link_cannot_be_read(tmp_path, monkeypatch):
+    """An ``OSError`` mid-walk is ``None``: the caller decides what unknown means."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    entry, _middle, _writable, _target = _hop_chain(tmp_path)
+
+    def broken_readlink(path, *a, **kw):
+        raise OSError(errno.EIO, "readlink failed")
+
+    monkeypatch.setattr(os, "readlink", broken_readlink)
+
+    assert platform_compat.traversed_components(entry) is None
+
+
+def test_root_owned_path_is_the_root_owned_predicate_over_the_walk(tmp_path, monkeypatch):
+    """The predicate is unchanged by the split: it is ``_root_owned_entry`` over the walk.
+
+    Both evasion shapes and a tight chain agree with that composition, and the
+    refusals stay refusals: the walk finds the one directory left as the test
+    user's in each shape and the predicate declines it.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    hop_entry, _middle, writable, _target = _hop_chain(tmp_path)
+    component_entry, _prefix, holder, _leaf = _symlinked_component_chain(tmp_path)
+    tight_dir = tmp_path / "tight"
+    tight_dir.mkdir()
+    tight = tight_dir / "aws"
+    tight.write_text("#!/bin/sh\nexit 0\n")
+    tight.chmod(0o755)
+    loose = {os.path.realpath(str(writable)), os.path.realpath(str(holder))}
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) in loose:
+            return st
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+
+    for entry, expected in ((hop_entry, False), (component_entry, False), (tight, True)):
+        components = platform_compat.traversed_components(entry)
+        assert components is not None
+        composed = all(platform_compat._root_owned_entry(str(c)) for c in components)
+        assert composed is expected
+        assert platform_compat._is_root_owned_path(str(entry)) is expected
+
+
+def test_root_owned_path_declines_a_symlink_into_a_writable_directory(tmp_path, monkeypatch):
+    """The realpath pass is load-bearing too, for a reason the literal pass cannot see.
+
+    ``os.stat`` follows a symlink, so stating the link already reads the TARGET's
+    own ownership — what the literal pass never visits is the target's ancestor
+    directories. A root-owned binary parked in a uid-writable directory and
+    symlinked from a trusted prefix therefore passes the literal walk end to end
+    and is caught only when the walk restarts from the resolved path.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    target = writable / "aws"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    link = trusted / "aws"
+    link.symlink_to(target)
+
+    real_stat = os.stat
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) == os.path.realpath(str(writable)):
+            # The ONE component left as the test user's. Everything else --
+            # including the target file the link resolves to -- is presented as
+            # root's, so no check other than the realpath ancestor walk can fail.
+            return st
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert platform_compat._is_root_owned_path(str(link)) is False
+
+
+def test_trusted_aws_bin_prefers_the_trusted_system_copy(monkeypatch):
+    """The local-prefix half is a FALLBACK, never a first choice."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: "/usr/bin/aws")
+    assert platform_compat.trusted_aws_bin() == "/usr/bin/aws"
+
+
+def test_trusted_aws_bin_declines_a_candidate_the_caller_could_replace(tmp_path, monkeypatch):
+    """A present, executable copy under a uid-writable prefix resolves to None.
+
+    Same answer as an absent tool, on purpose: the caller's degradation is
+    "cannot ask", never "ask this binary anyway".
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    tool = tmp_path / "aws"
+    # NOT a shebang script: the fallback refuses one, because a `#!` line names
+    # an interpreter the ownership walk never validated. Bytes that are the
+    # program stand in for the native executable AWS CLI v2 actually ships.
+    tool.write_bytes(b"\x7fELF not-a-script\n")
+    tool.chmod(0o755)
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    monkeypatch.setattr(platform_compat, "_LOCAL_SYSTEM_BIN_DIR", str(tmp_path))
+    monkeypatch.setattr(platform_compat, "_UNTRUSTED_AWS_BIN_LOGGED", False)
+    assert platform_compat.trusted_aws_bin() is None
+
+
+def test_trusted_aws_bin_resolves_a_candidate_that_passes_the_gate(tmp_path, monkeypatch):
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    tool = tmp_path / "aws"
+    # NOT a shebang script: the fallback refuses one, because a `#!` line names
+    # an interpreter the ownership walk never validated. Bytes that are the
+    # program stand in for the native executable AWS CLI v2 actually ships.
+    tool.write_bytes(b"\x7fELF not-a-script\n")
+    tool.chmod(0o755)
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    monkeypatch.setattr(platform_compat, "_LOCAL_SYSTEM_BIN_DIR", str(tmp_path))
+    monkeypatch.setattr(platform_compat, "_is_root_owned_path", lambda path: True)
+    assert platform_compat.trusted_aws_bin() == str(tool)
+
+
+def test_trusted_aws_bin_is_none_when_no_copy_exists_anywhere(tmp_path, monkeypatch):
+    """An open gate cannot invent a binary that is not there."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    monkeypatch.setattr(platform_compat, "_LOCAL_SYSTEM_BIN_DIR", str(tmp_path))
+    monkeypatch.setattr(platform_compat, "_is_root_owned_path", lambda path: True)
+    assert platform_compat.trusted_aws_bin() is None
+
+
+def test_trusted_aws_bin_declines_a_shebang_script(tmp_path, monkeypatch):
+    """A `#!` wrapper hands execution to a file the ownership walk never saw.
+
+    The interpreter is named in the script's CONTENT, so validating the script's
+    PATH says nothing about it -- and a root-owned wrapper pointing at a
+    user-writable interpreter is what `sudo pip install awscli` against a pyenv
+    Python produces. The fallback refuses scripts rather than starting down the
+    endless road of validating the interpreter, then its libraries, then its module
+    search path.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    tool = tmp_path / "aws"
+    tool.write_text("#!/home/someone/.pyenv/versions/3.12/bin/python\nprint(1)\n")
+    tool.chmod(0o755)
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    monkeypatch.setattr(platform_compat, "_LOCAL_SYSTEM_BIN_DIR", str(tmp_path))
+    # Ownership is fine; ONLY the shebang can decide the verdict.
+    monkeypatch.setattr(platform_compat, "_is_root_owned_path", lambda path: True)
+    monkeypatch.setattr(platform_compat, "_UNTRUSTED_AWS_BIN_LOGGED", False)
+    assert platform_compat.trusted_aws_bin() is None
+    # And the refusal is VISIBLE, so the caller can say "not trusted" rather than
+    # "absent" -- the two resolvers must never disagree about one file.
+    assert platform_compat.aws_bin_declined_on_ownership() == str(tool)
+
+    # A candidate this cannot even READ is refused too: unreadable is not
+    # shown-to-be-safe, and treating the read failure as "no shebang" would accept
+    # exactly the file whose contents could not be checked.
+    if os.getuid() != 0:  # pragma: no branch - root can read a 0000 file
+        tool.chmod(0o000)
+        monkeypatch.setattr(platform_compat, "_UNTRUSTED_AWS_BIN_LOGGED", False)
+        assert platform_compat._is_native_program(str(tool)) is False
+        tool.chmod(0o755)
+
+
+def test_local_aws_bin_trust_is_one_predicate_for_both_callers(tmp_path, monkeypatch):
+    """The resolver and the decline-reporter must never contradict each other.
+
+    Whatever the conditions are, one of them accepting a file the other reports as
+    refused would state two incompatible facts. Asserted as an invariant over both
+    verdicts rather than over a particular condition, so it survives the next
+    condition being added.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    tool = tmp_path / "aws"
+    tool.write_bytes(b"\x7fELF not-a-script\n")
+    tool.chmod(0o755)
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    monkeypatch.setattr(platform_compat, "_LOCAL_SYSTEM_BIN_DIR", str(tmp_path))
+    for trusted in (True, False):
+        monkeypatch.setattr(platform_compat, "_is_root_owned_path", lambda path: trusted)
+        monkeypatch.setattr(platform_compat, "_UNTRUSTED_AWS_BIN_LOGGED", False)
+        resolved = platform_compat.trusted_aws_bin()
+        declined = platform_compat.aws_bin_declined_on_ownership()
+        assert (resolved is None) is (declined is not None), (trusted, resolved, declined)
+
+
+def test_aws_bin_declined_names_the_copy_the_gate_refused(tmp_path, monkeypatch):
+    """A declined copy must be reportable, so "not trusted" is not told as "absent".
+
+    Debian policy has ``/usr/local`` subdirectories ``root:staff`` mode ``2775``,
+    so on a stock Debian or Ubuntu host the gate declines by default. A caller
+    that could only see ``None`` would tell those operators to install a tool they
+    already have.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    tool = tmp_path / "aws"
+    # NOT a shebang script: the fallback refuses one, because a `#!` line names
+    # an interpreter the ownership walk never validated. Bytes that are the
+    # program stand in for the native executable AWS CLI v2 actually ships.
+    tool.write_bytes(b"\x7fELF not-a-script\n")
+    tool.chmod(0o755)
+    monkeypatch.setattr(platform_compat, "_LOCAL_SYSTEM_BIN_DIR", str(tmp_path))
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    # tmp_path is the test user's, so the gate declines on ownership.
+    assert platform_compat.aws_bin_declined_on_ownership() == str(tool)
+
+
+def test_aws_bin_declined_is_none_when_there_is_no_copy(tmp_path, monkeypatch):
+    """An absent tool is not a declined one -- nothing was refused."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    monkeypatch.setattr(platform_compat, "_LOCAL_SYSTEM_BIN_DIR", str(tmp_path))
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    assert platform_compat.aws_bin_declined_on_ownership() is None
+
+
+def test_aws_bin_declined_is_silent_about_a_copy_the_gate_accepts(tmp_path, monkeypatch):
+    """The accepted case must report NOTHING, or the caller slanders a trusted copy."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    tool = tmp_path / "aws"
+    # NOT a shebang script: the fallback refuses one, because a `#!` line names
+    # an interpreter the ownership walk never validated. Bytes that are the
+    # program stand in for the native executable AWS CLI v2 actually ships.
+    tool.write_bytes(b"\x7fELF not-a-script\n")
+    tool.chmod(0o755)
+    monkeypatch.setattr(platform_compat, "_LOCAL_SYSTEM_BIN_DIR", str(tmp_path))
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    monkeypatch.setattr(platform_compat, "_is_root_owned_path", lambda path: True)
+    assert platform_compat.aws_bin_declined_on_ownership() is None
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason=(
@@ -4383,6 +6170,14 @@ class TestKillProcessTreePinned:
 
     HANDLE = 4242
 
+    @pytest.fixture(autouse=True)
+    def _isolate_pending_registry(self, monkeypatch):
+        # kill_process_tree_pinned now transfers the pinned root into the
+        # process-owned pending registry. Give each case its own so no fake
+        # pending state leaks between tests or into an unrelated one.
+        monkeypatch.setattr(pc, "_PENDING_WINDOWS_TREE_CLEANUPS", {})
+        monkeypatch.setattr(pc, "_WINDOWS_TREE_ADMISSIONS", set())
+
     def _wire(self, monkeypatch, *, handle=HANDLE, identity=(4321, 777, None)):
         """Patch the seams; return (opened, closed, killed) recorders."""
         opened: list[int] = []
@@ -4402,14 +6197,23 @@ class TestKillProcessTreePinned:
         def _close(h):
             closed.append(h)
 
-        def _kill(pid, sig):
-            killed.append((pid, sig))
+        def _kill(handle_arg):
+            # terminate_windows_process_tree_owned OWNS the handle it is given:
+            # on success it closes it once, on refusal it retains it. Model both
+            # against the same handle production passed, so the closure/retention
+            # assertions still observe close_process_handle.
+            killed.append((handle_arg, pc.SIGTERM))
+            _close(handle_arg)
             return True
 
-        monkeypatch.setattr(pc, "_open_process_query_handle", _open)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", _open)
         monkeypatch.setattr(pc, "_windows_process_handle_identity", _identity)
-        monkeypatch.setattr(pc, "_close_process_handle", _close)
-        monkeypatch.setattr(pc, "kill_process_tree", _kill)
+        monkeypatch.setattr(pc, "close_process_handle", _close)
+        monkeypatch.setattr(
+            pc,
+            "_advance_owned_windows_tree",
+            lambda state: (_kill(state.handles[state.root_pid]), True),
+        )
         return opened, closed, killed
 
     def test_a_matching_identity_kills_and_then_releases_the_handle(self, monkeypatch):
@@ -4418,7 +6222,7 @@ class TestKillProcessTreePinned:
         assert pc.kill_process_tree_pinned(4321, "777", pc.SIGTERM) is True
 
         assert opened == [4321]
-        assert killed == [(4321, pc.SIGTERM)]
+        assert killed == [(self.HANDLE, pc.SIGTERM)]
         assert closed == [self.HANDLE]
 
     def test_a_mismatched_identity_never_invokes_the_kill(self, monkeypatch):
@@ -4467,17 +6271,24 @@ class TestKillProcessTreePinned:
         seen_closed_during_kill: list[list[int]] = []
 
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda pid: self.HANDLE)
         monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda h: (4321, 777, None))
-        monkeypatch.setattr(pc, "_close_process_handle", closed.append)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
 
-        def _gated_kill(pid, sig):
+        def _gated_kill(handle):
+            assert handle == self.HANDLE
             seen_closed_during_kill.append(list(closed))
             entered.set()
             assert release.wait(10), "the gate was never released"
+            # The owned drain OWNS the handle and closes it once, on return.
+            closed.append(handle)
             return True
 
-        monkeypatch.setattr(pc, "kill_process_tree", _gated_kill)
+        monkeypatch.setattr(
+            pc,
+            "_advance_owned_windows_tree",
+            lambda state: (_gated_kill(state.handles[state.root_pid]), True),
+        )
 
         result: list[bool] = []
         worker = threading.Thread(
@@ -4499,27 +6310,45 @@ class TestKillProcessTreePinned:
         assert result == [True]
         assert closed == [self.HANDLE], "released once the kill returned"
 
-    def test_the_handle_is_released_when_the_kill_raises(self, monkeypatch):
-        """A failing terminate must not leak the handle.
+    def test_the_handle_is_retained_for_retry_when_the_kill_raises(self, monkeypatch):
+        """A failing drain must RETAIN the pinned handle, not leak or drop it.
 
-        A leaked handle keeps the pid reserved for the life of the gateway, so
-        the failure mode is a slow resource leak rather than a loud one.
+        Under the owned model the pinned root is transferred into the process
+        pending registry; a raised drain leaves it there with its handle open so
+        the incarnation stays pinned and the next maintenance tick can finish it.
+        Closing on the raise would unpin the pid mid-failure — the very reuse
+        window this change closes — so the contract is deliberate retention, and
+        a later successful drain is what releases the handle, exactly once.
         """
         closed: list[int] = []
+        first = [True]
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
-        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda h: (4321, 777, None))
-        monkeypatch.setattr(pc, "_close_process_handle", closed.append)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            lambda h: (4321, 777, None if first[0] else 888),
+        )
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
 
-        def _raising_kill(pid, sig):
-            raise ProcessLookupError("gone between the pin and the signal")
+        def _descendants(pid, retained, root_handle):
+            if first[0]:
+                raise ProcessLookupError("gone between the pin and the signal")
+            return {}
 
-        monkeypatch.setattr(pc, "kill_process_tree", _raising_kill)
+        monkeypatch.setattr(pc, "descendant_termination_handles", _descendants)
 
+        # First attempt: the drain raises, so the handle is RETAINED, not closed.
         with pytest.raises(ProcessLookupError):
             pc.kill_process_tree_pinned(4321, "777")
+        assert closed == [], "a failed drain must not close (unpin) the handle"
+        assert len(pc._PENDING_WINDOWS_TREE_CLEANUPS) == 1
 
+        # A later maintenance retry completes and releases the handle exactly once.
+        first[0] = False
+        assert pc.retry_pending_windows_process_trees() == (4321,)
         assert closed == [self.HANDLE]
+        assert pc._PENDING_WINDOWS_TREE_CLEANUPS == {}
 
     def test_posix_delegates_straight_through(self, monkeypatch):
         """POSIX is unchanged: no handle exists to hold, so none is sought.
@@ -4558,9 +6387,15 @@ class TestKillProcessTreePinned:
         monkeypatch.setattr(pc.sys, "platform", "win32")
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda pid: self.HANDLE)
         monkeypatch.setattr(pc, "_close_process_handle", lambda h: None)
-        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda h: (4321, 777, 888))
-        monkeypatch.setattr(pc, "kill_process_tree", lambda pid, sig: True)
+        monkeypatch.setattr(pc, "close_process_handle", lambda h: None)
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            lambda h, **_mode: (4321, 777, 888),
+        )
+        monkeypatch.setattr(pc, "_advance_owned_windows_tree", lambda state: (True, True))
 
         recorded = pc.process_start_time(4321)
 
@@ -5595,7 +7430,7 @@ class TestStripExtendedLengthPrefix:
 
         assert session_ledger.strip_extended_length_prefix is pc.strip_extended_length_prefix
 
-    def test_the_workflow_guard_shares_the_one_fold(self, monkeypatch):
+    def test_the_workflow_guard_shares_the_one_fold(self, monkeypatch, tmp_path):
         """``workflow_memory`` must reach the same helper on its guarded path."""
         from kiro_crew import workflow_memory
 
@@ -5607,5 +7442,5 @@ class TestStripExtendedLengthPrefix:
             return real(path)
 
         monkeypatch.setattr(pc, "strip_extended_length_prefix", record)
-        workflow_memory.binding_path("wf_shared_fold")
+        workflow_memory._allocator_path(tmp_path / "run-ids.json")
         assert calls, "workflow_memory did not reach the shared fold"

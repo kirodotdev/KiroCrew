@@ -193,17 +193,34 @@ describe('resolveUserScrollStick — direction-aware follow decision', () => {
     ).toBe(true)
   })
 
-  it('still follows at the TRUE bottom however the reader got there', () => {
-    // Rule 1 is untouched: a mid-stream shrink drops scrollTop to exactly the
-    // new bottom (which reads as an upward move), and releasing there froze
-    // streaming follow for the rest of the turn. At the true bottom there is
-    // nothing below to be yanked to.
+  it('still follows at the TRUE bottom when follow was already armed', () => {
+    // Rule 1's real case: a mid-stream shrink drops scrollTop to exactly the new
+    // bottom (which reads as an upward move), and releasing there froze
+    // streaming follow for the rest of the turn. The reader it protects is one
+    // who was ALREADY following -- the shrink's own scroll event is the first
+    // thing that could have released them.
+    expect(
+      resolveUserScrollStick({
+        stick: true, followOutput: true,
+        scrollTop: 600, prevScrollTop: 900, geom: { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 },
+      }),
+    ).toBe(true)
+  })
+
+  it('does NOT re-arm a RELEASED reader the content collapse clamped to the true bottom', () => {
+    // Same geometry, same arrival at the exact bottom -- but this reader had
+    // already scrolled up, so nothing here is them coming back. The content
+    // below them shrank past where they sat and the engine clamped them flush.
+    // Re-arming hands the rest of the turn to the pin and every later token
+    // drags them along: the phone report of scrolling up to read mid-stream and
+    // being taken to the end seconds later. This is rule 3's "band arrives at a
+    // STILL reader" one distance band further in, where a clamp always lands.
     expect(
       resolveUserScrollStick({
         stick: false, followOutput: true,
         scrollTop: 600, prevScrollTop: 900, geom: { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 },
       }),
-    ).toBe(true)
+    ).toBe(false)
   })
 })
 
@@ -563,8 +580,12 @@ describe('resolveUserScrollStick — what brought the reader to the bottom', () 
   })
 
   it('omitting viewportGrowth keeps the previous meaning for callers with no signal', () => {
+    // With no growth reported the landing is read as a CONTENT clamp, so an
+    // already-following reader is carried across it. Stated with stick armed
+    // because that is the state rule 1 protects; a released reader is covered by
+    // its own case above.
     const armed = resolveUserScrollStick({
-      stick: false,
+      stick: true,
       followOutput: true,
       scrollTop: 600,
       prevScrollTop: 600,

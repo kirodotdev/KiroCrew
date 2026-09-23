@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
@@ -13,8 +14,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from member_memory_helpers import DOCUMENT_CREDENTIAL, document_store
 from member_memory_helpers import env as _member_env
-from member_memory_helpers import member_proof as _member_proof
-from member_memory_helpers import patch_private_memory_supported, request, seed_body
+from member_memory_helpers import request, seed_body
 
 from kiro_crew import hooks, mcp_core, memory_schema, memory_stores
 from kiro_crew.config import loader
@@ -28,33 +28,40 @@ from kiro_crew.dashboard.handlers import (
 )
 from kiro_crew.mcp_tools import learn
 from kiro_crew.memory import MemoryStore
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 pytestmark = pytest.mark.xdist_group("member_memory_api")
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target", ["default", "bob"])
-async def test_private_spawn_cannot_delegate_into_global_or_peer_memory(env, member_proof, target):
-    from kiro_crew.config.loader import KiroCrewAgentConfig
+@pytest.mark.parametrize("target", ["", "bob"])
+async def test_spawn_inherits_member_or_uses_explicit_target(env, target):
     from kiro_crew.dashboard.handlers import messaging
 
     cfg = loader.KiroCrewConfig.load()
-    cfg.agents["default"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="general")
     cfg.agents["bob"].triggers = "review"
     cfg.save()
-    env.state.subagents = SimpleNamespace(spawn=mock.Mock())
+    env.state.subagents = SimpleNamespace(
+        spawn=mock.Mock(return_value=SimpleNamespace(id="run-1", done=False))
+    )
     response = await messaging.api_spawn(
         request(
             env,
-            body={"task": "read your memory", "crew": target, "parent_session": "dashboard:alice"},
+            body={
+                "task": "read your memory",
+                "target_member": target,
+                "parent_session": "dashboard:alice",
+            },
             internal=True,
-            proof=member_proof,
         )
     )
-    assert response.status == 409
-    assert json.loads(response.text)["code"] == "memory_unavailable"
-    env.state.subagents.spawn.assert_not_called()
+    assert response.status == 200
+    admitted = env.state.subagents.spawn.call_args.kwargs["_execution_context"]
+    assert admitted["member_id"] == (target or "alice")
+    assert (
+        env.state.subagents.spawn.call_args.kwargs["memory_store"] == f"member-{target or 'alice'}"
+    )
+    assert env.tiers["member-bob"].get_all_semantic() == []
 
 
 @pytest.mark.asyncio
@@ -69,22 +76,28 @@ async def test_internal_spawn_parent_must_match_caller_identity(
     from kiro_crew.dashboard.handlers import messaging
 
     env.state.subagents = SimpleNamespace(spawn=mock.Mock())
-    monkeypatch.setattr(
-        "kiro_crew.member_memory_auth.memory_request_identity",
-        lambda request: (identity, True),
-    )
     response = await messaging.api_spawn(
-        request(env, body={"task": "spawn", "parent_session": parent_session}, internal=True)
+        request(
+            env,
+            body={"task": "spawn", "parent_session": parent_session},
+            internal=True,
+            session=identity or "",
+        )
     )
-    assert response.status == 403
+    assert response.status == 409
+    assert json.loads(response.text)["code"] == "member_identity_unavailable"
     env.state.subagents.spawn.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_private_taskrunner_start_forwards_protected_origin(env, member_proof):
+async def test_private_taskrunner_start_forwards_protected_origin(env):
+    from kiro_crew.execution_context import read_session_execution
+
     runner = SimpleNamespace(
         _work_dir=env.home / "tasks",
+        _ctx=env.state.context_builder,
         start_background=mock.AsyncMock(return_value="run-1"),
+        _capture_execution=read_session_execution,
     )
     env.state.task_runner = runner
     response = await taskrunner.api_taskrunner_start(
@@ -92,15 +105,17 @@ async def test_private_taskrunner_start_forwards_protected_origin(env, member_pr
             env,
             body={"spec": "__inline__:# Task\nDo the work"},
             internal=True,
-            proof=member_proof,
         )
     )
     assert response.status == 200
     assert runner.start_background.await_args.kwargs["session_key"] == "dashboard:alice"
+    execution = runner.start_background.await_args.kwargs["execution_context"]
+    assert execution.member_id == "alice"
+    assert execution.store.legacy_name == "member-alice"
 
 
 @pytest.mark.asyncio
-async def test_private_taskrunner_status_hides_peer_and_global_runs(env, member_proof):
+async def test_taskrunner_status_uses_ordinary_internal_transport(env):
     for key, store in (
         ("taskrunner:alice-run:runtime", "member-alice"),
         ("taskrunner:bob-run:runtime", "member-bob"),
@@ -118,21 +133,13 @@ async def test_private_taskrunner_status_hides_peer_and_global_runs(env, member_
         _work_dir=env.home / "tasks",
     )
     env.state.task_runner = runner
-    response = await taskrunner.api_taskrunner_status(
-        request(env, internal=True, proof=member_proof)
-    )
+    response = await taskrunner.api_taskrunner_status(request(env, internal=True))
     assert response.status == 200
-    assert [row["task_id"] for row in json.loads(response.text)["runs"]] == ["alice-run"]
-
-
-def test_private_run_boundary_is_enforced_without_http(env):
-    from kiro_crew.context import require_memory_delegation
-
-    require_memory_delegation(env.state.conversation_log, "dashboard:alice", "member-alice")
-    require_memory_delegation(env.state.conversation_log, "dashboard:coordinator", "member-bob")
-    for target in ("", "member-bob"):
-        with pytest.raises(memory_stores.UnknownMemoryStore, match="tasks must retain"):
-            require_memory_delegation(env.state.conversation_log, "dashboard:alice", target)
+    assert [row["task_id"] for row in json.loads(response.text)["runs"]] == [
+        "alice-run",
+        "bob-run",
+        "global-run",
+    ]
 
 
 @pytest.mark.asyncio
@@ -155,10 +162,12 @@ async def test_named_v1_continuation_retains_its_parent_store(env, monkeypatch):
     )
 
     assert inherited == "legacy-team"
-    assert env.metadata["taskrunner:legacy-child"]["memory_store"] == "legacy-team"
+    from kiro_crew.execution_context import read_session_execution
+
+    assert read_session_execution("taskrunner:legacy-child").store.legacy_name == "legacy-team"
 
 
-def test_private_schedule_cannot_retarget_a_peer_or_claim_unsigned_metadata(env):
+def test_schedule_freezes_inherited_or_explicit_member_and_rejects_missing_identity(env):
     from kiro_crew.cron import CronJob, bind_cron_memory
     from kiro_crew.history import ConversationLog
 
@@ -168,18 +177,16 @@ def test_private_schedule_cannot_retarget_a_peer_or_claim_unsigned_metadata(env)
     peer = CronJob(
         id="peer", name="peer", message="work", session_key="dashboard:alice", member_id="bob"
     )
-    with pytest.raises(ValueError, match="only its own private memory"):
-        bind_cron_memory(peer)
+    bind_cron_memory(peer)
+    assert peer.execution_context["member_id"] == "bob"
     ConversationLog().update_metadata("slack:forged", {"memory_store": "member-bob"})
     forged = CronJob(id="forged", name="forged", message="work", session_key="slack:forged")
-    with pytest.raises(ValueError, match="trusted member assignment"):
+    with pytest.raises(ValueError, match="canonical member identity"):
         bind_cron_memory(forged)
 
 
-# ``env`` / ``member_proof`` are rebound module attributes so pytest discovers them
-# here and the modules that ``from test_member_memory_api import env`` keep working.
+# Re-export the shared synthetic fixture for API integration tests.
 env = _member_env
-member_proof = _member_proof
 
 
 @pytest.mark.asyncio
@@ -302,6 +309,8 @@ async def test_profile_put_refuses_store_removed_during_final_validation(
 ):
     memory_store = await document_store(env, "member-alice")
     target = getattr(memory_store, f"_{document}_file")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("Original manual rules", encoding="utf-8")
     before = target.read_bytes()
     validate = memory._validate_private_profile_update
 
@@ -342,7 +351,7 @@ async def test_profile_put_refuses_store_removed_during_final_validation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("store", ["", "member-alice"])
+@pytest.mark.parametrize("store", [""])
 @pytest.mark.parametrize("malformed", ["invalid_utf8", "oversized"])
 async def test_history_put_preserves_an_unreadable_today_file(env, monkeypatch, store, malformed):
     memory_store = await document_store(env, store)
@@ -372,15 +381,11 @@ async def test_history_put_preserves_an_unreadable_today_file(env, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_history_put_checks_today_when_the_bounded_v2_aggregate_omits_it(env, monkeypatch):
+async def test_member_history_put_preserves_redacted_sqlite_authority(env):
     memory_store = await document_store(env, "member-alice")
-    today = memory_store._today_history_file()
     raw = f"retain {DOCUMENT_CREDENTIAL} exactly"
-    today.write_text(raw, encoding="utf-8")
-    (today.parent / "9999-12-31.md").write_text("future entry", encoding="utf-8")
-    monkeypatch.setattr(MemoryStore, "_HISTORY_SNAPSHOT_MAX_ENTRIES", 1)
-    baseline = memory_store.read_recent_history()
-    assert DOCUMENT_CREDENTIAL not in baseline
+    memory_store.append_history(raw)
+    baseline = memory_store.read_editable_history()
 
     response = await memory.api_memory_history(
         request(
@@ -394,7 +399,9 @@ async def test_history_put_checks_today_when_the_bounded_v2_aggregate_omits_it(e
 
     assert response.status == 409
     assert json.loads(response.text)["code"] == "memory_document_redacted"
-    assert today.read_text(encoding="utf-8") == raw
+    assert memory_store.read_editable_history() == baseline
+    assert raw in baseline
+    assert not memory_store._today_history_file().exists()
 
 
 @pytest.mark.asyncio
@@ -404,10 +411,11 @@ async def test_unsigned_transcript_cannot_claim_or_mint_private_memory(env, monk
 
     forged_key = "slack:forged-private-assignment"
     env.metadata[forged_key] = {"memory_store": "member-bob"}
-    with pytest.raises(memory_stores.UnknownMemoryStore, match="trusted member assignment"):
+    with pytest.raises(memory_stores.UnknownMemoryStore, match="execution identity is missing"):
         store_of_session(env.state.conversation_log, forged_key)
-    patch_private_memory_supported(monkeypatch)
-    with pytest.raises(memory_stores.UnknownMemoryStore, match="trusted member assignment"):
+    with pytest.raises(
+        memory_stores.UnknownMemoryStore, match="canonical member execution identity"
+    ):
         await prepare_store_vectors(env.state.context_builder, "member-bob", session_key=forged_key)
     assert member_memory_auth.read_private_session_store(forged_key) is None
     assert store_of_session(env.state.conversation_log, "dashboard:alice") == "member-alice"
@@ -505,8 +513,9 @@ async def test_owner_can_stage_restore_of_lost_member_directory_and_see_pending_
     with pytest.raises(memory_stores.UnknownMemoryStore):
         memory_stores.require_memory_store("member-alice")
     assert memory_backup.apply_pending_member_restores() == {"member-alice": ""}
-    restored = VectorMemoryStore(db_path=directory / "memory.db")
-    restored.init()
+    restored = open_member_database(
+        directory / "memory.db", member_id="alice", store_id="member-alice"
+    )
     env.tiers["member-alice"] = restored
     assert json.loads(restored.get_semantic("project.database")["value_json"]) == "PostgreSQL"
 
@@ -554,8 +563,11 @@ async def test_paginated_lists_keep_fact_and_episode_copy_provenance_after_reope
     assert all(item["outcome"] == "imported" for item in json.loads(response.text)["results"])
     old_tier = env.tiers["member-alice"]
     old_tier.close()
-    tier = VectorMemoryStore(db_path=env.home / "memory_stores" / "member-alice" / "memory.db")
-    tier.init()
+    tier = open_member_database(
+        env.home / "memory_stores" / "member-alice" / "memory.db",
+        member_id="alice",
+        store_id="member-alice",
+    )
     env.tiers["member-alice"] = tier
     for handler, expected in (
         (memory.api_memory_semantic, selections[0]),
@@ -586,7 +598,7 @@ async def test_seed_cannot_be_authorized_by_agent_or_header(env, internal):
     response = await memory_member.api_memory_seed(
         request(env, body=seed_body({"kind": "fact", "id": "project.database"}), internal=internal)
     )
-    assert response.status == 403
+    assert response.status == 403, response.text
     assert env.tiers["member-alice"].get_all_semantic() == []
 
 
@@ -703,7 +715,7 @@ async def test_failed_copy_provenance_cannot_be_committed_by_a_later_write(env, 
 
 
 @pytest.mark.asyncio
-async def test_internal_recall_uses_recorded_member_and_returns_bounded_evidence(env, member_proof):
+async def test_internal_recall_uses_recorded_member_and_returns_bounded_evidence(env):
     for name, marker in (
         ("", "GLOBALSECRET"),
         ("member-bob", "BOBSECRET"),
@@ -713,7 +725,7 @@ async def test_internal_recall_uses_recorded_member_and_returns_bounded_evidence
             "project.database", f"PostgreSQL {marker}", 1.0, "user_explicit"
         )
     response = await memory_member.api_memory_recall(
-        request(env, query={"q": "PostgreSQL database"}, internal=True, proof=member_proof)
+        request(env, query={"q": "PostgreSQL database"}, internal=True)
     )
     assert response.status == 200
     result = json.loads(response.text)
@@ -756,6 +768,7 @@ async def test_owner_can_preview_a_selected_private_store(env):
 async def test_global_v1_recall_uses_the_same_explicit_tool_route(env, monkeypatch, owner):
     from kiro_crew import member_memory_auth
 
+    await document_store(env, "")
     env.tiers[""].set_semantic("project.database", "PostgreSQL V1FACT", 1.0, "user_explicit")
     env.tiers["member-alice"].set_semantic(
         "project.database", "PostgreSQL ALICEFACT", 1.0, "user_explicit"
@@ -794,7 +807,9 @@ async def test_temporary_session_cannot_recall(env):
 
 @pytest.mark.asyncio
 async def test_unknown_recorded_binding_fails_without_reading_global(env):
-    env.metadata["dashboard:alice"]["memory_store"] = "missing-member"
+    cfg = loader.KiroCrewConfig.load()
+    del cfg.memory_stores["member-alice"]
+    cfg.save()
     env.tiers[""].set_semantic("project.database", "GLOBALSECRET", 1.0, "user_explicit")
     response = await memory_member.api_memory_recall(
         request(env, query={"q": "database"}, internal=True)
@@ -804,15 +819,13 @@ async def test_unknown_recorded_binding_fails_without_reading_global(env):
 
 
 @pytest.mark.asyncio
-async def test_database_read_failure_returns_explicit_unavailability(
-    env, monkeypatch, member_proof
-):
+async def test_database_read_failure_returns_explicit_unavailability(env, monkeypatch):
     def unreadable(*args, **kwargs):
         raise OSError("disk unreadable")
 
     monkeypatch.setattr(env.tiers["member-alice"], "recall", unreadable)
     response = await memory_member.api_memory_recall(
-        request(env, query={"q": "database"}, internal=True, proof=member_proof)
+        request(env, query={"q": "database"}, internal=True)
     )
     assert response.status == 503
     assert json.loads(response.text)["code"] == "store_unavailable"
@@ -1034,20 +1047,19 @@ async def test_episode_copy_retry_after_correction_and_forgetting_does_not_resur
     ],
 )
 @pytest.mark.parametrize("target_store", ["", "member-bob"])
-async def test_private_spawn_sibling_routes_refuse_foreign_runs(
-    env, member_proof, handler_name, target_store
-):
+async def test_private_spawn_sibling_routes_refuse_foreign_runs(env, handler_name, target_store):
     from kiro_crew.dashboard.handlers import messaging
 
     # Fail at the scope boundary before status reads, provider work or mutations.
     env.state.subagents = SimpleNamespace(
-        _inherited_memory_store=lambda run_id: target_store,
+        get=lambda run_id: SimpleNamespace(
+            parent_session_key="dashboard:foreign", memory_store=target_store
+        ),
     )
     req = request(
         env,
         body={"task": "continue", "message": "steer", "parent_session": "dashboard:alice"},
         internal=True,
-        proof=member_proof,
     )
     req.match_info["agent_id"] = "foreign-run"
     response = await getattr(messaging, handler_name)(req)
@@ -1057,21 +1069,19 @@ async def test_private_spawn_sibling_routes_refuse_foreign_runs(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("claimed", ["", "dashboard:owner", "subagent:unknown"])
-async def test_private_continue_authenticates_parent_before_cwd_read(env, member_proof, claimed):
+async def test_private_continue_authenticates_parent_before_cwd_read(env, claimed):
     from kiro_crew.dashboard.handlers import messaging
 
     env.state.subagents = SimpleNamespace()
-    req = request(
-        env, body={"task": "continue", "parent_session": claimed}, internal=True, proof=member_proof
-    )
+    req = request(env, body={"task": "continue", "parent_session": claimed}, internal=True)
     req.match_info["agent_id"] = "global-run"
     response = await messaging.api_spawn_continue(req)
-    assert response.status == 403
-    assert json.loads(response.text)["code"] == "member_session_unverified"
+    assert response.status == 409
+    assert json.loads(response.text)["code"] == "member_identity_unavailable"
 
 
 @pytest.mark.asyncio
-async def test_private_spawn_list_only_shows_own_runs(env, member_proof):
+async def test_spawn_list_follows_origin_including_cross_member_delegation(env):
     from kiro_crew.dashboard.handlers import messaging
 
     def row(name, store):
@@ -1080,7 +1090,7 @@ async def test_private_spawn_list_only_shows_own_runs(env, member_proof):
             memory_store=store,
             task=name,
             done=True,
-            parent_session_key="dashboard:" + name,
+            parent_session_key="dashboard:" + name.removesuffix("-run"),
             agent="kirocrew",
             started=1,
             result="result-" + name,
@@ -1092,11 +1102,11 @@ async def test_private_spawn_list_only_shows_own_runs(env, member_proof):
             include_project=True,
         )
 
-    rows = [row("alice-run", "member-alice"), row("bob-run", "member-bob"), row("global-run", "")]
+    rows = [row("alice-run", "member-bob"), row("bob-run", "member-alice"), row("global-run", "")]
     env.state.subagents = SimpleNamespace(
         all_agents=rows, _agents={r.id: r for r in rows}, _tasks={r.id: object() for r in rows}
     )
-    response = await messaging.api_spawn_list(request(env, internal=True, proof=member_proof))
+    response = await messaging.api_spawn_list(request(env, internal=True))
     assert [r["id"] for r in json.loads(response.text)["agents"]] == ["alice-run"]
     assert "result-bob" not in response.text and "result-global" not in response.text
 
@@ -1126,9 +1136,7 @@ async def test_private_spawn_list_only_shows_own_runs(env, member_proof):
         "api_cron_folders_delete",
     ],
 )
-async def test_private_caller_cannot_use_owner_cron_aggregate_routes(
-    env, member_proof, handler_name
-):
+async def test_private_caller_cannot_use_owner_cron_aggregate_routes(env, handler_name):
     response = await getattr(cron, handler_name)(
         request(
             env,
@@ -1140,10 +1148,9 @@ async def test_private_caller_cannot_use_owner_cron_aggregate_routes(
                 "every": 60,
             },
             internal=True,
-            proof=member_proof,
         )
     )
-    assert response.status == 403
+    assert response.status == 403, response.text
     assert json.loads(response.text)["code"] == "member_scope_denied"
 
 
@@ -1157,13 +1164,11 @@ async def test_private_caller_cannot_use_owner_cron_aggregate_routes(
         "api_sessions_summarize",
     ],
 )
-async def test_private_caller_cannot_read_owner_session_aggregate_routes(
-    env, member_proof, handler_name
-):
+async def test_private_caller_cannot_read_owner_session_aggregate_routes(env, handler_name):
     from kiro_crew.dashboard.handlers import sessions
 
     response = await getattr(sessions, handler_name)(
-        request(env, body={"keys": ["dashboard:owner"]}, internal=True, proof=member_proof)
+        request(env, body={"keys": ["dashboard:owner"]}, internal=True)
     )
     assert response.status == 403
     assert json.loads(response.text)["code"] == "member_scope_denied"
@@ -1176,10 +1181,11 @@ async def test_private_caller_cannot_read_owner_session_aggregate_routes(
         ("search_chat_history", {"query": "confidential", "all_workspaces": True}),
         ("get_chat_session", {"session_key": "dashboard:bob", "all_workspaces": True}),
         ("get_chat_session", {"session_key": "dashboard:owner", "all_workspaces": True}),
+        ("get_chat_session", {"session_key": "dashboard:incognito", "all_workspaces": True}),
     ],
 )
-def test_member_history_tools_cannot_cross_private_store(
-    env, member_proof, monkeypatch, tool, arguments
+def test_history_tools_preserve_retention_without_member_confidentiality(
+    env, monkeypatch, tool, arguments
 ):
     from kiro_crew.mcp_tools import sessions
 
@@ -1190,65 +1196,25 @@ def test_member_history_tools_cannot_cross_private_store(
         ("dashboard:owner", "Global"),
     ]:
         env.history.append(key, "user", label + " confidential message")
+    env.history.append("dashboard:incognito", "user", "Restricted payload")
+    env.history.update_metadata("dashboard:incognito", {"memory_mode": "incognito"})
     monkeypatch.setattr(
         mcp_core, "require_strict_session_key", lambda error: ("dashboard:alice", "")
     )
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:alice")
     result = sessions.HANDLERS[tool](tool, arguments)
-    assert "Bob confidential" not in result and "Global confidential" not in result
+    assert "Restricted payload" not in result
     if tool == "get_chat_session":
-        assert "Access denied" in result
+        if arguments["session_key"] == "dashboard:incognito":
+            assert "incognito/temporary" in result
+        else:
+            assert "Bob" in result or "Global" in result
     elif tool == "list_sessions":
         assert "dashboard_alice" in result
-        assert "dashboard_bob" not in result and "dashboard_owner" not in result
+        assert "dashboard_bob" in result and "dashboard_owner" in result
+        assert "dashboard_incognito" not in result
     else:
-        assert "Alice confidential" in result
-        assert "dashboard:bob" not in result and "dashboard:owner" not in result
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "handler_name",
-    [
-        "api_session_control_create",
-        "api_session_control_stop",
-        "api_session_control_close",
-        "api_session_control_send",
-        "api_session_control_read",
-    ],
-)
-async def test_member_cannot_bypass_spawn_via_unbound_session_control(
-    env, member_proof, handler_name
-):
-    from kiro_crew.dashboard.handlers import session_control
-
-    response = await getattr(session_control, handler_name)(
-        request(
-            env,
-            body={"target": "dashboard:owner", "agent": "default"},
-            internal=True,
-            proof=member_proof,
-        )
-    )
-    assert response.status == 403
-    assert json.loads(response.text)["code"] == "member_scope_denied"
-
-
-def test_forged_mcp_caller_without_proof_cannot_read_private_history(env, monkeypatch):
-    from kiro_crew.mcp_caller import CallerContext
-    from kiro_crew.mcp_tools import sessions
-
-    env.history.append("dashboard:alice", "user", "Alice confidential message")
-    monkeypatch.setattr(
-        mcp_core, "require_strict_session_key", lambda error: ("dashboard:alice", "")
-    )
-    monkeypatch.setattr(
-        "kiro_crew.mcp_caller.current_caller",
-        lambda: CallerContext(session_key="dashboard:alice", from_gateway=True),
-    )
-    result = sessions.list_sessions("list_sessions", {"all_workspaces": True})
-    assert result.startswith("Error:")
-    assert "Alice confidential" not in result
+        assert "Alice" in result and "Bob" in result and "Global" in result
 
 
 @pytest.mark.asyncio
@@ -1257,14 +1223,15 @@ def test_forged_mcp_caller_without_proof_cannot_read_private_history(env, monkey
     [
         ("/api/chat", "POST"),
         ("/api/chat/slots", "POST"),
-        ("/api/chat/slots", "GET"),
+        # GET /api/chat/slots is NOT here: a crew member is admitted to the
+        # read-only session LIST (its folder tools resolve their own slot with
+        # it), and api_chat_slots filters the response to the member's own +
+        # created sessions. The create/relabel routes below stay refused.
         ("/api/chat/slots/alice/agent", "POST"),
         ("/api/chat/slots/alice/resume", "POST"),
     ],
 )
-async def test_private_chat_control_cannot_create_or_relabel_unbound_slots(
-    env, member_proof, path, method
-):
+async def test_private_chat_control_cannot_create_or_relabel_unbound_slots(env, path, method):
     from kiro_crew.dashboard.handlers._shared import private_chat_route_refusal
 
     app = web.Application()
@@ -1273,16 +1240,17 @@ async def test_private_chat_control_cannot_create_or_relabel_unbound_slots(
         method,
         path,
         app=app,
-        headers={"X-Session-Key": "dashboard:alice", "X-Member-Session-Proof": member_proof},
+        headers={"X-Session-Key": "dashboard:alice"},
     )
     req["internal_auth"] = True
+    req["peer_verified"] = True
     response = await private_chat_route_refusal(req)
     assert response.status == 403
     assert json.loads(response.text)["code"] == "member_scope_denied"
 
 
 @pytest.mark.asyncio
-async def test_private_followup_card_can_only_target_its_own_bound_tab(env, member_proof):
+async def test_private_followup_card_can_only_target_its_own_bound_tab(env):
     from kiro_crew.dashboard.handlers._shared import private_chat_route_refusal
 
     env.state._slots["alice"] = SimpleNamespace(
@@ -1298,9 +1266,10 @@ async def test_private_followup_card_can_only_target_its_own_bound_tab(env, memb
             "POST",
             f"/api/chat/slots/{slot}/followup",
             app=app,
-            headers={"X-Session-Key": "dashboard:alice", "X-Member-Session-Proof": member_proof},
+            headers={"X-Session-Key": "dashboard:alice"},
         )
         req["internal_auth"] = True
+        req["peer_verified"] = True
         req.match_info["slot"] = slot
         response = await private_chat_route_refusal(req)
         if slot == "alice":
@@ -1319,9 +1288,8 @@ async def test_private_followup_card_can_only_target_its_own_bound_tab(env, memb
     ],
 )
 @pytest.mark.parametrize("claimed", ["dashboard:alice", "dashboard:bob", "dashboard:owner"])
-async def test_member_current_session_callbacks_keep_verified_own_scope(
+async def test_session_callbacks_use_the_ordinary_transport_identity(
     env,
-    member_proof,
     monkeypatch,
     handler_name,
     claimed,
@@ -1343,29 +1311,22 @@ async def test_member_current_session_callbacks_keep_verified_own_scope(
         request(
             env,
             internal=True,
-            proof=member_proof,
             session=claimed,
             body={"tool": "loop", "raw_args": {"enabled": False}},
         )
     )
-    if claimed != "dashboard:alice":
-        assert response.status == 403
-        provider.touch_activity.assert_not_called()
-        read_policy.assert_not_called()
-        publish.assert_not_called()
+    assert response.status == 200
+    if handler_name == "api_session_keepalive":
+        provider.touch_activity.assert_called_once()
+        env.state.sessions.get_provider.assert_called_once_with(claimed)
+    elif handler_name == "api_session_tool_policy":
+        assert json.loads(response.text) == {"exclude": ["unsafe_tool"]}
     else:
-        assert response.status == 200
-        if handler_name == "api_session_keepalive":
-            provider.touch_activity.assert_called_once()
-            env.state.sessions.get_provider.assert_called_once_with("dashboard:alice")
-        elif handler_name == "api_session_tool_policy":
-            assert json.loads(response.text) == {"exclude": ["unsafe_tool"]}
-        else:
-            assert publish.call_args.args[0] == "dashboard:alice"
+        assert publish.call_args.args[0] == claimed
 
 
 @pytest.mark.asyncio
-async def test_internal_chat_middleware_refuses_member_before_slot_creation(env, member_proof):
+async def test_internal_chat_middleware_refuses_member_before_slot_creation(env):
     from kiro_crew.dashboard.token_auth import token_auth_middleware
 
     app = web.Application()
@@ -1377,7 +1338,6 @@ async def test_internal_chat_middleware_refuses_member_before_slot_creation(env,
         headers={
             "X-Internal-Secret": "test-member-secret",
             "X-Session-Key": "dashboard:alice",
-            "X-Member-Session-Proof": member_proof,
         },
     ).clone(remote="127.0.0.1")
     handler = mock.AsyncMock(return_value=web.json_response({"created": True}))
@@ -1386,6 +1346,150 @@ async def test_internal_chat_middleware_refuses_member_before_slot_creation(env,
         internal_secret="test-member-secret",
     )
     response = await middleware(req, handler)
-    assert response.status == 403
-    assert json.loads(response.text)["code"] == "member_scope_denied"
+    # The loopback TCP caller holds the secret and declares a session key it
+    # cannot attest, so the identity refusal lands ahead of the member-scope
+    # decision. Either way the chat control never runs.
+    assert response.status == 409
+    assert json.loads(response.text)["code"] == "member_identity_unavailable"
     handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+async def test_member_history_oversized_document_is_unavailable_without_overwrite(env, method):
+    await document_store(env, "member-alice")
+    db = env.tiers["member-alice"].db
+    limit = MemoryStore._HISTORY_SNAPSHOT_MAX_BYTES
+    day = datetime.now().astimezone().date().isoformat()
+    with db:
+        db.execute("INSERT INTO memory_history VALUES (?,?,1,'now')", (day, "x" * (limit + 1)))
+    before = db.total_changes
+    response = await memory.api_memory_history(
+        request(
+            env,
+            body={"content": "Do not overwrite the unreadable source"},
+            query={"store": "member-alice"},
+            owner=True,
+            session="dashboard:ui",
+        ).clone(method=method)
+    )
+    assert response.status == 503
+    assert json.loads(response.text)["code"] == "store_unavailable"
+    assert db.total_changes == before
+    assert (
+        db.execute(
+            "SELECT length(CAST(content AS BLOB)) FROM memory_history WHERE day=?", (day,)
+        ).fetchone()[0]
+        == limit + 1
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+@pytest.mark.parametrize("vector_available", [True, False])
+@pytest.mark.parametrize(
+    "question", ["{}", "What do we know about {}?", "Which project does {} belong to?"]
+)
+async def test_markdown_only_facts_reachable_from_agent_recall(
+    env, monkeypatch, mode, vector_available, question
+):
+    from kiro_crew import context, member_memory_auth
+    from kiro_crew.hooks import HookManager
+    from kiro_crew.learn import LessonStore
+    from kiro_crew.skills import SkillsLoader
+
+    store = await document_store(env, "")
+    store.write_projects("# Active Projects\nNotebookquartz task belongs to the synthetic project.")
+    store.append_history("Dailyquartz milestone was verified.")
+    assert env.tiers[""].get_semantic("Notebookquartz") is None
+    builder = context.ContextBuilder(
+        memory=store,
+        lessons=LessonStore(base_dir=env.home / "synthetic-lessons"),
+        skills=SkillsLoader(skills_path=env.home / "synthetic-skills", install_builtins=False),
+        hooks=HookManager(),
+    )
+    monkeypatch.setattr(context, "kiro_agents_dir", lambda: env.home / "empty-agents")
+    monkeypatch.setattr(context, "agent_skill_globs", lambda agent: [])
+    prompt = env.home / "synthetic-prompt.txt"
+    prompt.write_text("Preserve all safety controls.", encoding="utf-8")
+    monkeypatch.setattr(context, "_prompt_path", lambda **kwargs: prompt)
+    greeting, _ = builder.build_message("hi", True, blocks_reads=mode == "temporary")
+    assert greeting.endswith("hi")
+    if mode == "temporary":
+        assert "Notebookquartz" not in greeting and "Dailyquartz" not in greeting
+    else:
+        assert "Notebookquartz" in greeting and "Dailyquartz" in greeting
+    env.state._slots["global"] = SimpleNamespace(
+        is_restricted=mode == "incognito", blocks_reads=mode == "temporary", memory_mode=mode
+    )
+    session = "dashboard:global"
+    env.metadata[session] = {"memory_store": "default", "memory_mode": mode}
+    monkeypatch.setattr(member_memory_auth, "_request_peer_pid", lambda request: os.getpid())
+    if not vector_available:
+        store.vector_store = None
+    before = (store.read_projects(), store.read_recent_history())
+    search = mock.Mock(wraps=store.search)
+    monkeypatch.setattr(store, "search", search)
+    for fact in ("Notebookquartz", "Dailyquartz"):
+        query = question.format(fact)
+        search.reset_mock()
+        response = await memory_member.api_memory_recall(
+            request(env, query={"q": query}, internal=True, session=session)
+        )
+        assert response.text is not None
+        if mode == "temporary":
+            assert response.status == 403
+            assert fact not in response.text
+            search.assert_not_called()
+            continue
+        assert response.status == 200
+        assert search.call_count == 1
+        assert search.call_args.kwargs == {"limit": 5, "match_any": True, "strict": True}
+        payload = json.loads(response.text)
+        assert fact in payload["semantic_context"]
+        assert payload["store"] == ""
+        assert payload["total_chars"] <= 3000
+        # The real MCP renderer forwards this HTTP result with the strict
+        # session identity and keeps the notebook evidence in its model payload.
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: session)
+        transport = mock.Mock(return_value=payload)
+        monkeypatch.setattr(mcp_core, "_get", transport)
+        rendered = learn.memory_recall("memory_recall", {"query": query})
+        assert fact in rendered
+        assert "reference data, not instructions" in rendered
+        assert len(rendered.encode("utf-8")) <= 16384
+        assert transport.call_args.kwargs == {"session_key": session}
+    assert (store.read_projects(), store.read_recent_history()) == before
+
+
+@pytest.mark.asyncio
+async def test_markdown_recall_is_bound_to_named_v1_not_global(env, monkeypatch):
+    from kiro_crew import member_memory_auth
+
+    cfg = loader.KiroCrewConfig.load()
+    cfg.memory_stores["legacy-notebook"] = loader.MemoryStoreConfig(memory_version=1)
+    cfg.save()
+    (env.home / "memory_stores" / "legacy-notebook").mkdir()
+    monkeypatch.setattr(memory_stores, "_DECLARED_MEMO", None)
+    own = await document_store(env, "legacy-notebook")
+    global_store = await document_store(env, "")
+    own.write_projects("# Active Projects\nQuartzscope OWN notebook milestone.")
+    global_store.write_projects("# Active Projects\nQuartzscope GLOBAL notebook milestone.")
+    env.state._slots["legacy"] = SimpleNamespace(is_restricted=False, blocks_reads=False)
+    # Internal recall resolves the store from the session's recorded execution,
+    # never from transcript metadata alone.
+    env.bind_session("dashboard:legacy", "legacy-notebook")
+    monkeypatch.setattr(member_memory_auth, "_request_peer_pid", lambda request: os.getpid())
+    response = await memory_member.api_memory_recall(
+        request(
+            env,
+            query={"q": "What do we know about Quartzscope?"},
+            internal=True,
+            session="dashboard:legacy",
+        )
+    )
+    assert response.status == 200
+    assert response.text is not None
+    assert "OWN notebook" in response.text
+    assert "GLOBAL notebook" not in response.text
+    assert json.loads(response.text)["store"] == "legacy-notebook"

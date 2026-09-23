@@ -61,6 +61,7 @@ function readPanel(file: string): string {
  */
 const UNMAPPED_PANELS: Record<string, string> = {
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
+  'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
   'DiscordPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=discord',
   'TelegramPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=telegram',
@@ -164,6 +165,14 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { Input: 2 },
     reason: "LinkPatternsEditor's per-row pattern/url fields — part of a composite the extractor indexes whole (chat.text-link-patterns)",
   },
+  'DecisionsCard.tsx': {
+    counts: { input: 1 },
+    reason:
+      'the sampling-share range input has no slider primitive, exactly as ' +
+      "NotificationsPanel's volume does; it is reached through the card the " +
+      'developer.decisions-jev entry deep-links to, and a manual entry for it would ' +
+      'advertise a row that the capabilities.decisions ceiling can withdraw',
+  },
   'DisplayPanel.tsx': {
     counts: { SimpleSelect: 1, Input: 1 },
     reason: 'theme-install form (source picker + location) — transient install flow, not settings',
@@ -188,10 +197,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'primitive (manual: notifications.volume)',
   },
   'RemoteCrewPanel.tsx': {
-    counts: { input: 2 },
+    counts: { input: 6 },
     reason:
       'setup-wizard AWS profile/region convenience fields (localStorage) behind a ' +
-      'non-URL sub-tab a deep link cannot mount',
+      'non-URL sub-tab a deep link cannot mount; plus the launch form\'s identity ' +
+      'choice (2 radios) and Identity Center start-URL/region fields — per-launch ' +
+      'arguments sent with the launch request, not persistent settings',
   },
   'SecretsPanel.tsx': {
     counts: { Input: 2 },
@@ -270,6 +281,16 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
     reason:
       'labels arrive through BotChannelSpec props (per-channel copy decided by the ' +
       'mounting wrapper); the static-label primitives in the same file fan out per channel',
+  },
+  'DecisionsPointPanel.tsx': {
+    count: 2,
+    reason:
+      "the per-point scope switch and model.route's tier pickers take their label " +
+      'from a Record keyed by the SERVER id (the scope name, the tier), which is what ' +
+      'lets a gateway ship another point or scope with no edit here — the same ' +
+      'arrangement AgentBackendTab uses for capability labels. Both are one level ' +
+      'inside the card the developer.decisions-jev entry deep-links to, and a manual ' +
+      'entry would advertise a row the capabilities.decisions ceiling can withdraw',
   },
   'NotificationsPanel.tsx': {
     count: 1,

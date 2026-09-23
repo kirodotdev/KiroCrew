@@ -33,12 +33,7 @@ from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
-from kiro_crew.jsonl_util import (
-    RECORD_CAP,
-    UnreadableRecord,
-    rotate_jsonl_at,
-    strict_records,
-)
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
     open_in_pinned_parent,
@@ -54,27 +49,13 @@ MEMBERS_DIR_NAME = "members"
 #: Append-only pointer log inside a member's directory.
 ACTIVITY_FILE_NAME = "activity.jsonl"
 
-# Rotate a member's activity log once it exceeds this size, keeping ONE
-# previous generation (``.jsonl.1``) — the same 1 MiB cap / ~2 MiB total
-# shape as ``mcp_gateway.stub._FALLBACK_LOG_MAX_BYTES``. Entries are ~150
-# bytes, so the two generations together hold thousands of the most recent
-# pointers for :func:`read_activity`'s consumers (today the
-# ``dedupe_session`` probe inside :func:`record_activity`) — while an
-# unbounded log would grow forever (one append per participation event,
-# from multiple processes, and nothing ever pruned it). The dedupe probe
-# also reads this whole file synchronously on every deduped call, so the
-# cap bounds that read as well as the disk.
-_ACTIVITY_LOG_MAX_BYTES = 1024 * 1024
-
-# Longest single RECORD the reader will materialise. Distinct from the file-size
-# cap above and not implied by it: rotation only fires when the writer next
-# appends, so a crafted newline-free line lands whole before any rotation sees
-# it, and `for line in handle` would then allocate all of it at once. This log is
-# agent-writable and its read feeds an append/suppress decision, so an over-cap
-# record aborts the read (see :func:`_read_activity_checked`) rather than being
-# skipped. Named here so a test can move the dial; real entries are ~150 bytes,
-# so the shared cap has enormous headroom over anything legitimate.
-_RECORD_CAP = RECORD_CAP
+# LEGACY ONLY. Nothing writes this file: participation events go to the
+# per-member append-only event log, and :func:`read_activity` reads that log
+# rather than this path. It survives as a migration SOURCE, folded in once per
+# member and then retired by rename (see the event-log service). Bounding it by
+# size therefore has nothing to bound, since the writer that grew it is gone;
+# the fold streams it under its own byte budget instead, because the file stays
+# agent-writable whatever its size.
 
 #: Crew-slug -> DM-thread binding inside a member's directory.
 DM_FILE_NAME = "dm.json"
@@ -126,6 +107,12 @@ DM_SLOT_MODE = "member"
 #: Slot-key prefix for member DM threads (``member-<slug>``), following the
 #: existing ``<kind>-<id>`` key convention (``chat-<N>-<ts>``, ``cron-<id>``).
 DM_SLOT_KEY_PREFIX = "member-"
+
+#: Appended to a member's slot key when that member opts into a private memory
+#: store (``member-<slug>.memory-<store>``). It belongs to the SLOT, not to the
+#: slug, so every reader of a slot key drops it before treating the tail as a
+#: slug -- ``validate_slug`` rejects the ``.`` otherwise.
+MEMORY_STORE_SLOT_SUFFIX = ".memory-"
 
 
 def is_member_session_key(session_key: str | None) -> bool:
@@ -186,7 +173,9 @@ def select_provider_backend(
 MEMBER_DISPATCH_SERVER = "kirocrew-dashboard"
 
 
-def member_dispatch_session_server(session_key: str) -> dict[str, object] | None:
+def member_dispatch_session_server(
+    session_key: str, session_token: str = ""
+) -> dict[str, object] | None:
     """ACP ``session/new`` ``mcpServers`` element mounting session control.
 
     The entry carries ``KIROCREW_SESSION_KEY`` so the server's strict identity
@@ -195,6 +184,15 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     which the KAS projection's credential stripping never touches (that filter
     applies to the agent-declared ``mcpServers`` block, not to what the host
     itself injects per session).
+
+    ``session_token`` is this ACP session's own name, and it rides BESIDE the key
+    rather than replacing it (see
+    :func:`~kiro_crew.providers.mirrors.identity.control_plane_identity_env` for
+    the full argument). It matters most on a SHARED runtime, where the key baked
+    into this element names the session that was claiming when it was built while
+    the token's mapping is republished on every rekey — so a member thread on a
+    recycled process resolves to itself rather than to its predecessor. Empty
+    leaves the entry byte-identical to the pre-token shape.
 
     The env also carries ``KIROCREW_BOUND_PORT`` — the port this gateway is
     actually serving. Unlike a chat session's MCP child, which inherits the
@@ -241,7 +239,11 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     # DEFAULT home's gateway — where the member slot does not exist and every
     # verb is refused as ``caller_unidentified``. Empty on a default install.
     env: list[dict[str, str]] = [{"name": k, "value": v} for k, v in _managed_mcp_env().items()]
-    # Then the identity key.
+    # Then the identity: the signed per-session token first (the resolver reads it
+    # first, because it cannot go stale across a rekey), then the key as fallback
+    # for the one case the token cannot cover — no SEL trust root to sign with.
+    if session_token:
+        env.append({"name": STUB_SESSION_TOKEN_ENV, "value": session_token})
     env.append({"name": "KIROCREW_SESSION_KEY", "value": session_key})
     # resolve_serving_port() reads KIROCREW_BOUND_PORT first and only then falls
     # through the client order, so one call covers both "the gateway exported the
@@ -336,6 +338,25 @@ def slug_for_name(name: str) -> str:
     return validate_slug(base)
 
 
+def member_slug(name: str, config=None) -> str:
+    """Use persisted member identity; legacy members retain their existing slug."""
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    agent = config.agents.get(name)
+    member_id = getattr(agent, "member_id", "") if agent else ""
+    return validate_slug(member_id) if member_id else slug_for_name(name)
+
+
+def _stable_member_slug(slug: str, name: str) -> bool:
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig.load()
+    agent = cfg.agents.get(name)
+    return bool(agent and getattr(agent, "member_id", "") == slug)
+
+
 def member_dir(slug: str) -> Path:
     """Absolute path to one member's directory, containment-checked.
 
@@ -368,7 +389,7 @@ def member_slot_key(slug: str, memory_store: str = "") -> str:
         if memory_store == "default":
             raise ValueError("Global memory has no private conversation generation")
         # The complete store name is already a unique, bounded generation ID.
-        key += ".memory-" + memory_store
+        key += MEMORY_STORE_SLOT_SUFFIX + memory_store
     return key
 
 
@@ -590,7 +611,16 @@ def read_dm_binding(slug: str) -> dict | None:
     # differs) would otherwise pin A's thread — and A's restored transcript —
     # to B's identity. Colliding names are fine: every name that slugifies to
     # this slug passes; anything else reads as absent.
-    if slug_for_name(data["member"]) != slug:
+    if data.get("member_id") == slug:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.execution_context import member_config_for_id
+
+        try:
+            alias, _ = member_config_for_id(KiroCrewConfig.load(), slug)
+        except ValueError:
+            return None
+        data["member"] = alias
+    elif slug_for_name(data["member"]) != slug:
         return None
     return data
 
@@ -624,6 +654,7 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str
             f"(expected {member_slot_key(slug, memory_store)!r}); such a binding always reads back as absent"
         )
     binding = {
+        "member_id": slug if _stable_member_slug(slug, member) else "",
         "member": member,
         "slug": slug,
         "slot_key": slot_key,
@@ -650,11 +681,26 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str
     return binding
 
 
-def read_dm_binding_for_slot(slot_key: str) -> dict | None:
-    """Resolve a member slot without letting a newer generation adopt its history."""
+def slug_from_dm_slot_key(slot_key: str) -> str | None:
+    """The member slug a DM slot key names, or ``None`` if it names no member.
+
+    A V2 member opts into a memory store, and ``dm_slot_key`` then appends
+    ``.memory-<store>`` to the key. That suffix is part of the SLOT's identity,
+    never of the slug, so every reader of a slot key has to drop it -- and a
+    reader that forgets sees a slug carrying a ``.``, which ``validate_slug``
+    rejects. One spelling here so a third reader cannot drift from the other
+    two.
+    """
     if not slot_key.startswith(DM_SLOT_KEY_PREFIX):
         return None
-    slug = slot_key[len(DM_SLOT_KEY_PREFIX) :].split(".memory-", 1)[0]
+    return slot_key[len(DM_SLOT_KEY_PREFIX) :].split(MEMORY_STORE_SLOT_SUFFIX, 1)[0]
+
+
+def read_dm_binding_for_slot(slot_key: str) -> dict | None:
+    """Resolve a member slot without letting a newer generation adopt its history."""
+    slug = slug_from_dm_slot_key(slot_key)
+    if slug is None:
+        return None
     binding = read_dm_binding(slug)
     return binding if binding is not None and binding["slot_key"] == slot_key else None
 
@@ -737,7 +783,7 @@ def read_member_rules(slug: str, member: str) -> str:
             f"shape); the member will not run until the file is repaired — "
             f"rewrite or clear the rules via PUT /api/members/{slug}/rules"
         )
-    if data["member"] != member:
+    if data.get("member_id") != slug and data["member"] != member:
         # A colliding slug's file holds another exact name's rules; for THIS
         # member that is "never set", not an error.
         return ""
@@ -801,7 +847,12 @@ def write_member_rules(slug: str, *, member: str, text: str) -> None:
             platform_compat.restrict_dir_to_owner(_dir)
         except OSError:
             logger.debug("could not tighten mode on %s", _dir, exc_info=True)
-    payload = {"member": member, "slug": slug, "rules": text}
+    payload = {
+        "member": member,
+        "member_id": slug if _stable_member_slug(slug, member) else "",
+        "slug": slug,
+        "rules": text,
+    }
     atomic_write(path, json.dumps(payload, ensure_ascii=False), fsync=True)
     # atomic_write's fsync=True forces the file DATA; the rename that
     # publishes it — and, on first save, the just-created member-rules
@@ -838,6 +889,132 @@ def member_briefing_supported() -> bool:
     return bool(getattr(os, "O_NOFOLLOW", 0)) and supports_pinned_walk()
 
 
+def _briefing_pinned_target(slug: str) -> tuple[str, str]:
+    """``(resolved members root / slug, BRIEFING_FILE_NAME)`` for the pinned open.
+
+    The ROOT is resolved once (the pinned walk's "caller resolves once"
+    contract) and the member's own directory component is appended LEXICALLY,
+    never resolved: ``member_dir`` resolves ``members/<slug>`` too, and a
+    ``members/<slug>`` swapped for a symlink to a peer's directory would then
+    be followed *before* the walk begins -- the walk pins whatever the link
+    points at and reads the peer's briefing as this member's. Left lexical,
+    that component is opened with ``O_NOFOLLOW`` like every other and a link
+    there is refused, which is the property the agent-writable
+    ``members/<slug>/`` directory needs.
+    """
+    validate_slug(slug)
+    root = members_root().resolve()
+    return str(root / slug), BRIEFING_FILE_NAME
+
+
+MEMBER_BRIEFING_TRUNCATION_MARKER = "\n[... briefing truncated at cap — prune it]"
+
+
+def read_member_briefing_bounded(slug: str) -> tuple[str, float | None, bool]:
+    """The bounded, UNCAPPED briefing buffer, its mtime, and whether the read hit its bound.
+
+    The read half of :func:`read_member_briefing`, for a caller that must
+    transform the text BEFORE cutting it at :data:`MEMBER_BRIEFING_MAX_CHARS`
+    -- the dashboard's briefing endpoint redacts credentials, and a redaction
+    run over already-capped text cannot match a token the cap split in two:
+    the plaintext prefix would cross the boundary unmatched. The buffer is
+    still bounded by the read itself (``(cap + 2) * 4`` bytes; see
+    :func:`read_member_briefing`), so a token that straddles THAT edge is
+    possible too, which is why :func:`cap_member_briefing` can drop the split
+    tail. The third value is ``True`` when the file ran past the READ bound
+    (the buffer lacks the file's tail); whether the text also runs past the
+    character cap is :func:`cap_member_briefing`'s call, made on the text it
+    is given -- after any transform -- not on the raw length. The mtime is
+    from the same open as the text and ``None`` whenever the text reads as no
+    briefing. Blocking file IO.
+    """
+    try:
+        parent, name = _briefing_pinned_target(slug)
+    except (MemberSlugError, OSError, RuntimeError):
+        return "", None, False
+    byte_cap = (MEMBER_BRIEFING_MAX_CHARS + 2) * 4
+    if not member_briefing_supported():
+        # Fail closed (see the docstring): without O_NOFOLLOW and the pinned
+        # ancestor walk there is no race-free way to refuse a symlink on an
+        # agent-writable path.
+        return "", None, False
+    try:
+        fd = open_in_pinned_parent(
+            parent,
+            name,
+            flags=os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            mode=0o600,
+            what="member briefing",
+        )
+    except (PinnedPathRefusal, OSError):
+        # Missing file/dir, a symlink refused anywhere on the pinned walk
+        # (``members/<slug>`` itself included) or the leaf, or any unreadable
+        # state — all read as "no briefing yet".
+        return "", None, False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            # A FIFO, device or socket is never a briefing; reading one can
+            # block or misbehave, so it reads as "no briefing yet".
+            return "", None, False
+        data = os.read(fd, byte_cap + 1)
+    except OSError:
+        return "", None, False
+    finally:
+        os.close(fd)
+    mtime = float(st.st_mtime)
+    truncated_bytes = len(data) > byte_cap
+    if truncated_bytes:
+        # The cut can split a multi-byte character; the tail is being
+        # truncated anyway, so drop the partial character rather than failing
+        # the whole read over it.
+        text = data[:byte_cap].decode("utf-8", errors="ignore").strip()
+    else:
+        try:
+            text = data.decode("utf-8").strip()
+        except UnicodeError:
+            return "", None, False
+    return text, mtime, truncated_bytes
+
+
+def cap_member_briefing(
+    text: str, read_bounded: bool, *, drop_split_tail: bool = False
+) -> tuple[str, bool]:
+    """Cut ``text`` at :data:`MEMBER_BRIEFING_MAX_CHARS` with the visible marker.
+
+    Returns the text and whether it was cut. ``read_bounded`` is the third
+    value of :func:`read_member_briefing_bounded`: when the read hit its byte
+    bound the buffer lacks the file's tail, so the marker is owed even when
+    what remains fits the cap. Otherwise the cut happens only when the text
+    GIVEN runs past the cap -- measured here, on the text as it is now, so a
+    caller that redacted the buffer first (the dashboard endpoint) is judged
+    on the redacted length: a briefing that only overflowed before its
+    placeholders shrank it is shown whole, with no marker and no word lost.
+
+    With ``drop_split_tail`` the cut also removes the trailing run of
+    non-whitespace characters, so the shown text never ends in the FIRST HALF
+    of a word the cap split: every credential the redaction chain knows is
+    such a run, and a token that straddles the cut (either the character cap
+    or the bounded read's own edge) would otherwise cross the wire as an
+    unmatched plaintext prefix. At most one word of the shown tail is lost to
+    it; a briefing with no whitespace at all in its first cap's worth of
+    characters reads as the marker alone, which is the fail-closed answer.
+    The prompt path keeps the plain cut: the member reads its own file, and
+    the marker is what tells it to prune.
+    """
+    text = text.strip()
+    if not read_bounded and len(text) <= MEMBER_BRIEFING_MAX_CHARS:
+        return text, False
+    head = text[:MEMBER_BRIEFING_MAX_CHARS]
+    if drop_split_tail:
+        stripped = head.rstrip()
+        cut = len(stripped)
+        while cut > 0 and not stripped[cut - 1].isspace():
+            cut -= 1
+        head = stripped[:cut].rstrip()
+    return head + MEMBER_BRIEFING_TRUNCATION_MARKER, True
+
+
 def read_member_briefing(slug: str) -> str:
     """Return a member's briefing text capped for injection, or ``""``.
 
@@ -863,7 +1040,10 @@ def read_member_briefing(slug: str) -> str:
       alone is not enough, because the member's own directory
       (``members/<slug>/``) is agent-writable too, and swapping IT for a link
       redirects the whole traversal while the leaf open still finds an
-      ordinary file (the same ancestor-swap shape the pinned walk exists to close).
+      ordinary file. That is why the walk starts from the resolved members
+      ROOT with ``<slug>`` appended lexically (:func:`_briefing_pinned_target`)
+      rather than from :func:`member_dir`, whose own ``resolve()`` would follow
+      such a link before the walk could refuse it.
       ``O_NONBLOCK`` makes a FIFO open return immediately instead of waiting
       for a writer (both at open time — no check-then-open race); ``fstat``
       then rejects anything that is not a regular file. Where the pinned walk
@@ -879,57 +1059,8 @@ def read_member_briefing(slug: str) -> str:
 
     Blocking file IO: call via ``asyncio.to_thread`` from async code.
     """
-    try:
-        path = member_briefing_path(slug)
-    except (MemberSlugError, OSError, RuntimeError):
-        return ""
-    byte_cap = (MEMBER_BRIEFING_MAX_CHARS + 2) * 4
-    if not member_briefing_supported():
-        # Fail closed (see the docstring): without O_NOFOLLOW and the pinned
-        # ancestor walk there is no race-free way to refuse a symlink on an
-        # agent-writable path.
-        return ""
-    try:
-        # ``path.parent`` comes from :func:`member_dir`, which resolves and
-        # containment-checks it — the "caller resolves once" contract of the
-        # pinned walk. The walk then refuses any component swapped for a link
-        # after that resolution, ``members/<slug>/`` included.
-        fd = open_in_pinned_parent(
-            str(path.parent),
-            path.name,
-            flags=os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
-            mode=0o600,
-            what="member briefing",
-        )
-    except (PinnedPathRefusal, OSError):
-        # Missing file/dir, a symlink refused anywhere on the pinned walk
-        # (ancestor or leaf), or any unreadable state — all read as "no
-        # briefing yet".
-        return ""
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            # A FIFO, device or socket is never a briefing; reading one can
-            # block or misbehave, so it reads as "no briefing yet".
-            return ""
-        data = os.read(fd, byte_cap + 1)
-    except OSError:
-        return ""
-    finally:
-        os.close(fd)
-    truncated_bytes = len(data) > byte_cap
-    if truncated_bytes:
-        # The cut can split a multi-byte character; the tail is being
-        # truncated anyway, so drop the partial character rather than failing
-        # the whole read over it.
-        text = data[:byte_cap].decode("utf-8", errors="ignore").strip()
-    else:
-        try:
-            text = data.decode("utf-8").strip()
-        except UnicodeError:
-            return ""
-    if truncated_bytes or len(text) > MEMBER_BRIEFING_MAX_CHARS:
-        return text[:MEMBER_BRIEFING_MAX_CHARS] + "\n[... briefing truncated at cap — prune it]"
-    return text
+    text, _mtime, read_bounded = read_member_briefing_bounded(slug)
+    return cap_member_briefing(text, read_bounded)[0]
 
 
 def record_activity(
@@ -1004,62 +1135,78 @@ def record_activity(
         entry["project"] = project
     if via:
         entry["via"] = via
+    # Imported BEFORE the try, not beside the sibling imports inside it: the
+    # handler below reads this name, so an import that failed inside the block it
+    # guards would raise NameError from the handler itself.
+    from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED
+
     try:
-        slug = slug_for_name(member)
-        path = member_dir(slug)
+        # main's resolver, not the bare fold: a member may carry an explicit
+        # `member_id` in config, and member_slug honours it before falling back to
+        # slug_for_name. The log has to be keyed by the same id the rest of the
+        # roster uses, or a member with an explicit id reads an empty projection.
+        slug = member_slug(member)
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.types import ACTIVITY_RECORD
+
+        svc = get_service()
+        # ENSURE FIRST, then dedupe. ``ensure`` is what folds a pre-upgrade
+        # ``activity.jsonl`` into the log, so a scan running before it reads a
+        # log the legacy rows have not reached yet -- and the first
+        # post-upgrade call for a session already recorded in that file would
+        # dedupe against nothing and append a permanent duplicate. Both steps
+        # are idempotent, so paying ensure before a scan that may return early
+        # costs a caller nothing.
+        svc.ensure(slug, member)
         if dedupe_session:
-            prior, complete = _read_activity_checked(slug)
-            if not complete:
-                # Fail closed. An over-cap record was refused, so `prior` is a
-                # prefix of the log and the probe below cannot prove this pair
-                # is absent from the part it could not read. Appending anyway
-                # would risk a duplicate participation entry, which inflates
-                # the counts that drive trigger generation and routing. Not
-                # recording is the same outcome the blanket handler below
-                # already produces for any other read failure, so no caller
-                # learns a new failure mode from this.
-                logger.warning(
-                    "member activity log unreadable in full; not recording %r to avoid a "
-                    "duplicate entry",
-                    member,
-                )
-                return False
-            if any(
-                # Matched on BOTH fields: a colliding slug means one file can hold
-                # two members, so session alone would suppress the wrong entry.
-                # Only participation entries carry `session`, which is also the only
-                # kind deduped — routing decisions are distinct events.
-                r.get("session") == session_key and r.get("member") == member
-                for r in prior
-            ):
-                return False
-        path.mkdir(parents=True, exist_ok=True)
-        # Newline on BOTH sides. The trailing one is ordinary JSONL framing; the
-        # LEADING one is what survives a torn write. A record appended straight
-        # after an interrupted write would otherwise be glued to that fragment,
-        # losing BOTH to one unparseable line — and a leading newline alone is
-        # not enough either, because the newest record would then carry no
-        # terminator and be absorbed by whatever came next. read_activity skips
-        # the blank lines this produces.
-        line = "\n" + json.dumps(entry, ensure_ascii=False) + "\n"
-        # Bound the log before appending. The helper's rotation is
-        # try-lock-guarded (the log is append-only from multiple processes, so
-        # unserialized rotation would let two writers hitting the cap together
-        # discard a generation), best-effort, and never raises; a lost
-        # try-lock skips rotating rather than waiting, so this call cannot
-        # stall the shared event loop any more than the append itself.
-        # History survives rotation: read_activity spans both generations, so
-        # the `dedupe_session` probe keeps seeing rotated-aside entries.
-        rotate_jsonl_at(path / ACTIVITY_FILE_NAME, _ACTIVITY_LOG_MAX_BYTES)
-        # No fsync: this is an advisory pointer log, and a durability barrier is
-        # a blocking kernel syscall that would stall the shared event loop for
-        # every concurrent session. Losing the final entry to a crash is
-        # acceptable; stalling the gateway is not.
-        with open(path / ACTIVITY_FILE_NAME, "a", encoding="utf-8") as fh:
-            fh.write(line)
+            # Check the member's own ACTIVITY_RECORD events for this session
+            # pair instead of scanning a file. Matched on BOTH fields: a
+            # colliding slug means one log can hold two members, so session
+            # alone would suppress the wrong entry. Only participation entries
+            # carry `session`, which is also the only kind deduped — routing
+            # decisions are distinct events.
+            #
+            # The scan is UNBOUNDED, and a bound is not an optimisation here: the
+            # log is already materialised in memory by the read below, so a limit
+            # only truncates a filter over a list that was loaded either way. A
+            # 200-event cap therefore bought no I/O and did buy a miss — a
+            # session resumed after 200 later events deduped against nothing and
+            # wrote a second participation record, inflating the activity
+            # projection it feeds.
+            recent = svc.history(slug, before=None, limit=None)
+            for ev in recent:
+                if ev.get("type") != ACTIVITY_RECORD:
+                    continue
+                rec = ev.get("data") or {}
+                if rec.get("session") == session_key and rec.get("member") == member:
+                    return False
+        svc.append(slug, ACTIVITY_RECORD, entry)
         return True
-    except Exception:
-        logger.debug("member activity log write failed for %r", member, exc_info=True)
+    except Exception as exc:
+        # An ``already_owned`` refusal is a LOSS, and it is reported rather than
+        # hidden. The store's write lease is taken non-blocking, so a second
+        # process appending at the same instant is refused outright instead of
+        # being serialized behind the per-append lock -- and this entry is then
+        # never written. The two writers are ordinary rather than pathological:
+        # ``kirocrew-core`` runs as its own subprocess and records activity
+        # through this function, which :meth:`MemberLog.refresh_if_changed`
+        # already names as a second writer on the read side. ``crew_log.lease``
+        # states the caller's duty for this code -- it reports the loss rather
+        # than retrying it -- and a debug line does not discharge that: it leaves
+        # a dropped routing decision indistinguishable from a member that was
+        # never routed, which is the one thing this record exists to tell apart.
+        if getattr(exc, "code", "") == CODE_ALREADY_OWNED:
+            logger.warning(
+                "member activity entry DROPPED for %r (session %r, via %r): another "
+                "process owns writes to this member's log, so the entry is lost and "
+                "is not retried: %s",
+                member,
+                session_key,
+                via,
+                exc,
+            )
+        else:
+            logger.debug("member activity log write failed for %r", member, exc_info=True)
         return False
 
 
@@ -1067,13 +1214,11 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
     """Return a member's activity entries, oldest first.
 
     The degrading view of :func:`_read_activity_checked`: it drops the
-    completeness flag. A generation stopped by an over-cap record still
-    contributes the entries it read BEFORE that record, so the caller sees a
-    prefix rather than nothing -- correct for a caller that only displays or
-    counts entries. A caller whose output feeds a durable decision must use
-    :func:`_read_activity_checked` and honour the flag, because a prefix is
-    indistinguishable from the whole log without it -- see the
-    ``dedupe_session`` probe in :func:`record_activity`.
+    completeness flag. Backed by the per-member append-only event log — the
+    entries are the record dicts carried by ``ACTIVITY_RECORD`` events, in
+    append order (oldest first). ``limit`` > 0 returns only the most recent N.
+    Every failure reads as an empty list, so a caller that only displays or
+    counts entries needs no try/except.
     """
     rows, _complete = _read_activity_checked(slug, limit)
     return rows
@@ -1082,88 +1227,34 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
 def _read_activity_checked(slug: str, limit: int = 0) -> tuple[list[dict], bool]:
     """Return a member's activity entries oldest first, and whether they are ALL of them.
 
-    Reads the one rotated generation (``.jsonl.1``, see
-    :data:`_ACTIVITY_LOG_MAX_BYTES`) before the live file — the same
-    two-generation read as the stub fallback log's aggregator — so a
-    rotation does not hide history from consumers: in particular the
-    ``dedupe_session`` probe keeps suppressing a session pair whose entry
-    was rotated aside. Malformed lines are skipped rather than raising: the
-    log is append-only from multiple processes, and one torn line must not
-    make the whole history unreadable. A generation that cannot be read is
-    likewise skipped rather than discarding what the other generation
-    yielded. ``limit`` > 0 returns only the most recent N across both
-    generations.
+    Backed by the per-member append-only event log: reads ``ACTIVITY_RECORD``
+    events (newest first from the service), unwraps each to the record dict it
+    carries, and reverses to oldest-first — the order the former file-backed
+    reader returned. ``limit`` > 0 returns the most recent N. A bad slug or any
+    read failure yields ``([], True)``.
 
-    The second element is False when a record exceeded
-    :data:`_RECORD_CAP` and was therefore refused. That case cannot be
-    treated like a malformed line: this log is agent-writable, so one
-    crafted newline-free line would otherwise be materialised whole, and
-    :func:`kiro_crew.jsonl_util.strict_records` stops the read instead of
-    skipping it. Skipping would be worse than losing the entry — the
-    ``dedupe_session`` probe reads absence as "no prior entry" and appends a
-    duplicate, inflating the participation counts this log exists to feed.
-    So the flag is returned rather than swallowed, and the one caller that
-    writes based on this read fails closed on it.
+    The second element is retained for callers that fail closed on a partial
+    read of the agent-writable file. The event log commits one line
+    per append under fsync and the reader repairs a torn trailing line at load,
+    so a partial-read completeness gap does not arise here — the flag is
+    always ``True`` on a successful read. It stays in the signature so the
+    ``record_activity`` dedupe probe and its tests keep their shape.
     """
     try:
-        live = member_dir(slug) / ACTIVITY_FILE_NAME
+        validate_slug(slug)
     except MemberSlugError:
         return [], True
-    out: list[dict] = []
-    complete = True
-
-    # Hold a shared (non-blocking) lock on the rotation lock file while
-    # reading both generations.  This prevents a concurrent writer from
-    # rotating the live file into .1 between the two reads, which could
-    # cause records to be missed and duplicate session entries appended.
-    lock_fd: int = -1
-    lock_path = live.with_name(live.name + ".lock")
     try:
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        if not platform_compat.try_acquire_lock(lock_fd, exclusive=False):
-            # Could not acquire; close and proceed without the lock.
-            os.close(lock_fd)
-            lock_fd = -1
-    except OSError:
-        lock_fd = -1
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.types import ACTIVITY_RECORD
 
-    try:
-        for path in (live.with_name(live.name + ".1"), live):
-            if not path.is_file():
-                continue
-            try:
-                with open(path, "rb") as fh:
-                    for line in strict_records(fh, path, cap=_RECORD_CAP):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            row = json.loads(line)
-                        except (ValueError, TypeError):
-                            continue
-                        if isinstance(row, dict):
-                            out.append(row)
-            except UnreadableRecord:
-                # The generation is abandoned at the record it could not
-                # deliver, so what it yielded so far is a prefix, not the whole
-                # of it. Keep those rows (they are real entries the caller may
-                # display) but report the read as incomplete.
-                #
-                # "unreadable", not "over-cap": UnreadableRecord also covers a
-                # record that is not valid UTF-8, and naming only the cap here
-                # would send a reader looking for a size problem that may not
-                # exist.
-                complete = False
-                logger.warning(
-                    "member activity log has an over-cap record; %r read as incomplete", slug
-                )
-                continue
-            except OSError:
-                logger.debug("member activity log read failed for %r", slug, exc_info=True)
-                continue
-    finally:
-        if lock_fd != -1:
-            platform_compat.release_lock(lock_fd)
-            os.close(lock_fd)
-
-    return (out[-limit:] if limit > 0 else out), complete
+        svc = get_service()
+        events = svc.history(slug, before=None, limit=None)
+        records = [
+            ev.get("data") or {} for ev in reversed(events) if ev.get("type") == ACTIVITY_RECORD
+        ]
+        rows = [r for r in records if isinstance(r, dict)]
+    except Exception:
+        logger.debug("member activity log read failed for %r", slug, exc_info=True)
+        return [], True
+    return (rows[-limit:] if limit > 0 else rows), True

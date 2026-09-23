@@ -32,6 +32,13 @@ export interface KiroCrewAgent {
   /** Per-crew avatar override, verbatim from the backend. `{}`/absent means
    *  the face is derived from the crew name; interpreted by ghostTraitsFrom. */
   avatar?: unknown
+  /** The execution-choice namespace this row came from (`/api/agents/catalog`).
+   *  Absent on rows read from the member-management roster, which lists
+   *  members only. A member and a template can share a `name`, so a consumer
+   *  that offers both must key on (selection_kind, name), never on the name. */
+  selection_kind?: 'member' | 'template'
+  /** `global` or `project`; only catalog rows carry it. */
+  scope?: string
 }
 
 interface Props {

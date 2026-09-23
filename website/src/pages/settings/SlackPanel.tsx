@@ -10,6 +10,7 @@ import { api, type SlackConfigData, type SlackConfigSave } from '../../api/clien
 import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
+import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
@@ -44,11 +45,13 @@ function draftFrom(c: SlackConfigData): Draft {
 
 /** Status pill mirroring the connection state of the messaging gateway. */
 function StatusBadge({ config }: { config: SlackConfigData }) {
+  /* eslint-disable shadcn/no-unknown-classes -- shadcn-ui/lint#38: the rule reads every member of a destructured initializer as a class */
   const [dot, text, cls] = config.connected
     ? ['var(--ok)', i18nT('pages.settings.slackPanel.connected'), 'text-ok']
     : config.configured
       ? ['var(--warn)', i18nT('pages.settings.slackPanel.not_connected'), 'text-warn']
       : ['var(--muted)', i18nT('pages.settings.slackPanel.needs_setup'), 'text-muted']
+  /* eslint-enable shadcn/no-unknown-classes */
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${cls}`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
@@ -454,6 +457,14 @@ export function SlackPanel() {
                   disabled={ro}
                 />
               </div>
+            )}
+            {!!data.session_folder && (
+              <ChannelFolderBackfill
+                namespace="slack"
+                folderName={data.session_folder}
+                disabled={ro}
+                testId="session-folder-backfill"
+              />
             )}
           </div>
         </SettingsCard>

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { COMMAND_SESSION_FOLDER, commandFolderName, fileSessionInCommandFolder } from './sessionFolder'
 import { api } from '../../api/client'
+import { storedName } from '../../utils/ensureChatFolder'
 
 vi.mock('../../api/client', () => ({
   api: {
@@ -83,9 +84,11 @@ describe('fileSessionInCommandFolder', () => {
     // The server keeps `name.strip()[:100]`, and a manifest title may be 120. Asking
     // for the full title and then looking for the full title never matches what came
     // back, so every run would make another folder -- the one failure mode here that
-    // compounds instead of staying cosmetic.
+    // compounds instead of staying cosmetic. The name asked for is cut to fit with a
+    // fingerprint tail, so what the server stores is exactly what was asked for.
     const long = 'A'.repeat(120)
-    const stored = 'A'.repeat(100)
+    const stored = storedName(long)
+    expect(stored).toMatch(/^A{65} \([0-9a-f]{32}\)$/)
     serve([
       { id: 'p', name: COMMAND_SESSION_FOLDER, parent_id: '' },
       { id: 'l', name: stored, parent_id: 'p' },
@@ -99,7 +102,9 @@ describe('fileSessionInCommandFolder', () => {
   it('creates an over-long title under the name the server will keep', async () => {
     serve([])
     await fileSessionInCommandFolder('slot-5', 'B'.repeat(140))
-    expect(created()[1]?.[0]).toBe('B'.repeat(100))
+    const asked = created()[1]?.[0] as string
+    expect(asked).toMatch(/^B{65} \([0-9a-f]{32}\)$/)
+    expect([...asked].length).toBe(100)
   })
 
   it('does not mistake a same-named folder elsewhere in the tree for ours', async () => {
@@ -301,8 +306,9 @@ describe('commandFolderName', () => {
   })
 
   it('separates two distinct titles that agree on their first 100 characters', () => {
-    // Raw-title comparison finds no collision here, adds no discriminator, and lets the
-    // server file both commands into one folder -- reached without a duplicate title.
+    // Two different titles that the server alone would cut back into one name. They
+    // are not a duplicate, so no discriminator is added; the stored-name fingerprint
+    // is what keeps their leaves apart, and it must fit the server's limit.
     const shared = 'D'.repeat(100)
     const commands = map(
       cmd('app:a:one', shared + 'first', 'App A'),
@@ -311,8 +317,9 @@ describe('commandFolderName', () => {
     const a = commandFolderName(commands, 'app:a:one')
     const b = commandFolderName(commands, 'app:b:two')
     expect(a).not.toBe(b)
-    expect(a.endsWith('(App A)')).toBe(true)
-    expect(b.endsWith('(App B)')).toBe(true)
+    expect(storedName(a)).not.toBe(storedName(b))
+    expect([...storedName(a)].length).toBeLessThanOrEqual(100)
+    expect([...storedName(b)].length).toBeLessThanOrEqual(100)
   })
 
   it('never splits a surrogate pair when truncating', () => {

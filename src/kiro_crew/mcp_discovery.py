@@ -29,7 +29,7 @@ from typing import Any
 
 import aiohttp
 
-from kiro_crew import platform_compat
+from kiro_crew import mcp_quarantine, platform_compat
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import (
     MCP_PATH_HINT,
@@ -1014,6 +1014,9 @@ _MANAGED_SERVER_SUBCOMMANDS = {
     "kirocrew-computer": "mcp-computer",
     "kirocrew-dashboard": "mcp-dashboard",
     "kirocrew-work": "mcp-work",
+    "kirocrew-crew-log": "mcp-crew-log",
+    "kirocrew-debug": "mcp-debug",
+    "kirocrew-panel": "mcp-panel",
 }
 _MANAGED_SERVER_NAMES = set(_MANAGED_SERVER_SUBCOMMANDS)
 
@@ -1026,6 +1029,9 @@ _MANAGED_SERVER_TOOL_MODULES = {
     "kirocrew-computer": "kiro_crew.mcp_computer",
     "kirocrew-dashboard": "kiro_crew.mcp_dashboard",
     "kirocrew-work": "kiro_crew.mcp_work",
+    "kirocrew-crew-log": "kiro_crew.mcp_crew_log",
+    "kirocrew-debug": "kiro_crew.mcp_debug",
+    "kirocrew-panel": "kiro_crew.mcp_panel",
 }
 
 
@@ -1052,7 +1058,15 @@ _MANAGED_SERVER_TOOL_MODULES = {
 #: argument actually handed to the shim. That check imports the modules in the
 #: TEST process, where running package code is the point rather than a hazard.
 _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
-    {"kirocrew-core", "kirocrew-cron", "kirocrew-dashboard", "kirocrew-work"}
+    {
+        "kirocrew-core",
+        "kirocrew-cron",
+        "kirocrew-dashboard",
+        "kirocrew-work",
+        "kirocrew-crew-log",
+        "kirocrew-debug",
+        "kirocrew-panel",
+    }
 )
 
 #: Managed servers that ADVERTISE the capability but are deliberately withheld
@@ -1157,13 +1171,14 @@ def _fix_stale_managed_command(name: str, spec: dict) -> None:
     source of truth for the managed invocation. That handles every layout:
     a standalone ``bin/kirocrew`` (POSIX) / ``Scripts\\kirocrew.exe`` (Windows
     pip install) console script when one resolves, the Windows bundle's
-    ``bin\\kirocrew.cmd`` shim (unwrapped to ``<root>\\python.exe -P -s -m
-    kiro_crew <sub>``), and otherwise the ``<interpreter> -m kiro_crew <sub>``
-    fallback. Both ``command`` AND ``args``
-    are rewritten — the fallback needs ``["-m", "kiro_crew", <sub>]``, so
-    re-resolving the command alone (the old behavior) silently dropped the args
-    and spawned a bare ``kirocrew`` that isn't on PATH (Windows: ``command not
-    found: kirocrew``; the built-in cron/core tools then never load).
+    ``bin\\kirocrew.cmd`` shim (unwrapped to ``<root>\\python.exe -s -P -m
+    kiro_crew <sub>``), and otherwise the ``<interpreter> [-s] -P -m kiro_crew
+    <sub>`` fallback. Both ``command`` AND ``args`` are rewritten — the fallback
+    needs its optional isolation prefix plus ``["-P", "-m", "kiro_crew", <sub>]``,
+    so re-resolving the command
+    alone (the old behavior) silently dropped the args and spawned a bare
+    ``kirocrew`` that isn't on PATH (Windows: ``command not found: kirocrew``;
+    the built-in cron/core tools then never load).
     """
     subcommand = _MANAGED_SERVER_SUBCOMMANDS.get(name)
     if subcommand is None:
@@ -1233,13 +1248,17 @@ def _is_first_party_managed_argv(
         logger.debug("managed MCP invocation resolution failed", exc_info=True)
         return False
     expected_command, expected_args = invocation
-    # Refuse the interpreter fallback (`<python> -m kiro_crew <sub>`): `python
-    # -m` prepends the child's CWD to sys.path (this package supports 3.10, so
-    # `-P`/PYTHONSAFEPATH cannot be assumed), and the probe child inherits the
-    # gateway's cwd — a planted `kiro_crew/` tree there would shadow the
-    # installed package and run unconfined. Only a resolved console-script
-    # binary, whose entrypoint imports from its own install, qualifies.
-    if expected_args[:2] == ["-m", "kiro_crew"]:
+    # Refuse the interpreter fallback with or without its conditional ``-s``:
+    # neither form removes the child's CWD from sys.path, so a planted
+    # ``kiro_crew/`` tree in the gateway's cwd could still shadow the installed
+    # package and run unconfined. Only a resolved console-script binary, whose
+    # entrypoint imports from its own install, qualifies. Keep recognizing both
+    # fallback forms defensively.
+    if expected_args[:2] == ["-m", "kiro_crew"] or expected_args[:3] == [
+        "-s",
+        "-m",
+        "kiro_crew",
+    ]:
         return False
     return (
         command == expected_command
@@ -2569,6 +2588,46 @@ async def probe_server(
     return server
 
 
+# Warn once per crossing PER GATEWAY RUN, not per pass: the quarantine is re-read
+# every pass, so warning on the STATE would reprint one line forever. This ledger is
+# process memory while the quarantine is durable, so a crossing outliving a restart is
+# announced again — right, because that run has told nobody. Pruning to what is
+# quarantined now bounds it and self-heals it: a server must leave the store to re-cross.
+_quarantine_warned: set[str] = set()
+
+
+def _spawn_excluded() -> set[str]:
+    """Servers to report from cache without spawning them again.
+
+    The count comes from ``mcp_quarantine``, not a second counter here: that
+    store is already the per-server consecutive-probe-failure ledger, already
+    skips ``needs_auth``, and already has an operator reset. ``probe_all``'s
+    caller folds each round's verdicts back into it, so this sees the previous
+    pass. Reads a file, so callers run it off the loop; an unreadable store
+    probes everything, because refusing would make one bad file a fleet outage.
+    """
+    try:
+        snap = mcp_quarantine.snapshot()
+    except Exception:
+        logger.debug("cannot read MCP quarantine state; probing all", exc_info=True)
+        return set()
+    excluded = {name for name, st in snap.items() if st.get("failing")}
+    _quarantine_warned.intersection_update(excluded)
+    for name in sorted(excluded):
+        if name in _quarantine_warned:
+            continue
+        _quarantine_warned.add(name)
+        logger.warning(
+            "MCP server %s failed %d consecutive probes, so discovery will no longer "
+            "spawn it. Fix it, then clear it from the MCP panel (POST "
+            "/api/mcp/quarantine/clear) — the exclusion outlives a gateway restart; "
+            "or set agent.mcp_quarantine_after_failures to 0 to stop quarantining.",
+            name,
+            snap[name].get("fails") or 0,
+        )
+    return excluded
+
+
 # Cap how many MCP servers we probe concurrently.  Each probe spawns a
 # subprocess (or opens a remote connection) and resolves DNS on the event
 # loop's default executor; an unbounded fan-out across 25+ servers floods that
@@ -2609,8 +2668,26 @@ async def probe_all() -> list[McpServerInfo]:
     # Per-call semaphore: bounds the fan-out within this discovery pass while
     # binding to the currently-running loop (avoids import-time loop capture).
     sem = asyncio.Semaphore(PROBE_MAX_CONCURRENCY)
+    excluded = await asyncio.to_thread(_spawn_excluded)
 
     async def _guarded(s: McpServerInfo) -> McpServerInfo:
+        # Left out of the SPAWN set only, and still returned: callers judge
+        # freshness by comparing returned names against their own cache, so a
+        # dropped row reads as brand-new every request and re-arms this fan-out.
+        #
+        # Returned as ``outdated``, not with the failure ``list_servers`` merged
+        # on, because no handshake was attempted and a row must not present a
+        # stale observation as a current one. ``_quarantine_verdicts`` folds these
+        # rows into the very count that decided the exclusion, under the rule that
+        # only a status reporting an attempt may move the counter: a re-reported
+        # ``error`` would inflate that count with no probe behind it, and a later
+        # threshold rise could then never release the server. ``outdated`` with no
+        # error is what ``_get_cached`` gives any entry lacking a fresh result, so
+        # this says now what the row says anyway once the TTL lapses.
+        if s.name in excluded:
+            s.status = "outdated"
+            s.error = ""
+            return s
         async with sem:
             return await probe_server(s)
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import TrustDropdown from '../components/TrustDropdown'
 // `/all` for the ja/ko/de/zh-CN catalogs: `../i18n` registers English only.
 import { i18next } from '../i18n/all'
@@ -186,21 +186,96 @@ describe('TrustDropdown', () => {
     expect(screen.getByText('Trust').closest('button')).toBeDisabled()
   })
 
-  it('truncates only PATHOLOGICAL command labels — ordinary long ones render whole', () => {
-    // The 256 ceiling only guards the menu layout against pathological input
-    // (a base64 blob, a megabyte one-liner); a realistic long command renders
-    // in full so the user can read exactly what they are trusting.
-    const ordinary = 'find /very/long/path/to/directory -name "*.tsx" -exec grep -l something'
-    const { unmount } = render(<TrustDropdown fullCommand={ordinary} baseCommand="find" isShell className={btnClass} onAction={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    expect(screen.queryByText(/…/)).not.toBeInTheDocument()
-    unmount()
+  // #4700. The exact-command tier grants an exact-STRING match, so its label is
+  // not a description of the scope -- it IS the scope. Any elision leaves a cut
+  // for a difference to hide inside, and the `title` attribute that used to
+  // carry the rest never fires without a pointer, so on a phone the shortened
+  // label was the whole basis for the grant. These pin the row rendering the
+  // command WHOLE, at any length.
+  describe('the exact-command label is the whole command', () => {
+    // Longer than the 256-char elision budget, and made of realistic path
+    // segments rather than a blob, so what is on screen is what a user would
+    // actually be asked to trust.
+    const overBudget = `find ${'/very/long/path/segment'.repeat(12)} -name "*.tsx" -exec grep -l something`
 
-    const pathological = `find ${'/very/long/path/segment'.repeat(12)} -name "*.tsx" -exec grep -l something`
-    expect(pathological.length).toBeGreaterThan(256)
-    render(<TrustDropdown fullCommand={pathological} baseCommand="find" isShell className={btnClass} onAction={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText(/…/)).toBeInTheDocument()
+    const openWith = (cmd: string) => {
+      render(<TrustDropdown fullCommand={cmd} baseCommand="find" isShell className={btnClass} onAction={() => {}} />)
+      fireEvent.click(screen.getByText('Trust'))
+      return screen.getAllByRole('menuitem')
+    }
+
+    it('renders past the budget with no elision at all', () => {
+      expect(overBudget.length).toBeGreaterThan(256)
+      const [exact] = openWith(overBudget)
+      expect(exact.querySelector('.font-mono')?.textContent).toBe(overBudget)
+      expect(exact.textContent).not.toContain('…')
+    })
+
+    // The residual collision the middle-ellipsis left behind: two commands that
+    // share a head AND a tail and differ only in the middle. With no cut there
+    // is nowhere for the difference to hide.
+    it('tells apart two long commands that differ only in the middle', () => {
+      const head = `gh api repos/owner/some-repository/contents/${'nested/'.repeat(24)}`
+      const tail = `${'deeper/'.repeat(18)}secrets.json --jq .sha`
+      const prod = `${head}production/${tail}`
+      const dev = `${head}developing/${tail}`
+      expect(prod.length).toBeGreaterThan(256)
+
+      const [exactProd] = openWith(prod)
+      const prodLabel = exactProd.textContent
+      cleanup()
+      const [exactDev] = openWith(dev)
+      expect(exactDev.textContent).not.toBe(prodLabel)
+    })
+
+    // The row's accessible name is its own text content, so the full command
+    // reaches a screen reader with no `aria-label` duplicating the visible
+    // label -- a duplicate is what drifts out of sync and breaks "label in
+    // name" (WCAG 2.5.3).
+    it('carries the whole command in the row accessible name', () => {
+      const [exact] = openWith(overBudget)
+      // Matched with a predicate, not an exact string: the accessible-name
+      // algorithm inserts a space at each element boundary, so the quoted
+      // monospaced span lands inside the name whole but not byte-adjacent to
+      // the words around it.
+      const named = screen.getByRole('menuitem', { name: (n: string) => n.includes(overBudget) })
+      expect(named).toBe(exact)
+    })
+
+    // Only this row changes shape. The other two describe a FAMILY in words, so
+    // the words carry the meaning and a single clipped line costs nothing.
+    it('leaves the family and session rows single-line', () => {
+      const [exact, base, all] = openWith(overBudget)
+      expect(exact.querySelector('span')?.className).toContain('break-all')
+      expect(exact.querySelector('span')?.className).not.toContain('truncate')
+      expect(base.querySelector('span')?.className).toContain('truncate')
+      expect(all.querySelector('span')?.className).not.toContain('break-all')
+    })
+
+    // Whitespace is part of an exact-string grant, and HTML's default
+    // `white-space: normal` collapses runs of it -- the same defect as an
+    // elision, one character wide: `grep "a  b" f` would render as
+    // `grep "a b" f`. jsdom computes no layout, so what a unit test can pin is
+    // the class that governs it; the RENDERED proof is the `spaced` scene in
+    // scripts/capture-trust-command-label.mjs, which reads the label's
+    // innerText back out of a real browser and fails if a run collapsed.
+    it('preserves runs of whitespace, which collapse by default', () => {
+      const spaced = 'grep -r "two  spaces" /path/to/dir'
+      const [exact] = openWith(spaced)
+      const label = exact.querySelector('span')
+      expect(label?.className).toContain('whitespace-pre-wrap')
+      expect(exact.querySelector('.font-mono')?.textContent).toBe(spaced)
+    })
+
+    // The helper stays as it is for its other caller (the pet card's ~240px
+    // column, whose geometry is not this menu's): nothing here re-budgets it.
+    it('keeps the wrapped label bounded by the menu, not by a budget', () => {
+      const [exact] = openWith(overBudget)
+      const label = exact.querySelector('span')
+      expect(label?.className).toContain('min-w-0')
+      // The pointer user keeps the tooltip: one unwrapped line, same string.
+      expect(label?.getAttribute('title')).toBe(overBudget)
+    })
   })
 
   it.skip('closes on outside click — handled by Radix DropdownMenu', () => {

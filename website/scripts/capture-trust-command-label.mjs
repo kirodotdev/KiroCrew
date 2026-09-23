@@ -35,15 +35,32 @@ const SCENES = [
   // the menu off the right edge here (measured 440px against a 320px viewport),
   // hiding the label this menu exists to make readable.
   { name: 'trust-menu-api-secrets-narrow', cmd: 'api_secrets', theme: 'dark', pair: null, width: 320 },
+  // Past the 256-char elision budget. The exact-command row renders the whole
+  // command wrapped (#4700) -- no ellipsis to recover from, which matters
+  // because the `title` tooltip that used to carry the rest never fires without
+  // a pointer. Both widths, because the phone is the case with no recovery path.
+  { name: 'trust-menu-over-budget-dark', cmd: 'over_budget', theme: 'dark', pair: null, width: 760 },
+  { name: 'trust-menu-over-budget-narrow', cmd: 'over_budget', theme: 'dark', pair: null, width: 320 },
+  // A run of whitespace inside a quoted argument. `runOf` asserts the RENDERED
+  // text still carries it: HTML collapses runs by default, which is an elision
+  // one character wide, and no unit test can see it (jsdom computes no layout).
+  { name: 'trust-menu-spaced-dark', cmd: 'spaced', theme: 'dark', pair: null, width: 760, runOf: '  ' },
+  // Multi-KB, unspaced: the scale the removed budget named. `reachAll` scrolls
+  // the menu to its end and asserts the family and session rows are still
+  // reachable there, since with no truncation the menu's own
+  // max-height + overflow-y-auto is the only bound left.
+  { name: 'trust-menu-blob-dark', cmd: 'blob', theme: 'dark', pair: null, width: 760, reachAll: true },
+  { name: 'trust-menu-blob-narrow', cmd: 'blob', theme: 'dark', pair: null, width: 320, reachAll: true },
 ]
 
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 760, height: 260 }, deviceScaleFactor: 2 })
 
 let failed = false
+let written = 0
 const pairLabels = []
 for (const s of SCENES) {
-  await page.setViewportSize({ width: s.width, height: s.width === 320 ? 620 : 260 })
+  await page.setViewportSize({ width: s.width, height: s.width === 320 ? 900 : 620 })
   await page.goto(`${BASE}/capture/trust-command-label.html?cmd=${s.cmd}&theme=${s.theme}`)
   await page.waitForSelector('[data-capture-root]')
   // Open the menu: the labels under test only exist once it is open.
@@ -67,15 +84,50 @@ for (const s of SCENES) {
   const box = await page.locator('[role="menu"]').first().boundingBox()
   const vw = await page.evaluate(() => document.documentElement.clientWidth)
   const fitsViewport = Math.round(box.x + box.width) <= vw && Math.round(box.x) >= 0
+  // No ellipsis in the exact-command row, ever: that row's label IS the grant,
+  // so an elided frame is a misleading frame.
+  const unelided = !exact.includes('\u2026')
+  // Whitespace is part of an exact-string grant, and `innerText` is the RENDERED
+  // text -- so a collapsed run is visible here and nowhere else.
+  const keptRun = s.runOf ? exact.includes(s.runOf) : true
+  // With nothing shortening the label, the menu's own max-height and
+  // `overflow-y-auto` are the only bound: the rows BELOW a multi-KB label must
+  // still be reachable, and the menu must actually be the thing that scrolls.
+  let reachAll = true
+  let scrolls = true
+  if (s.reachAll) {
+    const menu = page.locator('[role="menu"]').first()
+    scrolls = await menu.evaluate(el => el.scrollHeight > el.clientHeight)
+    await menu.evaluate(el => { el.scrollTop = el.scrollHeight })
+    const last = page.locator('[role="menuitem"]').last()
+    reachAll = await last.isVisible() && await last.evaluate(el => {
+      const box = el.getBoundingClientRect()
+      const menuBox = el.closest('[role="menu"]').getBoundingClientRect()
+      const vh = document.documentElement.clientHeight
+      return box.height > 0
+        && box.top >= menuBox.top - 1 && box.bottom <= menuBox.bottom + 1
+        && box.top >= 0 && box.bottom <= vh
+    })
+  }
   const ok = items.length === 3 && exact.startsWith('Trust') && hasBase && hasAll
-    && clipped.ok && fitsViewport
+    && clipped.ok && fitsViewport && unelided && keptRun && reachAll && scrolls
   console.log(
     `${s.name}: items=${items.length} unclipped=${clipped.ok} (${clipped.why}) ` +
-    `fitsViewport=${fitsViewport} label=${JSON.stringify(exact)} ${ok ? 'OK' : 'MISMATCH'}`,
+    `fitsViewport=${fitsViewport} unelided=${unelided} ` +
+    // '-' where the scene does not exercise the check, so a default does not
+    // read as a measurement.
+    `keptRun=${s.runOf ? keptRun : '-'} ` +
+    `menuScrolls=${s.reachAll ? scrolls : '-'} ` +
+    `lastRowReachable=${s.reachAll ? reachAll : '-'} ` +
+    `label=${JSON.stringify(exact.length > 160 ? `${exact.slice(0, 160)}[+${exact.length - 160} chars]` : exact)} ` +
+    `${ok ? 'OK' : 'MISMATCH'}`,
   )
   if (!ok) { failed = true; continue }
   if (s.pair === 'api') pairLabels.push(exact)
-  await page.screenshot({ path: `${OUT}/${PREFIX}${s.name}.png` })
+  // A `reachAll` scene is shot AT ITS END, where the rows under the long label
+  // are: a frame of the top would show the label and not the reachability.
+  await page.screenshot({ path: `${OUT}${'/'}${PREFIX}${s.name}.png` })
+  written += 1
 }
 
 if (pairLabels.length === 2) {
@@ -92,4 +144,4 @@ if (failed) {
   console.error('one or more scenes did not render the expected label — no misleading frame written')
   process.exit(1)
 }
-console.log(`wrote ${SCENES.length} screenshots to ${OUT}`)
+console.log(`wrote ${written} screenshots to ${OUT}`)

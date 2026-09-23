@@ -148,7 +148,17 @@ class TestList:
         assert _json_body(resp) == {"artifacts": []}
 
     @pytest.mark.asyncio
-    async def test_returns_items(self, isolated_store, patch_restricted) -> None:
+    async def test_returns_items(self, isolated_store, patch_restricted, monkeypatch) -> None:
+        # Stamp the two artifacts from a counter, not from the host clock. `_now_iso`
+        # reads `datetime.now`, whose resolution is about 15.6 ms on Windows, so two
+        # creates inside one tick carry the SAME `updated_at`; `list()` sorts on that
+        # key alone, and a stable sort then falls back to directory scan order. "Newest
+        # first" is undefined in that window, which made this assertion pass or fail by
+        # how fast the runner was rather than by the behaviour it means to pin.
+        clock = iter(range(60))
+        monkeypatch.setattr(
+            art_mod, "_now_iso", lambda: f"2026-01-01T00:00:{next(clock):02d}.000000+00:00"
+        )
         isolated_store.create(name="a", content="aa")
         isolated_store.create(name="b", content="bb", tags=["x"])
         resp = await api_artifacts_list(_request())

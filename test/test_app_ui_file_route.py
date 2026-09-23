@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 
 import pytest
-from aiohttp import web
+from aiohttp import ClientPayloadError, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from conftest import make_dir_link, requires_symlinks
@@ -548,6 +548,188 @@ async def test_a_multi_chunk_file_streams_complete_and_bounded(
         assert resp.status == 200
         assert resp.headers["Content-Length"] == str(len(payload))
         assert await resp.read() == payload
+
+
+async def _free_permits() -> int:
+    """How many `_UI_STREAM_SEMAPHORE` permits can be taken right now.
+
+    Takes permits only while acquisition cannot block, hands them all back, and
+    reports the count, so a test can assert the route left nothing behind."""
+    taken = 0
+    while not app_routes._UI_STREAM_SEMAPHORE.locked():
+        await app_routes._UI_STREAM_SEMAPHORE.acquire()
+        taken += 1
+    for _ in range(taken):
+        app_routes._UI_STREAM_SEMAPHORE.release()
+    return taken
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_stops_reading_releases_its_permit(ui_root: Path) -> None:
+    """The head-of-line fix. The write loop is bounded by wall clock, so a
+    client that stops accepting bytes cannot hold a `_UI_STREAM_SEMAPHORE`
+    permit (and its descriptor) for as long as it stays connected. This route
+    bypasses token auth, so 8 such clients would otherwise wedge every app UI
+    on the host. A `write` that never completes is exactly what a socket whose
+    peer stopped draining it does."""
+    payload = b"y" * 4096
+    (ui_root / "stalled.js").write_bytes(payload)
+
+    async def _never_drains(self: web.StreamResponse, data: bytes) -> None:
+        await asyncio.sleep(3600)
+
+    async def _never_finishes(self: web.StreamResponse, data: bytes = b"") -> None:
+        # aiohttp runs its own `write_eof` after the handler returns. Toward a
+        # peer that accepts nothing that call cannot complete either, so the
+        # abort inside the route is the only thing that can end the connection
+        # — which is what makes this test tell the abort apart from merely
+        # disabling keep-alive.
+        await asyncio.sleep(3600)
+
+    torn_down = asyncio.Event()
+    watchers: list[asyncio.Task[None]] = []
+
+    async def _watch(transport: asyncio.Transport) -> None:
+        while not transport.is_closing():
+            await asyncio.sleep(0.01)
+        torn_down.set()
+
+    async def _watched_route(request: web.Request) -> web.StreamResponse:
+        # Observed from a task of its own: the abort cancels the request task,
+        # so anything placed after the handler call never runs.
+        transport = request.transport
+        assert transport is not None
+        watchers.append(asyncio.create_task(_watch(transport)))
+        return await app_routes.handle_app_ui_file(request)
+
+    watched = web.Application()
+    watched.router.add_get("/apps/{name}/ui/{path:.*}", _watched_route)
+    with pytest.MonkeyPatch.context() as mp:
+        # The route budgets whatever the resolver hands it, and
+        # `asyncio.timeout` takes a float, so a sub-second deadline keeps this
+        # test fast. The operator-facing range is [5, 600]; that binding is
+        # covered by `test_the_configured_deadline_is_what_the_route_enforces`.
+        mp.setattr(app_routes, "_ui_stream_timeout_secs", lambda: 0.25)
+        mp.setattr(web.StreamResponse, "write", _never_drains)
+        mp.setattr(web.StreamResponse, "write_eof", _never_finishes)
+        async with TestClient(TestServer(watched)) as client:
+            resp = await client.get(f"/apps/{APP}/ui/stalled.js")
+            assert resp.status == 200
+            try:
+                await asyncio.wait_for(torn_down.wait(), 5)
+            finally:
+                for watcher in watchers:
+                    watcher.cancel()
+            # Headers are sent before the loop, so the abandoned write shows up
+            # as a body that cannot satisfy the announced Content-Length.
+            with pytest.raises(ClientPayloadError):
+                await resp.read()
+
+    assert await _free_permits() == 8
+    async with TestClient(TestServer(_make_app())) as client:
+        ok = await client.get(f"/apps/{APP}/ui/stalled.js")
+        assert ok.status == 200
+        assert await ok.read() == payload
+
+
+def _patch_agent_config(monkeypatch: pytest.MonkeyPatch, value: object) -> None:
+    """Make the config source hand the route's resolver *value* for the knob."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    monkeypatch.setattr(
+        KiroCrewConfig,
+        "load",
+        staticmethod(
+            lambda: SimpleNamespace(agent=SimpleNamespace(apps_ui_stream_timeout_secs=value))
+        ),
+    )
+
+
+def test_the_resolver_hands_back_the_operators_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_agent_config(monkeypatch, 45)
+    assert app_routes._ui_stream_timeout_secs() == 45
+
+
+@pytest.mark.parametrize("value", [None, "60", True, 0, -1, 4.5])
+def test_a_deadline_that_is_not_positive_seconds_falls_back(
+    value: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loader clamps the operator's value, so anything unusable arriving here
+    came from a config object built without it. The fallback is a WORKING
+    deadline: no deadline is the head-of-line wedge this route bounds."""
+    _patch_agent_config(monkeypatch, value)
+    assert app_routes._ui_stream_timeout_secs() == 30
+
+
+def test_an_unreadable_config_keeps_the_default_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A config that cannot be loaded must not remove the deadline."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    def _boom() -> object:
+        raise OSError("config.json is unreadable")
+
+    monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_boom))
+    assert app_routes._ui_stream_timeout_secs() == app_routes._UI_STREAM_TIMEOUT_DEFAULT == 30
+
+
+@pytest.mark.asyncio
+async def test_the_configured_deadline_is_what_the_route_enforces(
+    ui_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``agent.apps_ui_stream_timeout_secs`` is the deadline the body phase runs
+    under. The operator's value is patched at the CONFIG source rather than at a
+    module constant, so this also fails if the route resolves the deadline once
+    at import: the value is read per request precisely so an edit applies without
+    a gateway restart."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.sections import AgentConfig
+
+    budgeted: list[float | None] = []
+
+    class _RecordingAsyncio:
+        """Delegates every attribute to the real ``asyncio``, recording only the
+        deadline the route asks ``asyncio.timeout`` for."""
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(asyncio, name)
+
+        def timeout(self, delay: float | None) -> object:
+            budgeted.append(delay)
+            return asyncio.timeout(delay)
+
+    monkeypatch.setattr(
+        KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(agent=AgentConfig(apps_ui_stream_timeout_secs=5))),
+    )
+    monkeypatch.setattr(app_routes, "asyncio", _RecordingAsyncio())
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"/apps/{APP}/ui/asset.js")
+        assert resp.status == 200
+        assert await resp.read() == b"bytes-for-.js"
+    assert budgeted == [5]
+    assert await _free_permits() == 8
+
+
+@pytest.mark.asyncio
+async def test_a_served_request_hands_back_every_permit(ui_root: Path) -> None:
+    """The deadline must not cost the ordinary path anything: a file served to
+    a client that reads it still answers 200 with the whole body, and the route
+    holds no permit once the response is done."""
+    payload = bytes(range(256)) * 9
+    (ui_root / "served.js").write_bytes(payload)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"/apps/{APP}/ui/served.js")
+        assert resp.status == 200
+        assert resp.headers["Content-Length"] == str(len(payload))
+        assert await resp.read() == payload
+    assert await _free_permits() == 8
 
 
 @pytest.mark.asyncio

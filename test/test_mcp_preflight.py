@@ -1245,9 +1245,42 @@ class TestOneServerCannotEndThePass:
     pass already paid two spawns each for.
     """
 
+    @pytest.fixture
+    def no_cyclic_gc_at_the_recursion_limit(self):
+        """Keep the cyclic collector out of the frames next to the recursion limit.
+
+        The deep-payload test below drives the projection to ``RecursionError`` on
+        purpose, so its innermost frames have no headroom left. A gen0 sweep that
+        lands there -- the allocation counter decides where, not the test -- runs
+        the finalizers of whatever cyclic garbage the worker is carrying. A pending
+        Task leaked by an earlier test reports itself through ``logger.error`` on
+        ``__del__``; at that depth the report itself raises ``RecursionError``, the
+        interpreter hands the escaped exception to ``sys.unraisablehook``, and
+        pytest's hook overflows in the same place, which it surfaces as
+        ``RuntimeError: Failed to process unraisable exception`` against THIS test
+        (3 unrelated heads, Linux and Windows). Reproduced on demand by planting
+        such garbage at every projection depth: every run.
+
+        Collect once at depth zero, so the inherited garbage pays its finalizers
+        where there is stack for them, then hold the collector off for the walk.
+        Reference counting still frees the projection's own dicts; only cycles
+        wait, and they are collected at teardown.
+        """
+        import gc
+
+        gc.collect()
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            yield
+        finally:
+            if was_enabled:
+                gc.enable()
+            gc.collect()
+
     @pytest.mark.asyncio
     async def test_deep_annotations_do_not_discard_the_other_verdicts(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, no_cyclic_gc_at_the_recursion_limit
     ) -> None:
         """The exact trigger GPT named: nesting deep enough to exhaust the stack.
 

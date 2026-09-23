@@ -29,6 +29,12 @@ import type { Result, ResourceProvider } from '../types'
  * strings). Title matches additionally bias the client-side ordering; non-title
  * (body-only) matches are kept with a neutral score so backend hits are never
  * dropped.
+ *
+ * WHICH fields the server matches is the caller's call, not this module's: the
+ * request is built in the injected `fetchArtifacts`, so the row mapping below is
+ * shared while the query is not. {@link useArtifactsProvider} is the palette tab's
+ * content search; the Command Bar builds the same provider around a name-only
+ * request.
  */
 
 const PROVIDER_ID = 'artifacts'
@@ -96,8 +102,13 @@ export function createArtifactsProvider(deps: ArtifactsProviderDeps): ResourcePr
 
       const results: Result[] = artifacts.map((a) => {
         const title = a.name || a.slug
-        // Highlight + client-side rank bias; never used to drop backend hits.
+        // `fuzzyMatch` is kept for the client-side RANK bias only; it never drops a
+        // backend hit. It must not drive the highlight: the server matches a plain
+        // substring, so a fuzzy highlight bolds letters the match never used --
+        // query "revenue" drew "**Re**port 1 Re**venue**", and a reader cannot tell
+        // why "Re" is bold. The highlight now shows the substring the server found.
         const match = fuzzyMatch(q, title)
+        const titleIdx = q ? substringIndices(q, title) : []
         const subtitle = a.snippet || a.description || a.kind
         // Highlight the query within the snippet/description (content match).
         const subIdx = q ? substringIndices(q, subtitle) : []
@@ -109,9 +120,20 @@ export function createArtifactsProvider(deps: ArtifactsProviderDeps): ResourcePr
           subtitleIndices: subIdx.length ? subIdx : undefined,
           icon: artifactIcon(),
           score: match ? match.score : 0,
-          indices: match ? match.indices : [],
-          // Not yet ported to the declarative §2 Enter matrix — the central
-          // dispatcher falls back to onActivate. Enter opens the artifact.
+          indices: titleIdx,
+          // The declarative §2 payload. Behaviour is unchanged: the dispatcher's
+          // `navigate` branch runs `onActivate` exactly as the fallback path did.
+          // What it adds is the row STATING the address it points at, which is what
+          // the launcher's copy layer reads — a row with no `enter` can be opened
+          // but not copied.
+          enter: { kind: 'navigate' as const, route: `/artifacts/${a.slug}` },
+          // A deployed webapp artifact has a SECOND address, and that is the one
+          // worth handing to another person: the route above needs this dashboard,
+          // the public URL does not. Undefined for every other artifact and for a
+          // deployment that has been torn down (the store blanks `public_url` on
+          // expiry), and the row then falls back to copying its route.
+          copyUrl: a.webapp_metadata?.deploy_target?.public_url || undefined,
+          // Enter opens the artifact.
           onActivate: () => openArtifact(a.slug),
         }
       })

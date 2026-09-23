@@ -20,6 +20,7 @@ verdict and the exact calls made. Nothing here touches the network.
 
 from __future__ import annotations
 
+import base64
 import email.message
 import http.client
 import importlib.util
@@ -33,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import test_ci_fleet_routing_expression_parity as parity
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ci" / "runner_watchdog.py"
@@ -49,6 +51,13 @@ SPEC.loader.exec_module(wd)
 REPO = "example-org/example-repo"
 NOW = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 CODEBUILD = "codebuild-example-gha-linux-{run}-{attempt}"
+WORKFLOWS_DIR = ROOT / ".github" / "workflows"
+
+
+def _wf_of(run: dict[str, Any]) -> str | None:
+    """The workflow file a fake run belongs to, from its ``path``."""
+    name = str(run.get("path") or "").rsplit("/", 1)[-1]
+    return name or None
 
 
 def _ts(minutes_ago: float) -> str:
@@ -66,6 +75,8 @@ def _run(
     fork: bool = False,
     branch: str = "main",
     event: str = "push",
+    workflow: str = "ci.yml",
+    head_sha: str | None = None,
 ) -> dict[str, Any]:
     head_repo = {"fork": fork, "full_name": "someone/example-repo" if fork else REPO}
     return {
@@ -79,6 +90,8 @@ def _run(
         "event": event,
         "html_url": f"https://example.invalid/runs/{run_id}",
         "head_repository": head_repo,
+        "head_sha": head_sha or f"sha-{run_id}",
+        "path": f".github/workflows/{workflow}",
     }
 
 
@@ -175,6 +188,7 @@ class FakeApi:
         newest_after_rerun: dict[str, int] | None = None,
         newest_after_rerun_sequence: dict[str, list[int]] | None = None,
         ambiguous: dict[str, int] | None = None,
+        workflow_contents: dict[tuple[str, str], Any] | None = None,
     ) -> None:
         self._runs_by_status = dict(runs_by_status)
         self._jobs_by_run = dict(jobs_by_run)
@@ -195,6 +209,7 @@ class FakeApi:
         self._newest_after_rerun = newest_after_rerun
         self._newest_sequence = {k: list(v) for k, v in (newest_after_rerun_sequence or {}).items()}
         self._flip_after_reads = flip_after_reads or {}
+        self._workflow_contents = workflow_contents or {}
         self._reads: dict[int, int] = {}
         self._rerun_seen = False
         self.posts: list[str] = []
@@ -243,6 +258,20 @@ class FakeApi:
         self.gets.append(path)
         base, _, query = path.partition("?")
         params = dict(urllib.parse.parse_qsl(query))
+        if "/contents/.github/workflows/" in base:
+            workflow = urllib.parse.unquote(base.split("/contents/.github/workflows/", 1)[1])
+            key = (params.get("ref", ""), workflow)
+            value = self._workflow_contents.get(key)
+            if isinstance(value, BaseException):
+                raise value
+            if value is None:
+                value = (WORKFLOWS_DIR / workflow).read_text(encoding="utf-8")
+            if isinstance(value, dict):
+                return value
+            return {
+                "encoding": "base64",
+                "content": base64.b64encode(str(value).encode("utf-8")).decode("ascii"),
+            }
         if base.endswith("/runs") and "/workflows/" in base:
             if "branch" in params:
                 table = self._newest_by_branch
@@ -258,6 +287,17 @@ class FakeApi:
                 if isinstance(newest, list):
                     return {"workflow_runs": newest}
                 return {"workflow_runs": self._listing_headed_by(newest, params["branch"])}
+            status = params["status"]
+            page = int(params.get("page", "1"))
+            per_page = int(params.get("per_page", "100"))
+            workflow = base.split("/workflows/", 1)[1].split("/")[0]
+            runs = [r for r in self._runs_by_status.get(status, []) if _wf_of(r) == workflow]
+            start = (page - 1) * per_page
+            return {"workflow_runs": runs[start : start + per_page]}
+        if base.endswith("/actions/runs"):
+            # Repo-wide listing: `GET /repos/{repo}/actions/runs?status=…` returns
+            # runs of EVERY workflow for that status, newest first, paginated. The
+            # script filters to the watched set client-side off each run's `path`.
             status = params["status"]
             page = int(params.get("page", "1"))
             per_page = int(params.get("per_page", "100"))
@@ -317,7 +357,6 @@ def _policy(**overrides: Any) -> Any:
         max_attempt=3,
         dry_run=False,
         max_runs=5,
-        list_cap=50,
         heal_budget=timedelta(seconds=300),
         force_cancel_after=timedelta(seconds=90),
         recovery_window=timedelta(minutes=90),
@@ -598,7 +637,42 @@ def test_evidence_that_cannot_be_re_read_before_the_cancel_fails_closed() -> Non
     assert verdict.verdict == wd.SKIPPED_NO_DISPATCH_EVIDENCE
     assert "could not be re-read" in verdict.detail
     assert api.posts == []
-    assert outcomes == {}
+    assert outcomes == {1: wd.OUTCOME_EVIDENCE_REREAD_DEFERRED}
+
+
+def test_a_rate_limit_on_the_fresh_evidence_read_has_an_accurate_outcome() -> None:
+    """A rate limit is a CONDITION, not a one-off, so the deferral it causes reds the tick.
+
+    The 502 case above stays green and deferrable: nothing was touched and the next
+    tick re-reads. A rate limit is what killed the tick in the incident, and while it
+    persists every tick would defer and every tick would look healthy, with the orphan
+    still parking every later push behind it.
+    """
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    original_get = api.get
+    reads = {"in_progress": 0}
+
+    def get(path: str) -> Any:
+        if re.search(r"/actions/runs\?.*status=in_progress", path):
+            reads["in_progress"] += 1
+            if reads["in_progress"] > 1:
+                raise wd.ApiError(
+                    403,
+                    "API rate limit exceeded for installation ID 12345",
+                    remaining="0",
+                )
+        return original_get(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_NO_DISPATCH_EVIDENCE
+    assert outcomes == {1: wd.OUTCOME_ABORTED_RATE_LIMITED}
+    assert wd.OUTCOME_ABORTED_RATE_LIMITED in wd.FAILED_OUTCOMES
+    # The plain deferral stays green: that is the 502 path, pinned above.
+    assert wd.OUTCOME_EVIDENCE_REREAD_DEFERRED not in wd.FAILED_OUTCOMES
+    summary = wd.render_summary(verdicts, outcomes, _policy())
+    assert wd.OUTCOME_ABORTED_RATE_LIMITED in summary
+    assert wd.OUTCOME_NOT_ATTEMPTED not in summary
 
 
 def test_evidence_still_fresh_at_cancel_time_heals_as_before() -> None:
@@ -766,6 +840,89 @@ def test_a_prompt_start_in_a_recently_completed_run_is_enough_evidence() -> None
     assert outcomes == {1: wd.OUTCOME_HEALED}
 
 
+def test_stale_completed_runs_do_not_hide_recent_fleet_evidence() -> None:
+    stale = [
+        _run(
+            100 + i,
+            minutes_ago=50 + i,
+            status="completed",
+            conclusion="success",
+            updated_minutes_ago=40 + i,
+            branch=f"stale-{i}",
+            workflow="ci.yml",
+        )
+        for i in range(wd.COMPLETED_SAMPLE)
+    ]
+    recent = _run(
+        200,
+        minutes_ago=12,
+        status="completed",
+        conclusion="success",
+        updated_minutes_ago=3,
+        branch="recent",
+        workflow="fast-gate.yml",
+    )
+    api = FakeApi(
+        {"in_progress": [_run(1, workflow="build.yml")], "completed": stale + [recent]},
+        {
+            1: [_job(11)],
+            **{
+                int(run["id"]): [_job(1000 + i, run_id=int(run["id"]))]
+                for i, run in enumerate(stale)
+            },
+            200: [
+                _job(
+                    2001,
+                    status="completed",
+                    conclusion="success",
+                    minutes_ago=11,
+                    started_minutes_ago=10.7,
+                    runner_name="recent-runner",
+                    run_id=200,
+                )
+            ],
+        },
+        evidence=False,
+    )
+    _, outcomes = _sweep(api)
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+    completed_listings = [path for path in api.gets if "status=completed" in path]
+    assert "/workflows/ci.yml/runs?" in completed_listings[0]
+    assert any("/workflows/fast-gate.yml/runs?" in path for path in completed_listings)
+    assert not any(f"/runs/{run['id']}/jobs" in path for run in stale for path in api.gets)
+
+
+def test_completed_run_reads_stay_within_the_sample_bound() -> None:
+    completed = [
+        _run(
+            300 + i,
+            minutes_ago=10 - i / 10,
+            status="completed",
+            conclusion="success",
+            updated_minutes_ago=2,
+            branch=f"recent-{i}",
+        )
+        for i in range(wd.COMPLETED_SAMPLE + 5)
+    ]
+    api = FakeApi(
+        {"completed": completed},
+        {
+            int(run["id"]): [_job(3000 + i, run_id=int(run["id"]))]
+            for i, run in enumerate(completed)
+        },
+        evidence=False,
+    )
+    evidence = wd.DispatchEvidence()
+    wd.sample_completed_runs(api, _policy(), evidence)
+    completed_ids = {int(run["id"]) for run in completed}
+    reads = [
+        path
+        for path in api.gets
+        if "/jobs" in path and int(path.split("/runs/", 1)[1].split("/", 1)[0]) in completed_ids
+    ]
+    assert len(reads) == wd.COMPLETED_SAMPLE
+
+
 def test_the_completed_sample_is_not_read_when_nothing_is_orphaned() -> None:
     api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11, status="completed", codebuild=False)]})
     _sweep(api)
@@ -878,17 +1035,148 @@ def test_a_run_listed_under_two_statuses_is_inspected_once() -> None:
     assert len(_posts(api, "/cancel")) == 1
 
 
-def test_the_listing_is_capped_and_paginated() -> None:
+def test_the_candidate_listing_is_repo_wide_and_paginated() -> None:
+    """One paginated repo-wide listing per status covers every workflow; no newest-N
+    truncation, because an orphan is an OLD run at the tail of the newest-first pages.
+    Negative control: reverted per-workflow code issues `/workflows/<wf>/runs` calls
+    and never the repo-wide `/actions/runs?status=` call this asserts."""
     runs = [_run(i, minutes_ago=200 - i) for i in range(1, 131)]
     api = FakeApi({"in_progress": list(reversed(runs))}, {})
-    listed = wd.list_candidate_runs(api, REPO, cap=120)
-    assert len(listed) == 120
-    assert sorted(int(r["id"]) for r in listed) == list(range(11, 131))  # the 120 newest
-    pages = [p for p in api.gets if "status=in_progress" in p]
-    assert len(pages) == 2
-    assert "per_page=100" in pages[0] and "page=1" in pages[0]
+    listed = wd.list_all_candidate_runs(api, REPO)
+    # Every watched run is examined -- all 130, not the newest 50 -- so the oldest
+    # (the orphans) are never truncated away.
+    assert sorted(int(r["id"]) for r in listed) == list(range(1, 131))
+    in_progress_pages = [
+        p
+        for p in api.gets
+        if p.startswith(f"repos/{REPO}/actions/runs?") and "status=in_progress" in p
+    ]
+    assert len(in_progress_pages) == 2  # 100 then 30 (< PAGE_SIZE) stops paging
+    assert "per_page=100" in in_progress_pages[0] and "page=1" in in_progress_pages[0]
     # The second page keeps the page size: `page` is an offset in units of
     # `per_page`, so a 20-run second page would re-read runs 21-40 instead.
+    assert "per_page=100" in in_progress_pages[1] and "page=2" in in_progress_pages[1]
+    # Every listing is the repo-wide endpoint, never a per-workflow one.
+    assert not any("/actions/workflows/" in p and "/runs?status=" in p for p in api.gets)
+
+
+def test_the_repo_wide_paging_respects_its_page_cap() -> None:
+    """A listing that always returns a full page would page forever; the cap stops it.
+    Negative control: reverted code has no `_iter_repo_runs` and no repo-wide page cap,
+    so this exercises a path that does not exist there."""
+    api = FakeApi({}, {})
+    full_page = [{"id": i, "path": ".github/workflows/ci.yml"} for i in range(1, wd.PAGE_SIZE + 1)]
+    api.get = lambda _path: {"workflow_runs": full_page}  # type: ignore[method-assign]
+    collected = list(
+        wd._iter_repo_runs(api, REPO, status="in_progress", max_pages=wd.REPO_LISTING_MAX_PAGES)
+    )
+    assert len(collected) == wd.PAGE_SIZE * wd.REPO_LISTING_MAX_PAGES
+
+
+def test_cancelled_recovery_reaches_past_the_shared_listing_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recently cancelled, old-created run sits on page nine.
+
+    The negative control gives cancelled recovery the shared live-listing cap;
+    that run is absent and cannot recover. The recovery-specific cap reaches it.
+    """
+
+    def api_with_deep_orphan() -> FakeApi:
+        newer_created = [
+            _run(
+                1000 + i,
+                minutes_ago=1 + i,
+                status="completed",
+                conclusion="cancelled",
+                updated_minutes_ago=200,
+                branch=f"filler-{i}",
+            )
+            for i in range(wd.PAGE_SIZE * wd.REPO_LISTING_MAX_PAGES)
+        ]
+        orphan = _run(
+            1,
+            minutes_ago=2_000,
+            status="completed",
+            conclusion="cancelled",
+            updated_minutes_ago=5,
+            branch="deep-orphan",
+        )
+        return FakeApi(
+            {"cancelled": newer_created + [orphan]},
+            {1: [_cancelled_orphan_job(11, run_id=1)]},
+            newest_by_branch={"deep-orphan": 1},
+            evidence=False,
+        )
+
+    recovery_cap = wd.RECOVERY_LISTING_MAX_PAGES
+    assert recovery_cap > wd.REPO_LISTING_MAX_PAGES
+    monkeypatch.setattr(wd, "RECOVERY_LISTING_MAX_PAGES", wd.REPO_LISTING_MAX_PAGES)
+    control = api_with_deep_orphan()
+    _, control_outcomes = _sweep(control)
+    assert 1 not in control_outcomes
+    assert not _posts(control, "/rerun")
+    monkeypatch.setattr(wd, "RECOVERY_LISTING_MAX_PAGES", recovery_cap)
+    api = api_with_deep_orphan()
+    _, outcomes = _sweep(api)
+    assert outcomes[1] == wd.OUTCOME_RECOVERED
+    assert _posts(api, "/rerun") == [f"repos/{REPO}/actions/runs/1/rerun"]
+    assert any("status=cancelled" in path and "page=9" in path for path in api.gets)
+
+
+def test_repo_listing_warns_only_when_the_page_cap_truncates() -> None:
+    full_page = [{"id": i, "path": ".github/workflows/ci.yml"} for i in range(wd.PAGE_SIZE)]
+    saturated = FakeApi({}, {})
+    saturated.get = lambda _path: {"workflow_runs": full_page}  # type: ignore[method-assign]
+    saturated_log: list[str] = []
+    saturated_runs = list(
+        wd._iter_repo_runs(
+            saturated,
+            REPO,
+            status="in_progress",
+            max_pages=2,
+            log=saturated_log.append,
+        )
+    )
+    assert len(saturated_runs) == 2 * wd.PAGE_SIZE
+    assert any("truncated" in line and "in_progress" in line for line in saturated_log)
+
+    short = FakeApi({"in_progress": [_run(1)]}, {})
+    short_log: list[str] = []
+    short_runs = list(
+        wd._iter_repo_runs(
+            short,
+            REPO,
+            status="in_progress",
+            max_pages=2,
+            log=short_log.append,
+        )
+    )
+    assert [run["id"] for run in short_runs] == [1]
+    assert not short_log
+
+
+def test_a_pathless_run_is_not_classified_or_changed() -> None:
+    run = _run(1)
+    run.pop("path")
+    api = FakeApi({"in_progress": [run]}, {1: [_job(11)]})
+    verdicts, outcomes = _sweep(api)
+    assert all(verdict.run_id != 1 for verdict in verdicts)
+    assert 1 not in outcomes
+    assert not any("/runs/1/jobs" in path for path in api.gets)
+    assert not any("/runs/1/" in path for path in api.posts)
+
+
+def test_the_completed_sample_listing_stays_workflow_scoped_and_paginated() -> None:
+    """The completed-run evidence sample keeps its per-workflow, globally-capped read."""
+    runs = [_run(i, minutes_ago=200 - i, status="completed") for i in range(1, 131)]
+    api = FakeApi({"completed": list(reversed(runs))}, {})
+    listed = wd.list_runs(api, REPO, "ci.yml", status="completed", cap=120)
+    assert len(listed) == 120
+    assert sorted(int(r["id"]) for r in listed) == list(range(11, 131))  # the 120 newest
+    pages = [p for p in api.gets if "/actions/workflows/ci.yml/runs?" in p]
+    assert len(pages) == 2
+    assert "per_page=100" in pages[0] and "page=1" in pages[0]
     assert "per_page=100" in pages[1] and "page=2" in pages[1]
 
 
@@ -1188,6 +1476,17 @@ def test_a_run_superseded_between_cancel_and_rerun_is_not_rerun_into_its_success
     assert any("branch=pr" in p and "event=push" in p for p in api.gets)
 
 
+def test_a_per_sha_audit_run_is_heal_exempt_and_never_cancelled() -> None:
+    api = FakeApi(
+        {"in_progress": [_run(1, workflow="main-ratchet-audit.yml")]},
+        {1: [_job(11)]},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.HEAL_EXEMPT
+    assert outcomes == {1: wd.OUTCOME_HUMAN_REQUIRED}
+    assert api.posts == []
+
+
 def test_a_run_that_finished_on_its_own_before_the_cancel_landed_is_not_rerun() -> None:
     api = FakeApi(
         {"in_progress": [_run(1)]}, {1: [_job(11)]}, cancel_lands_after=2, completes_as="success"
@@ -1332,6 +1631,94 @@ def test_a_chain_of_superseding_pushes_is_not_chased_past_the_depth_cap() -> Non
     assert outcomes == {1: wd.OUTCOME_SUCCESSOR_LOST}
     assert not any(p.endswith("/runs/4/rerun") for p in api.posts)
     assert any("not chasing further" in line and "gh run rerun 4" in line for line in logged)
+
+
+def _saturation_band_api() -> FakeApi:
+    """An orphan, a MIDDLE run holding the only slow start, and a young prompt start.
+
+    Under a narrow bound the middle run is the band that gets dropped, so the sweep
+    sees prompt starts and nothing slow. Under a wide bound it reads the slow start
+    and holds as saturated, which is what proves the fixture really does contain
+    saturation and the narrow-bound hold is not an artefact of an empty fixture.
+    """
+    middle = _run(2, minutes_ago=20, branch="middle")
+    young = _run(3, minutes_ago=9, branch="young")
+    slow = _job(
+        21, status="in_progress", minutes_ago=8, started_minutes_ago=2, runner_name="r", run_id=2
+    )
+    prompt = _job(
+        31, status="in_progress", minutes_ago=3, started_minutes_ago=2.8, runner_name="r", run_id=3
+    )
+    return FakeApi(
+        {"in_progress": [_run(1), middle, young]},
+        {1: [_job(11)], 2: [slow], 3: [prompt]},
+    )
+
+
+def test_a_successor_we_cancelled_and_will_not_restore_is_lost_not_a_clean_handoff() -> None:
+    """Declining at depth 0 is healthy; declining AFTER our own re-run cancelled it is not.
+
+    Run 1 is heal-safe and healed, its re-run's concurrency group cancels the successor
+    run 2 that landed in the settle window, and run 2's OWN revision then reads
+    heal-unsafe, so the watchdog will not restore it. At depth 0 that verdict means
+    "nothing was touched" and the tick stays green; here it means the watchdog
+    destroyed a run and walked away, so it must carry the same red as a refused
+    re-run or the run vanishes behind a green tick with no fingerprint for recovery.
+    """
+    successor = _run(
+        2,
+        minutes_ago=1,
+        status="completed",
+        conclusion="cancelled",
+        branch="pr",
+        head_sha="successor-publishes",
+    )
+    api = FakeApi(
+        {"in_progress": [_run(1, branch="pr")]},
+        {1: [_job(11)], 2: []},
+        newest_after_rerun={"pr": 2},
+        workflow_contents={
+            ("successor-publishes", "ci.yml"): (
+                "concurrency:\n  group: ${{ github.ref }}\njobs:\n  ship:\n"
+                "    runs-on: ubuntu-latest\n    steps:\n      - run: npm publish\n"
+            )
+        },
+    )
+    api.run_overrides[2] = successor
+    logged: list[str] = []
+    clock = _Clock()
+    _, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=logged.append
+    )
+    assert outcomes == {1: wd.OUTCOME_SUCCESSOR_LOST}
+    assert wd.OUTCOME_SUCCESSOR_LOST in wd.FAILED_OUTCOMES
+    assert not any(path.endswith("/runs/2/rerun") for path in api.posts)
+    assert any("::error::" in line and "gh run rerun 2" in line for line in logged)
+
+
+def test_partial_dispatch_evidence_holds_instead_of_authorizing_a_heal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sweep that read only part of its listing must not rule saturation out.
+
+    The bound drops the MIDDLE band, so the slow CodeBuild start there is never read
+    and "prompt starts, nothing slow" is not established. The paired wide bound reads
+    it and holds as saturated, proving the saturation is really in the fixture.
+    """
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    narrow = _saturation_band_api()
+    verdicts, outcomes = _sweep(narrow)
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert narrow.posts == []
+
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 50)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 10)
+    wide = _saturation_band_api()
+    wide_verdicts, _ = _sweep(wide)
+    assert _verdict_of(wide_verdicts, 1).verdict == wd.SKIPPED_SATURATED
+    assert wide.posts == []
+    assert outcomes is not None
 
 
 def test_the_successor_is_not_judged_while_our_own_rerun_is_still_cancelling() -> None:
@@ -1548,6 +1935,35 @@ def test_a_cancelled_orphan_is_still_recovered_past_a_same_named_fork_branch() -
     )
     _, outcomes = _sweep(api)
     assert outcomes == {1: wd.OUTCOME_RECOVERED}
+
+
+def test_recovery_read_budget_serves_the_run_nearest_updated_at_expiry_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refreshed_old_run = _run(
+        1,
+        minutes_ago=80,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=5,
+    )
+    expiring_newer_run = _run(
+        2,
+        minutes_ago=100,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=80,
+    )
+    api = FakeApi(
+        {"cancelled": [expiring_newer_run, refreshed_old_run]},
+        {1: [], 2: []},
+        evidence=False,
+    )
+    monkeypatch.setattr(wd, "RECOVERY_CLASSIFY_READS", 1)
+    clock = _Clock()
+    wd.recover_cancelled_runs(api, _policy(), budget=0, tick=_tick(clock), log=lambda _l: None)
+    job_reads = [path for path in api.gets if "/jobs?" in path]
+    assert job_reads == [f"repos/{REPO}/actions/runs/2/jobs?per_page=100&page=1&filter=latest"]
 
 
 def test_the_post_rerun_check_settles_before_declaring_the_heal_done() -> None:
@@ -1967,6 +2383,351 @@ def test_a_cancelled_orphan_nobody_rerun_is_rerun_on_the_next_tick() -> None:
     assert api.posts == [f"repos/{REPO}/actions/runs/1/rerun"]
 
 
+def test_a_runs_own_revision_that_adds_publish_is_exempt() -> None:
+    run = _run(1, head_sha="publish-sha")
+    own_revision = (
+        "concurrency:\n  group: ${{ github.ref }}\njobs:\n  ship:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: npm publish\n"
+    )
+    api = FakeApi(
+        {"in_progress": [run]},
+        {1: [_job(11)]},
+        workflow_contents={("publish-sha", "ci.yml"): own_revision},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.HEAL_EXEMPT
+    assert outcomes == {1: wd.OUTCOME_HUMAN_REQUIRED}
+    assert api.posts == []
+
+
+def test_a_runs_own_clean_revision_is_healed_and_read_once() -> None:
+    run = _run(1, head_sha="clean-sha")
+    own_revision = (
+        "concurrency:\n  group: ${{ github.ref }}\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
+    )
+    api = FakeApi(
+        {"in_progress": [run]},
+        {1: [_job(11)]},
+        workflow_contents={("clean-sha", "ci.yml"): own_revision},
+    )
+    _, outcomes = _sweep(api)
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+    revision_reads = [path for path in api.gets if "/contents/.github/workflows/ci.yml?" in path]
+    assert len(revision_reads) == 1
+    assert api.posts[:2] == [
+        f"repos/{REPO}/actions/runs/1/cancel",
+        f"repos/{REPO}/actions/runs/1/rerun",
+    ]
+
+
+@pytest.mark.parametrize(
+    "workflow_content",
+    [
+        wd.ApiError(500, "contents unavailable"),
+        {"encoding": "base64", "content": "%%%not-base64%%%"},
+    ],
+)
+def test_an_unreadable_run_revision_is_a_failed_outcome_not_a_silent_exemption(
+    workflow_content: Any,
+) -> None:
+    run = _run(1, head_sha="unreadable-sha")
+    api = FakeApi(
+        {"in_progress": [run]},
+        {1: [_job(11)]},
+        workflow_contents={("unreadable-sha", "ci.yml"): workflow_content},
+    )
+    verdicts, outcomes = _sweep(api)
+    # An unreadable revision is UNKNOWN, not unsafe: nothing is cancelled, and
+    # the outcome is a failure so a run whose safety nobody could establish
+    # cannot age out of its recovery window behind a green tick.
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert outcomes == {1: wd.OUTCOME_HEAL_SAFETY_UNKNOWN}
+    assert wd.OUTCOME_HEAL_SAFETY_UNKNOWN in wd.FAILED_OUTCOMES
+    assert api.posts == []
+
+
+def test_a_run_without_a_head_sha_cannot_be_judged_and_is_a_failed_outcome() -> None:
+    run = _run(1)
+    run.pop("head_sha")
+    api = FakeApi({"in_progress": [run]}, {1: [_job(11)]})
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert outcomes == {1: wd.OUTCOME_HEAL_SAFETY_UNKNOWN}
+    assert api.posts == []
+
+
+def test_a_publish_or_deploy_orphan_is_observed_but_requires_a_human() -> None:
+    api = FakeApi(
+        {"in_progress": [_run(1, workflow="pages.yml")]},
+        {1: [_job(11)]},
+    )
+    verdicts, outcomes = _sweep(api)
+    verdict = _verdict_of(verdicts, 1)
+    assert verdict.verdict == wd.HEAL_EXEMPT
+    assert "human" in verdict.detail
+    assert outcomes == {1: wd.OUTCOME_HUMAN_REQUIRED}
+    assert api.posts == []
+    summary = wd.render_summary(verdicts, outcomes, _policy())
+    assert wd.OUTCOME_HUMAN_REQUIRED in summary
+
+
+def test_recovery_uses_the_cancelled_runs_own_revision() -> None:
+    run = _run(
+        1,
+        minutes_ago=70,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=5,
+        head_sha="publish-sha",
+    )
+    own_revision = (
+        "concurrency:\n  group: ${{ github.ref }}\njobs:\n  ship:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: npm publish\n"
+    )
+    api = FakeApi(
+        {"cancelled": [run]},
+        {1: [_cancelled_orphan_job(11)]},
+        newest_by_branch={"main": 1},
+        workflow_contents={("publish-sha", "ci.yml"): own_revision},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.HEAL_EXEMPT
+    assert outcomes == {1: wd.OUTCOME_HUMAN_REQUIRED}
+    assert _posts(api, "/rerun") == []
+    revision_reads = [path for path in api.gets if "/contents/.github/workflows/ci.yml?" in path]
+    assert len(revision_reads) == 1
+
+
+def test_recovery_never_reruns_a_publish_or_deploy_workflow() -> None:
+    run = _run(
+        1,
+        minutes_ago=70,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=5,
+        workflow="release.yml",
+    )
+    api = FakeApi(
+        {"cancelled": [run]},
+        {1: [_cancelled_orphan_job(11)]},
+        newest_by_branch={"main": 1},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.HEAL_EXEMPT
+    assert outcomes == {1: wd.OUTCOME_HUMAN_REQUIRED}
+    assert api.posts == []
+    assert any("branch=main" in path for path in api.gets)
+
+
+def test_recovery_reaches_an_orphan_behind_newer_cancelled_runs() -> None:
+    orphan = _run(
+        1,
+        minutes_ago=80,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=5,
+        branch="orphan",
+    )
+    superseded = [
+        _run(
+            i,
+            minutes_ago=70 - i,
+            status="completed",
+            conclusion="cancelled",
+            updated_minutes_ago=4,
+            branch=f"superseded-{i}",
+        )
+        for i in range(2, 53)
+    ]
+    api = FakeApi(
+        {"cancelled": list(reversed(superseded)) + [orphan]},
+        {
+            1: [_cancelled_orphan_job(11, run_id=1)],
+            **{
+                run["id"]: [_cancelled_orphan_job(run["id"] * 10, run_id=run["id"])]
+                for run in superseded
+            },
+        },
+        newest_by_branch={
+            "orphan": 1,
+            **{run["head_branch"]: 100 + run["id"] for run in superseded},
+        },
+    )
+    _, outcomes = _sweep(api, max_runs=5)
+    assert outcomes == {1: wd.OUTCOME_RECOVERED}
+    assert len(_posts(api, "/rerun")) == 1
+
+
+def test_recovery_classifies_the_oldest_in_window_runs_within_its_read_cap() -> None:
+    """The read cap bounds job reads per tick AND spends them oldest-first.
+
+    Every `main` push cancels the run it supersedes, so a recovery window holds far
+    more cancelled runs than a tick should read. The orphan here is the OLDEST
+    in-window run, sitting behind more newer ones than the cap allows, so a cap
+    applied to a newest-first walk would never reach it.
+    """
+    orphan = _run(
+        1,
+        minutes_ago=88,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=70,
+        branch="orphan",
+    )
+    # A fixed count, independent of the cap, so the cap is the only thing the
+    # read assertion below measures.
+    newer = [
+        _run(
+            i,
+            minutes_ago=80 - i / 10,
+            status="completed",
+            conclusion="cancelled",
+            updated_minutes_ago=10,
+            branch=f"newer-{i}",
+        )
+        for i in range(2, 72)
+    ]
+    api = FakeApi(
+        {"cancelled": list(reversed(newer)) + [orphan]},
+        {
+            1: [_cancelled_orphan_job(11, run_id=1)],
+            **{
+                run["id"]: [_cancelled_orphan_job(run["id"] * 10, run_id=run["id"])]
+                for run in newer
+            },
+        },
+        newest_by_branch={
+            "orphan": 1,
+            **{run["head_branch"]: 100 + run["id"] for run in newer},
+        },
+    )
+    _, outcomes = _sweep(api, max_runs=5)
+    assert outcomes[1] == wd.OUTCOME_RECOVERED
+    cancelled_ids = {1} | {int(run["id"]) for run in newer}
+    job_reads = [
+        path
+        for path in api.gets
+        if "/jobs" in path and int(path.split("/runs/", 1)[1].split("/", 1)[0]) in cancelled_ids
+    ]
+    assert len(job_reads) <= wd.RECOVERY_CLASSIFY_READS
+    # Independent of the cap's value: a tick must not read every in-window run.
+    assert len(job_reads) < 1 + len(newer)
+
+
+def test_a_cancelled_run_too_short_lived_to_hold_an_orphan_is_excluded_for_free() -> None:
+    """Pins the recovery pass's zero-read exclusion to the CLASSIFIER, not to a number.
+
+    The exclusion skips a cancelled run whose lifetime is under ``orphan_after``
+    without spending a job read. That is only sound if such a run can never be
+    classified as an orphan, so the classifier is driven here with the most
+    favourable job the lifetime permits -- created with the run, still queueing
+    when the run was cancelled -- and must find nothing. The paired case lifts
+    the lifetime to the threshold and the same job does fingerprint, proving the
+    exclusion tracks the classifier rather than a hardcoded bound.
+    """
+    policy = _policy()
+
+    def verdict_for(lifetime_minutes: float) -> Any:
+        created, cancelled = 80.0, 80.0 - lifetime_minutes
+        run = _run(
+            1,
+            minutes_ago=created,
+            status="completed",
+            conclusion="cancelled",
+            updated_minutes_ago=cancelled,
+        )
+        job = _job(
+            11,
+            status="completed",
+            conclusion="cancelled",
+            minutes_ago=created,
+            completed_minutes_ago=cancelled,
+        )
+        return wd.classify_cancelled_run(run, [job], policy, newest_check=lambda: True)
+
+    threshold = policy.orphan_after.total_seconds() / 60
+    assert verdict_for(threshold - 1).orphans == []
+    assert verdict_for(threshold - 1).verdict != wd.CANCELLED_ORPHAN
+    assert verdict_for(threshold).verdict == wd.CANCELLED_ORPHAN
+
+
+def test_the_recovery_pass_spends_no_read_on_a_run_too_short_lived_to_hold_an_orphan() -> None:
+    """What keeps the classify bound off runs that were never candidates.
+
+    Every `main` push cancels the run it supersedes, and those live seconds. Were
+    each one read, the bound would be spent on them and a real candidate behind
+    them could age out of the window unread.
+    """
+    supersession = [
+        _run(
+            i,
+            minutes_ago=30,
+            status="completed",
+            conclusion="cancelled",
+            updated_minutes_ago=30 - 0.1,
+            branch=f"superseded-{i}",
+        )
+        for i in range(2, 9)
+    ]
+    candidate = _run(
+        1,
+        minutes_ago=80,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=20,
+        branch="orphan",
+    )
+    api = FakeApi(
+        {"cancelled": supersession + [candidate]},
+        {1: [_cancelled_orphan_job(11, run_id=1)], **{run["id"]: [] for run in supersession}},
+        newest_by_branch={"orphan": 1},
+    )
+    _, outcomes = _sweep(api, max_runs=5)
+    assert outcomes[1] == wd.OUTCOME_RECOVERED
+    job_reads = [path for path in api.gets if "/jobs?" in path]
+    assert job_reads == [f"repos/{REPO}/actions/runs/1/jobs?per_page=100&page=1&filter=latest"]
+
+
+def test_a_run_too_short_lived_to_hold_an_orphan_does_not_red_the_tick_from_the_tail() -> None:
+    """The near-expiry flag asks a human to look. It must not ask about a non-candidate."""
+    tail = [
+        _run(
+            i,
+            minutes_ago=89,
+            status="completed",
+            conclusion="cancelled",
+            updated_minutes_ago=89 - 0.1,
+            branch=f"superseded-{i}",
+        )
+        for i in range(2, 6)
+    ]
+    verdicts: list[Any] = []
+    outcomes: dict[int, str] = {}
+    wd._flag_unclassified_near_expiry(tail, _policy(), verdicts, outcomes, lambda _l: None)
+    assert verdicts == []
+    assert outcomes == {}
+
+
+def test_a_stuck_run_in_a_heal_exempt_workflow_reds_the_tick() -> None:
+    """Most of the watched set is heal-exempt, `main-ratchet-audit.yml` among them, and it
+    was in the incident this script exists for. A warning inside a passing scheduled run
+    nobody watches would leave that incident's shape intact."""
+    api = FakeApi(
+        {"in_progress": [_run(1, workflow="main-ratchet-audit.yml")]},
+        {1: [_job(11)]},
+    )
+    _, outcomes = _sweep(api)
+    assert outcomes == {1: wd.OUTCOME_HUMAN_REQUIRED}
+    assert wd.OUTCOME_HUMAN_REQUIRED in wd.FAILED_OUTCOMES
+
+
+def test_the_completed_sample_order_covers_exactly_the_watched_set() -> None:
+    """The sample order is a permutation of the watched set, so priority cannot
+    introduce an unwatched workflow or drop a watched one from sampling."""
+    assert sorted(wd.COMPLETED_SAMPLE_WORKFLOWS) == sorted(wd.WATCHED_WORKFLOWS)
+    assert len(set(wd.COMPLETED_SAMPLE_WORKFLOWS)) == len(wd.COMPLETED_SAMPLE_WORKFLOWS)
+
+
 def test_a_cancelled_run_superseded_by_a_newer_run_is_not_rerun() -> None:
     """Re-running an old pull-request run would cancel its successor through the group."""
     run = _run(
@@ -2097,9 +2858,21 @@ def test_recovery_itself_is_bounded_by_the_per_tick_cap() -> None:
     assert sum(1 for o in outcomes.values() if o == wd.OUTCOME_NOT_ATTEMPTED) == 2
 
 
-def test_recovery_covers_pull_request_runs_whose_heal_outlived_the_budget() -> None:
-    """A PR heal whose cancel landed after the budget left the run cancelled: the next tick re-runs it."""
-    run = _run(
+def test_a_pull_request_run_is_reported_and_never_healed() -> None:
+    """Replaces an earlier contract that recovered PR runs too. That was wrong.
+
+    The successor check asks whether a NEWER run of this branch is in flight, and
+    GitHub's runs listing can only be filtered by branch NAME, so two pull requests
+    open on one head branch read as each other's successor — abandoning a cancelled
+    orphan behind a green `skipped-superseded`. Matching by pull-request number is
+    not available: of 20 sampled same-repository `pull_request` runs only 9 carried
+    `pull_requests[].number`, so that route fails closed on most PR runs.
+
+    So a pull-request run is reported and left alone, like a fork run, and green for
+    the same reason: its owner is reading their own pull request's checks. `main`
+    orphans, which nobody watches and which the incident was made of, still heal.
+    """
+    cancelled = _run(
         1,
         minutes_ago=70,
         status="completed",
@@ -2108,12 +2881,38 @@ def test_recovery_covers_pull_request_runs_whose_heal_outlived_the_budget() -> N
         event="pull_request",
     )
     api = FakeApi(
-        {"cancelled": [run]}, {1: [_cancelled_orphan_job(11)]}, newest_by_branch={"main": 1}
+        {"cancelled": [cancelled]}, {1: [_cancelled_orphan_job(11)]}, newest_by_branch={"main": 1}
     )
     verdicts, outcomes = _sweep(api)
-    assert _verdict_of(verdicts, 1).verdict == wd.CANCELLED_ORPHAN
-    assert outcomes == {1: wd.OUTCOME_RECOVERED}
-    assert any("event=pull_request" in p for p in api.gets)
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PULL_REQUEST
+    assert outcomes == {}
+    assert api.posts == []
+    assert wd.render_summary(verdicts, outcomes, _policy()).count(wd.SKIPPED_PULL_REQUEST) == 1
+
+    live = FakeApi({"in_progress": [_run(2, event="pull_request", branch="pr")]}, {2: [_job(21)]})
+    live_verdicts, live_outcomes = _sweep(live)
+    assert _verdict_of(live_verdicts, 2).verdict == wd.SKIPPED_PULL_REQUEST
+    assert live_outcomes == {} and live.posts == []
+
+    # The push path is untouched: that is where the incident's orphans were.
+    push = FakeApi(
+        {
+            "cancelled": [
+                _run(
+                    3,
+                    minutes_ago=70,
+                    status="completed",
+                    conclusion="cancelled",
+                    updated_minutes_ago=5,
+                    branch="pushed",
+                )
+            ]
+        },
+        {3: [_cancelled_orphan_job(31, run_id=3)]},
+        newest_by_branch={"pushed": 3},
+    )
+    _, push_outcomes = _sweep(push)
+    assert push_outcomes == {3: wd.OUTCOME_RECOVERED}
 
 
 def test_a_human_cancel_of_a_healthy_run_never_matches_the_recovery_fingerprint() -> None:
@@ -2317,6 +3116,16 @@ def test_the_summary_reports_a_saturated_hold() -> None:
     assert wd.SKIPPED_SATURATED in summary and "dispatching slowly" in summary
 
 
+def test_the_summary_reports_a_partial_evidence_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hold the watchdog deliberately took must not read as "Nothing stuck."."""
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    verdicts, outcomes = _sweep(_saturation_band_api())
+    summary = wd.render_summary(verdicts, outcomes, _policy())
+    assert wd.SKIPPED_PARTIAL_EVIDENCE in summary
+    assert "Nothing stuck." not in summary
+
+
 def test_a_quiet_sweep_says_so() -> None:
     api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11, status="completed")]})
     verdicts, outcomes = _sweep(api)
@@ -2353,6 +3162,101 @@ def test_main_refuses_to_start_without_a_token(monkeypatch: pytest.MonkeyPatch) 
     assert wd.main(["--repo", REPO]) == 2
     monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
     assert wd.main([]) == 2
+
+
+def test_a_cheap_rate_limit_reset_in_recovery_is_waited_out_not_aborted() -> None:
+    """The re-raise must not cost a verdict a five-second wait would have saved.
+
+    Making a rate-limited recovery read propagate stopped it exiting green, but it
+    also sent a CHEAP reset -- one the gather phase simply waits out -- straight to
+    the abort handler. For a cancelled run with less window left than one schedule
+    interval there is no next tick, so a five-second wait was costing the verdict.
+    Recovery's reads now go through the same wait-and-retry.
+    """
+    candidate = _run(
+        1,
+        minutes_ago=100,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=85,
+        branch="orphan",
+    )
+    api = FakeApi(
+        {"cancelled": [candidate]},
+        {1: [_cancelled_orphan_job(11, run_id=1)]},
+        newest_by_branch={"orphan": 1},
+    )
+    _rate_limit_get(api, r"/actions/runs/1/jobs", times=1, retry_after=5.0)
+    clock = _Clock()
+    _, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    assert outcomes.get(1) == wd.OUTCOME_RECOVERED
+    assert wd.RATE_LIMIT_MARKER_ID not in outcomes
+    assert clock.t >= 5.0
+
+
+def test_a_recovery_mutation_is_never_retried_through_the_read_wrapper() -> None:
+    """Reads get the retry; a cancel or re-run that may be on the wire never does."""
+    posted: list[str] = []
+
+    class _Recording:
+        def get(self, path: str) -> Any:
+            raise AssertionError("the wrapper must route reads through the given reader")
+
+        def post(self, path: str) -> None:
+            posted.append(path)
+
+    reads: list[str] = []
+    wrapper = wd._ReadsThrough(_Recording(), lambda path: reads.append(path) or {"ok": True})
+    assert wrapper.get("repos/x/y") == {"ok": True}
+    assert reads == ["repos/x/y"]
+    wrapper.post("repos/x/y/cancel")
+    assert posted == ["repos/x/y/cancel"]
+
+
+def test_the_http_client_counts_its_calls_and_remembers_the_quota_it_was_told() -> None:
+    """The watchdog's own footprint against the quota whose exhaustion started this.
+
+    Logged, never enforced: a self-imposed call cap would silently stop healing,
+    which is the failure mode this script exists to end. A response without headers
+    is tolerated -- the reading is observability and must not crash a good read.
+    """
+
+    class _Response:
+        def __init__(self, remaining: str | None) -> None:
+            self.headers = email.message.Message()
+            if remaining is not None:
+                self.headers["X-RateLimit-Remaining"] = remaining
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"ok": true}'
+
+    class _Headerless(_Response):
+        def __init__(self) -> None:
+            super().__init__(None)
+            del self.headers
+
+    seen: list[Any] = [_Response("4321"), _Response("4320"), _Headerless()]
+
+    def opener(request: Any, timeout: float) -> Any:
+        return seen.pop(0)
+
+    client = wd.GitHubApi("token", "https://api.example.invalid", opener=opener)
+    assert client.calls == 0 and client.rate_limit_remaining is None
+    client.get("repos/x/y")
+    assert (client.calls, client.rate_limit_remaining) == (1, "4321")
+    client.get("repos/x/y")
+    assert (client.calls, client.rate_limit_remaining) == (2, "4320")
+    # A headerless response still counts, and does not erase the last reading.
+    client.get("repos/x/y")
+    assert (client.calls, client.rate_limit_remaining) == (3, "4320")
 
 
 def test_the_http_client_retries_once_on_a_server_error() -> None:
@@ -2584,3 +3488,790 @@ def test_the_http_client_surfaces_a_client_error_with_its_status() -> None:
     with pytest.raises(wd.ApiError) as excinfo:
         client.post("repos/x/y/actions/runs/1/rerun")
     assert excinfo.value.status == 403
+
+
+# ── the watched set covers every fleet-routed workflow, and only those ──────
+
+
+def _fleet_routed_workflow_files() -> set[str]:
+    """The fleet-routed workflow files, projected from the parity suite's pinned inventory.
+
+    Reuses ``test_ci_fleet_routing_expression_parity._EXPECTED_ROUTED_JOBS`` instead of
+    parsing ``runs-on`` a second time. That suite already pins the routed (file, job)
+    pairs against the real workflows and fails when one gains a route, so a second
+    scanner here would be a second place to update and a second thing to get wrong;
+    importing it is also how ``test_ci_additional_fleet_routes.py`` reuses that suite.
+    The watchdog's own workflow is absent because its job runs on a hosted runner and
+    the fleet label appears there only in a comment.
+    """
+    return {workflow for workflow, _ in parity._EXPECTED_ROUTED_JOBS}
+
+
+def test_the_watched_set_is_exactly_the_fleet_routed_workflows() -> None:
+    """Drift guard: a workflow that gains (or loses) a fleet route must be added to
+    (or removed from) WATCHED_WORKFLOWS, or this fails."""
+    assert set(wd.WATCHED_WORKFLOWS) == _fleet_routed_workflow_files()
+
+
+def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
+    heal_safe = frozenset(
+        {
+            "build.yml",
+            "ci.yml",
+            "fast-gate.yml",
+        }
+    )
+    exempt = frozenset(
+        {
+            "release.yml",
+            "pages.yml",
+            "main-ratchet-audit.yml",
+            "build-wheel.yml",
+            "dependency-vulnerability.yml",
+            "pr-merge-conflict-label.yml",
+            "code-review.yml",
+            "cross-platform.yml",
+            "dependency-review.yml",
+            "pr-scope.yml",
+            "screenshot-evidence.yml",
+            # Ref-keyed and publishes nothing, but triggered ONLY by `pull_request`,
+            # and pull-request runs are never healed -- so declaring it heal-safe
+            # would read as coverage no run could ever use.
+            "macos-on-demand.yml",
+        }
+    )
+    assert wd.HEAL_SAFE_WORKFLOWS == heal_safe
+    assert wd.heal_exempt_workflows() == exempt
+    assert heal_safe | exempt == frozenset(wd.WATCHED_WORKFLOWS)
+    assert not heal_safe & exempt
+
+
+def test_every_declared_heal_safe_workflow_is_ref_keyed_not_pr_keyed() -> None:
+    """The successor guard filters by head branch, never by pull-request number.
+
+    Two pull requests can share a head branch, so for a PR-keyed concurrency group
+    another PR's newer run reads as this run's successor and the cancelled verdict is
+    left unrestored. Declaring a PR-keyed workflow heal-safe would therefore break the
+    one protection healing has, and this fails if someone adds one back.
+    """
+    pr_keyed = []
+    for name in sorted(wd.HEAL_SAFE_WORKFLOWS):
+        text = (WORKFLOWS_DIR / name).read_text(encoding="utf-8")
+        if "pull_request.number" in text.split("jobs:", 1)[0]:
+            pr_keyed.append(name)
+    assert pr_keyed == [], f"PR-keyed workflows cannot be auto-healed: {pr_keyed}"
+    # The exempt tier really does hold the PR-keyed ones, so the assertion above is
+    # not passing merely because the repo has none.
+    assert "code-review.yml" in wd.heal_exempt_workflows()
+
+
+def test_every_declared_heal_safe_workflow_has_a_trigger_a_heal_can_reach() -> None:
+    """A declaration that can never act reads as coverage that does not exist.
+
+    Pull-request runs are never healed, so a workflow triggered ONLY by
+    `pull_request` can sit in `HEAL_SAFE_WORKFLOWS` and never produce one healable
+    run -- `macos-on-demand.yml` was exactly that until it was removed. This fails if
+    such an entry is added back, or if a declared workflow's triggers narrow to
+    pull-request only.
+    """
+    unreachable = []
+    for name in sorted(wd.HEAL_SAFE_WORKFLOWS):
+        text = (WORKFLOWS_DIR / name).read_text(encoding="utf-8")
+        triggers = {
+            keys[1]
+            for keys, _ in wd._yaml_mapping_entries(text)
+            if len(keys) >= 2 and keys[0] == "on"
+        }
+        if triggers and triggers <= {"pull_request", "pull_request_target"}:
+            unreachable.append(name)
+    assert unreachable == [], (
+        "these workflows are declared heal-safe but only pull-request runs can "
+        f"trigger them, and those are never healed: {unreachable}"
+    )
+    # macos-on-demand.yml really is pull-request only, so the check above is not
+    # vacuous -- it is the case that motivated it.
+    macos = (WORKFLOWS_DIR / "macos-on-demand.yml").read_text(encoding="utf-8")
+    macos_triggers = {
+        keys[1] for keys, _ in wd._yaml_mapping_entries(macos) if len(keys) >= 2 and keys[0] == "on"
+    }
+    assert macos_triggers == {"pull_request"}
+    assert "macos-on-demand.yml" in wd.heal_exempt_workflows()
+
+
+def test_every_declared_heal_safe_workflow_passes_the_derived_gate_on_its_real_yaml() -> None:
+    """The symmetric pin: the derived gate must ADMIT the four we declared safe.
+
+    `workflow_is_heal_safe_at_revision` is fail-closed -- a heal only proceeds when the
+    text gate returns True -- so the gate can silently DISABLE healing, not only enable
+    it. A benign future edit to one of these files (an `aws s3 cp` artifact fetch, a
+    concurrency group re-spelled in a way the hand-rolled parser misreads) would flip it
+    to `human-required` and the first signal would arrive at the next incident. This
+    fails at the edit instead.
+    """
+    refused = [
+        name
+        for name in sorted(wd.HEAL_SAFE_WORKFLOWS)
+        if wd.workflow_text_is_heal_safe((WORKFLOWS_DIR / name).read_text(encoding="utf-8"))
+        is not True
+    ]
+    assert refused == [], (
+        "these workflows are declared heal-safe but the derived gate refuses their own "
+        f"YAML, so healing is silently disabled for them: {refused}"
+    )
+
+
+def test_an_exempt_orphan_at_the_attempt_cap_still_asks_for_a_human() -> None:
+    """The attempt cap must not turn a promised red into a green.
+
+    That cap stops US looping re-runs, and an exempt workflow is never re-run by us, so
+    it is not the operative reason nobody touched the run -- while it carries no outcome,
+    which would leave the stuck orphan behind a green tick. A run with no orphan evidence
+    is untouched by this: the plain attempt-cap report is still what it gets.
+    """
+    api = FakeApi(
+        {"in_progress": [_run(1, workflow="main-ratchet-audit.yml", attempt=3)]},
+        {1: [_job(11)]},
+    )
+    verdicts, outcomes = _sweep(api)
+    verdict = _verdict_of(verdicts, 1)
+    assert verdict.verdict == wd.HEAL_EXEMPT
+    assert "attempt 3" in verdict.detail
+    assert outcomes == {1: wd.OUTCOME_HUMAN_REQUIRED}
+    assert api.posts == []
+
+    healthy = FakeApi(
+        {"in_progress": [_run(2, workflow="main-ratchet-audit.yml", attempt=3)]},
+        {2: [_job(21, status="completed")]},
+    )
+    quiet_verdicts, quiet_outcomes = _sweep(healthy)
+    assert _verdict_of(quiet_verdicts, 2).verdict != wd.HEAL_EXEMPT
+    assert quiet_outcomes == {}
+
+
+def test_a_rate_limited_recovery_keeps_the_heal_slots_it_already_spent() -> None:
+    """Partial recovery results survive the abort, so the five-per-tick cap holds.
+
+    The tuple return never lands when the pass raises, so a recovery that already
+    re-ran a run was invisible to the caller's slot accounting and the tick healed
+    five MORE live runs on top of it -- the global cap bypassed by an abort. The
+    caller owns the containers now, so an abort leaves it holding what was done.
+    """
+    recovered_orphan = _run(
+        1,
+        minutes_ago=100,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=30,
+        branch="recovered",
+    )
+    limited = _run(
+        2,
+        minutes_ago=100,
+        status="completed",
+        conclusion="cancelled",
+        updated_minutes_ago=31,
+        branch="limited",
+    )
+    live = [_run(100 + i, branch=f"live-{i}") for i in range(5)]
+    api = FakeApi(
+        {"cancelled": [limited, recovered_orphan], "in_progress": live},
+        {
+            1: [_cancelled_orphan_job(11, run_id=1)],
+            2: [_cancelled_orphan_job(21, run_id=2)],
+            **{run["id"]: [_job(run["id"] * 10, run_id=run["id"])] for run in live},
+        },
+        newest_by_branch={"recovered": 1, "limited": 2, **{f"live-{i}": 100 + i for i in range(5)}},
+    )
+    original_get = api.get
+
+    def get(path: str) -> Any:
+        # Run 2 is the OLDER cancellation, so it is classified and re-run first;
+        # the limit then lands on run 1's job read, mid-pass.
+        if "/runs/1/jobs" in path:
+            raise wd.ApiError(403, "API rate limit exceeded", remaining="0")
+        return original_get(path)
+
+    api.get = get  # type: ignore[method-assign]
+    _, outcomes = _sweep(api, max_runs=5)
+    assert outcomes.get(2) == wd.OUTCOME_RECOVERED
+    assert outcomes[wd.RATE_LIMIT_MARKER_ID] == wd.OUTCOME_ABORTED_RATE_LIMITED
+    reruns = _posts(api, "/rerun")
+    assert len(reruns) <= 5, f"the five-per-tick cap was bypassed: {reruns}"
+
+
+def test_a_newly_watched_workflow_is_heal_exempt_until_declared_safe() -> None:
+    # Classification reads the declaration alone, so a workflow nobody has
+    # classified is exempt whatever its YAML says.
+    assert wd.heal_exempt_workflows(("newcomer.yml",), frozenset()) == frozenset({"newcomer.yml"})
+    assert wd.heal_exempt_workflows(("newcomer.yml",), frozenset({"newcomer.yml"})) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("group", "safe"),
+    [
+        ("${{ github.workflow }}-${{ github.ref }}", True),
+        ("${{ github.ref_name }}", True),
+        ("${{ github.head_ref }}", True),
+        # A PR-keyed group is NOT heal-safe, and that is the point: the successor
+        # check filters the runs listing by branch NAME, so it cannot tell one pull
+        # request's run from another's on a shared head branch. Admitting this here
+        # would let the derived gate bless a workflow the declaration test forbids.
+        ("code-review-${{ github.event.pull_request.number }}", False),
+        ("a-constant-group", False),
+        ("audit-${{ github.sha }}", False),
+        ("run-${{ github.run_id }}", False),
+    ],
+)
+def test_heal_safety_requires_a_ref_keyed_group(group: str, safe: bool) -> None:
+    text = "on: push\nconcurrency:\n  group: " + group + "\n  cancel-in-progress: true\n"
+    assert wd.workflow_text_is_heal_safe(text) is safe
+
+
+def test_a_workflow_with_no_concurrency_group_is_heal_exempt() -> None:
+    assert (
+        wd.workflow_text_is_heal_safe("on: push\njobs:\n  one:\n    runs-on: ubuntu-latest\n")
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "run: npm publish",
+        "run: gh release create v1",
+        "uses: actions/deploy-pages@abc",
+        "uses: actions/upload-pages-artifact@abc",
+        "uses: ./.github/workflows/publish-cli.yml",
+        "run: docker push example/image:tag",
+        "run: docker buildx build . --push",
+        "run: aws s3 cp artifact s3://bucket/key",
+        "run: aws codeartifact publish-package-version --domain d",
+        "run: twine upload --repository-url https://d.codeartifact.example wheel",
+        "run: twine upload dist/*",
+        "uses: ./.github/workflows/sign-and-notarize.yml",
+    ],
+)
+def test_a_publish_or_deploy_step_makes_a_workflow_unsafe(step: str) -> None:
+    safe = "concurrency:\n  group: ${{ github.ref }}\njobs:\n  safe:\n    runs-on: ubuntu-latest\n"
+    assert wd.workflow_text_is_heal_safe(safe) is True
+    assert wd.workflow_text_is_heal_safe(safe + f"    steps:\n      - {step}\n") is False
+
+
+def test_a_job_environment_makes_a_workflow_unsafe() -> None:
+    text = (
+        "concurrency:\n  group: ${{ github.ref }}\njobs:\n  deploy:\n"
+        "    runs-on: ubuntu-latest\n    environment: production\n"
+    )
+    assert wd.workflow_text_is_heal_safe(text) is False
+
+
+def test_no_publish_pattern_chases_a_toolchain_this_repo_does_not_use() -> None:
+    """Keeps the backstop from drifting into a spelling chase.
+
+    A pattern earns its place by naming a publish route this repository could really
+    grow: it either already appears in `.github/workflows`, or it is one step from a
+    route that does. `cargo publish` and `uv publish` were added because a review
+    round named them, and this repo has neither Rust nor uv -- they are gone. The
+    four below match nothing today and stay, each for a stated reason; anything else
+    unmatched fails here, so the next addition has to justify itself.
+    """
+    text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    ).lower()
+    allowed_unmatched = {
+        # An npm/Electron app: `npx electron-builder` already runs here with
+        # `--publish never`, so dropping that flag is the whole distance to a publish.
+        r"\bnpm\s+publish\b": "npm/Electron project",
+        # `docker push` matches and `publish-docker.yml` exists; buildx with --push
+        # is the same route spelled in one command.
+        r"\bdocker\s+buildx\s+build\b[^\n]*\s--push\b": "docker publishing exists",
+        # The repo authenticates to CodeArtifact already; publishing to it is the
+        # same endpoint in the other direction.
+        r"\baws\s+codeartifact\s+publish-package-version\b": "CodeArtifact is wired up",
+        # `build-wheel.yml` builds a Python wheel; twine is how a wheel leaves.
+        r"\btwine\s+upload\b": "a wheel is built here",
+    }
+    unmatched = {p.pattern for p in wd._PUBLISH_OR_DEPLOY_PATTERNS if not p.search(text)}
+    unjustified = unmatched - set(allowed_unmatched)
+    assert unjustified == set(), (
+        "these publish patterns match nothing in .github/workflows and name no route "
+        f"this repo could grow, so they are a spelling chase: {sorted(unjustified)}"
+    )
+    # Every allowance is doing work rather than passing vacuously, and a pattern that
+    # starts matching must lose its allowance so the reasons stay true.
+    assert set(allowed_unmatched) == unmatched
+
+
+@pytest.mark.parametrize("permission", ["pages", "packages", "deployments"])
+def test_a_durable_write_permission_makes_a_workflow_unsafe(permission: str) -> None:
+    text = (
+        f"concurrency:\n  group: ${{{{ github.ref }}}}\npermissions:\n  contents: read\n"
+        f"  {permission}: write\njobs:\n  safe:\n    runs-on: ubuntu-latest\n"
+    )
+    assert wd.workflow_text_is_heal_safe(text) is False
+
+
+def test_id_token_write_alone_leaves_a_workflow_safe() -> None:
+    text = (
+        "concurrency:\n  group: ${{ github.ref }}\npermissions:\n  contents: read\n"
+        "  id-token: write\njobs:\n  safe:\n    runs-on: ubuntu-latest\n"
+    )
+    assert wd.workflow_text_is_heal_safe(text) is True
+
+
+def test_a_publish_marker_only_in_a_comment_leaves_a_workflow_safe() -> None:
+    text = (
+        "# run: npm publish\nconcurrency:\n  group: ${{ github.ref }}\n"
+        "jobs:\n  safe:\n    runs-on: ubuntu-latest\n"
+    )
+    assert wd.workflow_text_is_heal_safe(text) is True
+
+
+def test_the_watchdog_never_watches_its_own_workflow() -> None:
+    assert wd.WATCHDOG_WORKFLOW == "ci-runner-watchdog.yml"
+    assert wd.WATCHDOG_WORKFLOW not in wd.WATCHED_WORKFLOWS
+    text = (WORKFLOWS_DIR / wd.WATCHDOG_WORKFLOW).read_text(encoding="utf-8")
+    # A naive whole-file grep WOULD pull it in; the runs-on rule keeps it out.
+    assert "codebuild-kirocrew-gha" in text
+    assert wd.WATCHDOG_WORKFLOW not in _fleet_routed_workflow_files()
+
+
+def test_the_drift_guard_flags_a_new_unregistered_fleet_route() -> None:
+    """Negative control: a workflow that gains a fleet route without joining the watched
+    set breaks the equality above.
+
+    The route is added to the borrowed inventory rather than to a synthetic workflow
+    directory, because the scan itself is the parity suite's job and is negative-controlled
+    there; what this guards is the projection reaching WATCHED_WORKFLOWS.
+    """
+    routed = _fleet_routed_workflow_files() | {"surprise.yml"}
+    assert set(wd.WATCHED_WORKFLOWS) != routed
+
+
+# ── the watchdog heals orphans in every watched workflow, capped globally ───
+
+
+def test_an_orphan_in_a_non_ci_watched_workflow_is_healed() -> None:
+    """The 21-hour orphans sat in fast-gate.yml, not ci.yml. It is found through the
+    repo-wide listing and filtered in by its `path`. Negative control: reverted
+    pre-coverage code (WORKFLOW_FILE = "ci.yml") never lists fast-gate.yml, so run 1
+    is not healed; and the repo-wide `/actions/runs?status=` call this asserts is
+    absent on any per-workflow-loop revision."""
+    api = FakeApi({"in_progress": [_run(1, workflow="fast-gate.yml")]}, {1: [_job(11)]})
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert _verdict_of(verdicts, 1).workflow == "fast-gate.yml"
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+    assert any(p.startswith(f"repos/{REPO}/actions/runs?status=") for p in api.gets)
+
+
+def test_an_unwatched_workflows_run_in_the_repo_wide_listing_is_filtered_out() -> None:
+    """The repo-wide listing returns runs of EVERY workflow, so an unwatched one
+    (issue-triage.yml) with the exact orphan shape appears beside a watched orphan and
+    must be filtered out client-side -- classified nowhere, healed never. Negative
+    control: on a per-workflow-loop revision the unwatched run is never listed at all,
+    so the repo-wide `/actions/runs?status=` call this asserts is absent and the
+    filter it proves is untested."""
+    api = FakeApi(
+        {"in_progress": [_run(1, workflow="fast-gate.yml"), _run(2, workflow="issue-triage.yml")]},
+        {1: [_job(11)], 2: [_job(21, run_id=2)]},
+    )
+    verdicts, outcomes = _sweep(api)
+    # The unwatched run was returned by the repo-wide listing ...
+    assert any(p.startswith(f"repos/{REPO}/actions/runs?status=") for p in api.gets)
+    # ... but is filtered out: never classified, never acted on. Were the filter
+    # dropped, run 2 would be ORPHANED and healed and both assertions below fail.
+    assert [v.run_id for v in verdicts] == [1]
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+    assert not any("/runs/2/" in p for p in api.posts)
+
+
+def test_the_five_per_tick_cap_is_global_across_workflows() -> None:
+    """Seven orphans spread over the four heal-safe workflows: exactly five heal, oldest
+    first, the other two wait. Two workflows carry two orphans each, which is what shows
+    the cap counts RUNS globally rather than allowing five per workflow. Negative control:
+    reverted code sees only the one ci.yml run, so five never heal."""
+    heal_safe = sorted(wd.HEAL_SAFE_WORKFLOWS)
+    wfs = [heal_safe[i % len(heal_safe)] for i in range(7)]
+    runs = [
+        _run(i, minutes_ago=100 - i, branch=f"pr-{i}", workflow=wfs[i - 1]) for i in range(1, 8)
+    ]
+    api = FakeApi(
+        {"in_progress": runs},
+        {i: [_job(i * 10, run_id=i)] for i in range(1, 8)},
+    )
+    _, outcomes = _sweep(api, max_runs=5)
+    healed = sorted(run_id for run_id, outcome in outcomes.items() if outcome == wd.OUTCOME_HEALED)
+    assert healed == [1, 2, 3, 4, 5]  # oldest first, across workflows
+    assert outcomes[6] == outcomes[7] == wd.OUTCOME_NOT_ATTEMPTED
+    revision_reads = [path for path in api.gets if "/contents/.github/workflows/" in path]
+    assert len(revision_reads) == 5
+
+
+def test_live_job_read_bound_keeps_the_oldest_and_the_newest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The oldest runs are the only actionable ones; the newest carry the dispatch
+    # evidence a saturation hold is judged by. A bound that kept only the oldest
+    # would leave the sweep unable to tell a dead fleet from a busy one.
+    runs = [_run(i, minutes_ago=100 - i, status="queued") for i in range(1, 7)]
+    api = FakeApi({"queued": list(reversed(runs))}, {i: [] for i in range(1, 7)}, evidence=False)
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 3)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    logged: list[str] = []
+    clock = _Clock()
+    wd.run_watchdog(api, _policy(), clock=clock.now, sleep=clock.sleep, log=logged.append)
+    live_ids = set(range(1, 7))
+    reads = [
+        int(path.split("/runs/", 1)[1].split("/", 1)[0])
+        for path in api.gets
+        if "/jobs?" in path and int(path.split("/runs/", 1)[1].split("/", 1)[0]) in live_ids
+    ]
+    assert reads == [1, 2, 6]
+    assert any("live job-read cap of 3" in line for line in logged)
+
+
+def test_a_live_tick_under_the_read_bound_reads_every_run() -> None:
+    runs = [_run(i, minutes_ago=100 - i, status="queued") for i in range(1, 4)]
+    api = FakeApi({"queued": list(reversed(runs))}, {i: [] for i in range(1, 4)}, evidence=False)
+    clock = _Clock()
+    logged: list[str] = []
+    wd.run_watchdog(api, _policy(), clock=clock.now, sleep=clock.sleep, log=logged.append)
+    assert not any("live job-read cap" in line for line in logged)
+
+
+def test_a_live_tick_under_the_read_bound_behaves_as_before() -> None:
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+
+
+# ── a GitHub rate limit ends the tick non-fatally, never as a crash ─────────
+
+
+def _rate_limit_get(
+    api: FakeApi, pattern: str, *, times: int, retry_after: float | None = None
+) -> None:
+    """Make the next ``times`` GETs matching ``pattern`` raise a rate-limited ApiError."""
+    original_get = api.get
+    left = {"n": times}
+
+    def get(path: str) -> Any:
+        if left["n"] > 0 and re.search(pattern, path):
+            left["n"] -= 1
+            raise wd.ApiError(
+                403,
+                "API rate limit exceeded for installation ID 12345",
+                remaining="0",
+                retry_after=retry_after,
+            )
+        return original_get(path)
+
+    api.get = get  # type: ignore[method-assign]
+
+
+def test_a_rate_limit_mid_listing_aborts_the_tick_and_preserves_already_decided_heals() -> None:
+    """A 403 rate limit while reading run 2's jobs must not lose the tick: run 1, classified
+    before it, is still healed, and the tick ends with the aborted outcome rather than a crash.
+    Negative control: reverted code has no rate-limit handling, so the ApiError propagates out
+    of run_watchdog and _sweep raises."""
+    api = FakeApi(
+        {"in_progress": [_run(1, branch="a"), _run(2, minutes_ago=59, branch="b")]},
+        {1: [_job(11)], 2: [_job(21, run_id=2)]},
+    )
+    _rate_limit_get(api, r"/actions/runs/2/jobs", times=1)  # one page fails, then serves
+    logged: list[str] = []
+    clock = _Clock()
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=logged.append
+    )
+    assert outcomes[1] == wd.OUTCOME_HEALED  # the already-classified orphan is still acted on
+    assert outcomes[wd.RATE_LIMIT_MARKER_ID] == wd.OUTCOME_ABORTED_RATE_LIMITED
+    assert wd.OUTCOME_ABORTED_RATE_LIMITED in wd.FAILED_OUTCOMES
+    assert any(v.verdict == wd.TICK_ABORTED_RATE_LIMITED for v in verdicts)
+    assert any("rate limit" in line for line in logged)
+
+
+def test_a_page_two_rate_limit_keeps_and_heals_page_one_candidates() -> None:
+    orphan = _run(1, branch="orphan")
+    filler = [
+        _run(i, minutes_ago=5, branch=f"filler-{i}", workflow="issue-triage.yml")
+        for i in range(2, wd.PAGE_SIZE + 1)
+    ]
+    api = FakeApi({"in_progress": [orphan] + filler}, {1: [_job(11)]})
+    _rate_limit_get(api, r"/actions/runs\?.*page=2", times=1)
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert outcomes[1] == wd.OUTCOME_HEALED
+    assert outcomes[wd.RATE_LIMIT_MARKER_ID] == wd.OUTCOME_ABORTED_RATE_LIMITED
+    assert api.posts[:2] == [
+        f"repos/{REPO}/actions/runs/1/cancel",
+        f"repos/{REPO}/actions/runs/1/rerun",
+    ]
+
+
+def test_a_rate_limited_tick_that_classifies_nothing_exits_nonzero_and_annotates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "t")
+    summary = tmp_path / "summary.md"
+    argv = ["--repo", REPO, "--summary", str(summary)]
+    marker = wd.RunVerdict(
+        run_id=wd.RATE_LIMIT_MARKER_ID,
+        run_attempt=0,
+        head_branch="",
+        head_repo="",
+        event="",
+        status="",
+        url="",
+        age=timedelta(0),
+        verdict=wd.TICK_ABORTED_RATE_LIMITED,
+        workflow="",
+        detail="HTTP 403: API rate limit exceeded",
+    )
+    monkeypatch.setattr(
+        wd,
+        "run_watchdog",
+        lambda *_a, **_k: ([marker], {wd.RATE_LIMIT_MARKER_ID: wd.OUTCOME_ABORTED_RATE_LIMITED}),
+    )
+    assert wd.main(argv) == 1
+    printed = capsys.readouterr().out
+    assert "::error::" in printed
+    assert "recovery pass did not run" in printed
+    text = summary.read_text(encoding="utf-8")
+    assert "Aborted (rate limited)" in text
+    assert "Inspected 0 run(s)." in text  # the marker is not counted as a run
+
+
+def test_a_rate_limited_tick_exits_nonzero_even_after_acting_on_a_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    # Live work done before the abort does not make the tick healthy: the same
+    # abort skipped the recovery pass, and a cancelled orphan in the last
+    # tick-interval of its window ages out before any later tick reaches it.
+    monkeypatch.setenv("GH_TOKEN", "t")
+    summary = tmp_path / "summary.md"
+    argv = ["--repo", REPO, "--summary", str(summary)]
+    classified = wd._base_verdict(_run(1), NOW)
+    classified.verdict = wd.ORPHANED
+    marker = wd.RunVerdict(
+        run_id=wd.RATE_LIMIT_MARKER_ID,
+        run_attempt=0,
+        head_branch="",
+        head_repo="",
+        event="",
+        status="",
+        url="",
+        age=timedelta(0),
+        verdict=wd.TICK_ABORTED_RATE_LIMITED,
+        workflow="",
+        detail="HTTP 403: API rate limit exceeded",
+    )
+    monkeypatch.setattr(
+        wd,
+        "run_watchdog",
+        lambda *_a, **_k: (
+            [classified, marker],
+            {
+                1: wd.OUTCOME_HEALED,
+                wd.RATE_LIMIT_MARKER_ID: wd.OUTCOME_ABORTED_RATE_LIMITED,
+            },
+        ),
+    )
+    assert wd.main(argv) == 1
+    assert "recovery" in capsys.readouterr().out
+
+
+def test_a_normal_healthy_tick_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "t")
+    summary = tmp_path / "summary.md"
+    monkeypatch.setattr(wd, "run_watchdog", lambda *_a, **_k: ([], {}))
+    assert wd.main(["--repo", REPO, "--summary", str(summary)]) == 0
+    assert "::error::" not in capsys.readouterr().out
+
+
+def test_a_cheap_rate_limit_reset_is_waited_out_and_retried() -> None:
+    """A rate limit whose window resets within budget is honoured with one wait-and-retry, not
+    an abort. Negative control: reverted code neither knows retry_after nor retries, so it
+    raises."""
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    _rate_limit_get(api, r"/actions/runs/1/jobs", times=1, retry_after=5.0)
+    clock = _Clock()
+    _, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    assert outcomes == {1: wd.OUTCOME_HEALED}  # retried, not aborted
+    assert clock.t >= 5.0  # the reset was waited out
+
+
+def test_a_500_mid_listing_still_raises() -> None:
+    """A server error is not a rate limit: it must propagate exactly as before, so the abort
+    path never swallows it. Negative control: broadening the gather's except to all ApiError
+    (not only rate_limited) would turn this raise into a silent abort."""
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    original_get = api.get
+
+    def get(path: str) -> Any:
+        if re.search(r"/actions/runs/1/jobs", path):
+            raise wd.ApiError(500, "server error")
+        return original_get(path)
+
+    api.get = get  # type: ignore[method-assign]
+    with pytest.raises(wd.ApiError) as excinfo:
+        _sweep(api)
+    assert excinfo.value.status == 500
+
+
+def test_the_rate_limit_hint_reads_retry_after_and_reset_headers() -> None:
+    msg = email.message.Message()
+    msg["Retry-After"] = "12"
+    assert wd._rate_limit_hints(msg) == (12.0, None)
+    reset = email.message.Message()
+    reset["X-RateLimit-Remaining"] = "0"
+    reset["X-RateLimit-Reset"] = str(int(NOW.timestamp()) + 40)
+    wait, remaining = wd._rate_limit_hints(reset)
+    assert remaining == "0" and wait is not None and wait > 0
+    # Quota not spent: the reset is not a wait.
+    plenty = email.message.Message()
+    plenty["X-RateLimit-Remaining"] = "1000"
+    plenty["X-RateLimit-Reset"] = str(int(NOW.timestamp()) + 40)
+    assert wd._rate_limit_hints(plenty) == (None, "1000")
+    assert wd._rate_limit_hints(None) == (None, None)
+
+
+def test_a_rate_limited_error_is_recognised_from_message_or_headers() -> None:
+    assert wd.ApiError(403, "API rate limit exceeded for installation").rate_limited
+    assert wd.ApiError(429, "You have exceeded a secondary rate limit").rate_limited
+    assert wd.ApiError(403, "forbidden", remaining="0").rate_limited
+    assert not wd.ApiError(403, "resource not accessible").rate_limited
+    assert not wd.ApiError(404, "not found").rate_limited
+    assert not wd.ApiError(500, "rate limit").rate_limited  # only 403/429 count
+
+
+def test_a_rate_limited_job_read_in_recovery_reaches_the_callers_handler() -> None:
+    """A rate limit is not evidence the run is healthy.
+
+    The caller records ``aborted-rate-limited`` -- a FAILED outcome -- and that is the
+    only thing standing between an unclassified cancelled run and a green tick.
+    Swallowing the limit inside the pass hid it from that handler, so the tick went
+    green having never read the run's jobs.
+    """
+    cancelled = _run(
+        1, minutes_ago=105, status="completed", conclusion="cancelled", updated_minutes_ago=85
+    )
+    api = FakeApi({"cancelled": [cancelled]}, {1: []}, evidence=False)
+    original_get = api.get
+
+    def get(path: str) -> Any:
+        if "/jobs?" in path:
+            raise wd.ApiError(403, "API rate limit exceeded", remaining="0")
+        return original_get(path)
+
+    api.get = get  # type: ignore[method-assign]
+    with pytest.raises(wd.ApiError) as excinfo:
+        wd.recover_cancelled_runs(
+            api, _policy(), budget=1, tick=_tick(_Clock()), log=lambda _l: None
+        )
+    assert excinfo.value.rate_limited
+
+
+def test_a_plain_job_read_failure_in_recovery_is_still_swallowed() -> None:
+    """The narrow half of the rule above: only a RATE LIMIT escapes.
+
+    A 500 or a 404 on one run's jobs is genuinely "nothing was touched, the next tick
+    reads it again", and letting those out would abort the whole pass over one
+    unreadable run.
+    """
+    cancelled = _run(
+        1, minutes_ago=70, status="completed", conclusion="cancelled", updated_minutes_ago=20
+    )
+    api = FakeApi({"cancelled": [cancelled]}, {1: []}, evidence=False)
+    original_get = api.get
+
+    def get(path: str) -> Any:
+        if "/jobs?" in path:
+            raise wd.ApiError(500, "server error")
+        return original_get(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.recover_cancelled_runs(
+        api, _policy(), budget=1, tick=_tick(_Clock()), log=lambda _l: None
+    )
+    assert verdicts == []
+    assert outcomes == {}
+
+
+def test_the_classify_cap_refuses_a_green_tick_for_a_run_it_will_never_reach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tail run inside one schedule interval of expiry is recorded, not dropped.
+
+    The cap is fair to a run that will be listed again; it is not fair to one the
+    window check will drop before the cap is next consulted. With 6 minutes of a
+    90-minute window left and a 10-minute schedule, run 2 gets no further tick, so the
+    pass records it as inconclusive and the tick exits nonzero instead of green.
+    Run 3 has 70 minutes left and is genuinely deferrable, so it is NOT recorded --
+    otherwise every ordinary burst would turn the watchdog red.
+    """
+    served = _run(
+        1, minutes_ago=105, status="completed", conclusion="cancelled", updated_minutes_ago=85
+    )
+    near_expiry = _run(
+        2, minutes_ago=104, status="completed", conclusion="cancelled", updated_minutes_ago=84
+    )
+    deferrable = _run(
+        3, minutes_ago=90, status="completed", conclusion="cancelled", updated_minutes_ago=20
+    )
+    api = FakeApi(
+        {"cancelled": [served, near_expiry, deferrable]}, {1: [], 2: [], 3: []}, evidence=False
+    )
+    monkeypatch.setattr(wd, "RECOVERY_CLASSIFY_READS", 1)
+    verdicts, outcomes = wd.recover_cancelled_runs(
+        api, _policy(), budget=0, tick=_tick(_Clock()), log=lambda _l: None
+    )
+    assert outcomes.get(2) == wd.OUTCOME_LOOKUP_FAILED
+    assert 3 not in outcomes
+    assert wd.OUTCOME_LOOKUP_FAILED in wd.FAILED_OUTCOMES
+    flagged = [v for v in verdicts if v.run_id == 2]
+    assert flagged and flagged[0].verdict == wd.LOOKUP_INCONCLUSIVE
+    assert "no later tick will list it" in flagged[0].detail
+
+
+def test_the_classify_cap_costs_no_extra_api_read_to_flag_the_tail() -> None:
+    """Flagging is decided from the run payload already in hand.
+
+    If it cost a job read per tail run, the fix would spend exactly the budget the cap
+    exists to protect.
+    """
+    runs = [
+        _run(
+            i,
+            minutes_ago=105,
+            status="completed",
+            conclusion="cancelled",
+            updated_minutes_ago=85 - i * 0.1,
+        )
+        for i in range(1, 6)
+    ]
+    api = FakeApi({"cancelled": runs}, {i: [] for i in range(1, 6)}, evidence=False)
+    reads = {"jobs": 0}
+    original_get = api.get
+
+    def get(path: str) -> Any:
+        if "/jobs?" in path:
+            reads["jobs"] += 1
+        return original_get(path)
+
+    api.get = get  # type: ignore[method-assign]
+    wd.RECOVERY_CLASSIFY_READS  # documents that the cap is what bounds the reads below
+    import unittest.mock as _mock
+
+    with _mock.patch.object(wd, "RECOVERY_CLASSIFY_READS", 2):
+        wd.recover_cancelled_runs(
+            api, _policy(), budget=0, tick=_tick(_Clock()), log=lambda _l: None
+        )
+    assert reads["jobs"] == 2

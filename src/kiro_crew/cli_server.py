@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -58,8 +59,9 @@ from kiro_crew.git_divergence import (
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.instances import run_marker
+from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.learn import LessonStore
-from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
 from kiro_crew.memory import MemoryStore
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
@@ -183,6 +185,19 @@ def _token(args: argparse.Namespace) -> None:
         with loopback_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")
+    except urllib.error.HTTPError as exc:
+        # The gateway answered; its body names the reason (for example the
+        # host-provenance refusal on /api/token/local). Reporting that as
+        # "could not reach gateway" sends the operator to the wrong remedy.
+        try:
+            detail = str(json.loads(exc.read().decode("utf-8", "replace")).get("error") or "")
+        except Exception:
+            detail = ""
+        print(
+            f"❌ Gateway refused the token request (HTTP {exc.code}): {detail or exc.reason}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except Exception as exc:
         print(f"❌ Could not reach gateway on port {port}: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -371,8 +386,13 @@ def _request_gateway_shutdown(port: int) -> bool:
     return bool(isinstance(payload, dict) and payload.get("ok") and payload.get("shutting_down"))
 
 
-def _report_authenticated_shutdown(port: int) -> bool:
-    """Request, audit, and report an authenticated graceful shutdown."""
+def _report_authenticated_shutdown(port: int, reason: str = "listener_lookup_empty") -> bool:
+    """Request, audit, and report an authenticated graceful shutdown.
+
+    *reason* names the path that asked, since two of them do: the port lookup
+    found nobody (the default), or it found a listener no argv pattern
+    classifies (``argv_declined_listener``). The SEL record separates them.
+    """
     if not _request_gateway_shutdown(port):
         return False
     sel().log_api_access(
@@ -380,7 +400,7 @@ def _report_authenticated_shutdown(port: int) -> bool:
         operation="gateway_stop",
         outcome="allowed",
         source="cli",
-        resources=f"port={port} via=api reason=listener_lookup_empty",
+        resources=f"port={port} via=api reason={reason}",
     )
     print(f"✅ Requested graceful shutdown from gateway on port {port}.")
     return True
@@ -404,6 +424,56 @@ def _terminal_safe_name(name: str) -> str:
     classes without enumerating escape grammars.
     """
     return "".join(ch for ch in name if ch.isprintable())[:_MAX_ECHOED_NAME_LEN]
+
+
+def _verified_loopback_gateway_pids(port: int) -> list[int]:
+    """The pids a ``127.0.0.1:<port>`` request reaches, if they are our gateway.
+
+    Empty unless the process that would answer is provably the gateway that
+    recorded itself on this port. That proof has to exist before the request is
+    made, because the request carries the per-generation local secret and that
+    secret mints owner tokens: handing it to whatever answers would let a
+    foreign local process act as the operator. Reachability is not identity, and
+    argv cannot supply it here -- being argv-declined is the whole situation
+    this path serves. So the proof is the one
+    ``port_resolution._gateway_owns_port`` documents, minus its argv step (which
+    that contract itself keeps as defense in depth rather than proof), plus the
+    start identity and the ADDRESS the request will actually reach:
+
+    1. the pid and start token the gateway recorded for this port --
+       ``run/gateway-<port>.pid`` and its ``.start`` sidecar, written ``0600``
+       inside the ``0700`` ``run/`` dir, which is on the ``is_sensitive_path``
+       floor, so another local user cannot nominate a process of theirs;
+    2. that start token still matches the live pid's, so a pid left behind by a
+       crash and recycled onto an unrelated process cannot inherit the claim;
+    3. the pid is one of those a loopback connect actually reaches
+       (:func:`platform_compat.loopback_owner_pids` mirrors the kernel's
+       most-specific-bind dispatch) -- so a gateway bound to some other specific
+       address can never vouch for a process squatting ``127.0.0.1``;
+    4. the pid is owned by this account.
+
+    Fails closed at every step. Denies outright off POSIX, where
+    ``process_owner_uid`` reports no owner and the file-permission argument the
+    recorded identity rests on does not hold -- the same boundary
+    ``_gateway_owns_port`` draws, for the same reason. A same-account attacker is
+    out of scope by construction: they can already read the secret file itself.
+    """
+    if not platform_compat.IS_POSIX:
+        return []
+    record = run_marker.read_pid_record_path(
+        config_dir() / run_marker.RUN_DIR_NAME / run_marker.pid_file_name(port)
+    )
+    if record is None:
+        return []
+    pid, start_token = record
+    if not start_token or start_token != run_marker.pid_start_token(pid):
+        return []
+    if pid not in platform_compat.loopback_owner_pids(platform_compat.find_port_listeners(port)):
+        return []
+    owner = platform_compat.process_owner_uid(pid)
+    if owner is None or owner != os.getuid():
+        return []
+    return [pid]
 
 
 def _stop(cli_port: int | None = None) -> None:
@@ -519,6 +589,21 @@ def _stop(cli_port: int | None = None) -> None:
     # recycled. Acceptable risk for an interactive CLI tool with low blast radius.
     unrecognized = [p for p in pids if not _is_kirocrew_process(p)]
     pids = [p for p in pids if _is_kirocrew_process(p)]
+    if (
+        not pids
+        and _verified_loopback_gateway_pids(port)
+        and _report_authenticated_shutdown(port, "argv_declined_listener")
+    ):
+        # argv is not the only identity a gateway has, and it is the weakest:
+        # every spawn shape has to be taught to the patterns, and the desktop
+        # app's is not among them. So before refusing, ask the gateway to stop
+        # ITSELF -- one loopback request carrying this generation's secret, which
+        # it published at startup whatever its command line reads. Answering
+        # shuts down the answerer, so no pid is guessed and nothing here signals
+        # a process it has not identified. The request is only made once the
+        # process that will receive that secret is proven to be our gateway
+        # (_verified_loopback_gateway_pids); unproven keeps the refusal below.
+        return
     if not pids:
         # Something holds the port, but nothing on it classifies as a Kiro Crew
         # gateway. Reporting "no gateway running" here is misleading — the port
@@ -920,7 +1005,7 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
         # Source-tree/editable-install fallback: run the module directly.
         # This also covers the case where the wrapper script is not on PATH
         # (e.g. running from an unactivated checkout).
-        argv = [sys.executable, "-m", "kiro_crew", "gateway"]
+        argv = platform_compat.isolated_python_argv("-m", "kiro_crew", "gateway")
     if port is not None:
         argv += ["--port", str(int(port))]
 
@@ -1221,6 +1306,13 @@ def _restart(cli_port: int | None = None) -> None:
     prior_marker_pid = run_marker.read_pid(port)
     listeners = platform_compat.find_listening_pids(port)
     incumbents = [p for p in listeners if _is_kirocrew_process(p)]
+    # argv named no incumbent, so the stop below may go through the
+    # authenticated endpoint instead. Resolve who would answer it NOW, while the
+    # gateway is still up: after the stop that identity is gone, and it is the
+    # pid that must exit before a replacement can bind.
+    endpoint_incumbents = (
+        _verified_loopback_gateway_pids(port) if listeners and not incumbents else []
+    )
     wait_for_incumbents = False
     if listeners or not platform_compat.listening_pid_tool_available():
         # TOCTOU: the gateway can exit between the check above and _stop()'s own
@@ -1238,6 +1330,15 @@ def _restart(cli_port: int | None = None) -> None:
         except SystemExit:
             pass
         wait_for_incumbents = True
+        if not incumbents and stop_returned:
+            # The stop returned while the argv filter named nobody to wait for:
+            # the gateway acknowledged the authenticated shutdown and is now
+            # exiting, still owning the port and the lock. Wait for the pid that
+            # answered on loopback -- not every listener on the port, so an
+            # unrelated process sharing the number cannot stall the restart for
+            # the full timeout. An empty wait here returns at once and the
+            # replacement loses the race to the gateway still shutting down.
+            incumbents = endpoint_incumbents
         if not incumbents:
             # The port lookup named nobody to wait for. If _stop returned, a
             # gateway acknowledged the authenticated shutdown (the one path that
@@ -1370,6 +1471,36 @@ def _restart(cli_port: int | None = None) -> None:
     _print_token_url(port)
 
 
+def _snapshot_memory_or_exit() -> None:
+    """Copy every memory store, or refuse to let the caller rewrite this install.
+
+    Called immediately before each updater, never once at the top of ``_update``: the
+    interval guard is bypassed here, so a no-op or refused update must not spend a
+    retention slot on a copy nothing was going to change. ``memory.backup_keep`` is
+    passed for the same reason -- the sweep's own default would prune a longer
+    configured history. A copy that did not land exits 1, because rewriting the install
+    around the one store nothing else can rebuild is the loss this prevents.
+    """
+    from kiro_crew import memory_backup
+
+    try:
+        keep = int(KiroCrewConfig.load().memory.backup_keep)
+        snapshot = memory_backup.back_up_all_stores(keep, force=True)
+        failure = f"{snapshot['failed']} store(s) not copied" if snapshot["failed"] else ""
+    except Exception as exc:
+        snapshot, failure = {"backed_up": 0}, str(exc) or exc.__class__.__name__
+    if failure:
+        print(f"  ❌ Pre-update memory snapshot failed: {failure}")
+        print("     Not updating: the store would be rewritten with no fresh copy of it.")
+        print("     Check the log for the reason, then repair it: kirocrew memory backups")
+        sys.exit(1)
+    # Named as the DEFAULT store's directory: a bare path beside a count covering every
+    # store would point at the wrong place.
+    newest = memory_backup.newest_backup()
+    where = f"; default store copies in {newest.parent}" if newest is not None else ""
+    print(f"  💾 Memory snapshot: {snapshot['backed_up']} store(s) copied{where}\n")
+
+
 def _update(force: bool = False) -> None:
     """Update Kiro Crew — dispatches based on install layout.
 
@@ -1397,8 +1528,13 @@ def _update(force: bool = False) -> None:
     # A policy-defined provider OWNS the update on this host. Checked before any
     # layout dispatch so a manual `kirocrew update` cannot run the built-in
     # git/CDN mechanism the administrator excluded.
-    from kiro_crew.platform.update_provider import apply_policy_update
+    from kiro_crew.platform.update_provider import apply_policy_update, resolve_provider
 
+    # A provider that is not configured to apply -- check-only, or on Windows, where
+    # every provider command refuses -- is not about to rewrite anything.
+    _provider = resolve_provider()
+    if _provider is not None and _provider.can_apply():
+        _snapshot_memory_or_exit()
     applied = asyncio.run(apply_policy_update())
     if applied is not None:
         if applied:
@@ -1687,6 +1823,7 @@ def _update(force: bool = False) -> None:
         print(f"      Reconcile with: git rebase origin/{branch}")
         sys.exit(1)
 
+    _snapshot_memory_or_exit()
     print(f"  🔄 git reset --hard origin/{branch} ({target[:12]})…")
     try:
         result = subprocess.run(
@@ -1707,12 +1844,20 @@ def _update(force: bool = False) -> None:
         print(f"  ❌ git reset failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
-    # Update the optional kiro-cli backend if present.
-    if shutil.which("kiro-cli"):
+    # Update the optional kiro-cli backend if present. Pinned to an absolute
+    # path from the known install directories, with the inherited PATH excluded:
+    # a bare argv0 is re-resolved inside exec against a PATH that can lead with
+    # an agent-writable directory, and a `which` probe's answer is not what exec
+    # would run. No pin -> skip the step; a PATH-only install is reported so the
+    # operator knows why it was skipped and which override puts it back.
+    kiro_cli_bin, unpinned_kiro_cli = pin_kiro_cli()
+    if kiro_cli_bin is None and unpinned_kiro_cli:
+        print(f"  ⚠️  kiro-cli update skipped: {PATH_ONLY_INSTALL_NOTE}")
+    if kiro_cli_bin is not None:
         print("  🔄 kiro-cli update")
         try:
             subprocess.run(
-                ["kiro-cli", "update"],
+                [kiro_cli_bin, "update"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=120,
@@ -1777,7 +1922,7 @@ def _refresh_agent_config(proj: str) -> None:
     print("  🔒 Refreshing agent config…")
     try:
         r = subprocess.run(
-            [sys.executable, "-m", "kiro_crew", "setup", "--agent-only"],
+            platform_compat.isolated_python_argv("-m", "kiro_crew", "setup", "--agent-only"),
             cwd=proj,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -1907,6 +2052,7 @@ def _update_wheel(layout) -> None:
     # other shape (pipx, a bare venv the operator manages) keeps the
     # installer re-run, whose behavior is owned by cli.sh.
     if running_from_managed_venv():
+        _snapshot_memory_or_exit()
         print("\n  🔄 Building the new version beside the current one…")
         try:
             promoted = apply_wheel_update(
@@ -1958,6 +2104,8 @@ def _update_wheel(layout) -> None:
         print(f"    {cmd}")
         sys.exit(1)
 
+    # After the Windows refusal, so a host that cannot self-update never spends a copy.
+    _snapshot_memory_or_exit()
     try:
         result = subprocess.run(
             ["sh", "-c", cmd],
@@ -1994,7 +2142,17 @@ def _update_approve() -> None:
     shadow apply itself and restarts; progress lands on the dashboard's
     update overlay.
     """
+    from kiro_crew.platform.update_capability import MANAGED_BY_ELECTRON, derive_capability
     from kiro_crew.platform.update_stepup import read_pending
+
+    # A packaged desktop install has no host-side approval: the app's own
+    # updater owns the bytes, and the human click in Settings › About is the
+    # approval. Saying so and exiting cleanly beats hunting for a nonce that
+    # this shape never writes.
+    if derive_capability().managed_by == MANAGED_BY_ELECTRON:
+        print("ℹ️  This is a packaged desktop install.")
+        print("   Approve the update in the app: Settings › About › Install & restart.")
+        return
 
     print("👻 Approving the pending in-app update…\n")
     # Default read: never writes. This runs in the CLI process, outside the
@@ -2050,6 +2208,79 @@ def _update_approve() -> None:
     print("   and will restart itself; watch progress in the dashboard.")
 
 
+def _file_delivery_approve() -> None:
+    """Approve a flagged-file delivery consent armed from the dashboard.
+
+    Same step-up shape as :func:`_update_approve`: the proof of host identity is
+    READING THE NONCE FILE, which lives on the keystone floor with owner-only
+    permissions, so presenting its nonce back to the gateway demonstrates
+    filesystem access as the gateway's own user -- the step an owner-authenticated
+    but agent-DRIVEN browser cannot perform, which is the hole this closes. The
+    gateway records the grant only after the nonce validates.
+    """
+    from kiro_crew.file_delivery_consent import read_pending_grant
+
+    print("👻 Approving the pending flagged-file delivery consent…\n")
+    pending = read_pending_grant()
+    if pending is None:
+        print("❌ No armed grant request (it may have expired).")
+        print("   Confirm from the dashboard's Security panel first, then re-run this.")
+        sys.exit(1)
+    print(f"  📦 {pending.destination_class}, expires in {pending.expires_in}s")
+
+    port = resolve_client_port(None)
+    url = f"http://127.0.0.1:{port}/api/file-delivery/consent/approve"
+    payload = json.dumps({"nonce": pending.nonce}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    # Same local-secret / unix-socket authentication as _update_approve: reading
+    # the secret is itself host-local evidence, and an absent secret still works
+    # on a default loopback install where no token auth runs.
+    secret = read_local_secret(port)
+    if secret:
+        headers["X-Internal-Secret"] = secret
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        from kiro_crew.dashboard.urls import dashboard_socket_path
+
+        socket_path: str | None = str(dashboard_socket_path(port))
+    except Exception:
+        socket_path = None
+    try:
+        # NOT `loopback_urlopen`: this request carries the single-use nonce AND
+        # the local secret, and that opener's own contract says a caller whose
+        # request carries a credential another process could capture on the port
+        # wants `unix_socket_urlopen` instead. Its TCP fallback fires on a STALE
+        # socket -- exactly the dead-gateway case in which a foreign process may
+        # hold the loopback port -- so falling back would hand both credentials
+        # to whatever answers. A gateway that is gone is reported as not running
+        # rather than retried on a port nothing trustworthy is holding.
+        #
+        # TCP stays the transport only where there is no unix socket to prefer
+        # (native Windows has no `AF_UNIX`): there the port IS the only local
+        # transport, so no fallback decision exists to get wrong.
+        if socket_path is not None and hasattr(socket, "AF_UNIX"):
+            approve_resp = unix_socket_urlopen(req, 15, socket_path=socket_path)
+        else:
+            approve_resp = loopback_urlopen(req, timeout=15)
+        with approve_resp as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        print(
+            f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else "")
+        )
+        sys.exit(1)
+    except (urllib.error.URLError, OSError):
+        print("❌ Gateway is not running — start it, then re-run: kirocrew file-delivery approve")
+        sys.exit(1)
+    grant = body.get("grant") if isinstance(body, dict) else None
+    dest = grant.get("destination_class") if isinstance(grant, dict) else pending.destination_class
+    print(f"\n✅ Confirmed delivery to {dest}. The dashboard now shows it as confirmed.")
+
+
 def _status(args: argparse.Namespace) -> None:
     """Query the running gateway for stats, or print offline message."""
     port = resolve_client_port(getattr(args, "port", None))
@@ -2078,9 +2309,23 @@ def _status(args: argparse.Namespace) -> None:
     print(f"  Messages:    {data.get('messages', 0)}")
     print(f"  Tool calls:  {data.get('tool_calls', 0)}")
     print(f"  Subagents:   {data.get('subagents', 0)}")
-    print(f"  Cron jobs:   {data.get('crons', 0)}")
-    print(f"  Lessons:     {data.get('lessons', 0)}")
+    print(f"  Cron jobs:   {_format_count(data, 'cron_jobs')}")
+    print(f"  Lessons:     {_format_count(data, 'lessons')}")
     print(f"  Memory:      {_format_memory_line(data)}")
+
+
+def _format_count(data: dict, key: str) -> str:
+    """One of the two cached counts from a status payload, or a dash for unknown.
+
+    ``/api/status`` serves ``cron_jobs`` and ``lessons`` from the gateway-wide
+    count cache (``dashboard/status_counts.py``) and publishes ``null`` while
+    that cache has not refreshed yet or the store is failing — the same
+    unknown the dashboard renders as a loading skeleton. A dash keeps the CLI
+    from printing ``None`` or fabricating a zero for a count nobody measured;
+    an older gateway that omits the key prints the same dash.
+    """
+    value = data.get(key)
+    return "—" if value is None else str(value)
 
 
 def _format_memory_line(data: dict) -> str:

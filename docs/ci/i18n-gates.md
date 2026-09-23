@@ -5,7 +5,8 @@ what can fail a PR, what only reports, and the rule that governs relaxing a
 ratchet. The authoring rules (how to add a catalog key, the `src/i18n/format.ts`
 seam, the glossary) live in the frontend docs under `website/`.
 
-Run the whole chain locally before pushing:
+Run the static and catalog chain locally before pushing (the Vitest-only guards
+and browser render gate run separately, as shown below):
 
 ```bash
 cd website && npm run i18n:check
@@ -17,7 +18,7 @@ cd website && npm run i18n:check
 |---|---|---|
 | `frontend-lint` | Check i18n extraction, key references and plurals | `npm run i18n:check` (the runner below) |
 | `frontend-test` | Unit tests | `npx vitest run --coverage`, which includes the diff-scoped `localeFormatting.test.ts` gates and the catalog duplicate-key guard `duplicateKeys.test.ts` (see below) |
-| `e2e` | i18n render-time gate | `npm run i18n:render` (`scripts/check-i18n-render.mjs --build`) |
+| `e2e` | Run E2E and dedicated memory UI evidence in parallel | `python scripts/ci_e2e_parallel.py`; its `i18n` lane runs `npm --prefix website run i18n:render` (`scripts/check-i18n-render.mjs --build`) |
 
 The render gate lives in the `e2e` job to reuse the Chromium install that job
 already pays for. It needs no gateway, no token and no backend: it serves the

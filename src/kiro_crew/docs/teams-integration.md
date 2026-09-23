@@ -153,7 +153,7 @@ Transport capabilities: streaming and reactions are disabled; editing, inbound a
 
 ## Verifying
 
-- The dashboard **Settings → Teams** badge reports whether the channel connected:
+- The dashboard **Settings → Messaging Channels → Microsoft Teams** badge reports whether the channel connected:
   it turns green once the outbound app credentials validate, and turns red with a
   reason if a later send fails (a delivered message clears it again).
 - The status endpoint is `GET /api/teams/config`.
@@ -260,7 +260,7 @@ of auto-approval, so anything denied by policy stays denied.
 - Authorization is **deny-by-default** on both the allow-list and the conversation
   scope (personal only). All denials are recorded in the security event log.
 - **`/dashboard` issues a login credential.** It mints a presigned dashboard
-  session URL for the asking user (default 1 hour, capped at 24), and issuance is
+  session URL for the asking user (default 1 hour, capped at 20), and issuance is
   recorded in the security event log. Everyone on `allowed_emails` can do this, so
   treat that list as the set of people you would hand a dashboard session to.
 - The App Password and all bearer tokens are treated as secrets: the
@@ -300,12 +300,14 @@ of auto-approval, so anything denied by policy stays denied.
   a folded-in message is acknowledged with a short reply instead.
 - **No model picker yet.** Telegram can switch models from chat; Teams cannot. Use the
   dashboard. (`/sessions` — continuing a dashboard chat here — IS supported; see below.)
-- **The `send_message` agent tool does not reach Teams.** A cron result DOES arrive
-  here when its originating dashboard chat is mirrored into this conversation (that is
-  what `/link` binds). What is Slack-only is the explicit `send_message` tool call
-  with a channel or user target — its addressing, allow-list and threading are Slack
-  concepts — so a Teams-only install should rely on the mirror rather than on that
-  tool's own delivery.
+- **The `send_message` agent tool reaches Teams two ways**: `session="teams"` DMs this
+  channel's own configured owner, which needs exactly one reachable address on
+  `allowed_emails` and otherwise falls back to a dashboard notification and says so;
+  `channel_type="teams"` posts into the conversation the turn is already running in. A cron result also arrives here when its
+  originating dashboard chat is mirrored into this conversation (that is what `/link`
+  binds). What is Slack-only is `channel`, `user`, `blocks`, `thread_ts`,
+  `reply_broadcast`, `unfurl_links` and `unfurl_media` — Slack protocol options, so
+  combining any of them with a Teams target is refused rather than ignored.
 
 ## Related docs
 

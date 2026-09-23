@@ -131,7 +131,7 @@ describe('InstancesViewport under a Windows frameless shell', () => {
     })
     renderWithProviders(<InstancesViewport />, { store })
 
-    const bar = await screen.findByRole('group', { name: /Remote instances/i })
+    const bar = await screen.findByRole('group', { name: /Remote crews/i })
     expect(bar.style.paddingRight).toBe(`${WIN_CAPTION_RESERVE_PX}px`)
   })
 })

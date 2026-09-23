@@ -1,6 +1,6 @@
-# API Reference — KiroCrew Gateway API & Client
+# API Reference — Kiro Crew Gateway API & Client
 
-Reference for the KiroCrew Gateway HTTP and WebSocket APIs, and how apps consume
+Reference for the Kiro Crew Gateway HTTP and WebSocket APIs, and how apps consume
 them.
 
 How you talk to the Gateway depends on where your code runs:
@@ -10,7 +10,7 @@ How you talk to the Gateway depends on where your code runs:
   the dashboard host provides it at runtime through its import map (the bare
   specifier `@kirocrew/app-sdk` resolves to the host's vendored copy via
   `window.__kirocrew_modules`). See
-  [getting-started.md](getting-started.md) and the [App SDK Hooks](#app-sdk-hooks)
+  [getting-started.md](getting-started.md) and the [App SDK Hooks](#app-sdk-hooks-dashboard-ui)
   section below.
 - **Python apps / external CLI tools / services** — use the standalone
   `kirocrew-client` package, carried in this repository under
@@ -18,7 +18,7 @@ How you talk to the Gateway depends on where your code runs:
   the Kiro Crew main package, but it is not published to PyPI — use it from a source
   checkout. See the [Python Client](#python-client) section.
 - **Node.js / Electron apps** — call the Gateway REST/WS endpoints directly via
-  `fetch()` / a WebSocket. The full endpoint list is in
+  `fetch()` / a WebSocket. Selected endpoint paths are in
   [Gateway REST API Endpoints](#gateway-rest-api-endpoints).
 
 There is no published TypeScript gateway-client npm package, and none is planned
@@ -47,11 +47,85 @@ function MyPage() {
 }
 ```
 
-`useAppApi()` returns a client whose methods (`get`, `post`, `put`, `patch`,
-`del`) call the Gateway endpoints listed below, scoped to the `permissions.api`
-paths your `app.json` declares. The host injects auth automatically.
+`useAppApi()` returns a client whose methods (`raw`, `request`, `get`, `post`,
+`put`, `patch`, `del`) call the Gateway endpoints listed below, scoped to the
+`permissions.api` paths your `app.json` declares. JSON methods parse a JSON
+response; an empty successful response returns `undefined`.
+
+- `raw(path, init?)` returns a successful `Response` without consuming its body.
+  Use it for binary downloads, text or streamed responses and response headers.
+  Non-success responses still throw `AppApiError`. Supply an `AbortSignal` for
+  long-lived streams and abort or cancel the reader when the component unmounts;
+  the method does not implement EventSource reconnect or SSE parsing.
+
+- `request<T>(path, init?)` accepts `RequestInit`, including raw bodies such as
+  `FormData`, headers and an abort signal. It does not set a content type for you.
+- `get<T>(path, init?)` and `del<T>(path, init?)` fix the HTTP method.
+- `post<T>(path, body?, init?)`, `put<T>(path, body?, init?)` and
+  `patch<T>(path, body?, init?)` serialize the body argument as JSON. Their method
+  and body arguments take precedence over `init.method` and `init.body`. Headers
+  are merged with a default `Content-Type: application/json` unless you specify
+  another media type.
+
+The host owns `X-Session-Key`: chat surfaces use their bound session and routed
+app pages use the core dashboard-page identity, `dashboard:ui`. A host-provided
+key overrides a caller-supplied one. If a host has no binding, supplying that
+header is rejected before a request is sent; callers of this scoped client
+cannot choose a session. This is a frontend guardrail, not isolation from other
+JavaScript in the dashboard document; backend authorization remains authoritative.
+The path check applies to the initial URL. Browser redirect behavior remains
+controlled by `RequestInit.redirect` (default `follow`); use `redirect: 'error'`
+when the call must not follow redirects. Redirect targets are not rechecked by
+this client.
+
+HTTP failures remain `Error` objects with the message `API <status>: <body>` and
+now also carry `name: 'AppApiError'`, numeric `status` and string `body`. Import
+`AppApiError` as a **type**, not a runtime constructor. The body is unparsed, so
+parse it only when the endpoint promises JSON (for example, a conflict response).
+Network, abort and successful-response JSON parsing failures retain their original
+error types. Stale-owner reauthentication signaling still runs before an HTTP
+failure is thrown.
+
+The path matcher uses the backend's declared-pattern semantics: `/api/example`
+matches itself and slash-delimited children; `/api/example/*` also includes the
+base path; `/api/example*` includes any string prefix match. Blank entries match
+nothing, surrounding whitespace is stripped, and request paths are normalized
+before matching. A bare trailing slash is literal, not shorthand for `/*`.
+
+An explicit authentication-expiry response (`403`, `X-Auth-Required: true`)
+notifies the dashboard's existing recovery handler. It does not turn ordinary
+permission denials into refresh attempts or automatically replay writes.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
+
+## Embedded Chat
+
+`ChatEmbed` mounts Kiro Crew's native transcript and compact composer for an
+existing session. The required `slotKey` selects the session. Existing props such
+as `agent`, `placeholder`, `frameless`, `startAtBottom`, `onSend`, and
+`aboveComposer` keep their current contracts.
+
+```tsx
+import { ChatEmbed } from '@kirocrew/app-sdk'
+
+<ChatEmbed slotKey="coder-abc123" />
+```
+
+The composer accepts multiple lines. `Enter` sends the draft, `Shift+Enter`
+inserts a line break, and an Enter used to commit an input method editor (IME)
+candidate does not send. The box grows with the draft up to 240 pixels, then
+keeps its height and scrolls vertically.
+
+A host that boxes the embed at a fixed height passes `composerMaxHeight` (in
+pixels) to lower that cap, so a long draft cannot take most of the box from the
+transcript. The resting (empty) size of the composer is unchanged; only the cap
+moves. Omitted, the 240-pixel default applies.
+
+```tsx
+<div style={{ height: 420 }}>
+  <ChatEmbed slotKey="coder-abc123" composerMaxHeight={160} />
+</div>
+```
 
 ## Native Chat Panel
 
@@ -281,16 +355,18 @@ The `Returns` column describes the response shape. It is not a TypeScript type:
 no TypeScript client ships, so `SlotInfo`, `GatewayStatus`, `SystemInfo` and
 their siblings are response-shape names rather than importable types.
 
-When `app_name` is set and no explicit auth is provided, the client auto-reads
-the app secret from `~/.kiro/crew/apps/{name}/.app_secret` and exchanges it
-for a short-lived token via `POST /api/apps/{name}/token`.
+When `app_name` is set and no explicit auth is provided, the Python client reads
+the app secret from `~/.kiro/crew/apps/{name}/.app_secret`. For a remote Gateway,
+call `await client.authenticate()` before the first request; the context manager
+does not exchange the secret automatically. The same exchange refreshes a token
+after a 401/403 response.
 
 ### Authentication
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `authenticate()` | `boolean` | Exchange app secret for token (auto-called if appName set) |
-| `setToken(token)` | `void` | Manually set auth token on both HTTP and WS clients |
+| `authenticate()` | `boolean` | Exchange the app secret for a token; call explicitly before the first remote request |
+| `setToken(token)` | `void` | Conceptual token assignment; the Python client accepts `token=` in its constructor |
 
 ### Connection
 
@@ -405,8 +481,8 @@ class DeployProbe(Probe):
             ])
         obs = []
         if status.rolled_back:
-            # Nothing improves by waiting -> NMI bypasses coalescing.
-            obs.append(Observation("rollback", Severity.NMI,
+            # Nothing improves by waiting -> IMMEDIATE bypasses coalescing.
+            obs.append(Observation("rollback", Severity.IMMEDIATE,
                                    f"{self.env} rolled back."))
         for stage in status.failed_stages:
             obs.append(Observation(f"stage:{stage}", Severity.WAKE,
@@ -431,8 +507,8 @@ Rules:
   It is the only place a verdict is raised.
 - A failed observation returns `Tick(fetch_ok=False)`, never an empty `Tick` —
   an empty tick reads as "nothing is wrong".
-- Use `Severity.NMI` only for what genuinely cannot improve by waiting. Using
-  it to mean "important" defeats coalescing.
+- Use `Severity.IMMEDIATE` only for what genuinely cannot improve by waiting.
+  Using it to mean "important" defeats coalescing.
 - Supply an `epoch` when the subject has an identity token. Without one there
   are no resets, so a re-triggered subject inherits the previous run's masks.
 - Filter out conditions the operator already knows about (a check red on the
@@ -639,21 +715,27 @@ Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, p
 
 ### Proxy Authentication (Server-side)
 
-Verify that an incoming request was signed by the KiroCrew gateway reverse proxy. Use in app backends to authenticate proxied requests.
+Verify that an incoming request was signed by the Kiro Crew Gateway reverse proxy.
+Use these main-package helpers in Python app backends:
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-
-Options: `{ secret?: string, maxAgeSecs?: number }`
+| `raw_request_target(request)` | `str` | Preserve the raw percent-encoded path and query that the Gateway signed |
+| `proxy_secret()` | `str` | Read the injected `KIROCREW_PROXY_SECRET`, or an empty string |
+| `verify_proxy_request(header, *, method, target, body, secret=None, now=None)` | `bool` | Verify the body-bound HMAC and fixed ±60-second freshness window; fail closed on malformed input |
 
 ---
 
 ## Python Client
 
 Standalone async client using `aiohttp`, carried in this repository under
-`packages/kirocrew-client-py/`. It is not published to PyPI, so use it from a
-source checkout rather than by installing it. It covers part of the Gateway API
+`packages/kirocrew-client-py/`. It is not published to PyPI or included in the
+main wheel. Install it from a source checkout; it covers part of the Gateway API
 surface documented above.
+
+```bash
+python -m pip install -e /path/to/KiroCrew/packages/kirocrew-client-py
+```
 
 ```python
 from kirocrew_client import KiroCrewClient
@@ -669,7 +751,7 @@ async with KiroCrewClient(app_name="my-app") as mc:
 KiroCrewClient(
     base_url="",              # default: http://localhost:{KIROCREW_PORT or 5476}
     token="",                 # optional for localhost
-    app_name="",              # for app-scoped storage & auto-auth
+    app_name="",              # app-scoped storage and secret lookup
     timeout=30,               # request timeout seconds
     max_retries=3,            # retry count
     retry_base_delay=1.0,     # base delay for backoff
@@ -677,6 +759,11 @@ KiroCrewClient(
     on_auth_expired=None,     # async callback returning new token
 )
 ```
+
+For a remote Gateway, pass `token=...` or call `await client.authenticate()`
+after entering the context. Local loopback requests need no token. Setting
+`app_name` alone only locates the app secret; it does not authenticate during
+`__aenter__`.
 
 ### Method Reference
 
@@ -703,16 +790,16 @@ WebSocket connection rather than client methods.
 | `sendMessage(id, msg)` | `send_message(id, msg)` |
 | `spawn(task, agent?)` | `spawn(task, agent="")` |
 | `spawnMany(tasks, agents?)` | `spawn_many(tasks, agents=None)` |
-| `listSubagents()` | `list_subagents()` |
+| `listSubagents()` | *client wrapper expects a bare list, but `GET /api/spawn` returns `{agents}`; call it directly and read `agents`* |
 | `getSubagentStatus(id)` | `get_subagent_status(id)` |
 | `addCron(name, opts)` | `add_cron(name, **opts)` |
-| `listCrons()` | `list_crons()` |
-| `updateCron(id, opts)` | `update_cron(id, **opts)` |
+| `listCrons()` | *client wrapper expects a bare list, but `GET /api/crons` returns `{jobs, server_tz}`; call it directly and read `jobs`* |
+| `updateCron(id, opts)` | *client wrapper currently uses `PUT`, but the Gateway route is `PATCH`; call `PATCH /api/crons/{id}` directly* |
 | `removeCron(id)` | `remove_cron(id)` |
 | `pauseCron(id)` | `pause_cron(id)` |
 | `resumeCron(id)` | `resume_cron(id)` |
 | `addLesson(rule, cat, scope?)` | `add_lesson(rule, cat, scope="")` |
-| `listLessons()` | `list_lessons()` |
+| `listLessons()` | *client wrapper expects a bare list, but `GET /api/lessons` returns `{lessons, total, ...}`; call it directly and read `lessons`* |
 | `removeLesson(query)` | `remove_lesson(query)` |
 | `sendNotification(text, opts?)` | `send_notification(text, **opts)` |
 | `listNotifications()` | *not implemented — call the endpoint* |
@@ -726,7 +813,7 @@ WebSocket connection rather than client methods.
 | `setSlotModel(slot, model)` | *not implemented — call the endpoint* |
 | `getGatewayConfig(key)` | *not implemented — call the endpoint* |
 | `setGatewayConfig(key, val)` | *not implemented — call the endpoint* |
-| `listMcpServers()` | `list_mcp_servers()` |
+| `listMcpServers()` | *client wrapper currently calls an unregistered path; call `GET /api/mcp` directly* |
 | `registerMcpServer(def)` | `register_mcp_server(name, cmd, args?, env?)` |
 | `removeMcpServer(name)` | `remove_mcp_server(name)` |
 | `registerAppMcp(name, entry)` | *not implemented — call the endpoint* |
@@ -746,53 +833,11 @@ WebSocket connection rather than client methods.
 | `flushPendingContext(slot)` | `flush_pending_context(slot)` |
 | `setDefaultSlot(slot)` | `set_default_slot(slot)` |
 
-**Proxy Authentication (standalone functions):**
-
-| API surface | Python |
-|-----------|--------|
-
----
-
-## AppManifest
-
-Validate and serialize app.json manifests, via the `kirocrew-client` package.
-
-```python
-from kirocrew_client import AppManifest
-
-m = AppManifest.from_dict({"name": "my-app", "version": "1.0.0", ...})
-errors = m.validate()   # list[str] — empty if valid
-data = m.to_dict()
-```
-
-## AppLifecycle
-
-Manage app installation via the Gateway REST API.
-
-```python
-from kirocrew_client import KiroCrewClient, AppLifecycle
-
-async with KiroCrewClient() as mc:
-    lifecycle = AppLifecycle(mc)
-    await lifecycle.install("/path/to/my-app")
-    await lifecycle.enable("my-app")
-    await lifecycle.disable("my-app")
-    await lifecycle.uninstall("my-app")
-    apps = await lifecycle.list()
-```
-
-## GatewayManager
-
-Manage the KiroCrew Gateway process (start, stop, health check).
-
-```python
-from kirocrew_client import GatewayManager
-
-gm = GatewayManager(port=5476)
-await gm.start()
-healthy = await gm.is_healthy()
-await gm.stop()
-```
+The standalone package exports only `KiroCrewClient`, `KiroCrewError`, and
+`ErrorCode`. It does not export `AppManifest`, `AppLifecycle`, `GatewayManager`,
+proxy-auth helpers, or a WebSocket client. Validate manifests through the main
+package's install path, manage the Gateway with the `kirocrew` CLI, and use
+`kiro_crew.apps.proxy_auth` only from a backend that can import the main package.
 
 ---
 
@@ -810,7 +855,7 @@ All `kirocrew-client` errors are `KiroCrewError` instances with `code`,
 | `RATE_LIMITED` | 429 response | Yes (Retry-After or backoff) |
 | `SERVER_ERROR` | 5xx response | Yes (exponential backoff) |
 | `NETWORK_ERROR` | Timeout or connection failure | Yes (exponential backoff) |
-| `WS_DISCONNECTED` | WebSocket not connected | No |
+| `WS_DISCONNECTED` | Reserved enum value; the current client has no WebSocket surface and does not emit it | No |
 
 ```python
 from kirocrew_client import KiroCrewError
@@ -825,8 +870,30 @@ except KiroCrewError as e:
 
 ## Gateway REST API Endpoints
 
-The `useAppApi()` hook and the `kirocrew-client` package wrap these Gateway
-endpoints. Apps can also call them directly via `fetch()`.
+The `useAppApi()` hook can call declared paths, while the source-only Python
+client wraps the subset named below. These API routes require the appropriate
+dashboard, app, or internal credential; a bare `curl` request is not authenticated.
+
+### Core endpoints used by the Python client
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/status` | Gateway status and connectivity check |
+| GET | `/api/system` | System metrics |
+| GET/POST | `/api/chat/slots` | List or create chat slots |
+| GET/DELETE | `/api/chat/slots/{slot}` | Read slot detail/history or delete a slot |
+| POST | `/api/chat` | Send a chat turn |
+| GET/POST | `/api/spawn` | List or start subagents |
+| GET | `/api/spawn/{agent_id}` | Read subagent status |
+| GET/POST | `/api/crons` | List or create cron jobs |
+| PATCH/DELETE | `/api/crons/{job_id}` | Update or delete a cron job |
+| POST | `/api/crons/{job_id}/enable` | Pause or resume a cron job |
+| GET/POST/DELETE | `/api/lessons` | List, add, or remove lessons |
+| POST | `/api/send-message` | Send a notification/message |
+| GET | `/api/mcp` | List MCP server configuration |
+| PUT/DELETE | `/api/mcp/servers/{name}` | Register or remove an MCP server |
+| GET | `/api/memory/episodic/search` | Search memory |
+| POST | `/api/chat/slots/{slot}/context` | Inject silent context |
 
 ### App Management
 
@@ -838,6 +905,7 @@ endpoints. Apps can also call them directly via `fetch()`.
 | POST | `/api/apps/install` | Install from local path |
 | POST | `/api/apps/register` | Register a self-managed app |
 | POST | `/api/apps/registry/install` | Install from registry |
+| POST | `/api/apps/registry/install-stream` | Install from registry with an SSE progress stream |
 | GET | `/api/apps/{name}` | Get app details |
 | GET | `/api/apps/{name}/manifest` | Get app manifest |
 | GET/PUT | `/api/apps/{name}/config` | Read/write app config |

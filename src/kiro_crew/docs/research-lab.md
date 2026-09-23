@@ -32,8 +32,8 @@ A campaign can instead use **workflow** mode, which runs the Dynamic Workflow te
 - **Limits** — max cycles (safety cap), idle interval, max sub-questions per round, budget.
 - **In-progress guidance** — user steering injected between cycles: the agent reads
   `guidance.txt` each cycle and incorporates it.
-- **Emergent sub-questions** — findings-driven follow-ups, ranked, depth-decayed, deduped,
-  activated into the checklist, ranked with decay and de-duplicated.
+- **Emergent sub-questions** — findings-driven follow-ups, ranked with depth decay,
+  de-duplicated, and activated into the checklist.
 - **Findings + report** — per-cycle `cycle_NNN.json` cards + consolidated `FINDINGS.md`,
   exportable to the Knowledge Library or as an HTML artifact.
 
@@ -46,13 +46,14 @@ A campaign can instead use **workflow** mode, which runs the Dynamic Workflow te
 ├── guidance.txt           # user nudge: agent reads + incorporates each cycle
 ├── emergent_questions.json # agent writes findings-driven follow-ups; ingested + consumed
 ├── findings/
-│   ├── cycle_001.json      # { cycle, summary, key_insight, sources_checked,
-│   ├── cycle_002.json      #   sources_empty, evidence_strength, verification }
+│   ├── cycle_000.json      # { cycle, summary, key_insight, sources_checked, sources_empty,
+│   ├── cycle_001.json      #   new_findings_count, evidence_strength, verification }
 │   └── ...
 └── FINDINGS.md            # cumulative report
 ```
 
-The agent writes each `cycle_NNN.json` finding card as it completes a cycle.
+The agent writes each `cycle_NNN.json` finding card as it completes a cycle,
+beginning with `cycle_000.json`.
 
 ## Campaign lifecycle
 

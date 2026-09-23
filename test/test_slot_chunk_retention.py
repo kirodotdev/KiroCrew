@@ -250,8 +250,13 @@ async def test_openai_compat_response_survives_a_turn_end_purge(tmp_path):
 
     tokens = ["Hello", ", ", "world", "!"]
 
-    async def fake_run_chat(_state, sl, _prompt, *, _directive_user_origin):
+    async def fake_run_chat(_state, sl, _prompt, *, _directive_user_origin, _turn_actor):
         assert _directive_user_origin is True
+        # This request carries no app claim, so the handler names no actor and the
+        # turn is the dashboard caller's own. Taken as a parameter rather than
+        # swallowed by `**kwargs`: a double that accepts anything cannot tell a
+        # handler that stopped passing the actor from one that never did.
+        assert _turn_actor == ""
         for tok in tokens:
             sl.append("chunk", tok, "chunk", broadcast=False)
         # The turn finalizes: this call performs a window rewrite and also a

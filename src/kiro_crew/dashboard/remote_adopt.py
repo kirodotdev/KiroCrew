@@ -269,6 +269,19 @@ async def resolve_adopt_target(
     raise AdoptTargetUnknown("that session is not open on this crew")
 
 
+#: The forwardable header controls (``remote_relay._PEER_CONTROL_SEGMENTS``) an
+#: adopt SEEDS from the peer row, and the ones it deliberately leaves at the
+#: create default. Two closed sets rather than one: a control missing from both
+#: is a control nobody has decided how an adopted slot should show, and the
+#: structural test over ``_PEER_CONTROL_SEGMENTS`` fails until it is placed.
+#: ``model`` and ``reasoning_effort`` are unseeded here because the row read by
+#: ``resolve_adopt_target`` is a sidebar projection and the peer's own defaults
+#: for those two are not a local pin — a remote slot with no pin already renders
+#: the peer's answer from its capability read.
+ADOPT_SEEDED_CONTROLS: frozenset[str] = frozenset({"agent", "workspace"})
+ADOPT_UNSEEDED_CONTROLS: frozenset[str] = frozenset({"model", "reasoning_effort"})
+
+
 def peer_row_metadata(row: dict[str, Any]) -> dict[str, str]:
     """The fields an adopted local slot inherits from the validated peer row.
 
@@ -278,6 +291,20 @@ def peer_row_metadata(row: dict[str, Any]) -> dict[str, str]:
     session must carry the peer's, not this machine's default; defaulting it would
     let a session the user opened as ``incognito`` over there start writing memory
     the moment it was opened here.
+
+    ``workspace`` is inherited on the same terms as ``agent``: it is the value the
+    PEER committed for the session, and a remote-bound slot's ``workspace`` is
+    only ever a mirror of that commitment — the forwarded picks already write it
+    back from the peer's answer. Seeding it from the row keeps the adopted slot's
+    projection and its persisted record naming the workspace the turns actually
+    run in, instead of this machine's create default. It is a mirror, not a
+    binding: the peer-bound create skips this machine's agent-binding
+    resolution, so the value never selects a local ``project`` or
+    ``memory_store``, and the relay hands every turn to the peer before the
+    local turn path reads it. Every forwardable control in
+    ``_PEER_CONTROL_SEGMENTS`` is classified in :data:`ADOPT_SEEDED_CONTROLS` /
+    :data:`ADOPT_UNSEEDED_CONTROLS`, so a fifth control cannot be added without
+    saying how an adopt seeds it.
 
     Every value is bounded and pushed through the peer-text sink, because these
     land on a local slot (and its sidebar row) as strings the peer authored. An
@@ -289,6 +316,9 @@ def peer_row_metadata(row: dict[str, Any]) -> dict[str, str]:
     agent = row.get("agent")
     if isinstance(agent, str) and agent:
         out["agent"] = redact_peer_text(sanitize_string(agent))[:128]
+    workspace = row.get("workspace")
+    if isinstance(workspace, str) and workspace:
+        out["workspace"] = redact_peer_text(sanitize_string(workspace))[:128]
     title = row.get("title")
     if isinstance(title, str) and title:
         out["title"] = redact_peer_text(sanitize_string(title))[:200]

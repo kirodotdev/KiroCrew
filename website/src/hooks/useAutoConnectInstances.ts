@@ -37,7 +37,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type InstanceView } from '../api/client'
-import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
+import { WARM_SET_CAP_AUTO_CEILING, hasDashboardPane } from '../utils/remoteCrew'
 import { useAppDispatch, useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -97,6 +97,9 @@ export function selectAutoConnectTargets(
   for (const inst of instances) {
     if (out.length >= budget) break
     if (excluded.has(inst.id)) continue
+    // No pane to warm: a fargate crew's connect is a real SSM session that
+    // would only be spent on a card nobody asked to open.
+    if (!hasDashboardPane(inst)) continue
     if (isLive(inst)) continue
     out.push(inst.id)
   }

@@ -62,3 +62,53 @@ from typing import Any, Mapping
 UTF8_TEXT: Mapping[str, Any] = MappingProxyType(
     {"text": True, "encoding": "utf-8", "errors": "replace"}
 )
+
+
+def utf8_stdout(raw: bytes | str | None) -> str:
+    """Decode a child's captured output as UTF-8 with no newline translation.
+
+    Text mode cannot express this: ``subprocess`` wraps the pipe in a
+    ``TextIOWrapper`` with universal newlines hard-enabled and exposes no
+    ``newline=`` control, so every ``\\r`` the child prints is rewritten to
+    ``\\n`` before the caller sees it. For output where a carriage return is
+    CONTENT -- git prints paths byte-for-byte, and a POSIX path may legally
+    contain ``\\r`` -- capture bytes (drop the ``UTF8_TEXT`` splat) and decode
+    through this function instead. Same ``errors="replace"`` policy as
+    ``UTF8_TEXT``, for the same reason.
+
+    A ``str`` passes through unchanged, so a test stand-in that substitutes an
+    already-decoded ``CompletedProcess`` keeps working; ``None`` (stream not
+    captured) decodes as ``""``.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", "replace")
+
+
+def utf8_path_stdout(raw: bytes | str | None) -> str:
+    """Decode a child's captured output that names a FILESYSTEM PATH.
+
+    ``errors="replace"`` is wrong for a path: a byte that is not valid UTF-8
+    becomes U+FFFD, a decoded string that fails to round-trip to the bytes
+    the filesystem knows -- ``os.lstat`` then inspects a DIFFERENT path than
+    git answered with, and a guard that clears on ``FileNotFoundError`` fails
+    open for a path that exists. ``errors="surrogateescape"`` (PEP 383) maps
+    each such byte to a lone surrogate that ``os.fsencode`` -- the encode step
+    inside every ``os`` path call -- restores byte-exactly, so the ``lstat``
+    lands on the path git actually printed. This is the module docstring's
+    "must round-trip byte-exactly" policy, packaged for the git path probes
+    (``rev-parse --absolute-git-dir``) that feed
+    :func:`kiro_crew.git_worktree_scope.worktree_probe_failure_is_empty_scope`.
+
+    Same pass-through contract as :func:`utf8_stdout`: ``str`` unchanged (test
+    stand-ins), ``None`` decodes as ``""``. Never hand the result to a display
+    or JSON surface -- a lone surrogate is unencodable there; this decoder is
+    for values consumed by ``os`` path calls.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", "surrogateescape")

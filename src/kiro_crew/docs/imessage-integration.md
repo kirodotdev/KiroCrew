@@ -45,7 +45,7 @@ deliberately does not use one.
    handle from another device works — see [Messaging yourself](#messaging-yourself).
 
 If the gateway is not on your Mac, or `imsg` is missing, the channel reports why
-in **Settings → Channels → iMessage** instead of failing silently.
+in **Settings → Messaging Channels → iMessage** instead of failing silently.
 
 ## Access control
 
@@ -146,12 +146,12 @@ not.
 
 **Nothing happens when I message it.** Check the allow-list first — an empty or
 mistyped `allowed_handles` is the common cause, and by design it produces
-silence rather than an error. **Settings → Channels → iMessage** shows whether
+silence rather than an error. **Settings → Messaging Channels → iMessage** shows whether
 the channel is connected and why not.
 
 **It answers its own messages / the conversation never stops.** A self-chat where
 the echo guard is not doing its job — [Messaging yourself](#messaging-yourself)
-explains the mechanism. Turn the channel off in **Settings → Channels →
+explains the mechanism. Turn the channel off in **Settings → Messaging Channels →
 iMessage** to stop it immediately (every cycle is a real turn), and please report
 it: the log records the handle, redacted, the first time it suppresses an echo.
 

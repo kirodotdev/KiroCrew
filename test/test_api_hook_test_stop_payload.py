@@ -20,12 +20,20 @@ from kiro_crew.hooks import HOOK_EVENT_STOP, HOOK_EVENT_USER_PROMPT_SUBMIT, Scri
 def _req_with_store(store: ScriptHookStore, hook_id: str, context: str) -> make_mocked_request:
     state = MagicMock()
     state._hook_store = store
+    # The route is owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``): the predicate reads
+    # the claims the token-auth middleware publishes plus ``state.owner_id``, and
+    # ``owner_id == ""`` with the signed local bootstrap subject ``local-app`` is
+    # the standalone-local owner shape.
+    state.owner_id = ""
     req = make_mocked_request(
         "POST",
         f"/api/hooks/{hook_id}/test",
         match_info={"hook_id": hook_id},
     )
     req.app["state"] = state
+    req["user"] = "local-app"
+    req["app"] = ""
     req.json = AsyncMock(return_value={"context": context})
     return req
 

@@ -1,6 +1,6 @@
 ---
 name: papyrus-latex-comments
-description: Set up and use a non-destructive COMMENT layer in a LaTeX document — insert margin/inline notes (tagged by type) next to the author's text instead of rewriting it. Use when asked to comment on, review, or annotate a .tex file. For proposing actual replacement text the author can accept/reject, use papyrus-latex-suggestions.
+description: Set up and use a non-destructive COMMENT layer in a LaTeX document — margin/inline notes tagged by type next to the author's text, without rewriting it. Use when asked to comment on, review or annotate a .tex file. For accept/reject replacement text, use papyrus-latex-suggestions.
 triggers: latex comment, annotate tex, todonotes, margin note, aicomment
 ---
 

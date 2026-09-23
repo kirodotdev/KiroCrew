@@ -24,6 +24,7 @@ def _make_handle(
     """Create a mock AcpSessionHandle with configurable defaults."""
     handle = MagicMock()
     handle.session_id = session_id
+    handle.memory_mode = "persistent"
     handle.is_turn_active = is_turn_active
     handle.last_prompt_stats = AcpPromptStats(
         context_pct=context_pct,
@@ -1005,7 +1006,9 @@ class TestNewConversation:
         await provider.new_conversation()
 
         # Fresh session/new on the SAME runtime (cwd+agent from the runtime).
-        runtime.create_session.assert_awaited_once_with(cwd="/tmp/ws", agent="kirocrew")
+        runtime.create_session.assert_awaited_once_with(
+            cwd="/tmp/ws", agent="kirocrew", memory_mode="persistent"
+        )
         # Handle swapped to the fresh session → next prompt starts clean.
         assert provider._handle is new_handle
         assert provider.session_id == "fresh-session-2"
@@ -1047,6 +1050,89 @@ class TestNewConversation:
         # (never a window referencing a terminated one), and old was NOT destroyed.
         assert provider._handle is old
         old.destroy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_backend_that_does_not_evict_before_creating_anything(self):
+        """The whole primitive rests on ``old.destroy()`` actually reclaiming the
+        previous session. A backend outside ``ACP_BACKENDS_SESSION_EVICTION`` has
+        not demonstrated a teardown that does, so warm reuse would add one resident
+        session per reset with nothing but an age ceiling to reap it. It must
+        refuse, and refuse BEFORE ``session/new``: creating first would leak the very
+        session the refusal exists to prevent.
+
+        The stand-in is the claude backend: a registered backend that is not a
+        member. (codex WAS the motivating case, until its teardown became the
+        evicting ``session/close`` and it joined the set -- which is exactly why the
+        gate reads the set and not a name.)"""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKENDS_SESSION_EVICTION
+
+        assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_SESSION_EVICTION
+
+        old = _make_handle(session_id="old-session-1")
+        runtime, _ = self._runtime_with_new_session()
+        runtime.acp_backend = ACP_BACKEND_CLAUDE
+        provider = AcpSessionProvider(old, runtime)
+
+        with pytest.raises(AcpError, match="does not evict sessions"):
+            await provider.new_conversation()
+
+        # Nothing was created and nothing was torn down: the caller's hard-reset
+        # fallback runs against a provider still pointing at its live session.
+        runtime.create_session.assert_not_awaited()
+        old.destroy.assert_not_awaited()
+        assert provider._handle is old
+
+    @pytest.mark.asyncio
+    async def test_allows_codex_now_that_its_teardown_evicts(self):
+        """codex joined the eviction set when its teardown became ``session/close``;
+        pooled warm reuse is the path that gain was for."""
+        from kiro_crew.acp.types import ACP_BACKEND_CODEX
+
+        old = _make_handle(session_id="old-session-1")
+        runtime, new_handle = self._runtime_with_new_session()
+        runtime.acp_backend = ACP_BACKEND_CODEX
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        assert provider._handle is new_handle
+        old.destroy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_allows_kas_which_evicts_on_teardown(self):
+        """Positive membership, not "is not codex": KAS is the other member of
+        ``ACP_BACKENDS_SESSION_EVICTION`` and must keep the cheap path."""
+        old = _make_handle(session_id="old-session-1")
+        runtime, new_handle = self._runtime_with_new_session()
+        runtime.acp_backend = "kas"
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        assert provider._handle is new_handle
+        old.destroy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_kiro_keeps_the_cheap_path_and_its_id_is_the_empty_string(self):
+        """Kiro keeps warm reuse, and ``""`` is not a missing value to resolve:
+        ``ACP_BACKEND_KIRO`` IS ``""``, so a default runtime reads as a member of
+        the eviction set directly. Pinned because a reader meeting
+        ``acp_backend == ""`` naturally hears "unset" and adds a resolution step
+        the set does not need -- which is exactly the dead branch this replaced."""
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO, ACP_BACKENDS_SESSION_EVICTION
+
+        assert ACP_BACKEND_KIRO == ""
+        assert ACP_BACKEND_KIRO in ACP_BACKENDS_SESSION_EVICTION
+
+        old = _make_handle(session_id="old-session-1")
+        runtime, new_handle = self._runtime_with_new_session()
+        assert runtime.acp_backend == ACP_BACKEND_KIRO
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        assert provider._handle is new_handle
 
     @pytest.mark.asyncio
     async def test_success_survives_old_destroy_failure(self):

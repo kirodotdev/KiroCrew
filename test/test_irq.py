@@ -26,6 +26,7 @@ from kiro_crew.irq import (
     Observation,
     Outcome,
     Probe,
+    ResetsOn,
     Severity,
     Tick,
 )
@@ -277,14 +278,14 @@ def test_terminal_wins_over_an_open_window():
 # -------------------------------------------------------------------- exempt
 
 
-def test_nmi_bypasses_the_coalescing_window():
+def test_immediate_bypasses_the_coalescing_window():
     """A conflict dispatches no checks, so pending never drains and waiting
     observes nothing -- it must fire immediately even mid-window."""
     probe = ScriptedProbe(
         [
             Tick(
                 epoch="e1",
-                observations=[Observation("conflict", Severity.NMI, "CONFLICTING")],
+                observations=[Observation("conflict", Severity.IMMEDIATE, "CONFLICTING")],
                 pending=9,
             )
         ]
@@ -452,7 +453,7 @@ def test_an_entry_left_by_a_partial_fire_still_reaches_the_cap():
             {
                 "epoch": "e1",
                 # What a partial fire leaves: the sticky half already delivered,
-                # one epoch-scoped survivor carrying the age it earned.
+                # one ``REVISION`` survivor carrying the age it earned.
                 "coalescing": {key: {"brief": "a red", "opened_at": _clock.time() - 600}},
             }
         ),
@@ -784,7 +785,7 @@ def test_sanitize_label_strips_control_and_markup():
 
 
 def _sticky(observation_key: str, brief: str = "brief") -> Observation:
-    return Observation(observation_key, Severity.WAKE, brief, epoch_scoped=False)
+    return Observation(observation_key, Severity.WAKE, brief, resets_on=ResetsOn.NEVER)
 
 
 def test_a_sticky_key_survives_an_epoch_change():
@@ -800,7 +801,7 @@ def test_a_sticky_key_survives_an_epoch_change():
     assert isinstance(_verdict(probe, coalesce_secs=0), Skip)
 
 
-def test_an_epoch_scoped_key_is_still_wiped_by_an_epoch_change():
+def test_a_revision_key_is_still_wiped_by_an_epoch_change():
     """The carry-over filter must keep exactly one half. A filter that kept
     everything would silently disable the epoch reset itself."""
     probe = ScriptedProbe(
@@ -824,7 +825,7 @@ def test_the_two_key_spaces_do_not_collide():
 
 
 def test_a_sticky_key_is_dropped_once_past_the_realert_window():
-    """Epoch-scoped keys are bounded by the reset that wipes them; sticky keys
+    """``REVISION`` keys are bounded by the reset that wipes them; sticky keys
     have no such bound, so a long-lived watch would grow its state forever.
     Dropping them past the re-alert window frees state without changing any
     decision -- they suppress nothing at that age."""
@@ -871,7 +872,7 @@ def test_the_blind_marker_is_not_carried_across_an_epoch_change():
 
 def test_state_written_before_the_sentinels_existed_costs_no_extra_wake():
     """An upgrade must not re-report anomalies the previous version already
-    delivered. A bare key is adopted as epoch scoped, which is what every
+    delivered. A bare key is adopted into the epoch space, which is what every
     pre-sentinel key was."""
     path = state_path("test-kind", "sub-1", "job-1")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -902,9 +903,9 @@ def test_an_open_sticky_wake_is_not_pruned_when_the_probe_stops_reporting_it():
     assert "brief" in str(verdict)
 
 
-def test_an_open_epoch_scoped_wake_is_still_pruned_when_it_clears():
+def test_an_open_revision_wake_is_still_pruned_when_it_clears():
     """The other half of the same asymmetry: a check that reran green must not be
-    announced as failing, so the prune has to keep applying to epoch-scoped
+    announced as failing, so the prune has to keep applying to ``REVISION``
     entries. Exempting everything would reintroduce the self-contradicting wake.
     """
     probe = ScriptedProbe(
@@ -918,7 +919,7 @@ def test_an_open_epoch_scoped_wake_is_still_pruned_when_it_clears():
     assert isinstance(_verdict(probe, coalesce_secs=_COALESCE), Skip)
 
 
-def test_an_open_epoch_scoped_window_is_dropped_by_an_epoch_change():
+def test_an_open_revision_window_is_dropped_by_an_epoch_change():
     """The complement: window entries describing checks on a commit that is no
     longer under review must still be discarded, or a force-push would announce
     the old head's reds against the new one."""
@@ -1087,10 +1088,10 @@ def test_the_wake_footer_is_emitted_once_not_once_per_observation():
 
 def test_a_single_observation_wake_still_carries_the_footer():
     """The footer moved from the brief to the kernel, so every delivery path has
-    to apply it -- an NMI fires one observation without ever passing through the
+    to apply it -- an IMMEDIATE fires one observation without ever passing through the
     coalescing join, and would silently lose its instructions."""
     probe = FootedProbe(
-        [Tick(epoch="e1", observations=[Observation("conflict", Severity.NMI, "dirty")])]
+        [Tick(epoch="e1", observations=[Observation("conflict", Severity.IMMEDIATE, "dirty")])]
     )
     verdict = _verdict(probe, coalesce_secs=_COALESCE)
     assert isinstance(verdict, Report)
@@ -1102,7 +1103,7 @@ def test_a_footer_that_raises_costs_the_footer_not_the_tick():
     """A missing footer is recoverable; a watch that raises every tick is
     auto-paused, which loses the watch itself."""
     probe = FootedProbe(
-        [Tick(epoch="e1", observations=[Observation("conflict", Severity.NMI, "dirty")])],
+        [Tick(epoch="e1", observations=[Observation("conflict", Severity.IMMEDIATE, "dirty")])],
         suffix=RuntimeError("probe is broken"),
     )
     verdict = _verdict(probe, coalesce_secs=_COALESCE)
@@ -1130,12 +1131,12 @@ def test_a_sticky_wake_fires_at_the_floor_while_checks_are_still_pending():
     assert isinstance(_verdict(probe, coalesce_secs=_COALESCE), Report)
 
 
-def test_the_sticky_half_fires_while_the_epoch_scoped_half_keeps_waiting():
+def test_the_sticky_half_fires_while_the_revision_half_keeps_waiting():
     """The two populations fire on their OWN readiness, and both halves of that
     matter.
 
-    Firing the whole window when a sticky signal is ready would announce an
-    epoch-scoped `ready` while checks were still draining -- the
+    Firing the whole window when a sticky signal is ready would announce a
+    ``REVISION`` `ready` while checks were still draining -- the
     convergence-that-never-happened the floor exists to prevent. Holding the
     sticky signal until the checks drain is the defect above. So the wake is
     split, and the remainder keeps the ORIGINAL start stamp: it has been waiting
@@ -1167,7 +1168,7 @@ def test_the_sticky_half_fires_while_the_epoch_scoped_half_keeps_waiting():
 
 
 def test_a_partial_fire_defers_to_the_unwritable_state_fallback():
-    """Withholding the epoch-scoped half is a DELAY only while the window can be
+    """Withholding the ``REVISION`` half is a DELAY only while the window can be
     remembered.
 
     With an unwritable state directory the next tick reloads an empty window, so

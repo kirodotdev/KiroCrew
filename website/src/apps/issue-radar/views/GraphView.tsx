@@ -239,7 +239,7 @@ export default function GraphView() {
               onKeyDown={(e) => { if (e.key === 'Enter') onJump((e.target as HTMLInputElement).value) }}
               placeholder={i18nT('apps.issueRadar.views.graphView.jump_placeholder')}
               aria-label={i18nT('apps.issueRadar.views.graphView.jump_label')}
-              className="w-40 md:w-52 bg-card border border-border-strong text-text px-2.5 py-1 rounded-sm text-[11px] focus:outline-none focus:border-accent"
+              className="w-40 md:w-52 bg-card border border-border-strong text-text px-2.5 py-1 rounded-sm text-[11px] focus:outline-hidden focus:border-accent"
             />
           </label>
           <datalist id="ir-graph-open-items">

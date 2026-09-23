@@ -475,18 +475,20 @@ def test_the_handshake_is_the_spec_dialect() -> None:
 
 def test_the_argv_is_the_host_binary_plus_the_shipped_profile() -> None:
     """The ACP package is a plugin with no executable; the host binary boots it."""
-    from kiro_crew.acp.client import (
-        DEEPSEEK_ACP_PROFILE_ARGS,
-        DEEPSEEK_BIN,
-        DEEPSEEK_INSTALL_COMMAND,
-    )
+    from kiro_crew.agent_sdk.backends import launch_for
 
-    assert DEEPSEEK_BIN == "dsh"
-    assert DEEPSEEK_ACP_PROFILE_ARGS == ("--profile", "acp")
-    assert DEEPSEEK_INSTALL_COMMAND == "npm i -g @deepseek-ai/dsh"
-
-    body = inspect.getsource(AcpClient._spawn)
-    assert "argv = [deepseek_bin, *DEEPSEEK_ACP_PROFILE_ARGS]" in body
+    # The RECORD is what is pinned, not a line of source: the spawn arm reads
+    # ``_resolve_self_served_launch``, which is shared with the sibling harnesses, so
+    # a source-text assertion there would pin their spelling as well as this one's.
+    record = launch_for(ACP_BACKEND_DEEPSEEK)
+    assert record.binary == "dsh"
+    assert record.acp_args == ("--profile", "acp")
+    assert record.spawn_label == "dsh --profile acp"
+    # The installer names the HOST binary. The ACP package is a plugin with no
+    # executable of its own, so advice naming it would not produce a runnable
+    # harness -- which is the whole reason this fact is data rather than prose.
+    assert record.install_command == "npm i -g @deepseek-ai/dsh"
+    assert "dsh" in record.missing_hint or "plugin" in record.missing_hint
 
 
 def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_path) -> None:
@@ -511,7 +513,7 @@ def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(client_module, "_mise_which", lambda _name: "/never/reached")
 
-    resolved, _searched = client_module._resolve_deepseek_bin()
+    resolved, _searched = client_module._resolve_self_served_bin(ACP_BACKEND_DEEPSEEK)
     assert resolved == str(binary)
 
 
@@ -523,7 +525,7 @@ def test_an_absent_binary_reports_what_was_searched(monkeypatch) -> None:
     monkeypatch.setattr(client_module, "_mise_which", lambda _name: None)
     monkeypatch.setattr(client_module.shutil, "which", lambda *_a, **_kw: None)
 
-    resolved, searched = client_module._resolve_deepseek_bin()
+    resolved, searched = client_module._resolve_self_served_bin(ACP_BACKEND_DEEPSEEK)
     assert resolved is None
     assert searched
 
@@ -591,21 +593,36 @@ def test_the_levels_parser_reads_the_table(tmp_path) -> None:
     assert '== "effort"' not in body
 
 
+#: How many sites in ``AcpProvider`` resolve the effort option id per backend, and
+#: what each one is. An exact count rather than a floor: a literal at any of them
+#: makes the whole channel a silent no-op for a harness that spells the option
+#: differently, and a count that only grows cannot tell a new reader from a
+#: hard-coded one that slipped in beside a correct one.
+_PROVIDER_EFFORT_ID_SITES = (
+    "the advertised-option CHECK in ``_set_effort_config_option``",
+    "the skip-if-unadvertised check in ``change_effort``",
+    "the capability answer in ``supports_effort``, for a harness whose ADVERTISED "
+    "option decides that a level applies at all "
+    "(``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``)",
+)
+
+
 def test_no_site_that_asks_about_effort_spells_the_id_itself() -> None:
     """Membership in the effort set is worth nothing if a consumer hard-codes the id.
 
-    The levels parser is one of four sites. The advertised-option CHECK and the two
-    pushes live in ``providers/acp.py``, and a literal at any of them makes the whole
-    channel a silent no-op for this harness: the check reports the option
-    unsupported, the push never happens, and the dropdown still offers levels that
-    can never be applied.
+    The levels parser is one site; ``_PROVIDER_EFFORT_ID_SITES`` names the ones in
+    ``providers/acp.py``. A literal at any of them makes the whole channel a silent
+    no-op for this harness: the check reports the option unsupported, the push never
+    happens, and the dropdown still offers levels that can never be applied.
     """
     from kiro_crew.providers import acp as provider_module
 
     body = inspect.getsource(provider_module.AcpProvider)
     assert 'supports_config_option("effort")' not in body
     assert 'set_config_option("effort"' not in body
-    assert body.count("effort_config_option_id(self._client.backend)") == 2
+    assert body.count("effort_config_option_id(self._client.backend)") == len(
+        _PROVIDER_EFFORT_ID_SITES
+    )
 
 
 @pytest.mark.asyncio

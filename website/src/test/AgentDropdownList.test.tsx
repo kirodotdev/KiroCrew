@@ -66,6 +66,103 @@ describe('AgentDropdownList', () => {
   })
 })
 
+describe('AgentDropdownList namespaces (member vs template)', () => {
+  const both: AgentItem[] = [
+    { name: 'reviewer', source: 'kirocrew', selection_kind: 'member', description: 'My reviewer' },
+    { name: 'reviewer', source: 'builtin', selection_kind: 'template', description: 'Shared template' },
+    { name: 'test-writer', source: 'package', selection_kind: 'template' },
+  ]
+
+  it('groups by kind and keeps a same-name member and template as two rows', () => {
+    render(<AgentDropdownList agents={both} activeAgent="" defaultAgent="" onSelect={() => {}} />)
+    const groups = screen.getAllByRole('group')
+    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Crewmates', 'Agent templates'])
+    expect(screen.getAllByRole('option')).toHaveLength(3)
+    expect(screen.getAllByText('reviewer')).toHaveLength(2)
+  })
+
+  it('drops the origin badge inside the grouped view and explains what a template pick is', () => {
+    // The header already says what each row IS; a grey "package" / "kirocrew"
+    // tag beside it only asks the reader to decode a second vocabulary. The
+    // templates group instead carries the one fact a first-time picker needs:
+    // a template runs on shared memory and enrols nothing.
+    render(<AgentDropdownList agents={both} activeAgent="" defaultAgent="" onSelect={() => {}} />)
+    expect(screen.queryByText('package')).toBeNull()
+    expect(screen.queryByText('kirocrew')).toBeNull()
+    expect(screen.getByText(/runs the shared template on shared memory/i)).toBeInTheDocument()
+  })
+
+  it('drops the header and the templates hint when the list holds one kind only', () => {
+    // With crewmates withheld (HIDE_CREWMATE_CHOICES) the list is templates
+    // only. A header then separates nothing and the hint contrasts a template
+    // against a crewmate the list never shows, so both go; the accessible
+    // group label stays, and the rows keep their grouped rendering (no origin
+    // badge) so the flag flips nothing but the chrome.
+    const templatesOnly = both.filter(a => a.selection_kind === 'template')
+    render(<AgentDropdownList agents={templatesOnly} activeAgent="" defaultAgent="" onSelect={() => {}} />)
+    expect(screen.getByRole('group', { name: 'Agent templates' })).toBeInTheDocument()
+    expect(screen.queryByText('Agent templates')).toBeNull()
+    expect(screen.queryByText(/runs the shared template on shared memory/i)).toBeNull()
+    expect(screen.queryByText('package')).toBeNull()
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+  })
+
+  it('keeps the origin badge on the flat, name-only list', () => {
+    render(<AgentDropdownList agents={[{ name: 'x', source: 'package' }]} activeAgent="" defaultAgent="" onSelect={() => {}} />)
+    expect(screen.getByText('package')).toBeInTheDocument()
+  })
+
+  it('reports the kind with the name, so the caller can send the namespace', () => {
+    const onSelect = vi.fn()
+    render(<AgentDropdownList agents={both} activeAgent="" defaultAgent="" onSelect={onSelect} />)
+    const options = screen.getAllByRole('option')
+    fireEvent.click(options[0])
+    fireEvent.click(options[1])
+    expect(onSelect).toHaveBeenNthCalledWith(1, 'reviewer', 'member')
+    expect(onSelect).toHaveBeenNthCalledWith(2, 'reviewer', 'template')
+  })
+
+  it('draws the roster avatar on a crewmate row and none on a template row', () => {
+    // A member is a crewmate with a face; a template is a definition. The same
+    // CrewAvatar the roster renders (a decorative img) sits before the name on
+    // member rows only, so a same-name pair is told apart at a glance.
+    render(<AgentDropdownList agents={both} activeAgent="" defaultAgent="" onSelect={() => {}} />)
+    const options = screen.getAllByRole('option')
+    expect(options[0].querySelector('img')).not.toBeNull()
+    expect(options[1].querySelector('img')).toBeNull()
+  })
+
+  it('lights up only the row in the slot\'s recorded namespace', () => {
+    render(<AgentDropdownList agents={both} activeAgent="reviewer" activeKind="template" defaultAgent="" onSelect={() => {}} />)
+    const selected = screen.getAllByRole('option').map(o => o.getAttribute('aria-selected'))
+    expect(selected).toEqual(['false', 'true', 'false'])
+  })
+
+  it('lights the member row when the slot recorded no namespace and a member holds the name', () => {
+    // A slot restored from history (or from an older gateway) carries no kind.
+    // The backend resolves a bare name member-first, so the member row is
+    // what actually runs; the same-name template must not read as current.
+    render(<AgentDropdownList agents={both} activeAgent="reviewer" defaultAgent="" onSelect={() => {}} />)
+    const selected = screen.getAllByRole('option').map(o => o.getAttribute('aria-selected'))
+    expect(selected).toEqual(['true', 'false', 'false'])
+  })
+
+  it('lights the template row when the slot recorded no namespace and no member holds the name', () => {
+    const templateOnly: AgentItem[] = [
+      { name: 'reviewer', source: 'kirocrew', selection_kind: 'member' },
+      { name: 'planner', source: 'builtin', selection_kind: 'template' },
+    ]
+    render(<AgentDropdownList agents={templateOnly} activeAgent="planner" defaultAgent="" onSelect={() => {}} />)
+    const selected = screen.getAllByRole('option').map(o => o.getAttribute('aria-selected'))
+    expect(selected).toEqual(['false', 'true'])
+  })
+
+  it('renders a flat list, with no group headers, for a name-only roster', () => {
+    render(<AgentDropdownList agents={agents} activeAgent="" defaultAgent="" onSelect={() => {}} />)
+    expect(screen.queryByRole('group')).not.toBeInTheDocument()
+  })
+})
+
 describe('AgentDropdownList hosts own the scroll (#6375)', () => {
   // The component deliberately declares no scroll container (see the test
   // above), which moves the "exactly one scroll owner" invariant into the two

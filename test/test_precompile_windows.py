@@ -29,6 +29,14 @@ def test_precompiles_import_closure_as_relocatable_unchecked_hash_pyc(
     monkeypatch.syspath_prepend(str(root))
     for name in ("sample_startup", "sample_startup.dependency"):
         sys.modules.pop(name, None)
+    # The packaging step writes each pyc at ``cache_from_source()``, i.e. into a
+    # ``__pycache__`` BESIDE the shipped source -- that is what "relocatable"
+    # means for it. The suite's rootdir conftest sets ``sys.pycache_prefix`` so
+    # the checkout's own imports cache elsewhere, which would send this test's
+    # pycs into a per-user cache tree mirroring ``tmp_path``'s absolute path:
+    # a new orphaned tree on the operator's disk every run, and not the layout
+    # under test. Clear the prefix for this test so the layout is the shipped one.
+    monkeypatch.setattr(sys, "pycache_prefix", None)
 
     count, total_bytes = MODULE.precompile_import_closure(root, ["sample_startup"])
 
@@ -36,6 +44,8 @@ def test_precompiles_import_closure_as_relocatable_unchecked_hash_pyc(
     assert total_bytes > 0
     for source in package.glob("*.py"):
         cache = Path(importlib.util.cache_from_source(str(source)))
+        assert cache.is_relative_to(root), f"pyc landed outside the runtime tree: {cache}"
+        assert cache.parent == package / "__pycache__"
         payload = cache.read_bytes()
         flags = struct.unpack("<I", payload[4:8])[0]
         # Bit 0 = hash-based, which is what survives extraction restamping the

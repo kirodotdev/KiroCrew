@@ -13,7 +13,7 @@
  * component, its classes, or its strings. The line above the control is harness
  * chrome, labelled as such, so the frame shows which command produced the label.
  *
- *   ?cmd=api_config|api_secrets|pipeline   ?theme=dark|light
+ *   ?cmd=api_config|api_secrets|pipeline|over_budget|spaced|blob   ?theme=dark|light
  */
 import { createRoot } from 'react-dom/client'
 
@@ -31,6 +31,25 @@ const COMMANDS = {
   api_config: 'gh api repos/owner/some-repository/contents/config.json --jq .sha',
   api_secrets: 'gh api repos/owner/some-repository/contents/secrets.json --jq .sha',
   pipeline: 'gh pr diff 42 --repo owner/some-repository | head -40 | wc -l',
+  // Longer than the 256-char elision budget, which is where the residual gap
+  // lived (#4700): the old label cut the middle out, and the `title` tooltip
+  // that carried the rest never fires on touch. The frame shows the row
+  // rendering it whole, wrapped inside the menu's width cap.
+  over_budget:
+    'gh api repos/owner/some-repository/contents/infrastructure/environments/production/'
+    + 'us-east-1/services/checkout/config/secrets.enc.json --jq .sha '
+    + '--header "Accept: application/vnd.github.v3.raw" '
+    + '--hostname github.enterprise.example.com --paginate --cache 30s',
+  // A quoted argument carrying a RUN of whitespace. HTML collapses runs by
+  // default, so without `whitespace-pre-wrap` this renders as the one-space
+  // command while granting different exact authority; the harness reads the
+  // rendered innerText back and fails if the run collapsed.
+  spaced: 'grep -r "two  spaces" /path/to/dir --include="*.tsx"',
+  // Multi-KB and unspaced -- the scale the old 256-char budget named as what it
+  // guarded ("a base64 blob, a megabyte one-liner"). Nothing shortens it now,
+  // so the bound has to be the menu itself: the harness scrolls to the end and
+  // asserts the family and session rows are still reachable.
+  blob: `bash -c "echo ${'A1b2C3d4e5F6g7H8'.repeat(256)} | base64 -d | sh"`,
 } as const
 
 const params = new URLSearchParams(location.search)
@@ -49,8 +68,11 @@ const BTN = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-mut
 
 createRoot(document.getElementById('root')!).render(
   <div data-capture-root className="bg-bg text-text p-5 w-[720px] flex flex-col gap-3">
-    {/* Harness chrome: names the command whose label is under test. */}
-    <div className="text-[11px] text-muted font-mono break-all">
+    {/* Harness chrome: names the command whose label is under test. Whitespace
+        preserved for the same reason the row under test preserves it — a chrome
+        line that collapses a run the row keeps makes the two disagree in the
+        frame, and a reader cannot tell which one is wrong. */}
+    <div className="text-[11px] text-muted font-mono break-all whitespace-pre-wrap">
       <span className="not-italic text-subtle">the agent wants to run: </span>{cmd}
     </div>
     <div>

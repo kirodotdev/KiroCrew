@@ -204,3 +204,67 @@ class TestNoOpHandlers:
         r = _renderer(c)
         await r.on_compaction(75.0)
         assert c.replies == []
+
+
+class TestRedactionNotice:
+    """A rewritten answer is followed by one notice reply; clean answers are not.
+
+    Feishu delivers the TurnDriver's already-redacted stream verbatim, so the
+    tests feed the placeholder tag the driver writes. The tally counts the
+    delivered reply body; shared wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_redacted_answer_is_followed_by_one_notice(self) -> None:
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_text_chunk(f"Run: psql {CREDENTIAL_REDACTION_TAGS[0]}")
+        await r.on_done()
+        assert len(c.replies) == 2
+        assert c.replies[0][1].startswith("Run: psql ")
+        assert "Security notice" in c.replies[1][1]
+
+    @pytest.mark.asyncio
+    async def test_clean_answer_sends_no_notice(self) -> None:
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_text_chunk("All green, deploy finished.")
+        await r.on_done()
+        assert len(c.replies) == 1
+
+    @pytest.mark.asyncio
+    async def test_notice_send_failure_does_not_fail_a_delivered_turn(self) -> None:
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+        c = FakeClient()
+        real_send = c.send_reply
+
+        async def send_but_fail_the_notice(message_id: str, text: str) -> bool:
+            if "Security notice" in text:
+                raise RuntimeError("feishu down after the answer")
+            return await real_send(message_id, text)
+
+        c.send_reply = send_but_fail_the_notice  # type: ignore[method-assign]
+        r = _renderer(c)
+        await r.on_text_chunk(f"Run: psql {CREDENTIAL_REDACTION_TAGS[0]}")
+        await r.on_done()  # must not raise
+        assert len(c.replies) == 1  # the answer itself was delivered
+
+    @pytest.mark.asyncio
+    async def test_a_false_notice_verdict_is_contained_too(self) -> None:
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+        c = FakeClient()
+        real_send = c.send_reply
+
+        async def refuse_the_notice(message_id: str, text: str) -> bool:
+            await real_send(message_id, text)
+            return "Security notice" not in text
+
+        c.send_reply = refuse_the_notice  # type: ignore[method-assign]
+        r = _renderer(c)
+        await r.on_text_chunk(f"Run: psql {CREDENTIAL_REDACTION_TAGS[0]}")
+        await r.on_done()  # a False verdict on the notice is logged, not raised

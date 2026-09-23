@@ -1,0 +1,42 @@
+# Nightly: register a local folder as a knowledge source and watch the scan
+# land. The folder form takes a TYPED absolute path (the native picker is
+# macOS-only and the browser policy blocks file dialogs anyway), and the seeded
+# home lives at a mktemp path no static YAML can spell, so `boot.sh` stages
+# three sample markdown notes at the fixed path named in step 4 and
+# `teardown.sh` removes them again (docs/build/gui-user-test.md, "Seeds").
+#
+# What the fake backend can and cannot prove: discovery and ingestion are local
+# (walk -> chunk -> store), so the source row, its status and its item count are
+# deterministic -- each note is one chunk, so three notes become exactly three
+# items. Entity extraction runs LLM workers against the fake ACP backend, whose
+# canned reply is not the JSON the extractor wants, so extraction yields nothing
+# and is not asserted; neither is embedding (no model is downloaded on the
+# target). Only what the sources list shows is judged. Nightly: seven steps and
+# a scan to wait for is too long for the smoke tier.
+name: knowledge-add-folder-source-and-scan
+tier: nightly
+feature: knowledge
+user_story: >-
+  As a user, I want to register a local folder and see per-source counts after
+  a scan, so that its markdown becomes searchable.
+docs_url: docs/system-specs/modules/knowledge.md
+summary: Add the sample notes folder as a Knowledge source, start the scan and read the source row's item count
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /knowledge
+steps:
+  - You are on the Agent Capabilities page with its Knowledge tab selected; the pane header reads "Knowledge" with "Documents and sources your agent can search when answering" beneath it. Under that header is a row of view tabs (List View, Graph View, Sources, Settings). Click the "Sources" tab.
+  - Click the "+ Add Source" button on the right. A form titled "Add Source" opens with two type buttons, "Local File" and "Local Folder". Click "Local Folder".
+  - Click into the field whose placeholder reads "Name (optional)" and type exactly "Team notes".
+  - Click into the field whose placeholder reads "Folder path (e.g., /home/user/notes)" and type exactly "/tmp/kirocrew-gui-user-test/team-notes".
+  - Click the "Add Folder" button at the bottom right of the form.
+  - A confirmation dialog opens. It names the folder path and says "3 supported files found". Click its "Start Scanning" button.
+  - Wait about ten seconds, then look at the sources list. Repeat the wait (up to five more times) until the "Team notes" row no longer reads "0 items".
+expectations:
+  - The sources list has a row named "Team notes" whose second line reads "local_folder" followed by the folder path /tmp/kirocrew-gui-user-test/team-notes.
+  - That row's status badge reads "active" (not "Awaiting confirmation", "paused" or "error").
+  - That row shows a count of "3 items".
+  - No red error text is visible on the Sources tab (for example nothing starting with "Failed to add source" or "Directory not found").
+max_steps: 20
+max_seconds: 480

@@ -97,9 +97,18 @@ _TIMEOUT_RC = 124
 # it is not what an operator needs to read.
 _ERROR_CAP = 2000
 
-#: Chromium's own words when the host cannot run its sandbox. Decides only
-#: whether :data:`SANDBOX_REMEDY` is appended; the CLI's text is shown either way.
-_SANDBOX_MARKER = "No usable sandbox"
+#: Chromium's own words when the host cannot run its sandbox -- one phrasing per
+#: platform. The first is Linux's; the other two are macOS's, where a Seatbelt
+#: refusal prints both and either line alone has to be enough. Matched
+#: case-sensitively as a substring, which is why the macOS errno tail
+#: (``: Operation not permitted``) is left off: the errno varies by host and the
+#: cause does not. Decides only whether :data:`SANDBOX_REMEDY` is appended; the
+#: CLI's text is shown either way.
+_SANDBOX_MARKERS = (
+    "No usable sandbox",
+    "sandbox initialization failed",
+    "Failed to initialize sandbox.",
+)
 
 #: The remedy for the sandbox case, in the spec's terms: Kiro Crew never drops
 #: the sandbox by default; the operator names their own config to accept that
@@ -364,7 +373,8 @@ def _distill(out: str, err: str) -> str:
 
 def _error_text(rc: int, out: str, err: str) -> str:
     detail = _distill(out, err) or f"playwright-cli exited with status {rc}"
-    if _SANDBOX_MARKER in f"{err}\n{out}":
+    combined = f"{err}\n{out}"
+    if any(marker in combined for marker in _SANDBOX_MARKERS):
         detail = f"{detail}\n\n{SANDBOX_REMEDY}"
     return detail
 

@@ -66,7 +66,7 @@ env:
 jobs:
   metrics:
     name: Deterministic metrics
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     # Sized for the worst observed week (57 min) twice over: SZZ cost scales
     # with fix volume and `window_days` is a dispatch input.
     timeout-minutes: 120
@@ -149,7 +149,7 @@ jobs:
   analyze:
     name: Classify and narrate
     needs: metrics
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     # The model half alone. 09-07 was cut off two minutes into it because the
     # metrics half had spent 57 of the shared 60.
     timeout-minutes: 40
@@ -179,7 +179,7 @@ jobs:
           name: ${{ env.HANDOVER_ARTIFACT }}
           path: .
 
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           # SHIP_REPORT_BEDROCK_ROLE_ARN, not AWS_BEDROCK_ROLE_ARN: the review
           # lanes' role is trusted for pull_request events; this workflow runs
@@ -197,7 +197,7 @@ jobs:
         # out of time is CANCELLED and the always() tail runs on a 5-minute
         # grace clock with the model's orphan processes still being torn down.
         timeout-minutes: 30
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         with:
           # Model id form (bare regional `us.` inference profile) is
           # load-bearing — see design-review.yml. Write is granted for exactly

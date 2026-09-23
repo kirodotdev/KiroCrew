@@ -22,8 +22,8 @@ import contextlib
 import json
 import logging
 import os
+import random
 import signal
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,10 +32,11 @@ from typing import Any, Optional
 from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint, warm_code_fingerprint
 from kiro_crew.config.paths import config_dir
-from kiro_crew.env import resolve_krb5_ccname
+from kiro_crew.env import mcp_runtime_path, resolve_krb5_ccname
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
+from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER, default_ladder
 from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES as _SANDBOX_SENSITIVE_ENV_PREFIXES
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,13 @@ _LIVENESS_PING_INTERVAL_SECS = 30.0
 # daemon that would have recovered on its own. Empirically, the 2-fail
 # threshold raced with run_chaos.py and produced spurious
 # "gatewayd_pid_changed_unexpectedly" during legitimate chaos tests.
+#
+# Reaching the threshold takes more than three quiet cycles: a cycle counts only
+# when NEITHER probe answered (``_ping_with_escalation``), because the fast bound
+# measures load rather than liveness and on its own cannot tell a dead accept
+# loop from an event loop that is merely saturated. Under a wide fan-out that
+# confusion killed a live daemon ten times in thirty-five minutes, and each kill
+# severed every session's kirocrew-core transport.
 _LIVENESS_MAX_CONSECUTIVE_FAILURES = 3
 # Deadline for the ESCALATED probe, run once after a fast ping misses. The fast
 # ping's 2s bound measures load, not liveness: a daemon carrying 100+ concurrent
@@ -77,9 +85,14 @@ _LIVENESS_ESCALATED_TIMEOUT_SECS = 20.0
 # could reach ``pool.shutdown_all()``. Sourcing it from the daemon's published
 # budget makes that inversion unrepresentable.
 _SHUTDOWN_GRACE_SECS = TOTAL_SHUTDOWN_BUDGET_SECS
-# Respawn backoff: start here, double up to max.
-_RESPAWN_BACKOFF_START_SECS = 1.0
-_RESPAWN_BACKOFF_MAX_SECS = 60.0
+# Respawn backoff: the L4 rung of the shared recovery ladder. Floor and cap are
+# READ from ``recovery.ladder.LADDER`` rather than held here so the gatewayd
+# supervisor, the backend respawn, the ACP runtime rebuild and the task store
+# retry on one schedule with one jitter (RFC overload-resilience §7). The two
+# names stay because the stub mirrors the cap by name and a test pins it.
+_L4_POLICY = LADDER.layer(L4_GATEWAYD)
+_RESPAWN_BACKOFF_START_SECS = _L4_POLICY.base_secs
+_RESPAWN_BACKOFF_MAX_SECS = _L4_POLICY.max_secs
 # How many times start() will re-run assess-then-spawn before giving up. Two,
 # because the socket can change hands exactly once under a single start: a stale
 # incumbent yields and another gateway instance on the same machine wins the
@@ -187,6 +200,17 @@ class GatewaySpec:
     max_backends: int = 64  # keep in sync w/ McpGatewayConfig.max_backends (cover N agents x S servers)
     mcp_target_env: dict[str, str] = None  # type: ignore[assignment]
     prewarm_count: int = 0  # keep in sync w/ McpGatewayConfig.prewarm_count; 0 = disabled
+    # Admission (keep in sync w/ McpGatewayConfig.spawn_concurrency_* etc.).
+    spawn_concurrency_initial: int = 4
+    spawn_concurrency_min: int = 1
+    spawn_concurrency_max: int = 8
+    spawn_queue_wait_secs: int = 600
+    initialize_timeout_secs: int = 10
+    # Host budget ceilings; 0 = derive from the resource_status sample taken at
+    # spawn (procs, fds) or unbounded (rss_mb).
+    host_budget_max_procs: int = 0
+    host_budget_max_rss_mb: int = 0
+    host_budget_max_fds: int = 0
 
     def __post_init__(self) -> None:
         # dataclass(frozen) + mutable default → use object.__setattr__.
@@ -649,16 +673,25 @@ class GatewayManager:
         # long-lived background daemon's forked children inherit a usable
         # ticket for any credential-gated MCP server.
         resolve_krb5_ccname(env)
-        # A background daemon can inherit a minimal PATH (e.g. under
-        # systemd-user), so prepend the user-local bin dir where MCP
-        # server launchers are commonly installed.
-        local_bin = str(Path.home() / ".local" / "bin")
-        existing_path = env.get("PATH", "")
-        extra_dirs = [p for p in (local_bin,) if p and p not in existing_path.split(os.pathsep)]
-        if extra_dirs:
-            env["PATH"] = os.pathsep.join([*extra_dirs, existing_path]) if existing_path else os.pathsep.join(extra_dirs)
-        argv = [
-            sys.executable,
+        # A background daemon can inherit a minimal PATH (e.g. launched from
+        # Electron or under systemd-user), so extend it with the well-known MCP
+        # launcher dirs. This MUST be ``mcp_runtime_path``: operator-contributed
+        # MCP dirs lead (an explicitly named dir outranks a built-in guess),
+        # followed by ``augmented_path`` as one block in the exact order the
+        # kiro-cli spawn path uses, so wrappers that exec another BARE tool name
+        # resolve it. ``mcp_search_path`` is not correct here because this is an
+        # inherited daemon PATH, not a spec-authored PATH; treating it as the
+        # latter would move system entries ahead of managed launcher dirs.
+        #
+        # Off the loop, like the other blocking calls in this method: on a cold
+        # cache ``mcp_runtime_path`` calls ``augmented_path``, which globs every
+        # version-manager root for Node bin dirs (``_node_all_bin_dirs``, whose
+        # own docstring calls repeating that glob a GIL-contention risk).
+        # Measured 5ms warm-cache against 35 such dirs, but it is filesystem work
+        # with no ceiling on a slow or remote home, and this method already
+        # offloads a single chmod.
+        env["PATH"] = await asyncio.to_thread(mcp_runtime_path, env.get("PATH", ""))
+        argv = platform_compat.isolated_python_argv(
             "-m", _GATEWAYD_MODULE,
             "--socket", str(self._spec.socket_path),
             # This process is the daemon's one owner: it exits when we are
@@ -667,11 +700,27 @@ class GatewayManager:
             "--owner-pid", str(os.getpid()),
             "--idle-timeout-secs", str(self._spec.idle_timeout_secs),
             "--max-backends", str(self._spec.max_backends),
-        ]
+        )
         # Only pass --prewarm-count when enabled so the daemon command line
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:
             argv += ["--prewarm-count", str(self._spec.prewarm_count)]
+        # Admission: the spawn gate's fixed capacity and bounds, the queue wait
+        # and initialize budgets, and the host-budget ceilings. Ceilings left at
+        # 0 are derived in the daemon from ``--host-available-mb``, which is
+        # sampled HERE: the gateway process already runs the memory probe for
+        # its own sub-agent cap, and the daemon must not import that machinery.
+        argv += [
+            "--spawn-concurrency", str(self._spec.spawn_concurrency_initial),
+            "--spawn-concurrency-min", str(self._spec.spawn_concurrency_min),
+            "--spawn-concurrency-max", str(self._spec.spawn_concurrency_max),
+            "--spawn-queue-wait-secs", str(self._spec.spawn_queue_wait_secs),
+            "--initialize-timeout-secs", str(self._spec.initialize_timeout_secs),
+            "--host-budget-max-procs", str(self._spec.host_budget_max_procs),
+            "--host-budget-max-rss-mb", str(self._spec.host_budget_max_rss_mb),
+            "--host-budget-max-fds", str(self._spec.host_budget_max_fds),
+            "--host-available-mb", str(await asyncio.to_thread(self._host_available_mb)),
+        ]
         # Credential-rotation drain (seam-routed): the daemon is a separately
         # spawned process that never boots the platform, so the already-booted
         # gateway process resolves the watch paths here and threads each as a
@@ -721,6 +770,25 @@ class GatewayManager:
             # MemoryError) that would otherwise leak ``log_fh`` until
             # GC — a real risk under a watchdog respawn storm.
             log_fh.close()
+
+    @staticmethod
+    def _host_available_mb() -> float:
+        """Available host memory in MiB from the ``resource_status`` probe, or
+        ``-1.0`` when it is unavailable (the daemon then uses its floors).
+
+        Blocking (reads ``/proc`` or calls the platform API); callers offload
+        it. Never raises: a failed sample must not stop the daemon spawning.
+        """
+        try:
+            from kiro_crew.resource_status import probe
+
+            available_gb = probe().available_gb
+        except Exception:
+            logger.debug("host memory sample for the daemon's host budget failed", exc_info=True)
+            return -1.0
+        if available_gb is None or available_gb < 0:
+            return -1.0
+        return float(available_gb) * 1024.0
 
     @staticmethod
     def _credential_watch_paths() -> list[Path]:
@@ -955,6 +1023,9 @@ class GatewayManager:
     async def _ping_once(self) -> bool:
         """Return ``True`` iff the daemon replies ``{"type":"pong"}`` within
         ``_PING_TIMEOUT_SECS``. Any transport or parse error → ``False``.
+
+        A wider deadline belongs to the decisions that would DISPLACE a running
+        daemon, which reach it through :meth:`_ping_with_escalation`.
         """
         return (await self._ping_payload()) is not None
 
@@ -995,8 +1066,11 @@ class GatewayManager:
 
             def _left() -> float:
                 # Never zero or negative: wait_for(0) raises immediately, which
-                # would report a spent budget as a transport failure.
-                return max(0.001, deadline - loop.time())
+                # would report a spent budget as a transport failure. Never
+                # above the caller's bound either: ``deadline - now`` is a
+                # rounded float and can land a hair over ``timeout`` on the
+                # first step.
+                return min(timeout, max(0.001, deadline - loop.time()))
 
         try:
             reader, writer = await asyncio.wait_for(
@@ -1033,6 +1107,22 @@ class GatewayManager:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    async def set_spawn_capacity(self, capacity: int) -> Optional[int]:
+        """Move the daemon's spawn-gate capacity (adaptive controller actuator).
+
+        Returns the capacity the daemon actually applied (it clamps to its own
+        ``[floor, ceiling]``), or ``None`` when the daemon did not answer or
+        rejected the frame -- the caller keeps the value pending and retries
+        on its next tick rather than assuming it took effect.
+        """
+        reply = await self._control_roundtrip(
+            {"type": "set-spawn-capacity", "capacity": int(capacity)}
+        )
+        if not reply or reply.get("type") != "spawn-capacity":
+            return None
+        applied = reply.get("capacity")
+        return int(applied) if isinstance(applied, int) and not isinstance(applied, bool) else None
 
     async def stats(self) -> dict:
         """Return the daemon's pool snapshot, or ``{}`` on any error."""
@@ -1141,6 +1231,28 @@ class GatewayManager:
         )
         return True
 
+    @staticmethod
+    def _next_respawn_backoff(current: float) -> float:
+        """The delay after ``current`` on the L4 schedule: doubled, capped, jittered.
+
+        Reads the module floor/cap at call time (tests pin the floor to 0) and
+        applies the ladder's equal jitter so two supervisors that lost their
+        daemons together do not respawn in lock-step. Never below the floor and
+        never above ``_RESPAWN_BACKOFF_MAX_SECS`` -- the value the stub's
+        reconnect budget is derived from.
+        """
+        floor = _RESPAWN_BACKOFF_START_SECS
+        cap = _RESPAWN_BACKOFF_MAX_SECS
+        raw = min(max(current, floor) * 2, cap)
+        if raw <= 0:
+            return 0.0
+        # Equal jitter over the doubled value (see recovery.policy): the low half
+        # is guaranteed, the high half is drawn. The exponent is expressed as
+        # "double what we slept last time" because the loop holds the delay, not
+        # an attempt count.
+        jittered = raw / 2.0 + random.random() * (raw / 2.0)
+        return float(min(cap, max(floor, jittered)))
+
     async def _run_watchdog(self) -> None:
         """Supervise the daemon: respawn on exit or on liveness failure.
 
@@ -1213,7 +1325,7 @@ class GatewayManager:
                         # hot-loop at the floor interval.
                         self._adopted = True
                         await asyncio.sleep(backoff)
-                        backoff = min(backoff * 2, _RESPAWN_BACKOFF_MAX_SECS)
+                        backoff = self._next_respawn_backoff(backoff)
                     else:
                         # Spawned — reset backoff; the next iteration enters the
                         # wait-race to supervise the fresh process.
@@ -1234,7 +1346,7 @@ class GatewayManager:
                     # Escalate backoff (mirroring the main proc-exit path) so a
                     # persistent spawn failure does not hot-loop at the floor.
                     await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, _RESPAWN_BACKOFF_MAX_SECS)
+                    backoff = self._next_respawn_backoff(backoff)
                     continue
                 # Spawned — reset backoff; next iteration enters the wait-race.
                 backoff = _RESPAWN_BACKOFF_START_SECS
@@ -1294,7 +1406,7 @@ class GatewayManager:
                 "mcp-gateway: %s — respawning in %.1fs", exit_reason, backoff,
             )
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, _RESPAWN_BACKOFF_MAX_SECS)
+            backoff = self._next_respawn_backoff(backoff)
             if self._stopping:
                 return
             # Before respawning, check whether another daemon already owns
@@ -1326,7 +1438,7 @@ class GatewayManager:
                     incumbent.get("owner_pid"),
                 )
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _RESPAWN_BACKOFF_MAX_SECS)
+                backoff = self._next_respawn_backoff(backoff)
                 continue
             if incumbent is not None:
                 missing = self._adoption_drift(incumbent)
@@ -1341,7 +1453,7 @@ class GatewayManager:
                     # Draining incumbent: neither adoptable nor replaceable yet.
                     # Back off and re-assess rather than spawning into a held lock.
                     await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, _RESPAWN_BACKOFF_MAX_SECS)
+                    backoff = self._next_respawn_backoff(backoff)
                     continue
                 if verdict == _ADOPT:
                     self._adopted = True
@@ -1369,20 +1481,30 @@ class GatewayManager:
             except Exception:
                 logger.exception("mcp-gateway: respawn failed — will retry")
                 continue
+            # One L4 rebuild. The ladder counts it and, on a SECOND respawn
+            # inside its cooldown, escalates to L5 -- which is a notification,
+            # never an automatic gateway restart; this loop keeps supervising.
+            default_ladder().record_restart(L4_GATEWAYD)
+            default_ladder().observe_failure(
+                L4_GATEWAYD, "gatewayd", reason=exit_reason, retry_after_secs=None
+            )
             # Reset backoff after a successful respawn that stays alive
             # for at least 30s.
             await asyncio.sleep(30.0)
             if self._process is not None and self._process.returncode is None:
                 backoff = _RESPAWN_BACKOFF_START_SECS
+                default_ladder().observe_success(L4_GATEWAYD, "gatewayd")
 
     async def _liveness_probe_loop(self) -> str:
         """Ping the daemon every ``_LIVENESS_PING_INTERVAL_SECS``.
 
         Returns a human-readable reason string as soon as
-        ``_LIVENESS_MAX_CONSECUTIVE_FAILURES`` consecutive ping round-trips
-        fail. Never returns normally — either the coroutine is cancelled
-        by the outer watchdog race (daemon exited first) or it returns a
-        failure reason.
+        ``_LIVENESS_MAX_CONSECUTIVE_FAILURES`` consecutive cycles miss BOTH
+        probes: each cycle is the fast ping and then, only if it missed, one
+        escalated probe (see :meth:`_ping_with_escalation`), and a daemon that
+        answers either one is alive. Never returns normally — either the
+        coroutine is cancelled by the outer watchdog race (daemon exited
+        first) or it returns a failure reason.
         """
         consecutive_failures = 0
         while True:

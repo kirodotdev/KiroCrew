@@ -1,3 +1,4 @@
+import { downloadBlob } from '../../../utils/download'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, Copy, Download, Loader2 } from 'lucide-react'
 import {
@@ -11,7 +12,7 @@ import { copyToClipboard } from '../../../utils/clipboard'
 import ShareCard, { CARD_W } from './ShareCard'
 import {
   SHARE_REPO_URL, X_POST_LIMIT, buildIntentUrl, clampExcerpt, copyImageWithText,
-  downloadBlob, scanSensitive, type SensitiveKind,
+  scanSensitive, type SensitiveKind,
 } from './shareSupport'
 
 /**
@@ -263,7 +264,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
                   id="share-caption"
                   ref={captionRef}
                   aria-label={i18nT('pages.chat.share.caption_label')}
-                  className="w-full h-28 rounded-lg bg-bg ring-1 ring-inset ring-border focus:ring-accent outline-none px-3 py-2 text-[13px] leading-5 text-text resize-none"
+                  className="w-full h-28 rounded-lg bg-bg ring-1 ring-inset ring-border focus:ring-accent outline-hidden px-3 py-2 text-[13px] leading-5 text-text resize-none"
                   value={caption}
                   onChange={(e) => setCaption(e.target.value)}
                 />

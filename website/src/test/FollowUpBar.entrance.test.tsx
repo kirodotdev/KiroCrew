@@ -140,10 +140,10 @@ describe('follow-up chip entrance stagger', () => {
  */
 describe('follow-up chip entrance styling contract', () => {
   it('declares the hop keyframe and utility with a backwards fill', () => {
-    const config = readFileSync(resolve(process.cwd(), 'tailwind.config.js'), 'utf-8')
+    const theme = readFileSync(resolve(process.cwd(), 'src/tailwind-theme.css'), 'utf-8')
     // The overshoot midpoint IS the effect — a two-endpoint keyframe is a fade.
-    expect(config).toMatch(/'chip-hop':\s*\{[\s\S]{0,200}?'55%':\s*\{[^}]*translateY\(-4px\)/)
-    expect(config).toMatch(/'chip-hop':\s*'chip-hop [^']*backwards'/)
+    expect(theme).toMatch(/@keyframes chip-hop\s*\{[\s\S]{0,200}?55%\s*\{[^}]*translateY\(-4px\)/)
+    expect(theme).toMatch(/--animate-chip-hop:\s*chip-hop [^;]*backwards;/)
   })
 
   it('keeps the utility duration equal to the settle window CHIP_HOP_DURATION_MS is built from', () => {
@@ -152,8 +152,8 @@ describe('follow-up chip entrance styling contract', () => {
     // deepest chip is still mid-hop, its class is pulled, and the chip snaps
     // from an in-flight translateY to rest — a visible pop on the one chip the
     // stagger was for. The two live in different files, so pin them together.
-    const config = readFileSync(resolve(process.cwd(), 'tailwind.config.js'), 'utf-8')
-    const declared = config.match(/'chip-hop':\s*'chip-hop \.?(\d+)s/)
+    const theme = readFileSync(resolve(process.cwd(), 'src/tailwind-theme.css'), 'utf-8')
+    const declared = theme.match(/--animate-chip-hop:\s*chip-hop \.?(\d+)s/)
     expect(declared).not.toBeNull()
     // `.42s` → 420ms.
     expect(Math.round(parseFloat(`0.${declared![1]}`) * 1000)).toBe(FOLLOWUP_CHIP_HOP_DURATION_MS)

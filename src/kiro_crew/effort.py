@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable, Sequence
 
 from kiro_crew import model_registry
 
@@ -114,7 +115,11 @@ def effort_settings_key(model: str | None) -> str:
     return _EFFORT_KEY_DEFAULT
 
 
-def _coerce_defaults(defaults: object) -> dict[str, str]:
+def _coerce_defaults(
+    defaults: object,
+    accepts: Callable[[object], bool] = is_valid_effort,
+    normalize: Callable[[str], str] | None = None,
+) -> dict[str, str]:
     """Normalize a per-model defaults blob into ``{model: level}``.
 
     Accepts a dict or a JSON-string (the frontend ``setVariable`` signature
@@ -133,7 +138,11 @@ def _coerce_defaults(defaults: object) -> dict[str, str]:
         return {}
     out: dict[str, str] = {}
     for model, level in defaults.items():
-        if isinstance(model, str) and is_valid_effort(level):
+        if not isinstance(model, str):
+            continue
+        if normalize is not None and isinstance(level, str):
+            level = normalize(level)
+        if accepts(level):
             out[model] = level  # type: ignore[assignment]
     return out
 
@@ -142,22 +151,57 @@ def resolve_effort_for_model(
     model: str | None,
     slot_overrides: dict[str, str] | None = None,
     defaults: object = None,
+    levels: Sequence[str] | None = None,
+    normalize: Callable[[str], str] | None = None,
 ) -> str | None:
     """Resolve the effort level for *model* using the priority chain.
 
     Priority: ``slot_overrides[model]`` → ``defaults[model]`` → ``None``.
     Returns ``None`` when the model does not support effort or no level
     resolves (caller should then leave the provider on its own default).
+
+    *levels* is the vocabulary a harness ADVERTISED, passed by the callers whose
+    harness is the authority on it rather than this module's registry (see
+    ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``). Given, it answers both
+    questions for that session: a non-empty list means the session takes a level,
+    and membership in it means this level may be written. Omitted -- every
+    existing caller -- the model registry answers both exactly as before, which
+    is right where the level rides the model instead of the session.
+
+    Asking the registry on a harness that owns its vocabulary drops the level
+    twice over: the capability check answers False for a model id the registry
+    does not carry, and the validity check rejects a level Crew's own ladder does
+    not list -- so a persisted pick the dashboard offered and stored is silently
+    not applied, and the session runs a level the UI does not report.
+
+    *normalize* is the per-harness spelling of a level, applied BEFORE the check
+    in either mode and to overrides and defaults alike. The order is the whole
+    point: a stored level that the WRITE path folds onto one the harness does
+    advertise must not be rejected here for the spelling it was stored under, or
+    a live change accepted this session is dropped by the next cold start.
     """
-    if not model_supports_effort(model):
+    if levels is None:
+        if not model_supports_effort(model):
+            return None
+        accepts: Callable[[object], bool] = is_valid_effort
+    else:
+        if not levels:
+            return None
+        allowed = frozenset(levels)
+
+        def accepts(level: object) -> bool:
+            return isinstance(level, str) and level in allowed
+
+    if not model:
         return None
-    assert model is not None  # narrowed by model_supports_effort
     if slot_overrides:
-        lvl = slot_overrides.get(model)
-        if is_valid_effort(lvl):
-            return lvl
-    coerced = _coerce_defaults(defaults)
+        lvl: object = slot_overrides.get(model)
+        if normalize is not None and isinstance(lvl, str):
+            lvl = normalize(lvl)
+        if accepts(lvl):
+            return lvl  # type: ignore[return-value]
+    coerced = _coerce_defaults(defaults, accepts, normalize)
     lvl = coerced.get(model)
-    if is_valid_effort(lvl):
+    if accepts(lvl):
         return lvl
     return None

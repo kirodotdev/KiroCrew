@@ -478,3 +478,167 @@ def test_pump_stdin_forwards_messages_then_the_eof_sentinel(monkeypatch):
     fake._pump_stdin()
     assert fake._INBOX.get_nowait()["id"] == 1
     assert fake._INBOX.get_nowait() is None
+
+
+# --------------------------------------------------------------------------- #
+# KAS relay spawn: managed MCP readiness on the wire.
+# --------------------------------------------------------------------------- #
+
+_KAS_NEW_PARAMS = {
+    "cwd": "/w",
+    "mcpServers": [{"name": "kirocrew-dashboard", "command": "x", "args": []}],
+    "_meta": {
+        "kiro": {
+            "customAgents": [
+                {
+                    "id": "kirocrew",
+                    "mcpServers": {"kirocrew-core": {}, "kirocrew-cron": {}},
+                    "tools": ["@kirocrew-core", "@kirocrew-cron", "@kirocrew-dashboard"],
+                },
+                {"id": "other", "mcpServers": {"kirocrew-computer": {}}},
+            ]
+        }
+    },
+}
+
+
+def _kas_session(monkeypatch, buf: io.StringIO) -> str:
+    monkeypatch.setattr(fake, "_KAS_RELAY", True)
+    monkeypatch.setattr(fake, "_SESSION_AGENTS", {})
+    fake._handle({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": _KAS_NEW_PARAMS})
+    return fake._SESSION_ID
+
+
+def test_relay_flag_is_the_one_build_kas_argv_renders():
+    from kiro_crew.acp.kas_transport import KAS_RELAY_ENGINE_FLAG, build_kas_argv
+
+    assert fake.KAS_RELAY_FLAG == KAS_RELAY_ENGINE_FLAG
+    assert fake.KAS_RELAY_FLAG in build_kas_argv("/bin/kiro-cli")
+
+
+def test_kas_relay_reports_every_declared_server_connected_on_session_new(monkeypatch):
+    buf = _capture(monkeypatch)
+    sid = _kas_session(monkeypatch, buf)
+    msgs = _messages(buf)
+    assert msgs[0]["result"] == {"sessionId": sid}
+    status, tags = msgs[1], msgs[2]
+    assert status["method"] == "_kiro/mcp/status"
+    assert status["params"]["sessionId"] == sid
+    # Session-level array first, then each declared agent's block, deduplicated.
+    assert [s["name"] for s in status["params"]["servers"]] == [
+        "kirocrew-dashboard",
+        "kirocrew-core",
+        "kirocrew-cron",
+        "kirocrew-computer",
+    ]
+    for server in status["params"]["servers"]:
+        assert server["status"] == "connected"
+        assert server["_meta"]["kiro"]["resource"]["source"]["origin"] == "client"
+        assert server["tools"][0]["name"] == fake.MCP_CATALOG_TOOL
+    assert tags["method"] == "_kiro/tools/didChange"
+    assert {t["tag"] for t in tags["params"]["tags"]} >= {
+        "@kirocrew-core/ping",
+        "@kirocrew-dashboard/ping",
+    }
+
+
+def test_kas_relay_set_mode_answers_then_reports_the_active_agent_roster(monkeypatch):
+    buf = _capture(monkeypatch)
+    sid = _kas_session(monkeypatch, buf)
+    buf.seek(0)
+    buf.truncate()
+    fake._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/set_mode",
+            "params": {"sessionId": sid, "modeId": "kirocrew"},
+        }
+    )
+    msgs = _messages(buf)
+    assert msgs[0] == {"jsonrpc": "2.0", "id": 3, "result": {}}
+    assert msgs[1]["method"] == "_kiro/mcp/status"
+    # The switched-to agent's servers, not the other declared agent's.
+    assert [s["name"] for s in msgs[1]["params"]["servers"]] == [
+        "kirocrew-dashboard",
+        "kirocrew-core",
+        "kirocrew-cron",
+    ]
+
+
+def test_kas_relay_report_satisfies_the_host_readiness_barrier(monkeypatch):
+    """The frames the fake emits are the ones KasMcpReadiness stops waiting on."""
+    from kiro_crew.acp.mcp_session_report import KasMcpReadiness, required_managed_servers
+    from kiro_crew.acp.types import JsonRpcMessage
+
+    buf = _capture(monkeypatch)
+    sid = _kas_session(monkeypatch, buf)
+    buf.seek(0)
+    buf.truncate()
+    fake._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/set_mode",
+            "params": {"sessionId": sid, "modeId": "kirocrew"},
+        }
+    )
+    required = required_managed_servers(_KAS_NEW_PARAMS, "kirocrew")
+    assert set(required) == {"kirocrew-core", "kirocrew-cron", "kirocrew-dashboard"}
+    ready = KasMcpReadiness(
+        sid,
+        required,
+        tool_policy=_KAS_NEW_PARAMS["_meta"]["kiro"]["customAgents"][0],
+        injected=frozenset({"kirocrew-dashboard"}),
+    )
+    assert ready.pending
+    for m in _messages(buf):
+        if "method" in m:
+            ready.record(JsonRpcMessage(method=m["method"], params=m["params"]))
+    assert ready.pending == ""
+    assert ready.failure == ""
+
+
+def test_kiro_spawn_reports_no_mcp_readiness(monkeypatch):
+    """Without the relay flag the wire is kiro-cli v2's: set_mode answers {} and nothing else."""
+    buf = _capture(monkeypatch)
+    monkeypatch.setattr(fake, "_KAS_RELAY", False)
+    monkeypatch.setattr(fake, "_SESSION_AGENTS", {})
+    fake._handle({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": _KAS_NEW_PARAMS})
+    fake._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/set_mode",
+            "params": {"sessionId": fake._SESSION_ID, "modeId": "kirocrew"},
+        }
+    )
+    assert [m.get("method") for m in _messages(buf)] == [None, None]
+
+
+def test_main_arms_the_relay_from_argv(monkeypatch):
+    buf = _capture(monkeypatch)
+    monkeypatch.setattr(fake, "_SESSION_AGENTS", {})
+    monkeypatch.setattr(fake, "_KAS_RELAY", False)
+    monkeypatch.setattr(
+        fake.sys,
+        "argv",
+        ["fake_acp_backend", "acp", fake.KAS_RELAY_FLAG, "v3", "--auth-method", "cli"],
+    )
+    monkeypatch.setattr(
+        fake.sys,
+        "stdin",
+        io.StringIO(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n'
+            '{"jsonrpc":"2.0","id":2,"method":"session/new",'
+            '"params":{"mcpServers":[{"name":"kirocrew-core"}]}}\n'
+        ),
+    )
+    fake.main()
+    assert [m.get("method") for m in _messages(buf)] == [
+        None,
+        None,
+        "_kiro/mcp/status",
+        "_kiro/tools/didChange",
+    ]
+    assert fake._KAS_RELAY is True

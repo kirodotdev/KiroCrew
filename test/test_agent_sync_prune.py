@@ -6,14 +6,12 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-from member_memory_helpers import PRIVATE_EXECUTION_GATE
 
 from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.config.sections import MemoryConfig
 from kiro_crew.memory_stores import (
     UnknownMemoryStore,
-    archive_member_memory_store,
     provision_member_memory,
     require_member_memory_store,
 )
@@ -72,7 +70,6 @@ async def _run_sync(cfg: KiroCrewConfig, aim_agents_list: list[AgentInfo]) -> di
             new=_fake_update_config_locked,
         ),
         patch("kiro_crew.dashboard.handlers.agents._sel", return_value=sel_mock),
-        patch(PRIVATE_EXECUTION_GATE, return_value=True),
     ):
         response = await _do_agents_sync(request)
 
@@ -203,7 +200,7 @@ class TestAgentSyncPrune:
         cfg.save.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_package_prune_archives_private_generation(self):
+    async def test_package_prune_preserves_memory_without_rebinding_new_member(self):
         from kiro_crew.dashboard.handlers.agents import _do_agents_sync
 
         cfg = KiroCrewConfig.load()
@@ -231,7 +228,7 @@ class TestAgentSyncPrune:
             kiro_agent="stale-package", source="package", memory_store=store
         )
         rebind.save()
-        with pytest.raises(UnknownMemoryStore, match="archived"):
+        with pytest.raises(UnknownMemoryStore, match="member identity is missing or ambiguous"):
             require_member_memory_store(KiroCrewConfig.load(), "stale-package")
 
 
@@ -261,19 +258,14 @@ class TestSyncRefusesCredentialShapedNames:
         assert "oncall-triage" in cfg.agents
         store = cfg.agents["oncall-triage"].memory_store
         assert cfg.written_doc["agents"]["oncall-triage"]["memory_store"] == store
-        assert cfg.written_doc["memory_stores"][store] == {
-            "owner_member": "oncall-triage",
-            "memory_version": 2,
-            "description": "",
-            "embedding_provider": "",
-        }
+        assert store == "default"
+        assert cfg.written_doc["memory_stores"] == {}
 
     @pytest.mark.asyncio
-    async def test_reinstalled_package_member_gets_fresh_memory(self):
-        """A retired store is retained but never inherited by a same-name reinstall."""
+    async def test_reinstalled_package_member_does_not_adopt_previous_memory(self):
+        """An existing store is retained but never inherited by a same-name discovery."""
         cfg = _make_config({"oncall": KiroCrewAgentConfig(kiro_agent="oncall", source="package")})
         retired_store = provision_member_memory(cfg, "oncall")
-        assert archive_member_memory_store(retired_store, "oncall")
         del cfg.agents["oncall"]
 
         body = await _run_sync(cfg, [_make_aim_agent("oncall")])
@@ -282,7 +274,15 @@ class TestSyncRefusesCredentialShapedNames:
         fresh = cfg.agents["oncall"].memory_store
         assert fresh != retired_store
         assert retired_store in cfg.memory_stores
-        assert cfg.written_doc["memory_stores"][fresh]["owner_member"] == "oncall"
+        assert fresh == "default"
+        assert cfg.written_doc["memory_stores"] == {}
+        from kiro_crew.memory_stores import memory_stores_root
+        from kiro_crew.vector_memory import read_member_database_identity
+
+        assert (
+            read_member_database_identity(memory_stores_root() / retired_store / "memory.db")[1]
+            == retired_store
+        )
 
 
 class TestAgentSyncFsCheckIsOffloaded:
@@ -342,7 +342,6 @@ class TestPruneOnlySnapshotMatchedEntries:
                 new=_fake_update_config_locked,
             ),
             patch("kiro_crew.dashboard.handlers.agents._sel", return_value=MagicMock()),
-            patch(PRIVATE_EXECUTION_GATE, return_value=True),
         ):
             await _do_agents_sync(request)
 

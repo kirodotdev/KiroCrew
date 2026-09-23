@@ -37,6 +37,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from fake_pool_mcp_server import recorded
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import gatewayd as gw
@@ -197,10 +198,14 @@ def _resolver_for(
 
 
 def _observed_callers(log: Path) -> list[str]:
-    """The session key each ``tools/call`` reached the backend carrying."""
-    if not log.exists():
-        return []
-    return log.read_text(encoding="utf-8").splitlines()
+    """The session key each ``tools/call`` reached the backend carrying.
+
+    Read through the fake's own :func:`~fake_pool_mcp_server.recorded`, which is
+    the only thing that knows the on-disk layout: each daemon generation here
+    spawns its own backend process, so the identities are spread across per-pid
+    files that a direct read of *log* would never see.
+    """
+    return recorded(log)
 
 
 async def _start_daemon(sock: Path, resolver) -> tuple[asyncio.Event, asyncio.Task]:
@@ -233,13 +238,32 @@ async def _stop_daemon(stop: asyncio.Event, task: asyncio.Task) -> None:
 
 
 async def _reap(procs: list[asyncio.subprocess.Process]) -> None:
+    """Retire the stubs the way kiro-cli does, and only then force the stragglers.
+
+    Closing stdin is the stub's ordinary shutdown -- it reads EOF as
+    ``stdin_eof`` and exits on its own (pinned below by
+    :func:`test_a_closed_stdin_is_not_a_reconnectable_ending`). A SIGKILL to a
+    process that would have left cleanly hides a stub that does NOT act on EOF,
+    so it is reserved for one that is still alive after the graceful window.
+    """
     for p in procs:
-        if p.returncode is None:
+        if p.returncode is None and p.stdin is not None:
             try:
-                await pc.kill_process_tree_async(p.pid, pc.SIGKILL)
-            except Exception:  # noqa: BLE001 - teardown must never mask a failure
+                p.stdin.close()
+            except OSError:  # a pipe the stub already closed on its side
                 pass
     for p in procs:
+        if p.returncode is not None:
+            continue
+        try:
+            await asyncio.wait_for(p.wait(), timeout=15)
+            continue
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await pc.kill_process_tree_async(p.pid, pc.SIGKILL)
+        except Exception:  # noqa: BLE001 - teardown must never mask a failure
+            pass
         try:
             await asyncio.wait_for(p.wait(), timeout=15)
         except (asyncio.TimeoutError, ProcessLookupError):

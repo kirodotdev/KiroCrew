@@ -45,6 +45,7 @@ DEFAULT_MODEL
 DEFAULT_POOL_SIZE
 DEFAULT_SESSION_TIMEOUT
 DashboardConfig
+DecisionsConfig
 DiscordConfig
 EFFORT_LEVELS
 EMBED_RATE_LIMIT_MAX
@@ -77,6 +78,7 @@ McpGatewayConfig
 MemoryConfig
 MemoryStoreConfig
 MessagingConfig
+MonitoringConfig
 OrchestratorConfig
 POOL_SIZE_MAX
 POOL_TTL_SECS_MAX

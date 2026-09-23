@@ -142,13 +142,21 @@ CREW_TAG_KEY = "kirocrew:crew"
 #: Version of the fingerprint payload, hashed with it. A future change to which
 #: fields are hashed becomes a visibly different key rather than a silent
 #: collision with keys computed under the old shape.
-FINGERPRINT_SCHEME = 1
+#:
+#: Bumped to 2 when the container definition gained
+#: ``linuxParameters.initProcessEnabled``. The hashed FIELDS did not change, which
+#: is exactly why the bump is needed: a revision registered under scheme 1 has a
+#: DIFFERENT document for an identical key, so a caller confirming "revision N
+#: holds the content this spec describes" would accept a stale revision that runs
+#: without an init process. The new field is a constant, so hashing it could not
+#: have told the two apart; the scheme is the only thing that can.
+FINGERPRINT_SCHEME = 2
 
 #: A digest-pinned image reference: ``<repository>@sha256:<64 hex>``. A tag is
 #: refused. A tag can be moved after a revision is registered, which leaves the
 #: revision key identifying something other than the image content, and that
 #: identity is the premise every property built on the key depends on.
-_DIGEST_REF_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+_DIGEST_REF_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True)
@@ -205,15 +213,21 @@ class TaskDefinitionSpec:
     log: LogSpec
 
 
-def secret_destinations(spec: TaskDefinitionSpec) -> dict[str, SecretRef]:
-    """Each container variable this spec delivers, mapped to the secret behind it.
+def secret_destinations_for(secrets: Sequence[SecretRef]) -> dict[str, SecretRef]:
+    """Each container variable *secrets* delivers, mapped to the secret behind it.
 
-    Refuses two references whose derived variable is the same. Two secrets
-    competing for one destination have no defined winner, and the container would
-    read whichever the document happened to list first.
+    Takes the REFERENCES rather than a whole spec, because that is all the rule needs. It
+    is split out so a caller holding only secrets -- the launcher's config gate, deciding
+    whether a saved block names the model credential -- can apply this exact rule instead
+    of approximating it. Approximating it is what registered a lane the engine then
+    refused, three separate times.
+
+    Refuses two references whose derived variable is the same. Two secrets competing for
+    one destination have no defined winner, and the container would read whichever the
+    document happened to list first.
     """
     destinations: dict[str, SecretRef] = {}
-    for ref in spec.secrets:
+    for ref in secrets:
         name = secret_env_name(ref, source="secrets[].valueFrom")
         if name in destinations:
             raise DocumentRefused(
@@ -223,6 +237,38 @@ def secret_destinations(spec: TaskDefinitionSpec) -> dict[str, SecretRef]:
             )
         destinations[name] = ref
     return destinations
+
+
+def secret_destinations(spec: TaskDefinitionSpec) -> dict[str, SecretRef]:
+    """Each container variable this spec delivers, mapped to the secret behind it.
+
+    The spec-shaped spelling of :func:`secret_destinations_for`, kept because every
+    engine-side caller has a spec in hand. It DELEGATES rather than repeating the rule.
+    """
+    return secret_destinations_for(spec.secrets)
+
+
+def credential_recipient(image: str, secrets: Sequence[SecretRef]) -> str:
+    """Who a launch with this *image* and these *secrets* hands the model credential to.
+
+    ONE renderer, called by both sides of the confirmation: the launcher's config renders
+    what it will show an operator (``CloudConfig.fargate_config().credential_recipient()``)
+    and the engine renders what it is about to launch
+    (``fargate_engine.FargateLaunchEngine.provision``). A second spelling anywhere would let
+    the two disagree over the same pair of values, and a comparison between two renderings is
+    a comparison of the renderings, not of the recipient.
+
+    Two values, because two of them together decide who receives it: the image, which is the
+    container the credential lands in, and the ARN of the secret whose value the task's
+    execution role fetches and delivers there. Which reference that is comes from
+    :func:`secret_destinations_for`, not from a name match, so it is the same reference the
+    task definition will actually carry.
+
+    Raises ``DocumentRefused`` for a secret set this module already refuses, and ``KeyError``
+    for one that delivers no model credential -- both are sets no lane is registered for.
+    """
+    credential = secret_destinations_for(secrets)[MODEL_CREDENTIAL_ENV]
+    return f"{image} <- {credential.arn}"
 
 
 def spec_binding(spec: TaskDefinitionSpec) -> CrewBinding:
@@ -344,6 +390,13 @@ def task_definition_document(spec: TaskDefinitionSpec) -> dict[str, Any]:
                 "image": spec.image,
                 "essential": True,
                 "portMappings": [{"containerPort": FRONT_PORT, "protocol": "tcp"}],
+                # An init process inside the container, which AWS recommends
+                # specifically for ECS Exec: the SSM agent the Fargate platform
+                # bind-mounts in leaves child processes behind, and with no pid 1
+                # willing to reap them they accumulate as zombies for the task's
+                # whole life. Set on the definition because RunTask cannot
+                # override ``linuxParameters``.
+                "linuxParameters": {"initProcessEnabled": True},
                 "secrets": [
                     {"name": name, "valueFrom": destinations[name].arn}
                     for name in sorted(destinations)

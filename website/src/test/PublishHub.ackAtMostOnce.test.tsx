@@ -7,6 +7,7 @@
 // confirmed deploy of the same slug — two public deployments from one human
 // acknowledgment, which is precisely what this gate exists to prevent.
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { PublishHub } from '../components/PublishHub'
@@ -41,6 +42,10 @@ function clickPublish() {
     .find(b => b.textContent?.includes('Publish') && !b.textContent?.includes('Close'))
   fireEvent.click(btn!)
 }
+
+// The public-web deploy destination sits behind the Artifact Deploy Feature
+// Preview, so tests that publish through it opt in.
+beforeEach(() => { localStorage.setItem(PREVIEW_ARTIFACT_DEPLOY, '1') })
 
 describe('PublishHub acknowledgment is at-most-once', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>

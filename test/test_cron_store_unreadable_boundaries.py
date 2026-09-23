@@ -127,7 +127,9 @@ async def test_dashboard_create_refuses_unavailable_member_without_mutation(
         body = await resp.json()
         assert body["code"] == "invalid_cron"
         reason = (
-            "unknown Crew Member" if member == "unknown" else "missing or invalid memory binding"
+            "member identity is missing or ambiguous"
+            if member == "unknown"
+            else "is unavailable; Global was not used"
         )
         assert reason in body["error"]
     refresh.assert_not_called()

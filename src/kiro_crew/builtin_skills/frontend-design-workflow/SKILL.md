@@ -1,6 +1,6 @@
 ---
 name: frontend-design-workflow
-description: Workflow for frontend features, visual changes, and product design changes. Present mockup options before writing code, build against the project's design system, capture the right evidence type (screenshots vs video), and run a new-user usability review before finalizing. Use when building or changing UI, styling, layouts, animations, or any user-facing visual surface.
+description: Workflow for frontend features and visual/product design changes — present mockup options before code, build on the project's design system, capture the right evidence (screenshots vs video), run a new-user usability review. Use when building or changing UI, styling, layout or animation.
 triggers: mockup, mockups, frontend, redesign, restyle, visual change, UI change, design change, landing page, new page, new component
 ---
 
@@ -74,7 +74,9 @@ than as a built-in skill, so it is only available where that app is installed.
 
 Before declaring the change ready, run a dedicated review from a
 **brand-new, non-technical user's perspective** — as a separate sub-agent via
-`spawn_run`, with `include_project=true` so it can open the UI but
+`spawn_run`, with `solo_reason="fresh_context"` (the review is wrong if the
+reviewer can see the builder's context, which is also why a one-task
+`spawn_run` needs the reason), `include_project=true` so it can open the UI but
 `include_memory=false` so the reviewer has no builder's context. The reviewer
 answers:
 

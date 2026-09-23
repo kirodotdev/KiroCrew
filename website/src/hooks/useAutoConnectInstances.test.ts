@@ -75,6 +75,16 @@ describe('selectAutoConnectTargets', () => {
     const list = [inst('a', 'connected'), inst('b', 'connected'), inst('c')]
     expect(selectAutoConnectTargets(list, warmOf('a', 'b'), new Set(), 2)).toEqual([])
   })
+
+  it('skips a fargate crew: no pane to warm, so no connect to spend on it', () => {
+    // Same list shape as the all-target case, so the only thing that removes
+    // 'f' is its connection method -- not its position, status, or the cap.
+    const fargate = { ...inst('f'), connection_method: 'fargate' as const }
+    const list = [inst('a'), fargate, inst('c')]
+    expect(selectAutoConnectTargets(list, {}, new Set(), 5)).toEqual(['a', 'c'])
+    // Nor does it occupy a budget slot: cap 2 still reaches both real panes.
+    expect(selectAutoConnectTargets(list, {}, new Set(), 2)).toEqual(['a', 'c'])
+  })
 })
 
 describe('autoConnectEnabled', () => {

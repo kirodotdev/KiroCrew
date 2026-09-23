@@ -27,20 +27,24 @@ import { isNotFoundError } from '../../api/apiError'
 import Modal from '../Modal'
 import ErrorNotice from '../ErrorNotice'
 import { Badge, Btn } from '../ui'
+import SessionApprovalModes from './SessionApprovalModes'
 import { i18nT } from '../../i18n/t'
 import { sourceLabel, type RegistryApp } from './types'
 
 /** Machine-readable code the enable and registry-install paths return when trust is missing. */
 export const APP_EXECUTION_DENIED = 'app_execution_denied'
+/** Machine-readable code returned when enable needs the detail disclosure. */
+export const SESSION_APPROVAL_CONSENT_REQUIRED = 'session_approval_consent_required'
 
 /**
  * The subset of an app row the consent modal needs: identity for the grant,
- * display name for the title, and provenance (clone target + source label) so the
- * user can see WHO they are about to trust.
+ * display name for the title, provenance (clone target + source label), and the
+ * session approval grant so the user can see WHO and WHAT they are about to trust.
  */
 export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> & {
   displayName?: string
   trustRepository?: string
+  sessionApproval?: boolean
 }
 
 /** Mirror the backend's credential-free Git coordinate projection. */
@@ -110,6 +114,11 @@ function errorCode(e: unknown): string | null {
  */
 export function isTrustDeniedError(e: unknown): boolean {
   return errorCode(e) === APP_EXECUTION_DENIED
+}
+
+/** True when enable must continue from the detail disclosure surface. */
+export function isSessionApprovalConsentRequiredError(e: unknown): boolean {
+  return errorCode(e) === SESSION_APPROVAL_CONSENT_REQUIRED
 }
 
 /**
@@ -350,12 +359,28 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
             ))}
           </ul>
           {/* The three rows are a CEILING, not a manifest reading: trust grants all
-              three regardless of what this app happens to use, and Kiro Crew cannot
-              narrow it. Listing them without saying so reads as "here is what it
+              three regardless of what this app happens to use, and Kiro Crew
+              cannot narrow it. Listing them without saying so reads as "here is what it
               does", which would be a promise we do not keep. */}
           <p className="text-muted leading-relaxed">
             {i18nT('components.appstore.trustAppModal.capability_note')}
           </p>
+          {/* The sessionApproval grant is NOT part of that ceiling: it is a separate,
+              manifest-declared request enforced for app-token calls, so it lives in
+              its own box under its own heading. Folding it into the list above made
+              "all three" miscount the rows the user was consenting to. */}
+          {app.sessionApproval && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-warn/30 bg-warn-subtle px-3.5 py-3">
+              <div className="flex items-center gap-2 font-semibold text-warn">
+                <ShieldAlert size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.session_approval_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.session_approval_desc')}
+              </p>
+              <SessionApprovalModes label={i18nT('components.appstore.trustAppModal.session_approval_modes')} />
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2 text-muted">
             <GitBranch size={14} className="shrink-0" />
             <span className="shrink-0">{i18nT('components.appstore.trustAppModal.source')}</span>

@@ -1,6 +1,6 @@
 ---
 name: papyrus-writing
-description: Base skill for the Papyrus writing assistant — the conduct, paper-quality principles, and LaTeX house style that every Papyrus editing task builds on. Load this first when working on a .tex paper in Papyrus. For the mechanics of a specific task, also load papyrus-latex-comments, papyrus-latex-suggestions, papyrus-make-fluent, or papyrus-diagnose-compilation.
+description: Base skill for the Papyrus writing assistant — conduct, paper-quality principles and LaTeX house style every Papyrus edit builds on. Load first when working on a .tex paper in Papyrus, then the task skill (papyrus-latex-comments, -suggestions, -make-fluent or -diagnose-compilation).
 triggers: latex, .tex, papyrus, pdflatex, tectonic, bibtex, bibliography, manuscript, latex paper, writing assistant
 ---
 

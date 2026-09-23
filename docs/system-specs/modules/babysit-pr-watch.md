@@ -9,6 +9,14 @@ budgets, and wakes the owning session only for a new actionable fingerprint.
 Provider-fact-only GitHub review readiness therefore spends no agent turn while
 the pull request is unchanged.
 
+How strongly that preference reads is an installation's choice:
+`monitoring.prefer_structured_arming` (default off) decides whether the tool
+descriptions offer the structured path only once the objective is judged fully
+typed-decidable, or name it the default for a supported pull request with the
+prompt loop as the exception. It refuses neither tool, and in both positions
+evidence the typed provider cannot observe stays on the prompt loop. See
+`monitor-architecture.md` for the two costs of defaulting to the structured path.
+
 `monitor_start` creates a finite same-session AutoNudge loop for objectives or
 evidence the structured provider cannot decide, including generic comments and
 advisory review text. Its stateless directive is validated by
@@ -75,6 +83,44 @@ existing record and its evidence. `monitor_update` is the only way to revise or
 re-arm the bound legacy loop. The binding-key and collision tests in
 `test_autonudge_stop_auth.py` pin that behavior.
 
+A retained stop is refused at the turn boundary, and the three tools say so
+before the turn ends **whenever the retained record is readable**.
+`mcp_tools.control._retained_stop_refusal` reads the same
+`/api/autonudge/session-monitor` endpoint `monitor_inspect` reads and, when the
+binding holds an inactive record whose outcome is retained evidence, returns a
+refusal naming the retained outcome, its target, and the owner-only clear —
+instead of an ack. This closes a false acknowledgement rather than adding a
+capability: the tool answers the model over its own pipe DURING the turn while
+`apply_session_directive` runs after the turn's result is processed, so the
+authorizer's refusal and the `ARM_REFUSAL_NOTICE_PREFIX` transcript notice both
+arrive after the model has ended its turn believing a monitor exists. The
+preflight is read-only and fails OPEN — an unreachable gateway arms as before,
+because a preflight that failed closed would let one bad read block all arming —
+and the turn-boundary refusal remains the enforcement point. So the preflight is
+an ADVISORY early answer, not a second gate: on an unreadable read, and in the
+TOCTOU window where the record changes after the read, the in-turn answer and the
+enforced outcome can still differ, and the turn boundary is what settles it. It
+never clears or overwrites a record: clearing retained evidence stays the
+owner-only dashboard action. It also runs **only in the MCP server**: a directive
+tool's handler is re-run a second time inside the GATEWAY by
+`mcp_core.derive_directive`, which discards the returned text, and that replay is
+called synchronously on the gateway's own event loop — so the preflight's
+blocking loopback read would ask the gateway for an answer only the loop already
+waiting on it could give, stalling every co-hosted session until the timeout.
+`mcp_core.directive_capture_active` is the seam the guard reads, and the skip
+costs nothing: the preflight exists to reach the MODEL in the arming turn, which
+only the MCP-side run can do.
+`monitoring.models.retained_outcome_blocks_rearm` is
+the single predicate shared with `autonudge._stopped_row_is_replaceable`, so what
+cannot drift is the RULE itself — one outcome classification serves both sites,
+rather than two copies diverging. The replaceable/retained split is pinned as
+explicit data in `test_monitor_retained_stop_false_ack.py`, because a test that
+merely compares the two callers of one predicate is tautological. That file also
+covers all three tools, the fail-open paths, the system-imposed outcomes that
+must still arm, and the endpoint wire contract the refusal depends on — dropping
+`outcome` from `MONITOR_PUBLIC_FIELDS` would make the preflight fail open
+silently.
+
 `NudgeLoop.next_due_ts`, `notify_user_input`, and `notify_turn_complete` make
 dashboard-loop cadence deadline-preserving: user activity cancels a pending
 timer but does not move its deadline, and a delivered nudge begins its next
@@ -134,7 +180,7 @@ it does not make the script crash.
 * A merged PR or a closed unmerged PR is `Severity.TERMINAL`, so `irq.run`
   reports it and removes the cron job. `test_merged_pr_completes_the_watch` and
   `test_closed_unmerged_completes_the_watch` pin both terminal paths.
-* A conflicting or dirty PR is `Severity.NMI`. `irq.run` bypasses coalescing
+* A conflicting or dirty PR is `Severity.IMMEDIATE`. `irq.run` bypasses coalescing
   delay but still deduplicates it, because waiting cannot produce checks on a
   dirty PR and unmasked repetition would wake every tick. The conflict and
   re-alert tests pin this behavior.
@@ -169,9 +215,9 @@ fails while a coalescing window is open, `irq.run` reports immediately with a
 warning rather than delaying an observation into state it cannot recover.
 
 A `Tick.epoch` changes when the PR head changes. `irq.run` clears
-epoch-scoped dedupe and coalescing state on that change, so failures on the new
-head can wake again. Conversation observations set `epoch_scoped=False`, so a
-force-push does not replay an already-seen comment or review. These distinct
+`REVISION` dedupe and coalescing state on that change, so failures on the new
+head can wake again. Conversation observations set `resets_on=ResetsOn.NEVER`, so
+a force-push does not replay an already-seen comment or review. These distinct
 key spaces are load-bearing: treating every signal as head-scoped loses
 conversation dedupe, while treating every signal as sticky hides failures on a
 new head.
@@ -181,7 +227,7 @@ elapsed and the check rollup settles, or until its hard wall elapses. The hard
 wall ensures a permanently pending check delays a wake instead of losing it.
 Sticky conversation observations can fire once the floor elapses even while
 checks remain pending; they do not become more informative by waiting for CI.
-`Severity.NMI` and `Severity.TERMINAL` bypass the ordinary window. The
+`Severity.IMMEDIATE` and `Severity.TERMINAL` bypass the ordinary window. The
 coalescing and sticky-observation tests in `test_irq.py` pin these cases.
 
 Dedupe is time-bounded. The kernel re-alerts a persistent condition after its
@@ -217,9 +263,13 @@ The babysit skill no longer registers new script jobs.
 
 ## Non-goals
 
-The structured GitHub monitor does not parse generic comment bodies or decide
-whether an advisory finding is valid. It reports typed provider facts and leaves
-judgment, source inspection, and any reply to the reactivated babysit session.
+The structured GitHub monitor digests PR-level comment bodies to detect that
+one changed, so an in-place edit whose `created_at` never moves still wakes the
+owner. It never interprets what a comment says or decides whether an advisory
+finding is valid, and it deliberately does not read inline review-thread bodies
+at all -- it reports only the count of unresolved, non-outdated threads there. It
+reports typed provider facts and leaves judgment, source inspection, and any
+reply to the reactivated babysit session.
 `monitor_start` remains appropriate when each delivered cycle requires the agent
 to make progress, the objective requires untyped evidence, or the watched subject
 is unsupported by a structured provider.

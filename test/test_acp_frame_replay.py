@@ -413,10 +413,28 @@ def test_a_numeric_handshake_fixture_requires_a_protocol_version_row() -> None:
     harness speaks.
     """
     from kiro_crew.acp.client import _PROTOCOL_VERSION_BY_BACKEND
+    from kiro_crew.acp.harness import harness_for
+    from kiro_crew.acp_backends import ACP_BACKENDS_ACP_RUNTIME
 
     # The kiro family: handed the date-stamped version by construction, and named here
     # rather than inferred so an addition is a decision a reviewer sees.
     date_stamped_family = {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+
+    def _declares_a_numeric_dialect(backend: str) -> bool:
+        """Whether the core that DRIVES *backend* would send a numeric version.
+
+        Two cores, two homes for the answer, and asking only one of them is how a
+        harness that declares its dialect correctly is read as missing it. A harness
+        on the shared runtime answers from its own ``protocol_version`` seam; a
+        per-session harness answers from the client core's table. A backend on the
+        runtime deliberately has NO client row -- a second copy on a core that never
+        performs its handshake is one nothing keeps honest -- so its absence there is
+        the intended state rather than the defect this ratchet hunts.
+        """
+        if backend in ACP_BACKENDS_ACP_RUNTIME:
+            declared = harness_for(backend).protocol_version
+            return isinstance(declared, int) and not isinstance(declared, bool)
+        return backend in _PROTOCOL_VERSION_BY_BACKEND
 
     missing: list[str] = []
     checked: list[str] = []
@@ -441,11 +459,12 @@ def test_a_numeric_handshake_fixture_requires_a_protocol_version_row() -> None:
                 if isinstance(version, bool) or not isinstance(version, int):
                     continue
                 checked.append(f"{backend} ({path.name})")
-                if backend not in _PROTOCOL_VERSION_BY_BACKEND:
+                if not _declares_a_numeric_dialect(backend):
                     missing.append(
                         f"{backend}: {path.name} answers protocolVersion {version!r}, but "
-                        "the backend has no _PROTOCOL_VERSION_BY_BACKEND row, so Crew "
-                        "sends the date-stamped version instead"
+                        "neither its harness seam nor the client core's "
+                        "_PROTOCOL_VERSION_BY_BACKEND declares a numeric dialect for it, "
+                        "so Crew sends the date-stamped version instead"
                     )
                 break
 

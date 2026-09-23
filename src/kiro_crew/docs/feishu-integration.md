@@ -36,7 +36,7 @@ Lark).
 5. **Publish the app** so your tenant can install it.
 6. **Find your open_id** — the console's API Explorer, or any inbound message
    in the gateway log, shows the sender's `open_id` (it starts with `ou_`).
-7. **Paste it into Settings** — open **Settings → Channels → Feishu**, put the
+7. **Paste it into Settings** — open **Settings → Messaging Channels → Feishu**, put the
    App ID and App Secret in their fields, add your `open_id` to the allow-list,
    turn the channel on, and save. Saving writes the two secrets to
    `~/.kiro/crew/.env` (owner-only, `0600`) and the rest to `config.json`, so

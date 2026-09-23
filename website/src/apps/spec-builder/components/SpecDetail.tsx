@@ -580,7 +580,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
           so the column is anchored instead of floating under a page-wide title
           band. Issue Radar's detail column does the same: every column owns its
           header, and the headers line up. */}
-      <section className="flex-1 min-w-0 flex flex-col">
+      <section className="flex-1 min-w-0 min-h-0 flex flex-col">
         <header className="shrink-0 h-[52px] px-4 border-b border-border flex items-center gap-2.5">
           {isMobile
             ? (
@@ -925,7 +925,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
           aria-label={i18nT('apps.specBuilder.components.specDetail.review_document_named', { document: tab, name })}
           tabIndex={-1}
           ref={overlayRef}
-          className="absolute inset-0 z-[60] bg-bg flex flex-col outline-none"
+          className="absolute inset-0 z-[60] bg-bg flex flex-col outline-hidden"
           style={{ padding: '14px 26px 20px' }}
         >
           <style>{DOC_CSS}</style>

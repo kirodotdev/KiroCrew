@@ -622,8 +622,12 @@ class TestBridgeFrameHygiene:
 
 
 class TestEnsureBackendRejections:
-    """The pre-flight arm: a rejection the stub can still recover from is
-    tagged ``fallback: True`` so it runs an unpooled per-session exec."""
+    """The pre-flight arm: a TARGET-shaped rejection is tagged ``fallback: True``
+    so the stub runs an unpooled per-session exec, and a HOST-shaped one is not,
+    because that exec would be one more process on the host that just refused
+    one. The daemon here carries no ``admission``, which every real daemon does
+    (``run_gatewayd`` builds one unconditionally) -- so this arm also pins that
+    the CLASS of a refusal does not depend on the budget object's presence."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -642,18 +646,23 @@ class TestEnsureBackendRejections:
                 "_audit_pool_fallback",
             ),
             (
+                # Host-shaped, so no exec authorisation: the breaker is OPEN for
+                # this host's benefit and the stub's own fork would ignore it.
                 BackendUnavailable("circuit breaker OPEN"),
                 "circuit breaker OPEN",
-                True,
-                "_audit_pool_fallback",
+                False,
+                "_audit_pool_rejected",
             ),
             (
                 PoolAtCapacity("pool full"),
                 "pool full",
-                True,
-                "_audit_pool_fallback",
+                False,
+                "_audit_pool_rejected",
             ),
             (
+                # errno-less, so NOT one of ``_PRESSURE_ERRNOS``: this is the
+                # daemon's own launch environment, which the stub's exec need
+                # not share, so it stays target-shaped.
                 OSError("ENOMEM"),
                 "backend spawn failed: ENOMEM",
                 True,

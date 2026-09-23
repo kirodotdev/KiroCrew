@@ -57,8 +57,12 @@ _HELPER_END = "REAL_UID = "
 #: temp artifact lands under pytest's tmp_path).
 _PROP_START = "        # Private mount propagation"
 _PROP_END = "        # Pick a tmpfs-backed source dir"
-#: The three hiding mounts: credential dirs, sensitive files, ~/.ssh.
-_HIDE_START = "        # Bind-mount empty dirs over credential paths"
+#: The private-window staging plus the three hiding mounts: credential dirs,
+#: sensitive files, ~/.ssh. Staging is inside the slice because the credential
+#: loop READS ``_private_stage`` to carve a window's placeholder out of the
+#: empty stand-in, so a slice that started at the hiding loops would exec a
+#: fragment with that name undefined.
+_HIDE_START = "        # Private windows: a directory INSIDE a hidden tree that stays"
 _HIDE_END = "        # Scrub sensitive env vars"
 
 #: What the extracted region must contain. Without this a marker rename would
@@ -70,6 +74,7 @@ _HIDE_END = "        # Scrub sensitive env vars"
 #: ``test_every_tier_routes_all_four_mounts_through_the_guard``.
 _LANDMARKS = (
     "# Private mount propagation",  # the propagation site
+    "for p in PRIVATE_DIRS:",  # the private-window staging loop
     "for d in SENSITIVE_DIRS:",  # the credential-dir loop
     "for d in READONLY_DIRS:",  # the read-only exposure loop
     "for d in WRITABLE_DIRS:",  # the write carve-out loop (fail-open)
@@ -133,6 +138,7 @@ def _run(
     err: int = errno.EPERM,
     script: str | None = None,
     writable_dirs: list[str] | None = None,
+    private_dirs: list[str] | None = None,
 ) -> tuple[_FakeLibc, str | None]:
     """Run the mount region. Returns ``(fake_libc, refusal_message_or_None)``.
 
@@ -182,6 +188,9 @@ def _run(
         "expose_data": {},
         "EXPOSE_FILES": [],
         "SENSITIVE_DIRS": [str(aws)],
+        # Empty by default for the same reason as WRITABLE_DIRS: a private
+        # window stages its own bind, which would shift the call numbering.
+        "PRIVATE_DIRS": list(private_dirs or []),
         "READONLY_DIRS": [str(cache)],
         # Empty by default so the six-site call numbering above stays stable;
         # the carve-out tests inject their own entry.
@@ -290,7 +299,7 @@ def test_the_refusal_names_the_deliberate_opt_out(tmp_path: Path) -> None:
     assert "sandbox_level" in refusal
 
 
-def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
+def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
     """No tier may keep a raw, unchecked ``_libc.mount`` call site.
 
     Break-arm: ``reintroduce_raw`` (one site reverted to the raw call).
@@ -304,7 +313,11 @@ def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
             if "_libc.mount(" in line and "source, target, None, flags, None" not in line
         ]
         assert raw == [], f"{level}: unchecked mount call(s): {raw}"
-        assert script.count("_mount_or_die(") == 7  # 1 def + 6 call sites
+        # 1 def + 8 call sites: propagation, credential dirs, the read-only
+        # bind and its sealing remount, sensitive files, ~/.ssh, and the private
+        # window's two -- staging its real contents out before the parent is
+        # masked, then binding them onto the placeholder inside the stand-in.
+        assert script.count("_mount_or_die(") == 9
 
 
 # --------------------------------------------------------------------------

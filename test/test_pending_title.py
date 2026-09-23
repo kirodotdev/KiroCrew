@@ -218,7 +218,7 @@ class TestAutoTitleInFlightGuard:
             release_first = asyncio.Event()
             attempts = []
 
-            async def _generate(_state, messages):
+            async def _generate(_state, messages, *, session_key: str = ""):
                 attempts.append(list(messages))
                 if len(attempts) == 1:
                     first_started.set()
@@ -358,7 +358,7 @@ class TestAutoTitleRunsForEveryMemoryMode:
         state = _fake_state()
         attempts = []
 
-        async def _generate(_state, messages):
+        async def _generate(_state, messages, *, session_key: str = ""):
             attempts.append(list(messages))
             return generated
 

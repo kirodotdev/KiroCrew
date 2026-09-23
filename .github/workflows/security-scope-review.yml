@@ -67,6 +67,18 @@ jobs:
   # holds nothing worth reaching.
   generate:
     name: Security scope candidates (Fable 5)
+    # NOT routed to the CodeBuild fleet. The write fence two steps below
+    # hardcodes `Write(//home/runner/work/_actions/**)` -- the GitHub-hosted
+    # runner's action-code path -- to stop the untrusted-diff-driven model step
+    # from overwriting an action that runs later in this job with its live
+    # Bedrock OIDC credentials. CodeBuild relocates that directory (its
+    # actions land under `/codebuild/output/<random>/...`), so the same
+    # absolute-path deny would silently stop matching there and the fence
+    # would fail OPEN instead of closed -- exactly the failure mode the
+    # comment at the fence's definition already names as a known weakness of
+    # a hardcoded path. Revisit once the fence itself is CodeBuild-portable
+    # (an expression, not a literal path) rather than routing this job before
+    # that lands.
     runs-on: ubuntu-latest
     # OIDC for Bedrock, and read-only on the PR: this stage proposes candidates and
     # posts nothing.
@@ -648,6 +660,21 @@ jobs:
       always()
       && needs.generate.outputs.in_scope == 'true'
       && needs.generate.outputs.override != 'true'
+    # NOT routed to the CodeBuild fleet. A diff that touches this workflow's
+    # own `runs-on:` lines (as one that migrates CI runners does) sets
+    # `in_scope=true` above, but carries no shell/flow/cron surface for
+    # `generate`'s model to propose candidates for -- an honest empty
+    # `candidates.json`. `scope_candidates.py validate` treats that the same
+    # as an untrustworthy file (`CandidateError`, exit 2), deliberately: exit
+    # 3 ("nothing new to adjudicate") means the model DID propose candidates
+    # and they are already covered by the committed corpus, which is a
+    # different, stronger claim than "nothing was proposed at all" -- merging
+    # the two would let a failed or empty model call pass as a reviewed,
+    # honest empty set, which is the exact false green this lane exists to
+    # prevent (test_an_untrustworthy_candidate_file_is_exit_2's `empty` case
+    # pins this). Fixing the diff-has-no-surface-for-this-lane case belongs
+    # in a change to this lane's own design, not a CI-runner migration, so
+    # this job stays on `ubuntu-latest` until that lands.
     runs-on: ubuntu-latest
     # `contents: read` and NOTHING else. This job can execute the pull request's own
     # harness, so it must hold nothing worth reaching: no `id-token`, so no AWS
@@ -769,17 +796,33 @@ jobs:
 
       # The candidate set reached this job as an ARTIFACT, and an artifact is
       # world-readable on a public repository. It also has to reach the classifier
-      # BYTE-FAITHFUL: `deny_diff` classifies these exact strings at both refs, so a
-      # placeholder where a command used to be is a command nobody ever refused,
-      # which classifies as allowed. So this cannot scrub -- it probes a COPY and
-      # refuses the run, the same answer the normalized corpus gets before its own
-      # upload.
+      # BYTE-FAITHFUL: `deny_diff` selects rows by `kind` and `platform` and classifies
+      # `command_or_flow` at both refs, so a placeholder where a command used to be is
+      # a command nobody ever refused, which classifies as allowed.
+      #
+      # So the probe splits the file by WHAT THE CLASSIFIER READS. A shape in one of
+      # those three fields still refuses the run, exactly as before: it can be neither
+      # rewritten (that measures an operation nobody proposed) nor dropped (that
+      # silently removes the boundary the row probes, on rows the reviewer wrote out of
+      # the diff under review -- a coverage hole an author could steer). A shape in
+      # `reason`, which is prose the classifier never reads, removes THAT FIELD and
+      # nothing else: the row is still classified, at both refs, on the bytes the
+      # reviewer wrote. That is the case a change whose SUBJECT is ARNs and account ids
+      # keeps hitting, and it costs one row's explanation instead of the whole run.
+      #
+      # REMOVED rather than redacted: a `[REDACTED-` marker in a corpus is read by the
+      # publish path's own grep, which withholds a confirmed row on finding one.
       #
       # HERE rather than in `generate`, and that is the whole reason this step
       # moved: the probe IS `scope_redact.py`, a repository program, and `generate`
-      # holds the Bedrock credential. The rows are already public by the time this
-      # runs, so the refusal is what it can still buy -- a row carrying a credential
-      # shape is never adjudicated, and the corpus the legs read never travels.
+      # holds the Bedrock credential. That is also why the rule lives in the redactor
+      # and not in `scope_candidates.py`: this job may bootstrap the harness from the
+      # CHECKOUT, so a pull request could otherwise supply the program that decides
+      # whether its own rows carry a credential. The redactor is staged from the base
+      # blob above and is never taken from this workspace -- which is exactly why the
+      # flag is FEATURE-DETECTED below. The staged copy can predate it, and handing it
+      # an argument it does not know is an argparse exit 2 that says nothing about
+      # credentials at all.
       - name: Probe the candidate set for credential shapes
         id: probe
         env:
@@ -805,19 +848,65 @@ jobs:
           probe=0
           python "$REDACTOR" --mode json --fail-if-changed scrub-probe-candidates.json || probe=$?
           rm -f scrub-probe-candidates.json
-          if [ "$probe" != "0" ] && [ "$probe" != "10" ]; then
-            echo "::error::the candidate set could not be checked for credential shapes, and it travels to the validation job as a public artifact. Refusing to upload it unchecked."
+          if [ "$probe" = "0" ]; then
+            # Nothing in the file needs attention, so the real file is never opened for
+            # writing. That is most runs, and it is why the copy-probe earns its place:
+            # the byte-faithfulness of the normal path is not merely preserved by the
+            # prune below, it is never exercised by it.
+            echo "candidates_ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # WHICH field carries it decides what happens, and only the staged base
+          # redactor can answer that. Detected rather than assumed: this copy comes from
+          # the base ref, so it can predate the flag, and handing it an unknown argument
+          # is an argparse exit 2 that says nothing about credentials. A grep of the
+          # staged FILE rather than a `--help` run: the probe must not be a redactor
+          # invocation with no `--mode`, since every call in this lane declares the file
+          # shape it is scrubbing.
+          if ! grep -q -- "--drop-changed-fields" "$REDACTOR"; then
+            echo "::warning::the base-owned redactor at this base commit predates --drop-changed-fields, so a credential shape cannot be attributed to a field. Refusing the run, which is the answer this redactor can give."
+            # Exit 10 is the redactor's own answer to "did this change", which is the
+            # whole question the probe asks. Reading it beats grepping the probe's text
+            # for a marker: a redacted secret VALUE carries the unprefixed `[REDACTED]`
+            # spelling, so a `[REDACTED-` grep misses exactly the credential class the
+            # candidate set most needs caught.
+            if [ "$probe" = "10" ]; then
+              echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
+            else
+              echo "::error::the candidate set could not be checked for credential shapes, and it travels to the validation job as a public artifact. Refusing to upload it unchecked."
+            fi
             exit 1
           fi
-          # Exit 10 is the redactor's own answer to "did this change", which is the
-          # whole question the probe asks. Reading it beats grepping the probe's text
-          # for a marker: a redacted secret VALUE carries the unprefixed `[REDACTED]`
-          # spelling, so a `[REDACTED-` grep misses exactly the credential class the
-          # candidate set most needs refused.
-          if [ "$probe" = "10" ]; then
-            echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
-            exit 1
-          fi
+          # EVERY non-zero probe comes here, not just exit 10. A credential shape in an
+          # object KEY is the `--mode json` scrub's own exit 1 -- rewriting a key would
+          # change the schema its consumer reads -- and that is exactly a case the prune
+          # settles by removing the field, so refusing on the generic answer would red
+          # the lane over something the precise answer handles. A file the prune also
+          # cannot read still ends in the catch-all below.
+          #
+          # IN PLACE now, and only now: the pruned rows ARE the corpus `validate` reads
+          # next, so the removal has to land in the file it reads. Every classified field
+          # keeps the bytes the reviewer wrote. The prose that goes is still readable in
+          # the `security-scope-candidates-raw` artifact `generate` uploaded, which is
+          # where a reader goes to see it.
+          prune=0
+          python "$REDACTOR" --mode json --drop-changed-fields --fail-if-changed candidates.json || prune=$?
+          case "$prune" in
+            0)
+              echo "The candidate set needed no field removed; the generic probe answered on text the prune places elsewhere."
+              ;;
+            10)
+              echo "::warning::a candidate row carried a credential shape (an access-key id, an ARN, an account id or a credential-bearing assignment) in a field the classifier does not read, and that FIELD was removed. Every row is still adjudicated, on the bytes the reviewer wrote; only the removed field's explanation is absent from this run's report. The count is above."
+              ;;
+            11)
+              echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL) in a field the classifier reads. The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so that field can be neither published nor rewritten -- and dropping the row would silently remove the boundary it probes. Re-run so the reviewer proposes the operation without the embedded credential, or record a human override for this head with /ai-review override scope <sha>: <reason>, which skips this lane whole."
+              exit 1
+              ;;
+            *)
+              echo "::error::the candidate set could not be pruned of credential shapes, so the corpus that would reach the legs is not one anybody checked. Refusing to upload it."
+              exit 1
+              ;;
+          esac
           echo "candidates_ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate the candidates against the base corpus
@@ -1255,6 +1344,13 @@ jobs:
     # always(): a leg that reds is exactly the run whose verdict must be
     # published, and the exit-3 short circuit skips `adjudicate` entirely.
     if: always()
+    # NOT routed to the CodeBuild fleet -- same reason as `validate`, above:
+    # a diff limited to this workflow's own `runs-on:` lines gives `generate`
+    # nothing to propose, and `validate` already stays on `ubuntu-latest` for
+    # that diff shape. `publish` is this lane's required check and always
+    # runs downstream of `validate`, so routing it alone would not change
+    # this job's own outcome but would split the two across runner classes
+    # for no reason.
     runs-on: ubuntu-latest
     # Posts, and holds the ONLY write scope in this lane. On a `pull_request`
     # event a bare checkout resolves to the PR MERGE REF, so the workspace below
@@ -1587,7 +1683,25 @@ jobs:
             # the RAW header here; whether it is attributable to THIS head is the
             # marker's job, decided in the shared table rather than folded into the
             # header, so a present-but-unmarked header is not silently honoured.
-            model="$(printf '%s\n' "$summary" | grep -iE '^[[:space:]]*Scope-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
+            # ONE awk over a here-string, not a pipeline. A `grep` that matches
+            # nothing exits 1, and a `head -n1` closes the pipe on a long summary
+            # so its producer dies of SIGPIPE with 141 -- and under this step's
+            # `pipefail` plus the runner's own `-e` either status aborts the step
+            # HERE, one line above the fallback written for an absent header.
+            # Suppressing the statuses would be worse than the abort: 141 arrives
+            # with a header already in hand, so silencing it hands this lane a
+            # verdict read out of a document the step never finished reading.
+            # Hence BOTH halves of the shape below. No pipeline, so there is no
+            # status to suppress and awk exits 0 whether or not a header is there.
+            # And no `exit` on the first match: the whole summary is read, the
+            # FIRST header is what survives, and it is printed from `END`, so a
+            # verdict is never taken from a partial read. Same tool and the same
+            # here-string as the five sibling review lanes' own header capture.
+            # The class spells out the five characters `[[:space:]]` matches
+            # inside a record -- an awk record holds no newline -- because the
+            # runners' awk is mawk and nothing here should depend on its POSIX
+            # class support; the indentation the contract displays still matches.
+            model="$(awk '!found && tolower($0) ~ /^[ \t\v\f\r]*scope-verdict:/ { sub(/^[^:]*:[ \t\v\f\r]*/, ""); gsub(/\r/, ""); value = toupper($0); found = 1 } END { if (found) print value }' <<< "$summary")"
             [ -z "$model" ] && model="UNKNOWN"
             # The marker is the ONLY proof the review ran for THIS revision. A
             # here-string, not `printf | grep`, so a long summary cannot

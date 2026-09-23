@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -15,9 +16,17 @@ from typing import Any
 from urllib.parse import urlparse
 
 from kiro_crew.github_runner import SetupError, resolve_gh, run_gh
+from kiro_crew.monitoring.github_provider_errors import (
+    REASON_SHARED_COOLDOWN,
+    classify_cli_error,
+    shared_cooldown,
+    shared_cooldown_summary,
+)
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET,
     MAX_MONITOR_CHECK_IDENTITY_CHARS,
+    MonitorObservation,
+    MonitorObservationStatus,
     ProviderErrorKind,
 )
 from kiro_crew.monitoring.provider_cli import audit_provider_cli_denied
@@ -40,6 +49,20 @@ _HEAD_REVISION_RE = re.compile(r"^[0-9a-fA-F]{1,128}$")
 _PROBE_TIMEOUT_SECS = 30.0
 _REVIEW_THREAD_PAGE_SIZE = 100
 _REVIEW_THREAD_MAX_PAGES = 10
+# PR-level (issue) comments: the surface a review bot's verdict comment actually
+# lives on. The four verdicts that motivated this feature -- design-review,
+# codex-ai-review, first-principles-review, claude-ai-review -- post as PR-level
+# issue comments, NOT as review threads (measured: over 60 recently-updated open
+# PRs, 50 carry PR-level bot comments and ZERO carry an unresolved non-outdated
+# review thread). ``first:`` not ``last:``: a verdict comment is created once at
+# PR open and rewritten in place forever, so it is among the OLDEST, and
+# ``last:100`` would miss it precisely on a busy PR (measured max 309 comments).
+# Cost is a DIRECT connection, not the nested reviewThreads x comments product:
+# comments(first:100) across 25 subjects in one document is 2,500 nodes at cost 1
+# point, two orders under the 500,000-node ceiling. Paged with the same page-cap
+# shape as the thread read.
+_PR_COMMENT_PAGE_SIZE = 100
+_PR_COMMENT_MAX_PAGES = 10
 _MERGEABLE_SETTLED_STATES = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE"})
 _MAX_PULL_REQUEST_NUMBER = 2_147_483_647
 # GitHub bounds one connection page at 100 nodes, so the row budget this adapter
@@ -63,7 +86,7 @@ commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:PAGE_SIZE,afte
   totalCount pageInfo{hasNextPage endCursor}
   nodes{
     __typename
-    ... on CheckRun{name status conclusion checkSuite{workflowRun{workflow{name}}}}
+    ... on CheckRun{name status conclusion checkSuite{conclusion workflowRun{databaseId event workflow{databaseId name}}}}
     ... on StatusContext{context state}
   }
 }}}}}
@@ -74,6 +97,33 @@ reviewThreads(first:PAGE_SIZE,after:$CURSOR){
   nodes{isResolved isOutdated}
 }
 """.replace("PAGE_SIZE", str(_REVIEW_THREAD_PAGE_SIZE)).strip()
+_PR_COMMENTS_SELECTION = """
+comments(first:PAGE_SIZE,after:$CURSOR){
+  pageInfo{hasNextPage endCursor}
+  nodes{body}
+}
+""".replace("PAGE_SIZE", str(_PR_COMMENT_PAGE_SIZE)).strip()
+# GitHub meters GraphQL in points and REST in requests, and the two budgets are
+# SEPARATE. An exhausted point budget therefore refuses every read above while
+# these two paths keep answering, which is the whole reason the fallback exists.
+#
+# Both are built only from a validated target: `GitHubPullRequestTarget` admits
+# an owner and repository matching `_SEGMENT_RE` and a positive integer number,
+# and a revision reaching the second path has already passed
+# `_HEAD_REVISION_RE`. So no provider-controlled text is interpolated into a
+# request path.
+_REST_PULL_REQUEST_PATH = "repos/{owner}/{repo}/pulls/{number}"
+_REST_COMMIT_STATUS_PATH = "repos/{owner}/{repo}/commits/{revision}/status?per_page={page_size}"
+_REST_STATUS_PAGE_SIZE = 100
+#: GraphQL's ``mergeable`` enum, keyed by the REST boolean carrying the same fact.
+_REST_MERGEABLE = {True: "MERGEABLE", False: "CONFLICTING"}
+#: Reported for the one primary fact REST does not carry at all.
+#: ``_normalize_review_decision`` maps it to ``"unknown"``, which
+#: ``classify_pull_request_facts`` answers with PENDING -- so a REST-sourced
+#: observation can report a FAILING board but never a ready one. This is the
+#: fail-closed half of the fallback, and the test suite asserts it directly
+#: rather than leaving it to follow from the mapping.
+_REST_ABSENT_REVIEW_DECISION = "UNKNOWN"
 # GraphQL error types that name a cause this adapter's taxonomy already has. An
 # unlisted or absent type is not guessed at: it falls through to the message
 # classifier and then to TRANSIENT, so an unclassified failure still leaves this
@@ -157,6 +207,10 @@ class GitHubPullRequestResponse:
     checks_complete: bool
     unresolved_review_threads: int
     review_threads_complete: bool
+    #: Digest over the PR-level (issue) comment bodies, or "" when there are none
+    #: or the comment read was incomplete. Set after the supplemental comment
+    #: read via ``replace``; the primary-only and REST paths leave it empty.
+    pr_comment_body_digest: str = ""
 
 
 GitHubPullRequestProbeResult = PullRequestProbeResult
@@ -287,6 +341,13 @@ class GitHubPullRequestProvider:
                 _group_error(members, _classified_failure(ProviderErrorKind.AUTHORIZATION)),
             )
             return results
+        cooldown = _shared_cooldown(time.time())
+        if cooldown is not None:
+            # One cooldown per CALL, charged to every subject: the shared
+            # `github:api` scope is a property of the host's rate limit, not of a
+            # subject, and none of these queries ran.
+            results.update({member.raw: _shared_cooldown_result(cooldown) for member in members})
+            return results
         try:
             gh = self._resolver()
         except (SetupError, FileNotFoundError, OSError) as exc:
@@ -312,6 +373,7 @@ class GitHubPullRequestProvider:
         """Read one chunk of subjects with one request per evidence kind."""
         results: dict[str, GitHubPullRequestProbeResult] = {}
         facts, primary_errors = self._primary(gh, host, members)
+        degraded = self._degrade_primary_to_rest(gh, host, members, facts, primary_errors)
         for raw_target, (kind, reason) in primary_errors.items():
             results[raw_target] = _provider_error(kind, reason)
         live: list[_BatchSubject] = []
@@ -323,17 +385,47 @@ class GitHubPullRequestProvider:
                 results[member.raw] = _build_result(response, previous.get(member.raw), None)
                 continue
             live.append(member)
-        checks = self._checks(gh, host, live, {m.raw: facts[m.raw].head_revision for m in live})
-        threads = self._review_threads(gh, host, live)
+        heads = {member.raw: facts[member.raw].head_revision for member in live}
+        # A subject whose primary facts came from REST is one the GraphQL bucket
+        # has already refused, so its supplemental documents are not spent: the
+        # same budget would refuse them in the same tick.
+        graphql_live = [member for member in live if member.raw not in degraded]
+        checks = self._checks(gh, host, graphql_live, heads)
+        threads = self._review_threads(gh, host, graphql_live)
+        comments = self._pr_comments(gh, host, graphql_live)
+        rest_checks = self._checks_rest(
+            gh,
+            host,
+            [
+                member
+                for member in live
+                if member.raw in degraded or checks[member.raw][2] is ProviderErrorKind.RATE_LIMITED
+            ],
+            heads,
+        )
         for member in live:
-            check_rows, checks_complete, checks_error = checks[member.raw]
-            unresolved, threads_complete, threads_error = threads[member.raw]
+            if member.raw in rest_checks:
+                check_rows, checks_complete, checks_error = rest_checks[member.raw]
+            else:
+                check_rows, checks_complete, checks_error = checks[member.raw]
+            unresolved, threads_complete, threads_error = (
+                (0, False, None) if member.raw in degraded else threads[member.raw]
+            )
+            comment_digest = "" if member.raw in degraded else comments[member.raw]
+            if threads_error is ProviderErrorKind.RATE_LIMITED:
+                # Thread resolution is the ONE signal REST cannot express, so a
+                # refused thread read is reported as an incomplete COUNT rather
+                # than as a provider error. Incompleteness already holds the
+                # subject at PENDING, and it does not spend the retirement budget
+                # that an exhausted point bucket would otherwise drain to zero.
+                threads_error = None
             response = replace(
                 facts[member.raw],
                 checks=check_rows,
                 checks_complete=checks_complete,
                 unresolved_review_threads=unresolved,
                 review_threads_complete=threads_complete,
+                pr_comment_body_digest=comment_digest,
             )
             results[member.raw] = _build_result(
                 response,
@@ -341,6 +433,183 @@ class GitHubPullRequestProvider:
                 _combine_provider_errors(checks_error, threads_error),
             )
         return results
+
+    def _degrade_primary_to_rest(
+        self,
+        gh: str,
+        host: str,
+        members: Sequence[_BatchSubject],
+        facts: dict[str, GitHubPullRequestResponse],
+        primary_errors: dict[str, _Failure],
+    ) -> set[str]:
+        """Re-read the rate-limited subjects on REST and name the ones that recovered.
+
+        A watch reading only GraphQL retires on ``max_provider_errors`` whenever
+        the account's point budget is spent, with the REST bucket untouched and
+        answering. This is the one place that asymmetry is spent.
+
+        ONLY a rate limit is retried. Authentication, authorization, not-found and
+        transient failures each say something about the credential or the subject
+        that a second transport would answer identically, so they are charged
+        exactly as before.
+
+        A subject the fallback cannot read either KEEPS the rate limit it was
+        already charged. The REST failure is a second diagnosis of a subject
+        already known to be refused, and letting it replace the first could
+        substitute a terminal kind for a retryable one -- a REST ``404`` would
+        retire a watch that the GraphQL-only code would have retried. Bounding it
+        this way is what makes the fallback never worse than no fallback.
+
+        ``facts`` and ``primary_errors`` are corrected in place, because this is
+        the same answer they already hold rather than a third one beside it.
+        """
+        retry = [
+            member
+            for member in members
+            if primary_errors.get(member.raw, (None, ""))[0] is ProviderErrorKind.RATE_LIMITED
+        ]
+        if not retry:
+            return set()
+        recovered = self._primary_rest(gh, host, retry)
+        for raw_target, response in recovered.items():
+            facts[raw_target] = response
+            primary_errors.pop(raw_target, None)
+        return set(recovered)
+
+    def _primary_rest(
+        self,
+        gh: str,
+        host: str,
+        members: Sequence[_BatchSubject],
+    ) -> dict[str, GitHubPullRequestResponse]:
+        """Re-read the load-bearing facts on the REST bucket, one request per subject.
+
+        REST has no batching, so a chunk costs one request per subject instead of
+        one per chunk. The chunk is already bounded by ``_MAX_SUBJECTS_PER_QUERY``
+        and this runs only while the cheaper transport is refusing, so the bound is
+        the one the batched path already carries.
+        """
+        facts: dict[str, GitHubPullRequestResponse] = {}
+        for member in members:
+            target = member.target
+            payload, _ = self._rest(
+                gh,
+                host,
+                _REST_PULL_REQUEST_PATH.format(
+                    owner=target.owner,
+                    repo=target.repo,
+                    number=target.number,
+                ),
+            )
+            if payload is None:
+                continue
+            try:
+                facts[member.raw] = _normalize_response(
+                    target,
+                    _rest_primary_node(payload),
+                    checks=(),
+                    checks_complete=False,
+                    unresolved_review_threads=0,
+                    review_threads_complete=False,
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return facts
+
+    def _checks_rest(
+        self,
+        gh: str,
+        host: str,
+        members: Sequence[_BatchSubject],
+        expected_heads: Mapping[str, str],
+    ) -> dict[str, tuple[tuple[GitHubCheck, ...], bool, ProviderErrorKind | None]]:
+        """Read the REST-expressible half of each subject's board, one request each.
+
+        Commit statuses ONLY, and that is a measured bound rather than a choice.
+        REST names no workflow for a check run -- neither the run's own payload nor
+        its check suite carries one -- while the GraphQL rollup builds a check
+        run's identity as ``"<workflow> / <name>"``. A check run read here would
+        therefore carry a DIFFERENT identity for the same check, and the watch
+        would report one failure twice, once per transport. A commit status
+        carries ``context``, which IS its GraphQL identity, so the status half is
+        exactly the half that can be read without that drift.
+
+        The missing half is why every result here is incomplete. Incomplete
+        already means PENDING unless a check failed, so the degraded board still
+        wakes the session on a red status and still cannot call the subject
+        review-ready.
+
+        The read is PINNED to the revision the primary read reported, so the
+        mid-tick push that the GraphQL path detects by comparing heads cannot
+        arise: a status page for another commit is not reachable from here.
+        """
+        resolved: dict[str, tuple[tuple[GitHubCheck, ...], bool, ProviderErrorKind | None]] = {}
+        for member in members:
+            revision = expected_heads.get(member.raw, "")
+            if not revision:
+                # No revision to pin the read to. The primary facts stand and the
+                # board is reported unread, which classifies as PENDING.
+                resolved[member.raw] = ((), False, None)
+                continue
+            target = member.target
+            payload, failure = self._rest(
+                gh,
+                host,
+                _REST_COMMIT_STATUS_PATH.format(
+                    owner=target.owner,
+                    repo=target.repo,
+                    revision=revision,
+                    page_size=_REST_STATUS_PAGE_SIZE,
+                ),
+            )
+            if payload is None:
+                # Both buckets refused this subject, so there is no third
+                # transport to degrade to and the failure is charged as a failure.
+                resolved[member.raw] = (
+                    (),
+                    False,
+                    failure[0] if failure else ProviderErrorKind.TRANSIENT,
+                )
+                continue
+            try:
+                normalized = _normalize_checks(_rest_status_rows(payload))
+            except (KeyError, TypeError, ValueError):
+                resolved[member.raw] = ((), False, ProviderErrorKind.TRANSIENT)
+                continue
+            bounded, _ = _bounded_checks(normalized)
+            resolved[member.raw] = (bounded, False, None)
+        return resolved
+
+    def _rest(
+        self,
+        gh: str,
+        host: str,
+        path: str,
+    ) -> tuple[Mapping[str, Any] | None, _Failure | None]:
+        """Run one REST read on the bucket the GraphQL point budget does not share.
+
+        One request answers for one subject, so unlike :meth:`_graphql` there is no
+        partially-readable answer to preserve: a non-zero exit is about this
+        request and nothing else. The exit code is therefore read FIRST -- the
+        error body GitHub writes to stdout is itself a valid JSON object, so a
+        parse-led order would read a refusal as a response.
+        """
+        try:
+            proc = self._runner(
+                [gh, "api", path],
+                timeout=_PROBE_TIMEOUT_SECS,
+                audit_caller="core:monitor",
+                pin_host=host,
+            )
+        except (SetupError, FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            return None, _exception_failure(exc)
+        if proc.returncode != 0:
+            stderr = proc.stderr if isinstance(proc.stderr, str) else ""
+            return None, _classified_failure(_classify_cli_error(stderr))
+        try:
+            return _json_object(proc.stdout), None
+        except ValueError:
+            return None, (ProviderErrorKind.TRANSIENT, "provider_malformed_response")
 
     def _primary(
         self,
@@ -485,7 +754,10 @@ class GitHubPullRequestProvider:
         host: str,
         members: Sequence[_BatchSubject],
     ) -> dict[str, tuple[int, bool, ProviderErrorKind | None]]:
-        """Count every subject's unresolved review threads in shared pages."""
+        """Count each subject's unresolved, non-outdated review threads.
+
+        Returns ``(unresolved_count, complete, error)`` per subject.
+        """
         unresolved: dict[str, int] = dict.fromkeys((m.raw for m in members), 0)
         complete: dict[str, bool] = dict.fromkeys((m.raw for m in members), True)
         errors: dict[str, ProviderErrorKind | None] = dict.fromkeys((m.raw for m in members), None)
@@ -551,7 +823,85 @@ class GitHubPullRequestProvider:
             # so far is real but incomplete, and that is not a provider failure.
             complete[member.raw] = False
         return {
-            member.raw: (unresolved[member.raw], complete[member.raw], errors[member.raw])
+            member.raw: (
+                unresolved[member.raw],
+                complete[member.raw],
+                errors[member.raw],
+            )
+            for member in members
+        }
+
+    def _pr_comments(
+        self,
+        gh: str,
+        host: str,
+        members: Sequence[_BatchSubject],
+    ) -> dict[str, str]:
+        """Digest each subject's PR-level (issue) comment bodies in shared pages.
+
+        Mirrors :meth:`_review_threads` in paging shape -- page size 100, the same
+        page cap, cursor de-duplication and fail-closed handling -- but reports
+        ONLY a digest. PR-level comment completeness has no bearing on
+        review-readiness classification, so a refused, malformed or capped read is
+        never a provider error and never forces a retry: it simply yields "" and
+        emits no condition (fail-closed). The digest is over ALL comment bodies,
+        human and bot alike, because a human editing a comment in place is exactly
+        as invisible to a count and as load-bearing as a bot rewriting a verdict;
+        filtering by author would encode "only bots matter", which is false. Known
+        bounded cost: the tick after the owning session posts its own comment, the
+        digest moves once and wakes once, then dedupes.
+        """
+        bodies: dict[str, list[str]] = {member.raw: [] for member in members}
+        complete: dict[str, bool] = dict.fromkeys((m.raw for m in members), True)
+        pending = list(members)
+        cursors: dict[str, str] = {}
+        seen_cursors: dict[str, set[str]] = {member.raw: set() for member in members}
+        for _ in range(_PR_COMMENT_MAX_PAGES):
+            if not pending:
+                break
+            document, argv_tail = _batch_document(
+                pending,
+                _PR_COMMENTS_SELECTION,
+                cursors=cursors,
+            )
+            payload, _group_failure = self._graphql(gh, host, document, argv_tail)
+            if payload is None:
+                for member in pending:
+                    complete[member.raw] = False
+                break
+            round_errors = _subject_errors(payload, pending)
+            advancing: list[_BatchSubject] = []
+            for index, member in enumerate(pending):
+                node = _alias_pull_request(payload, index)
+                if node is None:
+                    complete[member.raw] = False
+                    continue
+                try:
+                    page_bodies, nodes_complete, has_next, cursor = _pr_comment_page(node)
+                except (KeyError, TypeError, ValueError):
+                    complete[member.raw] = False
+                    continue
+                bodies[member.raw].extend(page_bodies)
+                if member.raw in round_errors or not nodes_complete:
+                    complete[member.raw] = False
+                    continue
+                if not has_next or cursor is None:
+                    continue
+                if cursor in seen_cursors[member.raw]:
+                    complete[member.raw] = False
+                    continue
+                seen_cursors[member.raw].add(cursor)
+                cursors[member.raw] = cursor
+                advancing.append(member)
+            pending = advancing
+        for member in pending:
+            # The page cap was reached with more pages still advertised: an
+            # incomplete read, so no digest.
+            complete[member.raw] = False
+        return {
+            member.raw: (
+                _pr_comment_body_digest(bodies[member.raw]) if complete[member.raw] else ""
+            )
             for member in members
         }
 
@@ -703,11 +1053,138 @@ def _normalize_response(
     )
 
 
+def _superseded_key(raw: object) -> tuple[object, ...] | None:
+    """The identity a check run can be superseded within, or ``None`` to exempt it.
+
+    The identity is the workflow DEFINITION's id, the RUN's triggering event and the
+    check name. Never the workflow's display name: a host permits two workflow files
+    to carry one ``name:``, and each may publish a check of the same name, so a label
+    groups two independent workflows together and the collapse would drop one of
+    them. The event belongs in it because one workflow file can declare several
+    triggers, and a file on ``push`` and ``pull_request`` produces two runs of itself
+    on one commit. Those are concurrent dispatches rather than an attempt and its
+    replacement, so only a later run of the SAME trigger may replace an earlier one.
+
+    A row is exempt whenever the response did not supply one of those, which is the
+    same rule the run id gets one level down. The two ids are nullable ``Int`` on the
+    wire even though the objects carrying them are not, so either can be absent on
+    its own; the event is non-null, so its absence means a truncated response rather
+    than a permitted shape. It is still guarded, because a missing key component would
+    silently MERGE two triggers into one group, where a missing id simply leaves the
+    row out of the comparison. Either way, evidence the host withheld is not evidence
+    that two rows are one check, and the only thing left to key on would be the
+    display name, which is what this refuses.
+    Anything that is not a well-formed CheckRun is exempt too and reaches the
+    normalizer untouched, which keeps a malformed row raising there rather than
+    being quietly dropped here.
+    """
+    if not isinstance(raw, Mapping) or raw.get("__typename") != "CheckRun":
+        return None
+    name = raw.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    definition = _identifier(raw.get("workflowDefinitionId"))
+    if definition is None:
+        return None
+    event = raw.get("workflowRunEvent")
+    if not isinstance(event, str) or not event:
+        return None
+    return (definition, event, name)
+
+
+def _check_run_of(raw: object) -> object:
+    """The workflow run a check row belongs to, or ``None`` when unidentified."""
+    return _identifier(raw.get("workflowRunId") if isinstance(raw, Mapping) else None)
+
+
+def _run_was_cancelled(raw: object) -> bool:
+    """Whether this row's own RUN was cancelled -- the only proof of displacement here.
+
+    The rollup carries no lineage edge: nothing in it states that one run replaced
+    another. A higher run id proves only that a run started later, and a later run of
+    one workflow can be an independent dispatch, since a single file may declare
+    several triggers and ``WorkflowRun.event`` is coarser than the action that fired
+    it -- a ``synchronize`` run and an ``edited`` run share ``pull_request``. So
+    recency alone cannot license dropping a row.
+
+    A cancelled RUN is the case where displacement IS established: the concurrency
+    group cancelled the run in favour of the one that superseded it. That is a
+    property of the run, so it is read from the run and never inferred from the row.
+    A row reaches ``CANCELLED`` for reasons that are not supersession at all -- a
+    fail-fast matrix cancelling its siblings, a job cancelled because something in
+    its ``needs`` failed, an operator cancelling one job -- and in each of those the
+    run itself concludes ``FAILURE`` and is entirely live. Treating the row's own
+    cancellation as displacement would drop a row out of a live run, and because the
+    fold re-runs identically on every poll the loss is silent and never self-corrects.
+
+    Both are required. The run's cancellation is what proves the row was displaced;
+    the row's own ``COMPLETED``+``CANCELLED`` is what proves removing it takes no
+    verdict with it, since a cancelled run can still contain a row that reached a
+    real ``FAILURE`` before the cancel landed. Requiring both drops only a row that
+    was cancelled inside a cancelled run, so neither a live run's cancelled row nor a
+    cancelled run's decided row is ever discarded.
+    """
+    if not isinstance(raw, Mapping):
+        return False
+    if raw.get("workflowRunConclusion") != "CANCELLED":
+        return False
+    return raw.get("status") == "COMPLETED" and raw.get("conclusion") == "CANCELLED"
+
+
+def _collapse_superseded_rows(rows: list[object]) -> list[object]:
+    """Drop check rows a newer run of the same check has already replaced.
+
+    A host keeps a replaced round's completed rows in the rollup beside the round
+    that replaced them. Counting every row then reports a failure that is not live,
+    and the monitor wakes the session on a phantom it cannot act on. What decides
+    supersession is the RUN a row belongs to and whether that run was cancelled --
+    never the row's own conclusion, which reaches ``CANCELLED`` inside live runs too.
+
+    Newest is the greatest RUN ID, which increases monotonically. Not a timestamp:
+    ``WorkflowRun.createdAt`` resolves only to the second, and two runs of one
+    workflow on one head routinely share it -- a workflow firing on both
+    ``synchronize`` and ``edited`` produces exactly that, both under the
+    ``pull_request`` event. Ordering on it leaves such a pair tied, both rows survive,
+    and the state fold then reports the replaced one, so a lane whose newest run
+    succeeded reads as a blocking failure. The run id orders them on its own.
+
+    Two rows of ONE run do not replace each other and both survive, because they share
+    one id: a workflow can publish a check run through the Checks API under its own
+    job's display name, so both are live at the same time and dropping either would
+    hide a live failure. No filter on conclusion either -- discarding a cancelled
+    newest run would revive the verdict of the run it superseded.
+
+    A row whose run the response did not identify is kept and takes no part in
+    choosing the winner, since it may BE the run that would supersede the others.
+    Over-report rather than hide a live failure.
+    """
+    winner: dict[tuple[object, ...], int] = {}
+    for raw in rows:
+        key = _superseded_key(raw)
+        if key is None:
+            continue
+        run = _check_run_of(raw)
+        if not isinstance(run, int):
+            continue
+        if key not in winner or run > winner[key]:
+            winner[key] = run
+    kept: list[object] = []
+    for raw in rows:
+        key = _superseded_key(raw)
+        if key is None or key not in winner:
+            kept.append(raw)
+            continue
+        run = _check_run_of(raw)
+        if not isinstance(run, int) or run == winner[key] or not _run_was_cancelled(raw):
+            kept.append(raw)
+    return kept
+
+
 def _normalize_checks(raw: object) -> tuple[GitHubCheck, ...]:
     if not isinstance(raw, list):
         raise ValueError("GitHub check rollup is malformed")
     grouped: dict[tuple[str, ...], tuple[str, list[str]]] = {}
-    for row_index, item in enumerate(raw):
+    for row_index, item in enumerate(_collapse_superseded_rows(raw)):
         if not isinstance(item, Mapping):
             raise ValueError("GitHub check rollup is malformed")
         identity, state, group_key = _normalize_check(item)
@@ -847,6 +1324,76 @@ def _normalize_mergeability(mergeable: str, merge_state: str) -> str:
     if normalized_mergeable != "MERGEABLE" or normalized_state not in _MERGEABLE_SETTLED_STATES:
         return "pending"
     return "mergeable"
+
+
+def _rest_enum(value: object) -> object:
+    """Spell one REST enum the way GraphQL spells it, leaving a non-string alone.
+
+    The two transports use the same vocabulary in different case --
+    ``mergeable_state: "blocked"`` against ``mergeStateStatus: BLOCKED``, ``state:
+    "failure"`` against ``FAILURE`` -- so case is the whole translation.
+
+    A non-string is passed through so that ``_normalize_response`` and
+    ``_normalize_check`` reject it as malformed, which is the same answer the
+    GraphQL path gives for the same shape. Coercing it here would turn a response
+    this adapter cannot read into a confident verdict about the subject.
+    """
+    return value.upper() if isinstance(value, str) else value
+
+
+def _rest_primary_node(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate one REST pull request into the primary read's own node shape.
+
+    A translation, not a second normalizer. Every validation, enum mapping and
+    bound stays in ``_normalize_response`` and ``_normalize_mergeability``, so one
+    fact cannot come to mean two things depending on which bucket answered. What
+    REST genuinely spells differently is what this maps: ``merged`` is a boolean
+    beside ``state`` rather than a third state, ``mergeable`` is a boolean rather
+    than an enum, ``head.sha`` carries the revision, and ``mergeable_state`` is
+    the lowercase of ``mergeStateStatus``.
+
+    ``reviewDecision`` is the one primary fact REST does not carry AT ALL, so it
+    is reported as unknown rather than guessed at. That is the fail-closed half of
+    the fallback: an unknown review decision classifies as PENDING, so a
+    REST-sourced observation can report a failing board but never a ready one.
+    """
+    head = raw.get("head")
+    mergeable = raw.get("mergeable")
+    return {
+        "number": raw.get("number"),
+        "state": "MERGED" if raw.get("merged") is True else _rest_enum(raw.get("state")),
+        "isDraft": raw.get("draft"),
+        "headRefOid": head.get("sha") if isinstance(head, Mapping) else None,
+        "mergeable": _REST_MERGEABLE[mergeable] if isinstance(mergeable, bool) else "UNKNOWN",
+        "mergeStateStatus": _rest_enum(raw.get("mergeable_state")),
+        "reviewDecision": _REST_ABSENT_REVIEW_DECISION,
+    }
+
+
+def _rest_status_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Translate one combined-status response into the rollup's own row shape.
+
+    REST's combined status reports the latest status per context, which is the
+    same projection the GraphQL rollup reports, so each row becomes the
+    ``StatusContext`` row ``_normalize_check`` already reads and no second check
+    normalizer exists. Rows past the adapter's long-standing row budget are
+    dropped here for the same reason the paginated GraphQL path drops them.
+    """
+    statuses = payload.get("statuses")
+    if not isinstance(statuses, list):
+        raise ValueError("GitHub commit status is malformed")
+    rows: list[dict[str, Any]] = []
+    for row in statuses[:_MAX_CHECK_ROWS]:
+        if not isinstance(row, Mapping):
+            raise ValueError("GitHub commit status is malformed")
+        rows.append(
+            {
+                "__typename": "StatusContext",
+                "context": row.get("context"),
+                "state": _rest_enum(row.get("state")),
+            }
+        )
+    return rows
 
 
 def _batch_document(
@@ -992,6 +1539,7 @@ def _build_result(
             checks_complete=response.checks_complete,
             unresolved_review_threads=response.unresolved_review_threads,
             review_threads_complete=response.review_threads_complete,
+            pr_comment_body_digest=response.pr_comment_body_digest,
         ),
         previous_observation=previous_observation,
         response=response,
@@ -1017,9 +1565,20 @@ def _page_cursor(page_info: object) -> tuple[bool, str | None]:
 def _flat_check_row(raw: object) -> dict[str, Any]:
     """Present one rollup node in the flat shape the check normalizer reads.
 
-    ``workflowName`` is GitHub's own workflow name, reached through the check
-    suite's run; every other field is passed through untouched, so
-    ``_normalize_check`` reads exactly the keys it always has.
+    A ``CheckRun``'s workflow name, its run's id, its run's triggering event, its
+    run's conclusion and its workflow definition's id are all reached through the
+    check suite; every other field is passed through untouched, so
+    ``_normalize_check`` reads exactly the keys it always has. Those four travel
+    beside the name because the collapse is keyed on them rather than on a display
+    string: the definition id and the event say which check a row IS, the run id says
+    which attempt of it this is and, because it increases monotonically, which
+    attempt came later, and the run's conclusion says whether that attempt was
+    displaced at all.
+
+    The run's conclusion is read from the check suite, which is the run's own status
+    container -- ``WorkflowRun`` exposes no ``conclusion`` of its own, and
+    ``CheckSuite.workflowRun`` is the inverse edge of the one followed here, so the
+    suite's conclusion IS this run's.
     """
     if not isinstance(raw, Mapping):
         raise ValueError("GitHub check rollup is malformed")
@@ -1030,7 +1589,31 @@ def _flat_check_row(raw: object) -> dict[str, Any]:
     name = workflow.get("name") if isinstance(workflow, Mapping) else None
     if isinstance(name, str):
         row["workflowName"] = name
+    run_id = run.get("databaseId") if isinstance(run, Mapping) else None
+    if _identifier(run_id) is not None:
+        row["workflowRunId"] = run_id
+    event = run.get("event") if isinstance(run, Mapping) else None
+    if isinstance(event, str) and event:
+        row["workflowRunEvent"] = event
+    definition_id = workflow.get("databaseId") if isinstance(workflow, Mapping) else None
+    if _identifier(definition_id) is not None:
+        row["workflowDefinitionId"] = definition_id
+    run_conclusion = suite.get("conclusion") if isinstance(suite, Mapping) else None
+    if isinstance(run_conclusion, str) and run_conclusion:
+        row["workflowRunConclusion"] = run_conclusion
     return row
+
+
+def _identifier(value: object) -> object:
+    """*value* when it can serve as a host-supplied id, else ``None``.
+
+    Both ids the collapse reads are nullable ``Int`` on the wire, so absence is a
+    normal answer rather than a malformed one. ``bool`` is refused because it is an
+    ``int`` subclass and would silently group two rows under ``True``.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _rollup_page(
@@ -1064,8 +1647,30 @@ def _rollup_page(
     return [_flat_check_row(row) for row in rows], revision, total, has_next, cursor
 
 
-def _review_thread_page(node: Mapping[str, Any]) -> tuple[int, bool, bool, str | None]:
-    """Count one page's unresolved threads, ignoring outdated ones."""
+def _body_fingerprint(body: str) -> str:
+    """A FIXED-LENGTH stand-in for one externally-authored comment body.
+
+    This is where the bound lives. A comment body is unbounded third-party text
+    and a paged read accumulates one entry per comment across every page, so
+    retaining the body itself would let a single large comment, or many of them,
+    size the probe's own memory. Hashing at the moment of retention makes what is
+    kept 64 characters wide whatever arrives, and nothing downstream ever sees
+    the body again -- neither the aggregate digest nor the condition key.
+
+    Only the digest of the body is ever needed: the conditions built from these
+    answer "did this change", never "what does it say".
+    """
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _review_thread_page(
+    node: Mapping[str, Any],
+) -> tuple[int, bool, bool, str | None]:
+    """Count one page's unresolved, non-outdated review threads.
+
+    A malformed thread marks the page incomplete so the caller does not trust a
+    count built from a partial read.
+    """
     threads = node["reviewThreads"]
     if not isinstance(threads, Mapping):
         raise ValueError("GitHub review threads are malformed")
@@ -1082,71 +1687,79 @@ def _review_thread_page(node: Mapping[str, Any]) -> tuple[int, bool, bool, str |
         ):
             nodes_complete = False
             continue
-        unresolved += int(not thread["isResolved"] and not thread["isOutdated"])
+        if thread["isResolved"] or thread["isOutdated"]:
+            continue
+        unresolved += 1
     has_next, cursor = _page_cursor(threads.get("pageInfo"))
     return unresolved, nodes_complete, has_next, cursor
 
 
-def _classify_cli_error(raw: str) -> ProviderErrorKind:
-    lowered = raw.lower()
-    if any(marker in lowered for marker in ("rate limit", "abuse detection", "too many requests")):
-        return ProviderErrorKind.RATE_LIMITED
-    status_match = _HTTP_STATUS_RE.search(raw)
-    if status_match is not None:
-        status = int(status_match.group(1), 10)
-        if status == 429:
-            return ProviderErrorKind.RATE_LIMITED
-        if status == 401:
-            return ProviderErrorKind.AUTHENTICATION
-        if status == 403:
-            return ProviderErrorKind.AUTHORIZATION
-        if status == 404:
-            return ProviderErrorKind.NOT_FOUND
-        if status >= 500:
-            return ProviderErrorKind.TRANSIENT
-    if "could not resolve host" in lowered:
-        return ProviderErrorKind.TRANSIENT
-    # The status regex above reads only the first `http <ddd>` it matches, so a
-    # real 429 behind an earlier status reaches here instead: on
-    # "http 200 ... http 429" the regex matches the 200, which is not a status
-    # that block maps, so it returns nothing and the 429 survives to this check.
-    # The substring form also fires on a malformed "http 4290", which the regex
-    # skips because \b rejects a fourth digit. That false positive is accepted
-    # but not free: RATE_LIMITED is retryable, yet every provider error still
-    # spends one of the monitor's `max_provider_errors` (3 by default) and that
-    # cumulative count is never refunded, so mislabelling shortens the watch.
-    if "http 429" in lowered:
-        return ProviderErrorKind.RATE_LIMITED
-    if any(
-        marker in lowered
-        for marker in (
-            "bad credentials",
-            "authentication",
-            "not logged into",
-            "gh auth login",
-        )
-    ):
-        return ProviderErrorKind.AUTHENTICATION
-    if any(
-        marker in lowered
-        for marker in (
-            "not found",
-            "could not resolve to a repository",
-            "could not resolve to a pullrequest",
-        )
-    ):
-        return ProviderErrorKind.NOT_FOUND
-    if any(
-        marker in lowered
-        for marker in (
-            "forbidden",
-            "permission",
-            "resource not accessible",
-            "saml",
-        )
-    ):
-        return ProviderErrorKind.AUTHORIZATION
-    return ProviderErrorKind.TRANSIENT
+def _pr_comment_page(node: Mapping[str, Any]) -> tuple[list[str], bool, bool, str | None]:
+    """Read one page of a pull request's PR-level (issue) comments.
+
+    Returns a fixed-length FINGERPRINT per readable non-empty body rather than
+    the body itself: the bound is applied here, at the point of retention, so a
+    309-comment pull request carrying megabytes of review prose costs 64
+    characters per comment to watch.
+
+    An EMPTY body contributes nothing, which is what the aggregate digest has
+    always done with it -- doing it here keeps the pull request with no readable
+    prose emitting no condition, and keeps this surface's unit the COMMENT.
+
+    A malformed comment marks the page incomplete so a digest built from a
+    partial read is not trusted, mirroring the thread page reader.
+    """
+    comments = node["comments"]
+    if not isinstance(comments, Mapping):
+        raise ValueError("GitHub pull request comments are malformed")
+    nodes = comments.get("nodes")
+    if not isinstance(nodes, list):
+        raise ValueError("GitHub pull request comments are malformed")
+    fingerprints: list[str] = []
+    nodes_complete = True
+    for comment in nodes:
+        if not isinstance(comment, Mapping) or not isinstance(comment.get("body"), str):
+            nodes_complete = False
+            continue
+        body = comment["body"]
+        if not body:
+            continue
+        fingerprints.append(_body_fingerprint(body))
+    has_next, cursor = _page_cursor(comments.get("pageInfo"))
+    return fingerprints, nodes_complete, has_next, cursor
+
+
+def _pr_comment_body_digest(fingerprints: list[str]) -> str:
+    """A stable digest over a pull request's PR-level comment bodies.
+
+    Takes per-comment FINGERPRINTS, never bodies, so nothing on the path from
+    read to condition key scales with how much a reviewer wrote.
+
+    Empty when no readable non-empty body was seen, so a pull request with no
+    comments emits no condition. Fingerprints are SORTED before hashing so the
+    page order they arrived in cannot move the digest, mirroring the thread
+    digest.
+    """
+    kept = sorted(fingerprints)
+    if not kept:
+        return ""
+    encoded = json.dumps(kept, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+# ``gh`` stderr classification and the process-wide ``github:api`` cooldown are
+# shared with the sibling monitor (``monitoring.github_provider_errors``); the
+# module-level names stay so tests and callers address them per monitor.
+_classify_cli_error = classify_cli_error
+_shared_cooldown = shared_cooldown
+
+
+def _shared_cooldown_result(retry_at: float) -> GitHubPullRequestProbeResult:
+    return _provider_error(
+        ProviderErrorKind.RATE_LIMITED,
+        REASON_SHARED_COOLDOWN,
+        summary=shared_cooldown_summary(retry_at),
+    )
 
 
 def _reduce_provider_errors(kinds: Sequence[ProviderErrorKind]) -> ProviderErrorKind:
@@ -1214,5 +1827,20 @@ def _exception_failure(error: BaseException) -> _Failure:
     return _classified_failure(_provider_exception_kind(error))
 
 
-def _provider_error(kind: ProviderErrorKind, reason_code: str) -> GitHubPullRequestProbeResult:
-    return provider_error_result(kind, reason_code)
+def _provider_error(
+    kind: ProviderErrorKind, reason_code: str, *, summary: str = ""
+) -> GitHubPullRequestProbeResult:
+    result = provider_error_result(kind, reason_code)
+    if not summary:
+        return result
+    return GitHubPullRequestProbeResult(
+        response=None,
+        canonical={},
+        observation=MonitorObservation(
+            "",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=kind,
+            reason_code=reason_code,
+            summary=summary,
+        ),
+    )

@@ -11,6 +11,7 @@ import { TagListEditor } from './SlackPanel'
 import { api, type TeamsConfigData, type TeamsConfigSave } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Teams"
 const AZURE_BOT_URL = 'https://portal.azure.com/#create/Microsoft.AzureBot'
@@ -154,11 +155,13 @@ function draftFrom(c: TeamsConfigData): Draft {
 
 /** Status pill mirroring the other channel panels. */
 function StatusBadge({ config }: { config: TeamsConfigData }) {
+  /* eslint-disable shadcn/no-unknown-classes -- shadcn-ui/lint#38: the rule reads every member of a destructured initializer as a class */
   const [dot, text, cls] = config.connected
     ? ['var(--ok)', i18nT('pages.settings.teamsPanel.active'), 'text-ok']
     : config.configured
       ? ['var(--warn)', i18nT('pages.settings.teamsPanel.not_active'), 'text-warn']
       : ['var(--muted)', i18nT('pages.settings.teamsPanel.needs_setup'), 'text-muted']
+  /* eslint-enable shadcn/no-unknown-classes */
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${cls}`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
@@ -500,6 +503,14 @@ export function TeamsPanel() {
                   disabled={ro}
                 />
               </div>
+            )}
+            {!!data.session_folder && (
+              <ChannelFolderBackfill
+                namespace="teams"
+                folderName={data.session_folder}
+                disabled={ro}
+                testId="session-folder-backfill"
+              />
             )}
           </div>
         </SettingsCard>

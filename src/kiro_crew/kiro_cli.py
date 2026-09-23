@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
 import urllib.request
 from collections.abc import Mapping
@@ -12,6 +13,7 @@ from pathlib import Path
 from kiro_crew import identity_stores, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.env import augmented_path
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 KIRO_CLI_NAME = "kiro-cli"
 
@@ -34,6 +36,105 @@ _API_KEY_ENV = "KIRO_API_KEY"
 _IDC_PROBE_READ_ID = "kiro_cli.idc_identity_probe"
 
 _STATE_DB_TIMEOUT_SECS = 5.0
+
+#: Lowest kiro-cli release observed to ACCEPT a top-level ``permissions`` block in
+#: an agent spec.
+#:
+#: kiro-cli validates agent specs with serde ``deny_unknown_fields``, so a release
+#: whose schema lacks the field does not ignore it -- it refuses the WHOLE file,
+#: drops the agent from its table, and every Kiro Crew MCP server is silently
+#: absent from the session while ``--agent kirocrew`` resolves to the default
+#: agent. Observed refusing on 2.10.0 and accepting on 2.23.0.
+#:
+#: The floor is the release actually PROBED, for the same reason
+#: :data:`~kiro_crew.mcp_hot_reload.MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION` states:
+#: lowering it once an older release is verified is a one-line change, while
+#: granting it to a release that refuses the field costs the user every tool with
+#: nothing red to say why.
+#:
+#: What authorizes lowering it: install the candidate release (a 2.x between
+#: 2.10.0 and 2.23.0), put a spec carrying ``"permissions": {"rules": []}`` in
+#: its agents directory, start a session with ``--agent`` naming that spec, and
+#: confirm the agent resolves -- its MCP servers present, no ``unknown field
+#: 'permissions'`` in the log. The floor becomes the lowest release that passes.
+#: A changelog entry is not a probe; a release nobody ran stays above the floor.
+SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
+
+#: ``--version`` is a local read of an already-resolved binary, so it gets the
+#: same short leash the readiness probe puts on its own first execution.
+_VERSION_PROBE_TIMEOUT_SECS = 5
+
+#: One answer per binary IDENTITY, not per process: keyed by the pinned path and
+#: its mtime, so ``kiro-cli update`` swapping the binary invalidates the entry
+#: instead of leaving a whole gateway lifetime on a stale verdict.
+_version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
+
+
+def spec_permissions_supported(version: tuple[int, int, int] | None) -> bool:
+    """Pure gate: does a kiro-cli at *version* accept a spec ``permissions`` block?
+
+    An unknown version is not "probably new enough": it is False. The two losses
+    are not symmetric. Writing the field on a release that refuses it costs the
+    whole spec -- no MCP servers, no tools, no Kiro Crew agent at all.
+    Withholding it costs the KAS mode listing for that agent. So the unknown case
+    takes the smaller loss.
+    """
+    if version is None:
+        return False
+    return version >= SPEC_PERMISSIONS_MIN_VERSION
+
+
+def installed_kiro_cli_version() -> tuple[int, int, int] | None:
+    """The pinned kiro-cli's version, or ``None`` when it cannot be established.
+
+    Blocking: one bounded ``--version`` spawn on the first call per binary
+    identity, cached by path and mtime thereafter. The binary comes from
+    :func:`pin_kiro_cli` -- an absolute path from the known install directories
+    with the inherited ``PATH`` excluded -- because a bare argv0 would be
+    re-resolved inside ``exec`` against a ``PATH`` that can lead with an
+    agent-writable directory. No pin means no spawn and no answer.
+
+    Never raises. Every failure (absent binary, refused spawn, timeout,
+    unparseable output) gives the same answer as an old CLI: unknown, which the
+    gate reads as "do not write the field".
+    """
+    # The ``--version`` line and the handshake's ``agentInfo.version`` are the
+    # same spelling, so the parser is shared rather than copied. Imported here
+    # because ``mcp_hot_reload`` reaches ``acp_backends``, and this module is a
+    # leaf every setup and launch path imports at boot.
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    try:
+        binary, _unpinned = pin_kiro_cli()
+    except Exception:  # noqa: BLE001 - an unanswerable probe is not an error here
+        return None
+    if binary is None:
+        return None
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns)
+    except OSError:
+        return None
+    if key in _version_cache:
+        return _version_cache[key]
+    version: tuple[int, int, int] | None = None
+    completed: subprocess.CompletedProcess[str] | None
+    try:
+        completed = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            timeout=_VERSION_PROBE_TIMEOUT_SECS,
+            check=False,
+            # Pinned UTF-8 rather than bare text=True: a platform-locale decode
+            # could mangle the version token and report a supported kiro-cli as
+            # unparseable, which this gate reads as refusing.
+            **UTF8_TEXT,
+        )
+    except Exception:  # noqa: BLE001 - see the docstring: unknown, never raising
+        completed = None
+    if completed is not None and completed.returncode == 0:
+        version = parse_kiro_cli_version(completed.stdout or completed.stderr or "")
+    _version_cache[key] = version
+    return version
 
 
 def kiro_cli_state_dbs(
@@ -175,6 +276,29 @@ def _windows_program_files(environ: Mapping[str, str]) -> str:
     return environ.get("ProgramFiles") or environ.get("PROGRAMFILES") or r"C:\Program Files"
 
 
+#: The macOS install locations that are FIXED system-wide, in search order, with
+#: the user's own bundle inserted after the first entry by
+#: :func:`known_kiro_cli_dirs`.
+#:
+#: Named rather than inlined because these are the ONE part of the candidate set
+#: no argument can point elsewhere: every other entry is derived from ``home`` or
+#: ``environ`` (the mise shim entry with the exception this function's own
+#: docstring records -- ``mise_data_dir`` still honours the PROCESS-level
+#: ``MISE_DATA_DIR`` / ``XDG_DATA_HOME``, so it is home-pinned only in their
+#: absence), which is what lets a caller pin the set and then report it as the
+#: directories that were searched. A test that fakes a host by pinning
+#: ``(platform_name, home, environ)`` still gets these three, so on a developer
+#: machine with a real install it is asserting about that machine's
+#: ``/Applications`` rather than about its own fixture. Emptying this tuple is how
+#: such a test fences them; the values themselves are pinned by
+#: ``test_kiro_cli_pin.py`` so an empty default can never ship.
+_MACOS_SYSTEM_DIRS: tuple[str, ...] = (
+    "/Applications/Kiro CLI.app/Contents/MacOS",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+)
+
+
 def known_kiro_cli_dirs(
     platform_name: str,
     home: Path,
@@ -205,14 +329,13 @@ def known_kiro_cli_dirs(
             str(home / ".cargo" / "bin"),
         ]
     if platform_name == "darwin":
-        dirs.extend(
-            [
-                "/Applications/Kiro CLI.app/Contents/MacOS",
-                str(home / "Applications" / "Kiro CLI.app" / "Contents" / "MacOS"),
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-            ]
-        )
+        # Slicing rather than unpacking: a test fences the fixed locations by
+        # emptying ``_MACOS_SYSTEM_DIRS``, and slices are safe at any length while
+        # ``head, *rest = ()`` raises. Order is preserved -- the system bundle, the
+        # user's own bundle, then the shared bin dirs.
+        fixed = list(_MACOS_SYSTEM_DIRS)
+        user_app = str(home / "Applications" / "Kiro CLI.app" / "Contents" / "MacOS")
+        dirs.extend(fixed[:1] + [user_app] + fixed[1:])
     if include_inherited_path and platform_name == "win32":
         dirs.extend(part for part in environ.get("PATH", "").split(";") if part)
         # A GUI-launched Windows gateway can retain an old PATH after a user
@@ -303,3 +426,49 @@ def resolve_kiro_cli(
         include_inherited_path=include_inherited_path,
     )
     return candidates[0] if candidates else None
+
+
+#: Fixed wording for the one refusal worth reporting: an install that exists but
+#: only through ``PATH``. Named here so ``kirocrew update`` and the diagnostics
+#: bundle tell the operator the same thing, including the override that fixes it.
+PATH_ONLY_INSTALL_NOTE = (
+    "kiro-cli resolves only through PATH, which this spawn does not trust; "
+    "point KIROCREW_KIRO_BIN at the binary's absolute path to have it used here"
+)
+
+
+def pin_kiro_cli() -> tuple[str | None, bool]:
+    """``(pinned absolute path or None, an unpinned install exists)``.
+
+    The sync pin for a spawn that must not exec a bare argv0. ``argv0`` is
+    re-resolved off the inherited ``PATH`` inside ``exec``, and a gateway's
+    ``PATH`` can lead with an agent-writable directory (a worktree venv's
+    ``bin``), so the candidate set is :func:`resolve_kiro_cli` with
+    ``include_inherited_path=False``: the fixed known install directories plus
+    the operator's own ``KIROCREW_KIRO_BIN``. ``None`` means refuse — callers
+    skip the step rather than fall back to the bare name.
+
+    The second element separates the two ways the pin comes back empty, which
+    a caller reports differently: kiro-cli is not installed at all (nothing to
+    say — the backend is optional), or it IS installed somewhere the pin does
+    not accept, which an operator needs told about, together with
+    :data:`PATH_ONLY_INSTALL_NOTE`. The ``PATH``-inclusive lookup that answers
+    it only ever decides the wording; it never names what gets spawned.
+
+    Absolute or nothing. The one candidate that can come back relative is the
+    override itself (``KIROCREW_KIRO_BIN=kiro-cli``): the existence check would
+    pass against the current directory while ``exec`` re-resolved the bare
+    argv0 off ``PATH`` — the exact divergence this pin exists to remove. A
+    relative pin is therefore refused and reported like a ``PATH``-only
+    install, since the note already names the fix.
+
+    Sync and unbounded: it stats directories under the home directory. The
+    gateway's unattended paths run this in a thread under a timeout
+    (``slack.gateway._pinned_kiro_cli``); a CLI command or a request handler
+    already blocking on the spawn itself has nothing to gain from that.
+    """
+
+    pinned = resolve_kiro_cli(include_inherited_path=False)
+    if pinned is not None and os.path.isabs(pinned):
+        return pinned, False
+    return None, resolve_kiro_cli() is not None

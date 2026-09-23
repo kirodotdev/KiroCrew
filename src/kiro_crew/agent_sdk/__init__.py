@@ -8,7 +8,10 @@ direct dependencies on the backend packages while the rest of the SDK is built.
 Which backends this build can serve, and every capability set a harness may
 claim, live in :mod:`kiro_crew.agent_sdk.backends`; the per-session record a
 consumer asks instead of naming a harness is
-:class:`kiro_crew.agent_sdk.capabilities.SessionCapabilities`. Whether a harness's
+:class:`kiro_crew.agent_sdk.capabilities.SessionCapabilities`. What an operator
+choosing BETWEEN harnesses is shown -- the same memberships projected as one card
+per harness, with no per-harness prose -- is
+:mod:`kiro_crew.agent_sdk.backend_cards`. Whether a harness's
 tool calls reach the PreToolUse gate is :mod:`kiro_crew.agent_sdk.tool_gate`.
 
 Machine-local backend readiness lives in :mod:`kiro_crew.agent_sdk.backend_install`.
@@ -37,9 +40,12 @@ Layering::
                             |  resolves drivers through a registry
                             v
                      kiro_crew.agent_sdk.drivers.acp
-                                                  the only module INSIDE this
-                                                  package that imports
-                                                  kiro_crew.acp
+                     kiro_crew.agent_sdk.drivers.acp_vocab
+                                                  the only modules INSIDE this
+                                                  package that import
+                                                  kiro_crew.acp: the driver
+                                                  (call-time imports) and the
+                                                  by-value vocabulary it exposes
                             v
                      kiro_crew.acp  (foundation)  wire, dialects, adapters,
                                                   session handles, worker pool
@@ -56,6 +62,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
+# One name, because one name has a consumer: the dashboard handler that serves
+# ``GET /api/acp-backends``. The record types and the per-id projection stay inside
+# :mod:`kiro_crew.agent_sdk.backend_cards`, which is where the tests about them
+# reach for them -- a facade export nobody imports is a promise this boundary would
+# have to keep for no one.
+from kiro_crew.agent_sdk.backend_cards import card_payload
 from kiro_crew.agent_sdk.backend_install import (
     CACHE_TTL_SECONDS,
     COMPONENT_CLAUDE_ACP_ADAPTER,
@@ -66,6 +78,7 @@ from kiro_crew.agent_sdk.backend_install import (
     UNKNOWN,
     BackendInstallState,
     clear_probe_cache,
+    forget_for_recheck,
     probe_backend,
     probe_backends,
 )
@@ -124,6 +137,7 @@ __all__ = [
     "UNKNOWN_BACKEND_CAPABILITIES",
     "capabilities_for",
     "capabilities_of",
+    "card_payload",
     "UNKNOWN_AGENT_AUTH",
     "AgentAuthDeclaration",
     "AgentInteractiveLogin",
@@ -141,6 +155,7 @@ __all__ = [
     "NativeCommandBatch",
     "clear_probe_cache",
     "finish_suspended_spawn",
+    "forget_for_recheck",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",

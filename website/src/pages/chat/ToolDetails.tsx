@@ -19,13 +19,15 @@ import { ToolInputText } from '../../components/ToolInputText'
 import { ROW_RAIL_CLASS } from './rowPill'
 import { PierreCode } from '../../pierre'
 import SegmentedControl from '../../components/SegmentedControl'
+import { fmtNumber } from '../../i18n/format'
+import type { ToolPayloadCut } from '../../types'
 
 /** Compact single-value rendering inside the tool-details table: no gutter,
  *  wrapped lines, transparent background so the row's own surface shows. */
 const CMD_CODE_OPTIONS = { disableLineNumbers: true, overflow: 'wrap' } as const
 
 import { i18nT } from '../../i18n/t'
-export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto, pending, ts, hasEntry, fmtTime, barColor, layoutId, compact, flush }: {
+export function ToolDetails({ purpose, pillLabel, toolName, input, output, inputCut, outputCut, auto, pending, ts, hasEntry, fmtTime, barColor, layoutId, compact, flush }: {
   purpose: string
   /** What the pill itself displays. The meta row hides the `→ purpose` line
    *  when it would just duplicate the pill text — happens when
@@ -37,6 +39,13 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
    *  when it would duplicate the pill label. */
   toolName?: string
   input: string; output: string; auto: boolean; pending: boolean; ts: number; hasEntry: boolean
+  /** Clamp seam of `input` / `output` (see `ToolActivity.input_cut`): where the
+   *  live tool log dropped the middle of an oversize payload. The panel renders
+   *  the localized "N characters truncated" marker at that offset. Absent or
+   *  null for an unclamped payload and for every historical row, whose
+   *  persisted meta is served whole. */
+  inputCut?: ToolPayloadCut | null
+  outputCut?: ToolPayloadCut | null
   fmtTime: (t: number) => string
   /** Full CSS color value for the left rail (typically a `color-mix(...)` of
    *  a theme variable). Mirrors the pill icon's status colour so the panel
@@ -188,7 +197,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
                 transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
                 className="overflow-hidden"
               >
-                <PayloadView text={input} raw={rawMode} maxH={compact ? 'max-h-[160px]' : 'max-h-[400px]'} />
+                <PayloadView text={input} cut={inputCut} raw={rawMode} maxH={compact ? 'max-h-[160px]' : 'max-h-[400px]'} />
               </motion.div>
             )}
             {active === 'output' && hasOutput && (
@@ -200,7 +209,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
                 transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
                 className="overflow-hidden"
               >
-                <PayloadView text={output} raw={rawMode} maxH={compact ? 'max-h-[160px]' : 'max-h-[500px]'} />
+                <PayloadView text={output} cut={outputCut} raw={rawMode} maxH={compact ? 'max-h-[160px]' : 'max-h-[500px]'} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -375,8 +384,24 @@ function JsonTable({ data }: { data: Record<string, unknown> }): ReactNode {
  *  nothing here nests a border inside a border. `px-2` matches the meta-row
  *  chips' own padding, giving the chip row and the table one shared inner inset
  *  rather than a 2px step between them. */
-function PayloadView({ text, raw, maxH }: { text: string; raw: boolean; maxH: string }): ReactNode {
+function PayloadView({ text, cut, raw, maxH }: { text: string; cut?: ToolPayloadCut | null; raw: boolean; maxH: string }): ReactNode {
   const base = `px-2 py-2 bg-bg-elevated rounded-md text-[12px] font-mono ${maxH} overflow-y-auto leading-5 border border-border`
+  // A clamped payload is head + tail with the middle gone. It is never a whole
+  // JSON object (no table, which would swallow the seam), and neither half is
+  // a whole diff or document either: the diff renderer would draw the head as
+  // a finished patch while the tail, which starts mid-line, cannot be parsed
+  // at all. Both halves render verbatim around the marker, so what the reader
+  // sees is exactly the fragment the store holds.
+  if (cut && cut.at >= 0 && cut.at <= text.length) {
+    return (
+      <pre className={`${base} whitespace-pre-wrap break-all`}>
+        {text.slice(0, cut.at)}
+        <TruncationMarker count={cut.count} />
+        {'\n'}
+        {text.slice(cut.at)}
+      </pre>
+    )
+  }
   if (!raw) {
     const parsed = tryParseJsonObject(text)
     if (parsed) {
@@ -384,4 +409,21 @@ function PayloadView({ text, raw, maxH }: { text: string; raw: boolean; maxH: st
     }
   }
   return <pre className={`${base} whitespace-pre-wrap break-all`}><ToolInputText text={text} raw={raw} /></pre>
+}
+
+/** The "…(N characters truncated — reopen the session…)" line at a clamp seam.
+ *
+ *  Rendered here, not in the reducer: `i18nT` reads the ACTIVE catalog at
+ *  render time, so the marker follows a language switch like every other
+ *  string on the panel, and `fmtNumber` gives the count the locale's digit
+ *  grouping (`84,080` / `84 080` / `84.080`). `store.chatSlice.truncated_chars`
+ *  is the same key the clamp used to bake in; the sibling
+ *  `store.chatSlice.truncated` belongs to subagent stream tails and is not
+ *  reused. */
+function TruncationMarker({ count }: { count: number }): ReactNode {
+  return (
+    <span data-testid="tool-payload-truncated" className="text-muted italic">
+      {i18nT('store.chatSlice.truncated_chars', { count: fmtNumber(count) })}
+    </span>
+  )
 }

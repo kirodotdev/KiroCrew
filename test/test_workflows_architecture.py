@@ -35,6 +35,7 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     "validate": set(),
     "dsl": set(),
     "schema": set(),  # leaf: structured-output validator, no intra-pkg deps
+    "preview": set(),  # leaf: static plan preview for the graph view, stdlib ast only
     "events": set(),  # imports only the package root (__init__)
     "registry": set(),  # leaf: background-run registry, imports only __init__ (store via DI)
     "agent_exec": set(),  # production agent_fn adapter; imports llm_helpers (external),

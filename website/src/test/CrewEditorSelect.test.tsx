@@ -247,9 +247,18 @@ async function openCreate(): Promise<HTMLElement> {
 }
 
 describe('crew editor — collision warning', () => {
+  it('explains automatic member memory without an empty field or a workspace association', async () => {
+    await renderRoster()
+    const sheet = await openCreate()
+    const guidance = within(sheet).getByText('New members start with empty Member memory (V2). Global Memory V1 stays unchanged.')
+    expect(guidance).toBeVisible()
+    expect(within(sheet).queryByText('Memory store', { exact: true })).toBeNull()
+    expect(within(sheet).getByText('Workspace', { exact: true }).parentElement).not.toContainElement(guidance)
+  })
+
   it('distinguishes new private members from existing V1 bindings in the roster banner', async () => {
     await renderRoster()
-    expect(screen.getByText('New members get private Memory V2. Existing members keep their configured Memory V1 until you choose Create private memory for them.')).toBeVisible()
+    expect(screen.getByText('New crew members get Member memory (V2). Existing members keep their current memory.')).toBeVisible()
     expect(screen.queryByText(/Every named member has its own private Memory V2/)).toBeNull()
   })
 
@@ -298,89 +307,14 @@ describe('crew editor — collision warning', () => {
     expect(within(sheet).getByTestId('crew-wire-memory')).not.toHaveTextContent('Shared')
   })
 
-  it('keeps explicit V1 usable until the owner creates an empty private V2', async () => {
-    let provisioned = false
-    let finishProvision!: () => void
-    mockApi.kirocrewAgents.mockImplementation(async () => ({
-      agents: [
-        { ...DEFAULT_CREW, name: 'default', memory_store: 'default' },
-        { ...OTHER_CREW, workspace: 'core-ws', memory_store: provisioned ? 'member-oncall-new' : 'default' },
-      ],
-      default_agent: 'oncall',
-    }))
-    mockApi.kirocrewConfig.mockImplementation(async () => ({ memory_stores: provisioned
-      ? { default: {}, 'member-oncall-new': { memory_version: 2, owner_member: 'oncall' } }
-      : { default: {} } }))
-    mockApi.updateKirocrewAgent.mockImplementation((_name, body) => {
-      expect(body).toEqual({ provision_memory: true })
-      return new Promise(resolve => {
-        finishProvision = () => {
-          provisioned = true
-          resolve({ memory_store: 'member-oncall-new', new_conversation_required: true })
-        }
-      })
-    })
-    const view = await renderRoster()
-    view.queryClient.setQueryData(['member-thread', 'oncall'], { slot_key: 'member-oncall-v1' })
-    const sheet = await openEditor('oncall')
-    // The shared workspace dot contributes to both tab and panel names.
-    fireEvent.click(within(sheet).getByRole('tab', { name: 'Workspace · Memory Shared' }))
-    const panel = within(sheet).getByRole('tabpanel', { name: 'Workspace · Memory Shared' })
-
-    expect(within(panel).queryByText(/Also used by/)).not.toBeInTheDocument()
-    const memoryField = within(panel).getByText('Memory Store', { exact: true }).parentElement!
-    expect(within(memoryField).getByText('default', { exact: true })).toBeVisible()
-    expect(within(panel).getByText(/This member uses its current memory \(V1\)\./)).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
-    expect(within(panel).queryByText(/This member cannot return to its previous memory/)).toBeNull()
-    const create = within(panel).getByRole('button', { name: 'Create private memory' })
-    expect(create).toBeEnabled()
-    expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
-    fireEvent.click(create)
-    const confirmation = await screen.findByRole('dialog', { name: 'Create private memory' })
-    await waitFor(() => expect(within(confirmation).getByText(/This member cannot return to its previous memory/)).toBeVisible())
-    expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
-    fireEvent.click(within(confirmation).getByRole('button', { name: 'Create private memory' }))
-    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { provision_memory: true }))
-    expect(within(panel).getByRole('status')).toHaveTextContent('Creating private memory…')
-    finishProvision()
-    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Manage memory' })).toBeEnabled())
-    expect(within(panel).queryByText('Creating private memory…')).toBeNull()
-    expect(view.queryClient.getQueryData(['member-thread', 'oncall'])).toBeUndefined()
-    expect(within(panel).getByText('member-oncall-new', { exact: true })).toBeVisible()
-    expect(within(panel).queryByText(/This member uses its current memory \(V1\)\./)).toBeNull()
-    // Workspace sharing remains visible without claiming shared memory access.
-    fireEvent.click(within(sheet).getByTestId('crew-rail-overview'))
-    expect(within(sheet).getByTestId('crew-wire-workspace')).toHaveTextContent('Shared')
-  })
-
-  it('keeps workspace edits and the V1 conversation after cancellation and a refused opt-in', async () => {
-    mockApi.updateKirocrewAgent.mockRejectedValue(new Error('zzq-private-provision-refused'))
+  it('keeps V1 data and cached conversations without an update provisioning action', async () => {
     const view = await renderRoster()
     view.queryClient.setQueryData(['member-thread', 'oncall'], { slot_key: 'member-oncall-v1' })
     const sheet = await openEditor('oncall')
     fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
-    const user = userEvent.setup()
-    await user.click(within(sheet).getByRole('combobox', { name: 'Workspace' }))
-    await user.click(screen.getByRole('option', { name: 'core-ws', exact: true }))
-    const create = within(sheet).getByRole('button', { name: 'Create private memory' })
-    fireEvent.click(create)
-    const confirmation = await screen.findByRole('dialog', { name: 'Create private memory' })
-    await waitFor(() => expect(confirmation).toBeVisible())
-    fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel', exact: true }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create private memory' })).toBeNull())
-    expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('core-ws')
+    expect(within(sheet).getByText('This member keeps its current memory (V1). Member memory (V2) is only available when creating a new crew member.')).toBeVisible()
+    expect(within(sheet).queryByRole('button', { name: /Create.*memory/i })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
-    expect(view.queryClient.getQueryData(['member-thread', 'oncall'])).toEqual({ slot_key: 'member-oncall-v1' })
-
-    fireEvent.click(create)
-    const retry = await screen.findByRole('dialog', { name: 'Create private memory' })
-    await waitFor(() => expect(retry).toBeVisible())
-    fireEvent.click(within(retry).getByRole('button', { name: 'Create private memory' }))
-    await waitFor(() => expect(within(sheet).getByTestId('crew-sheet-error')).toHaveTextContent('zzq-private-provision-refused'))
-    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledExactlyOnceWith('oncall', { provision_memory: true })
-    expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('core-ws')
-    expect(within(sheet).getByText(/This member uses its current memory \(V1\)\./)).toBeVisible()
-    expect(within(sheet).getByRole('button', { name: 'Create private memory' })).toBeEnabled()
     expect(view.queryClient.getQueryData(['member-thread', 'oncall'])).toEqual({ slot_key: 'member-oncall-v1' })
   })
 
@@ -402,7 +336,7 @@ describe('crew editor — collision warning', () => {
     const panel = within(sheet).getByRole('tabpanel', { name: 'Workspace · Memory Shared' })
 
     expect(within(panel).getByText('oncall-mem', { exact: true })).toBeVisible()
-    expect(within(panel).getByText(/Private Memory V2/)).toBeVisible()
+    expect(within(panel).getByText('This member uses Member memory (V2).')).toBeVisible()
     expect(within(panel).getByRole('button', { name: 'Manage memory' })).toBeEnabled()
     expect(within(panel).queryByRole('button', { name: 'Create private memory' })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
@@ -427,10 +361,67 @@ describe('crew editor — collision warning', () => {
 
     expect(within(panel).getByText(reason, { exact: true })).toBeVisible()
     expect(within(panel).queryByText(/Open the crew manager/i)).toBeNull()
-    expect(within(panel).queryByText(/This member uses its current memory \(V1\)\./)).toBeNull()
+    expect(within(panel).queryByText(/This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\./)).toBeNull()
     expect(within(panel).queryByRole('button', { name: 'Create private memory' })).toBeNull()
     expect(within(panel).queryByRole('button', { name: 'Manage memory' })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
+  })
+})
+
+describe('crew editor — a registry write re-reads the config snapshot', () => {
+  /* The memory row is the only field on this page that reads `['kirocrewConfig']`
+     rather than the registry: `memberMemoryState` decides it from
+     `kirocrewCfg.memory_stores`. Creating a member writes BOTH records in one
+     config.json write, so a create that invalidates only `['kirocrew-agents']`
+     leaves the pre-write config in cache — the just-created store key is absent
+     from it, and the row reports a store the gateway calls valid as
+     "unavailable … kirocrew doctor". Reported against a member created at 06:48
+     whose store probed `lineage=crew`, owner matching, on the same install whose
+     `kirocrew doctor` printed `valid binding` for it. */
+  it('shows the created member as private V2 instead of unavailable', async () => {
+    // The roster and the config BOTH move with the write. First resolution is
+    // the pre-write world (no such member, no such store); every later one is
+    // the post-write world. Only a second config read can reach it.
+    mockApi.kirocrewAgents
+      .mockResolvedValueOnce(AGENTS_RESPONSE)
+      .mockResolvedValue({
+        agents: [DEFAULT_CREW, OTHER_CREW, {
+          name: 'fix', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'member-fix-1',
+        }],
+        default_agent: 'kirocrew',
+      })
+    mockApi.kirocrewConfig
+      .mockResolvedValueOnce(CONFIG_RESPONSE)
+      .mockResolvedValue({
+        memory_stores: {
+          ...CONFIG_RESPONSE.memory_stores,
+          'member-fix-1': { memory_version: 2, owner_member: 'fix' },
+        },
+      })
+
+    await renderRoster()
+    const create = await openCreate()
+    fireEvent.change(within(create).getByPlaceholderText('e.g. oncall'), { target: { value: 'fix' } })
+    // The template is required and starts unselected (see
+    // KiroCrewAgentsPage.templateRequired.test.tsx), so the create cannot be
+    // fired without choosing one. `kirocrew` names an installed template and
+    // nothing else in this sheet — the workspace and model pickers offer
+    // different values — so the option is unambiguous without scoping to the
+    // stub's listbox.
+    fireEvent.click(within(create).getByRole('combobox', { name: 'Agent Template' }))
+    fireEvent.click(within(create).getByRole('option', { name: 'kirocrew' }))
+    fireEvent.click(within(create).getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
+    // The write's own invalidation, not a window refocus or the server's generic
+    // refresh broadcast (hooks/useWebSocket.ts), which are not firing here.
+    await waitFor(() => expect(mockApi.kirocrewConfig.mock.calls.length).toBeGreaterThanOrEqual(2))
+
+    const sheet = await openEditor('fix')
+    fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
+    await waitFor(() =>
+      expect(within(sheet).getByText('This member uses Member memory (V2).')).toBeVisible())
+    expect(within(sheet).queryByText(/configured memory store is unavailable/)).toBeNull()
   })
 })
 

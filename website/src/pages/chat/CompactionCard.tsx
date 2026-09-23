@@ -6,6 +6,8 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
+import CompactionKeepLine from './CompactionKeepLine'
+import { decisionStripFieldOf, readCompactionKeepRecord } from './decisionRecord'
 import NoticeCard from './NoticeCard'
 import { useRowDisclosure } from './rowDisclosure'
 import type { ChatMessage } from '../../types'
@@ -33,6 +35,13 @@ import type { ChatMessage } from '../../types'
  *
  * Parsed on the frontend, at render time, so no history row needs rewriting:
  * a transcript persisted by any gateway since the notice existed gets the card.
+ *
+ * One row of that set can also carry a `meta.decisions_strip` record from the
+ * `compaction.keep` shadow point, and every shape above can: the scoring runs before
+ * the compaction picks an arm, so the record outlives whichever arm it took. That
+ * record draws one line UNDER whatever the card drew (`CompactionKeepLine`), saying
+ * what an oracle WOULD have kept — nothing was kept, and the compaction is identical
+ * whatever it answered.
  */
 export type CompactionStatus = 'completed' | 'failed' | 'notice'
 
@@ -115,12 +124,31 @@ export function isSystemNoticeRow(m: Pick<ChatMessage, 'role' | 'kind' | 'meta'>
  *
  * Expansion is per-row disclosure state, not persisted (same as RecoveryCard).
  */
-const CompactionCard = memo(function CompactionCard({ content, disclosureKey }: { content: string; disclosureKey?: string }) {
+const CompactionCard = memo(function CompactionCard({ content, disclosureKey, keepRecord }: { content: string; disclosureKey?: string;
+  /** Raw `decisions_strip` field off the notice row, validated here. Absent renders nothing. */
+  keepRecord?: unknown }) {
   // memo() boundary rendering i18nT() strings: subscribe so a language switch repaints.
   useLanguageGeneration()
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const headlineId = useId()
   const parsed = parseCompactionNotice(content)
+  // Validated here rather than at the render site, the rule `decisionRecord.ts` states:
+  // this payload names what left the machine and what came back, and a line printing a
+  // shape nobody checked would describe a measurement nobody made.
+  const keep = readCompactionKeepRecord(keepRecord)
+
+  // Appended BELOW whatever shape the row took, rather than inside one of the three
+  // branches. All three are reachable with a record on them — the threshold success
+  // notice, the recycle notice and the ⚠-led auto-compact failure — because the
+  // scoring runs before the compaction picks an arm, so a record exists whichever arm
+  // it then took. Putting the line in one branch would drop it on the other two.
+  const withKeep = (body: JSX.Element) =>
+    keep === null ? body : (
+      <div className="self-center w-full max-w-full min-w-0 flex flex-col" data-testid="compaction-card-host">
+        {body}
+        <CompactionKeepLine record={keep} />
+      </div>
+    )
 
   if (parsed.status === 'failed') {
     // No `askAgent` hand-off, deliberately. This row is drawn inside every
@@ -132,16 +160,16 @@ const CompactionCard = memo(function CompactionCard({ content, disclosureKey }: 
     // any editable field whose contents are not yet saved). The reason is still
     // rendered through ErrorNotice so it keeps the shared error chrome and the
     // journal lookup by message.
-    return (
+    return withKeep(
       <ErrorNotice
         message={parsed.reason}
         className="self-center w-full max-w-full min-w-0 animate-scale-in"
         testId="compaction-card-error"
-      />
+      />,
     )
   }
   if (parsed.status === 'notice') {
-    return <NoticeCard content={parsed.text} />
+    return withKeep(<NoticeCard content={parsed.text} />)
   }
 
   const title = i18nT('pages.chat.compactionCard.title')
@@ -174,7 +202,7 @@ const CompactionCard = memo(function CompactionCard({ content, disclosureKey }: 
     </>
   )
 
-  return (
+  return withKeep(
     <div
       className="self-center w-full max-w-full min-w-0 rounded-md ring-1 ring-inset forced-colors:border ring-border bg-card text-muted animate-scale-in"
       data-testid="compaction-card"
@@ -205,7 +233,7 @@ const CompactionCard = memo(function CompactionCard({ content, disclosureKey }: 
         // descendant is unreachable to a keyboard. Ring INSET because the body
         // is flush with the card's clipped edges (see SubagentCompletionCard).
         <div
-          className="px-3 pb-3 pt-2 text-[13px] leading-5 border-t border-border max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+          className="px-3 pb-3 pt-2 text-[13px] leading-5 border-t border-border max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
           data-testid="compaction-card-body"
           role="region"
           aria-labelledby={headlineId}
@@ -215,7 +243,7 @@ const CompactionCard = memo(function CompactionCard({ content, disclosureKey }: 
           <MarkdownRenderer content={parsed.summary} />
         </div>
       )}
-    </div>
+    </div>,
   )
 })
 
@@ -230,7 +258,15 @@ export default CompactionCard
  */
 export function SystemNoticeRow({ message, disclosureKey }: { message: ChatMessage; disclosureKey?: string }) {
   if (noticeKindOf(message) === 'compaction') {
-    return <CompactionCard content={message.content} disclosureKey={disclosureKey} />
+    return (
+      <CompactionCard
+        content={message.content}
+        disclosureKey={disclosureKey}
+        // The same field the assistant and user receipts ride, read through the same
+        // helper so a live frame and a row reloaded from history are treated alike.
+        keepRecord={decisionStripFieldOf(message)}
+      />
+    )
   }
   return <NoticeCard content={message.content} />
 }

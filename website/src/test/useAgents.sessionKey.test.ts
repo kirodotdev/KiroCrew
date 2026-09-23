@@ -10,7 +10,7 @@
  *   2. else uses the single project shared by every slot that has one;
  *   3. else returns None.
  *
- * `kirocrewAgents()` sent no `X-Session-Key` at all, so step 1 could never
+ * `agentCatalog()` sent no `X-Session-Key` at all, so step 1 could never
  * match. With two chats open on different projects step 2 fails closed by
  * design, and every project-scoped row silently disappeared. The backend was
  * correct the whole time; only the caller was unscoped.
@@ -24,21 +24,18 @@ import { useAgents } from '../hooks/useAgents'
 
 vi.mock('../api/client', () => ({
   api: {
-    kirocrewAgents: vi.fn(),
-    syncKirocrewAgents: vi.fn(),
+    agentCatalog: vi.fn(),
   },
 }))
 
 const { api } = await import('../api/client')
 const mockApi = api as unknown as {
-  kirocrewAgents: ReturnType<typeof vi.fn>
-  syncKirocrewAgents: ReturnType<typeof vi.fn>
+  agentCatalog: ReturnType<typeof vi.fn>
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockApi.syncKirocrewAgents.mockResolvedValue({})
-  mockApi.kirocrewAgents.mockResolvedValue({
+  mockApi.agentCatalog.mockResolvedValue({
     agents: [
       { name: 'kirocrew', scope: 'global' },
       { name: 'project-agent', scope: 'project' },
@@ -51,8 +48,8 @@ describe('useAgents session scoping', () => {
   it('forwards the slot key so the server can resolve project-local agents', async () => {
     renderHook(() => useAgents(0, 'chat-2-1786309747'))
 
-    await waitFor(() => expect(mockApi.kirocrewAgents).toHaveBeenCalled())
-    expect(mockApi.kirocrewAgents).toHaveBeenCalledWith('chat-2-1786309747')
+    await waitFor(() => expect(mockApi.agentCatalog).toHaveBeenCalled())
+    expect(mockApi.agentCatalog).toHaveBeenCalledWith('chat-2-1786309747')
   })
 
   it('exposes project-scoped agents returned for that slot', async () => {
@@ -68,10 +65,10 @@ describe('useAgents session scoping', () => {
       { initialProps: { sk: 'chat-1' } },
     )
 
-    await waitFor(() => expect(mockApi.kirocrewAgents).toHaveBeenCalledWith('chat-1'))
+    await waitFor(() => expect(mockApi.agentCatalog).toHaveBeenCalledWith('chat-1'))
 
     rerender({ sk: 'chat-2' })
-    await waitFor(() => expect(mockApi.kirocrewAgents).toHaveBeenCalledWith('chat-2'))
+    await waitFor(() => expect(mockApi.agentCatalog).toHaveBeenCalledWith('chat-2'))
   })
 
   it('clears the previous slot\'s roster while the new scope\'s fetch is in flight', async () => {
@@ -85,7 +82,7 @@ describe('useAgents session scoping', () => {
     )
     await waitFor(() => expect(result.current.agents).toHaveLength(2))
 
-    mockApi.kirocrewAgents.mockImplementationOnce(
+    mockApi.agentCatalog.mockImplementationOnce(
       () => new Promise(res => { resolveSecond = res }),
     )
     rerender({ sk: 'chat-2' })
@@ -105,7 +102,7 @@ describe('useAgents session scoping', () => {
     )
     await waitFor(() => expect(result.current.agents).toHaveLength(2))
 
-    mockApi.kirocrewAgents.mockImplementationOnce(() => new Promise(() => {}))
+    mockApi.agentCatalog.mockImplementationOnce(() => new Promise(() => {}))
     rerender({ trig: 1 })
 
     // Same slot, refresh only: the list stays while the refetch is in flight.
@@ -115,7 +112,7 @@ describe('useAgents session scoping', () => {
   it('omits the key on surfaces with no slot context (Channels, Schedule)', async () => {
     renderHook(() => useAgents(0))
 
-    await waitFor(() => expect(mockApi.kirocrewAgents).toHaveBeenCalled())
-    expect(mockApi.kirocrewAgents).toHaveBeenCalledWith(undefined)
+    await waitFor(() => expect(mockApi.agentCatalog).toHaveBeenCalled())
+    expect(mockApi.agentCatalog).toHaveBeenCalledWith(undefined)
   })
 })

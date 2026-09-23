@@ -35,12 +35,12 @@ where crew records land, so pointing it at a ``TemporaryDirectory`` keeps every
 store write inside the test. Nothing here touches the network or a real data home.
 """
 
-import asyncio
-import contextlib
 import json
+import os
 import tempfile
-import threading
+import time
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -57,6 +57,9 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     routes,
     store,
 )
+from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.crew_log.schema import KIND_SESSION
+from kiro_crew.crew_log.store import CrewLog
 
 BASE = "/api/apps/issue-radar"
 OWNER, REPO = "kirodotdev", "KiroCrew"  # brand-ok: the repository name
@@ -213,12 +216,37 @@ class _Nudge:
             self.loop.active = bool(kw["active"])
 
 
+class _Provider:
+    """A slot's live ACP provider, stubbed at the one attribute the resolver reads."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+
+
+class _Sessions:
+    """The session manager, stubbed at the exact registry lookup the write route makes.
+
+    ``get_provider`` is keyed by the namespaced session key (``dashboard:<slot>``),
+    which is how the route reaches a crew's live crew log unit from its slot key.
+    """
+
+    def __init__(self) -> None:
+        self._by_key: dict[str, _Provider] = {}
+
+    def bind(self, session_key: str, session_id: str) -> None:
+        self._by_key[session_key] = _Provider(session_id)
+
+    def get_provider(self, session_key: str) -> _Provider | None:
+        return self._by_key.get(session_key)
+
+
 class _State:
-    """The dashboard state, stubbed at the two members the route touches."""
+    """The dashboard state, stubbed at the three members the routes touch."""
 
     def __init__(self, slot: _Slot | None = None) -> None:
         self._slot = slot
         self.pushes = 0
+        self.sessions = _Sessions()
 
     def get_slot(self, key: str) -> _Slot | None:
         return self._slot
@@ -227,13 +255,21 @@ class _State:
         self.pushes += 1
 
 
+def _tick() -> None:
+    """Let the crew log's millisecond clock move between two stamps."""
+    time.sleep(0.004)
+
+
 class _CrewRouteCase(unittest.IsolatedAsyncioTestCase):
-    """Base: a temp data root, an enabled app, and a connected repo."""
+    """Base: a temp data root, an enabled app, a connected repo -- and an isolated
+    crew log, since a crew's ledger is the fold of the crew log its slot runs on."""
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
         # _scope is the single place that decides which data root a request's store
         # calls land in, so this one patch isolates every write in the module.
         for patcher in (
@@ -250,9 +286,27 @@ class _CrewRouteCase(unittest.IsolatedAsyncioTestCase):
                     {"owner": OWNER, "repo": REPO, "provider": "github", "host": "github.com"}
                 ],
             ),
+            mock.patch.dict(
+                os.environ, {"KIROCREW_HOME": home.name, crew_log_emit.CREW_LOG_ENV: "1"}
+            ),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
+        crew_log_emit.reset_caches()
+        crew_store._fold_cache.clear()
+        self.addCleanup(crew_store._fold_cache.clear)
+        self.addCleanup(crew_log_emit.reset_caches)
+        self.addCleanup(crew_log_emit.drain_for_shutdown, 2.0)
+        # The app every request carries unless a test builds its own: its state maps
+        # each crew's slot to the live unit the crew records into.
+        self.state = _State()
+        self.app = web.Application()
+        with warnings.catch_warnings():
+            # The route reads the string key ``"state"`` the dashboard sets, so the
+            # test must set that key; aiohttp's AppKey advice does not apply here.
+            warnings.simplefilter("ignore", UserWarning)
+            self.app["state"] = self.state
+        self._units: dict[str, str] = {}
 
     async def call(
         self, method: str, path: str, *, query: dict | None = None, body: object = "",
@@ -263,20 +317,45 @@ class _CrewRouteCase(unittest.IsolatedAsyncioTestCase):
         headers = {"X-Session-Key": session} if session is not None else None
         return await handler(  # type: ignore[operator]
             _request(
-                method, path, query=query, body=body, app=app, headers=headers,
-                internal_auth=internal_auth,
+                method, path, query=query, body=body, app=app if app is not None else self.app,
+                headers=headers, internal_auth=internal_auth,
             )
         )
 
     # ── fixtures written straight through the store ──────────────────────────
 
     def crew(self, name: str = "Andromeda", **spec) -> dict:
-        return crew_store.create_crew(OWNER, REPO, {"name": name, **spec}, self.root)
+        """A crew, the crew log unit its slot runs on, and the slot -> unit binding
+        the write route resolves. ``live=False`` makes a crew whose slot has no
+        live session, so a write has nowhere to record."""
+        live = spec.pop("live", True)
+        crew = crew_store.create_crew(OWNER, REPO, {"name": name, **spec}, self.root)
+        if live:
+            self.unit(crew)
+        return crew
 
-    def work(self, crew_id: str, number: int, phase: str) -> dict:
-        return crew_store.upsert_work_item(
-            OWNER, REPO, crew_id, number, {"phase": phase}, self.root
+    def unit(self, crew: dict, session_id: str = "") -> str:
+        session_id = session_id or f"acp-{crew['id']}-{len(self._units) + 1}"
+        CrewLog.create(
+            KIND_SESSION, session_id, owner="owner", agent="kirocrew",
+            slot=crew_store.slot_key_for(crew["id"]),
         )
+        self._units[crew["id"]] = session_id
+        self.state.sessions.bind(f"dashboard:{crew['slot_key']}", session_id)
+        return session_id
+
+    def work(self, crew_id: str, number: int, phase: str, **patch) -> dict:
+        return crew_store.commit_work_progress(
+            OWNER, REPO, crew_id, number, {"phase": phase, **patch}, "claim", "seeded",
+            root=self.root, session_id=self._units[crew_id],
+        )["item"]
+
+    def progress(self, crew_id: str, number: int, kind: str = "ci", text: str = "progress", **patch) -> dict:
+        """A write that carries no phase: progress on an existing item."""
+        return crew_store.commit_work_progress(
+            OWNER, REPO, crew_id, number, patch, kind, text,
+            root=self.root, session_id=self._units[crew_id],
+        )["item"]
 
     def ledger(self, crew_id: str = "") -> list[dict]:
         return crew_store.read_events(OWNER, REPO, self.root, crew_id=crew_id)
@@ -341,6 +420,12 @@ class TestRegistrationAndGates(_CrewRouteCase):
 
 
 class TestCrewsList(_CrewRouteCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # Stamps come off the crew log's own clock, so recency between two writes
+        # is established by letting that clock move (``_tick``) rather than by
+        # patching a timestamp source.
+
     async def test_returns_crews_settings_and_counts(self):
         self.crew("Andromeda")
         res = await self.call("GET", "/crews", query={"owner": OWNER, "repo": REPO})
@@ -360,19 +445,34 @@ class TestCrewsList(_CrewRouteCase):
         # implement came second — which is the whole point of the rule.
         crew = self.crew("Andromeda")
         self.work(crew["id"], 1, "awaiting-ci")
+        _tick()
         self.work(crew["id"], 2, "implementing")
         counts = _payload(
             await self.call("GET", "/crews", query={"owner": OWNER, "repo": REPO})
         )["counts"]
         self.assertEqual(counts["working"], 1)
 
+        # Progress on the older parked item makes it newest without creating an item.
+        _tick()
+        self.progress(crew["id"], 1, next="waiting for checks")
+        page = _payload(await self.call("GET", "/crews", query={"owner": OWNER, "repo": REPO}))
+        self.assertEqual(page["counts"]["working"], 0)
+        self.assertEqual(page["crews"][0]["status"], "idle")
+
     async def test_a_crew_parked_on_its_newest_item_is_not_working(self):
         crew = self.crew("Andromeda")
         self.work(crew["id"], 1, "implementing")
+        _tick()
         self.work(crew["id"], 2, "awaiting-ci")
         page = _payload(await self.call("GET", "/crews", query={"owner": OWNER, "repo": REPO}))
         self.assertEqual(page["counts"]["working"], 0)
         self.assertEqual(page["crews"][0]["status"], "idle")
+
+        _tick()
+        self.progress(crew["id"], 1, next="implementing the next step")
+        page = _payload(await self.call("GET", "/crews", query={"owner": OWNER, "repo": REPO}))
+        self.assertEqual(page["counts"]["working"], 1)
+        self.assertEqual(page["crews"][0]["status"], "working")
 
     async def test_a_retired_crew_is_neither_listed_nor_on_duty(self):
         crew = self.crew("Andromeda")
@@ -475,7 +575,8 @@ class TestCrewReadUpdateRetire(_CrewRouteCase):
         crew = self.crew("Andromeda")
         self.work(crew["id"], 7, "implementing")
         self.work(crew["id"], 8, "skipped")
-        crew_store.append_event(OWNER, REPO, crew["id"], 7, "claim", "took #7", self.root)
+        _tick()
+        self.progress(crew["id"], 7, kind="claim", text="took #7")
         res = await self.call(
             "GET", "/crew", query={"owner": OWNER, "repo": REPO, "id": crew["id"]}
         )
@@ -483,10 +584,14 @@ class TestCrewReadUpdateRetire(_CrewRouteCase):
         page = _payload(res)
         self.assertEqual(page["crew"]["name"], "Andromeda")
         self.assertEqual(sorted(it["number"] for it in page["items"]), [7, 8])
-        self.assertEqual([e["text"] for e in page["events"]], ["took #7"])
-        # A pass is terminal, so it frees the slot. `open` is the only count: there
-        # is no second bucket for work held on a human, because none is held.
-        self.assertEqual(page["counts"], {"open": 1})
+        # Newest first; the two seeding writes left their own lines behind it.
+        self.assertEqual([e["text"] for e in page["events"]], ["took #7", "seeded", "seeded"])
+        # A pass is terminal, so it frees the slot. Beside `open`, the fold's own
+        # eviction counters: they exist so a crew is told once per snapshot that a
+        # bounded collection dropped something, and this payload is what
+        # `issue_radar_crew_read` serves, so leaving them in the fold value alone
+        # meant nothing a crew reads ever said it.
+        self.assertEqual(page["counts"], {"open": 1, "evicted_items": 0, "evicted_skips": 0})
 
     async def test_read_of_an_unknown_crew_is_404_not_409(self):
         res = await self.call(
@@ -969,6 +1074,70 @@ class TestWorkItems(_CrewRouteCase):
         self.assertNotIn("event", item)
         self.assertNotIn("event_kind", item)
 
+    async def test_clear_empties_a_field_the_body_names(self):
+        """`clear: ["pr_number"]` is how a caller says "no pull request any more":
+        the tool schema types every field strictly, so a null cannot travel as the
+        field itself. A field both cleared and set in one call keeps the set value."""
+        crew = self.crew("Andromeda")
+        base = {"owner": OWNER, "repo": REPO, "crew_id": crew["id"], "number": 7}
+        await self.call(
+            "PUT", "/crew/work",
+            body={**base, "phase": "awaiting-ci", "pr_number": 91, "next": "watch CI",
+                  "claim_comment_id": 5, "event": "opened the PR", "event_kind": "ci"},
+        )
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={**base, "clear": ["pr_number", "next", "claim_comment_id"],
+                  "claim_comment_id": 6, "event": "PR closed, comment re-posted",
+                  "event_kind": "ci"},
+        )
+        self.assertEqual(res.status, 200)
+        item = _payload(res)["item"]
+        self.assertIsNone(item["pr_number"])
+        self.assertEqual(item["next"], "")
+        self.assertEqual(item["claim_comment_id"], 6, "set beats clear in one call")
+        stored = crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root)
+        self.assertIsNone(stored["pr_number"])
+        self.assertEqual(stored["phase"], "awaiting-ci", "an unnamed field is untouched")
+
+    async def test_a_clear_naming_an_unknown_field_is_400_and_writes_nothing(self):
+        crew = self.crew("Andromeda")
+        base = {"owner": OWNER, "repo": REPO, "crew_id": crew["id"], "number": 7}
+        for bad in (["phase"], ["pr_numbre"], "pr_number", [7]):
+            res = await self.call(
+                "PUT", "/crew/work",
+                body={**base, "clear": bad, "event": "x", "event_kind": "implement"},
+            )
+            self.assertEqual(res.status, 400, bad)
+            self.assertEqual(_payload(res)["code"], "invalid_clear", bad)
+        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
+        # A crew-level line has no item to clear a field on.
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"owner": OWNER, "repo": REPO, "crew_id": crew["id"],
+                  "clear": ["pr_number"], "event": "swept", "event_kind": "sweep"},
+        )
+        self.assertEqual(res.status, 400)
+        self.assertEqual(_payload(res)["code"], "item_fields_without_number")
+
+    async def test_an_append_the_writer_refused_is_503_not_a_record(self):
+        """A drained writer whose entry is not in the log refused it. The caller is
+        told so -- 503 `ledger_not_recorded`, retryable -- and is never handed an
+        item that exists nowhere (the old answer was 200 with `durable: false`)."""
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        crew = self.crew("Andromeda")
+        with mock.patch.object(crew_log_emit, "on_radar_recorded", lambda *_a, **_k: None):
+            res = await self.call(
+                "PUT", "/crew/work",
+                body={"owner": OWNER, "repo": REPO, "crew_id": crew["id"], "number": 7,
+                      "phase": "claimed", "event": "took it", "event_kind": "claim"},
+            )
+        self.assertEqual(res.status, 503)
+        self.assertEqual(_payload(res)["code"], "ledger_not_recorded")
+        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
+        self.assertEqual(self.ledger(crew["id"]), [])
+
     async def test_a_write_without_an_event_is_refused(self):
         # The reason this route exists: a phase must not change without a logged
         # reason, so the log line is not optional.
@@ -1220,472 +1389,146 @@ class TestSharedSkipIndex(_CrewRouteCase):
         self.assertEqual(len(page["recent_skips"]), crew_routes._MAX_RECENT_SKIPS)
 
 
-# ── one work write is all-or-nothing ────────────────────────────────────────
+# ── one work write is one crew log entry ────────────────────────────────────
 
 
-class TestWorkWriteRollback(_CrewRouteCase):
-    """``PUT /crew/work`` commits three files or none of them.
+class TestWorkWriteIsOneEntry(_CrewRouteCase):
+    """The write route appends ONE ``radar/recorded`` entry to the crew's live crew
+    log, and answers with the record that entry produces.
 
-    The route writes the work item, then the repo-wide skip index, then the ledger
-    line — three files, so no ordering makes it atomic. Every test here fails the
-    LAST write and asserts the earlier ones were rolled back, because the
-    half-written states are each worse than the failure: an item whose phase moved
-    with no event explaining it, or — the expensive one — an issue sitting in the
-    shared index that every other crew filters against, recorded as passed with
-    nothing in the log saying who passed on it or why.
-
-    The rollback is only correct because ONE lock — the crew's — is held from before
-    the snapshot to after the restore. The tests that pin that are the ones about a
-    competing write: a rollback target another writer can move is not a rollback, and
-    no comparison detects it, because in the interleaving that loses an update the
-    file DOES still hold what the failing transaction wrote.
-
-    ``append_event`` is failed with ``OSError`` rather than ``CrewStoreError``: the
-    kind is validated before any write, so the reachable failure is I/O, and an
-    ``OSError`` also proves the compensation is not accidentally riding on the
-    ``CrewStoreError -> 409`` decorator.
+    The all-or-nothing property the retired file store bought with three locks and
+    a rollback is now a property of the append: the item's delta, the line that
+    explains it and the skip row that indexes a pass ride on one entry, so there is
+    no partial state for a crash to leave and no rollback to get wrong. What the
+    route owes instead is a NAMED refusal when the crew has nowhere to record, so an
+    agent can tell "the log is not there" from "the update was refused".
     """
 
-    def _body(self, crew_id: str, number: int, **extra) -> dict:
-        return {
-            "owner": OWNER, "repo": REPO, "crew_id": crew_id, "number": number,
-            "event": f"progress on #{number}", "event_kind": "claim", **extra,
-        }
+    def agent(self, crew: dict) -> str:
+        return f"dashboard:{crew['slot_key']}"
 
-    async def _page(self, crew_id: str) -> dict:
-        return _payload(
-            await self.call("GET", "/crew", query={"owner": OWNER, "repo": REPO, "id": crew_id})
-        )
+    def _entries(self, crew: dict) -> list:
+        handle = CrewLog.open(KIND_SESSION, self._units[crew["id"]])
+        try:
+            return [e for e in handle.iter_from(1) if e.type == crew_store.LEDGER_ENTRY_TYPE]
+        finally:
+            del handle
 
-    async def test_a_failed_event_append_leaves_no_newly_created_item(self):
+    async def test_a_pass_is_one_entry_carrying_item_line_and_skip(self):
         crew = self.crew("Andromeda")
-        path = crew_store.work_item_path(OWNER, REPO, crew["id"], 7, self.root)
-        with mock.patch.object(
-            crew_store, "append_event", side_effect=OSError("no space left on device")
-        ):
-            with self.assertRaises(OSError):
-                await self.call(
-                    "PUT", "/crew/work",
-                    body=self._body(crew["id"], 7, phase="claimed"),
-                )
-        # Created by the failed request, so there is no earlier value to return to:
-        # the file must be GONE, not left holding a phase nothing logged. A stub
-        # would also occupy one of the crew's open slots for an issue it never took.
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
-        self.assertFalse(path.exists())
-        self.assertEqual(self.ledger(crew["id"]), [])
-        self.assertEqual((await self._page(crew["id"]))["items"], [])
-
-    async def test_a_rollback_restores_the_value_a_committed_write_left(self):
-        """The rollback target must not be able to go stale before it is used.
-
-        THE INTERLEAVING: another request writes #7 and fully succeeds; this request
-        then writes it, and its ledger append fails. If this request's snapshot was
-        taken before that write, restoring it erases an update that committed — and
-        no comparison can catch it, because the file DOES still hold exactly what
-        this request wrote: this request wrote last. Only holding one lock from
-        before the snapshot to after the rollback closes it, which is what makes the
-        snapshot below the other request's value rather than the seeded one.
-
-        Deterministic, not raced: the competing write is committed from the seam
-        where this transaction resolves its lock path, so it lands strictly before
-        the lock is taken — which in the broken shape is strictly AFTER the snapshot.
-        """
-        crew = self.crew("Andromeda")
-        await self.call(
-            "PUT", "/crew/work",
-            body=self._body(
-                crew["id"], 7, phase="claimed", next="read the traceback",
-                event="took it",
-            ),
-        )
-        with self._a_competing_write_commits_before_the_lock(crew["id"], 7):
-            with self.assertRaises(OSError):
-                await self.call(
-                    "PUT", "/crew/work",
-                    body=self._body(
-                        crew["id"], 7, phase="implementing", event="starting",
-                        event_kind="implement",
-                    ),
-                )
-
-        item = crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root)
-        assert item is not None
-        self.assertEqual(item["next"], "written by the other request")
-        # And this request's own phase change is gone: the restore happened, it just
-        # restored the value that was actually there.
-        self.assertEqual(item["phase"], "claimed")
-        self.assertEqual([e["text"] for e in self.ledger(crew["id"])], ["took it"])
-
-    async def test_a_rollback_does_not_delete_an_item_committed_before_it_locked(self):
-        """The same staleness on a NEW item, where the damage is worse.
-
-        A snapshot of ``None`` means "there was no item", so the compensation is a
-        DELETE. Snapshot it before another request CREATES the item and the rollback
-        removes a work item that committed — and with it that crew's claim on the
-        issue, which is the state this whole route exists to keep honest.
-        """
-        crew = self.crew("Whirlpool")
-        with self._a_competing_write_commits_before_the_lock(crew["id"], 8):
-            with self.assertRaises(OSError):
-                await self.call(
-                    "PUT", "/crew/work",
-                    body=self._body(
-                        crew["id"], 8, phase="investigating", event="starting",
-                        event_kind="investigate",
-                    ),
-                )
-
-        item = crew_store.read_work_item(OWNER, REPO, crew["id"], 8, self.root)
-        self.assertIsNotNone(item, "the rollback deleted an item another request created")
-        assert item is not None
-        self.assertEqual(item["next"], "written by the other request")
-
-    @contextlib.contextmanager
-    def _a_competing_write_commits_before_the_lock(self, crew_id: str, number: int):
-        """One competing work write, committed at the last moment before this
-        transaction can take the crew lock, with this request's ledger append failing.
-
-        The seam is ``_crew_lock_path``: whoever is about to lock has to resolve the
-        path first, and no lock is held at that point, so the competing write can
-        take it, commit and release. Placing it there is what makes the test
-        independent of where the snapshot is taken — it lands before the lock either
-        way, so a transaction that snapshots UNDER the lock sees it and one that
-        snapshots outside does not.
-        """
-        real_lock_path = crew_store._crew_lock_path
-        done: list[bool] = []
-
-        def _commit_the_other_request(owner, repo, cid, root=None):
-            if not done:
-                done.append(True)   # before the recursive call below re-enters here
-                crew_store.upsert_work_item(
-                    owner, repo, cid, number,
-                    {"next": "written by the other request"}, root,
-                )
-            return real_lock_path(owner, repo, cid, root)
-
-        with mock.patch.object(
-            crew_store, "_crew_lock_path", side_effect=_commit_the_other_request
-        ), mock.patch.object(
-            crew_store, "append_event", side_effect=OSError("no space left on device")
-        ):
-            yield
-        self.assertTrue(done, "the competing write never ran — the seam moved")
-
-    async def test_a_competing_write_waits_for_the_whole_transaction(self):
-        """Nothing may land between this transaction's write and its rollback.
-
-        The competing write is started while the transaction is at its LAST step, and
-        is asserted not to have landed — that is the exclusion the single lock buys,
-        and it is what makes the snapshot still valid when the rollback uses it. Once
-        the transaction unwinds, the competing write goes through: serialised after,
-        never lost.
-
-        Bounded: every wait here has a timeout, so a lock this test cannot get is a
-        failure rather than a hang.
-        """
-        crew = self.crew("Andromeda")
-        await self.call(
-            "PUT", "/crew/work",
-            body=self._body(crew["id"], 7, phase="claimed", event="took it"),
-        )
-        blocked = threading.Thread(
-            target=crew_store.upsert_work_item,
-            args=(OWNER, REPO, crew["id"], 7, {"next": "the later write"}, self.root),
-            daemon=True,
-        )
-        held_while_running: list[str | None] = []
-
-        def _start_a_competing_write_then_fail(*a, **k):
-            blocked.start()
-            # Long enough that an unlocked writer would certainly have landed, short
-            # enough to keep the suite fast. This asserts a NEGATIVE, so the wait is
-            # the whole test: with the lock held the value can never appear.
-            blocked.join(timeout=0.5)
-            item = crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root)
-            held_while_running.append((item or {}).get("next"))
-            raise OSError("no space left on device")
-
-        with mock.patch.object(
-            crew_store, "append_event", side_effect=_start_a_competing_write_then_fail
-        ):
-            with self.assertRaises(OSError):
-                await asyncio.wait_for(
-                    self.call(
-                        "PUT", "/crew/work",
-                        body=self._body(
-                            crew["id"], 7, phase="implementing", event="starting",
-                            event_kind="implement",
-                        ),
-                    ),
-                    timeout=30,
-                )
-
-        blocked.join(timeout=10)
-        self.assertFalse(blocked.is_alive(), "the competing write never got the lock")
-        self.assertEqual(
-            held_while_running, [""],
-            "a competing write landed while the transaction held the crew lock",
-        )
-        # It was not lost either — it applied to the value the rollback restored.
-        item = crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root)
-        assert item is not None
-        self.assertEqual(item["next"], "the later write")
-        self.assertEqual(item["phase"], "claimed")
-
-    async def test_a_work_write_does_not_deadlock_on_another_crews_skip_write(self):
-        """The lock held across the transaction must be the CREW's, not the shared one.
-
-        A crew's progress write holds its crew lock for all three writes and takes the
-        repo-wide index lock from inside it, for one read-modify-write. So while one
-        crew is mid-transaction, another crew's own pass — its crew lock, then the
-        shared index — must still go through.
-
-        Driven from OUTSIDE the request: this parks the request at its last write and
-        runs the other crew's pass from the test's own thread, so the assertion does
-        not depend on the parked request making progress. Every wait is bounded, so a
-        lock that cannot be got FAILS this test instead of hanging it. Holding the
-        repo-wide lock across the whole transaction instead — one lock, but the wrong
-        one — would park every other crew in the repo behind it, and the join below
-        would time out.
-        """
-        author = self.crew("Andromeda")
-        other = self.crew("Whirlpool")
-        real_append = crew_store.append_event
-        inside = threading.Event()
-        release = threading.Event()
-        finished: list[bool] = []
-
-        def _park_at_the_last_write(*a, **k):
-            inside.set()
-            # Bounded so a failure of this test cannot leave the worker wedged:
-            # the request finishes either way, the assertions just come first.
-            release.wait(timeout=15)
-            return real_append(*a, **k)
-
-        def _the_other_crews_pass() -> None:
-            # Its own crew lock, then the shared index — the same order the parked
-            # request is in the middle of, from a different crew.
-            crew_store.upsert_work_item(
-                OWNER, REPO, other["id"], 99, {"phase": "skipped"}, self.root
-            )
-            crew_store.record_skip(
-                OWNER, REPO, 99, "already fixed upstream", "already-fixed",
-                other["id"], self.root,
-            )
-            finished.append(True)
-
-        with mock.patch.object(crew_store, "append_event", side_effect=_park_at_the_last_write):
-            pending = asyncio.ensure_future(
-                self.call(
-                    "PUT", "/crew/work",
-                    body=self._body(
-                        author["id"], 42, phase="skipped", why="needs an owner decision",
-                        skip_scope="needs-design", event="passing on #42",
-                        event_kind="skip",
-                    ),
-                )
-            )
-            try:
-                self.assertTrue(
-                    await asyncio.to_thread(inside.wait, 15),
-                    "the request never reached its last write — it is blocked earlier",
-                )
-                thread = threading.Thread(target=_the_other_crews_pass, daemon=True)
-                thread.start()
-                await asyncio.to_thread(thread.join, 5)
-                self.assertTrue(
-                    finished,
-                    "another crew's pass could not complete while this request was "
-                    "mid-transaction — the shared lock is held too widely",
-                )
-            finally:
-                release.set()
-            res = await asyncio.wait_for(pending, timeout=30)
-
-        self.assertEqual(res.status, 200)
-        # Both passes are indexed: neither crew's write was dropped or rolled back.
-        self.assertEqual(
-            sorted(crew_store.read_skips(OWNER, REPO, self.root)), ["42", "99"]
-        )
-        item = crew_store.read_work_item(OWNER, REPO, other["id"], 99, self.root)
-        assert item is not None
-        self.assertEqual(item["phase"], "skipped")
-
-    async def test_a_rollback_never_removes_a_skip_another_request_committed_first(self):
-        """Two IDENTICAL passes: only the one that indexed it may un-index it.
-
-        Both requests see #42 unindexed before they write, and the entry that stands
-        afterwards names the same crew, reason and scope for either of them — so
-        neither a pre-read of the index nor a field match can tell them apart, and
-        the loser of that race would remove the winner's committed decision on its
-        own rollback. ``record_skip`` reports creation from inside the repo-wide lock
-        instead, which is the only place it is knowable.
-
-        Deterministic: the competing pass is committed at the front of this request's
-        own ``record_skip`` call, so this request's write is strictly the second one.
-        """
-        author = self.crew("Andromeda")
-        reader = self.crew("Whirlpool")
-        real_record_skip = crew_store.record_skip
-
-        def _land_the_other_pass_first(*a, **k):
-            real_record_skip(*a, **k)      # the overlapping request commits
-            return real_record_skip(*a, **k)  # this request's own call, now a re-skip
-
-        with mock.patch.object(
-            crew_store, "record_skip", side_effect=_land_the_other_pass_first
-        ), mock.patch.object(
-            crew_store, "append_event", side_effect=OSError("no space left on device")
-        ):
-            with self.assertRaises(OSError):
-                await self.call(
-                    "PUT", "/crew/work",
-                    body=self._body(
-                        author["id"], 42, phase="skipped", why="needs an owner decision",
-                        skip_scope="needs-design", event="passing on #42",
-                        event_kind="skip",
-                    ),
-                )
-
-        # The committed pass is still indexed, and still visible to the whole fleet —
-        # un-indexing it would put #42 back in front of every crew with nothing in
-        # the log saying it had been decided.
-        standing = crew_store.read_skips(OWNER, REPO, self.root)
-        self.assertEqual(list(standing), ["42"])
-        self.assertEqual(standing["42"]["reason"], "needs an owner decision")
-        self.assertEqual((await self._page(reader["id"]))["skipped_numbers"], [42])
-        # The item this request created is still rolled back: only the skip was
-        # somebody else's to keep.
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, author["id"], 42, self.root))
-
-    async def test_a_failed_event_append_leaves_an_existing_item_byte_identical(self):
-        crew = self.crew("Andromeda")
-        await self.call(
-            "PUT", "/crew/work",
-            body=self._body(
-                crew["id"], 7, phase="claimed", next="read the traceback",
-                why="looks reproducible", event="took it",
-            ),
-        )
-        path = crew_store.work_item_path(OWNER, REPO, crew["id"], 7, self.root)
-        before = path.read_bytes()
-
-        with mock.patch.object(
-            crew_store, "append_event", side_effect=OSError("no space left on device")
-        ):
-            with self.assertRaises(OSError):
-                await self.call(
-                    "PUT", "/crew/work",
-                    body=self._body(
-                        crew["id"], 7, phase="implementing", next="write the failing test",
-                        why="fix is one line", tried_approach="reverting the guard",
-                        event="starting on it", event_kind="implement",
-                    ),
-                )
-
-        # The WHOLE record, not the phase alone: the refused patch also moved
-        # `next`, `why`, `tried` and `last_progress_at`, and `last_progress_at` is
-        # what the claim TTL is measured from — a rollback that restored the phase
-        # while leaving the clock renewed would hold the claim on evidence of
-        # progress the crew never made.
-        self.assertEqual(
-            crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root),
-            json.loads(before),
-        )
-        self.assertEqual(path.read_bytes(), before)
-        self.assertEqual([e["text"] for e in self.ledger(crew["id"])], ["took it"])
-
-    async def test_a_failed_event_append_leaves_the_shared_skip_index_unchanged(self):
-        author = self.crew("Andromeda")
-        reader = self.crew("Whirlpool")
-        with mock.patch.object(
-            crew_store, "append_event", side_effect=OSError("no space left on device")
-        ):
-            with self.assertRaises(OSError):
-                await self.call(
-                    "PUT", "/crew/work",
-                    body=self._body(
-                        author["id"], 42, phase="skipped", why="needs an owner decision",
-                        skip_scope="needs-design", event="passing on #42",
-                        event_kind="skip",
-                    ),
-                )
-        self.assertEqual(crew_store.read_skips(OWNER, REPO, self.root), {})
-        # Asserted from the OTHER crew's page, because visible-to-the-fleet is the
-        # property: an entry left here is one every other crew filters #42 out on.
-        page = await self._page(reader["id"])
-        self.assertEqual(page["skipped_numbers"], [])
-        self.assertEqual(page["recent_skips"], [])
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, author["id"], 42, self.root))
-
-    async def test_a_rollback_never_removes_a_skip_this_request_did_not_add(self):
-        """The compensation must not undo a decision it merely found.
-
-        ``record_skip`` keeps the FIRST crew's reason, so a re-skip writes nothing
-        and has nothing to undo. Removing by key would erase the standing decision —
-        the earlier crew's audit trail — and put the issue back in front of every
-        crew in the fleet. Both owners are covered: another crew's entry, and this
-        crew's own from an earlier request, which a ``crew_id``-only check would get
-        wrong.
-        """
-        first = self.crew("Andromeda")
-        second = self.crew("Whirlpool")
-        for author, retrier in ((first, second), (first, first)):
-            with self.subTest(same_crew=author["id"] == retrier["id"]):
-                await self.call(
-                    "PUT", "/crew/work",
-                    body=self._body(
-                        author["id"], 42, phase="skipped", why="first reason",
-                        skip_scope="architecture", event="passing on #42",
-                        event_kind="skip",
-                    ),
-                )
-                standing = crew_store.read_skips(OWNER, REPO, self.root)
-                self.assertEqual(list(standing), ["42"])
-
-                with mock.patch.object(
-                    crew_store, "append_event", side_effect=OSError("no space left")
-                ):
-                    with self.assertRaises(OSError):
-                        await self.call(
-                            "PUT", "/crew/work",
-                            body=self._body(
-                                retrier["id"], 42, phase="skipped", why="second reason",
-                                skip_scope="duplicate", event="also passing",
-                                event_kind="skip",
-                            ),
-                        )
-                self.assertEqual(crew_store.read_skips(OWNER, REPO, self.root), standing)
-
-    async def test_the_happy_path_still_returns_the_item_the_event_and_the_skip(self):
-        # The regression guard on the compensation: it must run on the failure path
-        # ONLY. Nothing about the rollback can reach a request that succeeded, so
-        # all three writes still stand and all three are still answered.
-        crew = self.crew("Andromeda")
-        reader = self.crew("Whirlpool")
         res = await self.call(
             "PUT", "/crew/work",
-            body=self._body(
-                crew["id"], 42, phase="skipped", why="needs an owner decision",
-                skip_scope="needs-design", event="passing on #42", event_kind="skip",
-            ),
+            body={
+                "number": 7, "phase": "skipped", "event": "duplicate of #5",
+                "event_kind": "skip", "skip_reason": "duplicate of #5", "skip_scope": "duplicate",
+            },
+            internal_auth=True, session=self.agent(crew),
         )
         self.assertEqual(res.status, 200)
-        page = _payload(res)
-        self.assertEqual(page["item"]["phase"], "skipped")
-        self.assertEqual(page["event"]["kind"], "skip")
-        self.assertEqual(page["event"]["text"], "passing on #42")
-        self.assertEqual(page["skip"]["reason"], "needs an owner decision")
-        self.assertEqual(page["skip"]["scope"], "needs-design")
-        # Durable, not just echoed — all three files.
-        self.assertEqual(
-            crew_store.read_work_item(OWNER, REPO, crew["id"], 42, self.root)["phase"],
-            "skipped",
+        body = _payload(res)
+        self.assertEqual(body["item"]["phase"], "skipped")
+        self.assertEqual(body["skip"]["scope"], "duplicate")
+        self.assertEqual(body["event"]["text"], "duplicate of #5")
+        (entry,) = self._entries(crew)
+        self.assertEqual(entry.data["phase"], "skipped")
+        self.assertEqual(entry.data["skip"], {"reason": "duplicate of #5", "scope": "duplicate"})
+        self.assertEqual(entry.data["event_kind"], "skip")
+        # The answer IS the line the log holds -- same id, same stamp.
+        self.assertEqual(self.ledger(crew["id"])[0], body["event"])
+        self.assertTrue(body["durable"])
+
+    async def test_a_refused_update_appends_nothing(self):
+        """The store's refusals run against the folded record BEFORE the append, so a
+        conflict leaves the log exactly as it was -- an append-only log cannot take
+        a line back."""
+        crew = self.crew("Andromeda")
+        self.work(crew["id"], 7, "implementing")
+        before = self._entries(crew)
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"number": 9, "phase": "implementing", "event": "also editing", "event_kind": "implement"},
+            internal_auth=True, session=self.agent(crew),
         )
-        self.assertEqual([e["text"] for e in self.ledger(crew["id"])], ["passing on #42"])
-        self.assertEqual((await self._page(reader["id"]))["skipped_numbers"], [42])
+        self.assertEqual(res.status, 409)
+        self.assertEqual(_payload(res)["code"], "crew_conflict")
+        self.assertEqual(self._entries(crew), before)
+        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 9, self.root))
+
+    async def test_a_crew_whose_slot_has_no_live_session_is_told_so(self):
+        """No live unit, no record: 409 with its own code, not a generic conflict, so
+        the agent stops retrying the same body and reports the condition."""
+        crew = self.crew("Andromeda", live=False)
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"number": 7, "phase": "claimed", "event": "took #7", "event_kind": "claim"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 409)
+        self.assertEqual(_payload(res)["code"], "crew_log_unavailable")
+        self.assertIn("no live session", _payload(res)["error"])
+        self.assertEqual(self.ledger(crew["id"]), [])
+
+    async def test_a_live_session_whose_log_has_not_been_created_yet_is_told_so(self):
+        crew = self.crew("Andromeda", live=False)
+        self.state.sessions.bind(f"dashboard:{crew['slot_key']}", "acp-not-yet")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"event": "queue empty", "event_kind": "sweep"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 409)
+        self.assertEqual(_payload(res)["code"], "crew_log_unavailable")
+        self.assertIn("first turn", _payload(res)["error"])
+
+    async def test_an_update_that_cannot_fit_one_entry_is_413(self):
+        """Not a conflict: it can never land however often it is retried."""
+        crew = self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"number": 7, "next": "x" * (100 * 1024), "event": "huge", "event_kind": "claim"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 413)
+        self.assertEqual(_payload(res)["code"], "ledger_entry_too_large")
+        self.assertEqual(self.ledger(crew["id"]), [])
+
+    async def test_the_entry_lands_in_the_crews_unit_whoever_writes(self):
+        """The entry goes to the CREW's log, resolved from the crew's slot -- never
+        to the caller's session. The dashboard writing on a crew's behalf records
+        into the same unit the crew's own agent does."""
+        crew = self.crew("Andromeda")
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={
+                "owner": OWNER, "repo": REPO, "crew_id": crew["id"], "number": 7,
+                "phase": "claimed", "event": "took #7", "event_kind": "claim",
+            },
+        )
+        self.assertEqual(res.status, 200)
+        self.assertEqual([e.data["number"] for e in self._entries(crew)], [7])
+
+    async def test_a_crew_that_restarted_folds_its_earlier_units(self):
+        """A slot owns one ACP session id at a time; the record spans every unit the
+        slot ran under, and a write after a restart lands in the NEW unit while the
+        read still joins the old one."""
+        crew = self.crew("Andromeda")
+        first = self._units[crew["id"]]
+        self.work(crew["id"], 7, "claimed", next="read it")
+        _tick()
+        second = self.unit(crew)  # the slot came back on a new session
+        res = await self.call(
+            "PUT", "/crew/work",
+            body={"number": 7, "phase": "implementing", "event": "fixing", "event_kind": "implement"},
+            internal_auth=True, session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 200)
+        item = _payload(res)["item"]
+        self.assertEqual((item["phase"], item["next"]), ("implementing", "read it"))
+        self.assertEqual(crew_store.crew_log_units(OWNER, REPO, crew["id"], self.root), (first, second))
+        page = _payload(await self.call(
+            "GET", "/crew", query={"owner": OWNER, "repo": REPO, "id": crew["id"]}
+        ))
+        self.assertEqual([e["text"] for e in page["events"]], ["fixing", "seeded"])
 
 
 # ── POST /crew/pause ────────────────────────────────────────────────────────

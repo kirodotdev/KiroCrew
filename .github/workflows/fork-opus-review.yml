@@ -1,6 +1,6 @@
-name: Fork Opus 4.8 Review
+name: Fork Opus 5 Review
 
-# STAGE 2 (privileged) of the fork AI-review pipeline — the Opus 4.8 reviewer.
+# STAGE 2 (privileged) of the fork AI-review pipeline — the Opus 5 reviewer.
 # Triggered by the completion of "Fork AI Review (collect)" (Stage 1). Runs from
 # the DEFAULT branch with secrets + OIDC. It NEVER checks out or executes the
 # fork's code.
@@ -21,7 +21,7 @@ name: Fork Opus 4.8 Review
 #
 # Mirrors claude-review.yml's contract (model, [OPUS-REVIEWED]/[BLOCK-MERGE]
 # markers, fail-closed gate). claude-review.yml is UNCHANGED and owns same-repo
-# PRs. The fork check-run is named exactly "Opus 4.8 Review" so branch protection
+# PRs. The fork check-run is named exactly "Opus 5 Review" so branch protection
 # is satisfied on either path. (Follow-up: extract a shared prompt file so the
 # fork and same-repo prompts cannot drift.)
 
@@ -53,7 +53,7 @@ concurrency:
 
 jobs:
   fork-opus-review:
-    name: Fork Opus 4.8 Review
+    name: Fork Opus 5 Review
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: the review
     # self-terminates well before this. Set at 90 min (matches claude-review.yml)
@@ -72,8 +72,45 @@ jobs:
       # on Bedrock in us-west-2 (mirrors claude-review.yml's aws-region).
       # VERIFY before merge that this SHA resolves to the intended harden-runner
       # release (authoring host had no network to confirm it).
+      #
+      # The three ubuntu archive hosts are NOT optional and NOT this lane's own
+      # dependency: setting `allowed_non_write_users` on the discovery/validation
+      # steps below auto-enables claude-code-action's bubblewrap isolation, and
+      # the action bootstraps that by `apt-get install bubblewrap socat`. With
+      # those hosts blocked the install exits 7, the action never reaches the
+      # model, and the lane fails closed with `review incomplete` on EVERY fork
+      # PR -- the failure mode tracked at #12099. Failing closed is correct (the
+      # isolation is a security control, so no-sandbox must never be a silent
+      # fallback), but the lane can then never return a verdict at all.
+      #
+      # `/etc/apt/apt-mirrors.txt` on the ubuntu-latest image lists the azure
+      # mirror first over plaintext http, then falls back to the two canonical
+      # hosts over https, so all three are needed for the install to resolve.
+      # Only these two packages are fetched. dl.google.com and
+      # packages.microsoft.com are deliberately NOT added: they are third-party
+      # repositories preinstalled on the runner image, their failures are apt
+      # warnings (`W:`) rather than errors, and nothing this lane needs comes
+      # from them.
+      #
+      # claude.ai and downloads.claude.ai are the second half of that same
+      # bootstrap and are equally load-bearing: the action then installs the CLI
+      # itself with `curl https://claude.ai/install.sh`, and that script reads its
+      # version manifest and binary from `downloads.claude.ai/claude-code-releases`
+      # (its DOWNLOAD_BASE_URL). Blocked, curl exits 7 three times and the lane
+      # fails closed exactly as an apt block does. The two hosts are ordered and
+      # sequential, so an allowlist carrying only the apt half still never reaches
+      # the model -- do not read a green apt phase as proof the bootstrap resolves.
+      # `code.claude.com` and `www.anthropic.com` appear in that script only inside
+      # error messages, are never fetched, and so are NOT added.
+      #
+      # Exfil surface: unchanged in practice. The model is granted only the three
+      # read tools and no shell, so an injected prompt in the fork's diff has no
+      # way to originate a network request to these or any other endpoint; every
+      # fetch above happens in the action's bootstrap, before the model call. Keep
+      # this allowlist minimal for that reason -- it is a blast-radius control,
+      # not a convenience list.
       - name: Harden runner (egress allowlist)
-        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: block
           disable-telemetry: true
@@ -85,8 +122,14 @@ jobs:
             github.com:443
             api.github.com:443
             objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
             codeload.github.com:443
             registry.npmjs.org:443
+            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:443
+            claude.ai:443
+            downloads.claude.ai:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr
@@ -202,7 +245,7 @@ jobs:
         run: |
           set -uo pipefail
           id="$(gh api --method POST "repos/$REPO/check-runs" \
-            -f name="Opus 4.8 Review" -f head_sha="$HEAD" -f status="in_progress" \
+            -f name="Opus 5 Review" -f head_sha="$HEAD" -f status="in_progress" \
             -f external_id="opus-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
             -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
             --jq '.id')"
@@ -298,7 +341,7 @@ jobs:
 
       # Mint short-lived, Bedrock-only creds immediately before the model call,
       # via the SAME dedicated least-privilege role the same-repo Opus reviewer uses.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
@@ -327,9 +370,9 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: Opus 4.8 discovery
+      - name: Opus 5 discovery
         id: discover
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -356,7 +399,8 @@ jobs:
           # deny rule outranks every allow rule and CLI flag, and `Read` denials
           # apply to `Grep` and `Glob` too.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5
+            --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 120
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Read(//proc/**),Read(//sys/**)"
@@ -500,7 +544,7 @@ jobs:
       # discovery stage that consumes most of it used to leave validation to die
       # mid-call on an expired security token, failing the gate closed with no
       # verdict. Keep in sync with claude-review.yml.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
@@ -530,9 +574,9 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: Opus 4.8 validation
+      - name: Opus 5 validation
         id: review
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -545,7 +589,8 @@ jobs:
           # so no-Bash does not keep this job's credentials out of the model's
           # reach. Keep the two steps in sync.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5
+            --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 120
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Read(//proc/**),Read(//sys/**)"
@@ -614,7 +659,7 @@ jobs:
           fi
           {
             echo "$MARKER"
-            echo "## Opus 4.8 Review (fork) — $verdict"
+            echo "## Opus 5 Review (fork) — $verdict"
             echo
             echo "_Reviewed \`$HEAD\` via the fork AI-review pipeline; updated in place on each push._"
             echo
@@ -628,7 +673,7 @@ jobs:
               echo
               echo "</details>"
             else
-              echo "_No completed Opus verdict for this commit; see the Fork Opus 4.8 Review job logs._"
+              echo "_No completed Opus verdict for this commit; see the Fork Opus 5 Review job logs._"
               # REPORTING ONLY -- see the twin block in fork-gpt-review.yml.
               # A completed review whose `[OPUS-REVIEWED] <sha>` stamp is absent
               # or SHA-corrupted used to have its whole body dropped to the job
@@ -660,7 +705,7 @@ jobs:
                 # NOTHING. Same pattern as the fork first-principles/UX lanes.
                 if grep -Eq '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z2-7]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9/+=]{200,})' claude-review-output.md; then
                   echo
-                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork Opus 4.8 Review job logs._"
+                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork Opus 5 Review job logs._"
                 else
                   echo
                   echo "<details>"
@@ -784,9 +829,9 @@ jobs:
               echo "Created new $lane comment"
             fi
           }
-          guarded_comment_upsert "$MARKER" "[OPUS-REVIEWED]" "Fork Opus 4.8 Review" "${RUNNER_TEMP:-/tmp}/fork-opus-comment.md"
+          guarded_comment_upsert "$MARKER" "[OPUS-REVIEWED]" "Fork Opus 5 Review" "${RUNNER_TEMP:-/tmp}/fork-opus-comment.md"
 
-      # Fail-CLOSED finalize of the required "Opus 4.8 Review" check-run, keyed to
+      # Fail-CLOSED finalize of the required "Opus 5 Review" check-run, keyed to
       # head_sha; posts a failing check-run if the job died before opening one.
       # Opus is a REQUIRED gating check, so it never resolves neutral.
       - name: Finalize check-run (fail closed)
@@ -819,7 +864,7 @@ jobs:
             for attempt in 1 2; do
               if gh api --method PATCH "repos/$REPO/check-runs/$1" \
                 -f status="completed" -f conclusion="$2" \
-                -f "output[title]=Opus 4.8 Review — $3" \
+                -f "output[title]=Opus 5 Review — $3" \
                 -f "output[summary]=$summary" >/dev/null; then
                 return 0
               fi
@@ -844,10 +889,10 @@ jobs:
               ext_args=(-f external_id="opus-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT")
             fi
             gh api --method POST "repos/$REPO/check-runs" \
-              -f name="Opus 4.8 Review" -f head_sha="$HEAD" \
+              -f name="Opus 5 Review" -f head_sha="$HEAD" \
               -f status="completed" -f conclusion="failure" "${ext_args[@]}" \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
-              -f "output[title]=Opus 4.8 Review — could not run" \
+              -f "output[title]=Opus 5 Review — could not run" \
               -f "output[summary]=The fork Opus review job failed before producing a verdict; re-run it." >/dev/null || true
           fi
           # Sweep any still-incomplete run of this name that THIS pull request
@@ -868,7 +913,7 @@ jobs:
           # preserved: with no verdict, $conclusion is already failure/"review
           # incomplete".
           if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
-            enc="$(jq -rn '"Opus 4.8 Review" | @uri')"
+            enc="$(jq -rn '"Opus 5 Review" | @uri')"
             stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
               --jq ".check_runs[]

@@ -19,6 +19,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_handlers
@@ -43,6 +44,79 @@ async def _create_slot(state: Any, payload: dict[str, Any]) -> None:
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/chat/slots", json=payload)
         assert resp.status < 300, await resp.text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", ["default", "worker"])
+@pytest.mark.parametrize("recovery_error", ["", "restore failed"])
+async def test_owner_create_waits_for_memory_recovery_before_allocating(
+    dashboard_state, monkeypatch, agent, recovery_error
+):
+    from kiro_crew import memory_startup
+    from kiro_crew.session_agent_selection import session_agent_selection_name
+
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"}, worker={"kiro_agent": "kirocrew"})
+    cfg.save()
+    monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *args, **kwargs: None)
+    dashboard_state.sessions.get_provider.return_value = None
+    dashboard_state.sessions.resumable_sid.return_value = ""
+    startup = memory_startup.MemoryStartup.begin()
+    preparation = asyncio.get_running_loop().create_future()
+    dashboard_state.memory_startup_task = preparation
+    entered = asyncio.Event()
+
+    async def observe_wait(task):
+        entered.set()
+        await memory_startup.wait_for_memory_preparation(task)
+
+    monkeypatch.setattr(chat_handlers, "wait_for_memory_preparation", observe_wait, raising=False)
+    app = web.Application()
+    app["state"] = dashboard_state
+    app.router.add_post("/api/chat/slots", chat_handlers.api_chat_slot_create)
+    try:
+        async with TestClient(TestServer(as_owner(app))) as client:
+            request = asyncio.create_task(
+                client.post("/api/chat/slots", json={"name": "startup-chat", "agent": agent})
+            )
+            waiting = asyncio.create_task(entered.wait())
+            try:
+                finished, _ = await asyncio.wait(
+                    {request, waiting}, timeout=10, return_when=asyncio.FIRST_COMPLETED
+                )
+                assert (
+                    waiting in finished
+                ), "conversation creation refused before waiting for recovery"
+                assert not request.done()
+                assert "startup-chat" not in dashboard_state._slots
+                assert session_agent_selection_name("dashboard:startup-chat") is None
+                if recovery_error:
+                    startup.fail(RuntimeError(recovery_error))
+                else:
+                    assert startup.complete()
+                preparation.set_result(None)
+                response = await asyncio.wait_for(request, 10)
+                data = await response.json()
+                if recovery_error:
+                    assert response.status == 503
+                    assert data["code"] == "store_unavailable"
+                    assert recovery_error in data["error"]
+                    assert "startup-chat" not in dashboard_state._slots
+                    assert session_agent_selection_name("dashboard:startup-chat") is None
+                else:
+                    assert response.status == 200, data
+                    slot = dashboard_state._slots["startup-chat"]
+                    assert slot.agent == agent
+                    assert session_agent_selection_name("dashboard:startup-chat") == agent
+            finally:
+                if not preparation.done():
+                    preparation.set_result(None)
+                request.cancel()
+                waiting.cancel()
+                await asyncio.gather(request, waiting, return_exceptions=True)
+    finally:
+        startup.stop()
+        startup.release()
 
 
 @pytest.mark.asyncio
@@ -136,11 +210,11 @@ class TestSameBindingGuard:
         original = chat_handlers.resolve_agent_bindings
         calls = []
 
-        def resolve(config, agent, project=None):
+        def resolve(config, agent, project=None, **kwargs):
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
             calls.append((agent, project))
-            result = original(config, agent, project)
+            result = original(config, agent, project, **kwargs)
             if change_project and len(calls) == 1:
                 loop.call_soon_threadsafe(setattr, slot, "project", "/changed-project")
             return result
@@ -298,11 +372,11 @@ async def test_create_resolves_off_loop_without_adopting_a_concurrent_slot(
     calls = []
     replacement = _ChatSlot("offloop-create", agent="another-owner")
 
-    def resolve(config, agent):
+    def resolve(config, agent, **kwargs):
         with pytest.raises(RuntimeError, match="no running event loop"):
             asyncio.get_running_loop()
         calls.append(agent)
-        result = original(config, agent)
+        result = original(config, agent, **kwargs)
         if replace_slot:
             loop.call_soon_threadsafe(
                 dashboard_state._slots.__setitem__, replacement.key, replacement
@@ -338,6 +412,7 @@ async def test_switch_resolves_off_loop_and_refuses_rebound_slot_before_reset(
     from kiro_crew.dashboard.state import _ChatSlot
 
     cfg = _alias_config(default={"kiro_agent": "kirocrew"}, worker={"kiro_agent": "kirocrew"})
+    await asyncio.to_thread(cfg.save)
     monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
     monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *args, **kwargs: None)
     slot = dashboard_state.get_or_create_slot("offloop-switch", agent="default")
@@ -348,11 +423,11 @@ async def test_switch_resolves_off_loop_and_refuses_rebound_slot_before_reset(
     original = chat_handlers.resolve_agent_bindings
     calls = []
 
-    def resolve(config, agent, project=None):
+    def resolve(config, agent, project=None, **kwargs):
         with pytest.raises(RuntimeError, match="no running event loop"):
             asyncio.get_running_loop()
         calls.append((agent, project))
-        result = original(config, agent, project)
+        result = original(config, agent, project, **kwargs)
         if change == "replacement":
             loop.call_soon_threadsafe(dashboard_state._slots.__setitem__, slot.key, replacement)
         elif change == "session":
@@ -363,7 +438,7 @@ async def test_switch_resolves_off_loop_and_refuses_rebound_slot_before_reset(
     app = web.Application()
     app["state"] = dashboard_state
     app.router.add_post("/api/chat/slots/{slot}/agent", chat_handlers.api_chat_slot_agent)
-    async with TestClient(TestServer(app)) as client:
+    async with TestClient(TestServer(as_owner(app))) as client:
         response = await client.post(f"/api/chat/slots/{slot.key}/agent", json={"agent": "worker"})
         data = await response.json()
     assert len(calls) == 1

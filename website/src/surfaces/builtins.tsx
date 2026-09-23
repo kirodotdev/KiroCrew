@@ -7,21 +7,30 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, Users, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
+import { CrewMemberMark } from '../components/CrewMemberMark'
 import { registerBuiltinSurface, surfaceMachineValue } from './registry'
 import { selectSubagentActivityCount } from '../store/chatSlice'
+import { isSilencedNote } from '../store/notificationsSlice'
 import { PREVIEW_CREW, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import type { RootState } from '../store'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
 // invocation only re-runs the .filter().length when the items array changes
 // reference (which is the standard Redux Toolkit pattern).
+//
+// Silenced and passive rows are excluded, matching the backend's own
+// `_unread_count` and the rule the bell sheet's badge applies. This sum reaches
+// the user as the browser-tab attention number, and a muted note counted here is
+// a `(n)` in the title that no surface the user can open accounts for: the bell
+// omits it and the feed keeps silenced rows behind the muted disclosure, so
+// there is nothing to click that would clear it.
 const selectUnacknowledgedNotificationCount = createSelector(
   (s: RootState) => s.notifications.items,
-  items => items.filter(n => !n.acked).length,
+  items => items.filter(n => !n.acked && !isSilencedNote(n)).length,
 )
 
 // ── Main ───────────────────────────────────────────────────────────────────
@@ -69,7 +78,7 @@ registerBuiltinSurface({
   route: '/members',
   label: surfaceMachineValue('Crew Members'),
   labelKey: 'nav.crew_members',
-  icon: <Users size={16} />,
+  icon: <CrewMemberMark />,
   group: surfaceMachineValue('Main'),
   slotMode: 'member',
   badgeLabel: 'unread member threads',
@@ -167,7 +176,7 @@ registerBuiltinSurface({
   hiddenFromNav: true,
 })
 
-// Instances (multi-instance management) is configured under Settings → Remote Instances
+// Instances (multi-instance management) is configured under Settings → Remote Crew
 // (after Browser, before Security) and switched via the top-header tab strip —
 // it intentionally has no left-rail surface of its own.
 
@@ -208,7 +217,14 @@ registerBuiltinSurface({
 // on the rail, because a promoted row sits among the rail's rows rather than
 // among its panel's tabs, and the collapsed rail is icon-only:
 //   steering  Compass -> ScrollText  (Discover owns Compass, App.tsx, always rendered)
-//   crews     Users   -> Bot         (Crew Members owns Users when its preview is on)
+//   crews     Users   -> Bot         (see below)
+// `crews` keeps Bot even though the rail no longer draws Users at all: Crew
+// Members used to own that glyph, and now draws its own ghost-in-a-bubble brand
+// mark (`components/CrewMemberMark.tsx`), so Users is free again. Bot stays
+// because it is the better glyph on its own merits — a crew is a configured
+// AGENT, where Users reads as a group of people — and reverting it would only
+// re-spend review on a settled choice. The rule above is about collisions; this
+// row simply no longer has one.
 // `hooks` KEEPS its tab glyph. It was briefly moved to Zap because the
 // palette's standalone /hooks entry drew a Webhook, but this change deletes that
 // entry, and the `webhooks` surface is `hiddenFromNav` so it has no rail row --

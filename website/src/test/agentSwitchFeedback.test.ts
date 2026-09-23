@@ -28,7 +28,7 @@ describe('agent switch failure feedback', () => {
 
   it('preserves the new-conversation instruction for a pinned private chat', () => {
     const message = 'This conversation belongs to its original member. Start a new conversation to choose a different member.'
-    const error = new ApiError(409, message, JSON.stringify({ error: message, code: 'private_memory_session_pinned' }))
+    const error = new ApiError(409, message, JSON.stringify({ error: message, code: 'member_session_pinned' }))
     expect(agentSwitchFailureMessage(error)).toBe(message)
     expect(isTurnInFlightError(error)).toBe(false)
   })

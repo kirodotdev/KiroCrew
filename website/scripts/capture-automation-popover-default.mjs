@@ -29,6 +29,7 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { goalPopoverSlots, goalPopoverDetail } from './lib/goal-popover-fixture.mjs'
 
 const args = process.argv.slice(2).filter(a => a !== '--expect-bounded')
 const EXPECT_BOUNDED = process.argv.includes('--expect-bounded')
@@ -38,32 +39,8 @@ const PROJECT = '/home/user/workspace/notes'
 
 mkdirSync(OUT, { recursive: true })
 
-const slots = [{
-  key: SLOT,
-  title: 'Trim the flaky-test backlog',
-  running: false,
-  last_message: 'Two candidates left.',
-  messages: 2,
-  agent: 'kirocrew',
-  memory_mode: 'persistent',
-  project: PROJECT,
-  folder_id: '',
-  modified: Math.floor(Date.now() / 1000),
-  source_links: [],
-  source_links_total: 0,
-}]
-
-const detail = {
-  running: false,
-  has_more: false,
-  total: 2,
-  queue: [],
-  project: PROJECT,
-  messages: [
-    { role: 'user', ts: Date.now() / 1000 - 600, content: 'Which flaky test should we take first?' },
-    { role: 'assistant', ts: Date.now() / 1000 - 30, content: 'Two candidates left.' },
-  ],
-}
+const slots = goalPopoverSlots(SLOT, PROJECT)
+const detail = goalPopoverDetail(PROJECT)
 
 async function main() {
   const { srv, base } = await serveDist()

@@ -150,11 +150,21 @@ def register(app: web.Application) -> None:
     # The lanes the Set-up tab may offer (CPP remote_provisioners seam); the
     # built-in EC2 lane plus whatever the edition composes in.
     app.router.add_get("/api/cloud/provisioners", handlers_cloud.api_cloud_provisioners)
+    app.router.add_get("/api/cloud/identity", handlers_cloud.api_cloud_identity)
     app.router.add_get("/api/cloud/launch", handlers_cloud.api_cloud_launch_list)
     app.router.add_post("/api/cloud/launch", handlers_cloud.api_cloud_launch_create)
     app.router.add_get("/api/cloud/launch/{id}", handlers_cloud.api_cloud_launch_get)
+    # The ECS task a Fargate launch started, read live: the cloud panel's
+    # liveness source for that lane (the EC2 lane's is the Instances registry).
+    app.router.add_get("/api/cloud/launch/{id}/task", handlers_cloud.api_cloud_launch_task)
     app.router.add_post("/api/cloud/launch/{id}/cancel", handlers_cloud.api_cloud_launch_cancel)
     app.router.add_post("/api/cloud/launch/{id}/signin", handlers_cloud.api_cloud_launch_signin)
+    # Re-runs ONLY the sign-in step on a crew that ended up unsigned; never
+    # re-provisions (see api_cloud_launch_signin_restart).
+    app.router.add_post(
+        "/api/cloud/launch/{id}/signin/restart",
+        handlers_cloud.api_cloud_launch_signin_restart,
+    )
     app.router.add_post("/api/cloud/{tag}/stop", handlers_cloud.api_cloud_stop)
     app.router.add_post("/api/cloud/{tag}/start", handlers_cloud.api_cloud_start)
     app.router.add_delete("/api/cloud/{tag}", handlers_cloud.api_cloud_destroy)

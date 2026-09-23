@@ -33,7 +33,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from member_memory_helpers import PRIVATE_EXECUTION_GATE
 
 from kiro_crew import cli_commands as cc
 from kiro_crew import sel as sel_mod
@@ -1321,7 +1320,6 @@ class TestAgentCli:
         with (
             patch.object(KiroCrewConfig, "load", return_value=cfg),
             patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            patch(PRIVATE_EXECUTION_GATE, return_value=True),
         ):
             cc._handle_agent(
                 _ns(
@@ -2198,7 +2196,7 @@ class TestLearnCli:
         with _LearnHarness() as h:
             h.vs.get_lessons.return_value = []
             h.jsonl.load_all.return_value = [
-                SimpleNamespace(category="tool", rule="r", negative="n")
+                SimpleNamespace(category="tool", rule="r", negative="n", repo_scope=None)
             ]
             cc._learn(_ns(learn_action="list"))
         assert "[tool] r — n" in capsys.readouterr().out
@@ -2212,7 +2210,7 @@ class TestLearnCli:
         with _LearnHarness() as h:
             h.vs.get_lessons.return_value = []
             h.jsonl.load_all.return_value = [
-                SimpleNamespace(category="", rule="legacy row", negative=None)
+                SimpleNamespace(category="", rule="legacy row", negative=None, repo_scope=None)
             ]
             cc._learn(_ns(learn_action="list"))
         out = capsys.readouterr().out

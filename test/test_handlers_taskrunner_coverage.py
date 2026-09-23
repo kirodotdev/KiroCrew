@@ -48,6 +48,8 @@ from kiro_crew.dashboard.handlers.taskrunner import (
     api_taskrunner_update_plan,
     api_taskrunner_update_task,
 )
+from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun
 
 # A URL whose oversized query payload trips the (domain-agnostic) exfiltration
@@ -78,6 +80,10 @@ def _runner(tmp_path: Path) -> MagicMock:
     runner._group_parallel_tasks = MagicMock(return_value=[])
     runner._auto_name = MagicMock(side_effect=lambda text: text)
     runner._workflow_begin = AsyncMock()
+    runner._capture_execution = MagicMock(
+        return_value=ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew")
+    )
+    runner._bind_run_execution = AsyncMock()
 
     async def _delete_run(task_id: str) -> bool:
         runner._runs.pop(task_id, None)
@@ -111,6 +117,7 @@ def _request(
     request_app: str = "",
     with_content_length: bool = True,
     body_present: bool = False,
+    session: str = "",
 ) -> web.Request:
     app = web.Application()
     app["state"] = state
@@ -125,6 +132,8 @@ def _request(
     else:
         raw = b""
     headers = {"Content-Length": str(len(raw))} if (raw and with_content_length) else {}
+    if session:
+        headers["X-Session-Key"] = session
     req = make_mocked_request(
         method,
         path,
@@ -864,12 +873,23 @@ class TestPlan:
         assert runner._plan_task is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("exc", [FileNotFoundError("missing spec"), ValueError("empty input")])
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            FileNotFoundError("missing spec"),
+            ValueError("empty input"),
+            # A descriptor-gate refusal and an oversize spec are the caller's to
+            # see: the message names what was withheld instead of a bare 500.
+            PermissionError("Spec file refused by the file gate: /w/spec.md"),
+            FileTooLargeError("File exceeds 50 MB safety cap"),
+        ],
+    )
     async def test_expected_errors_are_400(self, tmp_path: Path, exc: Exception) -> None:
         runner = _runner(tmp_path)
         runner.plan = AsyncMock(side_effect=exc)
         resp = await api_taskrunner_plan(_request(_state(runner), json_body={"input": "x"}))
         assert resp.status == 400
+        assert _body(resp)["error"] == str(exc)
         assert _body(resp)["error"] == str(exc)
 
 
@@ -1419,174 +1439,126 @@ class TestNonObjectBodiesAcrossConvertedHandlers:
         assert _body(resp)["code"] == "body_not_object", handler.__name__
 
 
-@pytest.fixture
-def private_task_caller(monkeypatch):
-    from kiro_crew import member_memory_auth as auth
-
-    stores = {"dashboard:alice": "alice-store", "taskrunner:private-run:runtime": "alice-store"}
-    monkeypatch.setattr(auth, "private_memory_boundaries_active", lambda: True)
-    monkeypatch.setattr(auth, "memory_request_identity", lambda request: ("dashboard:alice", True))
-    monkeypatch.setattr(auth, "private_memory_store_for_session", lambda key: stores.get(key, ""))
-    return stores
+def _member_execution(mode="persistent"):
+    return ExecutionContext(
+        "alice", MemoryStoreRef("alice-store", "alice"), "member", "kirocrew", mode
+    )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("handler", [api_taskrunner_start, api_taskrunner_plan])
-async def test_private_task_file_ingress_refuses_before_host_file_read(
-    tmp_path, private_task_caller, handler
-):
+async def test_member_file_input_uses_ordinary_path_validation(tmp_path, handler):
     runner = _runner(tmp_path)
+    runner._capture_execution.return_value = _member_execution()
+    runner.plan.return_value = TaskRun("", "", task_id="new-plan")
+    spec = tmp_path / "task.md"
+    spec.write_text("work", encoding="utf-8")
     request = _request(
-        _state(runner), json_body={"source": "file", "spec": str(tmp_path / "peer-history.jsonl")}
+        _state(runner), json_body={"source": "file", "spec": str(spec)}, session="dashboard:alice"
     )
     request["internal_auth"] = True
     response = await handler(request)
-    assert response.status == 409
-    assert _body(response)["code"] == "private_task_file_unsupported"
-    runner.plan.assert_not_called()
-    runner.start_background.assert_not_called()
+    assert response.status == 200
+    method = runner.start_background if handler is api_taskrunner_start else runner.plan
+    assert method.await_args.kwargs["execution_context"] == _member_execution()
 
 
 @pytest.mark.asyncio
-async def test_private_inline_plan_uses_authenticated_origin(tmp_path, private_task_caller):
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_restricted_inline_start_keeps_input_in_memory(tmp_path, mode):
     runner = _runner(tmp_path)
-    runner.plan.return_value = TaskRun(spec_path="", spec_content="", task_id="new-plan")
+    runner._capture_execution.return_value = _member_execution(mode)
+    response = await api_taskrunner_start(
+        _request(_state(runner), json_body={"spec": "__inline__:restricted body"})
+    )
+    assert response.status == 200
+    assert runner.start_background.await_args.kwargs["input_content"] == "restricted body"
+    assert not list(tmp_path.rglob("TASK_*.md"))
+
+
+@pytest.mark.asyncio
+async def test_inline_plan_uses_authenticated_origin_and_captured_context(tmp_path):
+    runner = _runner(tmp_path)
+    runner._capture_execution.return_value = _member_execution()
+    runner.plan.return_value = TaskRun("", "", task_id="new-plan")
     request = _request(
         _state(runner),
-        json_body={
-            "input": "make my plan",
-            "source": "text",
-            "session_key": "dashboard:peer",
-            "memory_store": "peer-store",
-        },
+        session="dashboard:alice",
+        json_body={"input": "plan", "session_key": "dashboard:bob", "memory_store": "bob-store"},
     )
     request["internal_auth"] = True
     response = await api_taskrunner_plan(request)
     assert response.status == 200
     assert runner.plan.await_args.kwargs["session_key"] == "dashboard:alice"
+    assert runner.plan.await_args.kwargs["execution_context"] == _member_execution()
 
 
 @pytest.mark.asyncio
-async def test_private_from_chat_uses_verified_origin_not_claimed_actor(
-    tmp_path, private_task_caller
-):
+async def test_from_chat_owns_context_before_runtime_binding(tmp_path):
     runner = _runner(tmp_path)
-    runner._ctx = SimpleNamespace()
-
-    async def updated(task_id, _steps):
-        return runner._runs[task_id]
-
-    runner.update_plan.side_effect = updated
+    execution = _member_execution()
+    runner._capture_execution.return_value = execution
+    runner.update_plan.side_effect = lambda task_id, steps: runner._runs[task_id]
     request = _request(
         _state(runner),
-        json_body={
-            "steps": [{"title": "private step", "description": "work"}],
-            "original_input": "private supplied text",
-            "session_key": "dashboard:peer",
-            "created_by": "dashboard:peer",
-            "memory_store": "peer-store",
-        },
+        session="dashboard:alice",
+        json_body={"steps": [{"title": "step"}], "session_key": "dashboard:bob"},
     )
     request["internal_auth"] = True
-    with patch("kiro_crew.context.inherit_session_memory", AsyncMock()) as inherit:
-        response = await api_taskrunner_from_chat(request)
+    response = await api_taskrunner_from_chat(request)
     assert response.status == 200
     task_id = _body(response)["task_id"]
-    inherit.assert_awaited_once_with(
-        runner._ctx, "dashboard:alice", f"taskrunner:{task_id}:runtime"
-    )
+    run = runner._runs[task_id]
+    assert run.execution_context == execution
+    runner._bind_run_execution.assert_awaited_once_with(run, f"taskrunner:{task_id}:runtime")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["planned", "completed"])
-async def test_private_task_to_chat_binds_fresh_slot_before_content(
-    tmp_path, private_task_caller, status
-):
+async def test_task_to_chat_uses_owning_record_without_runtime_session(tmp_path, status):
+    from kiro_crew.execution_context import read_session_execution
+
     runner = _runner(tmp_path)
-    runner._runs["private-run"] = TaskRun(
-        spec_path="s.md", spec_content="private material", task_id="private-run", status=status
+    execution = _member_execution()
+    runner._runs["member-run"] = TaskRun(
+        "s.md", "material", task_id="member-run", status=status, execution_context=execution
     )
-    runner.plan_to_chat_context.return_value = "private plan"
+    runner.plan_to_chat_context.return_value = "plan"
     state = _chat_state(runner)
-    state.context_builder = SimpleNamespace()
     slot = state.get_or_create_slot.return_value
-    request = _request(state, match_info={"task_id": "private-run"})
-    request["internal_auth"] = True
-    with (
-        patch("kiro_crew.context.inherit_session_memory", AsyncMock()) as inherit,
-        patch("kiro_crew.dashboard.chat._run_chat", AsyncMock()) as chat,
-    ):
 
-        def create(*args, **kwargs):
-            assert inherit.await_count == 1
-            assert args[0].startswith("task-review-")
-            assert kwargs["linked_session_key"] == inherit.await_args.args[2]
-            return slot
+    def create(*args, **kwargs):
+        assert read_session_execution(kwargs["linked_session_key"]) == execution
+        assert kwargs["memory_mode"] == execution.memory_mode
+        return slot
 
-        state.get_or_create_slot.side_effect = create
-        slot.append.side_effect = lambda *_args: (
-            None if slot.memory_store == "alice-store" else pytest.fail("unbound private append")
+    state.get_or_create_slot.side_effect = create
+    slot.append.side_effect = lambda *args: (
+        None if slot.memory_store == "alice-store" else pytest.fail("unbound append")
+    )
+    with patch("kiro_crew.dashboard.chat._run_chat", AsyncMock()) as chat:
+        response = await api_taskrunner_to_chat(
+            _request(state, match_info={"task_id": "member-run"})
         )
-        response = await api_taskrunner_to_chat(request)
         await asyncio.gather(*list(state._background_tasks))
     assert response.status == 200
-    assert inherit.await_args.args[1] == "taskrunner:private-run:runtime"
     chat.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "handler",
-    [api_taskrunner_pause, api_taskrunner_update_task, api_taskrunner_retry],
-)
-async def test_task_alias_is_resolved_before_member_authorization(
-    tmp_path, private_task_caller, handler
-):
-    runner = _runner(tmp_path)
-    runner._runs["foreign-run"] = TaskRun(
-        spec_path="s.md", spec_content="peer", task_id="foreign-run", name="friendly-name"
-    )
-    private_task_caller["taskrunner:foreign-run:runtime"] = "peer-store"
-    request = _request(
-        _state(runner), match_info={"task_id": "friendly-name", "index": "1"}, json_body={}
-    )
-    request["internal_auth"] = True
-    response = await handler(request)
-    assert response.status == 404
-    assert _body(response)["code"] == "task_scope_denied"
-    runner.pause.assert_not_called()
-    runner.update_task.assert_not_called()
-    runner.retry_from_task.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_internal_caller_cannot_cancel_shared_planning(tmp_path, private_task_caller):
+async def test_internal_caller_cannot_cancel_shared_planning(tmp_path):
     runner = _runner(tmp_path)
     request = _request(_state(runner))
     request["internal_auth"] = True
     response = await api_taskrunner_plan_cancel(request)
     assert response.status == 403
-    assert _body(response)["code"] == "task_scope_denied"
     runner.cancel_plan.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_owner_can_cancel_shared_planning_with_private_members(tmp_path, private_task_caller):
+async def test_owner_can_cancel_shared_planning(tmp_path):
     runner = _runner(tmp_path)
     response = await api_taskrunner_plan_cancel(_request(_state(runner)))
-    assert response.status == 200
-    runner.cancel_plan.assert_called_once_with()
-
-
-@pytest.mark.asyncio
-async def test_global_only_internal_caller_can_cancel_planning(tmp_path, monkeypatch):
-    from kiro_crew import member_memory_auth as auth
-
-    monkeypatch.setattr(auth, "private_memory_boundaries_active", lambda: False)
-    runner = _runner(tmp_path)
-    request = _request(_state(runner))
-    request["internal_auth"] = True
-    response = await api_taskrunner_plan_cancel(request)
     assert response.status == 200
     runner.cancel_plan.assert_called_once_with()
 
@@ -1604,51 +1576,3 @@ def test_exact_task_cancel_does_not_follow_another_runs_colliding_name():
     runner.cancel("own-id", exact=True)
     assert own.status == "cancelling"
     assert peer.status == "running"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "handler",
-    [
-        api_taskrunner_cancel,
-        api_taskrunner_pause,
-        api_taskrunner_delete,
-        api_taskrunner_rename,
-        api_taskrunner_update_task,
-        api_taskrunner_retry,
-        api_taskrunner_plan_context,
-        api_taskrunner_export_yaml,
-        api_taskrunner_to_chat,
-        api_taskrunner_update_plan,
-        api_taskrunner_execute_plan,
-        api_taskrunner_from_chat,
-    ],
-)
-async def test_runtime_bound_routes_refuse_a_peer_before_read_or_mutation(
-    tmp_path, private_task_caller, handler
-):
-    runner = _runner(tmp_path)
-    runner._runs["peer-id"] = TaskRun(
-        spec_path="peer", spec_content="peer secret", task_id="peer-id", status="planned"
-    )
-    private_task_caller["taskrunner:peer-id:runtime"] = "peer-store"
-    request = _request(
-        _state(runner),
-        match_info={"task_id": "peer-id", "index": "1"},
-        json_body={"task_id": "peer-id", "steps": [{"title": "replace peer"}]},
-    )
-    request["internal_auth"] = True
-    response = await handler(request)
-    assert response.status == 404
-    assert _body(response)["code"] == "task_scope_denied"
-    for method in (
-        "cancel",
-        "pause",
-        "delete_run",
-        "update_task",
-        "retry_from_task",
-        "plan_to_chat_context",
-        "update_plan",
-        "execute_plan",
-    ):
-        getattr(runner, method).assert_not_called()

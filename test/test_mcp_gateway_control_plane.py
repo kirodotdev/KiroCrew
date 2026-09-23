@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from body_stream_helpers import attach_body
+from dashboard_owner_helpers import owner_claims
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
 from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -44,8 +45,12 @@ def _make_request(state: object, body: dict) -> web.Request:
     req = MagicMock(spec=web.Request)
     attach_body(req, body)
     req.app = {"state": state}
-    req.get = lambda key, default=None: default
-    return req
+    # The enable and stub routes are owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``). Every ``state`` here
+    # is a ``SimpleNamespace`` with no ``owner_id``, which the predicate reads as
+    # the standalone-local shape, so the signed local bootstrap subject
+    # ``owner_claims`` installs IS the owner.
+    return owner_claims(req)
 
 
 def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:

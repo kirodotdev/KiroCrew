@@ -42,13 +42,13 @@ import { announceAppsChanged as realAnnounceAppsChanged } from './useAppsData'
 import type { AppsData } from './useAppsData'
 
 /** A deferred api.updateApp call the test resolves/rejects by hand. */
-type Deferred = { resolve: () => void; reject: (e: Error) => void }
+type Deferred = { resolve: (value?: unknown) => void; reject: (e: Error) => void }
 
 /** Queue every api.updateApp call as a deferred the test settles explicitly. */
 function deferUpdates(): Deferred[] {
   const deferred: Deferred[] = []
   apiUpdateApp.mockImplementation(
-    () => new Promise<void>((resolve, reject) => { deferred.push({ resolve, reject }) }),
+    () => new Promise<unknown>((resolve, reject) => { deferred.push({ resolve, reject }) }),
   )
   return deferred
 }
@@ -110,6 +110,17 @@ describe('useAppUpdates — recorded-source routing (runUpdate)', () => {
     expect(setSuccess).toHaveBeenCalledWith(expect.stringContaining('Notes'))
     // setError('') clears the notice on start; no failure message follows.
     expect(setError).toHaveBeenCalledExactlyOnceWith('')
+  })
+
+  it('opens detail instead of reporting success when an update needs consent', async () => {
+    apiUpdateApp.mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+    const { result, updateAppNav, setSuccess, announce } = setup()
+
+    await act(async () => { await result.current.runUpdate('notes') })
+
+    expect(announce).toHaveBeenCalledTimes(1)
+    expect(updateAppNav).toHaveBeenCalledExactlyOnceWith('notes')
+    expect(setSuccess).not.toHaveBeenCalled()
   })
 
   it('routes a registry-sourced app to the detail page instead of updating in place', () => {
@@ -178,6 +189,25 @@ describe('useAppUpdates — recorded-source routing (runUpdate)', () => {
     await expect(retryUpdate('radar')).rejects.toThrow('boom')
   })
 
+  it('the trust retry opens detail when the update needs new consent', async () => {
+    const onTrustDenied = vi.fn()
+    apiUpdateApp.mockRejectedValueOnce(Object.assign(new Error('denied'), {
+      code: 'app_execution_denied',
+    }))
+    const { result, updateAppNav, setSuccess } = setup({
+      rowUpdatesInPlace: true,
+      onTrustDenied,
+    })
+
+    await act(async () => { await result.current.runUpdate('radar') })
+    const retryUpdate = onTrustDenied.mock.calls[0][1]
+    apiUpdateApp.mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+    await act(async () => { await retryUpdate('radar') })
+
+    expect(updateAppNav).toHaveBeenCalledExactlyOnceWith('radar')
+    expect(setSuccess).not.toHaveBeenCalled()
+  })
+
   it('routes an unknown name to the detail page (no recorded source to read)', () => {
     const { result, updateAppNav } = setup()
     act(() => { void result.current.runUpdate('ghost') })
@@ -231,6 +261,23 @@ describe('useAppUpdates — Update All', () => {
     )
   })
 
+  it('names every app needing consent instead of navigating to the first', async () => {
+    apiUpdateApp
+      .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+      .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+    const { result, updateAppNav, setError, setSuccess, announce } = setup()
+
+    await act(async () => { await result.current.updateAll() })
+
+    expect(announce).toHaveBeenCalledTimes(1)
+    const notice = setError.mock.lastCall?.[0] as string
+    expect(notice).toContain('pages.appsPage.updated_needs_session_approval_consent')
+    expect(notice).toContain('"name":"Notes"')
+    expect(notice).toContain('"name":"Docs"')
+    expect(updateAppNav).not.toHaveBeenCalled()
+    expect(setSuccess).not.toHaveBeenCalled()
+  })
+
   it('aggregates failures into one message; successes still announce', async () => {
     const deferred = deferUpdates()
     const { result, announce, setError, setSuccess } = setup()
@@ -244,10 +291,27 @@ describe('useAppUpdates — Update All', () => {
     expect(setError).toHaveBeenLastCalledWith(
       expect.stringContaining('pages.appsPage.failed_to_update'),
     )
-    expect(setError).toHaveBeenLastCalledWith(expect.stringContaining('notes'))
+    expect(setError).toHaveBeenLastCalledWith(expect.stringContaining('Notes'))
     expect(setSuccess).not.toHaveBeenCalled()
     // Only the surviving app announced.
     expect(announce).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports failures and consent together after a mixed result', async () => {
+    apiUpdateApp
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+    const { result, updateAppNav, setError, setSuccess } = setup()
+
+    await act(async () => { await result.current.updateAll() })
+
+    const notice = setError.mock.lastCall?.[0] as string
+    expect(notice).toBe(
+      'pages.appsPage.failed_to_update {"names":"Notes"}\n'
+      + 'pages.appsPage.updated_needs_session_approval_consent {"name":"Docs"}',
+    )
+    expect(updateAppNav).not.toHaveBeenCalled()
+    expect(setSuccess).not.toHaveBeenCalled()
   })
 
   it('blocks runUpdate and a second updateAll while a batch is running', async () => {

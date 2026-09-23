@@ -80,6 +80,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { i18nT } from '../i18n/t'
 import { api } from '../api/client'
+import { __resetErrorJournalForTests, recordError } from '../utils/errorReport'
 
 /** Slot keys `chatSlotDetail` was asked for — i.e. which sessions got fetched. */
 function detailCalls(): string[] {
@@ -175,6 +176,7 @@ function renderChatPage(opts: {
 
 beforeEach(() => {
   localStorage.clear()
+  __resetErrorJournalForTests()
   currentUrl = ''
 })
 
@@ -382,10 +384,10 @@ describe('ChatPage ?sid= URL parameter', () => {
       vi.useRealTimers()
     })
 
-    /** Control for the gate above: it must DELAY the deadline to the list's
-     *  arrival, not remove it. A key genuinely absent from a list that has landed
-     *  still earns the banner. */
-    it('still declares it missing once a list arrives without the key', async () => {
+    /** A slot list can be authoritative for what it carries without being the
+     *  final restored list. If a later frame proves the linked session is live,
+     *  the deadline's stale verdict must be withdrawn and the link resolved. */
+    it('withdraws not found when a later slot frame carries the key', async () => {
       vi.useFakeTimers()
       const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
       await vi.advanceTimersByTimeAsync(5100)
@@ -394,6 +396,65 @@ describe('ChatPage ?sid= URL parameter', () => {
       await act(async () => { store.dispatch(sseSlots(slots)) })
       await vi.advanceTimersByTimeAsync(5100)
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+
+      await act(async () => {
+        store.dispatch(sseSlots([...slots, slot('chat-9-900', 'Late Session')]))
+      })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
+      expect(store.getState().chat.activeSlot).toBe('chat-9-900')
+      vi.useRealTimers()
+    })
+
+    /** A late list entry proves the key exists, but its transcript can still fail
+     *  to load. Recovery must replace the stale not-found verdict with the
+     *  existing open-session failure instead of clearing every visible error. */
+    it('keeps a visible error when the late session detail cannot load', async () => {
+      vi.useFakeTimers()
+      const report = recordError({
+        source: 'api',
+        message: 'detail load failed',
+        status: 503,
+        code: 'slot_detail_failed',
+        endpoint: '/api/chat/slots/chat-9-900',
+      })
+      vi.mocked(api.chatSlotDetail).mockRejectedValueOnce(new Error(report.message))
+      const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
+      await act(async () => { store.dispatch(sseSlots(slots)) })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+
+      await act(async () => {
+        store.dispatch(sseSlots([...slots, slot('chat-9-900', 'Late Session')]))
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
+      expect(screen.getByText(
+        i18nT('store.chatSlice.session_open_error_named', { name: 'Late Session' }),
+      )).toBeTruthy()
+      expect(screen.getAllByRole('alert')).toHaveLength(1)
+      expect(store.getState().chat.switchSlotGone?.report).toMatchObject({
+        endpoint: '/api/chat/slots/chat-9-900',
+        status: 503,
+        code: 'slot_detail_failed',
+      })
+      vi.useRealTimers()
+    })
+
+    /** Control for the recovery above: repeated authoritative frames that omit
+     *  the key do not revoke the missing-session verdict. */
+    it('keeps not found while later slot frames still omit the key', async () => {
+      vi.useFakeTimers()
+      const { store } = renderChatPage({ route: '/chat?sid=chat-9-900', slots: [], slotsLoaded: false })
+      await act(async () => { store.dispatch(sseSlots(slots)) })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+
+      await act(async () => { store.dispatch(sseSlots([...slots])) })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+      expect(store.getState().chat.activeSlot).not.toBe('chat-9-900')
       vi.useRealTimers()
     })
   })
@@ -403,6 +464,54 @@ describe('ChatPage ?sid= URL parameter', () => {
   // flight, the deep-link load would trip the POP bail so the first switch never
   // updated the URL until a reload; loading at /chat (no ?sid) hides that.
   describe('switch after deep-link load (Mesh chat-switch bug)', () => {
+
+    /** Revoking the stale verdict must not undo a session choice made after the
+     *  deadline. The late frame clears the lie but leaves the user where they went. */
+    it('does not override a user switch when the denied slot arrives later', async () => {
+      vi.useFakeTimers()
+      const { store } = renderChatPage({
+        route: '/chat?sid=chat-9-900',
+        activeSlot: 'chat-1-100',
+        slots: [],
+        slotsLoaded: false,
+      })
+      await act(async () => { store.dispatch(sseSlots(slots)) })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+
+      await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
+      await act(async () => {
+        store.dispatch(sseSlots([...slots, slot('chat-9-900', 'Late Session')]))
+      })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
+      expect(store.getState().chat.activeSlot).toBe('chat-2-200')
+      vi.useRealTimers()
+    })
+
+    it('does not override a user who switches away and back before the denied slot arrives', async () => {
+      vi.useFakeTimers()
+      const { store } = renderChatPage({
+        route: '/chat?sid=chat-9-900',
+        activeSlot: 'chat-1-100',
+        slots: [],
+        slotsLoaded: false,
+      })
+      await act(async () => { store.dispatch(sseSlots(slots)) })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+
+      await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
+      await act(async () => { await store.dispatch(switchSlot('chat-1-100')) })
+      await act(async () => {
+        store.dispatch(sseSlots([...slots, slot('chat-9-900', 'Late Session')]))
+      })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
+      expect(store.getState().chat.activeSlot).toBe('chat-1-100')
+      vi.useRealTimers()
+    })
+
     it('updates URL when switching sessions after loading with ?sid= present', async () => {
       const { store } = renderChatPage({ route: '/chat/fix-login-bug?sid=chat-2-200', slots })
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))

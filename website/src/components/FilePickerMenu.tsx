@@ -5,6 +5,7 @@ import { FileText, Folder, Eye } from 'lucide-react'
 import { api } from '../api/client'
 import ErrorNotice from './ErrorNotice'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import { splitPathToken } from './composerTokens'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import type { SendMode } from '../pages/chat/ChatSettings'
 
@@ -25,9 +26,27 @@ interface FileResult {
 interface FileSearchResponse {
   results?: FileResult[]
   root?: string
+  /**
+   * Path mode only: the directory prefix these rows were produced FOR.
+   *
+   * Rows and prefix have to travel together. `placeholderData` keeps the
+   * PREVIOUS payload on screen while a new key fetches, so a prefix read from
+   * anything outside the payload — the live token or even the debounced one —
+   * is one level deeper than the rows a user can still see and choose, and the
+   * accepted token comes out doubled (`./src/src/`).
+   */
+  dir?: string
+  /**
+   * Path mode only: `true` when the token resolved out of the project, which is the
+   * one thing zero rows cannot say for itself — an out-of-project token and an empty
+   * directory look identical from here. It rides in the payload with the rows it
+   * describes, so a placeholder answer cannot label the wrong ones.
+   */
+  outside?: boolean
 }
 
 interface Props {
+  /** @-mention query, or the whole `./`-token in `pathMode`. */
   query: string
   anchorRef: React.RefObject<HTMLElement | null>
   open: boolean
@@ -35,6 +54,19 @@ interface Props {
   onClose: () => void
   onFileOpen?: (path: string) => void
   project?: string
+  /**
+   * Path-completion mode: `query` is a relative-path token (`./src/comp`) and the
+   * rows are ONE directory level of `project`, from `/api/path-complete`, instead
+   * of a fuzzy @-mention search. Same rows, same keyboard contract, same geometry
+   * — only the source and the shape of the accepted text differ, which is why this
+   * is a mode of the picker rather than a second menu.
+   *
+   * `project` is REQUIRED here: it is the root the token resolves against. The
+   * endpoint refuses an empty one, which surfaces as the settled search-failed
+   * state — deliberately, rather than gating the fetch, since a mode that never
+   * fetches also never settles and would swallow Enter with nothing to choose.
+   */
+  pathMode?: boolean
   /**
    * The composer's effective send binding (see ChatInput's SendMode). Consulted
    * for every empty-state copy: in 'ctrl-enter' mode a bare Enter is not a send
@@ -75,9 +107,12 @@ export function resultKind(f: { kind?: FileKind }): FileKind {
  * Build the payload handed to onSelect. Directory paths get a trailing slash on
  * the relative form so the inserted @-token reads unambiguously as a folder.
  */
-export function selectionFor(f: FileResult, root: string): { path: string; relativePath: string; kind: FileKind } {
+export function selectionFor(f: FileResult, root: string, dirPrefix?: string): { path: string; relativePath: string; kind: FileKind } {
   const kind = resultKind(f)
-  const rel = makeRelative(f.path, root)
+  // Path completion rebuilds the token from the prefix the user typed plus the
+  // entry name, so an accepted `../` stays `../` instead of being rewritten to
+  // the project-relative form; the @-mention flow strips the root instead.
+  const rel = dirPrefix === undefined ? makeRelative(f.path, root) : dirPrefix + f.name
   return {
     path: f.path,
     // `endsWith` covers either separator so a Windows path is not given a second
@@ -87,7 +122,7 @@ export function selectionFor(f: FileResult, root: string): { path: string; relat
   }
 }
 
-export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project, sendOnEnter = 'enter' }: Props) {
+export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project, pathMode = false, sendOnEnter = 'enter' }: Props) {
   const rootRef = useRef('')
   const resultsRef = useRef<FileResult[]>([])
   const onFileOpenRef = useRef(onFileOpen)
@@ -103,28 +138,53 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     return () => clearTimeout(t)
   }, [query])
 
+  // The directory prefix + partial name the path-mode token carries. Keyed on
+  // the DEBOUNCED token so the fetch key moves at the debounce, like the search
+  // query does; the live token still drives the empty-state copy below.
+  const scope = useMemo(() => splitPathToken(debounced), [debounced])
+  const dirPrefixRef = useRef('')
+
+  // A path token needs no minimum: `./` is already an unambiguous request for a
+  // listing, where two characters of a fuzzy query are the floor that keeps an
+  // unscoped walk from running on the first keystroke.
+  const ready = pathMode || query.length >= 2
+
   // File search via React Query (consistent with the $skill / /command pickers,
-  // which already use useQuery). `enabled` gates on 2+ chars; the queryFn `signal`
-  // aborts stale requests; `placeholderData` keeps the prior results on screen
-  // while the next query resolves so the list doesn't flicker to empty.
+  // which already use useQuery). `enabled` gates on 2+ chars outside path mode;
+  // the queryFn `signal` aborts stale requests; `placeholderData` keeps the prior
+  // results on screen while the next query resolves so the list doesn't flicker
+  // to empty.
   const { data, isFetching, isError } = useQuery<FileSearchResponse>({
-    queryKey: ['file-search', debounced, project],
-    queryFn: ({ signal }) => api.fileSearch(debounced, project, signal),
-    enabled: open && debounced.length >= 2,
+    queryKey: pathMode
+      ? ['path-complete', project, scope.dir, scope.partial]
+      : ['file-search', debounced, project],
+    queryFn: async ({ signal }) => pathMode
+      // Stamped with the prefix it was asked for, which is what makes a
+      // placeholder payload self-describing rather than merely stale.
+      ? { ...(await api.pathComplete(project ?? '', scope.dir, scope.partial, signal)), dir: scope.dir }
+      : api.fileSearch(debounced, project, signal),
+    // An empty `scope.dir` means the debounced token is not a path token yet —
+    // the tick right after the menu opens. Fetching there would ask for the
+    // project root under a token that names something else.
+    enabled: open && (pathMode ? scope.dir !== '' : debounced.length >= 2),
     placeholderData: prev => prev,
     staleTime: 10_000,
   })
   rootRef.current = data?.root || ''
+  // The prefix an accepted row is rebuilt on is read back out of the PAYLOAD the
+  // rows came in, so the two cannot come from different tokens (see `dir` above).
+  dirPrefixRef.current = pathMode ? (data?.dir ?? '') : ''
 
-  // Order bottom-up (shared helper) when the menu opens above. Gate on the LIVE
-  // `query` length (not the debounced one) so results clear immediately when the
-  // user drops below 2 chars; `data` is keyed on `debounced`, so it lags by up to
-  // one debounce tick — the intended debounce behavior.
+  // Order bottom-up (shared helper) when the menu opens above. Gate on `ready`,
+  // which reads the LIVE `query` (not the debounced one) so results clear
+  // immediately when the user drops below 2 chars; `data` is keyed on
+  // `debounced`, so it lags by up to one debounce tick — the intended debounce
+  // behavior.
   const { ordered: results, initialIndex } = useMemo(() => {
-    const raw = (open && query.length >= 2 ? data?.results : []) || []
+    const raw = (open && ready ? data?.results : []) || []
     const above = anchorRef.current ? menuGeometry(anchorRef.current, raw.length, 48).above : false
     return bottomUpOrder(raw, above)
-  }, [data, open, query, anchorRef])
+  }, [data, open, ready, anchorRef])
 
   // Open the highlighted file in the viewer (the eye/preview action) instead of
   // inserting an @-mention. Shared by the Cmd/Ctrl+Enter path (via onChoose's
@@ -148,7 +208,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     const f = r[eff]
     if (!f) return
     if (withModifier && openInViewer(eff)) return
-    onSelect(selectionFor(f, rootRef.current))
+    onSelect(selectionFor(f, rootRef.current, dirPrefixRef.current || undefined))
   }, [onSelect, openInViewer])
 
   // "Settled and genuinely empty": only then does the menu have no claim on
@@ -158,7 +218,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // user was still completing. A settled ERROR counts as settled-empty too —
   // the menu shows the same empty state and has nothing to offer, so keeping
   // the swallow there would recreate the trap on the error path.
-  const releaseKeysWhenEmpty = query.length >= 2 && debounced === query && !isFetching && (data !== undefined || isError)
+  const releaseKeysWhenEmpty = ready && debounced === query && !isFetching && (data !== undefined || isError)
 
   // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
   // When the release gate is armed, Enter/Tab pass through and the menu closes
@@ -199,9 +259,17 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // held or releasing — would be false there.
   const ctrl = sendOnEnter === 'ctrl-enter'
 
+  // An empty result set has two different causes in path mode, and only one of
+  // them is "nothing matched": a token that resolved out of the project lists
+  // nothing BY RULE, however full that directory is. The verdict is the
+  // endpoint's — it decides containment to serve the request at all, so
+  // re-deriving it here would be a second spelling of the same rule that could
+  // disagree with the answer on screen.
+  const outsideProject = pathMode && data?.outside === true
+
   // Enter AND Tab are swallowed while the gate is closed, so Send is not
   // keyboard-reachable — the copy names Escape, whose branch runs before them.
-  const emptyKey = query.length < 2
+  const emptyKey = !ready
     ? (ctrl
         ? 'components.filePickerMenu.type_2_chars_to_search_files_ctrl_enter_held'
         : 'components.filePickerMenu.type_2_chars_to_search_files_enter_held')
@@ -213,6 +281,10 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     // it; the plain arm is the ≤200ms debounce flash between two announced ones.
     : !releaseKeysWhenEmpty
     ? 'components.filePickerMenu.no_matches'
+    : outsideProject
+    ? (ctrl
+        ? 'components.filePickerMenu.outside_project_ctrl_enter_sends'
+        : 'components.filePickerMenu.outside_project_enter_sends')
     : ctrl
     ? 'components.filePickerMenu.no_matches_ctrl_enter_sends'
     : 'components.filePickerMenu.no_matches_enter_sends'
@@ -225,7 +297,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // copy would claim the search ran and found nothing, when it did not run at
   // all. Rendered above whatever (stale, placeholder) results are still on
   // screen so the keyboard gate above keeps working unchanged.
-  const searchFailed = isError && query.length >= 2 && debounced === query && !isFetching
+  const searchFailed = isError && ready && debounced === query && !isFetching
 
   return createPortal(
     <div
@@ -260,7 +332,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
           className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
           title={f.path}
           onMouseEnter={() => setSelected(i)}
-          onMouseDown={e => { e.preventDefault(); onSelect(selectionFor(f, rootRef.current)) }}
+          onMouseDown={e => { e.preventDefault(); onSelect(selectionFor(f, rootRef.current, dirPrefixRef.current || undefined)) }}
         >
           {isDir
             ? <Folder size={14} aria-label={i18nT('components.filePickerMenu.folder')} className="shrink-0 lucide-inline" />

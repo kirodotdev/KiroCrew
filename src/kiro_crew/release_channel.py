@@ -37,6 +37,10 @@ The SemVer half mirrors ``website/electron/auto-update.js``
 ``channelForVersion``: a ``-nightly.`` stamp is nightly and ANY other
 prerelease suffix is insider, because ``release.yml`` publishes ``-insider.N``
 and ``-rc.N`` alike to the insider feed.
+
+The same table read backwards is :func:`release_refs`: the git tags
+``release.yml`` may have cut for the version a build reports, for a caller that
+must install THIS release somewhere else (the cloud launcher's public-repo clone).
 """
 
 from __future__ import annotations
@@ -55,6 +59,20 @@ CHANNELS = ("nightly", "insider", "stable")
 #: anywhere in the string can only have come from a prerelease segment. This
 #: also matches ``1.2.3rc4.post1``, which is the point of not anchoring it.
 _PEP440_PRERELEASE = re.compile(r"(?:a|b|rc)\d+")
+
+#: The version shapes that name a release tag. ``release.yml`` refuses any tag
+#: whose base is not exactly ``x.y.z``, so these are anchored to three numeric
+#: components; a distribution build stamp (``0.7.0.5``, a ``BUILD_VERSION``
+#: file beside ``kiro_crew/__init__.py``) is a build OF ``0.7.0`` and folds onto
+#: its tag, exactly as ``changelog.release_of_build`` folds it onto its notes.
+_STABLE_BUILD = re.compile(r"(?P<base>\d+\.\d+\.\d+)(?:\.\d+)?")
+#: The wheel spelling of an insider build. ``release.yml`` derives ``rcN`` from
+#: the tag's trailing number for ``-insider.N`` and ``-rc.N`` tags alike, so the
+#: wheel form cannot say which one it came from; :func:`release_refs` names
+#: both, ``-insider.N`` (the lane's own naming) first.
+_INSIDER_WHEEL = re.compile(r"(?P<base>\d+\.\d+\.\d+)rc(?P<n>\d+)")
+#: The desktop spelling of an insider build IS the tag minus its ``v``.
+_INSIDER_DESKTOP = re.compile(r"\d+\.\d+\.\d+-(?:insider|rc)\.\d+")
 
 #: Release channel -> the repository label that carries it. Prerelease reports
 #: are what this mapping exists for: an insider bug is a candidate release
@@ -99,3 +117,32 @@ def channel(version: str | None = None) -> str:
 def is_prerelease(version: str | None = None) -> bool:
     """Whether this build is NOT a supported stable release."""
     return channel(version) != "stable"
+
+
+def release_refs(version: str | None = None) -> tuple[str, ...]:
+    """The git tags ``release.yml`` may have cut for ``version``, likeliest first.
+
+    ``0.7.0`` and a stamped ``0.7.0.5`` both name ``v0.7.0``; an insider build
+    spelled the desktop way (``0.7.0-insider.5``, ``0.7.0-rc.1``) IS its tag.
+    The wheel spelling ``0.7.0rc5`` is what ``release.yml`` writes for BOTH a
+    ``v0.7.0-insider.5`` and a ``v0.7.0-rc.5`` tag, so it names both, insider
+    first. Empty when no tag can exist for the version: nightly builds come off
+    ``main`` HEAD and cut none, the ``a`` / ``b`` prerelease segments belong to
+    no lane, and an unparseable string names nothing. The answers are tag
+    NAMES, not a promise that one exists — a caller that will clone one must
+    still probe the remote, because a build can be stamped before its tag is
+    pushed and a fork may never push one.
+    """
+    v = (version if version is not None else __version__).strip()
+    if channel(v) == "nightly":
+        return ()
+    m = _STABLE_BUILD.fullmatch(v)
+    if m:
+        return (f"v{m.group('base')}",)
+    m = _INSIDER_WHEEL.fullmatch(v)
+    if m:
+        base, n = m.group("base"), m.group("n")
+        return (f"v{base}-insider.{n}", f"v{base}-rc.{n}")
+    if _INSIDER_DESKTOP.fullmatch(v):
+        return (f"v{v}",)
+    return ()

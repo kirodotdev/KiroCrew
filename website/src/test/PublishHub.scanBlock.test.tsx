@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { PublishHub } from '../components/PublishHub'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import type { Artifact } from '../types'
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -31,6 +32,9 @@ describe('PublishHub 409 scan-blocked flow', () => {
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, 'fetch')
+    // The public-web deploy destination sits behind the Artifact Deploy Feature
+    // Preview, so a test that publishes through it opts in.
+    localStorage.setItem(PREVIEW_ARTIFACT_DEPLOY, '1')
   })
 
   it('renders scan findings from 409 response and sends override_scan on explicit override', async () => {
@@ -197,6 +201,9 @@ describe('PublishHub ttl_hours payload (F3 R11)', () => {
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, 'fetch')
+    // The public-web deploy destination sits behind the Artifact Deploy Feature
+    // Preview, so a test that publishes through it opts in.
+    localStorage.setItem(PREVIEW_ARTIFACT_DEPLOY, '1')
   })
 
   it('sends ttl_hours: 0 (persistent) by default in the confirm payload', async () => {

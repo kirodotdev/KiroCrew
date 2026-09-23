@@ -36,7 +36,6 @@ from kiro_crew.config.loader import (
     SUBAGENT_MAX_TURNS_CEILING,
     config_path,
 )
-from kiro_crew.dashboard.handlers import _shared as shared_mod
 from kiro_crew.dashboard.handlers import core as core_mod
 from kiro_crew.sel import SelVerification as _SelVerification
 from kiro_crew.stt import models as stt_models
@@ -579,9 +578,9 @@ class TestPipInstallChannel:
         a uv-created venv (the default for `uv venv`) ships no `pip` module, so
         an unpinned `find_spec("pip")` returns None on this host and every test
         below that isn't otherwise exercising that branch would misfire."""
-        monkeypatch.setattr(shared_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        monkeypatch.setattr(extras.platform_compat, "is_bundled_interpreter", lambda: False)
         monkeypatch.setattr(
-            shared_mod.importlib.util,
+            extras.importlib.util,
             "find_spec",
             lambda name, *a, **kw: object() if name == "pip" else None,
         )
@@ -590,14 +589,14 @@ class TestPipInstallChannel:
         """A pip install into the desktop app's code-signed bundle breaks
         launches/updates and is discarded on every app update — the command
         must not be offered there even though pip itself may exist."""
-        monkeypatch.setattr(shared_mod.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(extras.platform_compat, "is_bundled_interpreter", lambda: True)
         assert core_mod._pip_install_channel_available() is False
 
     def test_pipless_interpreter_has_no_channel(self, monkeypatch) -> None:
         """uv tool installs and some pipx layouts ship no `pip` module, so
         `<python> -m pip` fails immediately — the command must not be shown."""
         monkeypatch.setattr(
-            shared_mod.importlib.util,
+            extras.importlib.util,
             "find_spec",
             lambda name, *a, **kw: None,
         )
@@ -606,9 +605,9 @@ class TestPipInstallChannel:
     def test_externally_managed_python_has_no_channel(self, monkeypatch, tmp_path) -> None:
         """PEP 668: pip refuses installs into an externally-managed
         interpreter (distro/brew pythons) — but only outside a venv."""
-        monkeypatch.setattr(shared_mod.sys, "prefix", shared_mod.sys.base_prefix)
+        monkeypatch.setattr(extras.sys, "prefix", extras.sys.base_prefix)
         (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
-        monkeypatch.setattr(shared_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        monkeypatch.setattr(extras.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is False
 
     def test_venv_on_managed_base_has_a_channel(self, monkeypatch, tmp_path) -> None:
@@ -616,17 +615,17 @@ class TestPipInstallChannel:
         resolves to the BASE interpreter's directory where distro pythons put
         the marker — the recommended install layout (venv on a Debian/brew
         python) must not be misread as unsupported."""
-        monkeypatch.setattr(shared_mod.importlib.util, "find_spec", lambda name: object())
-        monkeypatch.setattr(shared_mod.sys, "prefix", str(tmp_path / "venv"))
-        monkeypatch.setattr(shared_mod.sys, "base_prefix", str(tmp_path / "base"))
+        monkeypatch.setattr(extras.importlib.util, "find_spec", lambda name: object())
+        monkeypatch.setattr(extras.sys, "prefix", str(tmp_path / "venv"))
+        monkeypatch.setattr(extras.sys, "base_prefix", str(tmp_path / "base"))
         (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
-        monkeypatch.setattr(shared_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        monkeypatch.setattr(extras.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is True
 
     def test_ordinary_venv_has_a_channel(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.setattr(shared_mod.importlib.util, "find_spec", lambda name: object())
-        monkeypatch.setattr(shared_mod.sys, "prefix", shared_mod.sys.base_prefix)
-        monkeypatch.setattr(shared_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        monkeypatch.setattr(extras.importlib.util, "find_spec", lambda name: object())
+        monkeypatch.setattr(extras.sys, "prefix", extras.sys.base_prefix)
+        monkeypatch.setattr(extras.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is True
 
 
@@ -749,13 +748,49 @@ class TestSttConfigEndpoint:
         assert "turbo" not in core_mod._STT_MODEL_SIZES
         async with TestClient(TestServer(_stt_app())) as client:
             assert (await client.put("/api/config/stt", json={"model": "small"})).status == 200
-            refused = await client.put("/api/config/stt", json={"model": "turbo"})
+            # An ALIAS is accepted and canonicalised. It has to be: a catalog cull
+            # turns a retired name into an alias, and refusing those meant someone
+            # whose stored model was retired could not save this panel at all --
+            # a field they never edited was rejected on every write.
+            aliased = await client.put("/api/config/stt", json={"model": "turbo"})
+            assert (await aliased.json())["model"] == "large-v3-turbo"
+            # A name that resolves to NOTHING leaves the stored value alone. The
+            # distinction matters: answering the default here would let one junk
+            # request replace a model the user deliberately chose.
+            refused = await client.put("/api/config/stt", json={"model": "no-such-model"})
             assert refused.status == 200
-            assert (await refused.json())["model"] == "small"
-            accepted = await client.put("/api/config/stt", json={"model": "large-v3-turbo"})
-            assert (await accepted.json())["model"] == "large-v3-turbo"
+            assert (await refused.json())["model"] == "large-v3-turbo"
+            accepted = await client.put("/api/config/stt", json={"model": "tiny"})
+            assert (await accepted.json())["model"] == "tiny"
         stt = json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]
-        assert stt["model"] == "large-v3-turbo"
+        assert stt["model"] == "tiny"
+
+    @pytest.mark.asyncio
+    async def test_put_round_trips_the_cleanup_consent(self, seeded_config) -> None:
+        """The whole feature hangs off this round trip, and it was broken.
+
+        `polish` sends the finished transcript to a model, so it is the one CONSENT
+        setting on this surface. The PUT branch never read it and the GET response
+        never returned it, so the toggle wrote nothing and a reload read the default
+        back -- and because `api_stt_polish` refuses while the flag is False, the
+        endpoint, the hook and the panel were each correct while the feature was
+        dead. Nothing in the UI said so, which is why this asserts the value on
+        DISK rather than only the response.
+        """
+        async with TestClient(TestServer(_stt_app())) as client:
+            assert (await (await client.get("/api/config/stt")).json())["polish"] is False
+            enabled = await client.put("/api/config/stt", json={"polish": True})
+            assert enabled.status == 200
+            assert (await enabled.json())["polish"] is True
+            assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["polish"] is True
+            # And back off again -- a consent setting that cannot be withdrawn is
+            # worse than one that cannot be given.
+            disabled = await client.put("/api/config/stt", json={"polish": False})
+            assert (await disabled.json())["polish"] is False
+            assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["polish"] is False
+            # A non-bool is ignored rather than coerced: "on" must not read as consent.
+            await client.put("/api/config/stt", json={"polish": "yes"})
+            assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["polish"] is False
 
     @pytest.mark.asyncio
     async def test_put_persists_the_millisecond_knobs_at_their_floors(self, seeded_config) -> None:
@@ -938,6 +973,30 @@ class TestSttStatus:
         # that assert on it override this.
         monkeypatch.setattr(core_mod, "ensure_ffmpeg_in_path", lambda: None)
         monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: None)
+
+    @pytest.mark.asyncio
+    async def test_voice_off_reports_no_backend_and_does_not_load_the_library(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        """Opening Settings must not dlopen the speech library to answer a question
+        about a feature that is switched off.
+
+        Reading the acceleration calls ``whisper_print_system_info()``, which on macOS
+        runs ``ggml_metal_device_init`` -- measured at +31.8 MB resident held for the
+        process lifetime, and a one-off 6.4 s library build on a cold cache. The
+        provider is already excluded; ``enabled`` has to be too, or every operator who
+        turned voice off still pays that for one visit to the panel. The field is
+        ABSENT rather than null, so the panel renders nothing instead of an unknown.
+        """
+        probed = []
+        monkeypatch.setattr(
+            "kiro_crew.stt.engine.WhisperEngine.capabilities",
+            classmethod(lambda _cls: probed.append(1)),
+        )
+        _seed_stt(seeded_config, enabled=False)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert probed == []
+        assert "backend" not in body
 
     @pytest.mark.asyncio
     async def test_status_reports_the_resolved_model_and_the_whole_catalog(
@@ -2052,6 +2111,19 @@ class TestAdvertisedModelGuards:
 
 
 class TestLocalToken:
+    @pytest.fixture
+    def verified_owner_process(self, monkeypatch) -> None:
+        from kiro_crew import member_memory_auth as auth
+
+        peer_pid = 12345
+        monkeypatch.setattr(auth, "_request_peer_pid", lambda _request: peer_pid)
+        monkeypatch.setattr(
+            auth.platform_compat,
+            "get_process_start_id",
+            lambda pid: "synthetic-start" if pid == peer_pid else None,
+        )
+        monkeypatch.setattr(auth, "_verified_host_process", lambda pid: pid == peer_pid)
+
     @pytest.mark.asyncio
     async def test_non_loopback_is_refused(self, monkeypatch, fake_sel) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: False)
@@ -2084,7 +2156,7 @@ class TestLocalToken:
 
     @pytest.mark.asyncio
     async def test_issues_credential_with_requested_ttl_and_embed_claim(
-        self, monkeypatch, fake_sel
+        self, monkeypatch, fake_sel, verified_owner_process
     ) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
         minted: dict = {}
@@ -2107,7 +2179,130 @@ class TestLocalToken:
         assert minted["extra"] == {"embed_parent_port": "5476"}
 
     @pytest.mark.asyncio
-    async def test_bad_embed_port_is_dropped(self, monkeypatch, fake_sel) -> None:
+    async def test_unix_peer_match_with_valid_secret_issues_a_token(
+        self, monkeypatch, fake_sel, verified_owner_process
+    ) -> None:
+        """A kernel-verified same-uid AF_UNIX peer is admitted.
+
+        The pod's `mint_token` connects over the pod's private unix socket,
+        where ``request.remote`` is EMPTY -- the loopback test alone 403s the
+        transport that is strictly harder to reach than loopback TCP. The
+        positive `check_peer_is_self` MATCH plus the unchanged secret check
+        must mint.
+        """
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+            lambda _s: PeerCredResult.MATCH,
+        )
+        monkeypatch.setattr(core_mod, "generate_token", lambda *a, **k: "issued-value")
+        resp = await core_mod.api_token_local(
+            _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 200
+        assert json.loads(resp.body)["token"] == "issued-value"
+
+    @pytest.mark.asyncio
+    async def test_unix_peer_still_needs_the_secret(self, monkeypatch, fake_sel) -> None:
+        """Unix admission is a TRANSPORT gate: the secret check is unchanged.
+
+        A MATCH peer with the wrong secret is refused at the SECRET check
+        ("invalid secret"), not the transport check ("loopback only") -- which
+        also pins that the admitted request reached past the transport gate.
+        """
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+            lambda _s: PeerCredResult.MATCH,
+        )
+        resp = await core_mod.api_token_local(
+            _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "wrong"})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["error"] == "invalid secret"
+
+    @pytest.mark.asyncio
+    async def test_unix_peer_uid_mismatch_is_refused_even_with_the_secret(
+        self, monkeypatch, fake_sel
+    ) -> None:
+        """A foreign-uid unix peer is refused BEFORE the secret is considered.
+
+        MISMATCH means the kernel positively identified another principal on
+        our socket -- exactly when the 0700-home directory gate has failed and
+        denying matters most. Deny-by-default: transport refusal even though
+        the request carries the correct secret.
+        """
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+            lambda _s: PeerCredResult.MISMATCH,
+        )
+        resp = await core_mod.api_token_local(
+            _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["error"] == "loopback only"
+        assert fake_sel.log_api_access.call_args.kwargs["resources"] == "non-loopback"
+
+    @pytest.mark.asyncio
+    async def test_unix_peer_unverifiable_is_refused_even_with_the_secret(
+        self, monkeypatch, fake_sel
+    ) -> None:
+        """Failure to verify the peer is never conflated with permission.
+
+        UNVERIFIABLE (no mechanism, non-AF_UNIX family, syscall failure) must
+        refuse -- a platform without a peer-credential mechanism never silently
+        widens this token_auth-bypassed endpoint.
+        """
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+            lambda _s: PeerCredResult.UNVERIFIABLE,
+        )
+        resp = await core_mod.api_token_local(
+            _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["error"] == "loopback only"
+
+    @pytest.mark.asyncio
+    async def test_valid_secret_without_verified_owner_process_is_refused(
+        self, monkeypatch, fake_sel
+    ) -> None:
+        from kiro_crew import member_memory_auth as auth
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
+        monkeypatch.setattr(auth, "_request_peer_pid", lambda _request: None)
+        minted = MagicMock()
+        monkeypatch.setattr(core_mod, "generate_token", minted)
+        resp = await core_mod.api_token_local(
+            _req(app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "member_owner_token_refused"
+        assert fake_sel.log_api_access.call_args.kwargs["resources"] == "unverified-owner-process"
+        minted.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bad_embed_port_is_dropped(
+        self, monkeypatch, fake_sel, verified_owner_process
+    ) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
         minted: dict = {}
 

@@ -411,6 +411,24 @@ def _default_account(snapshot: dict[str, Any]) -> str:
     return ""
 
 
+async def default_account_id() -> str:
+    """The account id the nightly loop will run for, or "" when there is none.
+
+    The loop resolves :func:`resolve_default_account_profile`, which picks the
+    account with :func:`_default_account` and only then chooses a key inside it.
+    This returns that first half on its own, for a per-account surface that has to
+    say whether the account it is showing is the scheduled one. Sharing the
+    account selection is the point: a surface that re-derived it could show a
+    schedule for an account the loop never visits, which is the silence this
+    exists to break.
+
+    Reads the cached snapshot, so it costs no AWS call of its own. A stale answer
+    here can only mislabel a schedule for the seconds after a default is moved,
+    while a fresh sweep would be paid on every poll of a polled route.
+    """
+    return _default_account(await list_accounts())
+
+
 async def resolve_default_account_profile() -> tuple[str, str] | None:
     """The working (profile, region) for the account the registry default names.
 

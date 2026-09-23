@@ -74,21 +74,42 @@ function executableSelector(tokens) {
  * Match only a Kiro Crew executable, or a Python process whose first execution
  * selector invokes the `kiro_crew` module or a Kiro Crew script. Later process
  * arguments never establish ownership, so SSH aliases and unrelated script
- * arguments cannot authorize a kill. Absolute Windows executables must also
- * match the exact path selected by the launch resolver.
+ * arguments cannot authorize a kill.
+ *
+ * An absolute Windows executable is additionally path-bound: it must be a
+ * file the launch resolver selected. Both sides of the path comparison go
+ * through `canonicalizePath` (a junction-following realpath in production;
+ * identity by default) because a Toolbox-style install launches through a
+ * `current` junction while Windows reports the running process by the
+ * directory the junction resolved to. A path the resolver did not select stays
+ * foreign, so a matching basename elsewhere can still never authorize a kill.
  */
-function isKirocrewCommand(commandLine, { trustedExecutablePaths = [] } = {}) {
+function isKirocrewCommand(
+  commandLine,
+  { trustedExecutablePaths = [], canonicalizePath = () => "" } = {}
+) {
   const tokens = commandLineTokens(commandLine);
   if (!tokens.length) return false;
 
   const windowsExecutablePath = normalizedWindowsAbsolutePath(tokens[0]);
   if (windowsExecutablePath) {
-    const trusted = new Set(
-      trustedExecutablePaths
-        .map(normalizedWindowsAbsolutePath)
-        .filter(Boolean)
-    );
-    if (!trusted.has(windowsExecutablePath)) return false;
+    const canonical = (candidate) => {
+      try {
+        return normalizedWindowsAbsolutePath(canonicalizePath(candidate));
+      } catch {
+        return "";
+      }
+    };
+    const trusted = new Set();
+    for (const candidate of trustedExecutablePaths) {
+      const normalized = normalizedWindowsAbsolutePath(candidate);
+      if (!normalized) continue;
+      trusted.add(normalized);
+      const resolved = canonical(normalized);
+      if (resolved) trusted.add(resolved);
+    }
+    const observed = [windowsExecutablePath, canonical(windowsExecutablePath)];
+    if (!observed.some((candidate) => candidate && trusted.has(candidate))) return false;
   }
 
   const selector = windowsExecutablePath

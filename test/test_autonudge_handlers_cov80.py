@@ -869,6 +869,10 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "gate",
         "stopped_reason",
         "approval_stalled",
+        # Same class as ``approval_stalled``: the automation's own reading of
+        # whether it can act, not a fact about what it watches. A structured
+        # monitor never writes it, so the row carries 0 truthfully.
+        "consecutive_start_failures",
         "next_due_ts",
         "self_armed",
         "terminal_notification_outcome",

@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -100,6 +100,23 @@ class FolderRepository:
         """Expose only committed folder state to a synchronous reader."""
         async with lock:
             return read(folders_provider())
+
+    @staticmethod
+    async def hold(
+        folders_provider: Callable[[], list[dict[str, Any]]],
+        lock: LoopBoundLock,
+        section: Callable[[list[dict[str, Any]]], Awaitable[_T]],
+    ) -> _T:
+        """Run an awaitable *section* while the store lock is held.
+
+        For a critical section that must exclude folder writers but whose own
+        work belongs off the loop (a file lock, an unlink) -- the same shape
+        :meth:`mutate` uses for its confirmed write. *section* receives a
+        SNAPSHOT of the committed list, never the live one: it must not
+        mutate folder state, and a stale copy cannot leak past the hold.
+        """
+        async with lock:
+            return await section([dict(folder) for folder in folders_provider()])
 
     @staticmethod
     def write_confirmed(

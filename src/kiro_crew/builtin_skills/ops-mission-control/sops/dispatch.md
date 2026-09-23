@@ -58,7 +58,10 @@ as the tool takes them.
       improvise with raw HTTP: launch the investigator with `spawn_run`
       instead, passing the same investigation kickoff (incident id, signal
       title, operating mode, and the `ops-mission-control` skill reference) as
-      the task. The incident panel shows "no session yet" without the
+      the task, with `solo_reason="fresh_context"` -- the investigator must
+      start from the kickoff alone, not from this dispatch turn's view of the
+      other incidents, and a one-task `spawn_run` without that reason is
+      refused. The incident panel shows "no session yet" without the
       conventional slot key, but the investigation genuinely runs and its
       outcome lands through the transition in (d).
 

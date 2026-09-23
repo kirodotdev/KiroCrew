@@ -5,11 +5,13 @@ All notable changes to KiroCrew are documented in this file.
 ## [0.7.0] - 2026-09-15
 
 Kiro Crew stops asking you to restart it: almost every setting now reaches the
-running gateway the moment you save it, and updates check on a schedule and wait
-for your work to finish. Long chats get a minimap, a model picker that no longer
-hides reasoning effort behind a drill in, and links you define yourself. Windows
-gets isolated pods and a gateway that starts about four times faster, and a pull
-request watch now covers GitLab, Bitbucket and Azure DevOps as well as GitHub.
+running gateway the moment you save it, updates check on a schedule and wait for
+your work to finish, and queued work survives a gateway restart. Long chats get
+a minimap, readable tool-call titles, a model picker that no longer hides
+reasoning effort behind a drill in and, in preview, Jev choosing the model for
+each turn. Windows gets isolated pods and a gateway that starts about four times
+faster, a pull request watch now covers GitLab, Bitbucket and Azure DevOps as
+well as GitHub, and a Fargate crew is reachable from your laptop.
 
 ### Settings that apply while you work
 
@@ -265,6 +267,199 @@ request watch now covers GitLab, Bitbucket and Azure DevOps as well as GitHub.
   reports, so choose another backend when you need its subagents, scheduling or
   memory tools.
 
+### Jev decides for the turn (Preview)
+
+- **Jev picks the model for a turn**: set a session's model to Auto (Jev) in
+  the chat model picker and each turn runs on the model you mapped to a simple,
+  medium or complex request through `decisions.model_route` in `config.json`,
+  once the Decisions (Jev) card under Settings → Developer → Feature Previews
+  is on.
+- **Jev decides steer or queue**: choose Auto (Jev) on the send button and a
+  message you type mid turn is judged to interrupt the turn or to wait for the
+  next one, instead of you guessing about a reply you have not finished reading.
+- **The decisions are on the record**: a strip under the reply names the skills
+  the turn loaded, what memory recall dropped and what left the machine, takes
+  your verdict on whether the pick was right, and a governance profile can turn
+  the whole preview off with `capabilities.decisions`.
+
+### Work that survives the host
+
+- **Queued work outlives a restart**: every subagent, task-runner step and
+  workflow call is a durable queued row, a gateway restart revives what was
+  queued instead of losing it, and concurrency adapts to the host's real
+  headroom, with the live picture under Tasks and capacity on the System page's
+  Services tab.
+- **A per-session record of what happened**: each session keeps an append-only
+  log of what it actually did, so long-horizon work survives compaction; a Crew
+  log view in the chat right panel folds it into status, usage, timeline, tools
+  and approvals when the gateway runs with `KIROCREW_CREW_LOG` on, and a
+  read-only `kirocrew-crew-log` MCP server lets an agent verify the trail.
+- **Sessions release what they held**: ending a session tears down its whole
+  process tree, its subagents and its per-session MCP servers, so a long-running
+  host stops accumulating hundreds of megabytes per ended session.
+
+### Notifications you notice
+
+- **A banner beside the bell**: a new notification arrives as a card under the
+  top bar, hides itself into the bell for a normal note and waits for you on a
+  critical one, several stack into a deck, and a prompt offers to turn on system
+  notifications so you are alerted while away.
+- **Waiting versus working**: a monitoring loop whose newest reply asks you
+  something shows Waiting on you on its sidebar row instead of a pulsing
+  progress row.
+- **Mute means mute**: muting a channel silences its banners and its unread
+  count, and the attention chime sounds only when a conversation hands control
+  back to you rather than at every intermediate pause.
+
+### The composer and the Files panel
+
+- **Paths, pastes and spelling**: typing `./` or `../` in the composer opens a
+  file picker scoped to that directory, Settings → Chat → Composer gains Show
+  Pasted Text in Full (off by default) so a long paste stays editable text, and
+  Spell Check Message Input (on by default) turns the browser's red underlines
+  off in every composer.
+- **Search inside your files**: the chat side panel's Files tab gains a
+  Name/Content toggle that searches what is inside your files and opens a hit at
+  its line, a right-click on a file offers Download, and the Project menu in the
+  tab's header opens a terminal already in the project directory.
+- **More attachments render**: the attachment picker accepts a `.drawio`
+  diagram, a Word document previews with its real headings and lists, and a
+  rendered Mermaid diagram exports as SVG or PNG from its action menu.
+
+### Tool calls and replies that read well
+
+- **Readable tool-call titles**: tool rows in the transcript read as what the
+  call does, Read file, Search, Git, instead of a raw shell command or a bare
+  tool name, and keep the raw command when a segment cannot be classified.
+- **A content-filter fallback**: a refused message is retried once on the model
+  chosen next to the throttle fallback under Settings → Chat
+  (`agent.refusal_fallback_model`, off by default), and the primary model
+  returns on the next turn.
+- **Response length reaches every agent**: the Response Verbosity setting under
+  Settings → Chat now applies to every agent, built in, custom or scheduled, and
+  an agent that declares a welcome message has it shown when it becomes active.
+
+### Folders, sessions and the command bar
+
+- **Folders with icons, found from anywhere**: a chat folder takes an emoji in
+  its settings Icon field, typed in or Auto-generated, folders appear in the
+  Command Bar (Cmd+K), in Search Everywhere and in the sidebar search, and a
+  nested subfolder can be dragged into a new position among its siblings.
+- **Artifacts from Cmd+K**: a Search Artifacts row lists the newest artifacts,
+  filters by name as you type and opens the one you pick, and a row under From
+  your chats on the Artifacts page opens a read-only preview with the save star
+  in its header.
+- **Sessions travel as files**: the sidebar's Import a session from a file
+  action takes an exported session back, a session pushed from a peer machine is
+  filed under Imported and then under who sent it, and
+  `dashboard.export_include_layer_b` (off by default) lets an export carry the
+  exact model context so an import resumes instead of replaying a prefix.
+
+### Crew members, at home and in the cloud
+
+- **Is my crew deployed**: a Cloud button on the Crew Members page opens a panel
+  that answers in plain language with one action per state, each crew's drawer
+  can show a live webview of what it holds, and the Wake sources block creates
+  a schedule already bound to that member's private memory.
+- **Fargate crews from your laptop**: Fargate joins SSH and AWS SSM as a
+  connection method under Settings → Remote crews, forwarding to the task over
+  AWS SSM with no ingress (needs the AWS CLI and the Session Manager plugin),
+  and a task lives six hours by default with ten running at most, set by
+  `fargate.task_ttl_seconds` and `fargate.max_running_tasks` in `cloud.json`.
+- **Ghost reactions**: a ghost crew plays a motion when a turn finishes or
+  fails, chosen per crew in the avatar builder's Reactions pane, and a crew
+  wearing an appearance pack plays that pack's own sound.
+
+### Apps, from more places
+
+- **Filter the store by source**: the Apps page filters by where an app comes
+  from, and a pinned registry shows its label and review tier so you can judge
+  how vetted a source is before installing.
+- **Bring a plugin in**: `kirocrew app import <dir>` converts a plugin package
+  written for another agent harness into an installable app, reporting what does
+  not map, without executing anything from the package.
+- **Apps that act**: an app can start, steer and stop sessions once you grant it
+  that in its trust dialog (off per app), an installed app's rail icon shows
+  whether one of its scheduled jobs is running, finished or broken, and Ops
+  Mission Control accepts incident.io as a provider.
+
+### Agents, backends and skills
+
+- **Agents as one markdown file**: an agent written as a markdown file with YAML
+  frontmatter in `~/.kiro/agents` is listed and usable with no JSON twin, the
+  agent picker lists templates alongside crew members without enrolling them as
+  members, and an agent can move its session between board tags with the
+  `chat_tag` tool under permissions you set in the tag manager.
+- **Backends as a list**: Developer → Agent Backend is a list of harnesses with
+  a capability card per row saying what it can do and how it treats your MCP
+  settings, goose joins as a selectable backend (Developer Mode), and Codex and
+  OpenCode sessions now compact.
+- **Skills by search, not by word overlap**: `skills.max_triggered` defaults to
+  0, so an agent discovers skills from a short index and `skill_search` instead
+  of having whole skill bodies injected (set a positive integer to restore the
+  old behaviour), Settings → Skills → Discover imports from
+  `owner/repo[@ref][:path]` pinned to its commit, and a saved lesson declares
+  whether it is a standing rule or a past finding (`applies`: `always` or
+  `on_topic`).
+
+### Watches, schedules and subagents
+
+- **Watches that know when to stop**: a structured pull-request watch retires
+  once its verdict stops changing, wakes on an edited review comment and on
+  named urgent conditions, and several watched pull requests cost one batched
+  query per check instead of three calls each.
+- **Schedules that fire when asked**: a low-frequency job wakes on its scheduled
+  minute instead of being skipped, each job's schedule is shown in its own
+  timezone, a persistent job's tab can be filed in a chat folder from the
+  Schedule page, and a job whose tool call the security gate refused reports the
+  refusal instead of success.
+- **Delegation with a reason**: `spawn_run` refuses a single task that names no
+  reason and no different model, agent or crew, a subagent is told at spawn which
+  of its MCP servers failed or await authorization, and `resource_status`
+  reports the concurrency cap actually in force against the configured maximum.
+
+### Security you can operate
+
+- **Approve a flagged file**: the owner can allow delivery of a file the
+  credential scanner flagged, armed in Settings → Security and completed with
+  `kirocrew file-delivery approve` on the host, and the Denied Commands card
+  states what that tier cannot see: the command line, not the body of a script.
+- **SSH agent forwarding, by consent**: git commit signing and git over SSH work
+  inside the sandbox when the operator writes `ssh_auth_sock_consent.json` from
+  outside it, and the private keys never enter the sandbox.
+- **Policies fail closed**: a ceiling folded from two policy tiers has its rules
+  read, a tool the operator denied is refused when the policy cannot be read,
+  and creating or editing a skill over the API requires the owner.
+
+### Windows, Linux and the installer
+
+- **Settings shortcut moves off Ctrl+,**: on Windows and Linux, Open settings is
+  Alt+, so a Chinese or Japanese input method can type a comma again, and macOS
+  keeps Cmd+,.
+- **Installs that say why**: the installer takes prebuilt wheels only and, when
+  no release publishes one for the host, stops with a message naming the host
+  and the packages (`KIROCREW_ALLOW_SOURCE_BUILDS=1` opts back in), and the
+  Linux AppImage starts on distributions without the older FUSE library.
+- **A desktop app that recovers**: on a host whose GPU process cannot start the
+  app relaunches in software rendering instead of exiting with no window, the
+  reconnect splash carries its own Close window control, and name-based command
+  auto-approval now works on Windows.
+
+### Faster where it hurt
+
+- **A backlog no longer freezes the rest**: the agent transport yields while
+  draining, the status endpoint reads its counts off the event loop, and memory
+  ranking falls back to lexical order past five seconds, so one busy session
+  cannot hold the dashboard and every other session behind it.
+- **Lighter startup**: skill discovery leaves the request path, a fresh session
+  no longer injects daily history and old project notes, and a scheduled job
+  that reuses its session stops re-sending full session-start context on every
+  run.
+- **Measured wins**: System page session rows sample in about 150 ms instead of
+  about 500 ms, opening a terminal holds the gateway for 0.5 ms instead of
+  107 ms, and a dashboard left on a long autonomous session no longer grows its
+  memory without bound.
+
 ### Notable fixes
 
 For anyone checking whether their particular annoyance is gone.
@@ -350,6 +545,111 @@ junction or symlink planted at the last part of a path, which is how it has
 always behaved on macOS and Linux. Rebuilding the dashboard from source replaces
 a broken directory link instead of failing partway, and removes obsolete links
 without deleting the folders they point to.
+
+**Streaming and rendering.** Scrolling back into a streaming reply holds your
+place instead of snapping to the end or sliding the text up from under you, on a
+phone as well as a desktop, and find-in-chat paints its matches without
+reflowing the message. Math written with LaTeX's own delimiters renders as math,
+a diff block opens and closes from the same chip, an options footer with prose
+glued after it still renders as clickable choices, and text a model writes after
+its own footer is labelled as the model's own. A message whose markdown fails
+to render degrades on its own instead of blanking the view.
+
+**Queued prompts and plans.** A prompt typed while a turn is running survives a
+gateway restart and returns as a queue card, answering a question the agent
+raised mid-turn reaches that turn rather than queuing behind it, and every
+composer honours the send-shortcut setting so a stray Enter no longer sends a
+half-written prompt from the session grid or side panel. A message sent between
+the stages of a running plan is queued for that plan instead of starting a
+second turn, and a stage that produced nothing is retried rather than counted
+as done.
+
+**Dashboard.** Settings → Channels is now Messaging Channels, so it stops
+colliding with the Channels app where several agents share a room, and the
+composer's git badge is gone as a stale duplicate of the Git panel, which keeps
+the full view. Hovering a row, badge or card changes only its colour so
+neighbours stop shifting, a session you close stays gone from the sidebar, a
+session opened from a pasted link is renamed from its first real turn instead of
+keeping the URL as its name, and a failed artifact-library load says so and
+offers Retry. The Git panel no longer draws a clean badge over a working tree it
+never read and says the status is unavailable instead.
+
+**Memory stores and members.** Your standing rules reach the model again at
+session start, after the startup allowance had collapsed to about a fifth of
+its size and on one library delivered 8 of 607 rules. The daily backup covers
+the default memory store, deleting a lesson from the Memory tab removes exactly
+that row, a named store whose directory was lost is refused instead of being
+silently recreated empty, and picking a private member in a brand-new chat binds
+the conversation to that member's memory. A member stuck on an old private
+store name can be moved to a current store or back to the shared one.
+
+**MCP servers and agent backends.** A session on an extended thinking model no
+longer becomes permanently unusable, a server that fails on every attempt stops
+being respawned each discovery pass, a value you edit on a server source reaches
+the generated spec on the next rebuild, and a server pinned to a path that has
+vanished is reported as out of sync with a re-sync offered. Sessions on the
+managed KAS backend start instead of timing out, a backend's tool-approval
+prompt is delivered rather than read as a cancelled call, and codex, opencode,
+goose and pi sessions are no longer refused before the first prompt. Approving
+a tool by its `@server/tool` name survives a rename, a disable and a purge.
+
+**Slack, Teams, WeCom and the rest.** Teams answers each queued message under
+its own sender instead of merging several people's text into one reply, and an
+over-long Teams message is truncated and delivered instead of rejected. A
+credential the model split with markup is scrubbed on WeCom, Weixin and Feishu
+before the platform reassembles it, internal control tags stop reaching Slack,
+Discord, Telegram and Webex readers as literal text, and a reply whose
+suspicious link was rewritten now says so. Pressing Stop from a channel stops
+the linked dashboard turn, a Slack turn counts as delivered only once the
+answer and its choices reach the reader, and a voice memo past the recognizer's
+limit is refused with a visible note.
+
+**Crons, watches and subagents.** A cron script whose sandbox is torn down under
+it fails loudly instead of reporting a run that persisted nothing, a long run
+summary keeps its outcome line and links, and Autopilot recognises a plan
+whatever its heading style. A pull-request watch keeps reading on the other
+rate-limit budget instead of retiring itself, stops waking you on a cancelled
+check a newer run already replaced, and a session whose monitor its owner
+stopped is told the arm was refused. Agent process trees whose launcher exited
+early are reclaimed, where field evidence found ten such trees holding 4 GB on
+one host, and a subagent already running when the page reconnected reappears
+in the Subagents panel.
+
+**Windows and macOS.** A killed runtime reports its real exit status instead of
+"not reaped", the crash log survives non-ASCII text, MCP servers connect under
+a path with a space, a percent sign or mixed-case segments, and files behind a
+junction path open. A toolbox-launched or version-swapped Windows gateway is
+recognised as its own so sign-in retries, recovery and quit work, the Windows
+app offers its own updater and release stream, and a running MCP gateway daemon
+is detected so `doctor` stops calling it absent. On macOS a zombie provider
+process is reaped, a Homebrew `mise` is found without the shell's PATH, and the
+desktop View menu's zoom items work again.
+
+**Apps and the terminal.** An enabled app whose backend exits unexpectedly is
+restarted, `kirocrew app enable` and `disable` take effect in the running
+gateway, the uninstall dialog shows what else depends on the app, and a slow
+reader can no longer stop every app UI from loading. A failed Run in terminal
+cleans up the tab it created, and dock tabs whose shells are gone do not come
+back on reload.
+
+**Diagnostics and sign-in.** An expired Kiro sign-in is reported as such
+instead of as advice to enable a billed fallback that spends credits failing,
+company SSO sign-in completes instead of reporting the auth service
+unreachable, and a crew that registered without finishing its sign-in offers
+its device code on its own row. `kirocrew doctor` finds the AWS CLI where AWS's
+installer puts it, names the sandbox that really confines a delegated spawn, and
+reports that it cannot verify user namespaces inside a confined shell rather
+than claiming the host lacks them. `kirocrew stop` and `restart` work against a
+gateway the desktop app spawned.
+
+**Privacy and safety.** A bearer token carried in a `?token=` URL is redacted
+everywhere the shared scrubber runs, an exported session bundle no longer
+carries the host name or checkout paths, and a spawned agent cannot redirect
+its own scratch marker at a protected file. Risky tool call flagging takes its
+own consent switch under Decisions, off even for someone who consented before
+it existed, because it sends the tool's arguments. An exact command trust grant
+shows the whole command, and a sensitive-path check that ran out of budget says
+it could not verify the path rather than claiming a match.
 
 ## [0.6.0] - 2026-09-05
 

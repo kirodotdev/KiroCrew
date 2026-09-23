@@ -2163,7 +2163,7 @@ def test_import_merge_preserves_store_generations(tmp_path, monkeypatch, existin
     )
 
     from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
-    from kiro_crew.vector_memory import VectorMemoryStore
+    from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
     source, destination = tmp_path / "source", tmp_path / "destination"
     source.mkdir()
@@ -2181,24 +2181,41 @@ def test_import_merge_preserves_store_generations(tmp_path, monkeypatch, existin
     if per_file_copy:
         monkeypatch.setattr(portability, "_merge_named_stores", _per_file_store_merge)
     summary = apply_import_zip(archive, mode="merge")
-    with contextlib.closing(VectorMemoryStore(db_path=kept / "memory.db")) as store:
-        if existing and per_file_copy:
-            assert (kept / "member-memory.json").exists()
-            with pytest.raises(ValueError, match="private schema"):
-                store.init()
+    if existing:
+        if per_file_copy:
+            assert _store_bytes(kept) != before
+            assert (kept / "memory/projects.md").read_text() == "source generation"
         else:
-            if existing:
-                assert _store_bytes(kept) == before
-                assert not (kept / "member-memory.json").exists()
-                assert not (kept / "memory_index.db").exists()
-                assert any("acme (kept the existing store;" in item for item in summary["items"])
-            else:
-                for name in ("member-memory.json", "memory.db", "memory_index.db"):
-                    assert (kept / name).is_file()
+            assert _store_bytes(kept) == before
+            assert not (kept / "memory/projects.md").exists()
+            assert any("acme (kept the existing store;" in item for item in summary["items"])
+        with contextlib.closing(VectorMemoryStore(db_path=kept / "memory.db")) as store:
             store.init()
-            assert store._memory_version == (1 if existing else 2)
-    for name in ("member-memory.json", "memory.db", "memory_index.db"):
-        assert (destination / MEMORY_STORES_DIR_NAME / "other" / name).is_file()
+            assert store.algorithm_version == "v1"
+    else:
+        with contextlib.closing(
+            open_member_database(kept / "memory.db", member_id="acme", store_id="acme")
+        ) as store:
+            assert store.algorithm_version == "v2"
+    for name in ("acme", "other"):
+        directory = destination / MEMORY_STORES_DIR_NAME / name
+        assert not (directory / "member-memory.json").exists()
+        assert not (directory / "memory_index.db").exists()
+        if name == "other" or not existing:
+            assert (directory / "memory/preferences.md").read_text(
+                encoding="utf-8"
+            ) == "generation 2"
+            assert (directory / "memory/projects.md").read_text(
+                encoding="utf-8"
+            ) == "source generation"
+    with contextlib.closing(
+        open_member_database(
+            destination / MEMORY_STORES_DIR_NAME / "other" / "memory.db",
+            member_id="other",
+            store_id="other",
+        )
+    ) as store:
+        assert store.algorithm_version == "v2"
 
 
 @pytest.mark.parametrize("exists", [False, True])

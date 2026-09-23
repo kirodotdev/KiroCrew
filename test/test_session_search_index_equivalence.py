@@ -25,6 +25,49 @@ from kiro_crew.history import ConversationLog
 pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite built without FTS5")
 
 
+@pytest.fixture(autouse=True)
+def _close_session_search_indexes(monkeypatch):
+    """Close the search index every ``ConversationLog`` lazily opened.
+
+    ``SessionCatalogProjection.search_index`` opens a SQLite connection on the
+    first search/backfill and nothing in these tests closes it, so each log
+    leaked that descriptor. Track every log and release its index at teardown;
+    the index is opened synchronously on this (the test) thread, so the
+    per-thread :meth:`SessionSearchIndex.close` reaches it.
+    """
+    import kiro_crew.history as _history_mod
+
+    created = []
+    orig_init = _history_mod.ConversationLog.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(_history_mod.ConversationLog, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for log in created:
+            index = getattr(log._catalog_projection, "_index", None)
+            if index is not None:
+                try:
+                    index.close()
+                except Exception:
+                    pass
+
+
+@pytest.fixture(autouse=True)
+def _no_index_quiet_window(monkeypatch):
+    """Zero the backfill quiet window: these corpora are written moments before
+    the backfill they feed, so the production deferral would skip every session
+    and the assertions below would be measuring the deferral, not the indexing.
+    """
+    from kiro_crew import history_search
+
+    monkeypatch.setattr(history_search, "_INDEX_QUIET_WINDOW_SECS", 0.0)
+
+
 # Written as escapes because this repository forbids literal Chinese characters in
 # source. CJK is not incidental here: it is the script whose gate is made entirely
 # of 1-character needles, so it exercises the distinct-character column rather than

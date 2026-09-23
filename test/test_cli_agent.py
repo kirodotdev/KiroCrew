@@ -11,7 +11,6 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
-from member_memory_helpers import PRIVATE_EXECUTION_GATE
 
 from kiro_crew.cli import main
 
@@ -88,7 +87,6 @@ class TestAgentCreate:
 
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch(PRIVATE_EXECUTION_GATE, return_value=True),
             unittest.mock.patch(
                 "sys.argv",
                 ["kirocrew", "agent", "create", "--name", "research"],

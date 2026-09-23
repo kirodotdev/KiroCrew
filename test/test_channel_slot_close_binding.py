@@ -101,9 +101,7 @@ def _restored_tab(state):
 
 def _close(state, slot, *, closed_at: float) -> None:
     asyncio.run(
-        save_slot_off_loop(
-            state, slot, closed=True, closed_at=closed_at, best_effort=False
-        )
+        save_slot_off_loop(state, slot, closed=True, closed_at=closed_at, best_effort=False)
     )
 
 
@@ -116,9 +114,7 @@ class TestSlotHistoryKey:
         assert not slot.linked_session_key
         assert slot_history_key(slot) == STEM
 
-    def test_a_dashboard_slot_merely_NAMED_like_a_channel_keeps_its_own_file(
-        self, tmp_path
-    ):
+    def test_a_dashboard_slot_merely_NAMED_like_a_channel_keeps_its_own_file(self, tmp_path):
         """A filename shape is not provenance -- and must not be read as one.
 
         ``POST /api/chat/slots`` accepts a client-supplied name, and main
@@ -407,9 +403,7 @@ class TestChannelBindingIsValidated:
 
     def test_binds_a_real_channel_key(self, tmp_path):
         state = _state(tmp_path, resolves=CHANNEL_KEY)
-        assert state.get_or_create_slot(
-            STEM, channel_origin=True
-        ).linked_session_key == CHANNEL_KEY
+        assert state.get_or_create_slot(STEM, channel_origin=True).linked_session_key == CHANNEL_KEY
 
     def test_leaves_it_unbound_when_the_map_cannot_resolve(self, tmp_path):
         state = _state(tmp_path)
@@ -430,17 +424,48 @@ class TestChannelBindingIsValidated:
         state = _state(tmp_path, resolves=CHANNEL_KEY)
         assert state.get_or_create_slot("chat-9-1").linked_session_key == ""
 
+    def test_an_app_owned_slot_is_never_auto_bound_to_a_channel(self, tmp_path):
+        """A channel thread is the person's conversation, and the name is app-supplied.
+
+        `api_chat_slot_create` lets an app caller pick the slot name, so a resolved
+        stem would let an app mint a slot bound to — and writing metadata into — a
+        channel transcript it never owned. The person's own create still binds.
+        """
+        state = _state(tmp_path, resolves=CHANNEL_KEY)
+        assert state.get_or_create_slot(STEM, app="some-app").linked_session_key == ""
+        person = state.get_or_create_slot("slack_1783733803.999999")  # a different stem
+        assert person.linked_session_key == CHANNEL_KEY
+
     def test_rehydrate_prefers_the_persisted_binding_over_the_map(self, tmp_path):
         state = _state(tmp_path, resolves="slack:9999999999.000000")
         _seed_channel_transcript(state)
-        state.conversation_log.update_metadata(
-            CHANNEL_KEY, {"linked_session_key": CHANNEL_KEY}
-        )
+        state.conversation_log.update_metadata(CHANNEL_KEY, {"linked_session_key": CHANNEL_KEY})
 
         slot = _rehydrate_slot_from_history(state, STEM)
 
         assert slot is not None
         assert slot.linked_session_key == CHANNEL_KEY
+
+    def test_rehydrate_never_surfaces_an_app_owned_channel_row(self, tmp_path):
+        """A persisted row an app owns on a channel transcript is not restored.
+
+        A channel thread is the person's conversation; such a row is the
+        artifact of the earlier stem auto-bind and surfacing it would load the
+        channel transcript into an app's slot. It is skipped, its file left
+        untouched. The person's own row (no app) restores as before.
+        """
+        state = _state(tmp_path, resolves=CHANNEL_KEY)
+        _seed_channel_transcript(state)
+        state.conversation_log.update_metadata(
+            CHANNEL_KEY, {"linked_session_key": CHANNEL_KEY, "app": "some-app"}
+        )
+
+        assert _rehydrate_slot_from_history(state, STEM) is None
+        assert STEM not in state._slots
+
+        state.conversation_log.update_metadata(CHANNEL_KEY, {"app": ""})
+        slot = _rehydrate_slot_from_history(state, STEM)
+        assert slot is not None and slot.linked_session_key == CHANNEL_KEY
 
     def test_unbound_channel_tab_still_loads_its_history(self, tmp_path):
         """Unbound is a supported state, not a broken one."""

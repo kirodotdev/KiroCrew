@@ -21,6 +21,8 @@ import MemberMemoryPanel from './MemberMemoryPanel'
 import MemoryRecordsEditor from './MemoryRecordsEditor'
 import MemoryDocCard from './MemoryDocCard'
 import Modal from '../../components/Modal'
+import { useConfirm } from '../../components/ConfirmDialog'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import type { Lesson, SessionInfo } from '../../types'
@@ -28,7 +30,27 @@ import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateTimeNumeric } from '../../i18n/format'
+import { compareText, fmtDateTimeNumeric } from '../../i18n/format'
+
+/** The Scope cell. The three values are the three delete selectors the list
+ *  reports, and each must read differently: a fragment is that scope's row;
+ *  `""` is the global row, labelled rather than left blank so it does not read
+ *  as missing data beside a scoped sibling; `null` is a row whose stored scope
+ *  the store cannot use, labelled so the reader can see that its Delete is the
+ *  one that reaches every scope. */
+function scopeCell(lesson: Lesson) {
+  const scope = lesson.repo_scope
+  const repo = scope === null
+    ? <span className="text-muted italic" title={i18nT('pages.overview.memoryTab.scope_unusable_hint')}>{i18nT('pages.overview.memoryTab.scope_unusable')}</span>
+    : !scope
+      ? <span className="text-muted">{i18nT('pages.overview.memoryTab.scope_global')}</span>
+      : <span className="font-mono break-all">{scope}</span>
+  // The JSONL tier is the other half of the row's identity: a same-text row in
+  // the active workspace's file and one in the global file would otherwise read
+  // alike, and their Deletes go to different files.
+  if (lesson.scope !== 'workspace' || !lesson.workspace) return repo
+  return <>{repo}<span className="block text-[12px] text-muted">{i18nT('pages.overview.memoryTab.scope_workspace', { name: lesson.workspace })}</span></>
+}
 
 export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNavigate }: { refreshTrigger: number; selectedStore?: string; onStoreNavigate?: (store: string) => void }) {
   const stores = useMemoryStores()
@@ -166,9 +188,51 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
     timeoutsRef.current.push(id)
   }, [])
   const loadLessons = useCallback(async () => { const d = await api.lessons(); setLessons(d.lessons || []) }, [])
+  const { confirm, confirmDialog } = useConfirm()
+  // Which step of a delete failed decides the banner's title: the request
+  // itself (the row is still stored) or the list refresh after it succeeded
+  // (the row is gone but may still be shown).
+  const [deleteError, setDeleteError] = useState<{ step: 'delete' | 'refresh' | 'nothing'; message?: string } | null>(null)
+  // A `null` scope is the one row whose Delete cannot be limited to itself: the
+  // route refuses the stored value as a selector, so the client sends none and
+  // the unselective delete removes every same-rule row in every scope. That is
+  // the collateral this tab otherwise exists to prevent, so it asks first --
+  // through the shared themed dialog, whose confirm button restates the act.
+  const deleteLesson = async (l: Lesson) => {
+    if (l.repo_scope === null && !(await confirm({
+      title: i18nT('pages.overview.memoryTab.delete_unusable_scope_title'),
+      body: i18nT('pages.overview.memoryTab.delete_unusable_scope_confirm'),
+      confirmLabel: i18nT('pages.overview.memoryTab.delete_unusable_scope_button'),
+    }))) return
+    setDeleteError(null)
+    // Both steps are awaited and reported where the row is, rather than letting
+    // the click end in silence: a rejected delete leaves the row stored, and a
+    // rejected refresh leaves a deleted row on screen.
+    // `exact`: this row holds the whole rule, so it names exactly one row; the
+    // route's default substring match would also take every longer rule that
+    // contains it.
+    let result: { ok: boolean }
+    try {
+      result = await api.deleteLesson(l.rule, l.repo_scope, { scope: l.scope, workspace: l.workspace, exact: true })
+    } catch (e) {
+      setDeleteError({ step: 'delete', message: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    if (!result?.ok) {
+      // The store found no row matching these selectors: the list is stale, or
+      // the displayed (redacted) text differs from the stored one.
+      setDeleteError({ step: 'nothing' })
+    }
+    try {
+      await loadLessons()
+    } catch (e) {
+      setDeleteError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
+    }
+  }
   const lessonComparators = useMemo(() => ({
     rule: (a: Lesson, b: Lesson) => a.rule.localeCompare(b.rule),
     category: (a: Lesson, b: Lesson) => a.category.localeCompare(b.category),
+    repo_scope: (a: Lesson, b: Lesson) => compareText(a.repo_scope ?? '', b.repo_scope ?? ''),
     ts: (a: Lesson, b: Lesson) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
   }), [])
   const recentLessons = useMemo(() => lessons.slice(-20), [lessons])
@@ -237,12 +301,12 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       <div className="flex gap-3 items-end flex-wrap">
         <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
           <span>{i18nT('pages.overview.memoryTab.consolidation_idle_hours')}</span>
-          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={0.5} max={24} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none transition-colors focus-ring" value={idleHours} onChange={e => setIdleHours(Number(e.target.value))} />
+          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={0.5} max={24} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={idleHours} onChange={e => setIdleHours(Number(e.target.value))} />
         </label>
         {!migrated && (
           <label htmlFor="memory-max-days" className="flex flex-col gap-1 text-[13px] text-muted">
             <span>{i18nT('pages.overview.memoryTab.history_retention_days')}</span>
-            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={7} max={365} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none transition-colors focus-ring" value={maxDays} onChange={e => setMaxDays(Number(e.target.value))} />
+            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={7} max={365} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={maxDays} onChange={e => setMaxDays(Number(e.target.value))} />
           </label>
         )}
         <Btn onClick={async () => { await api.saveMemorySettings({ history_idle_hours: idleHours, history_max_days: maxDays }); setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000) }}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn>
@@ -350,11 +414,27 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
           </span>
         )}
       </div>
-      <table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessons.length === 0 ? <tr><td colSpan={4}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
-          <tr key={`${l.rule}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(l.ts)}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.deleteLesson(l.rule); loadLessons() }}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
-        ))}</tbody></table></Card>
+      {/* No agent hand-off: it navigates away, and the Add row above may hold
+          an unsaved rule draft. */}
+      <ErrorNotice
+        title={i18nT(deleteError?.step === 'refresh' ? 'pages.overview.memoryTab.lessons_refresh_failed' : 'pages.overview.memoryTab.delete_failed')}
+        message={deleteError?.step === 'nothing' ? i18nT('pages.overview.memoryTab.delete_matched_nothing') : deleteError?.message}
+        onDismiss={() => setDeleteError(null)}
+        askAgent={false}
+        className="mb-2"
+      />
+      {/* Scrolls sideways rather than clipping: five columns plus a long path
+          fragment overrun a narrow viewport, and the card hides overflow. */}
+      <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
+        <tbody>{lessons.length === 0 ? <tr><td colSpan={5}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
+          // Scope is part of the key: a scoped and a global row sharing rule text
+          // are two lessons, and can share a timestamp. String() keeps the null
+          // (unusable-scope) row distinct from the "" (global) one; the JSONL tier
+          // keeps a workspace row distinct from a global one.
+          <tr key={`${l.rule}-${String(l.repo_scope)}-${l.workspace ?? ''}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(l.ts)}</td>
+            <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={() => deleteLesson(l)}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
+        ))}</tbody></table></div></Card>
     )}
+    {confirmDialog}
   </>)
 }

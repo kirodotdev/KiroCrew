@@ -12,7 +12,7 @@ the dashboard, completion events unroutable.
 Why the gate stayed green: the ancestry walk is implemented in FOUR
 independent copies (``mcp_caller.CallerContext.from_env``,
 ``mcp_core._resolve_session_key``, the inline walk in
-``mcp_shared._resolve_excluded_tools``, ``mcp_gateway/stub.py``), each tested
+``mcp_shared._resolve_tool_policy``, ``mcp_gateway/stub.py``), each tested
 with hand-rolled per-file mocks that encode their author's topology
 assumptions. Mocks cannot detect that the assumption itself changed.
 
@@ -204,9 +204,9 @@ def test_mcp_core_resolves_session_key(topo, monkeypatch, view) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Walk copy 3: the inline walk in mcp_shared._resolve_excluded_tools
+# Walk copy 3: the inline walk in mcp_shared._resolve_tool_policy
 # ---------------------------------------------------------------------------
-# The policy session-key walk is inlined in ``_resolve_excluded_tools`` and
+# The policy session-key walk is inlined in ``_resolve_tool_policy`` and
 # its deep-walk step is a nested function reading the real /proc, so it
 # cannot be patched. Model the resolvable case with the file on the DIRECT
 # parent (kiro-cli): under the host view the very first ancestor matches and
@@ -227,10 +227,7 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
     monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_failure_count", 0)
 
-    cfg = MagicMock()
-    cfg.dashboard.url = "http://localhost:5476/"
-    monkeypatch.setattr(mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
-    monkeypatch.setattr(mcp_shared, "parse_dashboard_url", lambda url: ("localhost", 5476))
+    monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
     monkeypatch.setattr(mcp_shared, "config_dir", lambda: topo.cfg_dir)
     (topo.cfg_dir / ".local_secret").write_text("s")
 
@@ -244,9 +241,9 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
     urlopen = MagicMock(return_value=response)
     monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
-    assert mcp_shared._resolve_excluded_tools() == set()
+    assert mcp_shared._resolve_tool_policy().excluded == set()
     # The walk must have RESOLVED a session key and reached the gateway —
-    # under pidns it resolves empty and fail-opens without the call.
+    # under pidns it resolves empty and returns unresolved without the call.
     assert urlopen.called
     request = urlopen.call_args[0][0]
     assert request.get_header("X-session-key") == SESSION_KEY
@@ -383,10 +380,7 @@ def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
     monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_failure_count", 0)
 
-    cfg = MagicMock()
-    cfg.dashboard.url = "http://localhost:5476/"
-    monkeypatch.setattr(mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
-    monkeypatch.setattr(mcp_shared, "parse_dashboard_url", lambda url: ("localhost", 5476))
+    monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
     monkeypatch.setattr(mcp_shared, "config_dir", lambda: topo.cfg_dir)
     (topo.cfg_dir / ".local_secret").write_text("s")
 
@@ -400,9 +394,13 @@ def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
     urlopen = MagicMock()
     monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
-    # No key resolvable -> startup-race fail-open WITHOUT a policy call and,
+    # No key resolvable -> startup-race refusal WITHOUT a policy call and,
     # crucially, WITHOUT the stolen key ever being read through the symlink.
-    assert mcp_shared._resolve_excluded_tools() == set()
+    policy = mcp_shared._resolve_tool_policy()
+    assert policy.excluded == set()
+    # Refusing to follow the symlink must not be reported as an empty
+    # exclusion list, or a stolen-key attempt would silently widen the deny.
+    assert policy.unresolved == "no_session_key"
     assert not urlopen.called
 
 
@@ -453,7 +451,10 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
     ),
     "mcp_caller.py": (
         "reader: client-side /proc ancestry walk — assumes HOST pids; .txt "
-        "reads via session_pid_sig.read_session_pid_txt (hardened, unsigned)"
+        "reads via session_pid_sig.read_session_pid_txt (hardened, unsigned). "
+        "Consulted only BELOW the protected member binding and the per-SESSION "
+        "token (session_token_sig.session_key_from_env_token), which from_env reads "
+        "above its own process-lifetime cache so a warm-pool rekey stays visible"
     ),
     "mcp_core.py": (
         "reader: lenient /proc ancestry walk + stale-file cleanup glob "
@@ -464,8 +465,12 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
     ),
     "mcp_shared.py": (
         "reader: policy session-key /proc ancestry walk inline in "
-        "_resolve_excluded_tools — assumes HOST pids; .txt reads via "
-        "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
+        "_policy_session_key, which _resolve_tool_policy calls -- assumes HOST "
+        "pids; .txt reads via session_pid_sig.read_session_pid_txt (hardened, "
+        "unsigned). Last resort there: the gateway's per-call caller, the protected "
+        "member binding and the per-SESSION token are all consulted first, and the "
+        "session this resolves keys the tool-policy cache as well as the policy "
+        "request"
     ),
     "mcp_gateway/stub.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
     "peer_resolve.py": (
@@ -493,7 +498,44 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "so in-namespace readers can look the file up directly without a /proc walk"
     ),
     "mcp_gateway/claim.py": "docstring reference to the contract (no code reads)",
-    "session_pid.py": "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead processes",
+    "config/paths.py": (
+        "docstring reference only (no code reads): shared_kiro_agents_writable "
+        "explains the #9690 failure shape — a foreign KIROCREW_HOME pinned into "
+        "the shared agent specs makes stubs search session_pid_<pid> mappings "
+        "in a home the real gateway never writes"
+    ),
+    "session_pid.py": (
+        "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead "
+        "processes, and (age-bounded) session_token_*.sig mappings, whose "
+        "token-hash filenames name no pid to probe"
+    ),
+    "session_cleanup.py": (
+        "SCHEDULER, not a reader or a resolver: the periodic cleanup tick calls "
+        "session_pid._prune_stale_session_pid_files on the maintenance executor "
+        "so the pass above runs more often than gateway startup and shutdown. It "
+        "reads no mapping, resolves no session key, and walks no /proc — the pid "
+        "view it would need is the one the pass it delegates to already uses, so "
+        "the pid-view parametrization this file requires of a new resolution path "
+        "has no new path to cover. It appears in this scan only because its "
+        "docstring names the file family it schedules the prune of, and says why "
+        "the prune is scheduled here rather than on a provider teardown, which "
+        "is synchronous on the gateway event loop"
+    ),
+    "session_token_sig.py": (
+        "SIBLING contract, NOT a session_pid reader: owns the per-SESSION "
+        "token -> session-key mapping (session_token_<sha256(token)>.sig, one "
+        "file holding MAC + body, signed with a subkey derived from the same SEL "
+        "trust root under a DIFFERENT domain label so the two sidecars cannot be "
+        "cross-replayed). It appears in this scan only because it IMPORTS "
+        "session_pid_sig's hardened reader and key loader rather than copying "
+        "them, and because its docstring contrasts the two contracts. It reads "
+        "and writes no session_pid file and does no /proc walk — deliberately: "
+        "a pid names a PROCESS, and one kiro-cli process hosts many ACP "
+        "sessions, so pid-keyed identity answers with the parent for a "
+        "spawn_run subagent. Being pid-FREE is the property that makes it "
+        "namespace-insensitive, so the pid-view parametrization this file "
+        "requires of a new resolution path has nothing to vary"
+    ),
     "mcp_computer.py": (
         "comment reference only (no code reads): the computer-use stdio shim "
         "explains why it resolves identity with mcp_core._resolve_session_key_strict "
@@ -611,6 +653,70 @@ def test_reflexive_tools_route_through_the_strict_gate() -> None:
         "check (fix the tool) or it is gone (remove it from "
         "mcp_core.REFLEXIVE_TOOL_MODULES)."
     )
+
+
+@pytest.mark.parametrize("identified", [True, False])
+@pytest.mark.parametrize(
+    "tool_name,args",
+    [
+        ("kiro_cli_logs", {}),
+        ("search_chat_history", {"query": "sharedmarker"}),
+        ("get_chat_session", {"session_key": "dashboard:target"}),
+        ("list_sessions", {"summarize": True}),
+    ],
+)
+def test_session_reads_require_and_reuse_strict_identity(
+    tmp_path, monkeypatch, identified, tool_name, args
+):
+    from kiro_crew import mcp_core
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.mcp_tools import logs, sessions
+
+    caller_key = "dashboard:child"
+    refusal = "Error: session identity unavailable. Fixture diagnosis."
+    gate = MagicMock(return_value=(caller_key, "") if identified else ("", refusal))
+    monkeypatch.setattr(mcp_core, "require_strict_session_key", gate)
+    monkeypatch.setattr(
+        mcp_core,
+        "_resolve_session_key",
+        MagicMock(side_effect=AssertionError("must not fall back to parent identity")),
+    )
+    audit = MagicMock()
+    monkeypatch.setattr(mcp_core, "sel", lambda: audit)
+    gateway = MagicMock(return_value={"summaries": {}})
+    monkeypatch.setattr(mcp_core, "_post", gateway)
+
+    history = ConversationLog(base_dir=tmp_path / "sessions")
+    history.update_metadata(caller_key, {"workspace": "child"})
+    for key, workspace, body in (
+        ("dashboard:target", "child", "CHILD-HISTORY sharedmarker"),
+        ("dashboard:parent", "parent", "PARENT-HISTORY sharedmarker"),
+    ):
+        history.append(key, "user", body)
+        history.update_metadata(key, {"workspace": workspace, "title": body})
+    history_reader = MagicMock(return_value=history)
+    monkeypatch.setattr(sessions, "ConversationLog", history_reader)
+    log_reader = MagicMock(return_value="READABLE PROTOCOL")
+    monkeypatch.setattr(logs.diagnostics, "read_kiro_cli_logs", log_reader)
+
+    handler = logs.kiro_cli_logs if tool_name == "kiro_cli_logs" else getattr(sessions, tool_name)
+    result = handler(tool_name, args)
+
+    gate.assert_called_once()
+    if not identified:
+        assert result == refusal
+        history_reader.assert_not_called()
+        log_reader.assert_not_called()
+        gateway.assert_not_called()
+        return
+    assert ("READABLE PROTOCOL" if tool_name == "kiro_cli_logs" else "CHILD-HISTORY") in result
+    assert "PARENT-HISTORY" not in result
+    assert audit.log_tool_invocation.call_args.kwargs["session_key"] == caller_key
+    if tool_name == "list_sessions":
+        gateway.assert_called_once()
+        assert gateway.call_args.args[0] == "/api/sessions/summarize"
+        assert set(gateway.call_args.args[1]["keys"]) == {"dashboard_target", "dashboard_child"}
+        assert gateway.call_args.kwargs == {"timeout": 120, "session_key": caller_key}
 
 
 @pytest.mark.parametrize("identified", [True, False])

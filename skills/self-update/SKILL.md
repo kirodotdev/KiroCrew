@@ -1,6 +1,6 @@
 ---
 name: self-update
-description: Check for and apply KiroCrew updates. Use when user says "update yourself", "check for updates", "are you up to date", "keep yourself updated", or "auto-update".
+description: Check for and apply Kiro Crew updates. Use when user says "update yourself", "check for updates", "are you up to date", "keep yourself updated", or "auto-update".
 triggers: update yourself, check for updates, new version, out of date, latest version, auto-update, keep updated
 ---
 
@@ -8,7 +8,7 @@ triggers: update yourself, check for updates, new version, out of date, latest v
 
 ## Overview
 
-Check for available KiroCrew updates, apply them, and optionally set up automatic update checking via cron.
+Check for available Kiro Crew updates and use the install layout's supported apply path. The gateway already performs periodic update checks; do not add a duplicate cron.
 
 `kirocrew update` behaves differently on three install layouts, and which one the
 user is on decides everything below:
@@ -38,9 +38,10 @@ Non-destructive — safe to run anytime. Report the installed version:
 kirocrew --version
 ```
 
-Then compare it against **that layout's own source of truth**: upstream for a git
-checkout, the release feed for a wheel install, the app's own updater for desktop.
-Comparing against the public repository's tags is right only for a git install.
+Then use that layout's own source of truth: the tracked upstream branch for a git
+checkout, the signed release feed for a wheel install, or the app's own updater
+for desktop. Do not compare a checkout against public tags; source updates are
+based on commit distance from its configured upstream, not release tags.
 
 ### Applying Updates
 
@@ -65,92 +66,54 @@ saying that first.
 
 ### Automatic Update Checking
 
-If the user asks for automatic updates, create a cron job that checks periodically and notifies.
+Do not create a second update-check or auto-apply cron. The running gateway
+already checks at startup and every 12 hours, and exposes the layout-aware
+verdict through **Settings → About** and `GET /api/update/check`.
 
-**Scheduling rules:**
-1. **Pick a random weekday and business hour** — don't hardcode Monday 9am. Suggest something like "I'll check on Wednesdays around 2pm" and let the user approve or adjust.
-2. **Add a random minute** (0-59) to the cron expression to avoid a thundering herd of all KiroCrew instances checking simultaneously.
-3. **Use the user's local timezone** — get it from their Slack profile via `read_slack_profile`. The `cron_add` tool accepts a `timezone` parameter. Never schedule in UTC unless the user is actually in UTC.
-4. **For auto-apply mode**, some users prefer updates outside business hours (e.g. "update overnight"). Ask the user's preference.
+The built-in capability selects the correct owner:
 
-**Determining the user's timezone:**
+- **git checkout / wheel install** — Kiro Crew checks the tracked upstream or
+  signed release feed and reports a nullable `update_available` verdict.
+- **desktop app** — the Electron/package OTA updater owns checking and consent.
+- **Docker** — the image is immutable; update by pulling/redeploying an image.
+- **policy-defined provider** — the provider owns both check and apply, with no
+  fallback to the built-in mechanism.
 
-Check the system timezone first (fastest). If it's UTC, it may be an unconfigured cloud desktop rather than the user's actual timezone — verify with a second source.
+A completed check is `check_status="succeeded"`; only then does
+`update_available=false` mean “up to date.” A failed, deferred, or unchecked
+comparison is not a negative verdict.
 
-```bash
-# System timezone (fast, local)
-cat /etc/timezone  # or: timedatectl show -p Timezone --value
-```
-
-Resolution order:
-1. **System timezone is non-UTC** — use it (reliably reflects user's locale)
-2. **System timezone is UTC** — could be correct or could be an unconfigured server. Check Slack profile via `read_slack_profile(user="<user_id>")` for the user's configured timezone, or ask the user to confirm
-3. **If `read_slack_profile` unavailable** — ask the user directly
-
-**Example — notify-only cron:**
-
-```python
-cron_add(
-    name="kirocrew-update-check",
-    cron_expr="37 14 * * 3",  # Wednesday at 2:37pm (random minute)
-    timezone="America/Los_Angeles",  # from user's Slack profile
-    command="kirocrew --version",
-    message="Report the installed KiroCrew version and check whether a newer one is available",
-)
-```
-
-A notify-only cron must NOT run `kirocrew update` (that applies the update). Use
-`kirocrew --version` to report the installed version, and have the LLM-mode job
-compare it against the public repo and tell the user if an update is available.
-Present the schedule to the user for confirmation, always including the timezone: "I'll check for updates on Wednesdays around 2:37pm Pacific (America/Los_Angeles). Sound good?"
-
-For fully automatic updates (apply + restart), first check the layout: only a git
-or wheel install has a self-update path to automate. On a desktop install point the
-user at the app's own OTA updater instead of a cron, and on Docker there is no
-self-update at all. Where a cron does fit, use an LLM-mode one so it can follow the
-gateway-restart skill for a safe restart:
-
-```python
-cron_add(
-    name="kirocrew-auto-update",
-    cron_expr="42 2 * * 4",  # Thursday at 2:42am (off-hours, random minute)
-    timezone="America/Los_Angeles",
-    message="Apply a KiroCrew update by scheduling it server-side, then follow the gateway-restart skill to restart the gateway. If already up to date, report briefly.",
-)
-```
-
-An explicit `kirocrew update` is the supported way a source install updates; a
-boot-time automatic apply is not part of the update architecture, so do not
-reintroduce one by cron on a layout that has no self-update engine.
+For automatic application, use the product's existing `auto_update`/policy and
+channel controls rather than scheduling a lifecycle command in a cron. The
+update path already owns checkout safety, memory snapshotting, install-layout
+dispatch, drain, and restart behavior.
 
 ### Limitations
 
 - BOTH `kirocrew restart` AND `kirocrew update` are blocked when run directly from an agent session, by the self-protection argv floor (it reads the command's argv, so mentioning the words in a path or a grep pattern is not blocked, and there is no opt-out).
 - A policy-defined update provider, where configured, owns updating the host and there is no fallback: `kirocrew update` exits 1 if it fails. Report that failure rather than working around it.
-- Because the agent shell cannot run them, an update must be applied either by the user manually, or scheduled server-side (a cron job runs outside the shell-tool filter). After an update, restart via the gateway-restart skill.
+- Because the agent shell cannot run lifecycle commands, apply through the authenticated dashboard when the capability offers it, or ask the user to run the displayed terminal command. Do not smuggle update or restart through a custom cron. A terminal update may still require the user to restart; an in-app apply owns its own drain/restart flow.
 - After an update + restart, the resuming session runs the new code.
 
 ## Usage
 
 ### User asks "am I up to date?" or "check for updates"
 
-1. Run `kirocrew --version` to show the current version
-2. Compare it against that layout's own source of truth (upstream for a git checkout, the release feed for a wheel install, the app's updater for desktop)
-3. Report findings
-4. If an update is available, offer to apply it and offer to set up automatic updates
+1. Run `kirocrew --version` to show the installed version.
+2. Read the layout-aware verdict from Settings → About or `GET /api/update/check` when that authenticated surface is available; otherwise compare against the layout's own source of truth.
+3. Report `check_status` as well as `update_available`: only a succeeded check with `false` proves the install is current.
+4. If an update is available, offer the supported in-app or user-terminal apply path.
 
 ### User asks "update yourself"
 
-1. Check the current version first
-2. If an update is available, apply it (the agent shell cannot run `kirocrew update` directly — schedule it server-side via cron, or ask the user to run it)
-3. Inform the user that a gateway restart is needed for the new version to take effect
-4. Offer to schedule the restart via a cron (per the gateway-restart skill) or ask the user to run it manually
+1. Check the current version and layout-aware update verdict first.
+2. If an update is available, use the authenticated in-app action when supported; otherwise ask the user to run the exact remediation command in their terminal. The agent shell cannot run `kirocrew update` directly.
+3. Follow the capability response: terminal source/wheel updates require a gateway restart, while an in-app apply owns the restart itself.
+4. Report any dirty-tree, divergence, interpreter-floor, policy-provider, or externally-managed refusal without routing around it.
 
 ### User asks "keep yourself updated" or "auto-update"
 
-1. Look up the user's timezone from their Slack profile (`read_slack_profile`)
-2. Pick a random weekday and business-hour time; present for approval
-3. Create a recurring cron with the user's timezone
-4. Offer two modes:
-   - **Notify only** — check and report during business hours, user applies manually
-   - **Auto-apply** — apply and restart automatically (suggest off-hours for this mode)
+1. Inspect the install's update capability and current `check_status`.
+2. Explain which component owns updates for this layout (git/wheel, desktop OTA, container, or policy provider).
+3. Use the existing Kiro Crew `auto_update`/channel/policy controls where available; do not create a second update cron.
+4. For externally managed or container installs, give the capability's own remediation instead of claiming Kiro Crew can self-update.

@@ -114,6 +114,13 @@ async def test_nudge_expiring_during_the_persist_cannot_resurrect(tmp_path, monk
 
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
+    def refuse_durable_execution_read(*_args, **_kwargs):
+        pytest.fail("close cleanup must snapshot live execution without a disk read")
+
+    monkeypatch.setattr(
+        "kiro_crew.execution_context.read_session_execution", refuse_durable_execution_read
+    )
+
     # The loop's idle timer is armed and about to expire. Collapsing its delay
     # to 0 makes the expiry SCHEDULED rather than timing-dependent: this task is
     # queued before the close task, so the event loop gives it its turn first,

@@ -22,8 +22,8 @@ vi.mock('../pages/ProjectDetailPage', () => ({ default: () => <div data-testid="
 vi.mock('../api/client', () => ({
   api: {
     taskRunnerStatus: vi.fn().mockResolvedValue({ running: false, available: true, runs: [] }),
-    syncKirocrewAgents: vi.fn().mockResolvedValue({}),
     kirocrewAgents: vi.fn(),
+    agentCatalog: vi.fn(),
   },
 }))
 
@@ -45,8 +45,8 @@ describe('ProjectsPage roster failure wiring (#7656)', () => {
     sessionStorage.clear()
     const { api } = await import('../api/client')
     vi.mocked(api).taskRunnerStatus.mockResolvedValue({ running: false, available: true, runs: [] })
-    vi.mocked(api).syncKirocrewAgents.mockResolvedValue({})
     vi.mocked(api).kirocrewAgents.mockRejectedValue(new Error('gateway restarting'))
+    vi.mocked(api).agentCatalog.mockRejectedValue(new Error('gateway restarting'))
   })
 
   it('hands the picker a failure it can act on when /api/agents rejects', async () => {
@@ -66,6 +66,8 @@ describe('ProjectsPage roster failure wiring (#7656)', () => {
     await waitFor(() => expect(screen.getByText('Retry')).toBeInTheDocument())
 
     vi.mocked(api).kirocrewAgents.mockResolvedValue({ agents: ROSTER, default_agent: 'kirocrew' })
+
+    vi.mocked(api).agentCatalog.mockResolvedValue({ agents: ROSTER, default_agent: 'kirocrew' })
     fireEvent.click(screen.getByText('Retry'))
 
     await waitFor(() => expect(screen.getByText('oncall')).toBeInTheDocument())
@@ -79,6 +81,7 @@ describe('ProjectsPage roster failure wiring (#7656)', () => {
 
     const before = store.getState().dashboard.refreshTrigger
     vi.mocked(api).kirocrewAgents.mockResolvedValue({ agents: ROSTER, default_agent: 'kirocrew' })
+    vi.mocked(api).agentCatalog.mockResolvedValue({ agents: ROSTER, default_agent: 'kirocrew' })
     fireEvent.click(screen.getByText('Retry'))
 
     // `useAgents` state is per-instance and the app shell holds its own copy, so

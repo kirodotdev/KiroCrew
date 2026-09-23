@@ -1,6 +1,6 @@
-# KiroCrew Eval Harness
+# Kiro Crew Eval Harness
 
-Multi-session evaluation harness for benchmarking KiroCrew's cross-session memory, lesson application, and context accumulation.
+Multi-session evaluation harness for benchmarking Kiro Crew's cross-session memory, lesson application, and context accumulation.
 
 ## Quick Start
 
@@ -20,6 +20,9 @@ kirocrew eval memory_recall_basic lesson_application
 
 # Run all scenarios
 kirocrew eval --all
+
+# Enable LLM-judge assertions
+kirocrew eval --judge my_scenario
 ```
 
 ## Available Scenarios
@@ -30,6 +33,25 @@ kirocrew eval --all
 | `memory_recall_basic` | 4 | 2 | memory_recall | ~1 min |
 | `lesson_application` | 2 | 2 | lesson_application | ~30s |
 | `context_accumulation` | 3 | 3 | context_accumulation, memory_recall | ~2 min |
+| `subagent_policy` | 1 | 1 | delegation_value, delegation_lifecycle | provider-dependent |
+
+## Delegation decisions
+
+`kirocrew eval subagent_policy` exercises eighteen hypothetical decisions with
+the existing read-only harness. It covers direct work, parent plus one child,
+independent fan-out, dependencies, legitimate and invented solo reasons,
+bounded parent work, terminal failures, cancellation, explicit user choices,
+blocking-tool limits and conflicting writers. No spawn tools are enabled by
+this scenario. Its response assertions test **planned decisions**, not actual
+child execution, task completion, or a speed/cost improvement.
+
+For a before/after comparison, use the same case text, provider/model and tool
+availability with each revision's orchestration prompt, repeat key cases, and
+retain raw responses. Record actual and planned agent counts separately, parent
+work, wait reasons, wall latency and provider-reported usage. Missing token
+counts are unknown. Pair the decision traces with deterministic solo-gate,
+busy-parent delivery and delayed-startup-memory tests; enum acceptance alone
+does not prove meaningful delegation.
 
 ## Output
 
@@ -156,12 +178,13 @@ Scenarios are JSON files in `src/kiro_crew/eval/scenarios/`. Each defines sessio
 | `not_contains` | Response does not contain value |
 | `regex` | Response matches regex pattern |
 | `equals` | Response equals value exactly (trimmed) |
+| `judge` | Separate LLM judge scores the response when `--judge` is enabled; otherwise it is not scored |
 
-All assertions are case-insensitive by default. Add `case_sensitive: true` to override.
+String-matching assertions are case-insensitive by default. Add `case_sensitive: true` to override.
 
 ## Tool Safety
 
-During eval, tool approval uses a name-based allowlist (`_SAFE_TOOL_EXACT` for exact matches, `_SAFE_TOOL_PREFIXES` for prefix matches). Approved tools are additionally checked against `is_sensitive_path()` — if the tool targets a sensitive path (e.g. `~/.aws`, `~/.ssh`), it is rejected regardless of name. All other tools not on the allowlist are rejected outright. This keeps eval runs safe and side-effect-free while allowing the agent to use read-only tools.
+During eval, tool approval uses a name-based allowlist (`_SAFE_TOOL_EXACT` for exact matches, plus `_SAFE_TOOL_PREFIXES_FS` and `_SAFE_TOOL_PREFIXES_API` for prefix matches). Filesystem-prefix tools must expose a path and pass `is_sensitive_path()`; exact and read-only API entries do not take the filesystem path branch. All other tools are rejected outright. This keeps eval runs side-effect-free while allowing the agent to use read-only tools.
 
 ## Architecture
 
@@ -172,4 +195,4 @@ kirocrew eval            CLI entry point — scenario selection, output
             └─ Turn      Send message → collect response → check assertions
 ```
 
-Key design: each session creates a **new provider instance**, simulating a user closing and reopening KiroCrew. Cross-session context must come from persisted memory, not conversation history.
+Key design: each session creates a **new provider instance**, simulating a user closing and reopening Kiro Crew. Cross-session context must come from persisted memory, not conversation history.

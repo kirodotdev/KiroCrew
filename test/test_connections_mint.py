@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
 from conftest import requires_symlinks
 from kiro_crew import hooks, mcp_grant
@@ -1003,6 +1004,10 @@ async def test_a_second_credential_bearing_url_surfaces_failure_without_a_third_
     view = mint.pending_mint_for("notion")
     assert view is not None
     assert view["token"] == token
+    # A fixed credential in the query is a rejection the allowlist cannot
+    # clear, so the card is NOT told which endpoint to add: naming it here would
+    # advertise a remedy that leaves the URL rejected. The naming case is the
+    # allowlist-clearable rejection below.
     assert _state_only(view) == {"state": "failed", "reason": "mint_url_rejected"}
     assert len(_FakeClient.instances) == 2
     assert [client.shutdowns for client in _FakeClient.instances] == [1, 1]
@@ -1010,6 +1015,154 @@ async def test_a_second_credential_bearing_url_surfaces_failure_without_a_third_
     assert logged == ["error reason=mint_url_rejected"]
     assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
     assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(logged)
+    assert "auth.example.com" not in caplog.text
+    assert tainted not in json.dumps(view)
+
+
+# The URL the operator extension exists for: standard front-channel parameters
+# whose opaque state trips the long-query heuristic at any endpoint outside the
+# allowlist, and passes once the endpoint is added. This is the shape the card
+# must NAME, because adding the entry actually fixes it.
+_EXEMPTIBLE_NAME, _EXEMPTIBLE_URL, (_EXEMPTIBLE_HOST, _EXEMPTIBLE_PATH) = (
+    OPERATOR_EXTENSION_OAUTH_URLS[0]
+)
+_EXEMPTIBLE_ENDPOINT = f"{_EXEMPTIBLE_HOST}{_EXEMPTIBLE_PATH}"
+
+
+async def _reject_twice(
+    monkeypatch: pytest.MonkeyPatch, caplog, tainted: str
+) -> tuple[dict | None, list[str]]:
+    """Drive a mint whose every attempt yields *tainted* to its terminal rejection."""
+
+    class _Tainted(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = [{"serverName": "notion", "oauthUrl": tainted}]
+
+    attempts = iter([_Tainted, _Tainted])
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
+    logged: list[str] = []
+    monkeypatch.setattr(
+        mint,
+        "_log_mint_outcome",
+        lambda slug, outcome, detail: logged.append(f"{outcome} {detail}"),
+    )
+    token, prior = await mint.reserve_mint_row("notion")
+    with caplog.at_level("WARNING"):
+        await mint.start_oauth_mint("notion", _URL, token, prior)
+    return mint.pending_mint_for("notion"), logged
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tainted",
+    [
+        # The credential IS the host label: a redacted host would name nothing.
+        "https://AKIAIOSFODNN7EXAMPLE.example.com/authorize?client_id=abc",
+        # The credential is a PATH segment: the diagnostic pair carries the
+        # redaction tag, which is not a path a user could type.
+        "https://idp.example.com/AKIAIOSFODNN7EXAMPLE/authorize",
+        # Nameable host+path, but the extension loader would refuse the host,
+        # so naming it would advertise an entry that gets skipped on load.
+        _EXEMPTIBLE_URL.replace(_EXEMPTIBLE_HOST, "localhost", 1),
+        # Nameable host+path, but the gate never grants the carve-out to an
+        # explicit port, so the entry would be refused again after adding it.
+        _EXEMPTIBLE_URL.replace(_EXEMPTIBLE_HOST, _EXEMPTIBLE_HOST + ":8443", 1),
+        # Nameable, loader-valid host+path, but a fixed credential in the query
+        # is refused unconditionally -- the allowlist would not clear it.
+        f"https://{_EXEMPTIBLE_HOST}{_EXEMPTIBLE_PATH}?access_token=AKIAIOSFODNN7EXAMPLE",
+        # Same, for a fragment: providers never emit one, the gate never allows one.
+        _EXEMPTIBLE_URL + "#AKIAIOSFODNN7EXAMPLE",
+    ],
+    ids=[
+        "credential-in-host",
+        "credential-in-path",
+        "loader-refuses-host",
+        "explicit-port",
+        "fixed-credential-in-query",
+        "fragment",
+    ],
+)
+async def test_a_rejection_the_helper_cannot_name_leaves_the_card_unnamed(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], caplog, tainted: str
+):
+    """Control for the naming case: when no copy-ready endpoint exists the row
+    carries NO rejected_endpoint, so the card falls back to its unnamed message
+    rather than showing a partial host, a redaction tag, or a remedy that
+    cannot work."""
+    view, logged = await _reject_twice(monkeypatch, caplog, tainted)
+
+    assert view is not None
+    assert _state_only(view) == {"state": "failed", "reason": "mint_url_rejected"}
+    assert logged == ["error reason=mint_url_rejected"]
+    assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(logged)
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(view)
+
+
+@pytest.mark.asyncio
+async def test_the_named_endpoint_is_host_and_path_only(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], caplog
+):
+    """The card gets the endpoint identity and nothing else from the URL: no
+    scheme, query, fragment, or the state/PKCE material that lives in them."""
+    # Mixed-case host, and every query value is opaque material the card must
+    # never echo (the 128-char state is what trips the gate).
+    tainted = _EXEMPTIBLE_URL.replace(_EXEMPTIBLE_HOST, _EXEMPTIBLE_HOST.title(), 1)
+    view, logged = await _reject_twice(monkeypatch, caplog, tainted)
+
+    assert view is not None
+    assert view["rejected_endpoint"] == _EXEMPTIBLE_ENDPOINT
+    serialized = json.dumps(view)
+    for never in (
+        "https://",
+        "a1B2c3D4",
+        "E9Melhoa2Owv",
+        "client_id",
+        "?",
+    ):
+        assert never not in serialized
+        assert never not in caplog.text
+        assert never not in json.dumps(logged)
+
+
+@pytest.mark.asyncio
+async def test_a_named_endpoint_never_reaches_the_log_or_audit_line(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], caplog
+):
+    """The scanner decision: the endpoint is a CARD field, not log text. If a
+    future edit routes it through the logger, this fails before Semgrep or
+    CodeQL do."""
+    view, logged = await _reject_twice(monkeypatch, caplog, _EXEMPTIBLE_URL)
+
+    assert view is not None
+    assert view["rejected_endpoint"] == _EXEMPTIBLE_ENDPOINT
+    assert caplog.text  # the slug-only warning still fires
+    assert "notion" in caplog.text
+    assert _EXEMPTIBLE_HOST not in caplog.text
+    assert _EXEMPTIBLE_HOST not in json.dumps(logged)
+    assert logged == ["error reason=mint_url_rejected"]
+
+
+def test_a_rejected_endpoint_rides_the_card_view_only_beside_its_reason():
+    """``pending_mint_for`` projects the field through the same allowlist as
+    ``reason``: present when stored, absent when not, never invented."""
+    mint._mints["notion"] = {"state": "failed", "reason": "mint_url_rejected", "token": "t1", "started": 0.0, "rejected_endpoint": "idp.example.com/authorize"}  # type: ignore[typeddict-item]
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_url_rejected",
+        "rejected_endpoint": "idp.example.com/authorize",
+    }
+    mint._mints["notion"] = {
+        "state": "failed",
+        "reason": "mint_url_rejected",
+        "token": "t2",
+        "started": 0.0,
+    }
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_url_rejected",
+    }
 
 
 @pytest.mark.asyncio

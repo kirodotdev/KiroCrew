@@ -347,7 +347,9 @@ function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string;
   // whole path as the "filename". Matches the pattern in MarkdownRenderer.tsx
   // and VectorMemoryCard.tsx.
   const filename = filePath.split(/[\\/]/).pop() || filePath
-  const ext = extOf(filePath).replace('.', '').toUpperCase()
+  // `BIN` fallback: the binary card is reached by a byte sniff, not by an
+  // extension list, so `coredump` and `a.out` land here with nothing to show.
+  const ext = extOf(filePath).replace('.', '').toUpperCase() || 'BIN'
   const url = fileDownloadUrl(filePath)
   const sizeCls = showBigDownload ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs'
   const iconSize = showBigDownload ? 16 : 14
@@ -430,7 +432,178 @@ function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string;
   )
 }
 
-type OfficePreviewBody = { text?: string; truncated?: boolean }
+/** Fallback body for a file `/api/file-read` refused to decode — the same
+ *  card the unsupported-office path shows, on the same reasoning: the bytes are
+ *  already on disk at the path the panel is naming, so Open-with-default-app is
+ *  the action, with Download as the remote fallback. Rendered instead of the
+ *  Pierre editor, which would otherwise show 512 KB of U+FFFD.
+ *
+ *  Deliberately NOT keyed on extension. The verdict comes from the backend's
+ *  NUL sniff, so an extension-less binary gets the card and a `.py` file in
+ *  latin-1 does not. */
+export const BinaryFileCard = memo(function BinaryFileCard({ filePath }: { filePath: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // The hint names the action the card LEADS with, same rule as OfficeCard's own
+  // hint: Open exists only on a direct-local, non-Windows session, so on a remote
+  // browser the copy must not send the user hunting for a button that is not
+  // there. Same gate the card's buttons read.
+  const canOpen = useCanOpenFile('file')
+  return (
+    <div
+      data-testid="binary-file-card"
+      className="h-full flex flex-col items-center justify-center gap-3 p-4 bg-bg-elevated rounded-md border border-border"
+    >
+      <div className="text-sm font-medium text-text text-center">
+        {i18nT('components.fileRenderers.binary_file_title')}
+      </div>
+      <div className="text-xs text-muted text-center max-w-md">
+        {canOpen
+          ? i18nT('components.fileRenderers.binary_file_open_hint')
+          : i18nT('components.fileRenderers.binary_file_download_hint')}
+      </div>
+      <OfficeCard filePath={filePath} showBigDownload hideHint />
+    </div>
+  )
+})
+
+/* ── Structured office preview (GET /api/file-office-preview?format=blocks) ──
+ *
+ * The backend can return a .docx either as one plaintext blob or as a block
+ * list that keeps its structure — headings, formatted runs, lists and tables.
+ * Blocks are requested first and text is the fallback, so a document the
+ * structured extractor cannot read is never worse off than before.
+ *
+ * Typography is deliberately the same as MarkdownRenderer's: a heading in a
+ * .docx and a heading in a .md are the same thing to a reader, and rendering
+ * them differently in the same panel would be the surprise. Page layout, theme
+ * colours and embedded pictures are explicitly NOT attempted — this is a
+ * readable document, not a Word emulator. */
+type OfficeRun = { text: string; bold?: boolean; italic?: boolean }
+type OfficeBlock =
+  | { type: 'heading'; level: number; text: string }
+  | { type: 'paragraph'; runs: OfficeRun[] }
+  | { type: 'list'; ordered: boolean; items: string[] }
+  | { type: 'table'; rows: string[][]; truncated_cols?: boolean }
+
+type OfficePreviewBody = { text?: string; truncated?: boolean; blocks?: OfficeBlock[] }
+
+/** Heading classes per level, mirroring MarkdownRenderer's h1–h6. */
+const OFFICE_HEADING_CLS = [
+  'text-xl font-bold mt-4 mb-2 text-text-strong',
+  'text-lg font-bold mt-3 mb-2 text-text-strong',
+  'text-base font-semibold mt-3 mb-1.5 text-text-strong',
+  'text-sm font-semibold mt-2 mb-1 text-text-strong',
+  'text-sm font-medium mt-2 mb-1 text-text-strong',
+  'text-[13px] font-medium mt-2 mb-1 text-muted',
+]
+
+function OfficeHeading({ level, text }: { level: number; text: string }) {
+  // A .docx can nominally carry Heading7-9; HTML stops at h6, so deeper levels
+  // render as h6 rather than as an invalid tag.
+  const lvl = Math.min(Math.max(level, 1), 6)
+  const Tag = `h${lvl}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
+  return <Tag className={OFFICE_HEADING_CLS[lvl - 1]}>{text}</Tag>
+}
+
+/** A document table as a real grid.
+ *
+ * The first row becomes the header, the way CsvViewer treats a CSV's first row
+ * and unlike SheetViewer's spreadsheet grid: a table inside a report or a deck
+ * is written with a header row, whereas a spreadsheet's first row is just row 1.
+ * Cell text keeps its newlines — a cell can hold several paragraphs. */
+function OfficeTable({ rows, truncatedCols }: { rows: string[][]; truncatedCols?: boolean }) {
+  const [head, ...body] = rows
+  return (
+    <div className="my-2 overflow-x-auto">
+      <table className="min-w-full border-collapse">
+        {head && (
+          <thead>
+            <tr>
+              {head.map((cell, i) => (
+                <th
+                  key={i}
+                  className="text-left text-muted text-[13px] font-medium px-3 py-2 border-b border-border bg-bg-elevated whitespace-pre-line align-top"
+                >
+                  {cell}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {body.map((row, r) => (
+            <tr key={r}>
+              {row.map((cell, c) => (
+                <td
+                  key={c}
+                  className="px-3 py-2 border-b border-border text-sm whitespace-pre-line align-top"
+                >
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {/* At the table, not in the document-level bar: the pinned notice says
+          "only the beginning of this document", which describes running out of
+          budget part-way through rather than a table losing its right-hand
+          columns. Same string AND the same plain muted treatment the sheet
+          viewer gives it: a border or a pill reads as a button and invites a
+          dead click, while a bare muted line under the grid reads as chrome. */}
+      {truncatedCols && (
+        <div data-testid="office-table-cols-truncated" className="mt-1 text-center text-[11px] text-muted">
+          {i18nT('components.fileRenderers.sheet_cols_truncated')}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function OfficeBlockList({ blocks }: { blocks: OfficeBlock[] }) {
+  return (
+    <>
+      {blocks.map((block, i) => {
+        switch (block.type) {
+          case 'heading':
+            return <OfficeHeading key={i} level={block.level} text={block.text} />
+          case 'paragraph':
+            return (
+              <p key={i} className="my-1 text-sm leading-6 break-words">
+                {block.runs.map((run, r) => {
+                  // Both flags apply independently: a run can be bold AND italic,
+                  // and an either/or chain dropped the second one.
+                  const inner = run.italic ? <em className="italic">{run.text}</em> : run.text
+                  return run.bold
+                    ? <strong key={r} className="font-semibold text-text-strong">{inner}</strong>
+                    : <span key={r}>{inner}</span>
+                })}
+              </p>
+            )
+          case 'list': {
+            const Tag = block.ordered ? 'ol' : 'ul'
+            const cls = block.ordered
+              ? 'list-decimal pl-8 my-2 space-y-1 marker:text-muted'
+              : 'list-disc pl-8 my-2 space-y-1 marker:text-muted'
+            return (
+              <Tag key={i} className={cls}>
+                {block.items.map((item, li) => (
+                  <li key={li} className="text-sm leading-relaxed break-words">{item}</li>
+                ))}
+              </Tag>
+            )
+          }
+          case 'table':
+            return <OfficeTable key={i} rows={block.rows} truncatedCols={block.truncated_cols} />
+          default:
+            // A block type this build does not know (older bundle, newer
+            // backend) is skipped rather than rendered as raw JSON.
+            return null
+        }
+      })}
+    </>
+  )
+}
 
 // Extensions the backend can actually extract (mirrors _OFFICE_PREVIEWABLE_EXT
 // in dashboard/handlers/files.py). Known-unsupported office formats render the
@@ -438,11 +611,18 @@ type OfficePreviewBody = { text?: string; truncated?: boolean }
 // guaranteed 415. The 415 fallback below stays as the safety net if the two
 // lists ever drift.
 const OFFICE_PREVIEWABLE_EXTS = new Set(['.docx', '.pptx'])
+/** The one extension the structured extractor handles (mirrors `extract_blocks`
+ *  in doc_blocks.py). Gated here rather than by asking the backend, because an
+ *  extension the extractor does not cover answers `blocks: []` -- the same
+ *  shape as a .docx it could not read -- and the fallback would then mark a
+ *  perfectly ordinary .pptx text preview as degraded. */
+const OFFICE_STRUCTURED_EXTS = new Set(['.docx'])
 
 export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: { filePath: string; hideHint?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const filename = filePath.split(/[\\/]/).pop() || filePath
   const previewable = OFFICE_PREVIEWABLE_EXTS.has(extOf(filePath))
+  const structured = OFFICE_STRUCTURED_EXTS.has(extOf(filePath))
   // React Query (repo convention for server fetches — see ArtifactPanel /
   // AgentSkillsEditor). Keyed on filePath so navigating between .docx files
   // in the tree never flashes a stale response; aborts via the provided
@@ -450,14 +630,29 @@ export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: {
   const previewQuery = useQuery<OfficePreviewBody | null>({
     queryKey: ['office-preview', filePath],
     queryFn: async ({ signal }) => {
-      const res = await fetch(fileOfficePreviewUrl(filePath), { signal })
-      if (!res.ok) {
-        // 415 (unsupported ext), 404, 400, 500 → all fall through to the
-        // download-only card. We don't distinguish here because a broken
-        // preview should never block downloading the real file.
-        return null
+      // For a .docx: blocks first, text as the fallback. An empty `blocks` list
+      // is the backend saying "nothing structured here" — a container the
+      // extractor could not read, or a document with no extractable content —
+      // and the flat text extractor sometimes still gets something out of the
+      // same file, so the second request is what keeps this never worse than
+      // the old preview. Any other extension goes straight to text: one
+      // request, and exactly the preview it had before structure existed.
+      if (structured) {
+        const res = await fetch(fileOfficePreviewUrl(filePath, 'blocks'), { signal })
+        // A failed blocks request falls through to the text request too: that
+        // is the one request a .docx made before structure existed, so the
+        // structured path can only add to the old preview, never take it away.
+        if (res.ok) {
+          const body = await res.json() as OfficePreviewBody
+          if (body.blocks?.length) return body
+        }
       }
-      return await res.json() as OfficePreviewBody
+      const textRes = await fetch(fileOfficePreviewUrl(filePath), { signal })
+      // 415 (unsupported ext), 404, 400, 500 → the download-only card. Not
+      // distinguished here because a broken preview should never block
+      // downloading the real file.
+      if (!textRes.ok) return null
+      return await textRes.json() as OfficePreviewBody
     },
     enabled: previewable,
     // No staleTime: a reopened file must show its CURRENT contents — the
@@ -478,7 +673,8 @@ export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: {
   }
 
   const body = previewable && !previewQuery.isError ? previewQuery.data : null
-  if (!body?.text) {
+  const blocks = body?.blocks?.length ? body.blocks : null
+  if (!blocks && !body?.text) {
     return (
       <div className="h-full flex items-center justify-center p-4 bg-bg-elevated rounded-md border border-border">
         <OfficeCard filePath={filePath} showBigDownload={true} hideHint={hideHint} />
@@ -494,13 +690,30 @@ export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: {
       {/* Keyboard-scrollable region — same pattern as CodeBlock.tsx. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <div className="flex-1 overflow-auto p-4" tabIndex={0} role="region" aria-label={filename}>
-        <pre className="text-sm text-text whitespace-pre-wrap break-words font-sans leading-relaxed">{body.text}</pre>
+        {blocks
+          ? <div className="text-text">
+              <OfficeBlockList blocks={blocks} />
+            </div>
+          : <>
+              {/* Without this the reader cannot tell a document that never had a
+                  table from one whose table this preview flattened away, and a
+                  degraded table invites more trust than a plainly partial one.
+                  Only where structure was attempted: an extension the extractor
+                  does not cover was never going to have it. */}
+              {structured && <div
+                data-testid="office-plain-text-notice"
+                className="mb-3 px-3 py-2 rounded border border-border bg-bg text-xs text-muted"
+              >
+                {i18nT('components.fileRenderers.office_structure_unavailable')}
+              </div>}
+              <pre className="text-sm text-text whitespace-pre-wrap break-words font-sans leading-relaxed">{body?.text}</pre>
+            </>}
       </div>
       <div className="border-t border-border p-3 bg-bg">
         {/* Truncation notice lives in the always-visible pinned bar (not after
             the 512 KB of text) so users skimming the top of a large document
             learn the preview is partial without scrolling to the end. */}
-        {body.truncated && (
+        {body?.truncated && (
           <div className="mb-2 text-xs text-muted italic text-center">
             {i18nT('components.fileRenderers.office_preview_truncated')}
           </div>

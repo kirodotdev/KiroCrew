@@ -169,7 +169,7 @@ class TestTheBindingIsStructural:
             for stmt in ast.walk(fn)
             if isinstance(stmt, ast.Assign)
             for target in stmt.targets
-            if isinstance(target, ast.Name) and target.id == "_ledger_actor"
+            if isinstance(target, ast.Name) and target.id == "_crew_log_actor"
         )
 
         def _queues_recovery(node: ast.AST) -> bool:
@@ -190,7 +190,7 @@ class TestTheBindingIsStructural:
 
         assert guarded, "no try block queues a recovery -- has the path moved?"
         assert bound_at < min(guarded), (
-            f"_ledger_actor is bound at line {bound_at}, after a recovery-queuing "
+            f"_crew_log_actor is bound at line {bound_at}, after a recovery-queuing "
             f"try that starts at line {min(guarded)}: a failure before the "
             f"assignment would read it unbound"
         )

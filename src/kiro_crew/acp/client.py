@@ -33,6 +33,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import aclosing, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
@@ -45,11 +46,20 @@ from typing import (
     TypeVar,
 )
 
-from kiro_crew import acp_tool_gate, agent_scratch, agent_sdk, model_registry, platform_compat
+from kiro_crew import (
+    __version__,
+    acp_tool_gate,
+    agent_scratch,
+    agent_sdk,
+    model_registry,
+    model_scope,
+    platform_compat,
+)
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import seed_provenance
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
+    DRAIN_YIELD_AFTER_S,
     _measure_tool_output,
     agent_version_from_init,
     build_permission_event,
@@ -66,6 +76,7 @@ from kiro_crew.acp._dispatch import (
     make_unified_diff,
     meta_builtin_server_names,
     parse_claude_compaction_notice,
+    parse_codex_compaction_update,
     parse_prompt_token_usage,
     parse_refusal,
     parse_session_modes,
@@ -97,6 +108,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
+    ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_MEMBER_DISPATCH,
@@ -164,7 +176,9 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
     effort_config_option_id,
+    effort_config_option_value,
     model_registry_namespace,
+    overlay_project_scope,
 )
 from kiro_crew.agent import (
     DerivedSpecSnapshot,
@@ -176,6 +190,13 @@ from kiro_crew.agent import (
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_LAUNCH,
+    ACP_BACKEND_NODE_ADAPTER_PACKAGES,
+    ACP_BACKEND_PROCESS_NAMES,
+    NODE_ADAPTER_ENTRY_SEGMENTS,
+    launch_for,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
@@ -199,7 +220,11 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.identity_stores import IDENTITY_STORE_ROOTS
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
-from kiro_crew.mcp_gateway.claim import mint_stub_session_token, schedule_claim
+from kiro_crew.mcp_gateway.claim import (
+    STUB_SESSION_TOKEN_ENV,
+    mint_stub_session_token,
+    schedule_claim,
+)
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
@@ -208,80 +233,120 @@ from kiro_crew.mcp_gateway.session_servers import (
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import MIRRORS, mirror_for
-from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
+from kiro_crew.recovery.ladder import L3_ACP_RUNTIME as _L3_ACP_RUNTIME
+from kiro_crew.recovery.ladder import LADDER as _LADDER
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
+    LAUNCHER_EXIT_PREFIXES,
     RLIMIT_PROFILE_SESSION_HOST,
+    SANDBOX_LAYER_CREW,
+    SANDBOX_LAYER_HARNESS,
     BoundWorkspaceMismatch,
-    _ensure_run_dir,
+    _forward_ssh_auth_sock,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
+    corroborate_launcher_refusal,
     create_subprocess_limited,
-    delegated_workspace_exposes_agents_dir,
+    delegated_workspace_exposes_sealed_target,
+    launcher_refusal,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
+    sandbox_init_remediation,
     scrub_agent_subprocess_env,
     wrap_argv,
     wrap_argv_async,
+    wrapped_by_crew_sandbox,
 )
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_token_sig import schedule_session_token_publish
 from kiro_crew.skill_usage import get_global_skill_read_observer
 
 logger = logging.getLogger(__name__)
 
 CLIENT_NAME = "kirocrew"
-CLIENT_VERSION = "0.1.2"
+#: The version reported to the agent host in ``initialize``'s ``clientInfo``, and
+#: from there into the host's own telemetry (``acp_client_version``). It is the
+#: PACKAGE version, never a literal of its own: a hand-maintained literal is a
+#: second version number nobody bumps, and this one was not -- it sat at
+#: ``"0.1.2"`` from the first commit that named it while the product shipped
+#: 0.2.0 through 0.8.0, so every Crew-driven session of every release reported
+#: one indistinguishable version and no version split of Crew traffic was
+#: possible. Reading ``__version__`` also inherits what that attribute already
+#: resolves at import: a release lane's rewritten literal AND a repackager's
+#: ``BUILD_VERSION`` stamp.
+CLIENT_VERSION = __version__
 _T = TypeVar("_T")
 # kiro-cli uses a date-stamped protocol; claude-agent-acp follows the
 # upstream ACP SDK (numeric integer, currently 1).  See acp.types.
 PROTOCOL_VERSION = "2025-08-22"
 PROTOCOL_VERSION_CLAUDE = 1
-# codex-acp speaks the same numeric ACP version as the claude adapter today.
-# Kept as its OWN literal rather than folded into the claude one: harness-parity
-# H10 wants the handshake stated per harness, so a divergence is a one-line edit
-# here instead of a silent downgrade of whichever harness moved first.
-PROTOCOL_VERSION_CODEX = 1
+# codex-acp has no literal here, and its absence is the point: this core drives
+# only the harnesses in the table below, and codex is not one of them. Its
+# handshake dialect is declared by ``acp.harness.codex``, on the core that does
+# drive it. One harness, one declaration -- a second copy on a core that never
+# performs the handshake is a copy nothing can keep honest.
 # OpenCode answers ``initialize`` with an integer ``protocolVersion`` of 1, so it
 # speaks the SPEC dialect rather than kiro-cli's date-stamped one. Verified off its
 # own wire, and its own literal for the same reason codex has one (harness-parity
 # H10): a divergence should be a one-line edit here, not a silent downgrade of
 # whichever harness moved first.
-PROTOCOL_VERSION_OPENCODE = 1
+PROTOCOL_VERSION_OPENCODE = launch_for(ACP_BACKEND_OPENCODE).protocol_version
 # pi-acp answers ``initialize`` with an integer ``protocolVersion`` of 1 as well,
 # verified off its own wire; its own literal for the same H10 reason.
 PROTOCOL_VERSION_PI = 1
 # goose answers ``initialize`` with an integer ``protocolVersion`` of 1, captured off
 # goose 1.50.1's own wire (``test/fixtures/acp_frames/goose/handshake-live.jsonl``);
 # its own literal for the same H10 reason.
-PROTOCOL_VERSION_GOOSE = 1
+PROTOCOL_VERSION_GOOSE = launch_for(ACP_BACKEND_GOOSE).protocol_version
 # DeepSeek Harness answers ``initialize`` with an integer ``protocolVersion`` of 1,
 # so it speaks the SPEC dialect too. Verified off its own wire, and its own literal
 # for the same reason the two above have one (harness-parity H10).
-PROTOCOL_VERSION_DEEPSEEK = 1
+PROTOCOL_VERSION_DEEPSEEK = launch_for(ACP_BACKEND_DEEPSEEK).protocol_version
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
 #: later is one row here; an id with no row speaks kiro-cli's date-stamped dialect.
 _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     ACP_BACKEND_CLAUDE: PROTOCOL_VERSION_CLAUDE,
-    ACP_BACKEND_CODEX: PROTOCOL_VERSION_CODEX,
-    ACP_BACKEND_OPENCODE: PROTOCOL_VERSION_OPENCODE,
     ACP_BACKEND_PI: PROTOCOL_VERSION_PI,
-    ACP_BACKEND_GOOSE: PROTOCOL_VERSION_GOOSE,
-    ACP_BACKEND_DEEPSEEK: PROTOCOL_VERSION_DEEPSEEK,
+    # Every harness whose own binary serves ACP declares its dialect in its
+    # ``ACP_BACKEND_LAUNCH`` row, so those rows are read rather than restated here.
+    # The two adapters above keep explicit rows: each is a separate package with
+    # its own release cadence, and none has a launch record to read.
+    **{backend: record.protocol_version for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
 }
 DEFAULT_MODEL = "auto"
 
+# Every adapter/harness executable name below is READ from the backend registry
+# rather than spelled here. The registry is also what the reclaim sweep projects its
+# marker set from (``session_pid._MANAGED_AGENT_MARKERS``), and a name written in both
+# places is a name that can drift -- a rename here that missed the table would leave
+# the sweep unable to recognise the process this module spawns, which spares an orphan
+# and then drops its tracking entry. The import direction is the allowed one: the ACP
+# layer may read ``agent_sdk.backends`` (a stdlib-only leaf it already imports for
+# ``launch_for``), while ``session_pid`` may not import the ACP layer at all --
+# ``scripts/check_agent_sdk_boundary.py`` counts even a type-only import as knowledge.
+# The one name NOT read from the table, and the reason is what happens on a miss. An
+# index raises at import, so a registry that stopped carrying this key would stop the
+# whole module importing -- and this is the DEFAULT backend, so that failure takes the
+# path a user reaches with no configuration at all, for a name that has never varied. The
+# three bespoke adapters below are indexed because their construction is already
+# registry-driven; kiro's is not, and coupling it here would buy one fewer literal at the
+# cost of a new import-time failure mode. Equality with the table is asserted by
+# ``test_pid_lifecycle``, so the two cannot drift silently.
 KIRO_CLI_BIN = "kiro-cli"
 KIRO_CLI_SUBCMD = "acp"
 
-CLAUDE_ACP_BIN = "claude-agent-acp"
+CLAUDE_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 # A self-updating ACP adapter can briefly disappear or remain locked while its
 # executable is replaced. Delay the one permitted startup retry past that window.
-_ACP_RESPAWN_BACKOFF_S = 2.0
+# The delay is the L3 (ACP runtime) rung's base on the shared recovery ladder --
+# one schedule for every layer that rebuilds a runtime (RFC overload-resilience
+# §7) -- read at import so the sleep site stays a plain constant.
+_ACP_RESPAWN_BACKOFF_S = _LADDER.layer(_L3_ACP_RUNTIME).base_secs
 # On-disk name of the Claude backend CLI.  The claude-agent-acp adapter
 # delegates the actual model turn to @anthropic-ai/claude-agent-sdk, which
 # needs a per-platform native binary (~250 MB each).  Those ship as npm
@@ -301,10 +366,10 @@ CLAUDE_CODE_BIN = "claude"
 # with ``npm i -g @agentclientprotocol/claude-agent-acp`` (or add it as a
 # project dependency); resolution also accepts a copy under a project-local
 # ``node_modules`` so no global install is strictly required.
-CLAUDE_ACP_NPM_PKG = "@agentclientprotocol/claude-agent-acp"
+CLAUDE_ACP_NPM_PKG = ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CLAUDE]
 # Entry script relative to the installed package directory (its package.json
 # "bin" field).  Used to locate a copy under a project ``node_modules``.
-_CLAUDE_ACP_PKG_ENTRY = Path(CLAUDE_ACP_NPM_PKG) / "dist" / "index.js"
+_CLAUDE_ACP_PKG_ENTRY = Path(CLAUDE_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
 # A direct runtime dependency of the adapter that npm hoists flat into the
 # same node_modules root.  Its presence is a cheap completeness check: a
 # copy missing it would crash at import with
@@ -317,9 +382,9 @@ _CLAUDE_ACP_DEP_MARKER = Path("@agentclientprotocol") / "sdk"
 # operations.  The ``codex`` CLI does not serve ACP itself -- it reads ``acp`` as a
 # prompt -- so the adapter is the transport, not an optimization.  It takes no argv
 # beyond its own path: any invocation enters stdio-server mode and blocks on stdin.
-CODEX_ACP_BIN = "codex-acp"
-CODEX_ACP_NPM_PKG = "@agentclientprotocol/codex-acp"
-_CODEX_ACP_PKG_ENTRY = Path(CODEX_ACP_NPM_PKG) / "dist" / "index.js"
+CODEX_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CODEX]
+CODEX_ACP_NPM_PKG = ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CODEX]
+_CODEX_ACP_PKG_ENTRY = Path(CODEX_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
 # Same hoisted-dependency completeness check as the claude adapter, and the same
 # dependency: codex-acp imports @agentclientprotocol/sdk, so a root carrying the
 # entry script without it dies at ESM import time -- after the child is spawned.
@@ -338,10 +403,13 @@ _ENV_CODEX_ACP_BIN = "CODEX_ACP_BIN"
 # executable -- so the resolution ladder here is the plain-binary one
 # (``_resolve_claude_code_executable``'s shape), not the Node-entry-script one the
 # two adapters above need.
-OPENCODE_BIN = "opencode"
-OPENCODE_ACP_SUBCMD = "acp"
-# Explicit override, spelled the way this harness's own documentation spells it.
-_ENV_OPENCODE_BIN = "OPENCODE_BIN"
+# The launch facts live in this harness's ``ACP_BACKEND_LAUNCH`` row, and every
+# shared path reads them from there: the resolver, the spawn arm, the install probe
+# and the driver seams. Only the two names a reader in THIS module still needs are
+# bound here, for ``_opencode_readback_remedy`` below -- the routing remedy names the
+# binary and its installer in prose. A harness added later needs neither.
+_OPENCODE_LAUNCH = launch_for(ACP_BACKEND_OPENCODE)
+OPENCODE_BIN = _OPENCODE_LAUNCH.binary
 # The channel Crew's permission routing travels down: inline config JSON in the
 # child's environment. It is what makes the routing seed session-scoped -- nothing
 # is written into a checked-out repository -- and it resolves ABOVE the project's
@@ -349,9 +417,7 @@ _ENV_OPENCODE_BIN = "OPENCODE_BIN"
 # ``permission: "allow"`` and reading ``ask`` back out. The read-back is still what
 # establishes the guarantee; this is only how the value gets there.
 _ENV_OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
-# The harness's own installer. Not an ``npm i -g`` of an adapter, because there is
-# no adapter: this installs the binary that serves ACP.
-OPENCODE_INSTALL_COMMAND = "npm i -g opencode-ai"
+OPENCODE_INSTALL_COMMAND = _OPENCODE_LAUNCH.install_command
 # The subcommand that prints the RESOLVED configuration -- every source merged, the
 # way the ACP server itself resolves it. Reading it back is what separates this
 # harness's routing from a declared-but-unverified seed.
@@ -362,21 +428,12 @@ _OPENCODE_READBACK_TIMEOUT_S = 30.0
 
 # goose serves ACP from its own binary too, so the same plain-binary ladder applies
 # and there is no adapter package and no Node floor.
-GOOSE_BIN = "goose"
-GOOSE_ACP_SUBCMD = "acp"
-# Explicit override, spelled like the sibling harnesses' overrides.
-_ENV_GOOSE_BIN = "GOOSE_BIN"
 # The channel Crew's permission routing travels down on this harness: goose resolves
 # its mode from a PLAIN ENVIRONMENT VARIABLE, above its own config file, so the seed
 # needs neither a file nor a JSON document. Verified on this harness by resolving a
 # config that declares ``GOOSE_MODE: auto`` and reading ``approve`` back off the
 # session.
 _ENV_GOOSE_MODE = "GOOSE_MODE"
-# The harness's own installer. Not an ``npm i -g`` of an adapter, because there is no
-# adapter: this installs the binary that serves ACP.
-GOOSE_INSTALL_COMMAND = (
-    "curl -fsSL https://raw.githubusercontent.com/block/goose/main/download_cli.sh | bash"
-)
 # The builtin extension Crew asks goose to load. goose REPLACES its configured
 # extensions with the client's ``mcpServers`` array, so a session handed Crew's
 # servers and nothing else carries no shell and no file tools at all. Naming it on
@@ -395,7 +452,37 @@ _GOOSE_BUILTIN_DEVELOPER = "developer"
 _ADAPTER_INTERPRETERS = frozenset({"node", "node.exe"})
 
 
-def _adapter_spawn_label(argv: Sequence[str], seam: str) -> str:
+def _is_adapter_package_entry(program: str, pkg_entry: Path) -> bool:
+    """Whether *program* is *pkg_entry* sitting under some node_modules root."""
+    parts = Path(program).parts
+    wanted = pkg_entry.parts
+    if len(parts) < len(wanted):
+        return False
+    return [p.casefold() for p in parts[-len(wanted) :]] == [p.casefold() for p in wanted]
+
+
+def _named_by_override(program: str, override_env: str | None) -> bool:
+    """Whether the operator's override is what supplied *program*.
+
+    The resolution ladder takes the override as its first candidate verbatim, so
+    an equality test against the resolved program is what separates a deliberate
+    override from the adapter's own installed entry.
+    """
+    if not override_env:
+        return False
+    override = os.environ.get(override_env, "").strip()
+    if not override:
+        return False
+    return os.path.normpath(os.path.expanduser(override)) == os.path.normpath(program)
+
+
+def _adapter_spawn_label(
+    argv: Sequence[str],
+    seam: str,
+    *,
+    pkg_entry: Path | None = None,
+    override_env: str | None = None,
+) -> str:
     """Keep a stable seam label while identifying the resolved program.
 
     Both ACP seams resolve their binary through a documented environment
@@ -407,8 +494,23 @@ def _adapter_spawn_label(argv: Sequence[str], seam: str) -> str:
     if not argv:
         return seam
     program = argv[0]
-    if Path(program).name.casefold() in _ADAPTER_INTERPRETERS and len(argv) > 1:
+    if Path(program).name.casefold() in _ADAPTER_INTERPRETERS:
+        # A bare interpreter identifies no adapter at all.
+        if len(argv) <= 1:
+            return seam
         program = argv[1]
+        # An adapter installed as a Node package resolves to its own
+        # `dist/index.js`, whose basename names the packaging rather than the
+        # adapter, so the seam alone is the useful identity there. That shortcut
+        # is only honest for the package's OWN entry under its own scope: a
+        # script the operator's override supplied, or any other `index.js`, is
+        # the one record of which build actually launched, so its path stays.
+        if (
+            pkg_entry is not None
+            and not _named_by_override(program, override_env)
+            and _is_adapter_package_entry(program, pkg_entry)
+        ):
+            return seam
     return f"{seam} via {program}" if program else seam
 
 
@@ -418,9 +520,9 @@ def _adapter_spawn_label(argv: Sequence[str], seam: str) -> str:
 # as ``pi --mode rpc --no-themes``; ``pi`` itself has no ``acp`` subcommand. Either
 # can be absent on its own, so the resolver, the probe and the not-found message
 # each name both.
-PI_ACP_BIN = "pi-acp"
-PI_ACP_NPM_PKG = "pi-acp"
-_PI_ACP_PKG_ENTRY = Path(PI_ACP_NPM_PKG) / "dist" / "index.js"
+PI_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_PI]
+PI_ACP_NPM_PKG = ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_PI]
+_PI_ACP_PKG_ENTRY = Path(PI_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
 # The adapter imports @agentclientprotocol/sdk like the two above, so an entry
 # script without the hoisted dependency dies at ESM import -- after the spawn.
 _PI_ACP_DEP_MARKER = _CLAUDE_ACP_DEP_MARKER
@@ -490,10 +592,6 @@ PI_GATE_EXTENSION_SHA256 = "33caa696e70e3b0c0793a705b0c6e06c372c52478e3ac4abf75f
 # profile is shipped: it is created on first use, and both of its bundles are inside
 # the installed package's own dependency closure, so a global install needs no
 # workspace checkout and no per-profile dependency step.
-DEEPSEEK_BIN = "dsh"
-DEEPSEEK_ACP_PROFILE_ARGS = ("--profile", "acp")
-# Explicit override, spelled the way this harness's own environment variables are.
-_ENV_DEEPSEEK_BIN = "DSH_BIN"
 # The one variable the shipped ACP profile composes its whole permission posture
 # from: it selects a sandbox mode AND an approval policy together. Pinned so the
 # posture never depends on an ambient value. A config layer can set the composed rows
@@ -504,10 +602,6 @@ _ENV_DEEPSEEK_PERMISSION_MODE = "DSH_PERMISSION_MODE"
 # in depth and nothing more, because it does not make this harness's tool calls reach
 # Crew's gate.
 DEEPSEEK_PERMISSION_MODE = "workspace-write"
-# The harness's own installer. The ACP plugin package itself has no executable --
-# it is a plugin with peer dependencies on the harness core -- so what is installed
-# is the host binary that boots the profile it lives in.
-DEEPSEEK_INSTALL_COMMAND = "npm i -g @deepseek-ai/dsh"
 
 # High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
 # drops instead of forwarding as per-line WARNINGs.  The driving case is the
@@ -924,88 +1018,71 @@ def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
     )
 
 
-_opencode_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
-_goose_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
+#: Resolved binary per self-served harness, keyed by backend id. ONE mapping rather
+#: than one module global each: the resolution is the same three rungs for every
+#: member, so a per-harness global would be three copies of one cache. Read and
+#: written only through :func:`_resolve_self_served_bin` and the driver's
+#: cached-negative seam, which is why an absent key means "not looked at yet" and a
+#: ``(None, path)`` value means "looked, and it is not here".
+_self_served_bin_caches: dict[str, tuple[str | None, str]] = {}
+
+#: Per-backend resolution generation, bumped by every deliberate cache clear.
+#:
+#: The caches above are all written AFTER an ``await``: a site checks the sentinel,
+#: offloads the resolve, and only then assigns. So a resolution that began before an
+#: operator installed a component can complete after a re-check cleared the cache, and
+#: its assignment would stamp that stale miss back over the cleared sentinel -- the
+#: panel having already reported the harness ready, and the next spawn failing on the
+#: revived miss.
+#:
+#: A resolution captures the generation before it awaits and publishes only if the
+#: generation is still current. Keyed by BACKEND rather than by cache name because a
+#: clear is per harness and pi keeps two caches under one id, so one bump has to fence
+#: both.
+_resolution_generation: dict[str, int] = {}
 
 
-def _resolve_opencode_bin() -> tuple[str | None, str]:
-    """Find the opencode executable and the PATH searched for it.
+def _resolution_epoch(backend: str) -> int:
+    """The generation a resolution should capture before it awaits."""
+    return _resolution_generation.get(backend, 0)
+
+
+def bump_resolution_generation(backend: str) -> None:
+    """Invalidate every resolution currently in flight for *backend*.
+
+    Called by ``agent_sdk.drivers.acp.forget_cached_resolution`` alongside the sentinel
+    reset. The sentinel is what makes the NEXT spawn resolve; this is what stops an
+    OLDER one from publishing over it.
+    """
+    _resolution_generation[backend] = _resolution_generation.get(backend, 0) + 1
+
+
+def _resolve_self_served_bin(backend: str) -> tuple[str | None, str]:
+    """Find *backend*'s own executable and the PATH searched for it.
 
     Three rungs, the plain-binary ladder: explicit override, then mise, then the
-    augmented PATH. No ``node_modules`` rung and no node resolution, because this
-    harness is not a Node script -- it is a binary that serves ACP itself.
+    augmented PATH. No ``node_modules`` rung and no node resolution, because every
+    harness this serves is a binary that speaks ACP itself rather than a Node entry
+    script -- which is exactly what membership in ``ACP_BACKEND_LAUNCH`` asserts.
 
-    Returns ``(None, search_path)`` when it is absent, so the caller reports what
-    was searched rather than raising from inside the resolver.
-    """
-    search_path = augmented_path(os.environ.get("PATH", ""))
-
-    override = os.environ.get(_ENV_OPENCODE_BIN)
-    if override and platform_compat.is_executable_file(override):
-        return _normalize_exe_casing(override) or override, search_path
-
-    mise_resolved = _mise_which(OPENCODE_BIN)
-    if mise_resolved:
-        return mise_resolved, search_path
-
-    on_path = shutil.which(OPENCODE_BIN, path=search_path)
-    if on_path:
-        return _normalize_exe_casing(on_path) or on_path, search_path
-
-    return None, search_path
-
-
-def _resolve_goose_bin() -> tuple[str | None, str]:
-    """Find the goose executable and the PATH searched for it.
-
-    The same three-rung plain-binary ladder ``_resolve_opencode_bin`` walks, for the
-    same reason: this harness is a binary that serves ACP itself, not a Node entry
-    script, so there is no ``node_modules`` rung and no node to resolve.
+    The binary name and the override variable come from that record, so a harness is
+    resolved by its row rather than by a function of its own.
 
     Returns ``(None, search_path)`` when it is absent, so the caller reports what was
     searched rather than raising from inside the resolver.
     """
+    launch = launch_for(backend)
     search_path = augmented_path(os.environ.get("PATH", ""))
 
-    override = os.environ.get(_ENV_GOOSE_BIN)
+    override = os.environ.get(launch.bin_env_var)
     if override and platform_compat.is_executable_file(override):
         return _normalize_exe_casing(override) or override, search_path
 
-    mise_resolved = _mise_which(GOOSE_BIN)
+    mise_resolved = _mise_which(launch.binary)
     if mise_resolved:
         return mise_resolved, search_path
 
-    on_path = shutil.which(GOOSE_BIN, path=search_path)
-    if on_path:
-        return _normalize_exe_casing(on_path) or on_path, search_path
-
-    return None, search_path
-
-
-_deepseek_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
-
-
-def _resolve_deepseek_bin() -> tuple[str | None, str]:
-    """Find the ``dsh`` executable and the PATH searched for it.
-
-    The same three-rung plain-binary ladder the sibling harness takes -- explicit
-    override, then mise, then the augmented PATH -- because this harness is a
-    binary that boots a profile, not a Node script to resolve.
-
-    Returns ``(None, search_path)`` when it is absent, so the caller reports what
-    was searched rather than raising from inside the resolver.
-    """
-    search_path = augmented_path(os.environ.get("PATH", ""))
-
-    override = os.environ.get(_ENV_DEEPSEEK_BIN)
-    if override and platform_compat.is_executable_file(override):
-        return _normalize_exe_casing(override) or override, search_path
-
-    mise_resolved = _mise_which(DEEPSEEK_BIN)
-    if mise_resolved:
-        return mise_resolved, search_path
-
-    on_path = shutil.which(DEEPSEEK_BIN, path=search_path)
+    on_path = shutil.which(launch.binary, path=search_path)
     if on_path:
         return _normalize_exe_casing(on_path) or on_path, search_path
 
@@ -1042,7 +1119,7 @@ def _resolve_pi_acp_bin() -> tuple[list[str] | None, str]:
 def _resolve_pi_bin() -> tuple[str | None, str]:
     """Find the ``pi`` agent executable and the PATH searched for it.
 
-    The plain-binary ladder (``_resolve_opencode_bin``'s shape). The override rung
+    The plain-binary ladder (``_resolve_self_served_bin``'s shape). The override rung
     is the ADAPTER'S variable: an operator who told pi-acp which ``pi`` to run has
     made the choice this resolver exists to honour, and the gate launcher execs
     exactly that binary -- so setting the variable on the child to the launcher
@@ -1085,34 +1162,51 @@ def pi_gate_extension_path() -> str:
     )
 
 
-def _pi_gate_run_dir() -> str:
-    """The sandbox run directory the gate artifacts may live in, or a refusal.
+def _pi_gate_artifact_dir() -> str:
+    """Create the owner-only pi gate artifact directory, or refuse the session.
 
-    ``sandbox._ensure_run_dir`` falls back to the system temp directory when the
-    configured ``<config_dir>/run`` cannot be created, and logs a warning. Every
-    sandbox launcher tolerates that: a launcher in a shared directory is a
-    liveness risk, not a security one. The gate artifacts are different -- the
-    sealed extension and the launcher are what make this harness ENFORCED, and a
-    copy in a world-writable directory can be re-chmodded and rewritten by any
-    process of the same UID between the seal and the exec, the agent's own tools
-    included. So the fallback is refused here, narrowly, rather than changed in the
-    shared helper: a harness whose compensating control cannot be placed does not
-    start, the same posture the sandbox floor takes when the credential mask
-    cannot be applied. Blocking (creates the directory); callers run it off the
-    loop.
+    The launcher and sealed extension are the compensating control that makes this
+    harness enforced. They therefore live in a dedicated directory containing no
+    credentials, under a real owner-only leaf that cannot fall back to a shared
+    temporary directory. Symlinks and Windows junctions are refused because either
+    can redirect writes into an agent-chosen location. Blocking (creates and validates
+    the directory); callers run it off the loop.
+
+    This is where the leaf is materialized and where its no-follow check lives, rather
+    than on ``sandbox``'s shared sealable-ceiling lists, because that walk runs on every
+    Linux spawn whatever the backend is: an entry there would let this adapter's
+    directory refuse an unrelated session. Every pi spawn reaches this function before
+    the sandbox is built, so the read-only seal still finds a directory to bind.
     """
-    run_dir = _ensure_run_dir()
-    expected = str(config_dir() / "run")
-    if os.path.realpath(run_dir) != os.path.realpath(expected):
+    lexical_home = os.path.abspath(os.path.normpath(str(config_dir())))
+    expected = os.path.join(lexical_home, "pi-gate")
+    canonical_expected = os.path.join(os.path.realpath(lexical_home), "pi-gate")
+    try:
+        os.makedirs(expected, mode=0o700, exist_ok=True)
+        info = os.lstat(expected)
+        if not stat.S_ISDIR(info.st_mode) or platform_compat.is_link_or_junction(expected):
+            raise OSError("path is not a real directory")
+        if not platform_compat.IS_WINDOWS:
+            os.chmod(expected, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
+            info = os.stat(expected)
+        resolved = os.path.realpath(expected)
+    except OSError as exc:
         raise AcpToolGateUnroutable(
             f"{acp_tool_gate.label_for(ACP_BACKEND_PI)} routes tool calls through a gate "
-            "extension Kiro Crew seals into its own run directory, but that directory "
-            f"could not be created or secured ({expected}) and the only alternative is a "
-            "shared temporary directory, where the sealed gate could be rewritten before "
-            "the harness loads it. Fix the permissions or free space under the Kiro Crew "
-            "config directory to select this harness."
+            "extension Kiro Crew seals into its own artifact directory, but that "
+            f"directory could not be created or secured ({expected}: {exc}). Fix the "
+            "permissions or free space under the Kiro Crew config directory to select "
+            "this harness."
+        ) from exc
+    owner_only = platform_compat.IS_WINDOWS or stat.S_IMODE(info.st_mode) == 0o700
+    if resolved != canonical_expected or not owner_only:
+        raise AcpToolGateUnroutable(
+            f"{acp_tool_gate.label_for(ACP_BACKEND_PI)} routes tool calls through a gate "
+            "extension Kiro Crew seals into its own artifact directory, but that "
+            f"directory is not a real owner-only leaf ({expected}). Fix its permissions "
+            "to select this harness."
         )
-    return run_dir
+    return expected
 
 
 def _pi_gate_extension_bytes(payload: bytes) -> bytes:
@@ -1131,8 +1225,8 @@ def _seal_pi_gate_extension() -> str:
 
     Reads the packaged file, refuses unless its SHA-256 is
     :data:`PI_GATE_EXTENSION_SHA256`, and writes the verified bytes to a read-only
-    file in the owner-only sandbox run directory -- the directory the agent's file
-    tools are fenced from and every sandbox tier exposes for exec. The copy is
+    file in the owner-only pi gate artifact directory -- the directory the agent's
+    file tools are fenced from and every sandbox tier exposes for exec. The copy is
     rewritten whenever its bytes differ from the verified ones, so a copy touched
     between spawns is replaced rather than loaded. Cached per process and inputs
     like the launcher.
@@ -1157,8 +1251,8 @@ def _seal_pi_gate_extension() -> str:
             f"pinned ({digest[:12]}… vs {PI_GATE_EXTENSION_SHA256[:12]}…); a session "
             "cannot start on a gate whose code this build did not ship. Reinstall Kiro Crew."
         )
-    run_dir = _pi_gate_run_dir()
-    sealed = os.path.join(run_dir, f"kirocrew_pi_gate_{os.getpid()}.ts")
+    artifact_dir = _pi_gate_artifact_dir()
+    sealed = os.path.join(artifact_dir, f"kirocrew_pi_gate_{os.getpid()}.ts")
     try:
         with open(sealed, "rb") as fh:
             if fh.read() == payload:
@@ -1166,7 +1260,7 @@ def _seal_pi_gate_extension() -> str:
     except OSError:
         pass
     fd, tmp = tempfile.mkstemp(
-        dir=run_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=".tmp"
+        dir=artifact_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=".tmp"
     )
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -1200,9 +1294,9 @@ def _pi_gate_launcher_body(pi_bin: str, extension_path: str) -> str:
 def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
     """Write (once per process and inputs) the launcher and return its path.
 
-    Lives in the sandbox run directory -- the same owner-only directory the sandbox
-    launchers live in, which every sandbox tier exposes to the child because the
-    child has to exec a launcher out of it. Written under a unique ``mkstemp`` name
+    Lives in the owner-only pi gate artifact directory, which the sandbox exposes
+    read-only because the child has to exec this launcher and read the sealed gate
+    extension. Written under a unique ``mkstemp`` name
     that is published to the cache only after the write and the mode change have
     finished, so a concurrent spawn never reads a half-written file, and cached so
     N sessions share one launcher rather than leaving N files behind.
@@ -1213,10 +1307,10 @@ def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
     cached = _pi_gate_launcher_cache.get(key)
     if cached and os.path.isfile(cached):
         return cached
-    run_dir = _pi_gate_run_dir()
+    artifact_dir = _pi_gate_artifact_dir()
     suffix = ".cmd" if platform_compat.IS_WINDOWS else ".sh"
     fd, tmp = tempfile.mkstemp(
-        dir=run_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=suffix
+        dir=artifact_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=suffix
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
@@ -1321,6 +1415,167 @@ def _opencode_uniform_permission(raw: object) -> object:
             return values.pop()
         return json.dumps(raw, sort_keys=True)
     return None
+
+
+#: How much of a refused read-back child's stderr is examined at all.
+#: A harness is free to write a screenful of banner, or a hundred megabytes, and
+#: this only ever needs the tail, where a launcher puts its verdict. Bounding the
+#: scan bounds the matching work; nothing outside the window is read.
+_READBACK_STDERR_SCAN_CHARS = 3200
+
+#: How many recognised fault shapes one refusal reports, most specific first.
+#: A shebang fault spells two at once (``bad interpreter: No such file or
+#: directory``) and both halves are worth having; past that a refusal is being
+#: padded rather than explained.
+_READBACK_FAULT_MAX_SHAPES = 2
+
+#: The CLOSED vocabulary of exec-failure shapes a refused read-back can report.
+#:
+#: Each entry pairs a pattern matched against the child's stderr with the phrase
+#: THIS MODULE publishes when it matches, so published text is always a literal
+#: written here and never a byte the child wrote. That is the point rather than a
+#: side effect. The child is a foreign harness binary and its stderr can hold
+#: whatever the operator's environment put in front of it, a credential included;
+#: any scheme that ECHOES those bytes has to prove no credential survives, which
+#: means proving a negative about arbitrary bytes against redactor patterns that
+#: need contiguity and label anchors. One inserted byte -- a line wrap, an SGR
+#: colour code -- breaks the anchor while leaving every character of the secret
+#: sitting in the text. With an SGR colour code inside a ``glpat-`` token body, 530
+#: of 700 splices leave the whole token readable that way: rejoining the run
+#: destroys the ``-`` the pattern anchors on, and not rejoining leaves the ``[31m``
+#: residue inside it. Reporting a MATCH removes the question instead of answering
+#: it -- there is no path from a child byte to published text, so there is nothing
+#: left to prove about the bytes.
+#:
+#: Covers what BOTH read-backs hit, which is why it reaches past exec failures: the
+#: pi read-back's launcher refuses an exec, while the opencode read-back parses a
+#: config document and can reject the flags it was handed. A shape neither of them
+#: produces is not worth carrying.
+#:
+#: Ordered most specific first, because the shapes overlap: a shebang fault reads
+#: ``bad interpreter: No such file or directory``, where the interpreter is the
+#: cause and the missing file only its symptom.
+#:
+#: What this deliberately drops is the DETAIL inside a recognised message -- which
+#: line of the config failed to parse, which path the OS refused. A capture would
+#: put child bytes back in the output and reopen the whole question for the sake of
+#: a number the harness repeats the moment the operator runs it themselves.
+#:
+#: Case-insensitive, and matched as substrings rather than whole lines, because the
+#: launcher's wording differs by platform -- ``/bin/sh``, ``dyld``, ``cmd.exe`` and
+#: Node each frame these differently -- while the fault underneath does not.
+_READBACK_FAULT_SHAPES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"bad interpreter", re.IGNORECASE),
+        "its shebang interpreter could not be run",
+    ),
+    (
+        re.compile(
+            r"bad CPU type|Exec format error|ENOEXEC|cannot execute binary file",
+            re.IGNORECASE,
+        ),
+        "it is built for a different CPU or executable format",
+    ),
+    (
+        re.compile(r"code ?signature|Killed: ?9", re.IGNORECASE),
+        "the OS killed it over its code signature",
+    ),
+    (
+        re.compile(r"Library not loaded|image not found|shared object file", re.IGNORECASE),
+        "a shared library it needs is missing",
+    ),
+    (
+        re.compile(r"unknown (?:flag|option|argument)|unrecognized (?:option|argument)", re.I),
+        "the gateway passed it a flag this harness version does not accept",
+    ),
+    (
+        re.compile(
+            r"cannot parse|parse error|syntax ?error|unexpected token|unexpected end of"
+            r"|invalid JSON|JSONDecodeError|YAMLException",
+            re.IGNORECASE,
+        ),
+        "its configuration could not be parsed",
+    ),
+    (
+        re.compile(r"Operation not permitted|EPERM", re.IGNORECASE),
+        "the OS denied the operation, as a sandbox, quarantine or privacy policy does",
+    ),
+    (
+        re.compile(r"Permission denied|EACCES", re.IGNORECASE),
+        "the OS refused to execute it",
+    ),
+    (
+        re.compile(r"Text file busy", re.IGNORECASE),
+        "the file was still being written",
+    ),
+    (
+        re.compile(r"Is a directory", re.IGNORECASE),
+        "the path is a directory, not a program",
+    ),
+    (
+        re.compile(r"Too many levels of symbolic links", re.IGNORECASE),
+        "its path loops through symlinks",
+    ),
+    (
+        re.compile(r"No such file or directory|ENOENT|not found", re.IGNORECASE),
+        "the path does not exist",
+    ),
+)
+
+
+def _readback_stderr_diagnosis(stderr: object) -> str:
+    """What a refused read-back child's stderr says went wrong, in this module's words.
+
+    A gate read-back that fails reports its child's exit code, and that code alone
+    names a verdict without a cause: on the pi read-back the launcher is ``/bin/sh``
+    exec'ing the resolved harness binary, so ``exit 126`` is the shell refusing the
+    exec, and an exec the OS denied (``Permission denied``), a shebang it cannot
+    resolve (``bad interpreter``) and a binary built for another architecture
+    (``Bad CPU type in executable``) are three different faults with three different
+    fixes. Only the child knows which one happened, so the refusal that reaches the
+    operator carries it.
+
+    What the refusal does NOT carry is the child's own bytes. The stderr is matched
+    against :data:`_READBACK_FAULT_SHAPES` and the phrase written there for the
+    matching shape is what gets published, so the output is drawn from a closed
+    vocabulary defined in this module. Nothing has to be proved about the child's
+    bytes because none of them are published -- see that constant for the measured
+    reason echoing the bytes cannot offer the same guarantee.
+
+    An unrecognised stderr answers ``""``, and the caller then reports the bare exit
+    code with no diagnosis. The caller still separates that from a SILENT child, so
+    "said something we do not recognise" and "said nothing at all" stay different
+    answers to the operator.
+
+    Non-strings and blank stderr answer ``""``.
+    """
+    if not isinstance(stderr, str) or not stderr:
+        return ""
+    window = stderr[-_READBACK_STDERR_SCAN_CHARS:]
+    matched: list[str] = []
+    for pattern, phrase in _READBACK_FAULT_SHAPES:
+        if pattern.search(window) and phrase not in matched:
+            matched.append(phrase)
+            if len(matched) == _READBACK_FAULT_MAX_SHAPES:
+                break
+    return "; ".join(matched)
+
+
+def _readback_detail_with_diagnosis(detail: str, stderr: object) -> str:
+    """*detail* plus what the child said about its own failure, when that is known.
+
+    Three outcomes, and the operator needs them apart. A recognised fault appends
+    the vocabulary phrase. Stderr holding something unrecognised says so without
+    quoting it, because "the harness explained itself and we could not read the
+    explanation" points at this vocabulary needing a shape, while a SILENT child
+    points at the harness. Nothing on stderr leaves *detail* alone.
+    """
+    diagnosis = _readback_stderr_diagnosis(stderr)
+    if diagnosis:
+        return f"{detail}: {diagnosis}"
+    if isinstance(stderr, str) and stderr.strip():
+        return f"{detail}, and its stderr holds no message this gateway recognises"
+    return detail
 
 
 def _scrub_observed(value: object) -> object:
@@ -1494,7 +1749,10 @@ def _resolve_ssh_auth_sock(env: dict[str, str]) -> None:
         return  # already valid
 
     if sys.platform == "darwin":
-        patterns = ["/tmp/com.apple.launchd.*/Listeners"]
+        patterns = [
+            "/tmp/com.apple.launchd.*/Listeners",
+            "/var/run/com.apple.launchd.*/Listeners",
+        ]
     else:
         uid = os.getuid()
         patterns = [
@@ -2438,6 +2696,25 @@ class AcpError(Exception):
         # is a session-expiry / rejected-credential answer, so the dashboard's
         # error row can offer the Kiro sign-in card instead of a retry.
         self.auth_required: bool = False
+        # Structural-rejection tag, set by :func:`_raise_acp_error` when the raw
+        # frame is a malformed-request answer ("Improperly formed request"). A
+        # DETERMINISTIC rejection of the payload's SHAPE: unlike a transient
+        # backend fault, re-sending the identical context reproduces it exactly.
+        # ``transient`` already carries the retry-layer verdict for the SAME
+        # frame (both False here); this is the narrower fact that the failure is
+        # a structural rejection specifically, so a self-driving caller (the
+        # auto-nudge loop) can stop re-firing the same context rather than
+        # merely declining an in-turn retry. Only structural terminality sets
+        # it — a spent usage limit or an unentitled model are also terminal but
+        # a NEW context can succeed, so they are not this fact.
+        self.structural_terminal: bool = False
+        # Whether this error happened while STARTING a session rather than on a
+        # prompt or another request. The twin of
+        # ``AcpRequestTimeout.session_start_failed`` on the runtime path: the two
+        # exception families share no base, so a self-driving caller reads the
+        # fact with ``getattr`` and both halves must spell it the same way. Only
+        # the raise sites that know the method set it True.
+        self.session_start_failed: bool = False
 
 
 class AcpTimeoutError(AcpError):
@@ -2478,6 +2755,77 @@ class AcpAuthRequired(AcpError):  # noqa: N818
     def __init__(self, message: str = "", *, backend: str = "") -> None:
         super().__init__(message)
         self.auth_required = backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
+
+
+class AcpSandboxInitFailed(AcpError):  # noqa: N818
+    """An OS sandbox refused to initialize, so the agent child never started.
+
+    Non-retryable, for the reason :class:`AcpAuthRequired` and
+    :class:`AcpToolGateUnroutable` are: the refusal is a property of the host and
+    its configuration, so the respawn the reconnect ladder would make hits the
+    same wall, and every attempt costs a spawn plus a teardown before reporting
+    the same thing. ``transient`` is fixed ``False`` so the retry ladders that
+    read the verdict off the exception (``llm_helpers.acp_error_is_transient``,
+    and through it every consumer from the dashboard turn to a cron tick) stop on
+    the first one without any of them matching on wording.
+
+    A DISTINCT type rather than a flag on ``AcpProcessDied``, because the two
+    answer different questions. ``AcpProcessDied`` says the child is gone and
+    leaves whether to resubmit the turn to its own classification; this says the
+    child cannot be started at all until a human changes something.
+
+    The message names which of the two isolation layers wrapped the spawn and what
+    to do about it, and ``corroborated`` decides how far that goes: the switch that
+    turns a layer OFF is emitted only when a TRUSTED run reached that verdict, never
+    on the strength of the dead child's own stderr -- see
+    :func:`sandbox.sandbox_init_remediation`.
+
+    Deliberately NOT an automatic downgrade to an unconfined spawn. Falling back
+    to no isolation on a sandbox failure is refused by design -- it would turn a
+    broken host into a silently unsandboxed agent -- so the useful thing this can
+    do is fail fast and say which layer to look at, loudly.
+    """
+
+    def __init__(self, *, layer: str, detail: str = "", corroborated: bool = False) -> None:
+        # Layer and remedy are LOCALS folded into the message, not attributes: the
+        # message is what an operator and every error surface read, and a
+        # structured field with no reader is a promise nobody keeps.
+        remediation = sandbox_init_remediation(layer, corroborated=corroborated)
+        # ``detail`` is the child's own stderr, already redacted by the caller
+        # that captured it (both transports redact before retaining: the text is
+        # untrusted subprocess output that can echo a token, and this message
+        # reaches a session card, the security event log, and a cron job's
+        # persisted last_error).
+        said = f" -- {detail}" if detail.strip() else ""
+        super().__init__(
+            f"the {layer} sandbox failed to initialize, so the agent process could "
+            f"not start{said}. Retrying cannot fix this: {remediation}",
+            transient=False,
+        )
+
+
+class AcpRegistrationRateLimited(AcpProcessDied):  # noqa: N818
+    """The runtime died after its dynamic registration was throttled (HTTP 429).
+
+    A SUBCLASS of :class:`AcpProcessDied`, because the process IS gone and every
+    existing death handler must keep treating it as a death; the narrower fact is
+    WHY: the child's registration calls were rate-limited by the endpoint, which
+    is a transient property of the endpoint's capacity, not of this host or this
+    request. ``transient`` is fixed True so the retry ladders that read the
+    verdict off the exception (``llm_helpers.acp_error_is_transient``, and
+    through it the sub-agent run loop and ``stream_and_collect``) retry with
+    their existing bounded backoff instead of surfacing a terminal generic
+    death. Replay SAFETY stays where it already lives: every consumer's
+    zero-activity gate decides between a verbatim replay and a continue, so this
+    classification never widens what a retry may re-run.
+
+    The message carries ONE retained cause rather than the full stderr tail: the
+    throttle prints the identical line on every attempt, and five copies of it
+    behind a death summary is the repetitive wall this type exists to replace.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, transient=True)
 
 
 class AcpToolGateUnroutable(AcpError):  # noqa: N818
@@ -2744,6 +3092,244 @@ def is_auth_failure_output(haystack: str) -> bool:
     return bool(_RE_AUTH.search(haystack)) or _is_session_expired(haystack)
 
 
+# An OS sandbox that refused to initialize, read off the dead child's stderr.
+# Detected during spawn/init for the same reason the auth vocabulary above is: the
+# condition is DETERMINISTIC, so the respawn the reconnect ladder is about to make
+# reproduces it exactly, and the operator gets a generic "process exited" card
+# several failed attempts later instead of the one line that names the fix.
+#
+# Anchored on a sandbox token in every alternative, deliberately. The failure
+# arrives as a three-line burst whose other two lines are a bare spawn error
+# (``Failed to spawn child process`` / ``Invalid argument (os error 22)``) and a
+# bare errno (``Operation not permitted``) -- neither is sandbox-specific, both
+# are ordinary output for a missing binary, a bad interpreter or a denied
+# credential file, and matching either alone would latch a PERMANENT verdict onto
+# a class of deaths a respawn legitimately fixes. Whichever layer refused prints a
+# sandbox token of its own, so requiring one costs no coverage:
+#
+# * ``sandbox initialization failed`` / ``sandbox_apply`` -- Seatbelt's own
+#   refusal, printed by whichever process called it (the harness's internal
+#   sandbox, or ``sandbox-exec`` under Crew's wrap).
+# * ``sandbox-exec:`` -- the macOS wrapper Crew's own seatbelt path execs.
+# * Crew's Linux namespace launcher refusing after the spawn, classified by
+#   :func:`sandbox.launcher_refusal` rather than by its prefixes. The prefixes
+#   alone are the WRONG test: that function deliberately answers ``None`` for
+#   launcher lines that are not sandbox failures at all, and two of them are
+#   actively retryable -- ``FATAL ... did not publish`` is a failed parent/child
+#   pipe handshake it classifies as ``transient`` (it self-heals on the next
+#   spawn), and the hardlinked-credential refusal means the sandbox WORKED and
+#   found host state it must not paper over. Only its ``no_backend`` kind -- the
+#   host cannot build the sandbox -- is this signature. Classified per LINE
+#   because that function returns on its first matching line, so a hardlink line
+#   above a real ``unshare`` refusal would otherwise hide it.
+#
+# The EMITTER does not identify the responsible LAYER, which is why the raise site
+# supplies that separately -- see :func:`sandbox_init_failure`. A harness sandbox
+# nested inside Crew's wrap fails with the harness's own wording while the layer
+# to turn off is Crew's.
+_RE_SANDBOX_INIT_FAILURE = re.compile(
+    r"sandbox\s+initialization\s+failed|\bsandbox_apply\b|^\s*sandbox-exec:",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def is_sandbox_init_failure_output(haystack: str) -> bool:
+    """True when *haystack* (a child's stderr) carries an OS-sandbox init refusal.
+
+    Shared by both ACP transports -- ``AcpClient`` reads its own stderr ring
+    buffer, ``AcpRuntime`` latches per line at its drain -- so the two cannot come
+    to disagree about what the signature IS, the same anti-drift reason
+    :func:`is_auth_failure_output` is one function.
+    """
+    if _RE_SANDBOX_INIT_FAILURE.search(haystack):
+        return True
+    for line in haystack.splitlines():
+        if not line.strip().startswith(LAUNCHER_EXIT_PREFIXES):
+            continue
+        classified = launcher_refusal(line)
+        if classified is not None and classified[0] == "no_backend":
+            return True
+    return False
+
+
+async def sandbox_init_failure(
+    detail: str,
+    *,
+    crew_wrap: bool,
+    mode: str = "",
+    extra_hidden_dirs: tuple[str, ...] = (),
+    corroboration_output: str = "",
+) -> "AcpSandboxInitFailed":
+    """Build the classified error for a spawn an OS sandbox refused.
+
+    *crew_wrap* is the one fact the stderr cannot carry: WHICH layer wrapped the
+    spawn. Callers read it from the argv their own wrap returned
+    (:func:`sandbox.wrapped_by_crew_sandbox`) rather than from the signature,
+    because a harness sandbox nested inside Crew's wrap prints the harness's
+    wording while the layer the operator must change is Crew's -- the field
+    reports this exists for were resolved by Crew's own switch, on stderr that
+    named the harness. When Crew's wrap is NOT in the chain the harness's own
+    sandbox is the only one left. Two layers, no third state: a spawn with neither
+    cannot produce this signature at all.
+
+    ASYNC because of the second question, which is the one that decides whether the
+    message may hand out a disable switch: does a TRUSTED run agree that the layer
+    refuses on this host? ``corroborate_launcher_refusal`` answers it by re-running
+    the real launcher around a trusted no-op, whose stderr no child wrote -- and it
+    blocks on a subprocess, so it goes off the loop exactly as the first-run gate
+    runs it. It answers ``None`` off Linux and for output carrying no launcher line,
+    and ``transient`` for a failed launcher readiness handshake; only its
+    ``no_backend`` verdict -- the host cannot build the sandbox -- corroborates.
+
+    *extra_hidden_dirs* is the refused spawn's own mask set so the trusted run
+    exercises the same mounts. Omitting it can only make the trusted run refuse
+    LESS, which withholds the switch rather than handing it out wrongly -- the safe
+    direction for a default.
+
+    *corroboration_output* is the stderr to CLASSIFY, separate from *detail* which
+    is the stderr to SHOW, because the two need different shapes. The launcher's
+    refusal is recognised per LINE, and a caller whose display string folds the tail
+    onto one line behind a summary prefix (the shared runtime's ``death_summary()``
+    does exactly that) would present nothing a line test can match -- corroboration
+    would silently never run and the switch would never be reachable. Defaults to
+    *detail*, which is the right answer for a caller holding the raw tail.
+    """
+    layer = SANDBOX_LAYER_CREW if crew_wrap else SANDBOX_LAYER_HARNESS
+    corroborated = False
+    to_classify = corroboration_output or detail
+    if launcher_refusal(to_classify) is not None:
+        verdict = await asyncio.to_thread(
+            functools.partial(
+                corroborate_launcher_refusal,
+                to_classify,
+                mode=mode or "strict",
+                extra_hidden_dirs=extra_hidden_dirs,
+            )
+        )
+        # ``no_backend`` ONLY. The same function answers ``("transient", ...)``
+        # for a failed launcher readiness handshake, which says nothing about the
+        # host and self-heals on the next spawn, so treating it as corroborated
+        # would hand out the disable switch for a condition that fixes itself.
+        # The identical test the signature detector applies to a launcher line,
+        # for the identical reason.
+        corroborated = verdict is not None and verdict[0] == "no_backend"
+    return AcpSandboxInitFailed(layer=layer, detail=detail, corroborated=corroborated)
+
+
+async def sandbox_init_failure_for_runtime(runtime: Any) -> "AcpSandboxInitFailed | None":
+    """The classified error when *runtime* observed a sandbox refusal, else ``None``.
+
+    ONE function for the three sites that translate a shared-runtime STARTUP
+    failure, so they cannot answer this differently. All three are in
+    ``providers/acp.py`` -- the first ``spawn()``, the resume respawn, and
+    ``create_session()`` -- and each already restates the auth translation inline.
+    A third restatement of THIS one is how one startup path ends up classifying
+    what another does not, which is the shape that let the shared-runtime startup
+    miss the latch entirely in the first place.
+
+    Three and not four: the per-turn death translation reads no latch, because the
+    latch is spent when ``initialize`` completes and a live session exists only
+    after that.
+
+    Duck-typed rather than annotated against ``AcpRuntime``: this module is below
+    the runtime in the import order and cannot name it.
+
+    Settles the stderr drain FIRST, and that is not a nicety. The latch is written
+    by the drain task, while the death that brings a caller here is discovered on
+    the stdout side and fails the pending ``initialize`` synchronously -- so both
+    are runnable at once and a straight read can see ``False`` for a line already
+    in the pipe. That is the ordinary shape of a real refusal, not a corner: the
+    child writes its signature and closes stdout together. Bounded and swallowing
+    (see :meth:`AcpRuntime.settle_stderr`), the same pattern ``AcpClient`` applies
+    at its own EOF. Because every caller asks this BEFORE the auth translation,
+    the settle covers that read too.
+    """
+    await runtime.settle_stderr()
+    if not runtime.saw_sandbox_init_failure():
+        return None
+    # The retained summary already carries the redacted stderr tail; it is empty
+    # on a restricted session, where the latch still fires and the remedy is what
+    # matters.
+    return await sandbox_init_failure(
+        runtime.death_summary() or "",
+        crew_wrap=runtime.sandbox_wrapped_by_crew,
+        mode=runtime.sandbox_mode,
+        extra_hidden_dirs=runtime.sandbox_hidden_dirs,
+        # The retained summary is what an operator READS -- one line, the tail
+        # folded behind a returncode prefix. Corroboration needs the lines
+        # themselves, so it gets them separately; passing the summary would leave
+        # the launcher's own refusal unrecognisable and the trusted run unmade.
+        corroboration_output=runtime.redacted_stderr_tail(),
+    )
+
+
+# A dynamic-registration call the endpoint throttled, read off the dead child's
+# stderr. Deliberately CONJUNCTIVE per line: a line must carry both the
+# registration context and an unambiguous too-many-requests marker before it
+# classifies, so neither a model-turn throttle (429 with no registration
+# context, which the provider-error path already classifies from its structured
+# frame) nor an unrelated registration failure (auth rejection, malformed
+# response — both terminal) can fire this. A bare ``429`` is deliberately NOT a
+# marker: a digit that lands in an exit code or a byte count must not upgrade a
+# crash to a throttle.
+#
+# Free-text stderr is an accepted evidence source here for the same reason it
+# is for :func:`is_auth_failure_output` and the sandbox latch: the child's
+# stderr is subprocess diagnostic output, not the structured frame the
+# compaction classifier insists on — but it is also the ONLY surface this
+# failure reaches, because the child dies before any frame can carry it. The
+# consequence of a false positive is bounded (a budgeted retry of a turn whose
+# replay safety is gated on observed activity by every consumer), which is why
+# the conjunctive signature above is the whole defence this needs.
+_RE_REGISTRATION_FAILED = re.compile(r"\bregistration failed\b", re.IGNORECASE)
+_RE_REGISTRATION_THROTTLE_MARK = re.compile(
+    r"\bHTTP 429\b|\btoo many requests\b|\brequested too many times\b", re.IGNORECASE
+)
+
+
+def registration_throttle_line(haystack: str) -> str | None:
+    """The first line of *haystack* showing a throttled registration, or ``None``.
+
+    *haystack* is a child's retained stderr (newline-joined lines). Matched per
+    LINE so the two tokens must describe the same event: a registration failure
+    early in the tail plus an unrelated throttle mention later must not combine
+    into a verdict neither line supports. Returns the line itself so the caller
+    can retain ONE sanitized cause instead of the tail's repeated copies.
+    """
+    for line in haystack.splitlines():
+        if _RE_REGISTRATION_FAILED.search(line) and _RE_REGISTRATION_THROTTLE_MARK.search(line):
+            return line.strip()
+    return None
+
+
+def is_registration_throttle_output(haystack: str) -> bool:
+    """True when *haystack* (a child's stderr) shows a throttled registration.
+
+    Shared by both ACP transports — ``AcpClient`` reads its own stderr ring
+    buffer, the shared-runtime death translations read
+    ``AcpRuntime.redacted_stderr_tail()`` — so the two cannot come to disagree
+    about what the signature IS, the same anti-drift reason
+    :func:`is_auth_failure_output` is one function.
+    """
+    return registration_throttle_line(haystack) is not None
+
+
+def registration_rate_limited_error(base: str, cause: str) -> "AcpRegistrationRateLimited":
+    """Build the typed error for a death whose evidence shows a registration throttle.
+
+    ONE composer for every translation site (the shared-runtime ``_died``, the
+    provider's ``_translate_dead``, the direct client's own death paths), so the
+    guidance and the one-retained-cause shape cannot drift apart. *base* is the
+    site's own death context; *cause* is the single matched stderr line, already
+    redacted by whichever reader captured it.
+    """
+    return AcpRegistrationRateLimited(
+        f"{base} — dynamic registration was rate-limited by the endpoint "
+        f"(HTTP 429); this is endpoint throttling, not a crash — retry later. "
+        f"Cause: {cause}"
+    )
+
+
 # Account/plan capacity is EXHAUSTED — terminal. Distinct from a throttle: a
 # throttle clears in seconds and a retry is the right move, whereas a spent
 # monthly allowance does not come back until it resets, so retrying only adds
@@ -2938,6 +3524,88 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     )
 
 
+#: ``ProviderErrorClass.kind`` values, in the precedence
+#: :func:`classify_provider_error` applies (first match wins).
+PROVIDER_ERROR_USAGE_LIMIT = "usage_limit"
+PROVIDER_ERROR_MALFORMED_REQUEST = "malformed_request"
+PROVIDER_ERROR_MODEL_UNAVAILABLE = "model_unavailable"
+PROVIDER_ERROR_THROTTLE = "throttle"
+PROVIDER_ERROR_CREDENTIAL_PROPAGATION = "credential_propagation"
+PROVIDER_ERROR_AUTH = "auth"
+PROVIDER_ERROR_SESSION_EXPIRED = "session_expired"
+PROVIDER_ERROR_CONNECTION = "connection"
+PROVIDER_ERROR_HTTP_5XX = "http_5xx"
+PROVIDER_ERROR_UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ProviderErrorClass:
+    """One provider-error verdict: what the text says and whether a retry can help.
+
+    ``kind`` is one of the ``PROVIDER_ERROR_*`` tokens; ``retryable`` is exactly
+    the answer :func:`_is_transient_raw_error` gives for the same text, so the
+    two can never disagree about a frame; ``matched`` is the token the pattern
+    hit (for logs), never the whole message.
+    """
+
+    kind: str
+    retryable: bool
+    matched: str = ""
+
+    @property
+    def terminal(self) -> bool:
+        return not self.retryable
+
+
+def classify_provider_error(haystack: str, *, data: str | None = None) -> ProviderErrorClass:
+    """Name the provider failure in *haystack* using this module's ONE pattern set.
+
+    *haystack* is the message text (formatted or raw); *data* is the raw JSON-RPC
+    ``error.data`` field when the caller has it (defaults to *haystack*), because
+    the malformed-request and model-unavailable patterns are matched against the
+    provider's own field only, never against a phrase echo in ``message``.
+
+    Precedence mirrors :func:`_is_transient_raw_error` exactly: usage-limit →
+    malformed-request → model-unavailable → throttle → credential-propagation →
+    auth → session-expiry → connection → 5xx (named / status / retry hint) →
+    unknown. ``unknown`` is terminal. This is the public face of the private
+    ``_RE_*`` patterns: the dependency coordinator's ACP adapter and any other
+    reader classify through it so a third copy of the vocabulary cannot drift.
+    """
+    text = haystack or ""
+    data_field = text if data is None else data
+    if _RE_USAGE_LIMIT.search(text):
+        return ProviderErrorClass(PROVIDER_ERROR_USAGE_LIMIT, False, "usage limit")
+    if _RE_MALFORMED_REQUEST.search(data_field):
+        return ProviderErrorClass(PROVIDER_ERROR_MALFORMED_REQUEST, False, "malformed request")
+    if _RE_MODEL_UNAVAILABLE.search(data_field) or _RE_MODEL_TEMP_UNAVAILABLE.search(data_field):
+        return ProviderErrorClass(PROVIDER_ERROR_MODEL_UNAVAILABLE, True, "model unavailable")
+    match = _RE_THROTTLE_NAMED.search(text) or _RE_THROTTLE_GENERIC.search(text)
+    if match:
+        return ProviderErrorClass(PROVIDER_ERROR_THROTTLE, True, match.group(0))
+    if is_credential_propagation_delay(text):
+        return ProviderErrorClass(
+            PROVIDER_ERROR_CREDENTIAL_PROPAGATION, True, "credential propagation"
+        )
+    match = _RE_AUTH.search(text)
+    if match:
+        return ProviderErrorClass(PROVIDER_ERROR_AUTH, False, match.group(0))
+    if _is_session_expired(text):
+        return ProviderErrorClass(PROVIDER_ERROR_SESSION_EXPIRED, False, "session expired")
+    match = _RE_CONNECTION.search(text)
+    if match:
+        return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, match.group(0))
+    match = (
+        _RE_5XX_NAMED.search(text)
+        or _RE_5XX_STATUS.search(text)
+        or _RE_5XX_HINT.search(text)
+        or _RE_GENERATE_FAILED.search(data_field)
+    )
+    if match:
+        return ProviderErrorClass(PROVIDER_ERROR_HTTP_5XX, True, match.group(0))
+    return ProviderErrorClass(PROVIDER_ERROR_UNKNOWN, False)
+
+
 def advertised_model_ids(entries: object) -> list[str]:
     """Model ids out of an ``availableModels``-shaped list, defensively.
 
@@ -3015,6 +3683,27 @@ def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str
     either spelling, and an id advertised verbatim (qualifier and all) never
     gets peeled at all.
 
+    When the peel misses too, both sides are folded with
+    :func:`model_registry.catalog_key` — the same fold
+    :func:`model_registry.namespace_vocabulary` judges nativeness with. That
+    fold strips an inference-profile prefix, the ``[1m]`` window marker and an
+    effort suffix, so a pin spelled in another namespace's provider-id form
+    (``global.anthropic.claude-opus-4-8[1m]``) meets the bare id this harness
+    advertises for the same model (``claude-opus-4.8``). Without it the two
+    sides fold with different functions: the vocabulary side calls the pin
+    native, this side finds no spelling, and the cold start reports an
+    entitlement problem for what is a spelling one. The fold is a SPELLING fold,
+    not a model fold: a candidate the static registry places as a DIFFERENT
+    canonical model from the pin (``claude-opus-4-8`` at 200K against a pin
+    naming the 1M ``claude-opus-4.8``) is rejected even though ``catalog_key``
+    folds the window marker away -- see
+    :func:`model_registry.same_registered_model` -- so a pin never resolves to
+    its neighbour with another context window. Several advertised spellings of
+    the SAME model can remain (a base and a 1M variant the registry lists as one
+    model); the winner is :func:`model_registry.preferred_advertised_spelling`,
+    the tie-break :func:`model_registry.resolve_wire_model_id` applies, so the
+    two folds cannot prefer different spellings.
+
     Returns the ADVERTISED spelling of the match, not the caller's: the result
     is meant to be sent on the wire (``session/set_model`` accepts advertised
     ids), and it keeps the display verdict and the wire withhold answering from
@@ -3038,7 +3727,16 @@ def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str
     namespace, sep, bare = wanted.partition("::")
     if sep and namespace and bare in by_key:
         return by_key[bare]
-    return ""
+    wanted_key = model_registry.catalog_key(wanted)
+    if not wanted_key:
+        return ""
+    folded = [
+        m
+        for m in ids
+        if model_registry.catalog_key(m) == wanted_key
+        and model_registry.same_registered_model(model_id, m)
+    ]
+    return model_registry.preferred_advertised_spelling(folded)
 
 
 def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> str:
@@ -3253,6 +3951,9 @@ async def _push_model_via_effort_split(driver: Any, backend: str, model_id: str)
     # selector" and skips -- the session then runs the suffix's effort while the
     # UI reports the slot's.
     effort_option = effort_config_option_id(backend)
+    # ...and the same resolver for the VALUE, so the split writes the level in the
+    # harness's own vocabulary rather than the suffix's verbatim.
+    effort = effort_config_option_value(backend, effort)
     if not driver.supports_config_option(effort_option):
         logger.warning(
             "ACP model %s applied as %s; adapter exposes no %r option, effort %s not applied",
@@ -3658,6 +4359,17 @@ def _raise_acp_error(
     if _PROMPT_BUSY_RE.search(raw_data):
         raise AcpPromptBusy(formatted)
     err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
+    # Tag a STRUCTURAL rejection ("Improperly formed request") so a self-driving
+    # caller can stop re-sending the same context rather than merely decline an
+    # in-turn retry. Scoped to the provider `data` field only -- exactly the
+    # scope `_is_transient_raw_error` and `_format_acp_error` use for this
+    # pattern -- so a phrase echo carried only by the JSON-RPC `message` cannot
+    # flip an unrelated error into a structural verdict. The frame is already
+    # terminal via `transient=False`; this narrows WHY (shape, not a momentary
+    # fault), which is the fact the auto-nudge storm fix reads.
+    raw_data_field = str(error.get("data", "") or "") if isinstance(error, dict) else ""
+    if _RE_MALFORMED_REQUEST.search(raw_data_field):
+        err.structural_terminal = True
     # Tag a model-rejection so the SUBSTITUTE (background) retry layer can pick a
     # served model; harmless on every other error (attributes just stay unset).
     rejected = _rejected_model_from_error(error)
@@ -3969,34 +4681,50 @@ def _read_basename(pid: int) -> bytes | None:
         return None
 
 
-# Type alias for child PID records: (start_time, recorded_basename)
-ChildRecord = tuple[int | None, bytes | None]
+# Type alias for child PID records: (start_id, recorded_basename).
+#
+# The identity half is ``platform_compat.get_process_start_id``, NOT the local
+# ``_get_start_time``. That matters on macOS, where ``_get_start_time`` returns
+# ``hash(ps -o lstart=)``: ``ps`` reports whole seconds, so two processes started
+# in the same second alias to one value and a recycled pid can FALSE-MATCH, and
+# ``hash()`` is PYTHONHASHSEED-randomized so the value is not comparable outside
+# the interpreter that produced it. ``get_process_start_id`` is microsecond
+# libproc on macOS, 100 ns creation FILETIME on Windows and stat field 22 on
+# Linux, is stable to persist and compare across processes, and spawns nothing.
+# Being a neutral value also lets the pid-lifecycle layer verify these records
+# with platform_compat alone, instead of importing this module to do it.
+ChildRecord = tuple[str | None, bytes | None]
 
 
 def _capture_child_records(pids: list[int]) -> dict[int, ChildRecord]:
-    """Capture (start_time, basename) for each pid as a ChildRecord map.
+    """Capture (start_id, basename) for each pid as a ChildRecord map.
 
-    On macOS ``_get_start_time`` / ``_read_basename`` shell out to ``ps`` (and
-    ``_get_child_pids`` to ``pgrep``), which can block during the subprocess
-    spawn (fork/exec). Callers running on the event loop MUST invoke this via
+    On macOS ``_read_basename`` shells out to ``ps`` (and ``_get_child_pids`` to
+    ``pgrep``), which can block during the subprocess spawn (fork/exec). Callers
+    running on the event loop MUST invoke this via
     ``run_in_executor(subprocess_executor(), ...)`` so the spawns happen on a
-    worker thread and never wedge the loop.
+    worker thread and never wedge the loop. Only the basename half needs that:
+    the identity half spawns nothing on any platform.
     """
-    return {p: (_get_start_time(p), _read_basename(p)) for p in pids}
+    return {p: (platform_compat.get_process_start_id(p), _read_basename(p)) for p in pids}
 
 
 def _is_our_child(
-    pid: int, expected_start: int | None = None, expected_basename: bytes | None = None
+    pid: int, expected_start: str | None = None, expected_basename: bytes | None = None
 ) -> bool:
     """Verify a PID still belongs to a process we spawned (deny-by-default).
 
-    Compares recorded basename and start_time against live values. No hardcoded
+    Compares recorded basename and start id against live values. No hardcoded
     allowlist — any binary recorded at spawn time is automatically supervised.
     Returns False for recycled PIDs or unreadable processes.
+
+    The start id comes from ``platform_compat.get_process_start_id`` so it is
+    read the same way it was recorded (see :data:`ChildRecord` for why that is
+    not ``_get_start_time``).
     """
     try:
-        # Start-time check: definitive PID recycling detection (always required)
-        actual_start = _get_start_time(pid)
+        # Start-id check: definitive PID recycling detection (always required)
+        actual_start = platform_compat.get_process_start_id(pid)
         if expected_start is None or actual_start is None:
             logger.debug("PID %d start time unavailable — denying (fail-closed)", pid)
             return False
@@ -4046,12 +4774,16 @@ def _kill_escaped_children(child_pids: dict[int, int | None] | dict[int, ChildRe
             if not platform_compat.pid_exists(cpid):
                 continue  # gone — nothing to sweep
             record = child_pids.get(cpid)
-            # Support both old (int|None) and new (tuple) record shapes
+            # Support both the legacy (int|None) and current (tuple) record shapes.
+            # A legacy int is a pre-neutral-start-id reading and can never equal a
+            # ``get_process_start_id`` value, so it is carried as unproven rather
+            # than compared: _is_our_child then denies, which is the same outcome a
+            # mismatch would produce, and keeps this branch honest about what it can
+            # actually verify.
+            expected_start: str | None = None
+            expected_basename: bytes | None = None
             if isinstance(record, tuple):
                 expected_start, expected_basename = record
-            else:
-                expected_start = record
-                expected_basename = None
             if not _is_our_child(
                 cpid, expected_start=expected_start, expected_basename=expected_basename
             ):
@@ -4195,7 +4927,7 @@ class AcpClient:
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
-        private_memory: bool = False,
+        shared_scratch: Path | None = None,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -4212,11 +4944,7 @@ class AcpClient:
         self._model = model or DEFAULT_MODEL
         self._agent = agent
         self._sandbox_mode = sandbox_mode
-        self._private_memory = private_memory is True
-        if self._private_memory:
-            from kiro_crew.member_memory_auth import require_private_memory_mcp_backend
-
-            require_private_memory_mcp_backend(acp_backend)
+        self.memory_mode = "persistent"
         self._acp_backend = acp_backend
         # Claude backend permission mode (Auto-mode / permission-UI parity).
         # Inert on the kiro-cli path. None = the backend's own default
@@ -4224,6 +4952,16 @@ class AcpClient:
         # what _write_claude_local_settings leaves in place when nothing asked
         # for a mode.
         self._permission_mode = permission_mode
+        # The session tree's work directory when this client is a DEDICATED
+        # subagent process spawned on a parent's behalf: re-validated at spawn
+        # (``agent_scratch.shared_scratch_window``) and mounted as a second
+        # private window beside this process's own scratch, which keeps the
+        # temp triple and the kiro-cli log. ``None`` for a session that starts
+        # its own tree. Once live, the client joins the tree's owner marker
+        # beside its parent (``agent_scratch.adopt_owner``), so a parent that
+        # dies first leaves no dead-owner marker over its running children.
+        self._shared_scratch: Path | None = Path(shared_scratch) if shared_scratch else None
+        self._scratch_dir: Path | None = None
         # True once this session has CREATED <work_dir>/.claude/settings.local.json
         # itself. Only then does reset remove it, and only then does a re-seed
         # overwrite it. The writer refuses a path that already holds a file it did
@@ -4275,23 +5013,13 @@ class AcpClient:
         # over-strict, while a None substituted there would short-circuit the
         # re-check on any path that reached it. None = no spawn yet.
         self._derived_spec_snapshot: DerivedSpecSnapshot | None = None
-        # What THIS session's agent said it can carry MCP over, straight from
-        # initialize's ``agentCapabilities.mcpCapabilities``. Held because the codex
-        # projection must not send a transport the adapter did not claim -- one such
-        # element fails the WHOLE session/new there, so the array that is its only
-        # channel takes every other server down with it. Read rather than
-        # remembered: a constant would encode one adapter version's answer and be
-        # silently wrong on the next. Empty until the handshake, and cleared on
-        # reset so a re-spawned session re-reads it.
-        self._agent_mcp_capabilities: dict[str, Any] = {}
         # The mirror's CLIENT OBLIGATION from the same spec parse as the array
         # (``SessionProjection.denied_tools``): ``(server, tool)`` pairs the spec
         # switched off that the backend cannot refuse on the wire, so this client
         # refuses them when the backend asks permission (``_deny_spec_disabled_tool``).
-        # Codex fills it; a backend that honours the restriction natively (kiro-cli)
-        # or through a file Crew writes (claude's ``permissions.deny``) leaves it
-        # empty, and an empty set makes the refusal a no-op. Cleared on reset with
-        # the array.
+        # A backend that honours the restriction natively (kiro-cli) or through a
+        # file Crew writes (claude's ``permissions.deny``) leaves it empty, and an
+        # empty set makes the refusal a no-op. Cleared on reset with the array.
         self._spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
         # The inline harness config this session's routing seed travels in, resolved
         # in the opencode spawn arm and read back there before the first prompt. The
@@ -4327,16 +5055,10 @@ class AcpClient:
         # are injected into this session at ACP session/new, where they outrank
         # the same-named entries in the agent spec. Nothing is written to the
         # user's project or to ~/.kiro/agents. None = pooling off.
-        # Private tools must be descendants of the member's sandbox. A shared
-        # broker can outlive an upgrade and lack current caller verification.
-        # Retain its path only for the sandbox's socket-placement validation.
-        self._private_mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else ""
-        self._mcp_gateway_overlay = (
-            str(mcp_gateway_overlay) if mcp_gateway_overlay and not self._private_memory else None
-        )
-        self._mcp_gateway_socket = (
-            str(mcp_gateway_socket) if mcp_gateway_socket and not self._private_memory else None
-        )
+        # Broker requests carry the owning session through ordinary transport
+        # authentication; member memory uses that session's execution record.
+        self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
+        self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         # Token this client's injected broker-stub entries carry, so gatewayd can
         # tell this session's stub connections from those of another session on
         # the same runtime PID (``mcp_gateway.claim.mint_stub_session_token``).
@@ -4351,7 +5073,7 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
-        self._start_time: int | None = None  # process start time for PID recycling detection
+        self._start_time: str | None = None  # start identity for PID-recycle detection
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's
         # session/load path), so the session id cannot distinguish the process
@@ -4479,6 +5201,22 @@ class AcpClient:
         # claude-agent-acp to reject the response.
         self._permission_options: dict[str | int, dict[str, str]] = {}
         self._stderr_lines: deque[str] = deque(maxlen=20)
+        # Latched on this process's FIRST non-thinking text chunk, tool call or
+        # tool result, cleared with the rest of the process state on respawn:
+        # the registration-throttle death classification is refused once work
+        # has been observed, so the transient verdict it hands the retry
+        # ladders can only ever license replaying a turn that provably did
+        # nothing. Per PROCESS (this client owns exactly one), matching the
+        # ring the evidence is read from.
+        self._prompt_or_tool_seen = False
+        # Set by ``_spawn`` from the wrapped argv; only meaningful once a child
+        # has been spawned. False before that, which is also the safe default for
+        # the classifier: a spawn that never reached the wrap cannot have been
+        # refused by it.
+        self._sandbox_wrapped_by_crew: bool = False
+        # The mask set this spawn asked for, so a trusted corroboration run can
+        # exercise the same mounts rather than a weaker profile.
+        self._sandbox_hidden_dirs: tuple[str, ...] = ()
         self._jsonl_pos: int = 0  # track read position in session JSONL for tool results
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._last_activity: float = time.monotonic()
@@ -4542,6 +5280,15 @@ class AcpClient:
         # settles it with a synthetic `completed` at turn end. Without that, a
         # consumer showing a compacting state would never leave it.
         self._claude_compaction_pending: bool = False
+        # The codex twin of the flag above. It guards TWO directions, and the
+        # second is why it is read on the way in as well as at turn end. A loaded
+        # session replays a past compaction as a ``tool_call`` that is already
+        # ``completed``, so only a terminal following a ``started`` seen in THIS
+        # turn describes work this turn did. And a compaction that ERRORS reports
+        # nothing at all -- codex-acp's ``runCompact`` never resolves, so the
+        # ``session/prompt`` request goes unanswered -- which leaves this armed
+        # for ``_settle_codex_compaction`` to close out at the turn's terminal.
+        self._codex_compaction_pending: bool = False
         # Liveness oracle for the stale-turn gate: before ending a silent turn
         # at _STALE_TURN_TIMEOUT, consult /proc evidence so a backend that is
         # provably working (CPU/IO movement in the subprocess subtree) is not
@@ -4595,10 +5342,6 @@ class AcpClient:
     @property
     def _is_claude(self) -> bool:
         return self.backend == ACP_BACKEND_CLAUDE
-
-    @property
-    def _is_codex(self) -> bool:
-        return self.backend == ACP_BACKEND_CODEX
 
     @property
     def _is_opencode(self) -> bool:
@@ -4705,7 +5448,12 @@ class AcpClient:
         """
         try:
             stubbed: Collection[str] = injection_server_names(
-                self._mcp_gateway_overlay, self._agent
+                # The same checkout the projection below resolves the agent SPEC
+                # against: a project agent's stubs must be read from the file the
+                # session is running, not from the user-level agent of that name.
+                self._mcp_gateway_overlay,
+                self._agent,
+                **overlay_project_scope(self.backend, self._work_dir),
             )
         except Exception:
             logger.warning(
@@ -4736,6 +5484,10 @@ class AcpClient:
             # carries one. A mirror cannot discover either value; the client can.
             session_key=self._session_key or "",
             channel_id=self._channel_id or "",
+            # This session's own name, so its control-plane elements resolve
+            # identity through the signed mapping rather than through an env key
+            # a warm-pool rekey can leave stale.
+            session_token=self._stub_session_token,
         )
         self._spec_denied_tools = projection.denied_tools
         # Kept beside the array it describes, so the post-consume check judges the
@@ -4743,7 +5495,12 @@ class AcpClient:
         self._session_mcp_snapshot = projection.derived_spec_snapshot
         servers = projection.params.get("mcpServers") or []
         out = list(servers) if isinstance(servers, list) else []
-        return self._append_member_dispatch_server(out)
+        # The restriction half of the projection's withhold set, from the SAME parse the
+        # array came out of: the member append must not re-add a name this projection
+        # refused on a transport where the withhold is the whole of the enforcement.
+        return self._append_member_dispatch_server(
+            out, projection.restricted_servers, projection.disabled_servers
+        )
 
     def _pooled_broker_stubs(self) -> list[dict[str, Any]]:
         """The raw broker stubs for this session, with no per-backend narrowing.
@@ -4758,11 +5515,21 @@ class AcpClient:
         is per client and is re-bound — not re-minted — by every ``rekey()``.
         """
         return attach_stub_session_token(
-            pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id),
+            pooled_session_servers(
+                self._mcp_gateway_overlay,
+                self._agent,
+                self._channel_id,
+                **overlay_project_scope(self.backend, self._work_dir),
+            ),
             self._stub_session_token,
         )
 
-    def _append_member_dispatch_server(self, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _append_member_dispatch_server(
+        self,
+        servers: list[dict[str, Any]],
+        restricted: Collection[str] = (),
+        disabled: Collection[str] = (),
+    ) -> list[dict[str, Any]]:
         """Mount the dashboard session-control server into a member DM session.
 
         Session-level and additive: the on-disk agent spec is untouched, so every
@@ -4770,28 +5537,99 @@ class AcpClient:
         carries ``KIROCREW_SESSION_KEY`` for strict identity — the same value this
         client already exports to the child process env.
 
-        Honors the same permission-surface precondition the mirror translation
-        just applied: when Crew does not own the session's native permission
-        file, the whole array was withheld, and quietly appending a
-        session-control server there would hand a pre-approvable surface exactly
-        the tools the withhold exists to keep off it.
+        The permission-surface precondition is asked of the BACKEND's ROUTING --
+        ``acp_tool_gate.is_enforced`` -- rather than read off
+        ``_claude_settings_authored`` alone. That flag answers one harness's question:
+        claude declares a routing this core does not enforce, so owning
+        ``settings.local.json`` is what stands in for the read-back it lacks, and
+        appending session control onto a surface Crew does not own would hand a
+        pre-approvable file exactly the tools the mirror's withhold keeps off it. A
+        harness whose routing IS enforced cannot satisfy that flag and does not need
+        to -- its session is refused before its first prompt unless the gate arms --
+        and its mirror documents the flag as accepted-and-ignored (see
+        ``providers/mirrors/opencode.py``), so reading the flag there would withhold
+        every member's tools on the strength of a condition that cannot describe the
+        backend.
+
+        A whole-server ``disabled`` on the dashboard server stops the mount outright,
+        for every backend and with no second channel to weigh: ``disabled`` has no
+        per-tool or per-call form, so a harness handed the server cannot refuse a call
+        to it, and the ``tools`` allowlist that keeps it out of the spec-described half
+        of the array does not reach an element this method appends itself. Mounting it
+        anyway would make the operator's switch-off of session control a no-op for the
+        one session type that holds the strongest tools Crew hands out.
+
+        The other composer answers alike: ``AcpRuntime`` asks
+        ``session_mcp.session_mcp_server_is_disabled`` on its create and resume paths,
+        so a member session on an ``ACP_BACKENDS_ACP_RUNTIME`` host (codex, KAS) gets
+        the same answer this method gives. It asks through that reader rather than
+        through a field on the projection because half of those hosts have no mirror to
+        carry one -- KAS projects through ``acp.kas_agents``, not an array.
+
+        A per-tool restriction on the dashboard server is the second precondition,
+        and it is the one this method can UNDO rather than merely fail: the projection
+        withholds a narrowed server (*restricted*), and on a backend whose
+        ``registry.PerToolDeny`` is ``WHOLE_SERVER`` that withhold is the ONLY
+        enforcement there is -- no rule in a file the harness reads, and no per-call
+        identity Crew can refuse by. Appending the entry back would make a tool the
+        operator switched off callable again. So the mount is withheld instead and the
+        thread runs as plain chat. A backend with a second channel keeps its mount:
+        codex refuses the call at permission time from ``denied_tools``, and claude's
+        deny rules refuse it inside the adapter.
+
+        Both halves of a session's array must agree about this. ``AcpRuntime`` mounts
+        the same entry on the resume and create paths, and :meth:`_foreign_mcp_identity`
+        judges a trusted tool identity against the array THIS method returns -- scoped to
+        ``ACP_BACKENDS_SESSION_MCP_ARRAY``, and reached only from
+        :meth:`_refuse_identity_drift`, whose own gate is ``ACP_BACKENDS_META_IDENTITY``
+        (goose alone today, so no backend mounted here runs it yet). A backend that later
+        joins that set and mounts the server on one path while this one withholds it would
+        refuse every dispatch call as a drifted server rather than run a plain chat.
         """
         if self.backend not in ACP_BACKENDS_MEMBER_DISPATCH:
             return servers
         # circular import: members' module graph is heavy; resolved at call time.
-        from kiro_crew.members import is_member_session_key, member_dispatch_session_server
+        from kiro_crew.members import (
+            MEMBER_DISPATCH_SERVER,
+            is_member_session_key,
+            member_dispatch_session_server,
+        )
 
         if not is_member_session_key(self._session_key):
             return servers
         session_key = self._session_key or ""
-        if not getattr(self, "_claude_settings_authored", False):
+        if MEMBER_DISPATCH_SERVER in disabled:
+            logger.warning(
+                "member session %s: %s is switched off for this session (disabled), so "
+                "session control is not mounted -- no backend can refuse a call to a "
+                "server it was handed, and mounting it would undo that switch. The DM "
+                "thread runs as plain chat; re-enable that server to restore it",
+                self._session_key,
+                MEMBER_DISPATCH_SERVER,
+            )
+            return servers
+        if MEMBER_DISPATCH_SERVER in restricted and self._withhold_is_the_only_deny_channel():
+            logger.warning(
+                "member session %s: one of %s's tools is switched off and this backend has "
+                "no channel to refuse a call to it, so the projection withheld the server "
+                "and mounting it here would make that tool reachable again. The DM thread "
+                "runs as plain chat; stop narrowing that server to restore session control",
+                self._session_key,
+                MEMBER_DISPATCH_SERVER,
+            )
+            return servers
+        # An unenforced routing is the ONLY case the owned-file fallback answers for;
+        # see the precondition paragraph above for why an enforced one must not read it.
+        if not acp_tool_gate.is_enforced(self.backend) and not getattr(
+            self, "_claude_settings_authored", False
+        ):
             logger.warning(
                 "member session %s: permission surface not Crew-owned — session "
                 "control is not mounted; the DM thread runs as plain chat",
                 self._session_key,
             )
             return servers
-        entry = member_dispatch_session_server(session_key)
+        entry = member_dispatch_session_server(session_key, self._stub_session_token)
         if entry is None:
             logger.warning(
                 "member session %s: dashboard server unresolved — the DM thread "
@@ -4800,6 +5638,33 @@ class AcpClient:
             )
             return servers
         return [e for e in servers if e.get("name") != entry["name"]] + [entry]
+
+    def _withhold_is_the_only_deny_channel(self) -> bool:
+        """Whether withholding a server is this backend's ONLY per-tool deny channel.
+
+        Read from the declaration each mirror already publishes
+        (``registry.PerToolDeny``) rather than from a second membership set, so a
+        backend cannot answer one way here and another way in the projection that
+        performs the withhold.
+
+        Fail-CLOSED on a backend with no declaration at all: ``projection_for`` raises
+        for one, and "no declared deny channel" is exactly the case where re-adding a
+        withheld server cannot be shown to be safe. The cost of being wrong in this
+        direction is a member thread that runs as plain chat.
+        """
+        from kiro_crew.providers.mirrors import PerToolDeny, projection_for
+
+        try:
+            return projection_for(self.backend).per_tool_deny is PerToolDeny.WHOLE_SERVER
+        except Exception:
+            logger.warning(
+                "member session %s: backend %r declares no MCP projection, so its per-tool "
+                "deny channel is unknown; treating a withheld server as un-re-addable",
+                self._session_key,
+                self.backend,
+                exc_info=True,
+            )
+            return True
 
     def _prepare_spawn_workspace(self) -> None:
         """Create the session's work dir, then snapshot its spec for the detector.
@@ -4850,9 +5715,10 @@ class AcpClient:
         detects has landed on three harnesses already
         (``providers/mirrors/README.md``), so a check that only ran on the harness
         someone had already thought about would be the same omission a fourth
-        time. kiro-cli is judged against the spec's own ``mcpServers`` instead of
-        the wire -- it loads them via ``--agent`` -- which the guard resolves from
-        the backend id.
+        time. A host that mounts the spec's own ``mcpServers`` off the wire
+        (``ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE``: kiro-cli loads them via
+        ``--agent``) is judged against the spec's definition instead of the array,
+        which the detector resolves from the backend id.
 
         Synchronous, in-memory and non-raising, in that order of importance: the
         composition site is shared with kiro-cli, so this adds no scheduling point
@@ -4948,60 +5814,12 @@ class AcpClient:
         """
         return self._session_mcp_servers()
 
-    def _codex_session_mcp_servers(self) -> list:
-        """MCP server array passed to a codex ``session/new`` / ``session/load``.
-
-        The codex twin of :meth:`_claude_session_mcp_servers`, and it must stay
-        non-empty. An empty array here is byte-identical for kiro-cli, which gets
-        its servers through ``--agent``, and a REAL GAP for codex: codex-acp reads
-        no ``~/.kiro/agents/<name>.json``, so nothing Crew declares reaches the
-        session and only the shared gateway's broker stubs arrive -- which makes the
-        GATEWAY rather than this hook decide whether Crew's own control plane is
-        there at all, and with that gateway off (the default) leaves the session
-        with no MCP tools whatsoever. codex is in ``BASELINE_SELECTABLE_BACKENDS``,
-        so a plain public build reaches exactly that.
-
-        The translation lives in the mirror
-        (:mod:`kiro_crew.providers.mirrors.codex`), not here, for the same reason
-        claude's does: projecting the agent spec onto a backend's native shape is
-        one named contract with one implementation per backend. Two rules there are
-        codex's own and both were MEASURED against a real adapter rather than
-        assumed -- an ``sse`` element is dropped (codex-acp answers ``-32600`` for
-        the WHOLE ``session/new``), and Crew's own servers carry
-        ``KIROCREW_SESSION_KEY`` on the element because codex-rs launches a stdio
-        server with ``env_clear()`` plus an allowlist and inherits nothing.
-
-        Only ``sse`` is fatal, and the scope matters because it is tempting to
-        generalise it into sending nothing at all: a malformed stdio element, or an
-        array member that is not an object, leaves ``session/new`` SUCCEEDING with
-        that element dropped, and ``sse`` fails with ``-32600`` rather than the
-        ``-32602`` an unadvertised transport is easy to assume. See
-        ``test/test_codex_session_mcp.py::test_real_codex_acp_accepts_the_crew_stdio_element``.
-
-        The transport narrowing runs HERE rather than inside the cached translation,
-        for a timing reason: the array is translated on the spawn path, before the
-        adapter process exists, while the set of transports it accepts is not known
-        until ``initialize`` answers. Reading it here uses what THIS session was
-        told instead of what some version once said, and it stays a pure in-memory
-        narrowing of an already-cached list.
-
-        The seam is deliberately KEPT rather than replaced by a capability-set
-        call: an edition may override this method, and swapping the call site for a
-        set membership test would silently stop calling that override.
-
-        In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
-        this accessor adds no scheduling or failure point to a call site shared with
-        kiro-cli (harness-parity H13).
-        """
-        return drop_unadvertised_transports(
-            self._session_mcp_servers(), self._agent_mcp_capabilities
-        )
-
     def _opencode_session_mcp_servers(self) -> list:
         """MCP server array passed to an opencode ``session/new`` / ``session/load``.
 
-        The opencode twin of :meth:`_codex_session_mcp_servers`, and it must stay
-        non-empty for the same reason: ``opencode acp`` reads no
+        The opencode twin of
+        :meth:`kiro_crew.acp.harness.codex.CodexHarness.session_mcp_servers`, and it
+        must stay non-empty for the same reason: ``opencode acp`` reads no
         ``~/.kiro/agents/<name>.json``, so nothing Crew declares reaches the session
         through any other door. Until this hook existed an opencode session held
         none of Crew's own tools at all -- no ``spawn_run``, no ``cron_add``, no
@@ -5369,9 +6187,13 @@ class AcpClient:
                 _opencode_readback_remedy(),
             )
         if completed.returncode != 0:
+            # The child's own fault, same as the pi read-back below: an operator
+            # reading this refusal learns both that the harness failed and which
+            # recognised fault it hit.
+            detail = f"exit {completed.returncode}"
+            detail = _readback_detail_with_diagnosis(detail, completed.stderr)
             return (
-                "the resolved configuration could not be read back "
-                f"(exit {completed.returncode})",
+                f"the resolved configuration could not be read back ({detail})",
                 _opencode_readback_remedy(),
             )
         # The harness prints a banner before the document, so the object is found
@@ -5462,6 +6284,11 @@ class AcpClient:
         commands = _pi_commands_from_readback(completed.stdout)
         if commands is None:
             detail = f"exit {completed.returncode}" if completed.returncode != 0 else "no response"
+            # WHICH fault the child hit. The launcher is /bin/sh exec'ing the
+            # resolved harness binary, so its stderr is what separates an exec the
+            # OS refused from a shebang that cannot be resolved -- a distinction
+            # the exit code alone cannot carry.
+            detail = _readback_detail_with_diagnosis(detail, completed.stderr)
             return (
                 f"the harness's command registry could not be read back ({detail})",
                 _pi_readback_remedy(),
@@ -5851,6 +6678,17 @@ class AcpClient:
     def _is_process_alive(self) -> bool:
         return self._process is not None and self._process.returncode is None
 
+    @property
+    def work_scratch_dir(self) -> Path | None:
+        """The session tree's work directory this process exposes as ``$KIROCREW_SCRATCH``.
+
+        The inherited directory when this client was spawned into an existing
+        tree, else its own allocation; ``None`` before spawn or when allocation
+        failed. Handed as ``shared_scratch`` to every spawn made on behalf of
+        this session (see ``session_allocation._collect_parent_runtime_kwargs``).
+        """
+        return self._shared_scratch or self._scratch_dir
+
     def is_process_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._is_process_alive()
@@ -5930,6 +6768,71 @@ class AcpClient:
             channel_id,
             self._stub_session_token,
         )
+        # The token deliberately SURVIVES a rekey (see __init__: a fresh one would
+        # leave the live MCP children carrying a name no claim will ever mention
+        # again), so the signed mapping is what has to move to the claiming
+        # session. Without this, a child spawned for the previous session resolves
+        # its token to that session's key until the first turn republishes — and
+        # the claiming session's first tool call is exactly what happens in
+        # between. Fire-and-forget; offloads its own file I/O.
+        schedule_session_token_publish(self._stub_session_token, session_key)
+
+    @property
+    def session_identity_token(self) -> str:
+        """This session's per-session identity token, or ``""``.
+
+        The uniform name the shared per-turn publisher reads
+        (``messaging.identity._publish_session_token``), for the same reason
+        :meth:`reclaim` is uniform: the publisher must stay backend-agnostic, and
+        the two ACP providers keep the token in different places — this one on the
+        client, the shared-runtime one on the session handle. A provider without
+        this attribute is simply not asked.
+        """
+        return self._stub_session_token
+
+    def _apply_session_identity_env(self, env: dict[str, str]) -> None:
+        """Put this session's identity on the child's environment.
+
+        The two values are NOT symmetric, and the asymmetry is the point.
+
+        The TOKEN is carried unconditionally, because a warm-pool client is spawned
+        with no session key at all — that is what makes it poolable — and a child's
+        environment is fixed at spawn. A token withheld there can never be added
+        later, so conditioning it on the key would strip it from exactly the children
+        that need it most: the pooled ones, whose identity has to survive a
+        ``rekey()``. It survives because the token is minted in ``__init__`` and its
+        signed mapping is (re)published when the session key becomes known, so a
+        child holding a token and no key still resolves — through the mapping — to
+        whichever session claimed the process.
+
+        The KEY is conditioned, because it is a value and not a pointer: an inherited
+        one names a session this client is not serving, and the resolver would read
+        it as identity. The token cannot go stale the same way — its mapping is
+        rewritten on every rekey, so the same token names the current owner — which
+        is also why the resolver prefers it.
+
+        Overwriting rather than popping is what keeps a reused ``env`` mapping honest:
+        whatever token it arrived with, it leaves carrying THIS client's.
+
+        The process environment is the right carrier HERE and only here: one
+        ``AcpClient`` drives one child serving one session, so the process names
+        exactly one session. On the shared runtime the same env would name whichever
+        session claimed the process, which is why identity travels per-element there
+        (``acp.runtime._own_stub_session`` and the mirror projections).
+
+        Mutates *env* in place, matching the surrounding block in :meth:`_spawn`.
+        """
+        if self._stub_session_token:
+            env[STUB_SESSION_TOKEN_ENV] = self._stub_session_token
+        else:
+            # No token to name this client with (a test double, a build that could
+            # not mint one). Carrying an empty value would present a token the
+            # mapping can never verify, which the resolver would try FIRST.
+            env.pop(STUB_SESSION_TOKEN_ENV, None)
+        if self._session_key:
+            env["KIROCREW_SESSION_KEY"] = self._session_key
+        else:
+            env.pop("KIROCREW_SESSION_KEY", None)
 
     def reclaim(self) -> None:
         """Re-push this session's claim, naming it by its stub token.
@@ -5960,19 +6863,9 @@ class AcpClient:
         """Switch model on a running session (used by warm pool post-claim)."""
         if not self._session_id:
             raise AcpError("Cannot set model before session is initialized")
-        # Unlike the spawn path, this is an explicit request for THIS model, so
-        # a silent downgrade would report success while running something else.
-        # Refuse before the wire and name what the account can use.
-        # AcpModelUnavailable (not a bare AcpError) so callers can tell "invalid
-        # request" from "the call didn't land": the generic failure is recovered
-        # by resetting the session, which for THIS case would destroy a live
-        # conversation and then land on a different model anyway.
-        #
-        # Callers passing an INHERITED value (warm-pool post-claim re-apply of a
-        # persisted slot model) must pre-check with model_is_unusable and skip
-        # instead of calling into here — otherwise the same stale setting that is
-        # quietly withheld on a cold start would raise and kill a warm claim,
-        # making the outcome depend on whether a pooled process happened to exist.
+        # This path deliberately does not scope: an explicit pick must reach the
+        # adapter because its advertised list can omit an entitlement the adapter
+        # accepts, and inherited pins are already scoped by their callers.
         if self._is_kiro and self._model_is_unusable(model_id):
             _rejected_log, _ = redact_exfiltration_urls(str(model_id))
             _rejected_log, _ = redact_credentials(_rejected_log)
@@ -6300,6 +7193,16 @@ class AcpClient:
         slot value is untouched, so a picker reading it still shows the model
         that was withheld. Healing the stored value is a separate change.
 
+        One class of inherited pin is refused for EVERY backend rather than only
+        the entitlement-checked one: a pin that a different harness's model
+        catalog claims and this one does not (``model_scope``). That is a
+        statement about which harness the value was picked in, which every
+        backend can answer from its own namespace, unlike an entitlement question
+        that only kiro can answer for its own partition. It is the case that
+        motivated this withhold contract in the first place: a model chosen under
+        one backend and re-sent after a switch to another. Scoped out before the
+        wire, so the adapter never refuses the id and never warns about it.
+
         An EXPLICIT switch is handled the opposite way in :meth:`set_model`:
         there the user asked for that exact model, and quietly running another
         one would be a lie.
@@ -6311,16 +7214,39 @@ class AcpClient:
         the base window. Same call as :meth:`set_model` uses, so an explicit switch
         and a startup application agree on one exact spelling.
         """
-        if self._uses_advertised_model_selection:
-            self._model = model_registry.resolve_wire_model_id(
-                self._model, self._model_registry_namespace
-            )
         if not self._model or self._model == DEFAULT_MODEL:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
             # Inheriting is only safe when the inherited model is served; the
             # backend can default to one this partition does not carry.
             await self._ensure_served_default()
             return
+        advertised = self._advertised_model_ids()
+        # Factory resolution covers every surface from the shared cache; this
+        # wire site also carries the current session's fresh advertised list.
+        if not model_scope.pin_applies(
+            self._model,
+            self._model_registry_namespace,
+            advertised=advertised,
+        ):
+            # Another harness's model. Recorded as the default for the same
+            # reason the entitlement withhold below does: the "!= DEFAULT_MODEL"
+            # test above is what the warm-pool re-apply path reads, so leaving
+            # the foreign id here would re-offer it on every claim.
+            self._model = (
+                model_scope.scoped_pin(
+                    self._model,
+                    self._model_registry_namespace,
+                    advertised=advertised,
+                    source=f"{self.backend} startup",
+                )
+                or DEFAULT_MODEL
+            )
+            await self._ensure_served_default()
+            return
+        if self._uses_advertised_model_selection:
+            self._model = model_registry.resolve_wire_model_id(
+                self._model, self._model_registry_namespace
+            )
         if self._is_kiro and self._model_is_unusable(self._model):
             # A literal miss can be a stale ``<namespace>::`` qualifier on a
             # model the backend fully serves: resolve to the advertised
@@ -6719,6 +7645,48 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
 
+    async def _resolve_self_served_launch(self) -> tuple[str, list[str], str, str]:
+        """The binary, argv, spawn label and stderr label for a self-served harness.
+
+        ONE resolution for every member of ``ACP_BACKEND_LAUNCH``, because for those
+        harnesses all four answers are values their row already holds: the binary that
+        serves ACP, the args that follow it, and the two labels derived from the same
+        pair. A harness whose argv needs a decision is not a member and does not call
+        this.
+
+        Off-loop, like the per-harness resolutions it replaces: the ladder reads the
+        environment and stats candidate paths. Cached per backend for the gateway's
+        life, which is the contract the install probe's ``restart_required`` answer
+        reports on.
+
+        Kiro-cli does not reach here and neither do the three Node adapters, so this
+        adds no step and no conditional to their construction paths (harness-parity
+        H13).
+        """
+        launch = launch_for(self.backend)
+        if self.backend in _self_served_bin_caches:
+            binary, search_path = _self_served_bin_caches[self.backend]
+        else:
+            epoch = _resolution_epoch(self.backend)
+            resolved = await asyncio.to_thread(_resolve_self_served_bin, self.backend)
+            # Publish only under the generation this resolve started in. A clear that
+            # landed while it ran means the answer predates an install, so writing it
+            # would undo the clear -- see ``_resolution_generation``. This session still
+            # uses its own answer: it began before the install and that verdict is
+            # honest for itself. Reading the local rather than re-subscripting keeps a
+            # concurrent pop from raising ``KeyError`` here.
+            if _resolution_epoch(self.backend) == epoch:
+                _self_served_bin_caches[self.backend] = resolved
+            binary, search_path = resolved
+        if not binary:
+            raise AcpError(
+                f"{launch.binary} not found "
+                f"({describe_search_path(search_path)}). Install it with "
+                f"'{launch.install_command}', or set {launch.bin_env_var} to the "
+                f"executable. {launch.missing_hint}"
+            )
+        return binary, [binary, *launch.acp_args], launch.spawn_label, launch.binary
+
     async def _spawn(self) -> None:
         """Start the ACP backend subprocess with stdio pipes.
 
@@ -6791,9 +7759,13 @@ class AcpClient:
             # at all; the warm is what keeps the read off the loop.
             self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
             global _claude_acp_argv_cache  # noqa: PLW0603
-            if _claude_acp_argv_cache is _UNRESOLVED:
-                _claude_acp_argv_cache = await asyncio.to_thread(_resolve_claude_acp_bin)
-            cached_claude_resolution = _claude_acp_argv_cache
+            cached_claude_resolution: tuple[list[str] | None, str] | object = _claude_acp_argv_cache
+            if cached_claude_resolution is _UNRESOLVED:
+                # Fenced on the resolution generation -- see ``_resolution_generation``.
+                epoch = _resolution_epoch(ACP_BACKEND_CLAUDE)
+                cached_claude_resolution = await asyncio.to_thread(_resolve_claude_acp_bin)
+                if _resolution_epoch(ACP_BACKEND_CLAUDE) == epoch:
+                    _claude_acp_argv_cache = cached_claude_resolution
             claude_argv, acp_search_path = (
                 cached_claude_resolution
                 if isinstance(cached_claude_resolution, tuple)
@@ -6807,96 +7779,24 @@ class AcpClient:
                     f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
                 )
             argv: list[str] = claude_argv
-            spawn_label = _adapter_spawn_label(argv, CLAUDE_ACP_BIN)
-            stderr_label = _adapter_spawn_label(argv, "claude-acp")
-        elif self._is_codex:
-            # Selectable on a public build (BASELINE_SELECTABLE_BACKENDS), so this
-            # branch runs for real users; what is unwritten is the session MCP array
-            # (_codex_session_mcp_servers), not the spawn. codex-acp takes no argv of
-            # its own: the adapter is spawned bare and driven entirely over the pipe,
-            # so unlike the kiro branch there is nothing to append. CODEX_PATH is
-            # left exactly as the operator set it (the adapter ships its own Codex
-            # binary; overriding it is an explicit choice, never a default).
-            global _codex_acp_argv_cache  # noqa: PLW0603
-            if _codex_acp_argv_cache is _UNRESOLVED:
-                _codex_acp_argv_cache = await asyncio.to_thread(_resolve_codex_acp_bin)
-            cached_codex_resolution = _codex_acp_argv_cache
-            codex_argv, codex_search_path = (
-                cached_codex_resolution
-                if isinstance(cached_codex_resolution, tuple)
-                else (None, "")
+            spawn_label = _adapter_spawn_label(
+                argv,
+                CLAUDE_ACP_BIN,
+                pkg_entry=_CLAUDE_ACP_PKG_ENTRY,
+                override_env="CLAUDE_AGENT_ACP_BIN",
             )
-            if not isinstance(codex_argv, list) or not codex_argv:
-                raise AcpError(codex_acp_not_found_message(codex_search_path))
-            argv = codex_argv
-            # Translate the agent spec into this session's MCP array HERE, on
-            # codex's own arm, for exactly the reason the claude arm above does it
-            # on its own: the translation reads disk, and doing it at the shared
-            # session/new call site would put an executor hop and a new failure
-            # mode on EVERY backend's construction path, kiro-cli included
-            # (harness-parity H13). No ordering constraint of claude's applies --
-            # codex has no settings file to author first, because its permission
-            # routing is asserted per session over session/set_config_option
-            # rather than seeded to a file. Correctness does not depend on this
-            # warm: _session_mcp_servers resolves a cold cache itself; the warm is
-            # what keeps the read off the loop.
-            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            spawn_label = _adapter_spawn_label(argv, CODEX_ACP_BIN)
-            stderr_label = spawn_label
-            # Fail closed BEFORE the spawn when the mask below would be dropped:
-            # several wrap_argv paths return without applying extra_hidden_dirs,
-            # which would start an enforced adapter with no compensating control
-            # at all. Placed inside this pre-existing codex arm rather than in a
-            # gate of its own on the shared path: harness-parity H13 asks whether
-            # the kiro path CHANGED, and a conditional or an awaited step added
-            # there in service of an adapter is the change it names -- so the
-            # adapter's work lives entirely behind the adapter's own seam.
-            # Keyed on the ROUTING, not on codex's identity: _sandbox_preflight
-            # re-checks acp_tool_gate.is_enforced(self.backend) itself, so this
-            # site cannot mask a harness this core does not enforce. A future
-            # SESSION_CONFIG harness gets its own arm here and must make the same
-            # call; test_acp_tool_gate ratchets that so it cannot be forgotten.
-            # OFF-LOOP: both halves touch the filesystem -- the refusal probes for
-            # a sandbox backend (a cold probe shells out via subprocess.run) and
-            # the mask resolves the home plus every env-override root -- so they
-            # run in ONE worker thread rather than blocking the gateway loop, and
-            # the wait is bounded (a stalled mount otherwise held the spawn open
-            # until the startup watchdog; found in review).
-            adapter_hidden_dirs = await _run_preflight_bounded(
-                _sandbox_preflight, self.backend, self._sandbox_mode
+            stderr_label = _adapter_spawn_label(
+                argv,
+                "claude-acp",
+                pkg_entry=_CLAUDE_ACP_PKG_ENTRY,
+                override_env="CLAUDE_AGENT_ACP_BIN",
             )
-            # The other half of the Bedrock trade: ``.aws`` stays in the mask
-            # above and only ``.aws/config`` comes back read-only, through each
-            # backend's own carve-out primitive. Empty for every unenforced
-            # harness. Pure path projection, no disk access, so no thread hop --
-            # which holds only because the mask resolved above is HANDED IN. Each
-            # re-exposed file must sit inside a directory that mask hides, and
-            # re-resolving the mask here to check that would put a filesystem read
-            # (a stalled home mount, a Windows directory open) back on the event
-            # loop the preflight above exists to keep it off.
-            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
         elif self._is_opencode:
             # This harness serves ACP from its own binary, so the argv is that binary
             # plus its ``acp`` subcommand: no adapter entry script, no node, and no
-            # npm package to resolve.
-            global _opencode_bin_cache  # noqa: PLW0603
-            if _opencode_bin_cache is _UNRESOLVED:
-                _opencode_bin_cache = await asyncio.to_thread(_resolve_opencode_bin)
-            cached_opencode_resolution = _opencode_bin_cache
-            opencode_bin, opencode_search_path = (
-                cached_opencode_resolution
-                if isinstance(cached_opencode_resolution, tuple)
-                else (None, "")
-            )
-            if not isinstance(opencode_bin, str) or not opencode_bin:
-                raise AcpError(
-                    f"{OPENCODE_BIN} not found "
-                    f"({describe_search_path(opencode_search_path)}). Install it with "
-                    f"'{OPENCODE_INSTALL_COMMAND}', or set {_ENV_OPENCODE_BIN} to the "
-                    f"executable. No adapter package is needed: this harness serves ACP "
-                    f"itself."
-                )
-            argv = [opencode_bin, OPENCODE_ACP_SUBCMD]
+            # npm package to resolve. All four values come from its
+            # ``ACP_BACKEND_LAUNCH`` row.
+            opencode_bin, argv, spawn_label, stderr_label = await self._resolve_self_served_launch()
             # Translate the agent spec into this session's MCP array HERE, on
             # opencode's own arm, for exactly the reason the claude and codex arms
             # do it on theirs: the translation reads disk, and doing it at the
@@ -6911,8 +7811,6 @@ class AcpClient:
             # resolves a cold cache itself; the warm is what keeps the read off the
             # loop.
             self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            spawn_label = f"{OPENCODE_BIN} {OPENCODE_ACP_SUBCMD}"
-            stderr_label = OPENCODE_BIN
             # The same refuse-then-mask preflight the codex arm runs, keyed on the
             # same routing question rather than on this harness's identity: it is
             # ENFORCED, so the OS credential mask is the compensating control for the
@@ -6983,35 +7881,17 @@ class AcpClient:
         elif self._is_goose:
             # This harness serves ACP from its own binary, so the argv is that binary
             # plus its ``acp`` subcommand: no adapter entry script, no node, and no
-            # npm package to resolve.
-            global _goose_bin_cache  # noqa: PLW0603
-            if _goose_bin_cache is _UNRESOLVED:
-                _goose_bin_cache = await asyncio.to_thread(_resolve_goose_bin)
-            cached_goose_resolution = _goose_bin_cache
-            goose_bin, goose_search_path = (
-                cached_goose_resolution
-                if isinstance(cached_goose_resolution, tuple)
-                else (None, "")
-            )
-            if not isinstance(goose_bin, str) or not goose_bin:
-                raise AcpError(
-                    f"{GOOSE_BIN} not found "
-                    f"({describe_search_path(goose_search_path)}). Install it with "
-                    f"'{GOOSE_INSTALL_COMMAND}', or set {_ENV_GOOSE_BIN} to the "
-                    f"executable. No adapter package is needed: this harness serves ACP "
-                    f"itself."
-                )
+            # npm package to resolve. All four values come from its
+            # ``ACP_BACKEND_LAUNCH`` row.
+            _goose_bin, argv, spawn_label, stderr_label = await self._resolve_self_served_launch()
             # The builtin extension travels on the ARGV rather than in the session
             # array, because it is not one of Crew's servers: it is the harness's own
             # shell and file tools, which this harness drops when a client supplies
             # ``mcpServers``. Restoring them here keeps a session that has Crew's
-            # tools from having nothing else.
-            argv = [
-                goose_bin,
-                GOOSE_ACP_SUBCMD,
-                _GOOSE_BUILTIN_ARG,
-                _GOOSE_BUILTIN_DEVELOPER,
-            ]
+            # tools from having nothing else. Appended AFTER the shared resolution, so
+            # the label above stays the harness plus its ACP subcommand and does not
+            # grow a builtin an operator did not name.
+            argv = [*argv, _GOOSE_BUILTIN_ARG, _GOOSE_BUILTIN_DEVELOPER]
             # Translate the agent spec into this session's MCP array HERE, on goose's
             # own arm, for the reason the claude, codex and opencode arms do it on
             # theirs: the translation reads disk, and doing it at the shared
@@ -7021,8 +7901,6 @@ class AcpClient:
             # resolves a cold cache itself -- the warm is what keeps the read off the
             # loop.
             self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            spawn_label = f"{GOOSE_BIN} {GOOSE_ACP_SUBCMD}"
-            stderr_label = GOOSE_BIN
             # The same refuse-then-mask preflight the codex, opencode and pi arms run,
             # keyed on the same routing question rather than on this harness's
             # identity: it is ENFORCED, so the OS credential mask is the compensating
@@ -7046,9 +7924,14 @@ class AcpClient:
             # Two components, resolved separately because either can be absent on
             # its own and the not-found message must name the one that is.
             global _pi_acp_argv_cache, _pi_bin_cache  # noqa: PLW0603
-            if _pi_acp_argv_cache is _UNRESOLVED:
-                _pi_acp_argv_cache = await asyncio.to_thread(_resolve_pi_acp_bin)
-            cached_pi_acp = _pi_acp_argv_cache
+            cached_pi_acp: tuple[list[str] | None, str] | object = _pi_acp_argv_cache
+            if cached_pi_acp is _UNRESOLVED:
+                # Both halves are fenced on the SAME generation: a clear is per harness
+                # and pi keeps two caches under one id, so one bump has to cover both.
+                epoch = _resolution_epoch(ACP_BACKEND_PI)
+                cached_pi_acp = await asyncio.to_thread(_resolve_pi_acp_bin)
+                if _resolution_epoch(ACP_BACKEND_PI) == epoch:
+                    _pi_acp_argv_cache = cached_pi_acp
             pi_acp_argv, pi_acp_search_path = (
                 cached_pi_acp if isinstance(cached_pi_acp, tuple) else (None, "")
             )
@@ -7060,9 +7943,12 @@ class AcpClient:
                     f"{_ENV_PI_ACP_BIN} to the adapter's entry script. The '{PI_BIN}' "
                     f"CLI alone does not serve ACP."
                 )
-            if _pi_bin_cache is _UNRESOLVED:
-                _pi_bin_cache = await asyncio.to_thread(_resolve_pi_bin)
-            cached_pi = _pi_bin_cache
+            cached_pi: tuple[str | None, str] | object = _pi_bin_cache
+            if cached_pi is _UNRESOLVED:
+                epoch_pi_bin = _resolution_epoch(ACP_BACKEND_PI)
+                cached_pi = await asyncio.to_thread(_resolve_pi_bin)
+                if _resolution_epoch(ACP_BACKEND_PI) == epoch_pi_bin:
+                    _pi_bin_cache = cached_pi
             pi_bin, pi_search_path = cached_pi if isinstance(cached_pi, tuple) else (None, "")
             if not isinstance(pi_bin, str) or not pi_bin:
                 raise AcpError(
@@ -7072,7 +7958,9 @@ class AcpClient:
                     f"{_ENV_PI_ACP_PI_COMMAND} to the executable."
                 )
             argv = pi_acp_argv
-            spawn_label = _adapter_spawn_label(argv, PI_ACP_BIN)
+            spawn_label = _adapter_spawn_label(
+                argv, PI_ACP_BIN, pkg_entry=_PI_ACP_PKG_ENTRY, override_env=_ENV_PI_ACP_BIN
+            )
             stderr_label = spawn_label
             # Same refuse-then-mask preflight as the two enforced arms above, keyed
             # on the routing rather than on this harness's identity, and FIRST for
@@ -7128,25 +8016,11 @@ class AcpClient:
         elif self._is_deepseek:
             # This harness is a plugin host and ACP is one of the profiles it boots,
             # so the argv is its own binary plus the profile selector: no adapter
-            # entry script, no node, and no npm package to resolve at spawn time.
-            global _deepseek_bin_cache  # noqa: PLW0603
-            if _deepseek_bin_cache is _UNRESOLVED:
-                _deepseek_bin_cache = await asyncio.to_thread(_resolve_deepseek_bin)
-            cached_deepseek_resolution = _deepseek_bin_cache
-            deepseek_bin, deepseek_search_path = (
-                cached_deepseek_resolution
-                if isinstance(cached_deepseek_resolution, tuple)
-                else (None, "")
+            # entry script, no node, and no npm package to resolve at spawn time. All
+            # four values come from its ``ACP_BACKEND_LAUNCH`` row.
+            _deepseek_bin, argv, spawn_label, stderr_label = (
+                await self._resolve_self_served_launch()
             )
-            if not isinstance(deepseek_bin, str) or not deepseek_bin:
-                raise AcpError(
-                    f"{DEEPSEEK_BIN} not found "
-                    f"({describe_search_path(deepseek_search_path)}). Install it with "
-                    f"'{DEEPSEEK_INSTALL_COMMAND}', or set {_ENV_DEEPSEEK_BIN} to the "
-                    f"executable. The ACP plugin package alone does not serve ACP: it "
-                    f"is a plugin, and this binary is the host that boots the profile "
-                    f"it lives in."
-                )
             # No spec translation is warmed here, and its absence is the declared
             # state rather than an omission: this harness has no mirror, so
             # ``_resolve_session_mcp_servers`` would answer with an empty list, and
@@ -7176,9 +8050,6 @@ class AcpClient:
             # it is absent from ``BASELINE_SELECTABLE_BACKENDS``. A read-back would
             # confirm a setting that governs escalations alone and read as a
             # guarantee nothing performs.
-            argv = [deepseek_bin, *DEEPSEEK_ACP_PROFILE_ARGS]
-            spawn_label = f"{DEEPSEEK_BIN} {' '.join(DEEPSEEK_ACP_PROFILE_ARGS)}"
-            stderr_label = DEEPSEEK_BIN
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -7249,11 +8120,25 @@ class AcpClient:
             # left to rewrite a spec. Refused before the spawn; off-loop because
             # the delegation predicate reads the kiro settings file.
             overlap = await asyncio.to_thread(
-                delegated_workspace_exposes_agents_dir, self._work_dir
+                delegated_workspace_exposes_sealed_target, self._work_dir
             )
             if overlap:
                 raise AcpError(overlap)
-            argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
+            from kiro_crew.acp.skill_projection import prepare_native_skill_projection
+
+            self._native_skill_projection = await asyncio.to_thread(
+                prepare_native_skill_projection, self._work_dir
+            )
+            argv = [
+                kiro_bin,
+                KIRO_CLI_SUBCMD,
+                "--agent",
+                (
+                    self._native_skill_projection.agent(self._agent)
+                    if self._native_skill_projection is not None
+                    else self._agent
+                ),
+            ]
             spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
             stderr_label = KIRO_CLI_BIN
 
@@ -7273,32 +8158,73 @@ class AcpClient:
         argv, delegate_internal_sandbox = await asyncio.to_thread(
             apply_pod_bundle_spawn, argv, backend=self.backend
         )
-        private_kwargs: dict[str, Any] = (
-            {
-                "private_memory": True,
-                "private_mcp_gateway_socket": self._private_mcp_gateway_socket,
-                "private_mcp_gateway_socket_overrides": tuple(
-                    self._extra_env[name]
-                    for name in ("KIROCREW_MCP_SOCKET", "MC_MCP_SOCKET")
-                    if self._extra_env.get(name)
-                ),
-            }
-            if self._private_memory
-            else {}
-        )
+        # Per-process scratch containment -- see acp/runtime.py's twin block.
+        # Allocated BEFORE the sandbox is built: the scratch ROOT is masked for
+        # every sandboxed process (``sandbox._CREW_HIDDEN_LEAVES``), so this
+        # child's own directory is re-exposed as a PRIVATE window (siblings stay hidden).
+        # Fail-open; owner recorded after spawn; reclamation is
+        # liveness-keyed, never age-keyed.
+        if self._shared_scratch is None and self._scratch_dir is not None:
+            # A respawn of this client (``ensure_ready`` after the process
+            # exited): the directory the previous process exposed IS this
+            # session's tree -- the children it spawned mounted it, and the
+            # work it staged is there -- so the new process joins it instead
+            # of starting an empty one that hides that work until the old
+            # directory is reclaimed. Validated and adopted below like any
+            # inherited tree; dropped if it was swept meanwhile.
+            self._shared_scratch = self._scratch_dir
+        self._scratch_dir = None
+        try:
+            self._scratch_dir = await asyncio.to_thread(
+                agent_scratch.allocate_scratch, self._session_key or "session"
+            )
+        except (OSError, agent_scratch.ScratchBoundaryError):
+            # The boundary refusal joins OSError HERE and deliberately not at
+            # record_owner below: no child exists yet, so there is nothing to
+            # stop, and scratch is hygiene rather than a spawn prerequisite.
+            logger.warning(
+                "agent-scratch: could not allocate; spawning with inherited temp",
+                exc_info=True,
+            )
+        scratch_window = (str(self._scratch_dir),) if self._scratch_dir is not None else ()
+        # The tree's work directory as a second window into the masked root
+        # (twin of acp/runtime.py): re-validated now, since the allocation it
+        # names may have been swept, and dropped -- not re-created -- if so.
+        if self._shared_scratch is not None:
+            self._shared_scratch = await asyncio.to_thread(
+                agent_scratch.shared_scratch_window, self._shared_scratch
+            )
+        if self._shared_scratch is not None:
+            scratch_window = (*scratch_window, str(self._shared_scratch))
+        # Resolve the SSH_AUTH_SOCK forward opt-in OFF the event
+        # loop (KiroCrewConfig.load() may stat/read config) ONCE, then pass the
+        # resolved boolean into both the sandbox wrap below and the parent-side
+        # scrub further down, so neither reads config synchronously on the loop
+        # (anchor: no-blocking-call-on-event-loop). Scoped to this agent spawn:
+        # generic launchers default the flag off and keep scrubbing the socket.
+        forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             # Credential homes the standard tier exposes for kiro-cli's sake and
             # that an enforced adapter has no claim on. Empty for every harness
             # this core does not enforce, so their spawn arguments are unchanged.
             extra_hidden_dirs=adapter_hidden_dirs,
+            extra_private_dirs=scratch_window,
             extra_expose_files=adapter_expose,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
-            **private_kwargs,
         )
+        # Which isolation layer this spawn actually got, recorded HERE from the
+        # argv the wrap returned -- the wrap's own record of the branch it took,
+        # which no later re-derivation from mode + platform + settings can match
+        # (see ``sandbox.wrapped_by_crew_sandbox``). Read back only when a
+        # sandbox-init refusal has to name the layer to turn off; the cgroup
+        # scope below prepends its own tokens, so the read happens before it.
+        self._sandbox_wrapped_by_crew = wrapped_by_crew_sandbox(argv)
+        self._sandbox_hidden_dirs = tuple(adapter_hidden_dirs)
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
         # No-op + loud warning where cgroup delegation is unavailable. --scope
@@ -7348,10 +8274,7 @@ class AcpClient:
             # from the operator's shell cannot select the unconfined mode. Defence in
             # depth: nothing here routes a tool call to Crew's gate.
             env[_ENV_DEEPSEEK_PERMISSION_MODE] = DEEPSEEK_PERMISSION_MODE
-        if self._session_key:
-            env["KIROCREW_SESSION_KEY"] = self._session_key
-        else:
-            env.pop("KIROCREW_SESSION_KEY", None)
+        self._apply_session_identity_env(env)
         if self._channel_id:
             env["KIROCREW_CHANNEL_ID"] = self._channel_id
         else:
@@ -7376,8 +8299,9 @@ class AcpClient:
         # Windows Kiro delegation has no POSIX `env -u` wrapper, so this is the
         # enforcement point there. Keep it after _resolve_spawn_env so SSH repair
         # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
-        # to the positively identified Kiro backend.
-        env = scrub_agent_subprocess_env(env)
+        # to the positively identified Kiro backend. forward_ssh_auth_sock is
+        # the opt-in resolved off-loop above and reused here.
+        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
         # Bundled skill scripts must not depend on a system ``python`` name.
         # The desktop bundles carry their interpreter outside the user's PATH,
         # while this path is already running under the exact environment that
@@ -7409,20 +8333,14 @@ class AcpClient:
         if browser_env:
             lifecycle_env = {**os.environ, **browser_env}
             env.update(await self._to_thread_guarding_sandbox(browser_socket_env, lifecycle_env))
-        # Per-process scratch containment -- see acp/runtime.py's
-        # twin block. Allocated off-loop, fail-open; owner recorded after
-        # spawn; reclamation is liveness-keyed, never age-keyed.
-        self._scratch_dir = None
-        try:
-            self._scratch_dir = await asyncio.to_thread(
-                agent_scratch.allocate_scratch, self._session_key or "session"
-            )
-            env.update(agent_scratch.scratch_env(self._scratch_dir))
-        except OSError:
-            logger.warning(
-                "agent-scratch: could not allocate; spawning with inherited temp",
-                exc_info=True,
-            )
+        # The scratch dir was allocated before the sandbox wrap (carved out of
+        # the masked root there); hand it to the child as its temp.
+        if self._scratch_dir is not None:
+            env.update(agent_scratch.scratch_env(self._scratch_dir, shared=self._shared_scratch))
+        elif self._shared_scratch is not None:
+            # Own allocation failed (inherited temp) but the tree's work
+            # directory is mounted: the prompt-visible name still points there.
+            env["KIROCREW_SCRATCH"] = str(self._shared_scratch)
         # Memory-aware cap for pytest-xdist's ``-n auto``: xdist sizes auto to
         # the CPU count, ignoring memory, so a full-suite run in an agent turn
         # can spawn cpu_count workers x ~1 GB each and exhaust the host. xdist
@@ -7451,26 +8369,29 @@ class AcpClient:
                 await bind_voice_safe_agent_workspace_async(self._work_dir)
             )
         try:
-            self._process = await create_subprocess_limited(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._spawn_work_dir,
-                limit=_STDOUT_BUFFER_LIMIT,
-                env=env,
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=(
-                    platform_compat.CREATE_NEW_PROCESS_GROUP
-                    | platform_compat._SUBPROCESS_NO_WINDOW
-                    | platform_compat.CREATE_SUSPENDED
+            self._process = await platform_compat.create_windows_cleanup_owned_process(
+                functools.partial(
+                    create_subprocess_limited,
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._spawn_work_dir,
+                    limit=_STDOUT_BUFFER_LIMIT,
+                    env=env,
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=(
+                        platform_compat.CREATE_NEW_PROCESS_GROUP
+                        | platform_compat._SUBPROCESS_NO_WINDOW
+                        | platform_compat.CREATE_SUSPENDED
+                    ),
+                    # None off macOS, where nothing binds. When set, the child enters
+                    # the workspace through this verified descriptor instead of
+                    # resolving ``cwd``'s pathname, which a same-UID symlink retarget
+                    # could aim elsewhere in between.
+                    chdir_fd=self._bound_workspace_fd,
+                    profile=RLIMIT_PROFILE_SESSION_HOST,
                 ),
-                # None off macOS, where nothing binds. When set, the child enters
-                # the workspace through this verified descriptor instead of
-                # resolving ``cwd``'s pathname, which a same-UID symlink retarget
-                # could aim elsewhere in between.
-                chdir_fd=self._bound_workspace_fd,
-                profile=RLIMIT_PROFILE_SESSION_HOST,
             )
         except BaseException:
             await self._discard_bound_workspace()
@@ -7506,22 +8427,67 @@ class AcpClient:
             # and thread tables (see the note on finish_suspended_spawn); the child
             # is frozen until it returns, so this is the one await the spawn cannot
             # skip.
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(),
-                functools.partial(
-                    finish_suspended_spawn, self._process, self._pid, label=_spawn_label
-                ),
+            await platform_compat.finish_windows_cleanup_owned_spawn(
+                lambda: asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(
+                        finish_suspended_spawn, self._process, self._pid, label=_spawn_label
+                    ),
+                )
             )
-            self._start_time = await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), _get_start_time, self._pid
-            )
+            # Identity for the recycle guards that later decide whether this pid
+            # may be signalled. ``get_process_start_id`` is in-process on every
+            # platform (its own docstring pins that), so unlike the ``ps``-forking
+            # reader it replaces there is nothing here to offload.
+            self._start_time = platform_compat.get_process_start_id(self._pid)
             if self._scratch_dir is not None:
                 # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
-                # twin block. Off-loop, fail-open.
-                await asyncio.get_running_loop().run_in_executor(
+                # twin block. Off-loop, and fail-open on a write that could not
+                # happen: an unowned dir is covered by the grace-window rule.
+                owner_outcome = await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(),
                     functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
                 )
+                if owner_outcome == "refused":
+                    # A LINK where this child's own marker belongs: the child
+                    # owns that directory and has pointed it somewhere else, so
+                    # it is steering an UNSANDBOXED gateway write at a path of
+                    # its choosing. Raising hands it to the guard below, which
+                    # reaps the process -- the spawn must not carry on as if the
+                    # owner had been recorded.
+                    raise agent_scratch.ScratchBoundaryError(
+                        "the spawned agent replaced its scratch owner marker with a link"
+                    )
+                if owner_outcome == "stale":
+                    # Not an attack: the update failed and the marker it left
+                    # could not be cleared, so this dir still names the GATEWAY.
+                    # That pid dies with the gateway while this child lives on,
+                    # which is the state a later sweep reads as a dead owner
+                    # before deleting a live agent's temp dir. Reaping now is
+                    # recoverable; that deletion is not.
+                    raise agent_scratch.ScratchBoundaryError(
+                        "the scratch owner marker still names the gateway after a failed update"
+                    )
+            if self._shared_scratch is not None:
+                # Twin of acp/runtime.py: join the tree's owner marker beside
+                # the parent, so the sweep keeps the tree while either lives.
+                adopt_outcome = await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(agent_scratch.adopt_owner, self._shared_scratch, self._pid),
+                )
+                if adopt_outcome in ("refused", "stale"):
+                    raise agent_scratch.SharedScratchJoinError(
+                        "the inherited scratch owner marker could not be joined"
+                        if adopt_outcome == "stale"
+                        else "the inherited scratch owner marker was replaced with a link"
+                    )
+                if adopt_outcome != "recorded":
+                    logger.warning(
+                        "agent-scratch: could not join the owner marker of %r (%s); the tree's "
+                        "work directory is left unowned and will not be swept",
+                        self._shared_scratch.name,
+                        adopt_outcome,
+                    )
             logger.info("Spawned %s (PID %d)", _spawn_label, self._pid)
             # Track root PID and do an early descendant scan.  kiro-cli forks
             # child processes quickly after launch.  Recording them here means
@@ -7611,10 +8577,11 @@ class AcpClient:
                     suppressed = 0
                     last_summary = now
                 continue
-            self._stderr_lines.append(text)
-            redacted, _ = redact_exfiltration_urls(text)
-            redacted, _ = redact_credentials(redacted)
-            logger.warning("%s stderr: %s", label, redacted)
+            if self.memory_mode == "persistent":
+                self._stderr_lines.append(text)
+                redacted, _ = redact_exfiltration_urls(text)
+                redacted, _ = redact_credentials(redacted)
+                logger.warning("%s stderr: %s", label, redacted)
         if suppressed:
             # Flush the residual count once the stream closes so the final burst
             # is still accounted for.
@@ -7662,6 +8629,11 @@ class AcpClient:
         Args:
             force: If True, kill immediately (used during shutdown).
         """
+        if self._process and platform_compat.IS_WINDOWS:
+            self._windows_tree_cleanup_failed = True
+            await platform_compat.terminate_windows_asyncio_tree(self._process)
+            self._windows_tree_cleanup_failed = False
+            return
         if not self._process or self._process.returncode is not None:
             return
         pid = self._pid
@@ -7893,6 +8865,17 @@ class AcpClient:
 
     def _reset_state(self) -> None:
         """Reset all session state (call after process is dead)."""
+        cleanup = getattr(self._process, "_windows_cleanup_state", None)
+        if platform_compat.IS_WINDOWS and isinstance(
+            cleanup, platform_compat._PendingWindowsTreeCleanup
+        ):
+            if not cleanup.retired:
+                self._windows_tree_cleanup_failed = True
+        if getattr(self, "_windows_tree_cleanup_failed", False) is True:
+            logger.warning(
+                "Retaining Windows client PID %s after incomplete tree cleanup", self._pid
+            )
+            return
         if self._process:
             for pipe in (self._process.stdin, self._process.stdout, self._process.stderr):
                 if pipe:
@@ -7933,10 +8916,9 @@ class AcpClient:
         # Same per-spawn freshness rule as the array above: an edited spec must be
         # what the next session's guard judges, not this one's.
         self._mcp_ref_spec = None
-        self._agent_mcp_capabilities = {}
         self._spec_denied_tools = frozenset()
         # Save PIDs before clearing state — needed for untracking
-        saved_pid = self._pid
+        saved_pid = None if platform_compat.IS_WINDOWS else self._pid
         saved_child_pids = self._child_pids
         self._process = None
         self._pid = None
@@ -7956,6 +8938,10 @@ class AcpClient:
         self.last_prompt_stats.cost_session_usd = 0.0
         self._buffer.clear()
         self._stderr_lines.clear()
+        # A fresh process opens a fresh registration window: cleared WITH the
+        # ring, so the latch and the evidence it gates always describe the same
+        # child.
+        self._prompt_or_tool_seen = False
         if self._stderr_task and not self._stderr_task.done():
             self._stderr_task.cancel()
         self._stderr_task = None
@@ -8074,7 +9060,6 @@ class AcpClient:
             # The pooled read stays off the loop, as it already was.
             "mcpServers": [
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
-                *(self._codex_session_mcp_servers() if self._is_codex else []),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
@@ -8177,13 +9162,13 @@ class AcpClient:
             )
         else:
             self._can_load_session = bool(capabilities.get("loadSession", False))
-        # Which MCP transports this agent will accept in the session array. Only the
-        # codex projection consults it (see _codex_session_mcp_servers); every other
-        # backend either reads no array or accepts the shapes Crew already sends --
-        # opencode is the measured case of the latter, accepting stdio, http and sse
-        # alike, so its hook applies no filter (see _opencode_session_mcp_servers).
-        advertised = (init_resp.get("agentCapabilities") or {}).get("mcpCapabilities")
-        self._agent_mcp_capabilities = dict(advertised) if isinstance(advertised, dict) else {}
+        # No harness this core drives narrows the session MCP array against the
+        # advertised ``mcpCapabilities``: every one of them either reads no array
+        # or accepts the shapes Crew already sends, opencode being the measured
+        # case of the latter (stdio, http and sse alike -- see
+        # ``_opencode_session_mcp_servers``). The harness that DOES narrow reads
+        # the handshake on the core that drives it, in
+        # ``acp.harness.codex.session_mcp_servers``, so nothing is held here.
         self._agent_version = agent_version_from_init(init_resp)
         self._note_pi_adapter_version()
         self._note_goose_version()
@@ -8269,7 +9254,6 @@ class AcpClient:
                         # off-loop there, for the same reasons as session/new.
                         "mcpServers": [
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
-                            *(self._codex_session_mcp_servers() if self._is_codex else []),
                             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                             *(self._goose_session_mcp_servers() if self._is_goose else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
@@ -8472,6 +9456,16 @@ class AcpClient:
         Re-creating the directory later could not repair a live child anyway:
         a process's cwd is bound to the inode, not the path.
         """
+        if (
+            platform_compat.IS_WINDOWS
+            and self._process
+            and (
+                self._process.returncode is not None
+                or getattr(self, "_windows_tree_cleanup_failed", False) is True
+            )
+        ):
+            await self._kill_process(force=True)
+            self._reset_state()
         if not self._work_dir_ready:
             await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
             self._work_dir_ready = True
@@ -8530,6 +9524,26 @@ class AcpClient:
                     self._reset_state()
                     raise
                 except (AcpTimeoutError, AcpError, OSError) as exc:
+                    # A sandbox that refused to initialize is DETERMINISTIC, so
+                    # the second attempt below would rebuild the same profile on
+                    # the same host and be refused identically -- paying a spawn
+                    # and a teardown to report the same thing later, with the one
+                    # line that names the fix buried in a generic exit card. Fail
+                    # fast with the layer named instead, exactly as the
+                    # ``AcpToolGateUnroutable`` arm above does for a
+                    # configuration refusal. Placed inside the generic handler
+                    # rather than as its own ``except`` clause because the
+                    # signature is on the CHILD's stderr, not on the exception:
+                    # the same refusal surfaces as an EOF ``AcpError``, as an
+                    # ``AcpTimeoutError`` when the child dies before answering
+                    # ``initialize``, and as an ``OSError`` on the write that
+                    # follows it.
+                    sandbox_failure = await self._sandbox_init_failure()
+                    if sandbox_failure is not None:
+                        _startup_outcome = "sandbox_init_failed"
+                        await self._cleanup_failed_live_spawn()
+                        self._reset_state()
+                        raise sandbox_failure from exc
                     if attempt == 0:
                         logger.warning("ACP init failed (%s), retrying with fresh process...", exc)
                         await self._cleanup_failed_live_spawn()
@@ -8537,15 +9551,27 @@ class AcpClient:
                         if isinstance(exc, OSError):
                             await asyncio.sleep(_ACP_RESPAWN_BACKOFF_S)
                     else:
+                        # Read the ring BEFORE the cleanup below clears it: a
+                        # startup that died with a throttled registration on its
+                        # stderr is pre-prompt by construction, so the typed
+                        # transient subclass is the accurate verdict here too.
+                        _throttled = await self._registration_throttle_line()
                         # AcpAuthRequired subclasses AcpError; label it distinctly
                         # so a not-logged-in exit is never counted as a generic
                         # startup error. (The fork has no separate auth fail-fast
                         # branch — retry semantics stay unchanged.)
-                        _startup_outcome = (
-                            "auth_required" if isinstance(exc, AcpAuthRequired) else "error"
-                        )
+                        if isinstance(exc, AcpAuthRequired):
+                            _startup_outcome = "auth_required"
+                        elif _throttled is not None:
+                            _startup_outcome = "registration_rate_limited"
+                        else:
+                            _startup_outcome = "error"
                         await self._cleanup_failed_live_spawn()
                         self._reset_state()
+                        if _throttled is not None and not isinstance(exc, AcpAuthRequired):
+                            raise registration_rate_limited_error(
+                                "ACP session startup failed", _throttled
+                            ) from exc
                         raise
         finally:
             try:
@@ -8563,6 +9589,94 @@ class AcpClient:
                 )
             except Exception:  # never let telemetry break session startup
                 logger.debug("session startup metric emit failed", exc_info=True)
+
+    async def _settle_stderr(self, timeout: float = 0.5) -> None:
+        """Bounded wait for the stderr drain, so its ring can be read consistently.
+
+        Same shape and budget as the EOF branch of :meth:`_read_message`, lifted
+        here because the other failure shapes that reach a classifier -- an
+        ``initialize`` timeout, an ``OSError`` on the write after the child died --
+        never pass through it.
+        """
+        task = self._stderr_task
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    async def _sandbox_init_failure(self) -> AcpSandboxInitFailed | None:
+        """The classified sandbox-init error for this child's stderr, or ``None``.
+
+        Reads the ring buffer rather than the exception: the refusal is printed by
+        the child (or by the wrapper that could not start it), and the exception
+        that reaches the caller is whatever transport symptom followed -- an EOF,
+        an ``initialize`` timeout, a broken pipe.
+
+        Returns ``None`` when nothing was retained, which is the case for a
+        restricted-memory session: stderr is not kept there by design, so this
+        cannot classify and must not guess. Those sessions keep today's retry
+        behaviour rather than getting a made-up verdict.
+
+        Settles the drain first, for the reason the EOF branch of
+        ``_read_message`` does: the ring is filled by the drain task while the
+        failure that brings us here can arrive from the stdout side or from a
+        timeout that never touched it, so a straight read can miss a line already
+        in the pipe. Bounded and swallowing -- this is already a failure path.
+        """
+        await self._settle_stderr()
+        if not self._stderr_lines:
+            return None
+        haystack = "\n".join(self._stderr_lines)
+        if not is_sandbox_init_failure_output(haystack):
+            return None
+        # The WHOLE tail, not its last line: the launcher's own refusal line is
+        # what corroboration keys on, and a burst can end on the child's generic
+        # "failed to spawn" instead.
+        detail, _ = redact_exfiltration_urls(haystack)
+        detail, _ = redact_credentials(detail)
+        return await sandbox_init_failure(
+            detail,
+            crew_wrap=self._sandbox_wrapped_by_crew,
+            mode=self._sandbox_mode,
+            extra_hidden_dirs=self._sandbox_hidden_dirs,
+        )
+
+    async def _registration_throttle_line(self) -> str | None:
+        """One redacted stderr line showing a throttled registration, or ``None``.
+
+        Refuses to classify once this process has produced a non-thinking text
+        chunk or dispatched a tool (``_prompt_or_tool_seen``): the transient
+        verdict this evidence buys licenses the retry ladders to act, and a
+        stale throttle line surviving in the ring past real work must never
+        hand that verdict to a death whose replay could repeat side effects.
+        The latch clears with the ring on respawn, so a recovered throttle
+        followed by a fresh child opens a fresh window.
+
+        Returns ``None`` when nothing was retained, which is the case for a
+        restricted-memory session: stderr is not kept there by design, so this
+        cannot classify and must not guess. Those sessions keep the generic
+        death surface rather than getting a made-up verdict.
+
+        Settles the drain first, for the reason :meth:`_sandbox_init_failure`
+        does: the ring is filled by the drain task while the death that brings
+        us here is discovered on the stdout side, so a straight read can miss a
+        line already in the pipe. Redacted before it leaves: the line rides an
+        exception message that reaches session cards and persisted errors, and
+        child stderr is untrusted subprocess output that can echo a credential.
+        """
+        if getattr(self, "_prompt_or_tool_seen", True):
+            return None
+        await self._settle_stderr()
+        if not self._stderr_lines:
+            return None
+        line = registration_throttle_line("\n".join(self._stderr_lines))
+        if line is None:
+            return None
+        line, _ = redact_exfiltration_urls(line)
+        line, _ = redact_credentials(line)
+        return line
 
     async def shutdown(self) -> None:
         """Gracefully stop the ACP process."""
@@ -8602,6 +9716,9 @@ class AcpClient:
         if not self._process or not self._process.stdin:
             raise AcpError("ACP process not running")
 
+        projection = getattr(self, "_native_skill_projection", None)
+        if projection is not None:
+            params = projection.request(method, params)
         req_id = self._next_req_id()
         req = JsonRpcRequest(method=method, params=params, id=req_id)
         data = json.dumps(req.to_dict()) + "\n"
@@ -8693,7 +9810,9 @@ class AcpClient:
                         await asyncio.wait_for(self._stderr_task, timeout=0.5)
                     except (Exception, asyncio.CancelledError):
                         pass
-                stderr_tail = "; ".join(self._stderr_lines) if self._stderr_lines else ""
+                stderr_tail = (
+                    "; ".join(self._stderr_lines) if self.memory_mode == "persistent" else ""
+                )
                 if stderr_tail:
                     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -8713,7 +9832,8 @@ class AcpClient:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            logger.debug("Skipping non-JSON line from ACP: %.100s", text)
+            if self.memory_mode == "persistent":
+                logger.debug("Skipping non-JSON line from ACP: %.100s", text)
             return None
 
         # Opt-in raw-frame recording for the replay corpus. A no-op unless
@@ -8722,9 +9842,12 @@ class AcpClient:
         # kiro_crew.acp._frame_record. Placed after the buffer early-return
         # above so a frame is recorded once, when it comes off the wire, not
         # again when a turn loop replays it out of _buffer.
-        if isinstance(data, dict):
+        if isinstance(data, dict) and self.memory_mode == "persistent":
             await record_frame(self.backend, data, len(line))
 
+        projection = getattr(self, "_native_skill_projection", None)
+        if projection is not None and isinstance(data, dict):
+            data = projection.frame(data)
         return JsonRpcMessage(
             id=data.get("id"),
             method=data.get("method"),
@@ -8866,6 +9989,13 @@ class AcpClient:
             progress = self._mcp_timeout_progress(expected_mcp)
             if progress:
                 message += f" ({progress})"
+            err = AcpTimeoutError(message=message)
+            # A start that never answered, tagged for the self-driving callers
+            # that count consecutive start failures (see
+            # ``AcpError.session_start_failed``). Set only in this branch: the
+            # other awaited requests are not session starts.
+            err.session_start_failed = True
+            raise err
         raise AcpTimeoutError(message=message)
 
     def _mcp_timeout_progress(self, expected: object) -> str:
@@ -9168,6 +10298,7 @@ class AcpClient:
             self._compaction_failed_at = None
             self._compaction_failed_turn = False
             self._claude_compaction_pending = False
+            self._codex_compaction_pending = False
             deadline = time.monotonic() + timeout
             consecutive_empty = 0
             last_data_ts = time.monotonic()
@@ -9181,6 +10312,7 @@ class AcpClient:
             # park time accrued SINCE the last frame is excluded.
             parked_total = 0.0
             parked_at_data = 0.0
+            _last_yield = time.monotonic()
 
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
@@ -9223,11 +10355,35 @@ class AcpClient:
                         self._compaction_failed_turn = True
                         return
 
+                # Cooperative yield, placed where the previous frame is fully
+                # handled and the next one is not yet read: no frame is held in a
+                # local here, so a cancellation landing on this yield drops
+                # nothing. `_read_message` is NOT a suspension point when input is
+                # already buffered -- it returns `self._buffer.popleft()` outright,
+                # and `StreamReader.readline` returns without awaiting when the
+                # line is already in its buffer -- so without this a burst drains
+                # inside one task step. Twin of
+                # AcpSessionHandle._dispatch_events; both read the same budget.
+                _now = time.monotonic()
+                if _now - _last_yield >= DRAIN_YIELD_AFTER_S:
+                    await asyncio.sleep(0)
+                    _last_yield = time.monotonic()
+
                 msg = await self._read_message(timeout=min(remaining, _READ_TIMEOUT))
                 if msg is None:
                     consecutive_empty += 1
                     if consecutive_empty >= _MAX_CONSECUTIVE_EMPTY and not self._is_process_alive():
                         rc = self._process.returncode if self._process else "?"
+                        # A death whose retained stderr shows a throttled
+                        # registration is endpoint throttling, not a crash:
+                        # raise the typed transient subclass so the retry
+                        # ladders recover it (a respawn through ensure_ready
+                        # genuinely retries registration on this transport).
+                        _throttled = await self._registration_throttle_line()
+                        if _throttled is not None:
+                            raise registration_rate_limited_error(
+                                f"Process exited during prompt (exit code {rc})", _throttled
+                            )
                         raise AcpProcessDied(f"Process exited during prompt (exit code {rc})")
                     # Staleness check: if caller set _stale_eligible (text was
                     # streamed) and kiro-cli has gone silent, exit early.
@@ -9502,6 +10658,7 @@ class AcpClient:
                     # event is discarded — this API yields str — but the context
                     # counts it drops are what the meter reads next turn.
                     self._settle_claude_compaction(reason)
+                    self._settle_codex_compaction(reason)
                     reason, _ = self.last_prompt_stats.terminal_refusal(reason)
                     self._last_stop_reason = reason
                     self._turn_done.set()
@@ -9523,6 +10680,10 @@ class AcpClient:
                     await self._reject_unknown_server_request(msg)
                 elif action == "update":
                     self._track_usage_update(msg)
+                    # Apply the codex compaction state change; this API yields
+                    # str so the event has nowhere to go, but the context counts
+                    # it drops are what the meter reads next turn.
+                    self._codex_compaction_event(msg)
                     # The gate tripwire holds on every reader that answers
                     # permission frames, this text-only one included.
                     await self._tripwire_pi_gate(msg)
@@ -9660,6 +10821,11 @@ class AcpClient:
                 _compaction_settle = self._settle_claude_compaction(reason)
                 if _compaction_settle is not None:
                     yield _compaction_settle
+                # The codex reading of the same hole: a compaction that errored
+                # sent no terminal, so the turn ending is where it is closed out.
+                _codex_settle = self._settle_codex_compaction(reason)
+                if _codex_settle is not None:
+                    yield _codex_settle
                 reason, _refusal = self.last_prompt_stats.terminal_refusal(reason)
                 # Turn is over — disarm the stall watchdog.
                 self._tool_dispatched = False
@@ -9712,6 +10878,13 @@ class AcpClient:
                 await self._reject_unknown_server_request(msg)
             elif action == "update":
                 self._track_usage_update(msg)
+                # codex reports compaction as a marked tool_call pair rather than
+                # as text, so it is read off the FRAME here instead of off a
+                # chunk below. Yielded and then fallen through: the frame is
+                # still a tool call this turn made.
+                _codex_compaction = self._codex_compaction_event(msg)
+                if _codex_compaction is not None:
+                    yield _codex_compaction
                 chunk, is_thinking = self._extract_text_chunk(msg)
                 _notice_chunk = False
                 if chunk and not is_thinking:
@@ -9734,6 +10907,7 @@ class AcpClient:
                     if not is_thinking:
                         self.last_prompt_stats.text_chunks += 1
                         self._stale_eligible = True
+                        self._prompt_or_tool_seen = True
                     yield AcpEvent(kind=kind, text=chunk, control_notice=_notice_chunk)
                     if not is_thinking and _is_tool_interrupted_marker(chunk):
                         # kiro-cli's built-in security filter cancelled the turn's tools.
@@ -9752,6 +10926,7 @@ class AcpClient:
                 tool_event = self._extract_tool_event(msg)
                 if tool_event:
                     self._stale_eligible = False
+                    self._prompt_or_tool_seen = True
                     # Arm the tool-stall watchdog: if no further data arrives
                     # within _TOOL_STALL_TIMEOUT, _prompt_loop treats the turn
                     # as dead instead of hanging to the full prompt timeout.
@@ -9835,6 +11010,11 @@ class AcpClient:
                     len(_subs) if isinstance(_subs, list) else "n/a",
                 )
                 if isinstance(_subs, list):
+                    # A roster means children exist: a spawned child can mutate
+                    # state before its first activity frame is observed, so the
+                    # roster itself closes the registration-throttle window.
+                    if _subs:
+                        self._prompt_or_tool_seen = True
                     # No runtime_global marking here: AcpClient owns a dedicated
                     # process with a single session, so an ownerless frame from
                     # it is this session's own roster, never a co-tenant's.
@@ -9866,6 +11046,12 @@ class AcpClient:
                 if _ssid and _ssid == (self._session_id or ""):
                     continue
                 if _ssid and _tcid:
+                    # A child's tool call is this process's side effect for
+                    # replay purposes — the parent prompt spawned it, so a
+                    # replay would re-run it. Close the registration-throttle
+                    # window, exactly as the shared-runtime handle does for its
+                    # fanned-out child tool calls.
+                    self._prompt_or_tool_seen = True
                     # Sub-agent output is LLM-influenced — redact the title before
                     # it reaches the dashboard/persisted message.
                     _su_title, _ = redact_exfiltration_urls(str(_upd.get("title") or ""))
@@ -9882,6 +11068,10 @@ class AcpClient:
                     # Skip reasoning/thinking blocks (is_thinking) — those are the
                     # sub-agent's internal reasoning, not user-visible output, and
                     # the flat pre-port read never surfaced them.
+                    # Observed child output also closes the registration-throttle
+                    # window: a child whose tool frame was lost or differently
+                    # spelled must not read as "did nothing".
+                    self._prompt_or_tool_seen = True
                     _su_text, _ = redact_exfiltration_urls(_su_text)
                     _su_text, _ = redact_credentials(_su_text)
                     yield AcpEvent(
@@ -10230,6 +11420,29 @@ class AcpClient:
         """
         return self.backend in ACP_BACKENDS_STEER
 
+    def turn_finished_cleanly(self) -> bool:
+        """Whether the last turn reached its own end boundary uncancelled.
+
+        Asked by a capability that treats the turn's end AS its result -- an inline
+        compaction, whose harness emits no status frame, so the boundary is the only
+        evidence there is. The test is POSITIVE: the stop reason must BE
+        ``end_turn``, because "not cancelled" also admits a refusal, a token limit,
+        a reason this build does not recognise, and a turn that reported none.
+
+        ``_cancelled`` is checked as well, because a cancel that never got an ack
+        leaves the reason empty while the flag is already set -- and an unacked
+        cancel is exactly the case where whatever the turn was for is least likely
+        to have happened.
+
+        Declared HERE rather than read off ``_cancelled`` / ``_last_stop_reason``
+        from outside: both are this class's private turn state, and a consumer
+        reading them across the wrapper boundary would answer this question from a
+        shape it does not own -- silently, if either field were ever renamed.
+        """
+        if self._cancelled:
+            return False
+        return self._last_stop_reason == STOP_REASON_END_TURN
+
     async def wait_turn_done(self, timeout: float) -> str:
         """Wait for the current prompt to finish. Returns stop_reason or raises TimeoutError."""
         await asyncio.wait_for(self._turn_done.wait(), timeout=timeout)
@@ -10286,6 +11499,7 @@ class AcpClient:
                 # See send_message_stream: settle for the context counts, drop
                 # the event this API cannot yield.
                 self._settle_claude_compaction(reason)
+                self._settle_codex_compaction(reason)
                 # Fold a metadata refusal onto the terminal, as the streaming
                 # paths do, so a caller reading ``last_stop_reason`` sees the
                 # refusal and does not retry a deterministic decline.
@@ -10312,6 +11526,9 @@ class AcpClient:
                 await self._reject_unknown_server_request(msg)
             elif action == "update":
                 self._track_usage_update(msg)
+                # See send_message_stream: settle the codex compaction for the
+                # context counts, drop the event this API cannot return.
+                self._codex_compaction_event(msg)
                 chunk, is_thinking = self._extract_text_chunk(msg)
                 if chunk and not is_thinking:
                     # Apply the claude compaction state change, then KEEP the
@@ -11346,8 +12563,9 @@ class AcpClient:
                 kind, _ = redact_exfiltration_urls(kind)
                 kind, _ = redact_credentials(kind)
             self.last_prompt_stats.tool_calls.append((kind, title))
-            # Trusted identity from _meta.kiro (NOT the LLM-authored title) —
-            # shared with the _dispatch builder so both event paths carry it.
+            # Trusted identity from adapter-authored markers (NOT the
+            # LLM-authored title), shared with the dispatch builder so both
+            # event paths carry the same classifier verdict.
             return AcpEvent(
                 kind=EVENT_TOOL_CALL,
                 title=title,
@@ -11368,6 +12586,7 @@ class AcpClient:
                 # populates nothing and asserts no provenance.
                 tool_name=identity.tool_name,
                 mcp_server_name=identity.mcp_server_name,
+                tool_identity_trusted=identity.tool_identity_trusted,
                 mcp_identity_trusted=identity.identity_trusted,
             )
         return None
@@ -11800,7 +13019,8 @@ class AcpClient:
         # to grep for server-side. See Mesh compaction-spam investigation.
         s_type = status.get("type", "") if isinstance(status, dict) else str(status)
         if s_type == "failed":
-            logger.warning("Compaction failed — raw notification params: %s", params)
+            if self.memory_mode == "persistent":
+                logger.warning("Compaction failed — raw notification params: %s", params)
             # Arm the bounded post-failure wait (see
             # _COMPACTION_FAILED_TURN_BUDGET): kiro-cli may never answer the
             # prompt this compaction was for.
@@ -11866,6 +13086,115 @@ class AcpClient:
         # Backend-echoed text on its way to the dashboard — redact before it can
         # reach any surface (parity with the kiro-cli/KAS compaction summaries).
         return AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=redact_text(detail))
+
+    def _codex_compaction_event(self, msg: JsonRpcMessage) -> AcpEvent | None:
+        """Reclassify a codex-acp context-compaction frame as an event.
+
+        The codex-side twin of ``_handle_compaction_status`` and
+        ``_claude_compaction_event``: it applies the same state mutation (drop the
+        stale context counts on a terminal) and returns the
+        ``EVENT_COMPACTION_STATUS`` every consumer already understands -- the
+        dashboard notice and context-meter reset, the messaging drivers, and
+        ``wait_for_compaction``. ``None`` means the frame is an ordinary
+        ``tool_call`` and must be handled as one.
+
+        Gated on ``ACP_BACKENDS_INLINE_COMPACTION``, the set of harnesses whose
+        compaction lands INSIDE the prompt turn -- so a harness that earns that
+        membership inherits the translation by joining the set. The MARKER is what
+        actually decides: ``_meta.contextCompaction`` is codex-acp's own, and
+        claude (a member) stamps nothing, so the parser declines its frames.
+
+        Reached on this class through the dormant codex seam -- a live codex
+        session is served by ``AcpRuntime``, whose ``AcpSessionHandle`` carries the
+        same method. Both implementations answer, rather than one, because a
+        capability the two transports disagree about is a capability that works on
+        whichever one a reader did not test (harness-parity H6).
+
+        Callers MUST still forward the frame. This is a SIDE EFFECT, never a
+        substitute: the frame is also a real tool call in the transcript, and a
+        layer that swallowed it would drop a row the user watched appear.
+
+        There is no ``failed`` arm because codex-acp sends no such status -- see
+        ``parse_codex_compaction_update``. A compaction that errors leaves the
+        ``session/prompt`` request unanswered, which the prompt loop's own
+        deadline owns; this method neither invents a terminal nor arms the
+        post-failure budget on a guess.
+        """
+        if self.backend not in ACP_BACKENDS_INLINE_COMPACTION:
+            return None
+        params = msg.params or {}
+        update = params.get("update")
+        if not isinstance(update, dict):
+            return None
+        status_type = parse_codex_compaction_update(update)
+        if status_type is None:
+            return None
+        if status_type != "started" and not self._codex_compaction_pending:
+            return None
+        logger.info("Compaction status (codex): %s", status_type)
+        self._codex_compaction_pending = status_type == "started"
+        if status_type == "completed":
+            self._compaction_failed_at = None
+            self.last_prompt_stats.reset_after_compaction()
+        # No title: the adapter ships no summary with either frame, and an empty
+        # string is what every consumer already renders for "compacted, no
+        # summary offered".
+        return AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title="")
+
+    def _settle_codex_compaction(self, reason: str) -> AcpEvent | None:
+        """Close out a codex compaction whose terminal never arrived, or None.
+
+        Called at the turn's terminal. ``None`` -- the ordinary case -- means no
+        codex compaction was in flight, or one was and it already reported.
+
+        The verdict is ``failed``, and that is the opposite of what the claude
+        twin synthesizes. The two harnesses differ in what a MISSING terminal
+        means. claude-agent-acp sends its ``Compacting completed.`` text only for
+        a MANUAL ``/compact``; an automatic mid-turn compaction takes a different
+        path and emits no text at all, so for claude a turn that ends naturally
+        after a ``started`` is evidence the compaction finished. codex-acp sends
+        its terminal for BOTH -- the capture shows the marked
+        ``tool_call_update`` on a manual ``/compact`` and on a native
+        ``model_auto_compact_token_limit`` compaction alike -- so here a missing
+        terminal is evidence the compaction did NOT finish. Reporting
+        ``completed`` would reset the context meter against a window nobody
+        summarized.
+
+        One arm for every *reason*, unlike its claude twin, and for the same
+        reason the verdict differs: this is not an inference from how the turn
+        ended, it is the absence of a frame codex always sends on success. A turn
+        cancelled mid-compaction did not compact either.
+
+        Three things it deliberately does NOT do:
+
+        * reset the context counts -- nothing was summarized, so the pre-compaction
+          numbers are still the true ones;
+        * arm the post-failure budget (``_compaction_failed_at``) -- that budget
+          exists to bound a wait for a turn that may never end, and this runs AT
+          the end of the turn, so arming it would charge the NEXT turn's idle
+          clock for this one's failure;
+        * claim the failure is retryable. ``last_compaction_transient`` is set
+          False because an inferred failure carries no reason to classify, and
+          False is the value that does not promise a user a retry will help.
+
+        The title is text this module authors, not text a backend echoed, so it
+        needs no redaction -- and it is there so the surfaces that render a
+        failure reason stop collapsing this case to "unknown error".
+        """
+        if not self._codex_compaction_pending:
+            return None
+        self._codex_compaction_pending = False
+        logger.warning(
+            "Compaction status (codex): started with no terminal, turn ended %r",
+            reason or "unknown",
+        )
+        self.last_compaction_transient = False
+        return AcpEvent(
+            kind=EVENT_COMPACTION_STATUS,
+            text="failed",
+            title="the turn ended without a compaction result",
+            synthesized=True,
+        )
 
     def _settle_claude_compaction(self, reason: str) -> AcpEvent | None:
         """Synthesize the terminal an AUTOMATIC claude compaction never sends.

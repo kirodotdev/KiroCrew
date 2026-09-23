@@ -234,7 +234,7 @@ def _step_env(workflow_name: str, step_name: str) -> dict[str, str]:
 
 # The three steps of the blocking-finding adjudication stage, in both GPT lanes.
 ADJ_EXTRACT = "Extract blocking findings for adjudication"
-ADJ_MODEL = "Opus 4.8 adjudication (blocking findings only)"
+ADJ_MODEL = "Opus 5 adjudication (blocking findings only)"
 ADJ_GATE = "Adjudicate the blocking verdict (script arithmetic, fail closed)"
 
 
@@ -511,7 +511,7 @@ class TestLineReviewHumanOverrides:
         assert '.user.login == "github-actions[bot]"' in workflow
         assert "steps.human_override.outputs.active != 'true'" in workflow
         assert "✅ human override accepted" in workflow
-        assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 4.8" in workflow
+        assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 5" in workflow
         assert "/ai-review override fable $HEAD:" in workflow
 
     @pytest.mark.parametrize(
@@ -911,7 +911,7 @@ class TestPrReadiness:
             "build.yml|Build",
             "code-review.yml|Code Review",
             "dynamic/github-code-scanning/codeql|CodeQL",
-            "claude-review.yml|Opus 4.8 Review",
+            "claude-review.yml|Opus 5 Review",
             "codex-review.yml|GPT 5.6 Review",
             "design-review.yml|Design Review",
         ):
@@ -952,18 +952,21 @@ class TestPrReadiness:
         # to THIS PR and attempt: the third field is the external_id prefix and
         # the fourth is the triggering workflow (Fast Gate) whose newest run +
         # attempt defines "current".
-        assert '"checkrun:Opus 4.8 Review|Opus 4.8 Review|opus-pr-|fast-gate.yml"' in workflow
+        assert '"checkrun:Opus 5 Review|Opus 5 Review|opus-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:GPT 5.6 Review|GPT 5.6 Review|gpt-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:Design Review|Design Review|design-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:UX Review|UX Review|ux-pr-|fast-gate.yml"' in workflow
-        assert "commits/$SHA/check-runs?check_name=$enc" in workflow
+        # One read of the head's check-runs serves all seven lanes; the
+        # external_id match, not a check_name filter, names the lane.
+        assert "commits/$SHA/check-runs?per_page=100" in workflow
+        assert "check-runs?check_name=$enc" not in workflow
         # The blanket fork skip and the maintainer-review verdict are gone.
         assert '"GPT 5.6 Review (fork PR)"' not in workflow
         assert 'state="maintainer_review"' not in workflow
         assert "AI reviews could not run" not in workflow
         # Stage-2 fork reviewers re-trigger readiness on completion so the
         # green verdict actually lands.
-        assert "Fork Opus 4.8 Review" in workflow
+        assert "Fork Opus 5 Review" in workflow
         assert "Fork GPT 5.6 Review" in workflow
         assert "github.event.workflow_run.event == 'workflow_run'" in workflow
 
@@ -3571,7 +3574,7 @@ FORK_SWEEP_LANES = (
         "Finalize check-run (advisory)",
     ),
     ("fork-gpt-review.yml", "GPT 5.6 Review", "gpt", "Finalize check-run (fail closed)"),
-    ("fork-opus-review.yml", "Opus 4.8 Review", "opus", "Finalize check-run (fail closed)"),
+    ("fork-opus-review.yml", "Opus 5 Review", "opus", "Finalize check-run (fail closed)"),
     ("fork-ux-review.yml", "UX Review", "ux", "Finalize check-run (advisory)"),
 )
 
@@ -3749,7 +3752,7 @@ class TestClaudeReviewCodeOnlyScope:
         assert "exit 1" in script  # an empty diff is a real signal, not a pass
         assert "${{ runner.temp }}/pr.diff" in same
         # The prefetch must precede the first agentic step.
-        assert same.index("Prefetch the reviewable diff") < same.index("- name: Opus 4.8 discovery")
+        assert same.index("Prefetch the reviewable diff") < same.index("- name: Opus 5 discovery")
         # The shared prompts must NOT hardcode a diff source: each lane names its
         # own, so the acquisition step belongs to the caller.
         for stage in ("opus-discovery", "opus-validate"):
@@ -3793,8 +3796,8 @@ class TestOpusTwoStageArchitecture:
     def test_both_lanes_run_discovery_then_validation(self) -> None:
         for lane in self.LANES:
             workflow = _workflow(lane)
-            discover_at = workflow.index("- name: Opus 4.8 discovery")
-            validate_at = workflow.index("- name: Opus 4.8 validation")
+            discover_at = workflow.index("- name: Opus 5 discovery")
+            validate_at = workflow.index("- name: Opus 5 validation")
             assert discover_at < validate_at, lane
             # The gate, the transcript capture and the posted comment all read
             # `steps.review`, so VALIDATION must own that id -- if discovery took
@@ -3807,7 +3810,7 @@ class TestOpusTwoStageArchitecture:
         for lane in self.LANES:
             workflow = _workflow(lane)
             assert ".review-candidates.md" in workflow, lane
-            validate_at = workflow.index("- name: Opus 4.8 validation")
+            validate_at = workflow.index("- name: Opus 5 validation")
             shim = workflow[validate_at:]
             assert "UNTRUSTED EVIDENCE" in shim, lane
             # No interpolation of the discovery transcript into the next prompt.
@@ -5354,6 +5357,111 @@ class TestForkReviewersAreStageTwoOfFastGate:
         assert "never a security" in flat, name
 
 
+class TestLedgerWriterGateFailsClosed:
+    """Execute the ACTUAL ledger writer-gating permission read with ``gh`` stubbed.
+
+    An empty ``perm`` matches no ``case`` arm, so a permission read that FAILED
+    resolves its author to non-writer and drops that writer's disposition
+    records from the ledger -- the reviewer then re-litigates findings a
+    repository writer already ruled on, on a green run with no annotation.
+    """
+
+    DISPOSITION = (
+        '[{"body":"<!-- ai-review-disposition target=gpt head=abc -->",'
+        '"user":{"login":"someone"}}]'
+    )
+
+    def _writer_gate_block(self) -> str:
+        script = _step_script(_workflow("codex-review.yml"), "Write review prompt")
+        start = script.index('disp_authors="')
+        end = script.index('ledger_full="')
+        return script[start:end]
+
+    def _run_gate(self, tmp_path: Path, perm_mode: str):
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the writer gate is Bash; skip where Bash is absent")
+        attempts = tmp_path / "gh-attempts"
+        gh = tmp_path / "gh"
+        stub = f'#!/bin/sh\nprintf x >> "{attempts}"\n'
+        if perm_mode == "write":
+            stub += "printf 'write\\n'\n"
+        elif perm_mode == "notfound":
+            stub += 'echo "gh: Not Found (HTTP 404)" >&2\nexit 1\n'
+        else:
+            stub += 'echo "gh: Internal Server Error (HTTP 500)" >&2\nexit 1\n'
+        gh.write_text(stub, encoding="utf-8", newline="\n")
+        gh.chmod(0o755)
+        sleep_stub = tmp_path / "sleep"
+        sleep_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+        sleep_stub.chmod(0o755)
+        out_file = tmp_path / "writers.json"
+        script = (
+            f"comments_json='{self.DISPOSITION}'\n"
+            + self._writer_gate_block()
+            + f'\nprintf \'%s\' "$writers" > "{out_file}"\n'
+        )
+        result = subprocess.run(
+            [bash, "-e", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={
+                "PATH": _stub_path(tmp_path),
+                "GH_TOKEN": "",
+                "GITHUB_TOKEN": "",
+                "GH_CONFIG_DIR": str(tmp_path),
+                "LC_ALL": "C",
+                "REPO": "example/repo",
+                "PR": "1",
+                "TMPDIR": str(tmp_path),
+            },
+            cwd=tmp_path,
+        )
+        return result, attempts, out_file
+
+    def test_a_readable_writer_is_gated_in(self, tmp_path: Path):
+        result, attempts, out_file = self._run_gate(tmp_path, "write")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(out_file.read_text(encoding="utf-8")) == ["someone"]
+        assert attempts.read_text(encoding="utf-8") == "x"
+
+    def test_a_404_stays_a_legitimate_non_writer(self, tmp_path: Path):
+        # The API answering "not a collaborator" is a real negative: exclude the
+        # author, without a retry and without failing the step.
+        result, attempts, out_file = self._run_gate(tmp_path, "notfound")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(out_file.read_text(encoding="utf-8")) == []
+        assert attempts.read_text(encoding="utf-8") == "x"
+
+    def test_an_unreadable_permission_fails_closed(self, tmp_path: Path):
+        result, attempts, out_file = self._run_gate(tmp_path, "transient")
+        assert result.returncode != 0, "an unreadable permission passed as non-writer"
+        assert "::error::" in result.stdout
+        # Bounded: a permanently failing API must not hold the job open.
+        assert attempts.read_text(encoding="utf-8") == "xxx"
+        assert not out_file.exists(), "the ledger was gated on a permission never read"
+
+    def test_permission_read_no_longer_swallows_its_status(self):
+        block = "\n".join(
+            line
+            for line in self._writer_gate_block().splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "collaborators/$author/permission" in block
+        # The read spans a continuation line and its redirection sits on the
+        # SECOND one, so judge THAT line: a check scoped to the line naming the
+        # endpoint passes while the exit status is still swallowed.
+        redirection = _line_containing(block, "--jq '.permission'")
+        assert "2>/dev/null" not in redirection
+        assert "|| true" not in redirection
+        # An explicit 404 stays a legitimate negative, so it must be matched by
+        # name rather than folded into the unknown-failure arm.
+        assert "HTTP 404|Not Found" in block
+        assert "for attempt in 1 2 3; do" in block
+
+
 class TestProtectedCheckNameHasOnePublisherPerPrType:
     """A required review status must never be satisfied by the OTHER lane's run.
 
@@ -5378,7 +5486,7 @@ class TestProtectedCheckNameHasOnePublisherPerPrType:
     # (same-repo workflow, protected check name, Stage-2 fork workflow)
     PAIRS = (
         ("codex-review.yml", "GPT 5.6 Review", "fork-gpt-review.yml"),
-        ("claude-review.yml", "Opus 4.8 Review", "fork-opus-review.yml"),
+        ("claude-review.yml", "Opus 5 Review", "fork-opus-review.yml"),
         ("design-review.yml", "Design Review", "fork-design-review.yml"),
         (
             "first-principles-review.yml",
@@ -5957,7 +6065,7 @@ class TestBlockAdjudicationContract:
             # Read-only tools, and no `gh`: this stage must not be able to post
             # its own verdict anywhere, only return text the script parses.
             assert '--allowedTools "Read,Grep,Glob"' in with_["claude_args"], lane
-            assert "us.anthropic.claude-opus-4-8" in with_["claude_args"], lane
+            assert "--model us.anthropic.claude-opus-5" in with_["claude_args"], lane
             assert "Bash" not in with_["claude_args"], lane
 
     def test_the_fork_lane_tells_the_adjudicator_the_head_is_not_on_disk(self) -> None:
@@ -6005,7 +6113,7 @@ class TestBlockAdjudicationContract:
             assert "all downgraded on adjudication" in comment, lane
             # Downgraded findings are still SHOWN. The signal was real; only its
             # authority to block the merge was removed.
-            assert "Adjudication (Opus 4.8)" in comment, lane
+            assert "Adjudication (Opus 5)" in comment, lane
             assert "codex-adjudication.md" in comment, lane
 
     def test_the_adjudication_step_never_fails_the_job_open(self) -> None:
@@ -10619,7 +10727,15 @@ class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            if "grep -iE" in stripped and "Scope-Verdict:" in stripped:
+            # Case-insensitively, because the capture is: an expression that
+            # lowercases the line before comparing spells the header in lower
+            # case, and a selector keyed to one casing would skip it.
+            if "scope-verdict:" not in stripped.lower():
+                continue
+            # The ASSIGNMENT, named by shape rather than by the program it runs:
+            # a pin keyed to one tool silently stops finding the capture the day
+            # the capture changes tool, and then measures nothing.
+            if '="$(' in stripped:
                 return stripped
         raise AssertionError(f"{workflow}: no Scope-Verdict capture expression")
 
@@ -10631,7 +10747,10 @@ class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
         assert any(line != line.lstrip() for line in header), header
 
     @pytest.mark.parametrize("workflow", _SCOPE_LANES)
-    @pytest.mark.parametrize("indent", ("", "    ", "\t"))
+    # Every whitespace form `[[:space:]]` matches inside a line, because the
+    # capture's own class has to match it: a narrower one silently stops reading
+    # a header the contract's own indentation could produce.
+    @pytest.mark.parametrize("indent", ("", "    ", "\t", "\v", "\f", "\r"))
     def test_each_lane_reads_the_same_verdict_however_it_is_indented(
         self, workflow: str, indent: str, tmp_path: Path
     ) -> None:
@@ -10658,12 +10777,15 @@ class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
                 f'printf %s "${name}"',
             ]
         )
-        # No `bash -e`: the lane's step runs `set -uo pipefail` and nothing else, so
-        # a grep that matches nothing leaves the capture EMPTY and the lane carries
-        # on to read `UNKNOWN`. Running this under `-e` would abort at the failed
-        # assignment and hide which verdict the expression actually yields.
+        # `-e` IS the production flag, and running without it is what let this pin
+        # pass while the lane aborted. A `run:` block with no `shell:` key gets
+        # `bash -e {0}`, which the lane's own job log records, so an expression
+        # whose status is non-zero dies at the assignment -- above whatever
+        # fallback was written for it. Asserting the STATUS as well as the value
+        # is the half that catches that: a capture may legitimately come back
+        # empty, and must never take the step down on its way.
         out = subprocess.run(
-            [bash, "-c", script],
+            [bash, "-e", "-c", script],
             check=False,
             capture_output=True,
             text=True,
@@ -10671,9 +10793,87 @@ class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
             env={**os.environ, "IN": str(review)},
             cwd=tmp_path,
         )
+        assert out.returncode == 0, (
+            f"{workflow}: indent {indent!r} aborted the step (rc={out.returncode}) "
+            f"under the runner's own `bash -e`: {out.stderr.strip()}"
+        )
         assert out.stdout == "PASS", (
             f"{workflow}: indent {indent!r} captured {out.stdout!r} "
             f"(rc={out.returncode}) {out.stderr.strip()}"
+        )
+
+    #: How many ``Scope-Verdict:`` lines the many-headers review carries. Chosen
+    #: well above the smallest count that makes a ``grep | head -n1`` pipeline
+    #: close the pipe on its producer (measured between 200 and 500 on Linux), and
+    #: small enough that the fixture is tens of kilobytes rather than megabytes.
+    _MANY_HEADERS = 2000
+
+    #: Reviews whose header the capture cannot return, and the value each must
+    #: yield. Every one is an ordinary model outcome, and in every one the
+    #: capture's own exit status decides whether the step lives to read its
+    #: fallback. ``many-headers`` is the case where a value IS in hand when the
+    #: read ends early, so an expression that merely suppresses the status would
+    #: hand the lane a verdict it never finished reading.
+    _NO_VERDICT_REVIEWS = {
+        "no-header": ("The change refuses nothing new.\n\nNo header here.\n", ""),
+        "header-shaped-prose": ("I would write Scope-Verdict as a header if asked.\n", ""),
+        "many-headers": (None, "PASS"),
+    }
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    @pytest.mark.parametrize("review_kind", sorted(_NO_VERDICT_REVIEWS))
+    def test_a_capture_that_returns_no_verdict_still_leaves_the_step_alive(
+        self, workflow: str, review_kind: str, tmp_path: Path
+    ) -> None:
+        """An empty capture is an ANSWER, and must not be an abort.
+
+        Each lane keeps a fallback one line under its capture -- ``UNKNOWN`` for the
+        same-repo lane, a ``[ -n ]`` test for the fork lane -- so a review that names
+        no verdict has a defined, fail-closed outcome. A ``run:`` block with no
+        ``shell:`` key runs under ``bash -e``, and these steps add ``pipefail``, so a
+        capture whose status is non-zero dies ABOVE that fallback: the lane writes no
+        verdict output at all, its status step reads an empty verdict, and the comment
+        that would have named the cause is never posted. A red either way, but one of
+        them tells nobody why.
+
+        The status assertion is the whole point. Asserting only the value passes an
+        expression that returns the right value and takes the step down anyway.
+        """
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the capture is Bash; skip where Bash is absent")
+        body, expected = self._NO_VERDICT_REVIEWS[review_kind]
+        if body is None:
+            body = "Scope-Verdict: PASS\n" + "Scope-Verdict: BLOCK\n" * self._MANY_HEADERS
+        review = tmp_path / "scope-review.md"
+        review.write_text(body, encoding="utf-8")
+        line = self._capture_line(workflow)
+        name = line.split("=", 1)[0]
+        script = "\n".join(
+            [
+                "set -uo pipefail",
+                'summary="$(cat "$IN")"',
+                'OUT="$IN"',
+                line,
+                f'printf %s "${name}"',
+            ]
+        )
+        out = subprocess.run(
+            [bash, "-e", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={**os.environ, "IN": str(review)},
+            cwd=tmp_path,
+        )
+        assert out.returncode == 0, (
+            f"{workflow}: a {review_kind} review aborted the step "
+            f"(rc={out.returncode}) under the runner's own `bash -e`, above the "
+            f"fallback written for it: {out.stderr.strip()}"
+        )
+        assert out.stdout == expected, (
+            f"{workflow}: a {review_kind} review captured {out.stdout!r}, " f"expected {expected!r}"
         )
 
 
@@ -11746,3 +11946,287 @@ class TestPerHeadMonotonicFloor:
             )
             == 1
         )
+
+
+def _lane_jobs(lane: str) -> dict:
+    """The `jobs:` mapping of one workflow file under `.github/workflows`."""
+    return yaml.safe_load((WORKFLOWS / lane).read_text(encoding="utf-8"))["jobs"]
+
+
+def _blocking_endpoints(job: dict) -> "list[str] | None":
+    """The job's blocking-egress endpoint list, or None when it does not block."""
+    for step in job.get("steps") or ():
+        if "step-security/harden-runner" not in str(step.get("uses") or ""):
+            continue
+        settings = step.get("with") or {}
+        if settings.get("egress-policy") != "block":
+            return None
+        return str(settings.get("allowed-endpoints") or "").split()
+    return None
+
+
+class TestForkLaneBunEgress:
+    """The fork reviewers install bun from a GitHub *release asset*.
+
+    `anthropics/claude-code-action` runs `oven-sh/setup-bun`, which downloads
+    `https://github.com/oven-sh/bun/releases/download/...`. GitHub answers that
+    with a 302 to `release-assets.githubusercontent.com` -- a different host
+    from the `objects.githubusercontent.com` these allowlists already carry. A
+    lane that blocks egress without it does not fail at the model call: bun
+    never lands, the action's own script dies `bun: command not found`
+    (exit 127), the lane posts `review incomplete`, and because `PR Readiness`
+    aggregates these lanes, every fork PR goes red at once.
+
+    `workflow_run` lanes always execute the DEFAULT branch's copy of the yaml,
+    so a PR editing these files cannot exercise its own change. This test is
+    the only pre-merge guard the coupling has.
+    """
+
+    ENDPOINT = "release-assets.githubusercontent.com:443"
+    ACTION = "anthropics/claude-code-action"
+
+    @classmethod
+    def _runs_a_model(cls, job: dict) -> bool:
+        return any(cls.ACTION in str(step.get("uses") or "") for step in job.get("steps") or ())
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_every_model_job_allows_the_bun_release_asset_host(self, lane: str) -> None:
+        checked = 0
+        for name, job in _lane_jobs(lane).items():
+            if not self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            checked += 1
+            assert self.ENDPOINT in endpoints, (
+                f"{lane} job {name!r} runs {self.ACTION} behind a blocking egress "
+                f"policy but does not allow {self.ENDPOINT}, so setup-bun's download "
+                "is refused and the step exits 127 instead of reviewing anything"
+            )
+        assert checked, f"{lane} has no blocking-egress {self.ACTION} job to check"
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_jobs_that_run_no_model_keep_the_narrower_allowlist(self, lane: str) -> None:
+        # Least privilege: only the job that actually downloads bun gets the
+        # host. `fork-security-scope-review.yml` blocks egress in four jobs and
+        # runs the model in exactly one, so a blanket per-file edit would widen
+        # three allowlists that fetch nothing but Actions artifacts.
+        for name, job in _lane_jobs(lane).items():
+            if self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            assert self.ENDPOINT not in endpoints, (
+                f"{lane} job {name!r} runs no model and downloads no bun, so "
+                f"allowing {self.ENDPOINT} widens its egress for nothing"
+            )
+
+
+class TestForkLaneBubblewrapBootstrapEgress:
+    """The fork reviewers fetch the whole toolchain their own settings turn on.
+
+    Setting `allowed_non_write_users` auto-enables `claude-code-action`'s
+    subprocess secret-scrub plus bubblewrap isolation, and the action bootstraps
+    in two sequential network phases. First `apt-get install bubblewrap socat`:
+    on the ubuntu-latest image `/etc/apt/apt-mirrors.txt` names the azure mirror
+    first over plaintext http and falls back to the two canonical hosts over
+    https, so all three are on the path of that one install. Then the CLI itself,
+    via `curl https://claude.ai/install.sh`, whose script reads its version
+    manifest and binary from `downloads.claude.ai/claude-code-releases`.
+
+    Both phases are asserted together because they are SEQUENTIAL: an allowlist
+    carrying only the apt half lets apt succeed and then dies on curl, with the
+    same `review incomplete` and no model call, so a green apt phase is not
+    evidence that the bootstrap resolves.
+
+    Blocked, the install exits 7 before the model is ever reached, and the lane
+    reports `review incomplete` rather than a verdict. Failing closed is
+    correct -- the isolation is a security control, so running unsandboxed must
+    never be a silent fallback -- but the lane then cannot review at all, and the
+    advisory lanes publish that as a NEUTRAL check, so three reviewers stopped
+    reviewing every fork PR without turning anything red.
+
+    This is the whole-file guard: `workflow_run` lanes always execute the DEFAULT
+    branch's yaml, so a PR editing these files cannot exercise its own change.
+    The endpoints are asserted on the model job only, for the same least-privilege
+    reason as the bun release-asset host above.
+    """
+
+    ENDPOINTS = (
+        "azure.archive.ubuntu.com:80",
+        "archive.ubuntu.com:443",
+        "security.ubuntu.com:443",
+        "claude.ai:443",
+        "downloads.claude.ai:443",
+    )
+    ACTION = "anthropics/claude-code-action"
+
+    @classmethod
+    def _runs_a_model(cls, job: dict) -> bool:
+        return any(cls.ACTION in str(step.get("uses") or "") for step in job.get("steps") or ())
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_every_model_job_allows_the_bubblewrap_bootstrap_hosts(self, lane: str) -> None:
+        checked = 0
+        for name, job in _lane_jobs(lane).items():
+            if not self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            checked += 1
+            missing = [host for host in self.ENDPOINTS if host not in endpoints]
+            assert not missing, (
+                f"{lane} job {name!r} runs {self.ACTION} behind a blocking egress "
+                f"policy but does not allow {missing}, so a phase of its bootstrap "
+                "is refused (apt for the bubblewrap sandbox, curl for the CLI "
+                "itself), the action exits 7 before any model call, and the lane "
+                "publishes `review incomplete` instead of a verdict"
+            )
+        assert checked, f"{lane} has no blocking-egress {self.ACTION} job to check"
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_jobs_that_run_no_model_keep_the_narrower_allowlist(self, lane: str) -> None:
+        # Least privilege, exactly as for the bun host: only a job that actually
+        # bootstraps the sandbox gets the package mirrors.
+        # `fork-security-scope-review.yml` blocks egress in four jobs and runs the
+        # model in one, so a blanket per-file edit would widen three allowlists
+        # that install nothing.
+        for name, job in _lane_jobs(lane).items():
+            if self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            present = [host for host in self.ENDPOINTS if host in endpoints]
+            assert not present, (
+                f"{lane} job {name!r} runs no model and installs no sandbox, so "
+                f"allowing {present} widens its egress for nothing"
+            )
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_no_lane_allows_a_host_nothing_here_fetches(self, lane: str) -> None:
+        # Two ways a reader widens this allowlist from something that merely
+        # APPEARED in the output. The runner image preinstalls google-chrome and
+        # microsoft apt sources, so a blocked `apt-get update` names them in the
+        # same wall of text as the ubuntu archive -- but their failures are apt
+        # WARNINGS (`W:`) and nothing here installs from them. And the CLI
+        # installer script prints `code.claude.com` and `www.anthropic.com` inside
+        # its own error messages without ever requesting them, so grepping that
+        # script for hostnames yields two more that belong nowhere near a
+        # blast-radius control.
+        forbidden = (
+            "dl.google.com",
+            "packages.microsoft.com",
+            "code.claude.com",
+            "www.anthropic.com",
+        )
+        for name, job in _lane_jobs(lane).items():
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            for host in forbidden:
+                assert not any(entry.startswith(host) for entry in endpoints), (
+                    f"{lane} job {name!r} allows {host}, which this lane never "
+                    "requests; it only ever appeared in a warning or an error string"
+                )
+
+
+class TestForkGptLaneMantleEgress:
+    """The GPT passes call Bedrock on the mantle host, not the runtime host.
+
+    The two review passes run a CLI configured with
+    `model_provider = "amazon-bedrock"`, whose provider posts to
+    `https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses` -- the URL a
+    real job log shows the lane calling. The classic
+    `bedrock-runtime.*.amazonaws.com` hosts in the allowlist do not cover it, so
+    under blocking egress each pass retries five times, ends
+    `Connection failed: error sending request`, and the lane fails closed with
+    `review incomplete` -- a separate failure from the bun one above, on the
+    same lane.
+
+    Only the job that configures that provider gets the host: the Opus, Design,
+    UX, First-Principles and Security-Scope lanes talk to Bedrock through the
+    runtime host and must not carry it.
+    """
+
+    ENDPOINT = "bedrock-mantle.us-east-1.api.aws:443"
+    PROVIDER = 'model_provider = "amazon-bedrock"'
+
+    @classmethod
+    def _configures_the_mantle_provider(cls, job: dict) -> bool:
+        return any(cls.PROVIDER in str(step.get("run") or "") for step in job.get("steps") or ())
+
+    def test_the_gpt_lane_model_job_allows_the_mantle_endpoint(self) -> None:
+        checked = 0
+        for name, job in _lane_jobs("fork-gpt-review.yml").items():
+            if not self._configures_the_mantle_provider(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            checked += 1
+            assert self.ENDPOINT in endpoints, (
+                f"fork-gpt-review.yml job {name!r} points the review CLI at "
+                f"Bedrock's mantle endpoint behind a blocking egress policy but "
+                f"does not allow {self.ENDPOINT}, so both passes fail to connect "
+                "and the lane posts `review incomplete`"
+            )
+        assert checked, "fork-gpt-review.yml has no blocking-egress mantle job to check"
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_lanes_that_use_no_mantle_provider_keep_the_narrower_allowlist(self, lane: str) -> None:
+        for name, job in _lane_jobs(lane).items():
+            if self._configures_the_mantle_provider(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            assert self.ENDPOINT not in endpoints, (
+                f"{lane} job {name!r} runs no mantle-backed model, so allowing "
+                f"{self.ENDPOINT} widens its egress for nothing"
+            )
+
+
+class TestUxLensZeroIsIdenticalInBothLanes:
+    """Lens 0 (product coherence) is where the UX lane judges look, information
+    architecture, element economy and, since the placement check joined it,
+    whether a control sits on the page a user would open to find it. The fork
+    lane is the copy that reviews an outside contributor's PR, so a rule that
+    lives in one copy only is a rule that does not apply to the PRs it was
+    written for. Both copies are pinned to each other, not to a literal, so a
+    deliberate rewording lands in both or fails here.
+    """
+
+    FIRST = "0. PRODUCT COHERENCE"
+    LAST = "1. FIRST-TIME COMPREHENSION"
+
+    def _lens_zero(self, workflow: str) -> str:
+        lines = _workflow(workflow).splitlines()
+        start = next((i for i, line in enumerate(lines) if self.FIRST in line), None)
+        assert start is not None, f"{workflow} carries no lens 0"
+        end = next(i for i, line in enumerate(lines[start:], start) if self.LAST in line)
+        block = lines[start:end]
+        indent = len(block[0]) - len(block[0].lstrip())
+        return "\n".join(line[indent:] if line.strip() else "" for line in block)
+
+    def test_both_ux_lanes_carry_an_identical_lens_zero(self) -> None:
+        blocks = {name: self._lens_zero(name) for name in UX_LANES}
+        reference = blocks[UX_LANES[0]]
+        for name, block in blocks.items():
+            assert (
+                block == reference
+            ), f"{name} lens 0 drifted from {UX_LANES[0]}; both UX lanes must carry the same text"
+
+    def test_lens_zero_judges_placement_across_the_whole_app(self) -> None:
+        for name in UX_LANES:
+            flat = _flat(self._lens_zero(name))
+            assert "- PLACEMENT" in flat, name
+            # Judged where a user would look, across the app, not inside the
+            # one panel the screenshot shows.
+            assert "where a user LOOKING FOR IT would go first" in flat, name
+            assert "across the whole app, not one panel" in flat, name
+            # "The issue asked for it here" is not a design decision.
+            assert "is NOT a design decision and is itself a finding" in flat, name

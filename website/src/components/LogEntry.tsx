@@ -44,7 +44,7 @@ export default function LogEntry({ entry, jobId }: { entry: LogEntryData; jobId:
 
   const triggerPill = (
     <span className={`px-1.5 py-[1px] rounded-full text-[11px] font-medium ${
-      entry.trigger === 'manual' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' : 'bg-bg-elevated text-muted border border-border'
+      entry.trigger === 'manual' ? 'bg-accent-subtle text-accent' : 'bg-bg-elevated text-muted border border-border'
     }`}>{entry.trigger}</span>
   )
 

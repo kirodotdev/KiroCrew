@@ -161,7 +161,7 @@ function ExpandableRunRow({
       >
         <span className="shrink-0 mt-0.5">
           {run.status === 'running' && <Loader2 size={14} className="text-accent animate-spin" />}
-          {run.status === 'finished' && <CheckCircle2 size={14} className="text-green-500" />}
+          {run.status === 'finished' && <CheckCircle2 size={14} className="text-ok" />}
           {(run.status === 'failed' || run.status === 'cancelled') && <AlertCircle size={14} className="text-danger" />}
         </span>
         <div className="min-w-0 flex-1">

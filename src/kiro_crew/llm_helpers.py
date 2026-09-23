@@ -11,6 +11,7 @@ import json
 import logging
 import random
 import time
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -26,10 +27,12 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.hooks import (
     _EDIT_TOOL_KIND,
+    _normalize_tool_name,
     fire_tool_hooks,
     get_global_hook_store,
     hook_gate_kwargs,
 )
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
@@ -674,6 +677,94 @@ async def advance_fallback_candidate(
         return wire
 
 
+def pick_epoch_host(provider: Any) -> Any:
+    """The one object the explicit-pick epoch lives on for this session.
+
+    A pick and a refusal-fallback restore can hold DIFFERENT layers of the
+    same session — the model handler holds the ``AcpProvider`` wrapper while
+    the chat runner's acquisition can hand the wrapped client — so both must
+    resolve the SAME host or the writer stamps an object the reader never
+    sees. The innermost wrapped client wins, following the same unwrap order
+    as :func:`resolve_substitute_set_model`; a bare test client resolves to
+    itself.
+    """
+    for attr in ("client", "_client"):
+        try:
+            inner = getattr(provider, attr, None)
+        except Exception:  # pragma: no cover - exotic property getters
+            inner = None
+        if inner is not None and not callable(inner):
+            return inner
+    return provider
+
+
+_slot_switch_session_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def slot_switch_session_lock(session_key: str) -> asyncio.Lock:
+    """The per-session lock every explicit model switch runs under.
+
+    Serializes model switches for aliases of ONE session — a channel-born
+    slot and its dashboard twin drive one wire session through disjoint slot
+    objects, so per-slot locks cannot order their switches. The switch
+    handlers in ``chat_handlers`` acquire it between ``slot._lock`` and
+    ``slot._model_pick_lock`` (the lock-order contract is documented at
+    their acquisition site); the chat runner's refusal-fallback restore
+    acquires it before the pick lock, so a restore's ``set_model(primary)``
+    await cannot interleave with an alias pick and silently overwrite the
+    user's selection. Lives here rather than in
+    ``chat_handlers`` because ``chat_handlers`` imports from the runner —
+    the runner could not import it back without a cycle.
+
+    Keyed on the CANONICAL spelling of the session key: a Slack session can
+    be addressed by its bare legacy ``thread_ts`` (a slot restored from an
+    old transcript) and by ``slack:<thread_ts>`` (its canonical sibling), and
+    ``SessionManager`` folds the two onto one live session. Two spellings
+    that name one session must take one lock, or two aliases would serialize
+    against nobody; ``canonical_key`` is the same fold the manager applies.
+
+    A ``WeakValueDictionary`` so a session's lock is collected once no
+    request holds it; unrelated sessions resolve different keys and so take
+    different locks.
+
+    An ``asyncio.Lock`` binds to the loop it is first contended on and
+    raises ``RuntimeError`` when awaited from any other loop. A cached lock
+    that is still alive when a different loop asks for the same key (a test
+    holding a reference past its per-test loop, an embedder that runs the
+    gateway on a fresh loop) is therefore unusable to the caller, so it is
+    replaced rather than returned. Holders on the old loop keep their lock;
+    the two loops cannot contend with each other in any case.
+    """
+    session_key = canonical_key(session_key)
+    lock = _slot_switch_session_locks.get(session_key)
+    if lock is not None and _bound_to_other_loop(lock):
+        lock = None
+    if lock is None:
+        lock = asyncio.Lock()
+        _slot_switch_session_locks[session_key] = lock
+    return lock
+
+
+def _bound_to_other_loop(lock: asyncio.Lock) -> bool:
+    """Whether ``lock`` is bound to a loop other than the running one.
+
+    ``asyncio.Lock`` records its loop in ``_loop`` on first contention and
+    leaves it ``None`` before that; an unbound lock is usable from any loop.
+    With no running loop the caller is synchronous setup code and the lock
+    is handed back unchanged.
+    """
+    bound = getattr(lock, "_loop", None)
+    if bound is None:
+        return False
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return bound is not running
+
+
 def resolve_substitute_set_model(provider: Any) -> Callable[[str], Awaitable[None]] | None:
     """The provider's substitute-path ``set_model`` coroutine, or ``None``.
 
@@ -1033,9 +1124,44 @@ def _extract_tool_input_strings(tool_input: str) -> list[str]:
 _MAX_SCANNABLE_TOOL_INPUT_CHARS = MAX_SCANNABLE_COMMAND_CHARS
 
 
+def _path_tier_exempt(event: object) -> str | None:
+    """The one string of *event* the path tier does not resolve, or ``None``.
+
+    The path tier reads a PATH; a shell tool's COMMAND is command text, which the
+    gate does not match paths in because the OS sandbox holds the credential
+    stores away from the shell. Only the recovered command text
+    (``AcpEvent.shell_command``) is exempt, and only when the client classified
+    the frame as shell AND no MCP server serves it: kiro-cli can classify an
+    execute-kind frame as shell while also naming an MCP server
+    (``classify_tool_call`` carries the identity and keeps the shell verdict),
+    and an MCP-served tool runs outside the sandbox. Every OTHER string of a
+    shell frame stays path-gated -- a shell-kind tool with structured
+    parameters (kiro-cli ``use_aws``) can carry a discrete credential path as an
+    argument, and in ``standard`` sandbox mode ``~/.aws`` is visible to the
+    shell, so the path tier over that argument is the control there, not the
+    sandbox. Same condition as ``hooks.on_tool_call``; both read the client's
+    own classification, never the payload's.
+    """
+    if not bool(getattr(event, "is_shell", False)):
+        return None
+    if getattr(event, "mcp_server_name", "") or "":
+        return None
+    command = getattr(event, "shell_command", None)
+    return command if isinstance(command, str) and command else None
+
+
+def _is_exempt_command_text(text: str, exempt_command: str | None) -> bool:
+    """*text* is the exempt command, with or without a display prefix."""
+    if exempt_command is None:
+        return False
+    return text == exempt_command or _normalize_tool_name(text) == exempt_command
+
+
 def _title_denial(
     title: str,
     denied_regexes: list[str] | None,
+    *,
+    exempt_command: str | None = None,
 ) -> tuple[str, str] | None:
     """Return the always-enforced denial for the tool *title*, or ``None``.
 
@@ -1048,7 +1174,16 @@ def _title_denial(
     place. The tuple is ``(kind, reason)`` with *kind* ``"path"`` / ``"bash"`` /
     ``"regex"``; the reasons are the exact strings the on-loop checks produced.
     """
-    path_refusal = sensitive_path_refusal(title)
+    # The path tier reads a PATH. A shell tool's recovered COMMAND is command text,
+    # which the gate deliberately does not match paths in (``hooks.on_tool_call``
+    # makes the same exemption): resolving ``cd /x && grep ...`` as a filename
+    # never matched, but it spent a resolver round-trip per call and, under a
+    # stall, refused the command as a sensitive path. ``exempt_command`` is
+    # :func:`_path_tier_exempt`'s answer -- the one string that is that text; a
+    # title that is not the command stays gated.
+    path_refusal = (
+        None if _is_exempt_command_text(title, exempt_command) else sensitive_path_refusal(title)
+    )
     if path_refusal:
         # A stall is passed through as worded (recognised by its fixed prefix, which
         # the deny guidance classifies by); a match keeps this producer's wording.
@@ -1133,6 +1268,8 @@ def _edit_target_denial(
 def _first_tool_input_denial(
     strings: list[str],
     denied_regexes: list[str] | None,
+    *,
+    exempt_command: str | None = None,
 ) -> tuple[str, str, str] | None:
     """Return the first tool_input denial among *strings*, or ``None``.
 
@@ -1168,7 +1305,13 @@ def _first_tool_input_denial(
                 ),
                 s[:64],
             )
-        path_refusal = sensitive_path_refusal(s)
+        # Same exemption as ``_title_denial``: only the recovered command text is
+        # command text. A shell frame's OTHER payload strings (a structured
+        # ``use_aws`` argument naming a path) stay path-gated -- see
+        # :func:`_path_tier_exempt`.
+        path_refusal = (
+            None if _is_exempt_command_text(s, exempt_command) else sensitive_path_refusal(s)
+        )
         if path_refusal:
             if is_unverifiable_path_refusal(path_refusal):
                 return ("path", path_refusal, s)
@@ -1236,6 +1379,8 @@ async def run_bg_oneliner(
     sel_session_key: str = "_bg",
     timeout: float | None = None,
     strict_model: bool = False,
+    crew_log_kind: str = "",
+    crew_log_session_key: str = "",
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
@@ -1259,6 +1404,12 @@ async def run_bg_oneliner(
     are audited under the generic ``"bg_oneliner"`` source rather than silently
     dropping the SEL event.
 
+    ``crew_log_kind`` and ``crew_log_session_key`` name what this call is and which
+    session it is charged to, and BOTH are required for it to reach that session's
+    crew log. Most callers are not charged to any one session -- a tip, a folder icon,
+    a cron label -- so the default is to write nothing rather than attribute shared
+    work to whichever session happened to trigger it.
+
     Errors propagate to the caller (the ``_bg`` session is still ``destroy()``-ed
     in ``finally``): callers that want best-effort "" fallback wrap the call
     themselves, while callers that surface the failure (title/nav) get it
@@ -1266,6 +1417,13 @@ async def run_bg_oneliner(
     exposing ``get_bg_session()``) rather than statically imported, so this
     low-level helper stays free of a dashboard/session import cycle.
     """
+    # Pinned before the acquisition below, not in the teardown that writes it: a
+    # slot reset, switch or compaction gives the successor a new ACP session id,
+    # and a teardown-time lookup would file this spend under a session that never
+    # incurred it. The acquisition is itself a suspension point -- it can take the
+    # background runtime lock and start a runtime -- so resolving after it is
+    # already late enough to name the successor.
+    _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
     session = await sessions.get_bg_session()
     # The stats object as it stands BEFORE this turn. The runner replaces it when
     # a turn actually begins, so comparing identity at teardown separates a turn
@@ -1411,6 +1569,21 @@ async def run_bg_oneliner(
                 # cache tokens with zero credits AND zero fresh token counts;
                 # a gate testing only the kiro dimensions silently drops it.
                 if usage_has_billing(usage):
+                    _served = str(getattr(session, "served_model", "") or "").strip()
+                    _elapsed_ms = int((time.monotonic() - turn_started) * 1000)
+                    # Same numbers, second destination: the usage store answers
+                    # "what did the account spend", the owning session's ledger
+                    # answers "what was spent on THIS session's behalf". A caller
+                    # that names neither a kind nor an owner is work not charged to
+                    # any one session (tips, a cron label) and writes nothing.
+                    _record_background_crew_log(
+                        _crew_log_owner,
+                        crew_log_kind,
+                        usage,
+                        model=_served,
+                        provider=_provider_label(session),
+                        elapsed_ms=_elapsed_ms,
+                    )
                     await persist_token_record_async(
                         sel_session_key,
                         # The model the session SERVED, never the one requested: a
@@ -1418,17 +1591,108 @@ async def run_bg_oneliner(
                         # above, so recording the request would bill the spend to a
                         # model that did not run. An unreadable served model falls
                         # through to model_source rather than naming a guess.
-                        str(getattr(session, "served_model", "") or "").strip(),
+                        _served,
                         usage,
                         _provider_label(session),
                         surface=f"bg:{sel_source}",
-                        elapsed_ms=int((time.monotonic() - turn_started) * 1000),
+                        elapsed_ms=_elapsed_ms,
                         model_source=session,
                     )
             except Exception:
                 logger.debug("bg oneliner accounting failed source=%s", sel_source, exc_info=True)
         finally:
             await session.destroy()
+
+
+def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, crew_log_kind: str) -> str:
+    """The crew log unit a background call is charged to, resolved BEFORE the call.
+
+    Resolution has to happen here rather than in the teardown that writes the
+    entry, and the reason is the resolver's own contract: it answers which unit a
+    slot's work is landing in NOW. A slot can be reset, switched, or compacted
+    while the model call is in flight, and the successor cold-starts a new ACP
+    session id -- so a teardown-time lookup would hand this call's spend to a
+    session that did not incur it, silently, in an append-only file. Reading it
+    before the call pins the unit that was current when the work was ordered.
+
+    Answers ``""`` when the caller named no owner or no kind, which is most of
+    them: a background call is shared infrastructure by default, and picking a
+    session for a tip or a cron label would put someone else's cost in a user's
+    log. Also ``""`` when the flag is off or the owner cannot be resolved.
+    """
+    if not crew_log_session_key or not crew_log_kind:
+        return ""
+    try:
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.crew_log.resolve import unit_for_session_key
+
+        if not crew_log_emit.enabled():
+            return ""
+        # The session manager the caller already holds is the resolver's only input
+        # here, and it is enough: a background call runs BETWEEN the owner's turns,
+        # where the owning slot holds no live ACP client and the registry is the
+        # authoritative source anyway.
+        return unit_for_session_key(sessions, crew_log_session_key)
+    except Exception:
+        logger.debug(
+            "crew log: resolving a background owner failed kind=%s",
+            crew_log_kind,
+            exc_info=True,
+        )
+        return ""
+
+
+def _record_background_crew_log(
+    owner_sid: str,
+    crew_log_kind: str,
+    usage: Any,
+    *,
+    model: str,
+    provider: str,
+    elapsed_ms: int,
+) -> None:
+    """File one background model call in the crew log of the session it served.
+
+    ``owner_sid`` is the unit :func:`_background_crew_log_owner` pinned before the
+    call, never a key resolved here -- see that function for why the timing is the
+    whole point. An empty value means "do not write", which covers an unnamed
+    caller, a disabled flag and an unresolvable owner alike.
+
+    Both background entry points -- the one-liner and the shared-session context
+    manager -- reach this from the same place in their teardown: after the turn's
+    usage has been snapshotted and the same ``usage_has_billing`` gate the usage
+    store uses has passed. So the two agree on WHETHER a call is billable, which is
+    the judgement that would otherwise drift. They do not agree on persistence: the
+    usage store writes on its own path and can fail there, and this entry is queued
+    for a writer that can drop it at a ceiling, so either side can be missing a call
+    the other recorded.
+
+    Best-effort, like the accounting beside it. This is describing spend, not
+    controlling it, and it must never be why a background task raises.
+    """
+    if not owner_sid or not crew_log_kind:
+        return
+    try:
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        crew_log_emit.on_background_completed(
+            owner_sid,
+            kind=crew_log_kind,
+            model=model,
+            provider=provider,
+            credits=float(getattr(usage, "credits", 0.0) or 0.0),
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            cache_read_tokens=int(getattr(usage, "cache_read_tokens", 0) or 0),
+            cache_write_tokens=int(getattr(usage, "cache_creation_tokens", 0) or 0),
+            duration_ms=int(elapsed_ms),
+        )
+    except Exception:
+        logger.debug(
+            "crew log: recording a background call failed kind=%s",
+            crew_log_kind,
+            exc_info=True,
+        )
 
 
 def _billing_stats(provider: Any) -> Any:
@@ -1674,13 +1938,11 @@ async def _cleanup_memory_consolidation_session(
         logger.debug("memory consolidation session retirement failed", exc_info=True)
         return
     try:
-        from kiro_crew.member_memory_auth import retire_memory_consolidation_binding
 
         # remove() waits for retirement but preserves resumable mappings. This
         # generated UUID has no user continuation, so discard that mapping too.
         await sessions.destroy(key)
         await asyncio.to_thread(log.delete_memory_consolidation_session, key, memory_store)
-        await asyncio.to_thread(retire_memory_consolidation_binding, key, memory_store)
     except Exception:
         logger.debug("memory consolidation artifact cleanup failed", exc_info=True)
 
@@ -1692,6 +1954,8 @@ async def background_turn(
     task: str,
     agent: "str | None" = None,
     memory_store: str = "",
+    crew_log_kind: str = "",
+    crew_log_session_key: str = "",
 ) -> "AsyncIterator[Any]":
     """Take the shared background session for ONE turn, then release and account.
 
@@ -1724,11 +1988,17 @@ async def background_turn(
     from kiro_crew.session import BACKGROUND_AGENT, BACKGROUND_KEY  # circular import
 
     key = BACKGROUND_KEY
+    # Pinned before the first suspension point for the same reason the other
+    # background helper does it: the owning slot can be reset or recycled while
+    # this turn runs, and its successor is a different ledger unit. Everything the
+    # resolver reads is a parameter, so it does not need the session this function
+    # is about to acquire.
+    _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
     if memory_store:
         from uuid import uuid4
 
+        from kiro_crew.execution_context import bind_session_execution, execution_for_store
         from kiro_crew.history import ConversationLog
-        from kiro_crew.member_memory_auth import bind_private_session_store
         from kiro_crew.memory_stores import memory_store_version, require_memory_store
 
         await asyncio.to_thread(require_memory_store, memory_store)
@@ -1737,8 +2007,8 @@ async def background_turn(
         key = f"memory-consolidation:{memory_store}:{uuid4().hex}"
         log = ConversationLog()
         try:
-            await asyncio.to_thread(log.update_metadata, key, {"memory_store": memory_store})
-            await asyncio.to_thread(bind_private_session_store, key, memory_store)
+            execution = execution_for_store(memory_store, template_id=agent or "kirocrew")
+            await asyncio.to_thread(bind_session_execution, key, execution)
         except BaseException:
             await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
             raise
@@ -1799,6 +2069,14 @@ async def background_turn(
                 # shared predicate covers the claude seam's cost and cache
                 # dimensions alongside the kiro credits/token signals.
                 if usage_has_billing(usage):
+                    _record_background_crew_log(
+                        _crew_log_owner,
+                        crew_log_kind,
+                        usage,
+                        model=str(getattr(client, "served_model", "") or "").strip(),
+                        provider=_provider_label(client),
+                        elapsed_ms=turn_elapsed_ms,
+                    )
                     await persist_token_record_async(
                         key,
                         "",
@@ -2485,7 +2763,9 @@ async def _resolve_permission(
         # ``is_sensitive_path`` (which does release the GIL) and yields between
         # the strings. Title first, so a request denied on its title
         # reports the title-tier reason and mechanism exactly as before.
-        title_hit = _title_denial(normalized, _denied_regexes)
+        title_hit = _title_denial(
+            normalized, _denied_regexes, exempt_command=_path_tier_exempt(event)
+        )
         if title_hit is not None:
             return (title_hit[0], title_hit[1], normalized, "always_deny")
         if _edit_target_gated:
@@ -2502,7 +2782,9 @@ async def _resolve_permission(
                 "always_deny_input",
             )
         if _input_strings:
-            input_hit = _first_tool_input_denial(_input_strings, _denied_regexes)
+            input_hit = _first_tool_input_denial(
+                _input_strings, _denied_regexes, exempt_command=_path_tier_exempt(event)
+            )
             if input_hit is not None:
                 return (*input_hit, "always_deny_input")
         return None
@@ -2590,11 +2872,12 @@ async def _resolve_permission(
                 await provider.approve_tool(event.request_id)
                 _log("auto_approved", metadata={"reason": "hook_auto_approve"})
                 return True
-            logger.warning(
-                "declining a hook auto-approve: %s; the request falls through "
-                "to this caller's approval path",
-                _ng_refusal.log_text,
-            )
+            if name_grant.should_log_decline(session_key, _ng_refusal):
+                logger.warning(
+                    "declining a hook auto-approve: %s; the request falls through "
+                    "to this caller's approval path",
+                    _ng_refusal.log_text,
+                )
             name_grant.log_decline(
                 source="",
                 session_key=session_key,

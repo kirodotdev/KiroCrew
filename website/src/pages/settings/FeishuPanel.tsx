@@ -31,6 +31,7 @@ function feishuSpec(): BotChannelSpec {
     // Product name — not translated.
     name: 'Feishu',
     queryKey: 'feishu-config',
+    namespace: 'feishu',
     logo: <FeishuLogo size={20} />,
     description: i18nT('pages.settings.feishuPanel.description'),
     // The lark-oapi SDK opens the long connection to this host; named so the

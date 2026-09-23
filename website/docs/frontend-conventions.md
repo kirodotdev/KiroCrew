@@ -9,7 +9,7 @@ in [theming-contract](theming-contract.md); user-facing strings are in
 ## The stack
 
 React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
-Framer Motion, Tailwind CSS 3, Lucide React, DOMPurify, highlight.js, Monaco,
+Framer Motion, Tailwind CSS 4, Lucide React, DOMPurify, highlight.js, Monaco,
 TypeScript, Vite 8. Read the pins from `website/package.json` rather than this list.
 
 Prefer the library already here over a new dependency. Every addition is bytes in a
@@ -80,8 +80,14 @@ Other shared modules:
   `TypewriterText.tsx`
 
 `src/kirocrew-ui/index.ts` re-exports the subset that apps may import as
-`@kirocrew/ui`. Adding a primitive there makes it app-facing API, so add
+`@kirocrew/app-sdk/ui`. Adding a primitive there makes it app-facing API, so add
 deliberately.
+
+`src/app-sdk/ChatEmbed.tsx` keeps its composer markup small but delegates draft
+behavior to `app-sdk/useComposerDraft`. Its textarea attaches the hook's
+`textareaRef`, so `Enter` sends, `Shift+Enter` inserts a newline, IME commits do
+not send, and the draft grows to the shared 240px cap before scrolling. Do not
+reimplement those key or sizing rules inside the component.
 
 Stories for these primitives live in `src/stories/` and render them in isolation
 under every theme (`npm run storybook`); see
@@ -302,18 +308,24 @@ the selected store is global and the surface is not private. The narrow form
 stacks its inputs and submit button; its draft joins the store-switch guard,
 pending submission disables the fields, and an error retains them for retry.
 
-Private recall presents the returned fact and experience snippets as compact
+Member-scoped recall presents the returned fact and experience snippets as compact
 evidence cards. Exact serialized model context and source diagnostics live in
 the collapsed Source and retrieval details disclosure. Rules have their own
 indicator and full context there; fact snippets do not represent the rules
 included in recall. The disclosure accepts the recall API's structured copy
 origin as well as the record browser's serialized origin.
 
-Before a legacy member opts into private V2, a confirmation dialog explains that
-the next chat starts a fresh conversation and the member cannot switch back to V1.
-Only its explicit create action submits the request; Cancel keeps the existing
-binding. Prior conversations and V1 data remain. The Crew Manager notice
-distinguishes new members from existing V1 members. A disabled Manage memory
+Memory V2 uses member-scoped language (成员记忆 in Chinese), without a lock badge
+or a promise of confidentiality between members. Database errors remain distinct
+from embedding-model errors; configured and active models, keyword and vector
+status, reload/rebuild confirmations, checkpoint failure evidence, and counts
+with their actual units remain visible.
+
+Only explicit member creation initializes an empty Memory V2 database. Existing
+members retain their current memory; edits offer no provisioning or migration
+action. An unavailable member database remains an error and requires restoring
+its backup. The Crew Manager notice distinguishes new members from existing
+members. A disabled Manage memory
 action shows its unsaved-changes reason as visible helper text for keyboard and
 touch users. Member status distinguishes an explicitly
 different configured owner from an unavailable or unverified binding. Unavailable
@@ -409,18 +421,126 @@ Two habits belong to the same concern:
 - Do NOT add a new CSS `@keyframes`. The existing ones in `index.css` back
   specific low-level effects (skeleton pulse, caret blink, indeterminate
   progress); a new component animation goes through Framer Motion.
+- **Hover PAINTS; it never moves or resizes.** A hover state may change colour,
+  border, brightness or shadow, but not `scale` or `translate` — growing a row
+  under the cursor nudges its neighbours and reads as a layout change rather
+  than "you are pointing at this". Press feedback (`whileTap`, `active:scale-*`)
+  is fine: that answers an action the user took. A selected-state scale applied
+  by STATE is an indicator, not a hover effect. A hover *rotation* is out of
+  scope — it leaves the element's box where it is.
+  - Removing a hover transform is only half the job: check the control still has
+    SOME hover cue. On a small swatch or dot the scale is often the only one, and
+    taking it away leaves a clickable thing that answers nothing.
+  - Pick the cue by what the element can actually show. `brightness` is a no-op
+    on a `transparent` fill (tint the border instead), and a class-based cue
+    cannot beat an inline `style`, so an element whose colour is animated needs
+    its cue on a property nothing animates.
+  - **A hover cue must not reuse a colour the control uses for its SELECTED
+    state — differ in colour, not merely strength.** A dimmer shade of the
+    selected colour still reads as "selected" at a glance (a bright or accent
+    mark is selection-grammar whatever its exact lightness), so hover must paint
+    in a genuinely different colour, not a fainter one. The colour swatches show
+    this: selection speaks in `--text-strong` (a near-white border) and
+    `--accent` (a border or `ring-1 ring-accent`), so their hover cue paints in
+    a neutral `--muted` outline — which is neither, and the lightest neutral
+    token with enough contrast on the darkest fill — and the memory-record card
+    hovers to `border-border-strong`, never its accent selected border. Where
+    selection is an offset accent ring, the hover outline must also CLEAR it
+    geometrically (`outline-offset:-3px` insets the line inside the fill) rather
+    than sit at the ring's radius and mask it; do this structurally, not with an
+    `:not([aria-pressed])` guard that silently misses a selected swatch marked
+    by a conditional class alone. This is the same lesson as the left rail,
+    where a full-strength `bg-bg-hover` read as selection and was fixed by
+    weakening it to `/60` — applied to colour rather than strength.
+  - `src/test/hoverNoScale.guard.test.ts` enforces this and names the fix in its
+    failure message. Deliberate exceptions live in that file's ALLOWLIST with a
+    written reason.
 
 ## Styling
 
-Tailwind CSS with the custom theme in `tailwind.config.js`, and
-`darkMode: ['selector', '[data-theme="dark"]']`, so dark mode is driven by the
-`data-theme` attribute rather than the OS media query alone.
+Tailwind CSS 4, configured in CSS rather than a JavaScript config file. Two
+files own it:
+
+- `src/tailwind-theme.css` — the utility ↔ token bridge. Every `--color-*`,
+  `--radius-*`, `--shadow-*`, `--font-*` and `--animate-*` theme key maps a
+  utility (`bg-accent`, `rounded-md`, `shadow-sm`, `font-mono`, `animate-rise`) to
+  the runtime design token of the same stem, so `text-muted/40` renders a
+  translucent `var(--muted)`. It also declares the `dark:` variant
+  (`@custom-variant dark ([data-theme="dark"] …)`, so dark mode follows the
+  `data-theme` attribute rather than the OS media query alone), keeps `hover:` an
+  ungated `:hover` so touch devices still reach hover-revealed controls, and
+  emits the iOS safe-area utilities (`p-safe`, `top-safe-offset-*`, …) as
+  `@utility` blocks. Adding a utility for a new token means adding one
+  `--color-<token>: var(--<token>)` line here; `scripts/check-phantom-classes.mjs`
+  compiles against this file to catch a utility whose token was never declared.
+- `src/index.css` — the entry. It imports Tailwind's theme and Preflight into
+  their cascade layers and emits `@tailwind utilities` UNLAYERED (see the header
+  comment there: the component CSS below it was written against v3's unlayered
+  utilities and must keep competing with them on plain specificity), lists the
+  template sources with `@source`, and restores three v3 Preflight defaults as
+  token-backed base rules (default border colour `var(--border)`, placeholder
+  colour `var(--muted)`, `cursor: pointer` on enabled buttons).
+
+The build runs through `@tailwindcss/vite`; there is no PostCSS config. A
+downstream edition's sources are added to the content scan by
+`editionExtensionPlugin` in `vite.config.ts`, which swaps the
+`/* @kirocrew-edition-source */` marker in `index.css` for an `@source` line.
+Utility names follow Tailwind v4: `outline-hidden` (not `outline-none`) is the
+accessible outline suppressor, `backdrop-blur-xs` is the 4px blur, and the
+`shadcn/ui` primitives animate through `tw-animate-css`.
 
 Colors come from CSS custom properties defined in `src/index.css`, including the
 semantic roles `--aim`, `--clarify`, and the `--diff-*` family. Never a hardcoded
-`#hex` / `rgb()` / `rgba()` literal; see
+`#hex` / `rgb()` / `rgba()` literal, and never a raw palette class
+(`text-green-500`, `bg-amber-400`): state colors are `text-ok` / `text-warn` /
+`text-danger` / `text-info`, and a running state is `text-accent`. See
 [theming-contract](theming-contract.md) for the variable set, the stable class
-hooks, and the checker.
+hooks, and the checkers.
+
+Three of those rules are enforced by `@shadcn/lint` inside the blocking
+`eslint src/ --max-warnings 0` gate (configured in `eslint.config.js`, the
+`shadcn` block):
+
+- `shadcn/no-raw-colors` — a palette class or a literal SVG `fill`/`stroke`
+  where a token belongs. Use the token; a logo whose colors are the artwork's
+  own gets a file-level override (see `KiroGhost.tsx`).
+- `shadcn/no-unknown-classes` — a class Tailwind emits no CSS for. Usually a
+  typo, a v3 spelling (`outline-none`, `resize-vertical`), or a class whose
+  stylesheet was deleted. A class that IS real but lives outside the theme's
+  import graph — an app stylesheet authored as a TS template string, a
+  selector hook a Playwright spec locates by — is listed in the rule's `allow`
+  with the file that owns it; the entry allows a name, it generates no CSS.
+- `shadcn/require-static-classes` — a `className` on a `ui/` primitive built
+  from a value the linter cannot read (an imported constant, a function call,
+  an array `join`). Keep the class strings in the file that applies them: a
+  shared class string becomes a small wrapper component (`FilterMenuLabel`),
+  a helper call gets a `cn(...)`.
+
+`shadcn/no-restyle` — a `className` that changes what a `ui/` primitive owns
+(its color, spacing, shape, typography) — is off in that gate: a few hundred
+call sites restyle primitives today and the gate is a hard zero, so turning it
+on is a design decision (fix the sites or write per-component contracts), not a
+lint toggle. What IS enforced is that the backlog cannot grow.
+`scripts/check-restyle-ratchet.mjs` (`npm run lint:restyle-ratchet`, run by
+CI beside the phantom-classes gate) lints with the rule through its own config
+(`allow: ['layout']`, so margins and widths pass) and holds every file at the
+count recorded in `scripts/restyle-baseline.json`: a file whose count rises, or
+a file with findings and no entry, fails the build; a file whose count fell
+fails too, until you record the drop with
+`npm run lint:restyle-ratchet -- --update-baseline`, which only ever lowers a
+number or prunes an entry that reached 0 — so progress is locked in, not left
+to a log line. Lowering a count is the only edit the script makes; the one hand
+edit is moving an entry to a file's new path when the file moves (the count may
+not grow). It is a separate script rather than ESLint's bulk suppressions
+because editors lint through the Node API, which ignores the suppressions
+file, and the CLI loads that file for every config, which would fail the i18n
+eslint run on "unused" entries. Adding a restyle to a file at its
+ceiling means using the primitive's own variant or size prop, keeping layout
+classes at the call site, or wrapping the primitive in a small named component
+that carries the class in the component file — not raising the number.
+`no-inline-styles` and `no-arbitrary-values` stay off by design — inline
+`style={}` is the mandated method for apps, and translucent theme surfaces are
+`bg-[color-mix(…)]` because the color tokens carry no alpha channel.
 
 Built-in themes are picked in Settings, Display tab, and the choice syncs across
 instances. Each theme has a dark and a light block, and the default theme's

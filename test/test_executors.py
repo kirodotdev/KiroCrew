@@ -48,6 +48,9 @@ def test_thread_name_prefixes_distinguish_pools() -> None:
     assert ex.maintenance_executor()._thread_name_prefix == "mc-maint"
     assert ex.subprocess_executor()._thread_name_prefix == "mc-subproc"
     assert ex.cron_executor()._thread_name_prefix == "mc-cron"
+    # Named for the crew log rather than "ledger": three other mechanisms in this
+    # codebase are also called a ledger, and a stack dump has to name which one.
+    assert ex.crew_log_executor()._thread_name_prefix == "mc-crewlog"
 
 
 def test_pools_are_bounded() -> None:

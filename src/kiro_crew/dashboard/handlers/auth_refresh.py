@@ -340,6 +340,17 @@ async def api_auth_me(request: web.Request) -> web.Response:
     The frontend scheduler reads ``session_exp`` to schedule the next
     refresh. ``refresh_exp`` is included so the UI can warn the user of
     pending re-auth (e.g., 'session expires in 2 days').
+
+    ``token_accepted`` reports whether the request's own ``?token=`` is the
+    credential that authenticated it. This endpoint is not owner-gated, so an
+    owner-denied session answers 200 here on its cookie alone and an invalid
+    query token is silently replaced by that cookie; a caller exchanging a
+    pasted token needs the difference, and 200 does not carry it.
+
+    ``owner_ok`` reports whether that caller also clears the owner gate. A token
+    minted before the owner was configured is perfectly valid, so it can be
+    accepted and still be denied everywhere the gate fronts; the two fields
+    answer different questions and a caller recovering a session needs both.
     """
     user_id = request.get("user", "")
     if not user_id:
@@ -385,11 +396,43 @@ async def api_auth_me(request: web.Request) -> web.Response:
         if valid:
             refresh_exp = exp
 
+    # Whether this caller clears the owner gate, from the predicate the
+    # owner-gated routes themselves use -- not a second copy of the rule. A
+    # pre-owner token is a VALID token (validity is signature, expiry and nonce;
+    # the owner decision happens later), so ``token_accepted`` alone says a
+    # pasted token authenticated while the owner gate keeps denying it. Imported
+    # inside the function because this module sits on the auth path and its
+    # owner is a 7900-line handler module; the name is the one
+    # ``aws_control`` and ``meetings`` already gate on.
+    owner_ok = False
+    try:
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        owner_ok = bool(is_owner_dashboard_request(request))
+    except Exception:  # pragma: no cover - defensive
+        # The predicate reads ``request.app["state"]``; an app without it cannot
+        # answer, and unknown must read as not-authorized so a caller waiting on
+        # this keeps its prompt rather than dropping one on no evidence.
+        owner_ok = False
+
     return web.json_response(
         {
             "user_id": user_id,
             "session_exp": session_exp,
             "refresh_exp": refresh_exp,
+            # Whether the ``?token=`` on THIS request is what authenticated it,
+            # published by the middleware from the same decision that mints a
+            # fresh session cookie. False when the caller sent no query token,
+            # and false when it sent an invalid one the middleware replaced with
+            # the session cookie -- the case the status code cannot express,
+            # because this endpoint is not owner-gated and an owner-denied
+            # session still answers 200 on its cookie. A bare boolean about a
+            # credential the caller itself supplied, so it discloses nothing.
+            "token_accepted": bool(request.get("auth_from_query_token", False)),
+            # Whether that caller also clears the owner gate. Neither field
+            # carries a token, a subject or an expiry -- both are one bit about
+            # the request the caller just made.
+            "owner_ok": owner_ok,
         }
     )
 

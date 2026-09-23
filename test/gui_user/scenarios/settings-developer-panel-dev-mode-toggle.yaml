@@ -1,0 +1,38 @@
+# Smoke: the Developer Mode consent gate on Settings > Developer. The switch is
+# a per-device flag (localStorage `mc-dev-mode`); while it is on, an "Open
+# Developer page" link appears under it and a "Developer" item appears in the
+# left rail's pinned bottom group, between Agent Capabilities and Settings. The
+# flow is on -> read -> off, so the scenario leaves the flag exactly as it found
+# it (off on a fresh browser profile). Both switch steps name the position to
+# leave the switch in rather than "click it", so a retry against the
+# un-reseeded target that starts from a half-finished attempt (switch left on)
+# converges on the same final state instead of inverting it. The three
+# surviving screenshots are the switch turned on, the switch turned back off
+# and the settled page, so the expectations read the "on" evidence from the
+# screenshot right after the first switch step and the "off" evidence from the
+# last one. Only the switch and the rail are judged: the Developer page itself
+# is read by the auth scenario, which reaches it by URL and needs no rail entry.
+name: settings-developer-panel-dev-mode-toggle
+tier: smoke
+feature: settings
+user_story: >-
+  As a developer, I want to enable Developer Mode in Settings > Developer, so
+  that the Developer page with logs and metrics appears in the sidebar.
+docs_url: docs/feature-map/README.md
+summary: Turn Developer Mode on, see the Developer rail item and link appear, then turn it off again
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/developer
+steps:
+  - You are on the Settings page with its Developer tab selected. The first card, under the heading "Developer Tools", has a row labelled "Developer Mode" with a switch. Make sure the switch is ON -- click it once if it is off -- then look at the left rail and the card without scrolling or clicking anything else.
+  - Read what changed. Under the "Developer Mode" row a link reading "Open Developer page" is showing, and in the left rail's bottom group an item labelled "Developer" (with a code icon, possibly with a small dot) sits above "Settings". Do not click either.
+  - Now make sure the same "Developer Mode" switch is OFF -- click it once if it is on.
+  - Wait a second.
+expectations:
+  - The "Developer Mode" switch is off, and no "Open Developer page" link is shown under it.
+  - The left rail's bottom group shows "Agent Capabilities" and "Settings" but no item labelled "Developer".
+  - In the screenshot taken right after you set the switch to ON, the switch was on, the "Open Developer page" link was visible under it, and a "Developer" item was listed in the left rail above "Settings".
+  - No red error banner is visible and nothing in the rail overlaps another row.
+max_steps: 8
+max_seconds: 240

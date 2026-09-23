@@ -400,6 +400,12 @@ class TurnDriver:
         # Terminal stop reason of the last run() — read by the dispatcher's
         # post-turn bookkeeping (e.g. COMPACTION_FAILED -> session reset).
         self.last_stop_reason: str = ""
+        # Whether run() saw an EVENT_COMPLETE at all. ``last_stop_reason`` is
+        # "" both before any completion and for a completion that carries no
+        # reason, and the two mean opposite things to the post-compaction
+        # re-injection bookkeeping (no completion: the prompt never landed; an
+        # empty reason: a normal end of turn), so the presence is kept apart.
+        self.completion_observed: bool = False
         # Synchronous pre-registration shutdown gate, supplied by the dispatcher
         # as a zero-arg closure over its SessionManager and session key. It lives
         # HERE rather than at each call site because the only placement that is
@@ -780,6 +786,7 @@ class TurnDriver:
                 # sent end_turn) and needs a session reset the driver cannot
                 # perform itself (it holds no session key).
                 self.last_stop_reason = event.stop_reason or ""
+                self.completion_observed = True
                 if self.monitor_completion is not None and is_monitor_completion_evidence(
                     event.stop_reason,
                     synthetic=event.synthetic_completion,

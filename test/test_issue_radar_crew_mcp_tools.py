@@ -932,6 +932,23 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
         captured, _ = _record(event="pushed", event_kind="implement")
         assert "labels_applied" not in captured["body"]
 
+    def test_a_clear_list_is_forwarded_by_name(self):
+        """Every scalar field above is gated on truthiness, so a null can never
+        reach the route through them; `clear` is the one way to empty a field and
+        must arrive as the names that were sent, nothing dropped, nothing added."""
+        captured, _ = _record(clear=["pr_number", "next"])
+        assert captured["body"]["clear"] == ["pr_number", "next"]
+        captured, _ = _record(event="pushed", event_kind="implement")
+        assert "clear" not in captured["body"], "silence must stay silence"
+
+    def test_the_clear_enum_is_the_store_s_list(self):
+        from kiro_crew.apps.builtins.issue_radar.backend import crew_store
+        from kiro_crew.mcp_tools import apps as apps_tools
+
+        schema = next(s for s in apps_tools.schemas() if s["name"] == "issue_radar_crew_record")
+        enum = schema["inputSchema"]["properties"]["clear"]["items"]["enum"]
+        assert sorted(enum) == sorted(crew_store.CLEARABLE_FIELDS)
+
     def test_the_verified_identity_is_the_one_sent_on_the_wire(self):
         """The gate's key must be the request's key — not a second resolution.
 

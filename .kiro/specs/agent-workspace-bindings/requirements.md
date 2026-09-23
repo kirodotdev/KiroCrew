@@ -1,5 +1,7 @@
 # Requirements Document
 
+Status: implemented in `src/kiro_crew/config/loader.py` and `src/kiro_crew/memory_stores.py`.
+
 ## Introduction
 
 KiroCrew currently treats agent selection as a thin pass-through to kiro-cli's `session/set_mode` — the `agent.default_agent` field in `config.json` is a single string naming a kiro agent, and workspaces are flat `dict[str, str]` mappings with no structured metadata. This feature introduces KiroCrew-owned agent definitions that serve as the orchestration layer binding together a workspace, a memory store, and a reference to a kiro/AIM agent (the execution layer). Kiro agents handle LLM details (prompt, tools, MCP servers, model). KiroCrew agents handle operational bindings (which workspace, which memory store, behavioral preferences). This is Phase 2 of the RFC config evolution, building on the formalized config system from Phase 1.

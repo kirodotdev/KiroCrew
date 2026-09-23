@@ -13,6 +13,10 @@ import json
 import logging
 from unittest.mock import patch
 
+import pytest
+
+from kiro_crew.config import loader as L
+from kiro_crew.config import validation
 from kiro_crew.config.loader import (
     CRED_TELEGRAM_BOT_TOKEN,
     KiroCrewAgentConfig,
@@ -73,6 +77,85 @@ class TestAccountsSurvivesSave:
         parsed = _parse_telegram_accounts({"ops": {"bot_token": ""}, "bad": "not-a-dict"})
 
         assert parsed == {}
+
+
+class TestEmptyAccountsAreNotMaterialized:
+    """An empty map protects no token, so it is neither written back nor announced.
+
+    Before this, ``to_dict()`` emitted ``accounts: {}`` from the dataclass default
+    into every saved config, and validation warned about the deprecated key on
+    every launch -- to an operator who never wrote it and had nothing to migrate.
+    """
+
+    def test_to_dict_omits_an_empty_accounts_map(self):
+        cfg = KiroCrewConfig()
+        assert cfg.telegram.accounts == {}
+
+        assert "accounts" not in cfg.to_dict()["telegram"]
+
+    def test_save_writes_no_accounts_key_for_a_fresh_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cfg_path = tmp_path / "config.json"
+
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_path):
+            KiroCrewConfig().save()
+
+        written = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "accounts" not in written["telegram"]
+
+    def test_an_empty_map_left_by_an_earlier_build_is_dropped_on_the_next_save(
+        self, tmp_path, monkeypatch
+    ):
+        """The migration path: a config an older build materialized converges by itself."""
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            json.dumps(
+                {"agent": {"provider": "acp"}, "telegram": {"enabled": False, "accounts": {}}}
+            )
+        )
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.setattr(L, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(L, "config_local_path", lambda: tmp_path / "config.local.json")
+
+        cfg = KiroCrewConfig.load()
+        cfg.save()
+
+        written = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "accounts" not in written["telegram"]
+
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_loading_an_empty_map_logs_no_deprecation(self, tmp_path, monkeypatch, caplog):
+        """Until that save happens, the leftover key is not a deprecation either."""
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            json.dumps({"agent": {"provider": "acp"}, "telegram": {"accounts": {}}})
+        )
+        monkeypatch.setattr(L, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(L, "config_local_path", lambda: tmp_path / "config.local.json")
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            KiroCrewConfig.load()
+
+        assert not any(
+            "deprecated field 'telegram.accounts'" in r.getMessage() for r in caplog.records
+        )
+
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_a_populated_map_is_still_announced_as_deprecated(self, caplog):
+        """The notice keeps firing for the operator who does have a token to move."""
+        data = {"agent": {"provider": "acp"}, "telegram": {"accounts": dict(_ACCOUNTS_RAW)}}
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data(data)
+
+        notices = [
+            r.getMessage()
+            for r in caplog.records
+            if "deprecated field 'telegram.accounts'" in r.getMessage()
+        ]
+        assert len(notices) == 1
+        assert "telegram.bot_token" in notices[0]
 
 
 class TestWithdrawalIsAnnounced:

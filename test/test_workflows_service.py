@@ -170,7 +170,8 @@ async def _wait_durable_terminal(svc: WorkflowService, run_id: str):
     """An orderly restart waits for the driver's terminal flush, not just RAM status."""
     handle = svc.registry.get(run_id)
     assert handle is not None and handle.task is not None
-    await asyncio.wait_for(asyncio.shield(handle.task), timeout=3.0)
+    # The driver settles on causality; the cap only turns a hang into a failure.
+    await asyncio.wait_for(asyncio.shield(handle.task), timeout=_HANG_GUARD_SECS)
     snap = svc.status(run_id)
     assert snap and snap["status"] != "running"
     return snap
@@ -1068,12 +1069,20 @@ async def test_start_task_plan_definition_delegates_to_taskrunner_without_python
 
     assert started["run_id"] == "wf_task"
     assert started["task_id"] == "task_123"
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
     assert task_runner.calls == [
         {
             "definition": saved,
             "input_text": "from slash",
             "author": "",
             "session_key": "",
+            "execution_context": ExecutionContext(
+                member_id=None,
+                store=MemoryStoreRef("default"),
+                selection_kind="template",
+                template_id="kirocrew",
+            ),
         }
     ]
 
@@ -1117,11 +1126,12 @@ async def test_start_launches_run_and_injects_on_done(monkeypatch) -> None:
     svc = WorkflowService(sessions=FakeSessions([]), on_done=on_done)
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="slot:main")
     assert "run_id" in out
-    snap = await _wait_terminal(svc, out["run_id"])
+    # The driver settles only after the durable flush and the result-to-chat
+    # callback, so this wait is causal — not a wall-clock cover for disk I/O.
+    snap = await _wait_durable_terminal(svc, out["run_id"])
     assert snap["status"] == "finished"
     assert snap["result"] == {"ok": True}
-    # Terminal state precedes the durable flush and result-to-chat callback.
-    await asyncio.wait_for(notified.wait(), timeout=3.0)
+    assert notified.is_set()
     assert done and done[0]["session_key"] == "slot:main"
 
 
@@ -1344,6 +1354,7 @@ class _IntgSlot:
         self.linked_session_key = ""
         self.title = ""
         self.running = False
+        self._in_stage_execution = False
         self.turns: list[str] = []  # prompts that started an agent turn
 
     def append(self, role, content, cls="", ts="", *, broadcast=True, meta=None):
@@ -1355,7 +1366,12 @@ class _IntgSlot:
 
     def enqueue_or_run_prompt(self, prompt, run_chat_coro, state) -> bool:
         # Mirror the real state.py primitive: busy -> queue (False), else run (True).
-        if self.running:
+        # Busy is ``running or _in_stage_execution``: between a plan's stages
+        # ``running`` reads False while the plan is still live, and the real gate
+        # holds the prompt there rather than starting a turn alongside the plan. A
+        # double that mirrored ``running`` alone would keep passing after the real
+        # gate regressed.
+        if self.running or self._in_stage_execution:
             return False
         self.append("user", prompt, "msg msg-u")
         self.turns.append(prompt)
@@ -1402,8 +1418,7 @@ async def test_finished_run_injects_result_and_autoruns_agent_turn(monkeypatch) 
 
     svc = WorkflowService(sessions=FakeSessions([]), on_done=_on_done)
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="dashboard:chat-1")
-    await _wait_terminal(svc, out["run_id"])
-    await asyncio.sleep(0.05)  # let on_done fire
+    await _wait_durable_terminal(svc, out["run_id"])
 
     # (1) result summary injected as an assistant message into the ORIGINATING slot
     assert any(m["role"] == "assistant" and "demo" in m["content"] for m in origin.messages)
@@ -1432,12 +1447,53 @@ async def test_finished_run_busy_slot_queues_turn(monkeypatch) -> None:
         on_done=lambda rid, snap: inject_workflow_result(dstate, rid, snap, on_injected=_auto_turn),
     )
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="dashboard:chat-1")
-    await _wait_terminal(svc, out["run_id"])
-    await asyncio.sleep(0.05)
+    await _wait_durable_terminal(svc, out["run_id"])
     # Result still injected, but the turn was QUEUED (False), not started.
     assert any(m["role"] == "assistant" for m in origin.messages)
     assert started == [False]
     assert origin.turns == []
+
+
+async def test_workflow_auto_turn_queues_between_a_plans_stages(tmp_path) -> None:
+    """The workflow auto-turn carries no mid-plan gate, so the admission point is it.
+
+    ``_wf_on_done``'s ``_auto_turn`` (``dashboard/server.py``) hands the prompt
+    straight to ``enqueue_or_run_prompt`` and records no intent to interrupt a plan
+    -- it reads the return value only to log "started" or "queued", so the queued
+    outcome is the one it is already written for. Between a plan's stages
+    ``slot.running`` reads False while the plan is still live, so gating on
+    ``running`` alone would start a SECOND turn alongside it.
+
+    Driven through a REAL ``_ChatSlot``, not this module's slot double: the double
+    reimplements the gate, so a test through it would pass on its own copy of the
+    rule rather than on the product's.
+
+    Mutation guard: drop ``or self._in_stage_execution`` from the gate and this
+    starts a turn.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot(key="chat-1")
+    # The inter-stage shape: nothing in flight, plan still executing.
+    slot.task = None
+    slot._in_stage_execution = True
+    dstate = MagicMock()
+    dstate._background_tasks = set()
+    started: list[bool] = []
+
+    # The auto-turn's own shape, prompt text and all.
+    def _auto_turn(s, snap) -> None:
+        prompt = f"[Workflow `{snap.get('name')}` finished] interpret the result above."
+        started.append(s.enqueue_or_run_prompt(prompt, AsyncMock(), dstate))
+
+    _auto_turn(slot, {"name": "demo"})
+
+    assert started == [False], "a mid-plan workflow result must be queued, not started"
+    assert slot.task is None, "and no turn may be opened alongside the plan"
+    assert len(slot._queue) == 1, "the prompt is held for the plan's own drain"
+    assert "interpret the result above" in slot._queue[0]["content"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1679,7 +1735,7 @@ async def test_rerun_keeps_birth_mode_and_current_caller_policy(original, caller
     async def resolve_mode(key):
         return modes[key]
 
-    context = SimpleNamespace(_session_memory_modes={}, memory_mode_for_session=resolve_mode)
+    context = SimpleNamespace(_session_memory_modes=modes, memory_mode_for_session=resolve_mode)
     svc = WorkflowService(sessions=FakeSessions([]), context_builder=context)
     first = await svc.start(GOOD_SCRIPT, session_key="dashboard:original")
     assert "run_id" in first, first
@@ -1689,5 +1745,45 @@ async def test_rerun_keeps_birth_mode_and_current_caller_policy(original, caller
     assert "run_id" in again, again
     result = await _wait_terminal(svc, again["run_id"])
     assert result["status"] == "finished"
-    binding = await asyncio.to_thread(read_binding, again["run_id"], required=True)
+    handle = svc.registry.get(again["run_id"])
+    binding = await asyncio.to_thread(
+        read_binding, again["run_id"], required=True, record=handle.to_store_json()
+    )
+    if binding["memory_mode"] != "persistent":
+        assert not svc.registry._store._path_for(again["run_id"]).exists()
     assert binding["memory_mode"] == (strictest((original, caller)) or "persistent")
+
+
+async def test_durable_terminal_wait_includes_the_completion_callback(monkeypatch):
+    _patch_stream(monkeypatch, ["stub"])
+    flushing = asyncio.Event()
+    release = asyncio.Event()
+    done = []
+    svc = WorkflowService(sessions=FakeSessions([]), on_done=lambda *args: done.append(args))
+    original_persist = svc.registry.persist_async
+
+    async def persist(run_id):
+        handle = svc.registry.get(run_id)
+        if handle is not None and handle.status == "finished":
+            flushing.set()
+            await release.wait()
+        await original_persist(run_id)
+
+    monkeypatch.setattr(svc.registry, "persist_async", persist)
+    out = await svc.start(GOOD_SCRIPT)
+    waiter = None
+    try:
+        await asyncio.wait_for(flushing.wait(), timeout=3.0)
+        assert svc.status(out["run_id"])["status"] == "finished"
+        assert done == []
+        waiter = asyncio.create_task(_wait_durable_terminal(svc, out["run_id"]))
+        # Give the waiter one turn. A RAM-only poll returns before release;
+        # a durable wait remains blocked on the deliberately held flush.
+        await asyncio.sleep(0)
+        assert not waiter.done()
+    finally:
+        release.set()
+        if waiter is not None:
+            await waiter
+        await _wait_durable_terminal(svc, out["run_id"])
+    assert len(done) == 1

@@ -103,7 +103,7 @@ function occupancy(trace: ContextTrace | undefined): number {
 function Trace({ segs }: { segs: MiniSeg[] }) {
   if (segs.length === 0) return null
   return (
-    <div className="h-1.5 rounded-[1px] overflow-hidden flex outline outline-1 outline-[var(--border)]" style={{ width: 110 }}>
+    <div className="h-1.5 rounded-[1px] overflow-hidden flex outline-solid outline-1 outline-[var(--border)]" style={{ width: 110 }}>
       {segs.map(s => (
         <div key={s.key} className="h-full" style={{ width: `${s.pct}%`, background: s.fill, minWidth: s.isUser ? 2 : undefined }} />
       ))}
@@ -202,7 +202,7 @@ function SubNode({
             return (
               <div key={i} className="grid grid-cols-[2rem_1fr_3rem] gap-2.5 items-center py-[2px]">
                 <span className="font-mono text-[10px] text-muted text-right">t{i + 1}</span>
-                <div className="h-4 flex rounded-[2px] overflow-hidden outline outline-1 outline-[var(--border)] bg-bg" style={{ width: `${Math.max(8, Math.sqrt(t.total_chars / maxTurn) * 100)}%` }}>
+                <div className="h-4 flex rounded-[2px] overflow-hidden outline-solid outline-1 outline-[var(--border)] bg-bg" style={{ width: `${Math.max(8, Math.sqrt(t.total_chars / maxTurn) * 100)}%` }}>
                   {tsegs.map(s => <span key={s.key} className="h-full" style={{ width: `${s.pct}%`, background: s.fill }} />)}
                 </div>
                 <span className="font-mono text-[10px] text-text text-right tabular-nums">{fmtTok(t.total_chars)}</span>

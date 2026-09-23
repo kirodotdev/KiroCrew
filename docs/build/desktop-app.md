@@ -13,27 +13,28 @@ build is driven by [`packaging/build-desktop.sh`](../../packaging/build-desktop.
 ## What `make desktop` produces
 
 ```bash
-make desktop               # macOS: ONE universal DMG (arm64 + x86_64) · Linux: AppImage + deb + rpm
-UNIVERSAL=0 make desktop   # macOS: faster host-arch-only DMG (local iteration)
+make desktop               # macOS: universal DMG + update ZIP · Linux: AppImage + deb + rpm
+UNIVERSAL=0 make desktop   # macOS: faster host-arch-only DMG + ZIP (local iteration)
 ```
 
 Output lands in **`website/electron/dist/`**:
 
 | Command | Platform | Artifact |
 |---------|----------|----------|
-| `make desktop` | macOS | `KiroCrew-<version>-universal.dmg` |
-| `UNIVERSAL=0 make desktop` | macOS | `KiroCrew-<version>-arm64.dmg` (Apple Silicon host) or `KiroCrew-<version>.dmg` (Intel host) |
+| `make desktop` | macOS | `KiroCrew-<version>-universal.dmg` plus `KiroCrew-<version>-universal-mac.zip` |
+| `UNIVERSAL=0 make desktop` | macOS | Host-arch DMG plus the matching `*-mac.zip` update archive |
 | `make desktop` | Linux | `KiroCrew-*.AppImage`, `*.deb`, `*.rpm` (host arch) |
 
 The electron-builder configuration lives in
 [`website/electron/package.json`](../../website/electron/package.json):
 
-- **appId:** `dev.kirocrew.desktop`
+- **appId:** `com.amazon.kiro.crew`
 - **productName:** `KiroCrew`
 - macOS display name: `Kiro Crew` via `CFBundleDisplayName`; `CFBundleName`
   remains aligned with `productName` because Electron uses it to locate the
   `KiroCrew Helper` app bundles during startup
-- mac target: `dmg` (category `public.app-category.developer-tools`). The DMG
+- mac targets: `dmg` and `zip` (category
+  `public.app-category.developer-tools`). The DMG
   uses a 660×420 logical-size branded drag-to-Applications background, packaged
   as a multi-resolution TIFF with 660×420 (1×) and 1320×840 (2×) representations
   for Retina displays. The background is a flat light purple carrying the opening
@@ -70,8 +71,10 @@ The electron-builder configuration lives in
 
 ### macOS default — one universal DMG for both arches
 
-On macOS, `make desktop` produces a single `KiroCrew-<version>-universal.dmg`
-running **natively** on both Apple Silicon and Intel Macs. It needs only
+On macOS, `make desktop` produces a `KiroCrew-<version>-universal.dmg` for
+first install and a matching `KiroCrew-<version>-universal-mac.zip` for the
+update/signing handoff. Both run **natively** on Apple Silicon and Intel Macs.
+It needs only
 **one Apple-Silicon machine** — no Intel host, no second build. (It requires
 an Apple-Silicon host with Rosetta 2; the script fails fast with instructions
 otherwise, and `UNIVERSAL=0` is the opt-out.)
@@ -88,8 +91,8 @@ an Intel Mac where the universal build cannot run. Per-arch targets:
 
 | Target | Build host | Produces |
 |--------|-----------|----------|
-| macOS arm64 (Apple Silicon) | Apple Silicon Mac (`UNIVERSAL=0`) | arm64 `.dmg` |
-| macOS x86_64 (Intel) | Intel Mac | x86_64 `.dmg` |
+| macOS arm64 (Apple Silicon) | Apple Silicon Mac (`UNIVERSAL=0`) | arm64 `.dmg` + matching `*-mac.zip` |
+| macOS x86_64 (Intel) | Intel Mac | x86_64 `.dmg` + matching `*-mac.zip` |
 | Linux x86_64 | x86_64 Linux | x86_64 `.AppImage`, `.deb`, `.rpm` |
 | Linux aarch64 (Graviton/ARM) | aarch64 Linux | aarch64 `.AppImage`, `.deb`, `.rpm` |
 
@@ -207,7 +210,7 @@ hdiutil detach "/Volumes/KiroCrew $V-universal"
 post-gates, plus a resolver-agreement gate asserting `find-bin.js` resolves
 the arch-suffixed launcher.)
 
-**CI:** the `macos-14` (Apple Silicon) entry in `build-desktop.yml` runs
+**CI:** the `macos-15` (Apple Silicon) entry in `build-desktop.yml` runs
 `make desktop` (universal by default on macOS — GitHub's arm64 macOS runners
 include Rosetta 2)
 and uploads a single `unsigned-build-darwin-universal` artifact. Everything
@@ -264,7 +267,7 @@ pipeline end-to-end:
 3. pip-install kiro_crew + deps into the bundled interpreter
 4. Stage the dashboard into the package's static dir
 5. Prune caches/tests/unused stdlib to shrink bundle
-6. Package with electron-builder                      → website/electron/dist/ (DMG / AppImage / NSIS)
+6. Package with electron-builder                      → website/electron/dist/ (DMG/ZIP, AppImage/deb/rpm, or NSIS)
 ```
 
 On macOS (universal by default) the pipeline repeats steps 2–5 once per
@@ -509,9 +512,9 @@ closes the popup and collapses the labels back to the hamburger. The menu surfac
 uses the dashboard theme because native Windows popups capture window input and
 cannot support hover switching; a narrow IPC bridge keeps command execution and
 standard Electron roles in the main process.
-When a remote instance is connected, the instance switcher shares the same bounded
-left region as the menu: it is a single trigger naming the instance on screen (see
-InstanceTabBar's SwitcherMenu), not a row of per-instance tabs, so it costs constant
+When a remote crew is connected, the instance switcher shares the same bounded
+left region as the menu: it is a single trigger naming the crew on screen (see
+InstanceTabBar's SwitcherMenu), not a row of per-crew tabs, so it costs constant
 width whether the menu is collapsed to a hamburger or expanded to full labels.
 The centered command palette yields that region rather than the reverse — the
 correct priority while the menu is open is labels > instance status > an idle
@@ -592,8 +595,10 @@ unit-testable without mocking globals.
   A clean install never creates the legacy directory.
 - Honors the **`KIROCREW_PORT`** env var for the dashboard port (default `5476`,
   validated to `1–65535`). `BACKEND_URL` / health checks target that port.
-- Sets `KIROCREW_PROJECT_DIR` to the Electron app's parent directory so the
-  bundled `agents/` and `skills/` are discovered.
+- Sets `KIROCREW_PROJECT_DIR` to the packaged tree that contains `agents/` and
+  `skills/`. POSIX builds use the Electron app's parent; Windows probes one and
+  two levels above the Electron sources and takes the first tree carrying both
+  directories.
 - On every desktop platform, pins `PYTHONUTF8=1` and
   `PYTHONIOENCODING=utf-8:backslashreplace` at the Electron-to-Gateway spawn
   boundary. This applies before CPython constructs redirected stdout/stderr and
@@ -602,15 +607,60 @@ unit-testable without mocking globals.
   and stale-asset re-exec, and Electron liveness respawn all use the same UTF-8
   contract instead of falling back to the Windows ANSI code page or an
   incompatible inherited POSIX encoding override.
-- Leaves the inherited child `PATH` unchanged. The gateway prerequisite service
-  probes supported Kiro CLI locations independently — including the Windows
-  per-user install at `%LOCALAPPDATA%\Kiro-Cli` — so desktop launches find
-  user-local installations without mutating the shell environment or requiring
-  the already-running gateway to inherit an installer-updated `PATH`.
+- Leaves the inherited child `PATH` unchanged on Linux and Windows. A
+  GUI-launched macOS app appends only the user launchd domain's additions, after
+  the inherited entries, so an existing resolution cannot be shadowed. The
+  gateway prerequisite service also probes supported Kiro CLI locations
+  independently — including the Windows per-user install at
+  `%LOCALAPPDATA%\Kiro-Cli` — so an already-running gateway does not depend on
+  inheriting an installer-updated `PATH`.
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
   app to the tray on window close; the composition root delegates quit-time
   gateway teardown to the supervisor, which performs the graceful shutdown and
   signal escalation contract.
+- On macOS, leaving native fullscreen is an asynchronous AppKit transition that
+  can stall: the Space switches back and the real window is re-ordered in, but
+  the full-display snapshot overlay AppKit animates during the exit stays on
+  screen and `leave-full-screen` never fires. The overlay is not one of the
+  shell's windows (no traffic lights, cannot be moved or resized, covers every
+  other app), and hiding the real window underneath it leaves the user with only
+  the overlay. Two guards in the shell handle this:
+  [`hide-to-tray.js`](../../website/electron/hide-to-tray.js) waits for
+  `leave-full-screen` plus a short settle and then hides the **application**;
+  if the event never comes, its backstop takes the same app-level path. In both
+  cases `app.hide()` can order the overlay out together with the real window,
+  whereas `win.hide()` would leave the overlay behind;
+  [`fullscreen-transition-watch.js`](../../website/electron/fullscreen-transition-watch.js)
+  watches every transition from its first `resize` and, when an exit has not
+  completed after four seconds, logs `fullscreen: exit transition did not
+  complete` to `gateway-launch.log` and cycles `app.hide()` / `app.show()`,
+  which clears the overlay and restores the real window at its normal frame.
+  Both terminal fullscreen events are journaled (`fullscreen: entered` /
+  `fullscreen: left`) so a stalled transition is legible after the fact.
+- The same overlay is reachable without any stall, and that route is the common
+  one: AppKit does **not** queue a fullscreen toggle issued while one of its own
+  transitions is animating. It abandons the running transition, leaving that
+  transition's overlay orphaned on screen while every terminal event still
+  arrives normally, so no missing-event detector can see it. Its completion
+  callback is not the all-clear either — measured on macOS 26,
+  `enter-full-screen` lands well before the Space animation ends, and a close
+  issued after it still orphaned an overlay in roughly a third of runs (and the
+  hide itself was swallowed, so the window stayed on screen). The close path
+  therefore gates its exit on **quiet time** rather than on an event:
+  `fullscreen-transition-watch.js` exposes `quietFor()` (milliseconds since the
+  window last moved in fullscreen terms) and `hide-to-tray.js` issues
+  `setFullScreen(false)` only once that clears 700ms, then hides after the usual
+  settle and re-asserts the hide once a second later. Measured on the same
+  harness: 0 orphaned overlays in 20 randomized runs and the window hidden every
+  time, against 7 of 20 and 10 of 20 without the gate. A transition abandoned
+  some other way (a user toggling fullscreen twice inside one animation) is
+  reported as `fullscreen: … transition abandoned` and repaired like a stall,
+  with the unhide suppressed while a close-to-tray hide is pending so the repair
+  never re-surfaces a window the user just dismissed.
+- Because the fullscreen close hides the **application**, every user-intent show
+  path (`showMainWindow`, `activateMainWindow`, and therefore the tray items and
+  the summon hotkey) calls `app.show()` first: a hidden app ignores
+  `win.show()`.
 
 ## Code signing & notarization (macOS)
 
@@ -930,6 +980,32 @@ routes the dashboard's update check, badge, and Update button through the
 declared commands, and the gateway then reports no release channel at all.
 The `check_command` runs on every check — the 12-hourly background poll AND
 the manual Check button — so it must be side-effect-free and idempotent.
+If the `apply_command` installs into a new versioned tree and prunes the old one,
+it deletes the interpreter the running gateway was launched from. The gateway then
+has nothing to re-enter, and it says so rather than trying: the restart is refused
+while every session is still answerable, and on the orchestrator path it is
+deferred. Restore the interpreter and the deferred update finishes on its own.
+
+What it will not do is drain first and find out afterwards. That was the old
+failure. It saved, fenced, closed every session and only then found the
+interpreter gone, leaving a gateway alive and serving nobody with no way back
+except a manual relaunch.
+
+Checking early cannot cover every case, though: the target can be replaced
+between the check and the restart, and a present, executable file can still be an
+image this kernel refuses. When that happens the gateway EXITS rather than
+survive. Look for a CRITICAL line naming the target, followed by the process
+ending with status 1. That is deliberate — the sessions are already closed, so a
+surviving process would serve nothing while still holding the port your relaunch
+needs. Repair the install and start the gateway again.
+
+There is no policy key naming a fallback executable to re-enter instead, because
+such a key cannot be validated. A pathname's bytes do not decide what the kernel
+execs: a `#!` wrapper delegates to an interpreter the check never sees, and a
+header that parses can still belong to a truncated binary. Learning the answer
+for certain means exec'ing the candidate, which is either running an arbitrary
+binary or booting a second gateway. The supported recovery is to repair the
+install and let the retry finish, or to relaunch by hand.
 
 ## Remote tunnel mode
 
@@ -937,7 +1013,7 @@ The desktop app can also connect to a gateway running on a **remote** host (e.g.
 an always-on server) over an SSH tunnel, fetching a fresh token via
 `ssh <host> kirocrew token` on each launch instead of starting a local backend.
 See [`website/electron/README.md`](../../website/electron/README.md) and
-[remote-desktop-setup.md](../guides/remote-and-mobile.md) for setup.
+[remote-and-mobile.md](../guides/remote-and-mobile.md) for setup.
 
 ## See also
 

@@ -118,12 +118,42 @@ _MD_ESCAPE_RE = re.compile(r"\\(.)")
 #: separator (``C:\Users\me\shot.png``).
 _MD_ESCAPABLE = frozenset("()[]\\<>\"'")
 
-#: Destinations that are not a local file at all, so there is nothing to upload
-#: and nothing to report. Public because both directions test against it: a
-#: remote reference is skipped by extraction and by artifact registration alike,
-#: and two copies of the list is how one direction starts treating a scheme the
-#: other rejects as a local path.
+#: Prefixes of destinations that are not a local file. NOT the classifier: `//`
+#: is ambiguous, so this tuple is a necessary condition and not a sufficient
+#: one. Both directions call :func:`is_remote_destination` instead -- testing
+#: this tuple directly is exactly the bug that predicate exists to fix, because
+#: it reads a roaming profile's own UNC attachment path as a remote URL.
+#: Exported for the grammar (and the tests that pin it), not as an entry point.
 REMOTE_PREFIXES = ("http://", "https://", "data:", "//")
+
+
+def is_remote_destination(dest: str) -> bool:
+    """Whether *dest* names something other than a local file.
+
+    The ``//`` prefix is ambiguous and both readings are real. It is a
+    protocol-relative URL, and on Windows it is also the forward-slash spelling
+    of a UNC path -- which is the ONLY spelling a markdown destination can carry
+    for one, because a backslash before ASCII punctuation is dropped by the
+    CommonMark parser that reads it (``chat_attachments._posix_separators``). A
+    roaming profile puts the data home itself on a share, so a stored attachment
+    on such a host is spelled exactly like a protocol-relative URL.
+
+    Telling the two apart needs no new policy: ``unc_probe_allowed`` is the
+    lexical allowlist the filesystem gate in :func:`local_destination` already
+    applies, admitting only paths under directories this gateway itself writes
+    to. Reusing it here means a ``//`` destination is reclassified as local only
+    where reading it was already permitted, and an attacker-chosen
+    ``//evil/share/x.png`` keeps the old answer -- so this opens no SMB probe the
+    gate did not already allow, and the check never touches the network to
+    decide. On POSIX a UNC path does not exist, so every ``//`` destination stays
+    remote there.
+    """
+    if not dest.lower().startswith(REMOTE_PREFIXES):
+        return False
+    if os.name == "nt" and is_unc_shape(dest) and unc_probe_allowed(dest):
+        return False
+    return True
+
 
 #: Machine-readable reason a reference was not turned into an upload. A caller
 #: that needs different wording, a different language, or a different channel
@@ -542,7 +572,7 @@ def iter_local_refs(text: str) -> list[LocalRef]:
         dest, consumed = _walk_destination(text[match.end() :])
         if not dest:
             continue  # malformed markup, or a `(` that belongs to prose
-        if dest.lower().startswith(REMOTE_PREFIXES):
+        if is_remote_destination(dest):
             continue  # remote or data URI: nothing local to upload
         refs.append(
             LocalRef(

@@ -116,13 +116,21 @@ _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 def _git(args: list[str], cwd: Path, timeout: float = 60.0) -> str:
     """Run a read-only git command in ``cwd``; return stdout (empty on any failure).
-    Discovery must never crash the loop, so every error degrades to ""."""
+    Discovery must never crash the loop, so every error degrades to "".
+
+    ``cwd=`` is passed as well as ``-C``: ``-C`` fixes the tree git reads, but the
+    child's working directory would otherwise be inherited from the gateway, which is the
+    one thing about a host-side spawn that must never be ambient. Both name the SAME
+    absolute path: ``-C`` is resolved by git against the child's cwd, so a relative
+    ``cwd`` handed to both would be applied twice."""
     require_pinned(cwd)
+    where = str(Path(cwd).absolute())
     try:
         proc = subprocess.run(
-            ["git", "-C", str(cwd), *_GIT_SAFE_CONFIG, *args],
+            ["git", "-C", where, *_GIT_SAFE_CONFIG, *args],
             capture_output=True,
             timeout=timeout,
+            cwd=where,
             **UTF8_TEXT,
         )
     except Exception:  # noqa: BLE001

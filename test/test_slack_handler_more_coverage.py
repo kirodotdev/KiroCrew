@@ -41,6 +41,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY, ToolHookResult
+from kiro_crew.messaging import auto_title
 from kiro_crew.slack.handler import handle_interaction, handle_message
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
@@ -48,6 +49,13 @@ from kiro_crew.task_reporter import build_status
 # ──────────────────────────────────────────────────────────────────────
 # doubles
 # ──────────────────────────────────────────────────────────────────────
+
+
+#: These tests exercise the SLACK side (thread renaming), not the record
+#: pin, so they pass the value production supplies when there is nothing to
+#: pin. ``maybe_auto_title`` requires it, which is what stops a call site
+#: from reading the record inside the task and reopening the window.
+_PRESENT_PIN = auto_title.RecordPin(auto_title.RECORD_PRESENT, "")
 
 
 class FakeProvider:
@@ -586,7 +594,14 @@ class TestAutoTitleToolRejection:
         sessions = _TitleSessions(provider)
         slack = MockSlackClient()
         await h._maybe_auto_title_slack(
-            slack, sessions, "C1", "slack:t1", None, "user text", "assistant text"
+            slack,
+            sessions,
+            "C1",
+            "slack:t1",
+            None,
+            "user text",
+            "assistant text",
+            pin=_PRESENT_PIN,
         )
         # The titling session is never allowed to run tools.
         assert provider.rejected == ["rq1"]
@@ -602,7 +617,14 @@ class TestAutoTitleToolRejection:
         )
         slack = MockSlackClient()
         await h._maybe_auto_title_slack(
-            slack, _TitleSessions(provider), "C1", "slack:t2", None, "hi", "hello"
+            slack,
+            _TitleSessions(provider),
+            "C1",
+            "slack:t2",
+            None,
+            "hi",
+            "hello",
+            pin=_PRESENT_PIN,
         )
         assert "slack:t2" not in h._titled_threads
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
@@ -637,7 +659,14 @@ class TestAutoTitleToolRejection:
                 lock.release()
                 inner = lock._bound()  # this loop's underlying asyncio.Lock
                 await h._maybe_auto_title_slack(
-                    slack, _TitleSessions(provider), "C1", session_key, None, "u", "a"
+                    slack,
+                    _TitleSessions(provider),
+                    "C1",
+                    session_key,
+                    None,
+                    "u",
+                    "a",
+                    pin=_PRESENT_PIN,
                 )
                 return lock, inner
 
@@ -965,6 +994,120 @@ class _Hooks:
     def on_tool_call(self, title, **kw):
         self.tool_calls.append(title)
         return self._tool_result
+
+
+class _RecordingBuilder(_Builder):
+    """``_Builder`` that also keeps every ``build_message`` kwarg."""
+
+    def __init__(self):
+        super().__init__(ToolHookResult(action=TOOL_ALLOW))
+        self.build_calls: list[dict] = []
+
+    def build_message(self, text, is_new, session_key, **kw):
+        self.build_calls.append({"key": session_key, **kw})
+        return text, None
+
+
+def _arm_reinjection(sessions) -> dict:
+    """Give the session stand-in the real manager's one-shot flag surface."""
+    ledger: dict = {"consumed": [], "marks": 0, "armed": True}
+
+    def _consume(key):
+        ledger["consumed"].append(key)
+        was = ledger["armed"]
+        ledger["armed"] = False
+        return was
+
+    def _mark(key):
+        ledger["marks"] += 1
+        ledger["armed"] = True
+
+    sessions.consume_needs_reinjection = _consume
+    sessions.mark_needs_reinjection = _mark
+    return ledger
+
+
+class TestCompactionReinjection:
+    """The native Slack turn loop is its own copy, so it must consume the flag itself.
+
+    ``session_compaction`` marks ``needs_reinjection`` after an in-place compaction
+    dropped the session-start context. A turn loop that does not read it runs
+    every turn after ``/compact`` without the skills index or the response-preferences
+    block.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_compacted_session_forwards_the_flag_to_build_message(self):
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]))
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        call = builder.build_calls[-1]
+        assert ledger["consumed"] == [call["key"]], "consumed under the key the turn runs as"
+        assert call["needs_reinjection"] is True
+        # Landed: consumed exactly once, and NOT put back.
+        assert ledger["marks"] == 0 and ledger["armed"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_session_stand_in_without_the_flag_gets_the_false_default(self):
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]))
+        assert not hasattr(sessions, "consume_needs_reinjection")
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is False
+        assert sessions.failures == [], "the turn still ran"
+
+    @pytest.mark.asyncio
+    async def test_a_synthetic_completion_for_a_wedged_turn_puts_the_flag_back(self):
+        # stale_recover is the backend's synthetic completion for a wedged turn:
+        # the stream ends normally, but the prompt never landed.
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(
+            FakeProvider([AcpEvent(kind=EVENT_COMPLETE, stop_reason="stale_recover")])
+        )
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is True
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_stream_that_ends_without_a_completion_puts_the_flag_back(self):
+        # The stream exhausted with no EVENT_COMPLETE: nothing proves the prompt
+        # landed, so the finally re-arms.
+        class _Exhausted(FakeProvider):
+            async def stream(self, message, timeout=120.0):
+                yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial")
+
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(_Exhausted())
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is True
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_consuming_turn_puts_the_flag_back(self):
+        # The flag is cleared BEFORE build_message; a provider error on that very
+        # turn discards the prompt carrying the re-injected context. Without the
+        # re-arm the session runs without it until the NEXT compaction -- the
+        # contract the dashboard runner keeps in its finally, applied here.
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider(raises=AcpProcessDied("agent died")))
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is True
+        assert sessions.failures, "the turn was recorded a failure"
+        assert ledger["marks"] == 1 and ledger["armed"] is True
 
 
 class TestToolHookVerdicts:

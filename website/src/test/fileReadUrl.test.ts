@@ -54,6 +54,28 @@ describe('fileReadUrl', () => {
     // absolute and the backend schema refuses it outright.
     expect(fileReadUrl('C:notes.md')).toContain('resolve=1')
   })
+
+  // SECURITY: `~name/...` expands only if `name` is a real account. The
+  // backend's expanduser leaves an unknown `~name` UNCHANGED and its
+  // resolver then anchors it to the process CWD — so classifying `~name`
+  // as absolute let it bypass the session-doc preview's relative-path
+  // refusal and read a same-named file in whatever project is current
+  // (review r3, blocking). Only the gateway user's OWN home (`~`, `~/...`)
+  // expands deterministically and project-independently.
+  it.each([
+    ['~nosuchuser/plan.md', 'an unresolved named-user tilde path'],
+    ['~root/notes.md', 'a named-user tilde path (even a real account is not OUR home)'],
+    ['~\\plan.md', 'a backslash tilde form (POSIX expanduser treats it as a user name)'],
+  ])('marks %s for server-side resolution — never absolute (%s)', (path) => {
+    expect(fileReadUrl(path)).toContain('resolve=1')
+  })
+
+  it.each([
+    ['~', 'bare tilde'],
+    ['~/notes.md', 'home-anchored path'],
+  ])('treats %s as absolute (%s): the own-home expansion is deterministic', (path) => {
+    expect(fileReadUrl(path)).not.toContain('resolve=1')
+  })
 })
 
 describe('fileDownloadUrl', () => {

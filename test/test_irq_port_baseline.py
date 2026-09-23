@@ -17,7 +17,7 @@ visible diff rather than a silent one.
 
 Three more tests pin behaviours the rest of this file leaves uncovered: the hard
 cap fires on its own schedule regardless of the floor, an epoch change preserves
-an open sticky window's ``opened_at``, and a cleared epoch-scoped entry is pruned
+an open sticky window's ``opened_at``, and a cleared ``REVISION`` entry is pruned
 before the window extends. Three related behaviours are covered elsewhere and are
 out of scope here: the ``blind`` consecutive-error backstop, the sticky-key
 garbage collection past the re-alert window, and the hostile-input hardening in
@@ -35,7 +35,7 @@ import pytest
 
 from kiro_crew import irq, probes
 from kiro_crew.cron_script import Done, Report, Skip
-from kiro_crew.irq import Observation, Severity, Tick
+from kiro_crew.irq import Observation, ResetsOn, Severity, Tick
 from kiro_crew.irq import _dedupe_key as dedupe_key
 from kiro_crew.irq import load_state, run, state_path
 from kiro_crew.probes import gh_pr
@@ -130,11 +130,11 @@ def _wake(key: str, brief: str = "brief") -> Observation:
 
 def _sticky(key: str, brief: str = "sticky brief") -> Observation:
     """A signal about the SUBJECT rather than the current epoch -- a comment."""
-    return Observation(key, Severity.WAKE, brief, epoch_scoped=False)
+    return Observation(key, Severity.WAKE, brief, resets_on=ResetsOn.NEVER)
 
 
-def _nmi(key: str, brief: str = "nmi brief") -> Observation:
-    return Observation(key, Severity.NMI, brief)
+def _immediate(key: str, brief: str = "immediate brief") -> Observation:
+    return Observation(key, Severity.IMMEDIATE, brief)
 
 
 def _window() -> dict:
@@ -184,48 +184,48 @@ def test_re_observing_an_open_entry_refreshes_its_brief_and_never_its_stamp():
     assert "first sighting" not in body
 
 
-def test_an_nmi_bypasses_the_coalescing_delay_but_not_the_dedupe_mask():
-    """An NMI skips the window and is still told only once per epoch.
+def test_an_immediate_bypasses_the_coalescing_delay_but_not_the_dedupe_mask():
+    """An IMMEDIATE skips the window and is still told only once per epoch.
 
     The severity answers one question -- whether waiting could observe anything
     -- and for a dirty pull request it cannot, because a dirty pull request
     dispatches no checks so ``pending`` never drains. That is not a licence to
     repeat.
 
-    ``test_nmi_bypasses_the_coalescing_window`` pins the bypass and the probe's
+    ``test_immediate_bypasses_the_coalescing_window`` pins the bypass and the probe's
     ``test_conflict_wakes_once_per_head`` pins the pairing end to end. The
-    kernel's own mask on an NMI -- the half a reader drops by reading "bypasses
+    kernel's own mask on an IMMEDIATE -- the half a reader drops by reading "bypasses
     the window" as "bypasses everything" -- is what this pins.
     """
     probe = _ScriptedProbe(
         [
-            Tick(epoch="e1", observations=[_nmi("conflict", "CONFLICTING")], pending=7),
-            Tick(epoch="e1", observations=[_nmi("conflict", "CONFLICTING")], pending=7),
+            Tick(epoch="e1", observations=[_immediate("conflict", "CONFLICTING")], pending=7),
+            Tick(epoch="e1", observations=[_immediate("conflict", "CONFLICTING")], pending=7),
         ]
     )
     first = _verdict(probe, coalesce_secs=_FLOOR)
-    assert isinstance(first, Report), "an NMI must not wait for the floor"
+    assert isinstance(first, Report), "an IMMEDIATE must not wait for the floor"
 
     _clock.advance(1.0)
     assert isinstance(
         _verdict(probe, coalesce_secs=_FLOOR), Skip
-    ), "the same NMI inside the realert window must not repeat"
+    ), "the same IMMEDIATE inside the realert window must not repeat"
 
 
-def test_a_masked_nmi_does_not_swallow_a_wake_beside_it():
-    """A masked NMI falls through to the wake path instead of ending the tick.
+def test_a_masked_immediate_does_not_swallow_a_wake_beside_it():
+    """A masked IMMEDIATE falls through to the wake path instead of ending the tick.
 
-    The NMI scan runs BEFORE wakes are computed, so a short circuit there loses
+    The IMMEDIATE scan runs BEFORE wakes are computed, so a short circuit there loses
     every wake arriving on a tick where the conflict is still outstanding -- and
     a conflict outstands for as long as it takes a human to rebase, which is
     exactly when reds and comments arrive.
     """
     probe = _ScriptedProbe(
         [
-            Tick(epoch="e1", observations=[_nmi("conflict", "CONFLICTING")], pending=0),
+            Tick(epoch="e1", observations=[_immediate("conflict", "CONFLICTING")], pending=0),
             Tick(
                 epoch="e1",
-                observations=[_nmi("conflict", "CONFLICTING"), _wake("red:a", "a real red")],
+                observations=[_immediate("conflict", "CONFLICTING"), _wake("red:a", "a real red")],
                 pending=0,
             ),
         ]
@@ -234,7 +234,7 @@ def test_a_masked_nmi_does_not_swallow_a_wake_beside_it():
 
     _clock.advance(1.0)
     verdict = _verdict(probe, coalesce_secs=0)
-    assert isinstance(verdict, Report), "a masked NMI must not end the tick"
+    assert isinstance(verdict, Report), "a masked IMMEDIATE must not end the tick"
     assert "a real red" in str(verdict)
 
 
@@ -257,7 +257,7 @@ def test_a_signal_joining_an_open_window_serves_its_own_full_floor():
     makes that change visible.
     """
     checks_pending = 3
-    red = _wake("red:a", "an epoch-scoped red")
+    red = _wake("red:a", "a REVISION red")
     comment = _sticky("comment:1", "a fresh review comment")
     probe = _ScriptedProbe(
         [
@@ -267,7 +267,7 @@ def test_a_signal_joining_an_open_window_serves_its_own_full_floor():
         ]
     )
 
-    # The red opens the window. It is epoch-scoped and the checks have not
+    # The red opens the window. It is ``REVISION`` and the checks have not
     # drained, so it cannot fire on its own.
     assert isinstance(_verdict(probe, coalesce_secs=_FLOOR), Skip)
 
@@ -286,7 +286,7 @@ def test_a_signal_joining_an_open_window_serves_its_own_full_floor():
     assert isinstance(verdict, Report)
     body = str(verdict)
     assert "a fresh review comment" in body
-    assert "an epoch-scoped red" not in body
+    assert "a REVISION red" not in body
 
 
 def test_an_admitted_entry_rides_along_on_a_wake_it_could_not_have_triggered():
@@ -365,7 +365,7 @@ def test_an_epoch_change_carries_an_open_sticky_window_with_its_stamp():
     survives the epoch boundary.
     """
     comment = _sticky("comment:1", "a review comment")
-    red = _wake("red:a", "an epoch-scoped red")
+    red = _wake("red:a", "a REVISION red")
     probe = _ScriptedProbe(
         [
             # e1: the comment opens the window; the red keeps pending non-zero
@@ -390,19 +390,19 @@ def test_an_epoch_change_carries_an_open_sticky_window_with_its_stamp():
         verdict, Report
     ), "an open sticky window survives the epoch change carrying the age it served"
     assert "a review comment" in str(verdict)
-    assert "an epoch-scoped red" not in str(verdict), "the epoch-scoped entry is dropped"
+    assert "a REVISION red" not in str(verdict), "the REVISION entry is dropped"
 
 
-def test_a_cleared_epoch_scoped_entry_is_pruned_before_the_window_extends():
+def test_a_cleared_revision_entry_is_pruned_before_the_window_extends():
     """An anomaly that cleared while the window was open is not delivered.
 
-    Before the window extends, an epoch-scoped entry the probe does not report
+    Before the window extends, a ``REVISION`` entry the probe does not report
     this tick is dropped from it. So a check that reads green again is gone from
     the window by the time it fires, and the wake carries only checks still
     failing -- never a cleared check announced as failing beside the observation
     that replaced it.
 
-    The prune is epoch-scoped only: a sticky entry stays (a probe that stops
+    The prune is ``REVISION``-only: a sticky entry stays (a probe that stops
     reporting a comment has stopped LOOKING, not seen it clear), which the
     sticky tests cover.
     """

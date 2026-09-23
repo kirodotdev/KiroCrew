@@ -95,7 +95,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, peek_data_home
 from kiro_crew.sel import _sel_hmac_key_bytes, sel_hmac_key_path
 
 logger = logging.getLogger(__name__)
@@ -301,9 +301,7 @@ def _compute_sig(key: bytes, pid: int | str, payload: str) -> str:
     so every signed mapping written before the format change still verifies.
     """
     subkey = _derive_subkey(key)
-    return hmac.new(
-        subkey, f"{pid}:{payload}".encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    return hmac.new(subkey, f"{pid}:{payload}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _parse_mapping_body(raw: str) -> tuple[str, str | None] | None:
@@ -388,9 +386,6 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     else:
         body = session_key
     atomic_write(_txt_path(pid, cfg), body)
-    from kiro_crew.member_memory_auth import publish_member_session_pid
-
-    publish_member_session_pid(pid, session_key, home=cfg)
     key = _load_hmac_key()
     if key is None:
         _report_signing_unavailable()
@@ -510,6 +505,23 @@ def read_session_pid_txt(pid: int | str, cfg: Path | None = None) -> str:
     if token is not None and _pid_recycled(pid, token):
         return ""
     return session_key
+
+
+def session_pid_mapping_path(pid: int | str) -> Path:
+    """The mapping file strict verification reads for *pid* (diagnostics only).
+
+    Resolves the same home ``config_dir()`` serves — via
+    :func:`kiro_crew.config.paths.peek_data_home`, which applies the identical
+    override predicate WITHOUT the mkdir maintenance ``config_dir()``
+    performs: a diagnostic only names a path, so nothing needs to exist, and an
+    uncreatable configured home must not turn the denial message this feeds
+    into a crash. When an agent spec pins a foreign ``KIROCREW_HOME`` into the
+    stub's environment, this path points at the poisoned home — the one piece
+    of evidence that distinguishes "wrong home" from a genuinely broken trust
+    root, where ``kirocrew doctor`` on the real gateway reports everything
+    healthy.
+    """
+    return _txt_path(pid, peek_data_home())
 
 
 def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:

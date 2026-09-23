@@ -354,6 +354,32 @@ class TestChatSlotReasoningEffortLiveProvider:
             state.sessions.reset.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_live_clear_that_changed_nothing_commits_nothing_and_does_not_reset(self):
+        # clear_effort's third outcome: the workspace overlay was locked, so
+        # NOTHING changed -- the file still holds the level and the provider put
+        # its entry back. Committing the cleared slot value would show "default"
+        # over that overlay, and resetting would re-read the same level, so the
+        # handler commits neither and answers a retryable 409.
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        provider.clear_effort = AsyncMock(return_value=None)
+        slot = _ChatSlot("test")
+        slot.reasoning_effort = "high"
+        state = _mock_state(slot, provider=provider)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": ""},
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "effort_overlay_busy"
+            assert slot.reasoning_effort == "high", "the cleared value was committed anyway"
+            state.sessions.reset.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_live_clear_applied_live_skips_reset(self):
         # clear_effort returns True only when a default was applied LIVE
         # (kiro with a workspace default) → no session reset needed.

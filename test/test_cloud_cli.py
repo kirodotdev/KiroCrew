@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import shutil
 
 import pytest
 
-from kiro_crew import cli_cloud
+from kiro_crew import cli_cloud, platform_compat
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2
 from kiro_crew.cloud.config import CloudConfig
+from kiro_crew.cloud.launch_state import LaunchState
 
 
 def _args(**kw):
@@ -37,6 +39,9 @@ class TestDispatch:
         captured = {}
 
         monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "us-west-2"))
+        # Launch inherits the machine's sign-in via ``kiro-cli whoami``; pin the probe so
+        # the flag assertion never runs the host's kiro-cli (Builder ID: no identity).
+        monkeypatch.setattr(cli_cloud, "discover_local_identity", lambda: {})
         monkeypatch.setattr(
             cli_cloud.wizard, "launch", lambda **kwargs: captured.update(kwargs) or 0
         )
@@ -51,6 +56,7 @@ class TestDispatch:
         captured = {}
 
         monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "ap-southeast-1"))
+        monkeypatch.setattr(cli_cloud, "discover_local_identity", lambda: {})
         monkeypatch.setattr(
             cli_cloud.wizard, "launch", lambda **kwargs: captured.update(kwargs) or 0
         )
@@ -207,6 +213,142 @@ class TestConnect:
 
 
 class TestDestroy:
+    @pytest.mark.parametrize("shape", ("symlink", "hardlink"))
+    def test_destroy_refuses_an_aliased_record_and_deletes_nothing(
+        self, monkeypatch, capsys, tmp_path, shape
+    ):
+        """The whole command, not the helper: an alias must cost the stack nothing.
+
+        A writable second name for the launch record puts any tag in it, and this is the verb
+        that acts on the tag irreversibly. So the refusal has to land BEFORE the stack is
+        described, let alone deleted, and has to read as a named refusal rather than a
+        traceback -- the file, the shape, and the one command that clears it.
+        """
+        import os
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        real = tmp_path / "somewhere-else.json"
+        real.write_text('{"profile": "p", "region": "us-east-1", "last_tag": "kc-theirs"}')
+        record = tmp_path / "cloud_launch_state.json"
+        if shape == "symlink":
+            record.symlink_to(real)
+        else:
+            os.link(real, record)
+            assert record.stat().st_nlink > 1, "the fixture did not produce a second link"
+
+        def _must_not_run(*a, **k):
+            raise AssertionError("an aliased record must not reach AWS")
+
+        monkeypatch.setattr(ec2, "describe", _must_not_run)
+        monkeypatch.setattr(ec2, "destroy", _must_not_run)
+
+        rc = cli_cloud.handle_cloud(
+            _args(cloud_action="destroy", profile="", region="", tag="", dry_run=False, yes=True)
+        )
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        text = captured.out + captured.err
+        assert "cloud_launch_state.json" in text
+        # This platform's own delete command. The first version asserted a POSIX `rm` with POSIX
+        # quoting and reddened the Windows shard: `shlex.quote` wraps a `C:\...` path in single
+        # quotes, which cmd does not use for quoting, so the remedy named a command a Windows
+        # operator does not have for a path their shell would not resolve.
+        if platform_compat.IS_WINDOWS:  # pragma: no cover - asserted on the Windows shards
+            assert f'del "{record}"' in text
+        else:
+            assert f"rm {shlex.quote(str(record))}" in text
+
+    def test_launch_refuses_an_aliased_record_before_re_attaching(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """Re-attaching to a forged tag is the same substitution, just quieter than a delete.
+
+        ``launch`` resolves the saved tag to decide whether to keep an existing stack, and
+        under ``--yes`` it keeps it without asking. So the same read refuses here, and the
+        wizard is never entered.
+        """
+        from kiro_crew.cloud import wizard
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        real = tmp_path / "somewhere-else.json"
+        real.write_text('{"profile": "p", "region": "us-east-1", "last_tag": "kc-theirs"}')
+        (tmp_path / "cloud_launch_state.json").symlink_to(real)
+
+        def _must_not_run(*a, **k):
+            raise AssertionError("an aliased record must not reach the wizard")
+
+        monkeypatch.setattr(wizard, "launch", _must_not_run)
+
+        rc = cli_cloud.handle_cloud(_args(cloud_action="launch", profile="", region="", yes=True))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "cloud_launch_state.json" in captured.out + captured.err
+
+    def test_a_failed_pointer_clear_still_reports_the_removal(self, monkeypatch, capsys):
+        """The stack is gone, so nothing after it may fail the command.
+
+        A full disk, a read-only filesystem or a lock that cannot be taken raises `OSError`
+        from the clear -- after `ec2.destroy` confirmed. Exiting non-zero there tells automation
+        the teardown failed while the AWS resources are actually deleted, and the AWS work
+        cannot be retried. Same decision `wizard._record_launch` makes on the launch side.
+        """
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(ec2, "destroy", lambda *a, **k: {"destroyed": True})
+        monkeypatch.setattr(connect_mod, "unregister_instance", lambda *a, **k: True)
+        import kiro_crew.cloud.source as source_mod
+
+        monkeypatch.setattr(
+            source_mod, "delete_source", lambda *a, **k: {"removed": True, "uri": "", "error": ""}
+        )
+
+        def _read_only(*a, **k):
+            raise OSError("Read-only file system")
+
+        monkeypatch.setattr(LaunchState, "clear_tag", classmethod(_read_only))
+
+        rc = cli_cloud._cloud_destroy(
+            _args(profile="", region="", tag="kc-1", dry_run=False, yes=True)
+        )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "all AWS resources deleted" in out
+        assert "Read-only file system" in out
+
+    def test_destroy_refuses_an_aliased_legacy_config_and_deletes_nothing(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """The same hole through the OLD file: an aliased `cloud.json` with no record yet.
+
+        The record's guard did not cover its own fallback, and `cloud.json`'s guard sits on the
+        launch seam, which a teardown never runs -- so a forged legacy `last_tag` reached this
+        command. The pre-created empty record is the default state on any install that has
+        spawned an agent, so the fallback is the normal path rather than an exotic one.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        real = tmp_path / "dotfiles-cloud.json"
+        real.write_text('{"last_tag": "kc-theirs"}')
+        (tmp_path / "cloud.json").symlink_to(real)
+        (tmp_path / "cloud_launch_state.json").write_text("{}")
+
+        def _must_not_run(*a, **k):
+            raise AssertionError("an aliased config must not reach AWS")
+
+        monkeypatch.setattr(ec2, "describe", _must_not_run)
+        monkeypatch.setattr(ec2, "destroy", _must_not_run)
+
+        rc = cli_cloud.handle_cloud(
+            _args(cloud_action="destroy", profile="", region="", tag="", dry_run=False, yes=True)
+        )
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "cloud.json" in captured.out + captured.err
+
     def test_destroy_dry_run(self, monkeypatch, capsys):
         monkeypatch.setattr(
             ec2,
@@ -246,7 +388,7 @@ class TestDestroy:
         monkeypatch.setattr(
             CloudConfig, "load", classmethod(lambda cls, *a: CloudConfig(last_tag="kc-1"))
         )
-        monkeypatch.setattr(CloudConfig, "save", lambda self, *a: None)
+        monkeypatch.setattr(LaunchState, "record", classmethod(lambda cls, **k: None))
         rc = cli_cloud._cloud_destroy(
             _args(profile="", region="", tag="kc-1", dry_run=False, yes=True)
         )
@@ -277,7 +419,7 @@ class TestDestroy:
         monkeypatch.setattr(
             CloudConfig, "load", classmethod(lambda cls, *a: CloudConfig(last_tag="kc-1"))
         )
-        monkeypatch.setattr(CloudConfig, "save", lambda self, *a: None)
+        monkeypatch.setattr(LaunchState, "record", classmethod(lambda cls, **k: None))
         rc = cli_cloud._cloud_destroy(
             _args(profile="", region="", tag="kc-1", dry_run=False, yes=True)
         )
@@ -304,7 +446,11 @@ class TestDestroy:
         monkeypatch.setattr(
             CloudConfig, "load", classmethod(lambda cls, *a: CloudConfig(last_tag="kc-1"))
         )
-        monkeypatch.setattr(CloudConfig, "save", lambda self, *a: saved.update(n=saved["n"] + 1))
+        monkeypatch.setattr(
+            LaunchState,
+            "record",
+            classmethod(lambda cls, **k: saved.update(n=saved["n"] + 1)),
+        )
         monkeypatch.setattr(connect_mod, "unregister_instance", lambda *a, **k: True)
 
         rc = cli_cloud._cloud_destroy(
@@ -339,6 +485,7 @@ class TestCloudLogin:
             ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
         )
         monkeypatch.setattr(cli_cloud.login_mod, "is_logged_in", lambda *a, **k: False)
+        monkeypatch.setattr(cli_cloud.login_mod, "remote_identity_state", lambda *a, **k: "absent")
         monkeypatch.setattr(
             cli_cloud.login_mod,
             "start_device_login",
@@ -366,6 +513,7 @@ class TestCloudLogin:
             ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
         )
         monkeypatch.setattr(cli_cloud.login_mod, "is_logged_in", lambda *a, **k: False)
+        monkeypatch.setattr(cli_cloud.login_mod, "remote_identity_state", lambda *a, **k: "absent")
         monkeypatch.setattr(
             cli_cloud.login_mod,
             "start_device_login",
@@ -376,6 +524,39 @@ class TestCloudLogin:
         rc = cli_cloud._cloud_login(_args(profile="", region="", tag="kc-1", no_browser=True))
         assert rc == 1
         assert "not detected yet" in capsys.readouterr().out
+
+    def test_flagless_login_over_an_identity_center_session_is_a_mismatch(
+        self, monkeypatch, capsys
+    ):
+        """A flagless ``cloud login`` asks for Builder ID. On an instance that
+        holds an Identity Center session that is a wrong-identity mismatch, not
+        "not signed in": kiro-cli ignores a login over a live session, so
+        starting one would do nothing and report nothing. The command names the
+        target it was asked for, points at logout, exits 1, and never starts a
+        sign-in."""
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
+        monkeypatch.setattr(cli_cloud, "_resolve_tag", lambda _a: "kc-1")
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(cli_cloud.login_mod, "is_logged_in", lambda *a, **k: False)
+        seen: list[object] = []
+
+        def state(*a, **k):
+            seen.append(k["target"])
+            return "mismatch"
+
+        monkeypatch.setattr(cli_cloud.login_mod, "remote_identity_state", state)
+        monkeypatch.setattr(
+            cli_cloud.login_mod,
+            "start_device_login",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("no sign-in over a mismatch")),
+        )
+        rc = cli_cloud._cloud_login(_args(profile="", region="", tag="kc-1", no_browser=True))
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert seen and seen[0].is_default
+        assert "DIFFERENT Kiro identity than Builder ID" in out and "cloud logout" in out
 
     def test_logout_signs_out_and_points_at_login(self, monkeypatch, capsys):
         monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))

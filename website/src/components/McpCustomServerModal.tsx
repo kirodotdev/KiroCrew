@@ -241,11 +241,11 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
           placeholder={editing ? '' : PLACEHOLDER}
           spellCheck={false}
           aria-label={editing ? i18nT('components.mcpCustomServerModal.server_spec_json') : i18nT('components.mcpCustomServerModal.servers_json')}
-          className={`w-full ${editing ? 'min-h-[220px]' : 'min-h-[400px]'} rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text focus:outline-none focus-visible:ring-1 focus-visible:ring-accent resize-y`}
+          className={`w-full ${editing ? 'min-h-[220px]' : 'min-h-[400px]'} rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent resize-y`}
         />
 
         {parsed && !parsed.ok && (
-          <span className="flex items-center gap-1 text-xs text-amber-400" role="alert">
+          <span className="flex items-center gap-1 text-xs text-warn" role="alert">
             <AlertTriangle size={13} aria-hidden="true" /> {parsed.error}
           </span>
         )}
@@ -259,7 +259,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
             onChange={(e) => setBareName(e.target.value)}
             placeholder={i18nT('components.mcpCustomServerModal.server_name')}
             aria-label={i18nT('components.mcpCustomServerModal.server_name_2')}
-            className="w-60 rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[12px] text-text focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            className="w-60 rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[12px] text-text focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
           />
         )}
 

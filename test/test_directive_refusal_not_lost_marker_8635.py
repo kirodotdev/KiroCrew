@@ -366,6 +366,9 @@ _HOSTILE_CALLS: dict[str, dict] = {
     "set_project": {"path": "/definitely/not/a/real/project/xyz"},
     "reset_conversation": {},
     "suggest_followup": {"items": [{}]},
+    # chat_tag: an unknown tag id is the cheapest deterministic
+    # refusal — it fails validation before any grant or persistence path.
+    "chat_tag": {"add": ["definitely-not-a-vocabulary-tag-xyz"]},
 }
 
 

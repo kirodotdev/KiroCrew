@@ -355,13 +355,19 @@ Then return a QA VERDICT, not a raw dump:
      (b) a flaky/timing issue, or (c) an environment problem (missing venv,
      missing dist, port clash)? Cite the log line or screenshot that proves it.
   4. The ARTIFACT_DIR path so the dev can open screenshots/video.
-""")
+""", solo_reason="bulk_data")
 ```
 
+`solo_reason` is required: this is ONE sub-agent for one task, and `spawn_run`
+refuses that unless told why. The e2e run is a legitimate `bulk_data` case --
+Playwright output, videos and pod logs would flood your context, and only the
+verdict is needed back.
+
 ### When to delegate vs run inline
-- **Delegate to a QA agent** (default): you're mid-feature and want it verified
-  without derailing your own context; or the suite is long (Playwright + video).
-- **Run inline** yourself: a quick smoke where you want the result in your own turn.
+- **Delegate to a QA agent** when the suite is long (Playwright + video) and
+  its raw output would swamp your context -- that is the `bulk_data` reason.
+- **Run inline** yourself (default for a quick smoke): you want the result in
+  your own turn, and "not derailing my context" is not a reason to delegate.
 
 Parallel QA across branches: spawn one QA agent per worktree in a single
 `spawn_run` `tasks=[...]` call — each pod gets its own port and isolated HOME,

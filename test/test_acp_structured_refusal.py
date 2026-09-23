@@ -62,11 +62,30 @@ class TestCapabilitySet:
         assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STRUCTURED_REFUSAL
         assert ACP_BACKEND_CODEX not in ACP_BACKENDS_STRUCTURED_REFUSAL
 
-    def test_every_shared_runtime_harness_is_a_member(self):
-        # AcpSessionHandle reads the envelope unconditionally on the strength of
-        # this subset relation; a runtime harness outside the set would have its
-        # metadata guessed at.
-        assert ACP_BACKENDS_ACP_RUNTIME <= ACP_BACKENDS_STRUCTURED_REFUSAL
+    def test_the_shared_runtime_carries_hosts_outside_the_set(self):
+        """The subset relation does not hold, which is why the read is gated.
+
+        A parser written for one host's vocabulary must not judge another's
+        notification: its answer would be attached to the turn as a refusal
+        category the host never sent.
+        """
+        assert not (ACP_BACKENDS_ACP_RUNTIME <= ACP_BACKENDS_STRUCTURED_REFUSAL)
+
+    def test_both_cores_gate_the_read_on_membership(self):
+        """Neither core may read the envelope for a host outside the set.
+
+        Asserted on both, because the two paths answering differently is how one of
+        them ends up reading a notification the set says it cannot parse.
+        """
+        import inspect
+
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+
+        for fn in (AcpClient._track_metadata, AcpSessionHandle._track_metadata):
+            source = inspect.getsource(fn)
+            assert "parse_refusal" in source, fn.__qualname__
+            assert "ACP_BACKENDS_STRUCTURED_REFUSAL" in source, fn.__qualname__
 
 
 class TestParseRefusal:

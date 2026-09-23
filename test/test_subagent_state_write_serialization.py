@@ -367,21 +367,22 @@ class TestLockRegistry:
 
 
 def _park_first_writer_late(monkeypatch, inside: threading.Event, delay: float) -> None:
-    """Patch ``_atomic_write`` so the FIRST writer announces itself, then lands
-    *delay* seconds later.
+    """Park the first provenance writer after its read, then land it later.
 
     The announcement marks the point where the writer's READ has already
     happened, so anything written after it is what a stale rewrite would roll
     back. The delay is what puts the writer's WRITE after the on-loop write
     under test -- unserialized and undrained, that ordering is the clobber.
     """
+
     real_atomic_write = sp._atomic_write
     seen: list[str] = []
     guard = threading.Lock()
 
     def instrumented(path, data):
         with guard:
-            first = not seen
+            # Execution identity is published before model provenance.
+            first = path.name == "state.json" and "requested_model" in data and not seen
             if first:
                 seen.append("parked")
         if first:
@@ -418,6 +419,7 @@ def _mock_sessions_for_run(served_model: str):
     sessions.reset = AsyncMock()
     sessions.record_success = MagicMock()
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     return sessions
 
 
@@ -449,6 +451,7 @@ class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
     async def test_keep_survives_a_cancelled_runs_provenance_worker(self, agent_root, monkeypatch):
         from unittest.mock import patch
 
+        from kiro_crew.execution_context import execution_for_store
         from kiro_crew.subagent import SubagentInfo, SubagentManager
 
         conv_id = "keep01"
@@ -463,7 +466,12 @@ class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
             ctx_builder=_mock_ctx_builder_for_run(),
             is_yolo=lambda: True,
         )
-        info = SubagentInfo(id=conv_id, task="keep vs zombie", model="model-req")
+        info = SubagentInfo(
+            id=conv_id,
+            task="keep vs zombie",
+            model="model-req",
+            execution_context=execution_for_store("", template_id="kirocrew"),
+        )
         manager._agents[info.id] = info
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):

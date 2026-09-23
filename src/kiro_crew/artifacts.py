@@ -21,8 +21,19 @@ Security
 - Slugs are validated against ``_SLUG_RE`` to block path-traversal attempts.
 - All filesystem writes go through ``Path.resolve()`` + a parent-directory
   check to prevent escapes.
-- ``security.is_sensitive_path()`` is queried before any read/write, so the
-  store cannot accidentally land under ``~/.aws``, ``~/.ssh``, etc.
+- The sensitive-path fence is queried before any read/write, so the store
+  cannot accidentally land under ``~/.aws``, ``~/.ssh``, etc. The store's own
+  file helpers hand it the ``realpath`` they already computed through
+  ``security.is_sensitive_canonical_path()`` (see ``_fence_refuses``), which
+  answers off the event loop without a resolver-pool submission and with the
+  bounded ``security.is_sensitive_path()`` on the loop; the root check and the
+  source-file pointers ask the bounded gate directly.
+- Store reads are pinned to the descriptor they open
+  (``pinned_fs.open_fenced_for_read`` via ``_open_pinned_for_read``): the open
+  refuses a link at the final name, the inode must be a regular file with one
+  link, and the fence judges the kernel's own path for that inode when it
+  differs from the path already judged, so a swap between the check and the
+  open cannot redirect the read.
 - Tool invocations emit SEL audit events via ``sel().log_tool_invocation()``.
 
 The MCP tools (``artifact_save`` etc.) and HTTP handlers wrap this module --
@@ -48,9 +59,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from typing import List as _List
 
-from kiro_crew import hooks
+from kiro_crew import hooks, pinned_fs
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.constants import ARTIFACT_MAX_CONTENT_BYTES
 from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API compatibility
     WebAppArchitecture,
     WebAppCost,
@@ -62,7 +74,7 @@ from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API 
 )
 from kiro_crew.metrics.events import ARTIFACTS_CREATED, emit_counter
 from kiro_crew.publish_provider import DEFAULT_PROVIDER
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
@@ -79,10 +91,11 @@ MAX_VERSIONS = 50
 #: HTML reports, CSVs) routinely exceed 1 MiB — at 1 MiB clone/pull would
 #: silently fail on exactly the shared-HTML artifacts bidirectional sync
 #: targets. 25 MiB is large enough to bring those down locally while still
-#: refusing truly unbounded content. Keep in lockstep with
-#: ``validation.ARTIFACT_CONTENT_MAX`` (the MCP tool-arg cap) so a save's limit
-#: doesn't depend on its entry path — guarded by a regression test.
-MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
+#: refusing truly unbounded content. Owned by
+#: ``constants.ARTIFACT_MAX_CONTENT_BYTES`` (a leaf) so
+#: ``validation.ARTIFACT_CONTENT_MAX`` -- the MCP tool-arg cap -- reads the same
+#: name without importing this module; re-exported here for the store's callers.
+MAX_CONTENT_BYTES = ARTIFACT_MAX_CONTENT_BYTES
 
 #: Maximum length of human-readable name / description fields.
 MAX_NAME_LEN = 200
@@ -166,7 +179,7 @@ MAX_TAGS = 16
 # Slug pattern: lowercase letters, digits, hyphens. 1-80 chars. No leading or
 # trailing hyphen. Single-character slugs are allowed for trivial names.
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
-_TAG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,63}$")
+_TAG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,63}\Z")
 _VERSION_FILE_RE = re.compile(r"^v(\d+)\.html$")
 _SLUG_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
 
@@ -332,6 +345,49 @@ class ArtifactComment:
     # Transient: set on inbound provider mirrors that came back as tombstones so
     # merge_remote_comments can drop the local copy. Never persisted.
     deleted: bool = False
+
+
+def filter_comments_for_forward(
+    comments: _List["ArtifactComment"],
+) -> _List["ArtifactComment"]:
+    """Canonical comment-forwarding filter (comment→chat replay fix).
+
+    The single source of truth for which comments get *forwarded/counted* when
+    an artifact's feedback is sent into chat, so the UI count, the side-panel
+    submit and the agent's read all agree.
+
+    Evaluated at **thread-root granularity**: a reply inherits its root's
+    status, so resolving a thread drops the whole thread rather than leaving
+    replies whose parent is gone.
+
+    A resolved thread is the only thing dropped. Staleness is deliberately NOT
+    inferred from the anchor version: a comment anchored to an older version
+    whose quoted span still exists is live feedback nobody has addressed, and
+    dropping it would silently stop forwarding a thread the sidebar still shows
+    as open. ``anchor_orphaned`` already marks the genuinely stale case (the
+    quote is gone) and the UI warns on it, so that call stays with the human.
+    """
+    by_id = {c.id: c for c in comments}
+
+    def root_of(c: "ArtifactComment") -> "ArtifactComment":
+        # ``thread_id`` names the root directly (a root's is its own id), so it
+        # is the first choice: a nested reply whose *immediate* parent has been
+        # deleted still names its root, which a parent walk cannot reach.
+        root = by_id.get(c.thread_id)
+        if root is not None:
+            return root
+        # Fall back to the parent walk when thread_id resolves to nothing (the
+        # field defaults to ""). The `seen` set terminates a parent cycle; a
+        # parent missing from the list ends the walk, leaving the comment its
+        # own root.
+        seen: set[str] = set()
+        cur = c
+        while cur.parent_id and cur.parent_id in by_id and cur.parent_id not in seen:
+            seen.add(cur.id)
+            cur = by_id[cur.parent_id]
+        return cur
+
+    return [c for c in comments if root_of(c).status != "resolved"]
 
 
 @dataclass
@@ -712,9 +768,7 @@ def is_document_path(path: str) -> bool:
 # are lost -- and every consumer surfaces this as a soft warning, never a
 # rejection.
 _HARDCODED_COLOR_RE = re.compile(
-    r"[:=(\s\"']#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b"
-    r"|\brgba?\("
-    r"|\bhsla?\(",
+    r"[:=(\s\"']#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b" r"|\brgba?\(" r"|\bhsla?\(",
     re.IGNORECASE,
 )
 
@@ -848,7 +902,7 @@ def _strip_session_scope(key: str) -> str:
     """
     prefix = "dashboard:"
     if key.startswith(prefix):
-        return key[len(prefix):]
+        return key[len(prefix) :]
     from kiro_crew.history import _safe_key
     from kiro_crew.messaging.link import is_channel_session_key
 
@@ -1095,6 +1149,46 @@ def _lock_for_root(root: Path) -> threading.Lock:
         return lock
 
 
+def _fence_refuses(resolved: Path) -> bool:
+    """Ask the sensitive-path fence about a path the store already canonicalised.
+
+    *resolved* MUST be the output of ``os.path.realpath`` computed by the caller
+    on the line above, in the same function: that is the precondition of
+    ``security.is_sensitive_canonical_path`` (see its docstring), and the
+    store's file helpers are pinned to it by ``test_artifacts_pathres.py``.
+
+    Which gate answers is the shared entry point's decision, by thread: off the
+    event loop -- a ``run_in_executor`` / ``to_thread`` worker, or a plain
+    synchronous caller -- the pre-resolved gate answers with no ``mc-pathres``
+    submission. ``list()`` reaches this once per ``meta.json``, and the bounded
+    gate costs two pool hops per call, so a listing over a few hundred
+    artifacts would fill the two-worker pool with resolutions of paths this
+    store has already canonicalised; the fail-closed stall then reads as a
+    sensitive-path refusal and drops healthy artifacts from the listing. On the
+    loop the bounded gate stays in place, so an on-loop store call behaves as
+    it always has, and a caller earns the off-pool gate by offloading, never by
+    declaring anything.
+    """
+    return is_sensitive_canonical_path(str(resolved))
+
+
+def _open_pinned_for_read(resolved: Path) -> int:
+    """Open a store file for reading, pinned to the descriptor it returns.
+
+    *resolved* is a path the caller has already canonicalised and judged with
+    :func:`_fence_refuses`. :func:`pinned_fs.open_fenced_for_read` refuses a
+    link at the final component, requires a regular file with a single link,
+    and asks :func:`_fence_refuses` about the kernel's own path for the opened
+    inode exactly when that path differs from the judged one. Refusals raise
+    :class:`ArtifactError`; a missing file raises ``FileNotFoundError``.
+    """
+    return pinned_fs.open_fenced_for_read(
+        resolved,
+        fence=lambda fd_real: _fence_refuses(Path(fd_real)),
+        refusal=ArtifactError,
+    )
+
+
 class ArtifactStore:
     """File-system backed store for artifacts.
 
@@ -1328,9 +1422,7 @@ class ArtifactStore:
         if not data:
             raise ArtifactValidationError("image bytes are empty")
         if len(data) > MAX_CONTENT_BYTES:
-            raise ArtifactValidationError(
-                f"image exceeds {MAX_CONTENT_BYTES} bytes ({len(data)})"
-            )
+            raise ArtifactValidationError(f"image exceeds {MAX_CONTENT_BYTES} bytes ({len(data)})")
         name = _validate_name(name)
         source = _validate_source(source)
         description = _validate_description(description)
@@ -1715,9 +1807,7 @@ class ArtifactStore:
             # worse than reading through one, so the same fd-pinned gate the
             # read side uses applies here: O_NOFOLLOW open first, then hardlink
             # / regular-file / real-path / sensitive checks on that descriptor.
-            if not hooks.safe_write_file_nolink(
-                str(p), content, within_root=str(containing)
-            ):
+            if not hooks.safe_write_file_nolink(str(p), content, within_root=str(containing)):
                 logger.warning(
                     "source_path %r refused by the descriptor-pinned write gate", source_path
                 )
@@ -2095,12 +2185,9 @@ class ArtifactStore:
         candidates = [art for art in self.list() if self._is_sweepable_auto_widget(art)]
         if len(candidates) <= keep:
             return 0
-        # ``list()`` sorts by ``updated_at`` alone, which is not a total order:
-        # two widgets registered in the same microsecond tie-break by directory
-        # scan order, making WHICH of them gets deleted nondeterministic. Re-sort
-        # on ``(updated_at, slug)`` so the kept/dropped boundary is stable and
-        # testable. Kept local to the sweep — ``list()``'s ordering is shared with
-        # the library UI and is not this change's to redefine.
+        # ``list()`` already sorts on ``(updated_at, slug)``, so the kept/dropped
+        # boundary is stable. Re-sorting here is belt-and-braces: this sweep DELETES,
+        # so it must not inherit an ordering assumption from a caller-supplied list.
         candidates.sort(key=lambda a: (a.updated_at, a.slug), reverse=True)
         # Newest-first, so everything past `keep` is the oldest tail.
         deleted = 0
@@ -2429,7 +2516,14 @@ class ArtifactStore:
             if pinned is not None and bool(art.pinned) is not pinned:
                 continue
             results.append(art)
-        results.sort(key=lambda a: a.updated_at, reverse=True)
+        # ``updated_at`` alone is not a total order: it is microsecond ISO, so two
+        # artifacts written inside one microsecond carry the identical stamp, and a
+        # stable sort then leaves the tie to directory scan order -- "newest first"
+        # becomes whatever the filesystem enumerated first, which differs per
+        # platform. Windows CI failed ``test_artifacts_handlers`` on exactly that.
+        # ``slug`` makes the order total, and every caller (the library UI, the MCP
+        # list tool, the pruning sweep) gets the same answer on every host.
+        results.sort(key=lambda a: (a.updated_at, a.slug), reverse=True)
         return results
 
     def migrate_kinds(self, *, apply: bool = False) -> _List[dict[str, Any]]:
@@ -3218,10 +3312,11 @@ class ArtifactStore:
     def _snapshot_version(self, slug: str, version: int, src: Path) -> None:
         target = self._artifact_dir(slug) / "versions" / f"v{version}.html"
         # Defense in depth: route the read through the gated helper so the
-        # is_sensitive_path() check fires on every filesystem read, even when
+        # sensitive-path check fires on every filesystem read, even when
         # ``src`` is a store-internal path constructed by the store itself.
-        # Per the security-controls rule: all file reads must go through
-        # hooks.py which enforces is_sensitive_path().
+        # Per security rule 1: a read either goes through hooks.py or, as
+        # here, asks ``is_sensitive_canonical_path`` on the canonicalised
+        # path and opens through ``pinned_fs.open_fenced_for_read``.
         self._write_text(target, self._read_text(src))
 
     def _write_meta(self, art: Artifact) -> None:
@@ -3509,14 +3604,31 @@ class ArtifactStore:
         )
 
     def _read_text(self, path: Path) -> str:
+        """Read a store-internal text file through a pinned descriptor.
+
+        The fence is asked with the ``realpath`` computed on the line above (see
+        :func:`_fence_refuses` for which gate answers, and why). The opened
+        descriptor is checked again so a replacement at the final name cannot
+        redirect the read after that first decision.
+        """
         resolved = Path(os.path.realpath(path))
-        if is_sensitive_path(str(resolved)):
+        if _fence_refuses(resolved):
             raise ArtifactError(f"refusing to read sensitive path: {resolved}")
-        return resolved.read_text(encoding="utf-8")
+        fd = _open_pinned_for_read(resolved)
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            return fh.read()
 
     def _write_text(self, path: Path, text: str) -> None:
+        """Atomically write a store-internal file through the sensitive-path fence.
+
+        Same fence and same precondition as :meth:`_read_text`. This is the
+        read+write fence (``_SENSITIVE_HOME_DIRS`` plus the keystone publish
+        artifacts): the write-only superset ``is_sensitive_write_path`` guards the
+        agent's file-edit tool, has no pre-resolved form, and adopting it here
+        would change the decision rather than the submission path.
+        """
         resolved = Path(os.path.realpath(path))
-        if is_sensitive_path(str(resolved)):
+        if _fence_refuses(resolved):
             raise ArtifactError(f"refusing to write sensitive path: {resolved}")
         resolved.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write: tmp file + rename.
@@ -3527,13 +3639,14 @@ class ArtifactStore:
     def _read_bytes(self, path: Path) -> bytes:
         """Binary sibling of :meth:`_read_text` (image asset reads).
 
-        Same sensitive-path gate — every store read, text or binary, must pass
-        ``is_sensitive_path`` per the security-controls rule.
+        Same sensitive-path gate and the same descriptor checks as text reads.
         """
         resolved = Path(os.path.realpath(path))
-        if is_sensitive_path(str(resolved)):
+        if _fence_refuses(resolved):
             raise ArtifactError(f"refusing to read sensitive path: {resolved}")
-        return resolved.read_bytes()
+        fd = _open_pinned_for_read(resolved)
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read()
 
     def _read_image_asset_bytes(self, path: Path) -> bytes:
         """Read an image sidecar with the open descriptor as the unit of trust.
@@ -3574,7 +3687,7 @@ class ArtifactStore:
         never observes a half-written asset.
         """
         resolved = Path(os.path.realpath(path))
-        if is_sensitive_path(str(resolved)):
+        if _fence_refuses(resolved):
             raise ArtifactError(f"refusing to write sensitive path: {resolved}")
         resolved.parent.mkdir(parents=True, exist_ok=True)
         tmp = resolved.with_suffix(resolved.suffix + ".tmp")

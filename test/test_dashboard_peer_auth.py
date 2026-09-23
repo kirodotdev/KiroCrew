@@ -34,7 +34,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
-from tmpdir_helpers import short_tmp_base
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 import kiro_crew.dashboard.token_auth as ta
 from kiro_crew import platform_compat
@@ -53,7 +53,7 @@ def short_sock_dir() -> "Iterator[Path]":
     ``mkdtemp`` under :func:`short_tmp_base`, removed at teardown because
     ``mkdtemp`` registers no finalizer.
     """
-    base = Path(tempfile.mkdtemp(dir=short_tmp_base()))
+    base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "peer-", dir=short_tmp_base()))
     yield base
     shutil.rmtree(base, ignore_errors=True)
 

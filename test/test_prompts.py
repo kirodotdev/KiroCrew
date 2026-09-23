@@ -208,8 +208,22 @@ class _Slot:
         self.model = None
         self._queue = []
         self._stop_generation = 0
+        self._stopping = False
+        # Mirrors _ChatSlot's model-access / fallback defaults. _run_chat's
+        # per-turn reset reads _model_access_recovery_pending on EVERY turn
+        # (including the slash-command turns these tests drive); the companion
+        # fields are read/written in that same block once the guard is True.
+        self._model_access_recovery_pending = False
+        self._model_access_recovery_stop_gen = 0
+        self._model_access_fallback_used = False
+        self._active_fallback_model = ""
         # Mirrors _ChatSlot._chunk_seq: the per-slot chunk counter _run_chat continues.
         self._chunk_seq = 0
+        # Mirrors _ChatSlot._refusal_retry_text/_refusal_fallback_attempted: the
+        # dispatch gate reads both on EVERY turn to tell a refusal replay apart
+        # from a genuine message, prompt turns included.
+        self._refusal_retry_text = ""
+        self._refusal_fallback_attempted = False
         self.linked_session_key = ""
         # Mirrors _ChatSlot.project: the per-slot local project @mention/​/prompts
         # resolve against. "" means no project (global prompts only), matching
@@ -3369,11 +3383,10 @@ class TestCreateAndDeletePinTheDirectory:
             "bool",
         }, f"boot-path constant calls something that may touch the filesystem: {sorted(calls)}"
 
-    @pytest.mark.skipif(
-        not _prompts_mod._UNNAMED_CREATE_SUPPORTED or not os.path.isdir("/proc/self/fd"),
-        reason="platform cannot build an unnamed inode (O_TMPFILE + /proc/self/fd)",
-    )
-    def test_the_body_is_durable_before_the_name_appears(self, tmp_path, mock_sel, monkeypatch):
+    @pytest.mark.parametrize("unsupported_tmpfile", [False, True], ids=["native", "unsupported"])
+    def test_the_body_is_durable_before_the_name_appears(
+        self, tmp_path, mock_sel, monkeypatch, unsupported_tmpfile
+    ):
         """The flush precedes the publish, and the DIRECTORY is flushed too.
 
         201 says the prompt is on disk. Publishing first and flushing after
@@ -3398,7 +3411,29 @@ class TestCreateAndDeletePinTheDirectory:
         tests below.
         """
         order: list[str] = []
-        real_fsync, real_link = os.fsync, os.link
+        real_fsync, real_link, real_open = os.fsync, os.link, os.open
+        unnamed_opens: list[bool] = []
+        if unsupported_tmpfile:
+            # Exercise EOPNOTSUPP even on POSIX hosts without O_TMPFILE/procfs.
+            monkeypatch.setattr(_prompts_mod, "_UNNAMED_CREATE_SUPPORTED", True)
+            monkeypatch.setattr(os, "O_TMPFILE", getattr(os, "O_TMPFILE", 1 << 30), raising=False)
+            real_isdir = os.path.isdir
+            monkeypatch.setattr(os.path, "isdir", lambda p: p == "/proc/self/fd" or real_isdir(p))
+        attempts_unnamed = _prompts_mod._UNNAMED_CREATE_SUPPORTED and os.path.isdir("/proc/self/fd")
+        tmpfile_flag = getattr(os, "O_TMPFILE", 0)
+
+        def _note_open(path, flags, *a, **kw):
+            if tmpfile_flag and flags & tmpfile_flag == tmpfile_flag:
+                try:
+                    if unsupported_tmpfile:
+                        raise OSError(errno.EOPNOTSUPP, "test filesystem has no O_TMPFILE")
+                    fd = real_open(path, flags, *a, **kw)
+                except OSError:
+                    unnamed_opens.append(False)
+                    raise
+                unnamed_opens.append(True)
+                return fd
+            return real_open(path, flags, *a, **kw)
 
         def _note_fsync(fd):
             # Distinguish the file's flush from the directory's by asking the
@@ -3410,11 +3445,17 @@ class TestCreateAndDeletePinTheDirectory:
             order.append("publish")
             return real_link(*a, **kw)
 
+        monkeypatch.setattr(os, "open", _note_open)
         monkeypatch.setattr(os, "fsync", _note_fsync)
         monkeypatch.setattr(os, "link", _note_link)
         resp = asyncio.run(api_prompts_create(_create_request({"name": "durable", "content": "B"})))
+        monkeypatch.setattr(os, "open", real_open)
         monkeypatch.setattr(os, "fsync", real_fsync)
         monkeypatch.setattr(os, "link", real_link)
+
+        assert len(unnamed_opens) == int(attempts_unnamed)
+        if unsupported_tmpfile:
+            assert unnamed_opens == [False]
 
         assert resp.status == 201
         assert "fsync_file" in order, f"the body was never flushed: {order}"
@@ -3422,10 +3463,9 @@ class TestCreateAndDeletePinTheDirectory:
         assert order.index("fsync_file") < order.index(
             "fsync_dir"
         ), f"the body must be durable before the entry's flush claims it: {order}"
-        # The production predicate, so this cannot quietly settle for the weaker
-        # arm on a host where the stronger property holds.
-        unnamed = _prompts_mod._UNNAMED_CREATE_SUPPORTED and os.path.isdir("/proc/self/fd")
-        if unnamed:
+        # Observe the open outcome independently: a missing publish must never
+        # make a successful unnamed create pass as the weaker named branch.
+        if unnamed_opens == [True]:
             assert order[:2] == [
                 "fsync_file",
                 "publish",
@@ -4383,54 +4423,28 @@ class TestLocalScopeStaysInProject:
         A project that keeps its config under another directory of its OWN and
         links ``.kiro`` at it resolves inside the project root, so the root gate
         must keep listing it: the same tolerance the write verbs already grant.
-        The listing half is platform-neutral because the whole decision is this
-        PR's own gates; whether a mention can then READ it is not, and is split
-        into the two tests below.
+        The listing half is decided by this API's own gates; whether a mention
+        can then READ it also passes through ``hooks.validate_file_path``, which
+        is pinned by the test below.
         """
         proj = self._linked_kiro_project(tmp_path)
         assert [e["name"] for e in _list_aim_prompts(proj) if e["source"] == "local"] == ["ok"]
 
     @requires_symlinks
-    @pytest.mark.skipif(not IS_POSIX, reason="Windows refuses a linked ancestor; see below")
-    def test_a_kiro_link_that_stays_in_the_project_still_resolves_on_posix(
-        self, tmp_path, mock_sel
-    ):
-        """...and on POSIX the mention resolves it, so listed and serveable agree."""
-        proj = self._linked_kiro_project(tmp_path)
-        msg, status = _expand_prompt_mention("@ok", _State(), _Slot(project=proj))
-        assert status == "ok" and "BODY" in msg
+    def test_a_kiro_link_that_stays_in_the_project_still_resolves(self, tmp_path, mock_sel):
+        """...and the mention resolves it on every platform, so listed and serveable agree.
 
-    @requires_symlinks
-    @pytest.mark.skipif(IS_POSIX, reason="the linked-ancestor screen is Windows-only by design")
-    def test_a_kiro_link_is_refused_by_the_windows_ancestor_screen(self, tmp_path, mock_sel):
-        """On Windows the mention is REFUSED, and not by anything on this surface.
-
-        ``hooks.validate_file_path`` walks the ancestors on Windows only and
-        refuses any path with a linked one — deliberately, because a junction
-        whose target is a UNC share turns the ``realpath`` below it into the
-        outbound SMB probe its lexical UNC gates exist to prevent, and Windows has
-        no ``O_NOFOLLOW`` to fall back on. POSIX takes the opposite trade: an
-        unconditional ancestor walk there would refuse a symlinked ``/home``.
-
-        So the tolerance above is POSIX-only, and this is the platform-honest
-        statement of it rather than an untested asymmetry: the outcome is the
-        ``blocked`` that gate produces, the listing still offers the name (the
-        test above), and the disagreement is between one platform's read gate and
-        the library — not between two surfaces of this API, which is what this
-        PR is about. Pinning it means a later round cannot quietly relax that
-        screen, and cannot mistake this refusal for a root-gate regression.
+        On Windows ``hooks.validate_file_path`` screens each linked ancestor
+        instead of refusing it: a link whose target is another local directory is
+        rewritten to that target and the read proceeds, while a link aimed at a
+        UNC share still refuses before ``realpath`` can probe it (pinned in
+        ``test_hooks_coverage.py``). POSIX never walked the ancestors. Both
+        platforms therefore serve this in-project link, which is what makes the
+        listing above honest.
         """
         proj = self._linked_kiro_project(tmp_path)
         msg, status = _expand_prompt_mention("@ok", _State(), _Slot(project=proj))
-        assert status == "blocked" and "BODY" not in msg
-        # Attributed: the refusal is the ancestor screen's, on the path as
-        # addressed, and it is reached before anything this surface owns.
-        from kiro_crew import hooks as _hooks
-        from kiro_crew import platform_compat as _pc
-
-        addressed = proj / ".kiro" / "prompts" / "ok.md"
-        assert _pc.first_linked_ancestor(str(addressed)) is not None
-        assert _hooks.validate_file_path(str(addressed)) is None
+        assert status == "ok" and "BODY" in msg
 
 
 class TestAncestorSymlinkLoopCostsOneLibraryNotTheRequest:
@@ -4673,20 +4687,13 @@ class TestARootSwappedAfterValidationPublishesNothing:
         resp = asyncio.run(api_prompt_detail(_api_request("creds", project=proj)))
         # The property, on every platform: the swapped root's file is not served.
         assert b"OUTSIDE-ROOT-HEADING" not in resp.body
-        if IS_POSIX:
-            # Refused by the read root: `_prompt_read_within_root` re-runs the
-            # scope's gate, sees the linked root, and answers None.
-            assert resp.status == 500
-            assert mock_sel.log_tool_invocation.call_args[1]["outcome"] == "error"
-        else:
-            # Windows refuses one gate EARLIER, and not one this surface owns:
-            # `hooks.validate_file_path` walks the ancestors there and refuses a
-            # linked one outright, so the swapped root is caught before the read
-            # root is ever derived. Asserted rather than skipped, because "the
-            # bytes are not served" holds on both platforms and only the stage
-            # that refuses differs.
-            assert resp.status == 403
-            assert mock_sel.log_tool_invocation.call_args[1]["outcome"] == "blocked"
+        # Refused by the read root: `_prompt_read_within_root` re-runs the
+        # scope's gate, sees the linked root, and answers None. Windows reaches
+        # the same stage: `hooks.validate_file_path` rewrites a local linked
+        # ancestor to its target instead of refusing it, so the swapped root is
+        # caught by this surface's own gate rather than one stage earlier.
+        assert resp.status == 500
+        assert mock_sel.log_tool_invocation.call_args[1]["outcome"] == "error"
 
 
 class TestFallbackDeleteRace:

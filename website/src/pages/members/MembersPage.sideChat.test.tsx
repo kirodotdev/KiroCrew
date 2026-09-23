@@ -17,9 +17,9 @@ vi.mock('../../api/client', () => ({
     members: vi.fn(),
     memberThread: vi.fn(),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
-    crons: vi.fn(() => Promise.resolve({ jobs: [] })),
-    webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
-    defaultAgent: vi.fn(() => Promise.resolve({ default_agent: '' })),
+    memberBriefing: vi.fn(() => Promise.resolve({ slug: '', member: '', supported: true, text: '', updated_ts: null, redacted: false, truncated: false })),
+    sessionCrewLogProjections: vi.fn(() => Promise.resolve({ folds: {}, resolved: true, writesDrained: true })),
+    memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
   },
 }))
@@ -114,7 +114,7 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
 
   it('Ask opens the Side tab in the docked panel, bound to the MEMBER slot, and reports the Ask as done', async () => {
     await openThread()
-    await screen.findByTestId('member-crew-summary')
+    await screen.findByTestId('member-notes')
     expect(tabLabels()).not.toContain('Side Chat')
 
     act(() => { fireEvent.click(screen.getByRole('button', { name: 'stub-ask' })) })
@@ -128,7 +128,7 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
 
   it('Side Chat is offered from the + menu too: its draft lives in the chat-core store, so the panel unmounting the body loses nothing', async () => {
     await openThread()
-    await screen.findByTestId('member-crew-summary')
+    await screen.findByTestId('member-notes')
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
@@ -141,7 +141,7 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     setWindowWidth(NARROW_WINDOW)
     await openThread()
     // Overlay closed by default — the panel is not on screen.
-    expect(screen.queryByTestId('member-crew-summary')).toBeNull()
+    expect(screen.queryByTestId('member-notes')).toBeNull()
     act(() => { fireEvent.click(screen.getByRole('button', { name: 'stub-ask' })) })
     expect(verdicts).toEqual([true])
     const overlay = await screen.findByTestId('member-side-panel')
@@ -198,9 +198,9 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     // The collision surfaces as its own notice; no pane, so no Ask …
     await screen.findByTestId('member-thread-collision')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
-    // … and the strip is the slot-free bucket: only the Crew summary, no Side
+    // … and the strip is the slot-free bucket: only the Notes / Work log / Dashboard chips, no Side
     // Chat on the roster's unconfirmed `member-other` key.
-    await waitFor(() => expect(tabLabels()).toEqual(['Crew summary']))
+    await waitFor(() => expect(tabLabels()).toEqual(['Notes', 'Work log', 'Dashboard']))
     expect(screen.queryByTestId('side-chat-stub')).toBeNull()
   })
 })

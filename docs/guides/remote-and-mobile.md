@@ -86,6 +86,16 @@ and owner-identity credentials (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`,
 / Webex). There is no model API key to configure: `kiro-cli` owns the model
 credential, and `kiro-cli login` is where it is set.
 
+Two channels do not travel to an arbitrary remote host. **iMessage** needs the
+gateway on a Mac running macOS 14 or newer, with Full Disk Access and Automation
+granted to whatever launched it, so a Linux VPS cannot serve it at all
+([imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md)).
+**WhatsApp** runs anywhere, but it is not in the base install: it needs the
+optional `neonize` dependency (`pip install ".[whatsapp]"`) and a one-time device
+pairing from **Settings → Channels → WhatsApp**, so reach the remote dashboard
+first (part 2 below) and scan the rotating code from there
+([whatsapp-integration.md](../../src/kiro_crew/docs/whatsapp-integration.md)).
+
 ### Install Kiro Crew
 
 Same two steps as a local machine (Python backend plus the React dashboard
@@ -138,14 +148,17 @@ tmux kill-session -t kirocrew
 
 ### Move your state to the new host
 
-A fresh install starts with no memories, preferences, lessons, or agent config.
-`scripts/sync-to-remote.sh` copies them from your local machine. Run it **from
-the local machine**:
+A fresh install starts with no memories, preferences, lessons, or custom agent
+configuration. After installing and running setup on the remote host,
+`scripts/sync-to-remote.sh` copies selected Kiro Crew state from your local
+machine. It does **not** copy `~/.kiro/agents/`; review and recreate any custom
+agent specs separately. Run the helper **from the local machine**:
 
 ```bash
-scripts/sync-to-remote.sh user@your-host.example.com
+# Standard gateway port (the script's checked-in DEFAULT_PORT is 7779)
+scripts/sync-to-remote.sh user@your-host.example.com 5476
 
-# Non-default dashboard port on the remote (multi-host setups)
+# Or choose another dashboard port for a multi-host setup
 scripts/sync-to-remote.sh user@your-host.example.com 7779
 
 # Preview without transferring
@@ -154,13 +167,19 @@ scripts/sync-to-remote.sh --dry-run
 scripts/sync-to-remote.sh --help
 ```
 
-It is one-way (local overwrites remote). It takes an atomic SQLite `.backup` of
-`memory.db` rather than copying a live WAL, which would land a torn database;
-patches the remote `config.json` to `dashboard.url = http://localhost:<port>`
-with `auto_open_browser` off (a headless host has no browser to open); and syncs
-`sessions/` so your chat history shows up on the remote dashboard. `--dry-run`
-prints every transfer without performing it. Set `DEFAULT_HOST` at the top of the
-script if you do not want to pass the target every time.
+If you omit the port, the script uses its `DEFAULT_PORT` value, currently
+`7779`; pass `5476` explicitly for the normal gateway port.
+
+It is one-way (local overwrites remote). When `sqlite3` is available, it takes
+an atomic SQLite `.backup` of `memory.db` rather than copying a live WAL, which
+would land a torn database. Without `sqlite3` it warns and falls back to copying
+the database plus its WAL/SHM sidecars, which is less safe while the local
+gateway is writing. It also patches the remote `config.json` to
+`dashboard.url = http://localhost:<port>` with `auto_open_browser` off (a
+headless host has no browser to open), and syncs `sessions/` so your chat history
+shows up on the remote dashboard. `--dry-run` prints every transfer without
+performing it. Set `DEFAULT_HOST` at the top of the script if you do not want to
+pass the target every time.
 
 What matters, and where it lives:
 
@@ -168,19 +187,23 @@ What matters, and where it lives:
 |---|---|---|
 | Structured memory | `~/.kiro/crew/workspace/memory/` | `preferences.md`, `projects.md`, daily `history/` |
 | Vector + FTS databases | `~/.kiro/crew/memory.db`, `memory_index.db` | Semantic/episodic memory (`vector_memory.py`) and the FTS5 index (`memory.py`) |
-| Lessons | `~/.kiro/crew/memory.db`, falling back to `lessons.jsonl` | See the note below |
-| Config | `~/.kiro/crew/config.json` | Chat-platform tokens, model prefs, dashboard settings |
+| Lessons | `~/.kiro/crew/memory.db`; legacy `lessons.jsonl` | Native lesson writes live in the vector store; copy a legacy JSONL separately |
+| Config | `~/.kiro/crew/config.json` | Model preferences, dashboard settings, and integration config; inspect it for legacy inline credentials before copying |
 | Skills | `~/.kiro/crew/skills/` | Custom skill definitions |
 | Webhook hooks | `~/.kiro/crew/hooks.json` | Script-hook definitions (`hooks.py` `ScriptHookStore`) |
 | Cron jobs | `~/.kiro/crew/crons.json` | Scheduled recurring jobs (`cron.py`) |
 
 > **Where lessons actually live.** Both stores exist and the vector store wins
-> when it holds anything. `learn.py` appends to `<config_dir>/lessons.jsonl`,
-> but `vector_memory.write_lesson()` stores lessons as semantic entries in
-> `memory.db`, and `ContextBuilder` reads `get_lessons_context()` from the vector
-> store first, only falling back to the JSONL when that comes back empty. So
-> sync **both**: `memory.db` is authoritative on any host that has ever written
-> a lesson natively, and the JSONL still carries lessons written before that.
+> when it holds anything. Current `learn` writes go through
+> `vector_memory.write_lesson()` into `memory.db`; `lessons.jsonl` is the legacy
+> fallback and migration source. The sync helper copies `memory.db` but does
+> **not** copy `lessons.jsonl`. If that legacy file exists, transfer it separately:
+>
+> ```bash
+> rsync -az ~/.kiro/crew/lessons.jsonl user@your-host.example.com:~/.kiro/crew/
+> ```
+>
+> Copying both preserves native lessons and any rows that have not yet migrated.
 
 What NOT to carry over:
 
@@ -190,8 +213,9 @@ What NOT to carry over:
   copied.
 - `~/.kiro/crew/security_events.jsonl`: the tamper-evident SEL audit chain
   (`sel.py`); it belongs to the host that wrote it.
-- `~/.kiro/crew/.env`, `.local_secret`, `sel_hmac.key`: secrets. Re-enter the
-  `.env` credentials with `kirocrew setup`; the other two are regenerated.
+- `~/.kiro/crew/.env`, `.local_secret`, `sel_hmac.key`: secrets. Re-enter
+  channel credentials from the dashboard (or use `kirocrew setup --slack` for
+  Slack); the other two are regenerated.
 
 Keeping two hosts loosely in sync afterwards is just rsync (replace the SSH
 target):
@@ -623,22 +647,22 @@ Safari's address bar.
 
 **The service worker provides a limited offline shell.**
 [`website/public/sw.js`](../../website/public/sw.js) caches exactly `/` and
-`/index.html`. For the paths below the worker declines to intercept, handing them
-straight to the network; every other same-origin `GET` **is** intercepted,
-network-first, but only the shell is ever cached:
+`/index.html`. Every other same-origin `GET` is either passed straight to the
+browser or handled network-first; no other response is cached:
 
-| Path | Why the worker declines it |
+| Path | Service-worker behavior |
 |---|---|
-| `/api`, `/apps/` | Gateway and app-backend responses must never be served stale |
-| `/assets/` | Vite content-hashed bundles — HTTP immutable caching already covers them |
-| `/vendor/`, `/fonts/`, `/sprites/` | Stable filenames, nothing to bust |
-| `/logo.png`, `/static/` | Gateway-served brand assets; caching them strands a broken image across a gateway restart |
+| `/api`, `/sandbox-doc/`, `/apps/` | Declines to intercept API, one-shot document, and app-backend responses |
+| `/assets/`, `/vendor/` | Retries network errors and 5xx responses twice with jitter, but never caches the response |
+| `/fonts/`, `/sprites/` | Declines to intercept non-critical static resources |
+| `/logo.png`, `/static/` | Declines to intercept gateway-served brand assets |
 
-So offline you get the shell and its reconnecting state — and only while the
-browser's own HTTP cache still holds the hashed `/assets/` bundles, which the
-worker never caches. After a build that changes those hashes, the cached shell
-references bundle URLs nothing has downloaded yet. Sessions, history, and
-notifications are never served from disk.
+Every other same-origin `GET` is network-first, with the cached shell used only
+for failed navigation requests. So offline you get the shell and its reconnecting
+state — and only while the browser's own HTTP cache still holds the hashed
+`/assets/` bundles, which the worker never caches. After a build that changes
+those hashes, the cached shell references bundle URLs nothing has downloaded yet.
+Sessions, history, and notifications are never served from disk.
 
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:
@@ -679,7 +703,7 @@ If the desktop app should act only as a client for this remote gateway, turn off
 its supervised gateway releases port 5476. Start the tunnel, verify the health
 probe below, and only then reopen the app. Turning the switch off does not create
 or supervise a tunnel; on the next launch the app expects a gateway to already
-answer on port 5476. A connected entry on the Instances page does not satisfy
+answer on port 5476. A connected entry on the Remote Crew page does not satisfy
 this requirement because those tunnels are supervised by the local gateway
 itself and use separate loopback ports.
 
@@ -722,10 +746,10 @@ Opens the tunnel if needed, mints a token on the remote, and opens the browser.
 #!/bin/zsh -e
 # Required parameters:
 # @raycast.schemaVersion 1
-# @raycast.title Open KiroCrew
+# @raycast.title Open Kiro Crew
 # @raycast.mode compact
 # Optional parameters:
-# @raycast.packageName KiroCrew Utils
+# @raycast.packageName Kiro Crew Utils
 # Documentation:
 # @raycast.description Get a token and open the dashboard
 REMOTE_HOST="user@your-host.example.com"
@@ -889,7 +913,7 @@ KIROCREW_BIN=$(command -v kirocrew 2>/dev/null || echo "$HOME/.local/bin/kirocre
 
 sudo tee /etc/systemd/system/kirocrew.service << EOF
 [Unit]
-Description=KiroCrew AI Agent Gateway
+Description=Kiro Crew AI Agent Gateway
 After=network-online.target
 Wants=network-online.target
 StartLimitBurst=3

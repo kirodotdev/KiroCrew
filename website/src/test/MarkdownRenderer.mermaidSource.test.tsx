@@ -109,7 +109,7 @@ describe('MermaidBlock source view and copy', () => {
     // in each state separately, because the row's membership is state-dependent.
     const toggle = await renderDiagram()
     const diagramView = rowButtons(toggle).map(b => b.getAttribute('data-testid'))
-    expect(diagramView).toEqual(['mermaid-source-toggle', 'mermaid-enlarge'])
+    expect(diagramView).toEqual(['mermaid-source-toggle', 'mermaid-more-actions'])
 
     fireEvent.click(toggle)
     const sourceView = rowButtons(toggle).map(b => b.getAttribute('data-testid'))

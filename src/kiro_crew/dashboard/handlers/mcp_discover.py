@@ -138,8 +138,10 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
     """GET /api/mcp/discover?q=<query>[&provider=<name>][&limit=N]
 
     Multi-provider MCP server search. A query shorter than 2 chars returns
-    ``{"results": [], "providers": [...]}`` WITHOUT calling any provider —
-    the cheap availability probe the frontend gates its UI on.
+    ``{"results": [], "providers": [...], "provider_outcomes": []}``
+    WITHOUT calling any provider — the cheap availability probe the frontend
+    gates its UI on. Completed searches add one ``provider_outcomes`` row per
+    attempted provider while preserving the legacy ``providers`` name list.
     """
     query = request.query.get("q", "").strip()
     provider_filter = request.query.get("provider", "").strip() or None
@@ -152,9 +154,13 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
     provider_names = [p.name for p in registry.available_providers]
 
     if len(query) < _MIN_QUERY_LEN:
-        return web.json_response({"results": [], "providers": provider_names})
+        return web.json_response(
+            {"results": [], "providers": provider_names, "provider_outcomes": []}
+        )
 
-    results = await registry.search(query, provider=provider_filter, limit=limit)
+    search_response = await registry.search_with_outcomes(
+        query, provider=provider_filter, limit=limit
+    )
 
     # Cross-ref against KiroCrew's configured servers so the UI can badge
     # already-installed entries. list_servers() reads config files
@@ -162,7 +168,7 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
     configured = await asyncio.to_thread(_configured_server_names)
 
     items = []
-    for r in results:
+    for r in search_response.results:
         # A discovered server lands in config under its sanitized short name
         # (or, for legacy slashed ids, its kiro-safe alias) — check all
         # plausible keys plus the raw provider id (edition registry ids).
@@ -186,6 +192,11 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
             }
         )
 
+    provider_outcomes = [
+        {"name": _redact_external(outcome.name), "status": outcome.status}
+        for outcome in search_response.provider_outcomes
+    ]
+    failed_provider_count = sum(outcome["status"] != "ok" for outcome in provider_outcomes)
     sel().log_tool_invocation(
         session_key=request.get("session_key", "dashboard"),
         tool_name="discover_mcp_servers",
@@ -195,9 +206,16 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
             "query": query,
             "provider_filter": provider_filter or "all",
             "result_count": str(len(items)),
+            "failed_provider_count": str(failed_provider_count),
         },
     )
-    return web.json_response({"results": items, "providers": provider_names})
+    return web.json_response(
+        {
+            "results": items,
+            "providers": provider_names,
+            "provider_outcomes": provider_outcomes,
+        }
+    )
 
 
 async def api_mcp_discover_detail(request: web.Request) -> web.Response:

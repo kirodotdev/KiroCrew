@@ -83,6 +83,11 @@ class WarmPoolState:
     fill_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     health_task: asyncio.Task[Any] | None = None
     sweep_pids: set[int] = field(default_factory=set)
+    # Monotonic instant of the most recent identity sweep. Every queued provider
+    # spawned at or before it authenticated as the PREVIOUS account, so it is
+    # disqualified from being claimed no matter when the retirement sweep gets
+    # around to shutting it down. ``0.0`` means no sweep has run.
+    identity_epoch: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +219,36 @@ class WarmSessionPool:
     def _pool_sweep_pids(self, value: set[int]) -> None:
         self.state.sweep_pids = value
 
+    @property
+    def _pool_identity_epoch(self) -> float:
+        return self.state.identity_epoch
+
+    @_pool_identity_epoch.setter
+    def _pool_identity_epoch(self, value: float) -> None:
+        self.state.identity_epoch = value
+
+    def mark_identity_epoch(self) -> None:
+        """Disqualify every already-queued provider from future claims.
+
+        Called at the head of an identity sweep, before any session key is
+        exposed as claimable. The actual pool teardown
+        (``_retire_kiro_warm_pool``) cannot run inside the sweep's cold-start
+        permit barrier -- it takes ``_pool_fill_lock``, which a fill in progress
+        holds while awaiting a start permit the barrier is holding, so calling it
+        there deadlocks. This timestamp is the fence that covers that gap: a
+        claim during the window is refused on age, so no session can be handed a
+        provider that authenticated as the previous account, whatever order the
+        teardown runs in.
+        """
+        self._pool_identity_epoch = time.monotonic()
+
+    def _claimed_under_previous_identity(self, provider: LLMProvider, spawn_time: float) -> bool:
+        """Whether this queued provider predates the last identity sweep."""
+        epoch = self._pool_identity_epoch
+        if not epoch or spawn_time > epoch:
+            return False
+        return self._deps.get_identity_predicate()(provider)
+
     async def start_pool(self, *, blocking: bool = True) -> None:
         """Start the background session and configured warm-pool workers."""
         if self._pool_started or not self._owner._provider_factory:
@@ -263,8 +298,12 @@ class WarmSessionPool:
                         cwd=self._pool_cwd or None,
                     )
                     async with self._owner._start_sem:
+                        # Age includes startup time. Startup takes seconds, while
+                        # the warm-pool TTL is 1800 seconds; more importantly, a
+                        # start spanning an identity epoch stays pre-epoch.
+                        spawn_time = time.monotonic()
                         await provider.start()
-                    self._warm_pool.put_nowait((provider, time.monotonic()))
+                    self._warm_pool.put_nowait((provider, spawn_time))
                     provider = None
                     self._deps.logger.info(
                         "Warm pool: spawned process (pool=%d/%d agent=%s)",
@@ -396,6 +435,22 @@ class WarmSessionPool:
         claimed = self._owner._claim_from_pool(agent)
         while claimed is not None:
             provider, spawn_time = claimed
+            if self._claimed_under_previous_identity(provider, spawn_time):
+                # Registering this would give the key a live session running as
+                # the PREVIOUS account: its native conversation and any
+                # extended-thinking signatures are minted under that identity,
+                # which is the whole reason the sweep drops the mapped sid.
+                # Refuse on age rather than trusting the teardown to have
+                # already dequeued it -- claims do not take a cold-start permit,
+                # so the sweep's barrier does not hold them back.
+                self._deps.logger.warning(
+                    "Warm pool: claimed provider predates the identity change, discarding"
+                )
+                discarded = True
+                await self._owner._discard_pool_provider(provider, "Warm pool identity discard")
+                claimed = self._owner._claim_from_pool(agent)
+                continue
+
             age = time.monotonic() - spawn_time
             if self._pool_ttl_secs and age > self._pool_ttl_secs:
                 try:

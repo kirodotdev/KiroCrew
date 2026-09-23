@@ -100,6 +100,23 @@ def _sync_status(store: KnowledgeStore, sid: str) -> str:
     ]
 
 
+def _hold_revision(store: KnowledgeStore, hold) -> None:
+    """Make every ``revise_source_properties`` take call *hold(props)* between
+    its read and its write, so a test can force the interleaving a lock has to
+    survive. The hold runs INSIDE the write-locked transaction: a second take
+    blocks at ``BEGIN IMMEDIATE`` for as long as the first holds."""
+    real = store.revise_source_properties
+
+    def held(source_id, revise, **kw):
+        def revise_after_hold(props):
+            hold(props)
+            return revise(props)
+
+        return real(source_id, revise_after_hold, **kw)
+
+    store.revise_source_properties = held  # type: ignore[method-assign]
+
+
 async def test_strict_guard_is_actually_armed(strict_store):
     """An on-loop take must raise, or every test below passes vacuously."""
     with pytest.raises(OnLoopStoreError):
@@ -148,23 +165,22 @@ class TestSyncSourceOffLoop:
         threads. Unserialised, two concurrent failures both read N and both
         write N+1, so the count never reaches MAX_FAILURES and a dead source is
         never quiesced. The barrier makes both workers finish the read before
-        either writes -- with the lock the second worker waits instead (the
-        barrier times out harmlessly), and both increments land."""
+        either writes -- under the store's write-locked take the second worker
+        waits at BEGIN IMMEDIATE instead (the barrier times out harmlessly),
+        and both increments land."""
         sid = await off(strict_store.add_source, "remote", "webhook", "x://remote")
         sched = SyncScheduler(strict_store, _pipeline(strict_store), {})
 
         both_read = threading.Barrier(2)
-        orig_get = sched._get_source
 
-        def rendezvous_get(source_id):
-            row = orig_get(source_id)
+        def rendezvous_after_read(props):
+            # Runs inside the take, after the row was read.
             try:
                 both_read.wait(timeout=1.0)
             except threading.BrokenBarrierError:
                 pass  # serialised execution: the other worker never arrives
-            return row
 
-        sched._get_source = rendezvous_get  # type: ignore[method-assign]
+        _hold_revision(strict_store, rendezvous_after_read)
         await asyncio.gather(
             asyncio.to_thread(sched._record_failure, sid),
             asyncio.to_thread(sched._record_failure, sid),
@@ -192,21 +208,19 @@ class TestSyncSourceOffLoop:
 
         success_written = threading.Event()
         in_failure = threading.local()
-        orig_get = sched._get_source
 
-        def gated_get(source_id):
-            row = orig_get(source_id)
+        def gate_after_read(props):
+            # Runs inside the take, after the row was read.
             if getattr(in_failure, "active", False):
                 # Hold the failure's write until the success write has landed
                 # (or the lock has correctly kept the success out: timeout).
                 success_written.wait(timeout=1.0)
-            return row
 
         def failure_entry(source_id):
             in_failure.active = True
             sched._record_failure(source_id)
 
-        sched._get_source = gated_get  # type: ignore[method-assign]
+        _hold_revision(strict_store, gate_after_read)
 
         async def run_success():
             await asyncio.to_thread(lambda: sched._record_success(sid, None, completed=True))

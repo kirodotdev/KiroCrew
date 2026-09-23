@@ -60,7 +60,7 @@ POST   /meetings/{id}/init          create folder/metadata/tasks/outputs (idempo
 POST   /meetings/{id}/start         activate: seed outputs, spawn agent sessions
 POST   /meetings/{id}/status        {status} — active | paused | reviewing | ended
 POST   /meetings/{id}/stop          flush agents, send the finalize notice, mark ended
-GET    /meetings/{id}/transcript    finalized speech + typed broadcasts; optional cursor
+GET    /meetings/{id}/transcript    speech, typed broadcasts, system loss markers; optional cursor
 GET    /meetings/{id}/outputs       batch-read every agent output + tasks
 GET    /meetings/{id}/translations[?since=N]   translated lines, cursor-paged
 PUT    /meetings/{id}/outputs       replace one agent's minutes  {agent_id, content}
@@ -69,7 +69,7 @@ POST   /meetings/{id}/attachments   {action: add|remove, attachments[]|index}
 POST   /meetings/{id}/agents        {agent_id, enable} — toggle mid-meeting
 POST   /meetings/{id}/mute          {agent_id, muted}
 POST   /meetings/{id}/dispatch      {text, chat?} — persist then fan out one line
-POST   /meetings/{id}/import        {audio_path} — transcribe a file into the meeting
+POST   /meetings/{id}/import        {audio_path} — owner-only, safely snapshot and transcribe a file
 POST   /meetings/{id}/message       {agent_id, text} — one agent, flushed at once
 POST   /meetings/{id}/reset         reset tripped circuit breakers
 GET    /meetings/{id}/tasks         extracted action items
@@ -109,7 +109,7 @@ calendar-cache.json              last calendar sync
 task-ledger.json                 tasks filed through the local task provider
 meetings/<safe_id>/session.json  per-meeting metadata
 meetings/<safe_id>/tasks.json    extracted action items
-meetings/<safe_id>/transcript.jsonl finalized speech + typed broadcasts
+meetings/<safe_id>/transcript.jsonl speech + typed broadcasts + system loss markers
 meetings/<safe_id>/<agent>.md    a markdown agent's output
 meetings/<safe_id>/<agent>.html  an HTML agent's output
 meetings/<safe_id>/translations.json  live translation, reset on language change
@@ -158,6 +158,10 @@ provider-to-local-record transaction.
 never overwrites, so user edits survive every restart. A second `on_startup`
 hook launches the calendar poller (below); its `on_cleanup` partner runs before
 the session teardown hook, so no poll tick can pre-create a meeting mid-shutdown.
+Startup also marks any persisted `active`, `paused`, or `reviewing` meeting as
+`ended`, because a fresh process cannot hold its live in-memory session. Graceful
+cleanup first drains the live queues and then makes the same metadata transition;
+the normal `ended` → `active` restart path is the recovery in both cases.
 
 An alias matches a standalone occurrence, case-insensitively, longest alias first.
 "Standalone" is asserted per edge: `\b` where the alias's own edge character is a
@@ -182,9 +186,12 @@ like any other invalid term.
 ## Lifecycle
 
 ```
-idle ──start──> active ⇄ paused ──> reviewing ──> ended
-                  │                    ▲             │
-                  └────────────────────┘         restart
+idle ──start──> active
+active ⇄ paused
+active | paused ──> reviewing
+reviewing ──> paused | ended
+idle | active | paused | reviewing ──explicit POST …/stop──> ended
+ended ──restart──> active
 ```
 
 A meeting enters `idle` either when the dashboard opens its row (`POST …/init`)
@@ -192,10 +199,13 @@ or when the calendar poller pre-creates it ahead of its start; both run the same
 idempotent init, so the two paths cannot produce two folders for one event.
 Pre-creation never leaves `idle` — only a user's `start` does.
 
-`reviewing` is a **gate, not a state to pass through**: `ended` is reachable only
-from it, so no extracted action item is silently dropped. The UI's transition
-table (`useMeetingSession.ALLOWED_TRANSITIONS`) has a test asserting no other
-state can reach `ended`.
+The normal dashboard close path treats `reviewing` as a **gate**: it enables Close
+only after every extracted action item is filed or archived, and the shared status
+transition table permits `ended` only from `reviewing`. `POST …/stop` is the
+separate deliberate exit shown above; it can mark any initialized meeting
+`ended` directly. When a live session exists it first closes transcript admission,
+sends the finalize notice, and drains every queue. The route is therefore not
+evidence that every caller passed through action-item review.
 
 `MAX_CONCURRENT_MEETINGS == 1`: a second `start` for a different meeting answers
 409 while the first is live and unexpired. A session past
@@ -215,11 +225,12 @@ stored record (`id`, UTC `timestamp`, `source`, `text`), so the dashboard can ad
 it to its React Query cache immediately while polling remains the reload and
 disconnect recovery path. Polling sends the opaque byte cursor returned as
 `next_cursor`; the initial request returns the complete history and later requests
-read only appended bytes. `source` is `speech` for final STT segments and `typed`
-for the broadcast bar; the `[chat]` agent-context prefix is not stored as user
-text. Persist-before-fan-out is the data-integrity boundary: an accepted agent
-line cannot be absent from the transcript. A 16 MiB per-meeting ceiling fails the
-request with `413 transcript_too_large` before fan-out and never truncates an
+read only appended bytes. `source` is `speech` for final STT segments, `typed`
+for the broadcast bar, and `system` for an app-authored loss marker; the `[chat]`
+agent-context prefix is not stored as user text. Persist-before-fan-out is the
+data-integrity boundary: an accepted agent line cannot be absent from the
+transcript. A 16 MiB per-meeting ceiling fails the request with
+`413 transcript_too_large` before fan-out and never truncates an
 accepted row. The browser treats that code as terminal instead of retrying: it
 stops STT dispatch, disables typed broadcasts, and shows one persistent notice.
 Appends are serialized, flushed, and synced. An append following a crash tail
@@ -233,6 +244,15 @@ transaction, close admission where necessary, and release the lock before slow
 agent flushes. Stop/pause/review/delete therefore cannot detach agents mid-dispatch or
 resurrect an orphan transcript directory, while a slow agent does not hold every
 later speech request behind its flush.
+
+Starting a meeting is the one closed-admission state that HOLDS speech instead of
+refusing it. Agent initialization can take tens of seconds, so finalized lines are
+persisted immediately and up to `MAX_INIT_BUFFER_LINES` (200) are retained with
+the recipients that were active when each line arrived. Initialization completion
+reopens admission and drains them in arrival order under the same lock. Overflow
+drops the oldest agent-bound lines, then sends the affected agents and the durable
+transcript a `source=system` marker naming the loss; the user's transcript remains
+complete because every held line was appended before it entered the buffer.
 Meetings created by an older version have no file and read as an empty transcript.
 
 A flush takes **whole lines up to `MAX_BATCH_CHARS` (60k)** and deletes exactly
@@ -333,6 +353,7 @@ line number**, because a `queryFn` that runs twice for one cursor (React Strict 
 in dev) would otherwise duplicate every line. Stored `n` stays monotonic when the
 file is trimmed. A failed line is persisted with `text: ""` on purpose, so the panel
 marks it rather than leaving a gap indistinguishable from nobody speaking.
+
 ## Importing a recording
 
 `POST …/{id}/import` (`backend/routes/audio_import.py`) takes a host path,
@@ -366,13 +387,24 @@ per meeting at a time; a second concurrent request answers 409
 (`import_in_progress`), because both would dispatch line-by-line into the same
 transcript and interleave.
 
-The path goes through `hooks.validate_file_path`, the shared dashboard file gate,
-which canonicalizes (following symlinks) and enforces `is_sensitive_path`. The
-predicate is never called directly, so this route's answer is identical to every
-other file read in the product, and the extension check runs on the CANONICAL
-path — a symlink named `.mp3` cannot smuggle in its target. `transcribe_audio`
-re-checks the path itself, so a refusal is enforced twice by two owners. The
-extension allowlist is a "did you mean this file" filter, not a content check.
+The route is owner-only and requires the platform's pinned directory walk
+(`dir_fd` plus `O_NOFOLLOW`); a platform without it answers 501 before touching
+the supplied path. `hooks.validate_file_path` first canonicalizes the source and
+enforces the shared `is_sensitive_path` gate. `_vet_audio_file` records that
+canonical file's device/inode identity, then `_snapshot_recording` opens its parent
+component by component, refuses links or an identity change, and copies the bytes
+into a request-private 0700 directory below the agent-denied voice-runtime root.
+The duration probe and transcriber consume one descriptor pinned to that copy, not
+the user-writable name, and cleanup joins any in-flight copy before closing the
+descriptor and removing the directory.
+
+The extension check runs on the canonical path — a symlink named `.mp3` cannot
+smuggle in a differently named target — and selects the forced decoder format. It
+is still a "did you mean this file" filter rather than content sniffing. For a
+provider with a batch-duration ceiling, an unverified duration is a retryable 503;
+the local provider splits an over-cap recording into bounded segments, while a
+provider that fails loudly at its ceiling returns 413 instead of silently importing
+a prefix.
 
 `lines` and `dispatched` are reported separately: the gap is what the noise gate
 dropped, and a recording that yields 400 lines of which 0 were dispatched (an
@@ -551,9 +583,13 @@ default visual rhythm. Empty copy distinguishes an active meeting from review or
 ended states, and the durable list is not an ARIA live region because the compact
 caption already announces recognizer updates.
 
-Cloud transcription is optional (`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'`). When it
-is absent the endpoint answers a friendly WS error, the hook surfaces it as a
-toast, and the user can still type into the broadcast bar to feed the agents.
+The shared STT settings choose among `local` (resident whisper.cpp, the default),
+`apple` (on-device SpeechAnalyzer on supported macOS), and `transcribe` (paid AWS
+Transcribe with recorded operator consent). `/api/ws/stt` requires both
+`stt.enabled` and `stt.streaming`; a selected provider that is unavailable returns
+a coded WS error that the hook surfaces as a toast. The default local path needs
+neither an AWS account nor the optional `voice-aws` dependencies, and the typed
+broadcast bar remains available when speech input is unavailable.
 
 ## Security posture
 
@@ -630,17 +666,19 @@ toast, and the user can still type into the broadcast bar to feed the agents.
      Remote-URL *fetches* are left to the CSP rather than pattern-matched.
 
   Mermaid still renders, and this is what makes control 3 affordable: it is driven
-  by KiroCrew's own bootstrap from the declarative `div.mermaid` / fenced
+  by Kiro Crew's own bootstrap from the declarative `div.mermaid` / fenced
   ```mermaid markup the agent is instructed to emit, so the agent has no
   documented need to ship JS. Both directions are tested in
   `website/src/test/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
   Mermaid diagram plus an inline-styled HTML table still render (the guards
   against over-stripping the panel into a blank).
 * **A client-supplied FILE path exists in exactly one place** — the audio import —
-  and it goes through `hooks.validate_file_path` rather than a local check, so it
-  gets the same canonicalization and `is_sensitive_path` verdict as every other
-  file read in the product. The format check runs on the canonical path, so a
-  symlink cannot use its own name to pass it.
+  and that route is owner-only. It goes through `hooks.validate_file_path`, then
+  pins the validated device/inode while copying through a component-by-component
+  no-follow walk into an agent-denied snapshot. Both the duration probe and the
+  decoder consume one descriptor for that snapshot. Platforms without that
+  primitive fail closed with 501 before opening the client path. The format check
+  runs on the canonical source, so a symlink cannot use its own name to pass it.
 * **No blocking call on the loop.** The calendar fetch is aiohttp; transcript
   reads/appends, DNS validation, the local `.ics` read, the data-dir seed, the
   enable check, the task-provider `create`, the import's path vetting and
@@ -652,13 +690,14 @@ toast, and the user can still type into the broadcast bar to feed the agents.
 See `ATTRIBUTION.md` for the table. In short: the internal task system became
 the task-provider seam, the internal calendar MCP became the calendar-provider
 seam, the second (separately built, internally sourced) speech-to-text daemon was
-deleted in favour of KiroCrew's own, the standalone server became in-gateway
+deleted in favour of Kiro Crew's own, the standalone server became in-gateway
 routes, the shell-blob self-heal cron became Python at startup, and the
 internal-git update-check cron was deleted (a builtin versions with the package).
 
 ## Tests
 
 `test/test_meetings_store.py` (containment, layout, config),
+`test_meetings_agent_names.py` (shipped agent names and references),
 `test_meetings_dictionary.py` (matching + hostile input),
 `test_meetings_session.py` (dispatcher, breaker, lifecycle, prompts),
 `test_meetings_providers.py` (both registries, the `.ics` parser,
@@ -675,14 +714,16 @@ fake session manager in `test/meetings_helpers.py`. Every dispatch goes through
 that fake session manager; no test spawns a process, opens a socket, calls a
 model, or decodes audio.
 
-These live in the repo-level `test/` tree, not an in-package `tests/`:
-`setup.cfg` sets `testpaths = test transfer`, so a test under
-`src/kiro_crew/apps/builtins/...` is never collected by CI.
+The app's current tests live in the repo-level `test/` tree. `setup.cfg` sets
+`testpaths = test src/kiro_crew/apps/builtins`, so a future in-package Meetings
+suite would also be collected by CI; the second root already collects builtin-app
+suites that intentionally ship beside their code.
 
 Frontend: `website/src/test/MeetingsApiClient.test.ts` (fetch-boundary
 translation), `MeetingsSessionLogic.test.ts` (dedup, preset resolution, the
-transition table), `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
+transition table), `MeetingsPage.test.tsx` and `MeetingsPageCov80.test.tsx` (list,
+refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
+`MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
-`MeetingsTranslation.test.tsx`, and
-`MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
-split-to-primary layout transition).
+`MeetingsTranslation.test.tsx`, and `MeetingsTranscriptPanel.test.tsx`
+(durable/live rows, follow mode, and the split-to-primary layout transition).

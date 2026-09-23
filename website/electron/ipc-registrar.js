@@ -72,8 +72,12 @@ function createIpcRegistrar({
         : (windows.focusedDashboardWindow() || windows.getMainWindow() || null)
     ),
     createWindow: () => windows.createMainWindow(),
-    // A global shortcut fires while another app is frontmost. On macOS the
-    // window rises without keyboard focus unless the app steals activation.
+    // A global shortcut fires while another app is frontmost. A fullscreen
+    // tray-close hides the whole application, so unhide it before win.show();
+    // then steal activation after the window has been surfaced.
+    showApp: () => {
+      if (process.platform === "darwin" && typeof app.show === "function") app.show();
+    },
     focusApp: () => {
       if (process.platform === "darwin") app.focus({ steal: true });
     },
@@ -122,7 +126,7 @@ function createIpcRegistrar({
     ipcMain.on("focus-mode-chrome", (event, visible) =>
       windows.chrome.focusMode(event.sender, visible));
     ipcMain.on("window-control", (event, action) =>
-      windows.chrome.windowControl(event.sender, action));
+      windows.chrome.windowControl(event.sender, action, event.senderFrame));
     ipcMain.on("theme-mode-changed", (_event, pref) =>
       windows.chrome.setThemeMode(pref));
     ipcMain.on("titlebar-overlay-theme", (_event, mode) =>

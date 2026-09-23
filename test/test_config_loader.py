@@ -107,37 +107,6 @@ def test_memory_backup_enabled_requires_json_boolean_without_jsonschema(
 logger = logging.getLogger("kiro_crew.config.loader")
 
 
-@pytest.mark.parametrize("without_jsonschema", [False, True])
-@pytest.mark.parametrize(
-    "memory_data,expected",
-    [
-        ({}, True),
-        ({"private_provisioning_enabled": True}, True),
-        ({"private_provisioning_enabled": False}, False),
-        ({"private_provisioning_enabled": "false"}, False),
-        ({"private_provisioning_enabled": 1}, False),
-        ({"private_provisioning_enabled": None}, False),
-    ],
-)
-def test_private_provisioning_control_round_trip_and_invalid_value_pause(
-    tmp_path, monkeypatch, memory_data, expected, without_jsonschema
-):
-    from kiro_crew.config import validation
-
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps({"memory": memory_data}), encoding="utf-8")
-    monkeypatch.setattr(loader_module, "config_path", lambda: path)
-    monkeypatch.setattr(loader_module, "config_local_path", lambda: tmp_path / "absent.local.json")
-    if without_jsonschema:
-        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
-    config = KiroCrewConfig.load()
-    assert config.memory.private_provisioning_enabled is expected
-    config.save()
-    saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["memory"]["private_provisioning_enabled"] is expected
-    assert KiroCrewConfig.load().memory.private_provisioning_enabled is expected
-
-
 # ---------------------------------------------------------------------------
 # Helpers / Strategies
 # ---------------------------------------------------------------------------
@@ -303,6 +272,29 @@ def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
         assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is False
     enabled = _load_from_dict({"agent": {"sandbox_allow_unsandboxed_exec": True}})
     assert enabled.agent.sandbox_allow_unsandboxed_exec is True
+
+
+def test_ssh_auth_sock_forward_is_not_an_agent_config_field() -> None:
+    """The SSH_AUTH_SOCK forward enable is NOT read from config.json.
+
+    Keeping the socket grants USE of the operator's ssh-agent keys for the
+    session -- an authorization, not a preference -- so its consent lives on the
+    keystone (``ssh_auth_sock_consent.json``, agent-nonwritable, sealed read-only
+    in the sandbox), the same placement as ``computer_use.json``. An
+    agent-writable enable in config.json would let a prompt-injected shell flip
+    its own forwarding on. This asserts the field is absent so it cannot silently
+    return: an agent-readable enable is the exact hole this design closes.
+    """
+    import dataclasses
+
+    from kiro_crew.config.sections import AgentConfig
+
+    field_names = {f.name for f in dataclasses.fields(AgentConfig)}
+    assert "sandbox_forward_ssh_auth_sock" not in field_names
+    # A config.json that names the old key is ignored, not honoured: the loader
+    # builds AgentConfig field-by-field and never reads it.
+    cfg = _load_from_dict({"agent": {"sandbox_forward_ssh_auth_sock": True}})
+    assert not hasattr(cfg.agent, "sandbox_forward_ssh_auth_sock")
 
 
 def test_max_stop_hook_nudges_loads_from_config_and_round_trips() -> None:
@@ -532,6 +524,68 @@ def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
     assert reloaded.slack.home_tab_sessions_per_kind == 42
 
 
+class TestSessionControlLoad:
+    """agent.session_control load-time coercion.
+
+    The operator's single withdrawal of cross-session control. A MISSING key
+    defaults to true (today's behaviour), but a PRESENT-but-malformed value --
+    the routine quoted `"false"` config mistake -- must coerce to FALSE, so a
+    botched opt-out withdraws the capability rather than silently leaving every
+    agent able to drive peer sessions.
+    """
+
+    def test_missing_key_defaults_true(self) -> None:
+        assert _load_from_dict({}).agent.session_control is True
+
+    def test_explicit_true_and_false(self) -> None:
+        assert _load_from_dict({"agent": {"session_control": True}}).agent.session_control is True
+        assert _load_from_dict({"agent": {"session_control": False}}).agent.session_control is False
+
+    def test_quoted_false_coerces_to_false_not_true(self) -> None:
+        # The fail-open this locks shut: `"false"` is not a bool, and defaulting
+        # it to true keeps the capability on against the operator's intent.
+        assert (
+            _load_from_dict({"agent": {"session_control": "false"}}).agent.session_control is False
+        )
+
+    def test_quoted_true_also_coerces_to_false(self) -> None:
+        # A non-bool is an explicit opt-out, the same rule `member_dispatch`
+        # follows: a value the operator quoted is not a value to trust.
+        assert (
+            _load_from_dict({"agent": {"session_control": "true"}}).agent.session_control is False
+        )
+
+    def test_any_present_non_bool_coerces_to_false(self) -> None:
+        for bad in ("false", "true", "yes", 1, 0, {}, [], None):
+            assert (
+                _load_from_dict({"agent": {"session_control": bad}}).agent.session_control is False
+            ), bad
+
+    def test_round_trips_through_to_dict(self) -> None:
+        loaded = _load_from_dict({"agent": {"session_control": "false"}})
+        reloaded = _load_from_dict(loaded.to_dict())
+        assert reloaded.agent.session_control is False
+
+    def test_coercion_says_so_in_the_log(self) -> None:
+        """Silence is half the defect: an operator who meant ON gets told."""
+        cfg, logs = _load_from_dict_with_logs({"agent": {"session_control": "true"}})
+        assert cfg.agent.session_control is False
+        said = [m for m in logs if "agent.session_control" in m and "not a boolean" in m]
+        assert said, logs
+        line = said[0]
+        # Names the type it found and the JSON that chooses, so the operator can act.
+        assert "str" in line
+        assert "false" in line
+
+    def test_a_real_bool_draws_no_coercion_line(self) -> None:
+        # The superseded-default notice for a stored ``false`` is a different
+        # line and belongs to a different mechanism; only the coercion line is
+        # this loop's to emit.
+        for good in (True, False):
+            _, logs = _load_from_dict_with_logs({"agent": {"session_control": good}})
+            assert not [m for m in logs if "not a boolean" in m], (good, logs)
+
+
 class TestMemberDispatchLoad:
     """agent.member_dispatch load-time coercion.
 
@@ -569,6 +623,12 @@ class TestMemberDispatchLoad:
         reloaded = _load_from_dict(loaded.to_dict())
         assert reloaded.agent.member_dispatch is False
 
+    def test_coercion_says_so_in_the_log(self) -> None:
+        """The shared loop covers this key too, so the signal does as well."""
+        cfg, logs = _load_from_dict_with_logs({"agent": {"member_dispatch": "true"}})
+        assert cfg.agent.member_dispatch is False
+        assert [m for m in logs if "agent.member_dispatch" in m and "not a boolean" in m], logs
+
 
 class TestFallbackModelLoad:
     """agent.fallback_model flows through the explicit load() kwargs."""
@@ -593,6 +653,31 @@ class TestFallbackModelLoad:
     def test_round_trips_through_to_dict(self) -> None:
         loaded = _load_from_dict({"agent": {"fallback_model": "claude-opus-5"}})
         assert loaded.to_dict()["agent"]["fallback_model"] == "claude-opus-5"
+
+
+class TestRefusalFallbackModelLoad:
+    """agent.refusal_fallback_model flows through the explicit load() kwargs."""
+
+    def test_load_coerces_registry_alias(self) -> None:
+        loaded = _load_from_dict({"agent": {"refusal_fallback_model": "opus-4.8-1m"}})
+        assert loaded.agent.refusal_fallback_model == "claude-opus-4.8"
+
+    def test_load_default_is_disabled(self) -> None:
+        # DEFAULT PIN: a config without the key loads "" — the refusal retry
+        # is OFF and a refusal surfaces exactly as before the feature.
+        assert _load_from_dict({}).agent.refusal_fallback_model == ""
+
+    def test_load_auto_defers_to_recommendation(self) -> None:
+        loaded = _load_from_dict({"agent": {"refusal_fallback_model": "auto"}})
+        assert loaded.agent.refusal_fallback_model == "auto"
+
+    def test_load_malformed_value_never_crashes(self) -> None:
+        loaded = _load_from_dict({"agent": {"refusal_fallback_model": {"not": "a string"}}})
+        assert loaded.agent.refusal_fallback_model == ""
+
+    def test_round_trips_through_to_dict(self) -> None:
+        loaded = _load_from_dict({"agent": {"refusal_fallback_model": "claude-opus-5"}})
+        assert loaded.to_dict()["agent"]["refusal_fallback_model"] == "claude-opus-5"
 
 
 class TestMalformedConfigValuesNeverCrashLoad:
@@ -1752,7 +1837,7 @@ class TestMemoryStoreBindingFloor:
         assert "default" not in config.memory_stores, "the floor must not be declared here"
 
         assert resolve_agent_bindings(config, agent_name="default").memory_store_name == "default"
-        with pytest.raises(UnknownMemoryStore, match="missing or invalid"):
+        with pytest.raises(UnknownMemoryStore, match="is unavailable; Global was not used"):
             resolve_agent_bindings(config, agent_name="broken")
         if bound == "":
             with pytest.raises(UnknownMemoryStore, match="invalid memory store name"):
@@ -3638,7 +3723,7 @@ class TestDynamicSubagentSizingFields:
         assert a.subagent_cost_gb == 0.5
         assert a.subagent_cpu_cost_cores == 1.0
         assert a.subagent_auto_max == 32
-        assert a.subagent_spawn_stagger_secs == 2.0
+        assert a.subagent_spawn_stagger_secs == 0.25
 
     def test_explicit_values_load(self) -> None:
         cfg = _load_from_dict(
@@ -4421,6 +4506,45 @@ class TestTrustedLocalApps:
         assert cfg.to_dict()["agent"]["apps_trusted_local"] == ["local-app"]
 
 
+class TestAppsUiStreamTimeout:
+    """``agent.apps_ui_stream_timeout_secs`` is the body-transfer deadline on the
+    unauthenticated ``/apps/{name}/ui/`` route, so an unusable value must resolve
+    to a usable deadline rather than to none."""
+
+    def test_defaults_to_thirty_seconds(self) -> None:
+        assert AgentConfig().apps_ui_stream_timeout_secs == 30
+        assert _load_from_dict({}).agent.apps_ui_stream_timeout_secs == 30
+
+    def test_an_in_range_value_round_trips(self) -> None:
+        cfg = _load_from_dict({"agent": {"apps_ui_stream_timeout_secs": 45}})
+        assert cfg.agent.apps_ui_stream_timeout_secs == 45
+        assert cfg.to_dict()["agent"]["apps_ui_stream_timeout_secs"] == 45
+
+    @pytest.mark.parametrize(
+        "written,loaded",
+        [(4, 5), (0, 5), (-30, 5), (601, 600), (86400, 600)],
+    )
+    def test_a_value_outside_the_range_is_clamped_to_the_bound(
+        self, written: int, loaded: int
+    ) -> None:
+        """The declared range is [5, 600]: below 5 a client cannot finish a real
+        transfer, and above 600 the permit is held long enough that eight such
+        clients are the head-of-line wedge the deadline exists to stop."""
+        cfg = _load_from_dict({"agent": {"apps_ui_stream_timeout_secs": written}})
+        assert cfg.agent.apps_ui_stream_timeout_secs == loaded
+
+    def test_a_numeric_string_from_an_older_writer_still_loads(self) -> None:
+        """``_safe_int`` accepts the numeric-string form every other bounded
+        agent key accepts, so a hand-edited ``"60"`` is 60 seconds, not 30."""
+        cfg = _load_from_dict({"agent": {"apps_ui_stream_timeout_secs": "60"}})
+        assert cfg.agent.apps_ui_stream_timeout_secs == 60
+
+    @pytest.mark.parametrize("value", ["soon", "", None, True, False, 4.5, [], {}])
+    def test_a_value_that_is_not_a_whole_number_loads_the_default(self, value) -> None:
+        cfg = _load_from_dict({"agent": {"apps_ui_stream_timeout_secs": value}})
+        assert cfg.agent.apps_ui_stream_timeout_secs == 30
+
+
 def test_heartbeat_default_deliver_default_is_slack():
     """Absent config -> backward-compatible 'slack' default."""
     cfg = _load_from_dict({})
@@ -4516,6 +4640,39 @@ class TestKnowledgeAutoIngest:
             "knowledge.dedup_every_n_sweeps",
         ):
             assert key in _EDITABLE_CONFIG, key
+
+
+class TestMemoryPersistenceAndInjectionToggles:
+    """``memory.persistence_enabled`` / ``inject_memory`` / ``inject_lessons``:
+    default on, override reads, junk falls back to the default (``_safe_bool``
+    accepts only real booleans)."""
+
+    def test_defaults_are_on(self) -> None:
+        mc = _load_from_dict({}).memory
+        assert (mc.persistence_enabled, mc.inject_memory, mc.inject_lessons) == (
+            True,
+            True,
+            True,
+        )
+
+    def test_an_empty_memory_section_leaves_every_toggle_on(self) -> None:
+        mc = _load_from_dict({"memory": {}}).memory
+        assert (mc.persistence_enabled, mc.inject_memory, mc.inject_lessons) == (
+            True,
+            True,
+            True,
+        )
+
+    @pytest.mark.parametrize("key", ["persistence_enabled", "inject_memory", "inject_lessons"])
+    def test_false_reads_false(self, key: str) -> None:
+        mc = _load_from_dict({"memory": {key: False}}).memory
+        assert getattr(mc, key) is False
+
+    @pytest.mark.parametrize("key", ["persistence_enabled", "inject_memory", "inject_lessons"])
+    @pytest.mark.parametrize("bad", ["false", 0, 1, None, [], {}])
+    def test_junk_falls_back_to_on(self, key: str, bad: object) -> None:
+        mc = _load_from_dict({"memory": {key: bad}}).memory
+        assert getattr(mc, key) is True
 
 
 class TestKnowledgePoolIdleTtl:
@@ -6470,8 +6627,14 @@ _DISPATCH_EXEMPT = {
     "resolved_alias",
     # Request metadata the caller checks separately, not dispatch identity.
     "requested_resolved",
+    # Namespace provenance controls later resolution, not identical current targets.
+    "selection_kind",
+    # Protects automatic publication after resolution, not dispatch identity.
+    "selection_revision",
     # Derived from memory_store_name plus global config shared by both sides.
     "effective_memory_config",
+    # Session selection validates admitted member/mode before this target comparison.
+    "execution_context",
 }
 
 
@@ -6490,7 +6653,10 @@ def _dispatch_field_mutations() -> dict[str, object]:
         "model": "drift-pin-other-model",
         "resolved_alias": "drift-pin-other-alias",
         "requested_resolved": False,
+        "selection_kind": "template",
+        "selection_revision": "observed-selection-revision",
         "effective_memory_config": {"embedding_provider": "drift-pin-other"},
+        "execution_context": object(),
     }
 
 

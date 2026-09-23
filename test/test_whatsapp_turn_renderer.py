@@ -619,3 +619,49 @@ class TestNothingIsLostOrLooped:
 
         note = unsupported_note(MediaDescription(kind=KIND_REACTION))
         assert note == "", "a reaction must yield no note, so it starts no turn"
+
+
+class TestRedactionNotice:
+    """A rewritten delivery is followed by one notice; clean ones are not.
+
+    The tally counts the converted chunks that shipped (streamed prefix
+    included). Shared wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"
+
+    @pytest.mark.asyncio
+    async def test_redacted_answer_is_followed_by_one_notice(self) -> None:
+        r, transport, _client = make()
+        await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+        await r.on_done()
+
+        bodies = [c for _jid, c in transport.sent]
+        assert not any("SuperSecret123" in c for c in bodies)
+        notices = [c for c in bodies if "Security notice" in c]
+        assert len(notices) == 1
+        assert "SuperSecret123" not in notices[0]
+
+    @pytest.mark.asyncio
+    async def test_clean_answer_sends_no_notice(self) -> None:
+        r, transport, _client = make()
+        await r.on_text_chunk("All green, deploy finished.")
+        await r.on_done()
+
+        assert not any("Security notice" in c for _jid, c in transport.sent)
+
+    @pytest.mark.asyncio
+    async def test_notice_send_failure_does_not_fail_a_delivered_turn(self) -> None:
+        r, transport, _client = make()
+        real_send = transport.send_message
+
+        async def send_but_fail_the_notice(jid, content):
+            if "Security notice" in content:
+                raise RuntimeError("wa down after the answer")
+            return await real_send(jid, content)
+
+        transport.send_message = send_but_fail_the_notice  # type: ignore[method-assign]
+        await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+        await r.on_done()  # must not raise
+        assert any("[REDACTED: credential]" in c for _jid, c in transport.sent)

@@ -5,11 +5,13 @@
 The Slack integration (`kiro_crew/slack/`) connects KiroCrew to Slack via Socket Mode. DMs are routed through ACP to kiro-cli with real-time streaming and interactive tool approval.
 
 Independently scheduled agent runs admit their exact execution key as durable
-work before provider allocation, publishing its privacy mode in the existing
-protected runtime-policy tree. Single and sequential-agent paths share that
+work before provider allocation, publishing its privacy mode in the canonical
+session execution record. Single and sequential-agent paths share that
 admission, so first-turn child creation does not require a dashboard slot or a
 previous transcript. A damaged committed mode refuses allocation; a key prefix
 alone never grants a mode. Origin-chat injection keeps the chat's own policy.
+Cron execution binding is published off the event loop before mode admission
+and provider allocation, using the run's already captured execution context.
 
 Startup wires memory objects behind one gateway-lifetime in-process barrier.
 Both dashboard and API-only servers receive the orchestrator's existing context
@@ -66,15 +68,16 @@ retrieval, admission, decay, consolidation and capacity behavior remain
 unchanged.
 
 The first heartbeat after memory becomes ready schedules a tracked background
-backup pass for active member V2 stores only. Global and named V1 backups remain
-manual. Existing per-store backup freshness prevents duplicate copies across
+backup pass for every active memory store: the default store first, then declared
+named V1 stores and active member V2 stores.
+Existing per-store backup freshness prevents duplicate copies across
 restarts; later checks retain the daily cadence at tick 30 modulo 1440. A large
-member ZIP does not delay subsequent heartbeat ticks or idle-session checks.
+store does not delay subsequent heartbeat ticks or idle-session checks.
 Only one backup pass belongs to a heartbeat service at a time. Shutdown signals
 its worker to finish at most the current atomic copy, then skip pruning and all
 remaining stores. Stopping the async waiter never resets that worker's stop flag.
-Automatic backup enumeration excludes V1 and archived, unbound private stores.
-Manual all-store backups include declared V1 and active V2 stores. Archived files
+Automatic backup enumeration excludes archived, unbound private stores.
+Manual all-store backups visit the same set. Archived files
 and backup listings remain available for owner inspection; restore requires an
 active exclusive binding and there is no archive reattachment UI.
 
@@ -89,9 +92,9 @@ file timestamps do not establish completed recovery or safe deletion order.
 During operation, member cron jobs, linked DMs, nudges and completion injections validate
 their own recorded memory identity before acquiring a provider. Completion
 injections use the parent conversation's memory; delegates keep their target's
-private memory for the delegated run and retries.
+member-scoped memory for the delegated run and retries.
 
-Private-memory refusals retain their named recovery reason in channel replies,
+Memory-operation refusals retain their named recovery reason in channel replies,
 but pass through the shared credential/exfiltration and local-path redactors
 before truncation. Both native Slack and its transport dispatcher apply the same
 protection as Discord and Telegram. Native Slack sanitizes the accumulated reply
@@ -163,6 +166,15 @@ or store the user token.
 ### `run_gateway(cfg: KiroCrewConfig, *, no_dashboard=False, no_crons=False) -> None`
 Starts the Socket Mode listener. Blocks until SIGINT/SIGTERM. When `no_crons=True`, the `CronService` is instantiated but not started — cron jobs are visible in the dashboard but not executed. Use for multi-instance setups where a single primary instance handles cron execution. On shutdown, calls `dashboard_state.close_all_ws()` before `AppRunner.cleanup()` to prevent 30s hang from blocked WebSocket `async for msg` loops.
 
+### Restart after update
+
+Automatic-update restarts select and validate the composed gateway launcher before
+saving state or draining callbacks/sessions. Without a launcher they retain the
+core-managed interpreter resolver loaded before apply. Launcher selection and the
+companion integration contract are defined in
+[platform-context](platform-context.md#gateway-restart-launcher); the callback
+fence and final yield-free drain-to-exec handoff apply to both launch paths.
+
 ### Shutdown Sequence
 
 1. First Ctrl+C sets `shutdown_event` → graceful shutdown begins (10s deadline)
@@ -172,9 +184,26 @@ Starts the Socket Mode listener. Blocks until SIGINT/SIGTERM. When `no_crons=Tru
    modes, then `cleanup_orphaned_sessions()` kills any kiro-cli PIDs tracked in
    the PID file before `os._exit(0)`.
 
+**Self-initiated exits carry a non-zero status.** `_shutdown_and_exit` composes
+`shutdown_exit_code(watchdog) or listener_guard_exit_code(...)`, so an operator
+stop still exits 0 while a shutdown the gateway asked for itself does not —
+a restart-on-failure supervisor never relaunches an exit 0:
+
+| Status | Source | Meaning |
+| --- | --- | --- |
+| 0 | operator (SIGTERM, `systemctl stop`, Ctrl+C) | stay down as asked |
+| 75 (`EX_TEMPFAIL`) | stale-asset watchdog | the served assets vanished |
+| 69 (`EX_UNAVAILABLE`) | listener guard (`dashboard/listener_guard.py`) | the TCP listener could not be restored, so the process was alive but unreachable |
+
+The listener-guard path is Windows-only in practice: CPython's proactor loop
+closes the LISTEN socket after one failed `accept()` and never re-arms it. The
+guard rebinds first and only sets this status when rebinding keeps failing, or
+when the rebind binds yet the loopback `/api/live` probe still gets no answer —
+a state no rebind can fix.
+
 ### Event-loop stall watchdog & blocking-work executors
 
-The gateway runs a single asyncio loop, so any blocking call on the loop thread freezes the whole backend. Two mechanisms contain this (see `dashboard/loop_watchdog.py`, `executors.py`):
+The gateway runs a single asyncio loop, so any blocking call on the loop thread freezes the whole backend. App Home skill loader construction and listing run together in a worker: listing can initialize/read the persistent SQLite metadata index. Two mechanisms contain this (see `dashboard/loop_watchdog.py`, `executors.py`):
 
 - **`LoopStallWatchdog`** — armed only when `faulthandler.is_enabled()` (the real `gateway` entrypoint; not `chat`/`tui`). The async heartbeat (`dashboard/server.py`, 5s interval) `beat()`s it each tick, re-arming a C-level `dump_traceback_later(exit=True)` timer that dumps all thread stacks and `_exit()`s if the loop goes silent. Desktop/foreground launches automatically use 25s; managed systemd/launchd gateways automatically use 90s because they have no Electron probe and WSL, VM, or heavy disk pressure can suspend scheduling long enough to make 25s a false death. The config value is nullable/automatic so an unrelated full config save cannot pin either launch-class default; any explicit `dashboard.loop_stall_exit_after_secs` value, including 25, overrides both. Older full-config saves may have materialized the former 25-second default; Kiro Crew reports that through the read-only superseded-default warning and `doctor` rather than guessing whether the value was deliberate. The managed path emits a non-fatal all-thread dump to stderr at `stall_after=30s`, never to the fatal crash-sentinel file, then exits at its service budget if the loop has not recovered. If the hard timer is disabled or fails to arm, that soft-only fallback is written to the dedicated dump file as well as stderr so it remains discoverable. `KIROCREW_SERVICE_MANAGED=1` in the generated systemd unit or launchd plist is the sole managed-launch authority; inherited systemd metadata is deliberately ignored because descendants receive it too. `kirocrew doctor` detects an installed definition without the marker and tells the operator to run `kirocrew service install` once to regenerate it and adopt the managed-service default.
 - **Bounded executors** — blocking maintenance work is offloaded off the default executor (which the loop uses for DNS) into two separate bounded pools: `maintenance_executor()` (`mc-maint`, fast orphan-reaping sweeps + agent-overlay rewrites) and `cron_executor()` (`mc-cron`, long/concurrent cron command & script jobs). Kept separate so a burst of cron jobs cannot starve the orphan sweeps. MCP `probe_all()` fan-out is bounded by `asyncio.Semaphore(5)`.
@@ -192,6 +221,55 @@ used for everything session-scoped: `SessionManager` registry, conversation
 log, per-thread override maps, trust set). The canonical form is stable
 across all messages of a thread; the legacy bare form is folded onto the same
 live session by `SessionManager._fold_key` (see session.md).
+
+`slack.dm_single_session` (default off) splits those two for a 1:1 DM. A
+message in a `D…` channel runs under `slack:<channel_id>` —
+`flat_dm_session_key`, one session for the whole DM instead of one per
+message — and a top-level message posts at channel root, so `post_thread_ts` is
+`None` while `reply_ts` keeps its thread-index and reaction meaning. A THREADED
+reply in that DM joins the same session: in a 1:1 DM a thread is a layout habit
+rather than a new topic, so splitting it off would leave the branch without the
+conversation it answers. Only the session merges — the reply, the `!stop` ack and
+a privacy modifier's confirmation all still post where they were addressed, back
+inside the thread. The session is bound to
+the channel (`set_channel`) and NOT to a thread: a flat conversation has no
+thread for `set_slack_link` to claim, claiming one would give the dashboard
+mirror a thread to post into while the conversation itself is flat, and with
+several threads the scalar `slack_thread_ts` would flip to whichever spoke last.
+Routing needs no claim regardless: the flat key is DERIVED from the channel, so
+it is recomputed rather than looked up. That holds
+for every writer of the link, not just the turn's own self-link:
+`maybe_apply_privacy_modifiers` takes a separate `link_thread` flag, which is
+false in flat mode, so `!temporary` / `!incognito` register no thread while still
+confirming in place. A thread already claimed by its own per-thread session — the
+shape this feature replaces, e.g. from before the flag was on — is ignored so it
+cannot pull the turn back out of the merged conversation; any OTHER owner (a
+dashboard send-to-Slack) still wins.
+Group channels and group DMs (`mpim`) are excluded — a thread there is
+a deliberate scope boundary, and an `mpim` is shared with other people. The key
+keeps the two-segment `slack:<scope>` shape on purpose, so callers that treat a
+Slack key as opaque or reverse-derive from it are unaffected.
+
+One consumer needs the shape spelled out: `file_send`'s upload handler resolves
+its target from the session map, and its thread-first branch requires a thread
+before it will use the linked channel. A flat DM has a channel and no thread, so
+it fell through to the owner's DM — a file sent to a different conversation than
+the one that asked. The handler now also accepts "channel, no thread" when the
+session key IS that channel's key (`slack:<channel_id>`), delivering at the DM's
+root. Deliberately not broader: a thread-scoped or dashboard session that merely
+knows a channel keeps failing closed to the owner DM rather than broadcasting at
+the root of a channel it does not own.
+
+`_route_message` derives the same key for its busy/queue bookkeeping; keyed on
+the message ts instead, a second DM would read as not-busy, skip the queue and
+block inside `get_or_create` with none of the queued-message feedback. That
+derivation (`_dm_single_session_enabled`) additionally requires the turn to
+take the messaging-transport path, because only `handle_message_transport`
+honours the flat key: with `messaging.use_transport` off, or in a review-mode
+channel that `_route_message` deliberately keeps on native for its privacy
+gate, the turn runs under `canonical_key(msg_ts)` and the bookkeeping keys the
+same way. Both conditions live in that one helper so `!stop`, the queue check
+and `message_deleted` cannot disagree.
 
 1. Check hooks for auto-reply
 2. Check `status` keyword — reply with stats summary
@@ -395,7 +473,7 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - Tool calls shown inline as 🔧 _tool name_
 - **Thinking/reasoning content** filtered from the main response — accumulated separately and posted as a 💭 thread reply after the main message. Inline `<thinking>` / `</thinking>` tags are also stripped as a safety net. The thread reply is suppressed when `slack.show_thinking` is `false` (default `true`).
 - Final message split into multiple posts if over 3900 chars (via `split_message()`)
-- **Redaction notice** — when the delivered text (answer or thinking) still carries a `security.CREDENTIAL_REDACTION_TAGS` placeholder or a `security.EXFILTRATION_REDACTION_TAG_PREFIX` (suspicious-URL) placeholder, one `messaging.renderer.redaction_notice` message is posted in the thread after the answer is committed, so the reader knows a command or link they copy will not run as pasted. Worded by kind (credential → re-enter the secret; URL → re-check the link), and byte-identical to the prior `credential_redaction_notice` sentence when only credentials were rewritten. Redaction is NOT relaxed — Slack is an egress path. Counted from the tag in the sent text rather than the redactor's warnings list, which is empty on the streaming path because each chunk was already redacted upstream. **One notice per turn**: answer and thinking share a single tally. Approving a review-mode draft (`interactions.py`) posts the same notice for the same reason, since that publishes to the whole channel. Both posts are best-effort — a failed notice must never turn a delivered answer into a failed turn
+- **Redaction notice** — when the delivered text (answer or thinking) still carries a `security.CREDENTIAL_REDACTION_TAGS` placeholder or a `security.EXFILTRATION_REDACTION_TAG_PREFIX` (suspicious-URL) placeholder, one `messaging.renderer.redaction_notice` message is posted in the thread after the answer is committed, so the reader knows a command or link they copy will not run as pasted. Worded by kind (credential → re-enter the secret; URL → re-check the link), and byte-identical to the prior `credential_redaction_notice` sentence when only credentials were rewritten. Redaction is NOT relaxed — Slack is an egress path. Counted from the tag in the sent text rather than the redactor's warnings list, which is empty on the streaming path because each chunk was already redacted upstream. **One notice per turn**: answer and thinking share a single tally. Approving a review-mode draft (`interactions.py`) posts the same notice for the same reason, since that publishes to the whole channel. Both posts are best-effort — a failed notice must never turn a delivered answer into a failed turn. The transport-path renderer (`slack/renderer.py`, the default `messaging.use_transport` delivery) posts the same one-per-turn notice: the final display-safe answer body and the posted 💭 reasoning share a single tally, counted with `messaging.renderer.count_redaction_tags` over the form the reader is left with — which can carry placeholders the driver's byte-level stream scan never wrote, because `_display_safe` re-redacts against what Slack renders
 
 ## Message Queue (`session.py` + `events.py`)
 
@@ -429,7 +507,7 @@ Shared data-collection and Block Kit rendering for recent sessions, used by thre
 
 The collector and renderer live in `kiro_crew/slack/sessions_view.py` so both `events.py` and `handler.py` can import them at module top-level without forming a circular import. `sessions_view.py` depends only on `kiro_crew.slack.blocks` and `kiro_crew.security` — it knows nothing about `events` or `handler`, which is what keeps the import graph acyclic.
 
-All three surfaces call `await _collect_recent_sessions_off_loop(sessions, *, limit, kind)` — the required entry point for async callers, which runs the synchronous collector `_collect_recent_sessions` in a worker thread via `asyncio.to_thread` — to read JSONL files under `~/.kiro/crew/sessions/`, classify them as `dashboard` (main chat slots), `taskrunner` (autopilot/task runner steps), or `other`, and `_build_sessions_blocks(rows, *, for_home_tab=False)` to render them. The sync collector does unbounded-size transcript reads and is worker-thread-only: never call it directly from an `async def`. It pre-scans the directory (kind from the filename stem, mtime from `stat`) and reads only the newest `limit` matching transcripts.
+All three surfaces call `await _collect_recent_sessions_off_loop(sessions, *, limit, kind, include_ended=False)` — the required entry point for async callers, which runs the synchronous collector `_collect_recent_sessions` in a worker thread via `asyncio.to_thread` — to read JSONL files under `~/.kiro/crew/sessions/`, classify them as `dashboard` (main chat slots), `taskrunner` (autopilot/task runner steps), or `other`, and `_build_sessions_blocks(rows, *, for_home_tab=False)` to render them. The sync collector does unbounded-size transcript reads and is worker-thread-only: never call it directly from an `async def`. It pre-scans the directory (kind from the filename stem, mtime from `stat`) and reads `limit` matching transcripts plus one per skipped candidate met on the way down the mtime order, so the read count does not grow with the directory. `include_ended` and the third skip reason are covered under "Ended rows leave the list" below.
 
 The slash command and keyword (which post via `chat.postMessage`) use the shared `blocks.session_task_card` builder. The Home Tab calls with `for_home_tab=True` and uses `section` blocks instead — Slack's `views.publish` API rejects `task_card` with `unsupported type: task_card`. Both paths keep the canonical `mc_session_resume_{key}` action ID handled by `interactions.py:_handle_session_resume`.
 
@@ -444,6 +522,22 @@ Each surface emits a SEL audit event for the data-access via `sel.log_api_access
 - Home Tab: `slack.home_tab_sessions_data_access` (caller = Slack user id)
 
 Sharing the builder also means the `sessions` keyword now displays the same 🟢 active / ⚫ inactive marker as the slash command. Previously the keyword path rendered every card as inactive regardless of session state.
+
+### Ended rows leave the list
+
+`⏹️ End` (`mc_session_end_{key}`, handled by `interactions.py:_handle_session_end`) records a **dismissal** on the row's transcript: `closed: True` plus a `closed_at` epoch on the metadata line, written through `ConversationLog.update_metadata_if` and therefore mtime-preserving. `messaging/sessions_view._row_is_ended` reads that flag back and the collector leaves such rows out unless the caller passes `include_ended=True`.
+
+Three details are load-bearing:
+
+- **The record is written whether or not a session is live.** The soft remove above it only kills a process, and a cluttered list is mostly idle rows — for those the removal branch resolves no key and does nothing, which is why End used to have no observable effect at all.
+- **The skipped row frees its slot.** Dismissed rows are skipped inside the read loop the same way empty and unreadable files are, so the list still fills to `limit` with live sessions instead of shrinking. The cost is one read per skipped row: with the *n* newest rows dismissed, *n* transcripts are read and discarded before the first kept row. Unlike the corrupt-file skips this is an ordinary state, so it is reachable in normal use; it is bounded by the directory, and `with_messages=False` reduces each such read to line 0.
+- **`closed_at` is stamped after the teardown**, because consolidation and skill extraction write the transcript on the way out of an End. Nothing in this list compares it (see below); it is written because the dashboard's reader does, and a flag with no instant makes every close there permanent.
+
+A live session outranks the flag, so a resumed conversation is listed immediately. `▶️ Resume` also clears the flag outright (`ConversationLog.clear_closed`), so the row stays listed once that process exits.
+
+This is deliberately **not** the rule `dashboard/channel_slots._close_stands` applies to the same field. That one asks whether a channel conversation outran a closed tab and compares the close against the channel's last write. This one asks whether the user still wants the row, and background housekeeping — consolidation, skill extraction, an auto-title — writes the file without the user doing anything, so any write-based rule would put a dismissed row straight back at the top.
+
+The opt-in is `sessions all` / `sessions ended` (DM keyword) and `/<command> sessions all` (slash). `sessions_view.SESSIONS_INCLUDE_ENDED_ARGS` is the one vocabulary, read both by `sessions_view.sessions_include_ended` and by `handler._is_sessions_keyword` — the matcher has to admit the argument or the message is never routed to the sessions handler at all. Opted-in rows render 🛑 in both the task card and the Home Tab layout so they are distinguishable from merely idle ones. The Home Tab has no argument surface and always uses the default.
 
 ## `!compact` Command (`handler.py`)
 
@@ -801,8 +895,7 @@ Owner command in `handler.py` that generates a time-limited token URL for dashbo
 
 `token_auth_middleware(local_only)` in `token_auth.py` — aiohttp middleware in the explicit middleware chain:
 
-- **Auth required when**: not local-only (i.e. bound to all interfaces)
-- **Loopback trusted when**: local-only mode (SSH tunnel access)
+- **Auth required**: on every gated request, loopback included — local-only mode no longer trusts loopback (local port forwarders make remote traffic appear as 127.0.0.1)
 - **Bypassed for**: static assets (`/assets/`, `/static/`, `/logo.png`, `/manifest.json`, `/sw.js`, `/icon-*.png`)
 - **Token sources**: `?token=` query param (first use) or `mc_token_{port}` cookie (subsequent requests)
 - **First query-param use**: binds token to client IP, marks consumed, sets `HttpOnly; SameSite=Strict; Path=/` cookie
@@ -888,7 +981,8 @@ Config example (remote access via URL):
 - **Enterprise Grid validation** (`slack/enterprise.py`): Two-layer defence against data exfiltration to personal/external Slack workspaces:
   1. **Startup gate**: `validate_enterprise()` calls `auth.test` with the bot token, verifies `enterprise_id` matches the configured production (`E0123ABC456`) or sandbox (`E0456DEF789`) grid. Caches `team_id` and `enterprise_id` in memory. Clears cache before each validation attempt so re-validation failures are fail-closed. Gateway refuses to connect if validation fails.
   2. **Per-message gate**: `check_message_origin()` compares each incoming event's `team` field against the cached `team_id`. Catches `.env` hot-swap while running. Zero-cost in-memory string comparison, no API call. Deny-by-default: empty `team` field is rejected.
-  - Configurable extra enterprise IDs via `slack.allowed_enterprise_ids` in config.json (for additional subsidiary grids)
+  - Configurable extra IDs via `slack.allowed_enterprise_ids` in config.json (for additional subsidiary grids)
+  - **One list, two id spaces — Enterprise Grid needs BOTH kinds in it.** `auth.test` returns an org-level `enterprise_id` (`E…`) *and* the install workspace's `team_id` (`T…`), while each inbound event carries the child workspace `team_id` it was sent in. The startup gate checks `enterprise_id or team_id`, so on Grid the **org id** must be listed or validation refuses and Slack is disabled; the per-message gate only ever compares the event's **workspace id**, which an `E…` entry can never equal, so **every child workspace id** must be listed or its messages are denied. Supplying either kind alone fails, and the two failures look nothing alike: workspace-ids-only refuses loudly at boot, while org-id-only passes validation (`Enterprise validation OK`) and then denies every DM — armed, because any entry leaves default-open, with nothing inbound able to match. `_diagnose_allowlist_id_spaces()` warns at load time for the org-id-only case (SEL `error=allowlist_admits_no_inbound_workspace`), and the startup refusal names the missing org id for the other, so neither state is silent or points at the wrong remedy. Both are DIAGNOSTIC: admission is unchanged, because treating an `E…` entry as org-wide admission would widen the allowlist this gate exists to keep narrow.
   - **Corrupt-config fail-closed**: `KiroCrewConfig.load()` degrades a torn/corrupt `config.json` (or `config.local.json` overlay) to a defaults object rather than raising, so `slack.allowed_enterprise_ids` would come back empty. `_load_allowed_team_ids()` positively detects that degraded read (a config file that exists on disk but does not parse) and fails CLOSED -- the allowlist stays enforced and admits NO origin (not even the just-validated workspace, which would answer the allowlist's own question) so startup is refused, and the degradation is SEL-audited (`operation=slack.allowed_team_ids_load`, `error=config_load_degraded_fail_closed`) -- instead of silently reverting to default-open. A genuinely unconfigured allowlist (no config file, or a clean file listing none) stays default-open.
   - **One reader owns the allowlist**: the admitted set comes only from that validated read of `slack.allowed_enterprise_ids`. Caller-supplied `extra_ids` -- the caller's own earlier `KiroCrewConfig.load()` snapshot of the same key -- does not contribute to it. The validated read is never older than the snapshot, so ids the snapshot holds and the read does not are ids the operator REMOVED, and unioning them would undo the removal. Consequence in both directions: removing one id takes effect at validation, and emptying the list returns to default-open, matching what a restart does. `extra_ids` does not contribute on the `auth.test`-failure path either, so the validated read is the sole source on every path: that path decides fail-open vs fail-closed by asking whether a restriction is configured, and counting an older snapshot there would manufacture a restriction the file does not list. An UNREADABLE config still refuses there -- a config that cannot be honoured is not one that honestly lists no restriction -- and a configured allowlist still fails closed.
   - All validation outcomes logged to SEL (`operation=slack.enterprise_validation`)

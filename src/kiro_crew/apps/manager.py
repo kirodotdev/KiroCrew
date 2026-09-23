@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, NamedTuple
 from urllib.parse import urlparse
 
 from kiro_crew import platform_compat
@@ -151,6 +151,10 @@ class InstalledApp:
     sourceRegistry: str = ""  # noqa: N815  — external registry id; "" = bundled catalog
     sourceCommit: str = ""  # noqa: N815  — commit SHA resolved in the source clone
     sourceSigner: str = ""  # noqa: N815  — verified signer id; "" = no verified signature
+    # True while a newly declared session-control grant still needs a user
+    # consent moment. Kept separate from ``enabled`` so a normal manual disable
+    # never shows the re-consent warning.
+    sessionApprovalConsentPending: bool = False  # noqa: N815
 
     def validate_fields(self) -> list[str]:
         """Validate classification field values. Returns error list (empty = valid)."""
@@ -187,6 +191,7 @@ class InstalledApp:
             sourceRegistry=str(data.get("sourceRegistry", "")),
             sourceCommit=str(data.get("sourceCommit", "")),
             sourceSigner=str(data.get("sourceSigner", "")),
+            sessionApprovalConsentPending=bool(data.get("sessionApprovalConsentPending", False)),
         )
         # Migrate old "managed" field to new classification fields
         if inst.schemaVersion < 2 and "origin" not in data:
@@ -282,6 +287,19 @@ def _write_installed(name: str, meta: InstalledApp) -> None:
     atomic_write(meta_path, json.dumps(credential_free_meta.to_dict(), indent=2) + "\n")
 
 
+def _pending_session_approval_after_manifest_change(
+    *,
+    existing_pending: bool,
+    requested_session_approval: bool,
+    widened_session_approval: bool,
+) -> bool:
+    if widened_session_approval:
+        return True
+    if not requested_session_approval:
+        return False
+    return existing_pending
+
+
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
@@ -297,11 +315,18 @@ class AppResult:
     error: str = ""
     error_code: str = ""  # structured error code for HTTP status mapping
     secret: str = ""
+    #: Machine-readable qualifier on a SUCCESSFUL result -- something the caller
+    #: must show or act on even though the operation went through (an update that
+    #: left the app disabled pending consent). Serialized as ``notice`` so it can
+    #: never be mistaken for the failure ``code``.
+    notice: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"ok": self.ok, "name": self.name}
         if self.message:
             d["message"] = self.message
+        if self.notice:
+            d["notice"] = self.notice
         if self.error:
             d["error"] = self.error
         # `code` is the repo's wire contract for a machine-readable failure
@@ -406,6 +431,7 @@ _COPY_IGNORE = (
     ".git",
     "__pycache__",
     ".venv",
+    INSTALLED_META_FILENAME,
     ".kirocrew-deps",
     ".kirocrew-deps-staging",
     ".kirocrew-deps-prior",
@@ -787,6 +813,7 @@ def install_app(
         version=manifest.version,
         displayName=manifest.displayName,
         enabled=False,  # installed but not enabled until explicitly enabled
+        sessionApprovalConsentPending=bool(manifest.permissions.sessionApproval),
         installedAt=_now_iso(),
         source=str(source),
         # Persist the server-resolved repository at the first durable metadata
@@ -815,7 +842,14 @@ def install_app(
     )
 
     logger.info("Installed app %s v%s from %s", name, manifest.version, source)
-    return AppResult(ok=True, name=name, message=f"installed {name} v{manifest.version}")
+    return AppResult(
+        ok=True,
+        name=name,
+        message=f"installed {name} v{manifest.version}",
+        notice=(
+            "session_approval_reconsent" if manifest.permissions.sessionApproval else ""
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -897,12 +931,46 @@ def update_app(
         )
 
     old_version = existing.version
+    # Consent to session-approval control is captured at install/enable, but the
+    # route guard reads the LIVE manifest. Without this check a routine update
+    # that adds ``permissions.sessionApproval`` would gain control of the user's
+    # sessions with no consent moment. Read the old manifest BEFORE the tree is
+    # replaced so the old grant remains the consent boundary.
+    old_manifest = get_app_manifest(name)
+    requested_session_approval = bool(manifest.permissions.sessionApproval)
+    widened_session_approval = bool(
+        requested_session_approval
+        and not (old_manifest and old_manifest.permissions.sessionApproval)
+    )
 
+    # Carry every persisted field forward from ``existing``, overriding only
+    # what the update changes. Keeping this metadata inside the file transaction
+    # means any write failure restores the old tree and old metadata together.
+    meta = replace(
+        existing,
+        version=manifest.version,
+        displayName=manifest.displayName,
+        updatedAt=_now_iso(),
+        enabled=False if widened_session_approval else existing.enabled,
+        sessionApprovalConsentPending=_pending_session_approval_after_manifest_change(
+            existing_pending=existing.sessionApprovalConsentPending,
+            requested_session_approval=requested_session_approval,
+            widened_session_approval=widened_session_approval,
+        ),
+        source=str(source),
+        sourceUrl=source_repository.strip(),
+        sourceRegistry="",
+        sourceCommit="",
+        sourceSigner="",
+    )
     # Preserve data directory and app secret
     data_dir = dest / "data"
     secret_file = dest / ".app_secret"
     tmp_data = dest.parent / f".{name}-data-tmp"
     tmp_secret = dest.parent / f".{name}-secret-tmp"
+    retired = dest.parent / f".{name}-update-old-{os.getpid()}-{os.urandom(4).hex()}"
+    preserved_data = False
+    preserved_secret = False
 
     # Clean up stale tmp files from a previous failed update
     if tmp_data.is_dir() and data_dir.is_dir():
@@ -913,62 +981,60 @@ def update_app(
     try:
         if data_dir.is_dir():
             shutil.move(str(data_dir), str(tmp_data))
+            preserved_data = True
         if secret_file.is_file():
             shutil.move(str(secret_file), str(tmp_secret))
+            preserved_secret = True
 
-        # Replace app files
-        shutil.rmtree(dest)
+        # Keep the complete old tree until the replacement and its metadata are
+        # durable. Source-owned installed.json never reaches the live tree.
+        os.replace(dest, retired)
         _copy_app_tree(source, dest)
 
-        # Restore data
         if tmp_data.is_dir():
             restored = dest / "data"
             if restored.exists():
-                shutil.rmtree(restored)
+                _remove_any_shape(restored)
             shutil.move(str(tmp_data), str(restored))
-        # Restore secret
         if tmp_secret.is_file():
-            shutil.move(str(tmp_secret), str(dest / ".app_secret"))
+            restored_secret = dest / ".app_secret"
+            _remove_any_shape(restored_secret)
+            shutil.move(str(tmp_secret), str(restored_secret))
+        _write_installed(name, meta)
     except (OSError, shutil.Error, ValueError) as exc:
-        # Attempt to restore on failure — each step independently wrapped
+        rollback_error = ""
         try:
-            if tmp_data.is_dir() and not data_dir.is_dir():
-                shutil.move(str(tmp_data), str(data_dir))
-        except OSError:
-            pass
-        try:
-            if tmp_secret.is_file() and not secret_file.is_file():
-                shutil.move(str(tmp_secret), str(secret_file))
-        except OSError:
-            pass
-        return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
+            if retired.is_dir():
+                restored_data = dest / "data"
+                restored_secret = dest / ".app_secret"
+                if preserved_data and not tmp_data.is_dir() and restored_data.is_dir():
+                    shutil.move(str(restored_data), str(tmp_data))
+                if preserved_secret and not tmp_secret.is_file() and restored_secret.is_file():
+                    shutil.move(str(restored_secret), str(tmp_secret))
+                _remove_any_shape(dest)
+                os.replace(retired, dest)
+            if tmp_data.is_dir():
+                restored = dest / "data"
+                _remove_any_shape(restored)
+                shutil.move(str(tmp_data), str(restored))
+            if tmp_secret.is_file():
+                restored_secret = dest / ".app_secret"
+                _remove_any_shape(restored_secret)
+                shutil.move(str(tmp_secret), str(restored_secret))
+            _write_installed(name, existing)
+        except (OSError, shutil.Error, ValueError) as rollback_exc:
+            rollback_error = f"; rollback failed: {rollback_exc}"
+            logger.error("Failed to restore app %s after update error", name, exc_info=True)
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"failed to update app files: {exc}{rollback_error}",
+        )
 
-    # Update metadata — carry every persisted field forward from ``existing``
-    # via dataclasses.replace, overriding only what the update actually changes
-    # (version/displayName/updatedAt/source and source provenance). Constructing
-    # a fresh InstalledApp
-    # here silently dropped any field not re-listed (enabled, installedAt,
-    # origin, resources, lifecycle, schemaVersion, migratedTo, and — the bug
-    # that surfaced this — the ``dev`` flag, so updating an app being iterated
-    # on in dev mode wrote ``dev: false`` and later dropped it from live
-    # reload). ``replace`` makes new fields regression-proof by construction.
-    meta = replace(
-        existing,
-        version=manifest.version,
-        displayName=manifest.displayName,
-        updatedAt=_now_iso(),
-        source=str(source),
-        # A local-source update is a provenance transition, not a refresh of the
-        # old registry checkout. Keeping the previous sourceUrl made runtime
-        # repository checks attest repo A while the files now came from local B.
-        # Registry callers pass the target they just cloned and then persist the
-        # remaining commit/signer fields through set_app_provenance.
-        sourceUrl=source_repository.strip(),
-        sourceRegistry="",
-        sourceCommit="",
-        sourceSigner="",
-    )
-    _write_installed(name, meta)
+    try:
+        _remove_any_shape(retired)
+    except OSError:
+        logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
 
     # Ensure data directory exists
     app_data_dir(name)
@@ -980,6 +1046,24 @@ def update_app(
         manifest.version,
         source,
     )
+    if widened_session_approval:
+        sel().log_api_access(
+            caller="app_update",
+            operation="session_approval_widened",
+            outcome="disabled",
+            resources=f"name={name!r}",
+            error="update added permissions.sessionApproval; re-enable to consent",
+        )
+        return AppResult(
+            ok=True,
+            name=name,
+            message=(
+                f"updated {name} v{old_version} -> v{manifest.version}; "
+                "disabled because this version newly requests session approval "
+                "control -- review it on the app page and enable again"
+            ),
+            notice="session_approval_reconsent",
+        )
     return AppResult(
         ok=True,
         name=name,
@@ -1807,7 +1891,7 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
         return None
 
 
-def enable_app(name: str) -> AppResult:
+def enable_app(name: str, *, session_approval_consent: bool = False) -> AppResult:
     """Enable an installed app."""
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
@@ -1855,10 +1939,19 @@ def enable_app(name: str) -> AppResult:
             error_code="app_execution_denied",
         )
 
+    if meta.sessionApprovalConsentPending and not session_approval_consent:
+        return AppResult(
+            ok=False,
+            name=name,
+            error="session approval consent must be confirmed from a disclosure surface",
+            error_code="session_approval_consent_required",
+        )
+
     if meta.enabled:
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
 
     meta.enabled = True
+    meta.sessionApprovalConsentPending = False
     meta.updatedAt = _now_iso()
     _write_installed(name, meta)
 
@@ -1940,6 +2033,120 @@ def list_apps() -> list[dict[str, Any]]:
             app_info["orphaned"] = True
         result.append(app_info)
     return result
+
+
+class AppsListing(NamedTuple):
+    """What :func:`list_apps` returned, and whether it saw every app on disk."""
+
+    #: Exactly what :func:`list_apps` returns, unchanged.
+    apps: list[dict[str, Any]]
+    #: False when at least one entry in the apps root stood for an app that
+    #: :func:`list_apps` dropped. An app absent from ``apps`` then carries no
+    #: information: it cannot be read as "no such app is installed".
+    complete: bool
+
+
+def _path_is_occupied(path: Path) -> bool:
+    """Whether something is AT *path*, judged without resolving it.
+
+    ``Path.exists`` follows a symlink, so a dangling ``installed.json`` link reads
+    absent while :func:`_read_installed` still fails on it -- and the two answers
+    together say "no such app" about an app that is on disk. ``is_symlink`` does not
+    close it either: it is False for a Windows directory junction, so a dangling
+    junction stays invisible to every predicate that resolves its target.
+
+    Anything uninspectable counts as present, the same fail-to-unknown direction
+    :func:`_absence_is_genuine` takes.
+    """
+    try:
+        return path.exists() or path.is_symlink() or is_link_or_junction(path)
+    except OSError:
+        return True
+
+
+def _entry_stands_for_a_dropped_app(entry: Path) -> bool:
+    """Whether a root entry :func:`list_apps` did not return still holds an app's claim.
+
+    A DIRECTORY that still has its record file counts: :func:`list_apps` reaches
+    ``if not meta: continue`` for a record that does not read and drops the app
+    silently, so the directory is the only remaining evidence the app is there.
+
+    A non-directory entry counts when it is link-ish or uninspectable.
+    :func:`list_apps` skips any entry that is not a readable directory, so an app
+    root replaced by a dangling symlink or junction is not a dir, is not listed, and
+    its record is unreachable -- every resolving predicate agrees the app is absent
+    when something is plainly occupying its name.
+
+    An entry that inspects cleanly as a plain FILE is deliberately NOT counted. It
+    cannot be told apart from an ordinary non-app file in this directory, and
+    treating every such file as a dropped app would leave the listing permanently
+    incomplete, which costs every caller that reads completeness as doubt. An app
+    root overwritten by a plain file is the residue that leaves.
+    """
+    try:
+        if entry.is_dir():
+            return _path_is_occupied(entry / INSTALLED_META_FILENAME)
+        return entry.is_symlink() or is_link_or_junction(entry)
+    except OSError:
+        return True
+
+
+def list_apps_with_skips() -> AppsListing:
+    """:func:`list_apps`, plus whether it dropped an app that is on disk.
+
+    :func:`list_apps` drops an app whose installed record does not read, and drops
+    it SILENTLY rather than raising, so its return value on its own cannot separate
+    "no such app is installed" from "that app's record went unread". A caller that
+    must tell those apart -- one deciding whether an absent app means a name is
+    genuinely unclaimed -- has no way to ask, and the wrong answer is on the
+    unrecoverable side.
+
+    This reports the second case, so the decision belongs to the module that owns
+    the skip rules. ``agent.py``'s rebuild consumed a copy of this walk before, in a
+    module where a change to ``list_apps``'s record layout or skip behaviour would
+    have left the copy stale with nothing failing.
+
+    ``complete`` is a property of the LISTING, not of any one app: it says only that
+    something on disk stood for an app the list does not carry. It does not name
+    which, because the dropped record is exactly the thing that could not be read.
+
+    Raises only what :func:`list_apps` raises, so an unreadable registry stays
+    distinguishable from an empty one. A root that cannot be WALKED is reported as an
+    incomplete listing instead, because the apps it would have vouched for are
+    already in ``apps``.
+    """
+    apps = list_apps()
+    try:
+        named = {app.get("name") for app in apps if isinstance(app, dict)}
+        root = apps_dir()
+        if not root.is_dir():
+            # Nothing can be enumerated here, so the two shapes are told apart by
+            # whether anything is AT the root rather than by walking it.
+            #
+            # An ABSENT root is the ordinary "nothing installed" case, and
+            # :func:`list_apps` returns the same empty list for it, so the listing is
+            # complete and an app missing from it really is not installed.
+            #
+            # A root something else OCCUPIES is the opposite answer. Every installed
+            # app's record is underneath it and none of them can be reached, while no
+            # entry can stand for them either because the walk cannot run at all. So
+            # completeness is unknown, and reporting it as unknown is what stops a
+            # caller pruning a claim it merely could not read.
+            #
+            # A plain FILE counts here, where :func:`_entry_stands_for_a_dropped_app`
+            # deliberately does not count one. The reason is the position, not the
+            # shape: a file BESIDE the app directories is an ordinary member of a
+            # healthy apps root, and counting it would hold every normal listing
+            # incomplete, whereas a file standing WHERE the root belongs has replaced
+            # the whole directory and no healthy installation looks like that.
+            return AppsListing(apps, not _path_is_occupied(root))
+        dropped = any(
+            entry.name not in named and _entry_stands_for_a_dropped_app(entry)
+            for entry in root.iterdir()
+        )
+    except Exception:  # noqa: BLE001 — a root that cannot be read vouches for nothing
+        return AppsListing(apps, False)
+    return AppsListing(apps, not dropped)
 
 
 def get_app(name: str) -> dict[str, Any] | None:
@@ -2308,22 +2515,87 @@ def register_external_app(
             ),
         )
 
+    # Self-registration is routine (self-managed apps re-register on every
+    # launch) and the app authors its own manifest, so this path can widen the
+    # session-approval grant without any user moment -- the same gap
+    # ``update_app`` closes with ``widened_session_approval``. Compare against the
+    # manifest that was consented to (the persisted one; none for a first
+    # registration) and, if the grant is new, register the app DISABLED so the
+    # user sees it on the detail page and enables it deliberately.
+    requested_session_approval = bool(
+        isinstance(manifest_data, dict)
+        and isinstance(manifest_data.get("permissions"), dict)
+        and manifest_data["permissions"].get("sessionApproval") is True
+    )
+    prior_manifest = get_app_manifest(name) if existing else None
+    widened_session_approval = requested_session_approval and not (
+        prior_manifest and prior_manifest.permissions.sessionApproval
+    )
+
     if existing:
-        # Update existing registration
-        existing.version = version
-        existing.displayName = display_name
-        existing.updatedAt = _now_iso()
+        # Build replacement metadata without mutating the persisted snapshot;
+        # it remains the rollback source if either durable write fails.
+        meta = replace(
+            existing,
+            version=version,
+            displayName=display_name,
+            updatedAt=_now_iso(),
+            enabled=False if widened_session_approval else existing.enabled,
+            sessionApprovalConsentPending=(
+                _pending_session_approval_after_manifest_change(
+                    existing_pending=existing.sessionApprovalConsentPending,
+                    requested_session_approval=requested_session_approval,
+                    widened_session_approval=widened_session_approval,
+                )
+                if manifest_data
+                else existing.sessionApprovalConsentPending
+            ),
+            resources=resources,
+            lifecycle=lifecycle,
+        )
         if not preserve_server_provenance:
             if source:
-                existing.source = source
-            existing.sourceUrl = requested_repository
-            existing.sourceRegistry = ""
-            existing.sourceCommit = ""
-            existing.sourceSigner = ""
-            existing.origin = origin
-        existing.resources = resources
-        existing.lifecycle = lifecycle
-        _write_installed(name, existing)
+                meta.source = source
+            meta.sourceUrl = requested_repository
+            meta.sourceRegistry = ""
+            meta.sourceCommit = ""
+            meta.sourceSigner = ""
+            meta.origin = origin
+
+        manifest_path = dest / APP_MANIFEST_FILENAME
+        prior_manifest_text = (
+            manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else None
+        )
+        manifest_text = json.dumps(manifest_data, indent=2) + "\n" if manifest_data else ""
+        try:
+            if manifest_data and widened_session_approval:
+                # Disable first when adding the grant so the new manifest is
+                # never live beside metadata that still authorizes the app.
+                _write_installed(name, meta)
+                atomic_write(manifest_path, manifest_text)
+            else:
+                # Remove the grant durably before clearing pending consent.
+                if manifest_data:
+                    atomic_write(manifest_path, manifest_text)
+                _write_installed(name, meta)
+        except (OSError, ValueError) as exc:
+            rollback_errors: list[str] = []
+            try:
+                _write_installed(name, existing)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"metadata rollback failed: {rollback_exc}")
+            try:
+                if manifest_data:
+                    if prior_manifest_text is None:
+                        manifest_path.unlink(missing_ok=True)
+                    else:
+                        atomic_write(manifest_path, prior_manifest_text)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"manifest rollback failed: {rollback_exc}")
+            detail = f"failed to persist external registration: {exc}"
+            if rollback_errors:
+                detail += f" ({'; '.join(rollback_errors)})"
+            return AppResult(ok=False, name=name, error=detail)
     else:
         # New registration
         dest.mkdir(parents=True, exist_ok=True)
@@ -2331,7 +2603,11 @@ def register_external_app(
             name=name,
             version=version,
             displayName=display_name,
-            enabled=True,  # self-managed apps are always "enabled"
+            # Self-managed apps are "enabled" by default; a manifest that asks for
+            # session control is the one exception, since that grant needs a
+            # consent moment the self-registration path cannot provide.
+            enabled=not widened_session_approval,
+            sessionApprovalConsentPending=widened_session_approval,
             installedAt=_now_iso(),
             source=source,
             sourceUrl=requested_repository,
@@ -2340,11 +2616,10 @@ def register_external_app(
             lifecycle=lifecycle,
         )
         _write_installed(name, meta)
-
-    # Persist manifest if provided (so dashboard can show full info)
-    if manifest_data:
-        manifest_path = dest / APP_MANIFEST_FILENAME
-        atomic_write(manifest_path, json.dumps(manifest_data, indent=2) + "\n")
+        # Persist manifest if provided (so dashboard can show full info).
+        if manifest_data:
+            manifest_path = dest / APP_MANIFEST_FILENAME
+            atomic_write(manifest_path, json.dumps(manifest_data, indent=2) + "\n")
 
     # Ensure data directory exists
     app_data_dir(name)
@@ -2370,6 +2645,25 @@ def register_external_app(
         resources,
         lifecycle,
     )
+    if widened_session_approval:
+        sel().log_api_access(
+            caller="app_register",
+            operation="session_approval_widened",
+            outcome="disabled",
+            resources=f"name={name!r}",
+            error="registration added permissions.sessionApproval; re-enable to consent",
+        )
+        return AppResult(
+            ok=True,
+            name=name,
+            message=(
+                f"{action} {name} v{version}; disabled because this manifest newly "
+                "requests session approval control -- review it on the app page and "
+                "enable it"
+            ),
+            secret=secret if is_new_secret else "",
+            notice="session_approval_reconsent",
+        )
     result = AppResult(
         ok=True,
         name=name,

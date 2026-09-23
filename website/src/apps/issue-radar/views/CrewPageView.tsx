@@ -195,7 +195,7 @@ function StatBlock({ label, value, note, colorClass, testId }: {
         label={label}
         value={value}
         colorClass={colorClass}
-        className="rounded-b-none border-b-0 pb-1.5 hover:translate-y-0 hover:border-border"
+        className="rounded-b-none border-b-0 pb-1.5 hover:border-border"
         data-testid={testId}
       />
       <div

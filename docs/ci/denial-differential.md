@@ -41,7 +41,7 @@ runs all four in the same order, reporting which one decided:
 
 | Tier | Check | Lives in |
 |---|---|---|
-| `sensitive-path` | `is_sensitive_path` — the path fence | `security/paths.py` |
+| `sensitive-path` | `sensitive_path_refusal` — the reason-returning path fence built on `is_sensitive_path` | `security/paths.py` |
 | `sensitive-bash` | `is_sensitive_bash_command` — scan ceiling, IMDS reach, env-credential detector | `security/paths.py` |
 | `exfil` | `audit_bash_exfiltration` — egress and reverse-shell shapes | `security/exfil.py` |
 | `deny-rules` | `is_denied` — the rule catalog and the argv-structural floors | `security/__init__.py` |
@@ -140,10 +140,12 @@ this gate, so the handover withdrew nothing.
 
 `surface` groups rows for a reader and is ignored by the gate.
 
-`kind` is `shell`, `flow` or `cron`; `platform` is `any`, `posix` or `windows`.
-Only `shell` rows are classified here — a flow and a cron have no single command
-line to hand a matcher — and the other two are reported as skipped rather than
-dropped. They stay in the file on purpose: the corpus is a contract document as
+`kind` is `shell`, `test`, `flow` or `cron`; `platform` is `any`, `posix` or
+`windows`. Only `shell` rows are classified here. A `test` row is a pytest
+selector consumed by the security-conductor's `verify_fix.py`, while a flow and a
+cron have no single command line to hand a matcher. The other three kinds are
+reported as skipped rather than dropped. They stay in the file on purpose: the
+corpus is a contract document as
 well as a gate input, and one that listed only shell rows would read as "these are
 all the golden paths", which is false. Reporting them as skipped is the honest form,
 and it also means a corpus that is mostly unclassifiable says so instead of

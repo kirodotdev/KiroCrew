@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from unittest.mock import patch
 
@@ -26,15 +27,18 @@ from kiro_crew.config.loader import KiroCrewAgentConfig
 from kiro_crew.context import _MEMBER_HOW_YOU_WORK, ContextBuilder, _scrub_member_payload
 from kiro_crew.members import (
     MEMBER_BRIEFING_MAX_CHARS,
+    MEMBER_BRIEFING_TRUNCATION_MARKER,
     MEMBER_RULES_MAX_CHARS,
     MemberRulesUnreadable,
     MemberSlugError,
+    cap_member_briefing,
     member_briefing_path,
     member_dir,
     member_rules_path,
     member_slot_key,
     member_thread_session_alias,
     read_member_briefing,
+    read_member_briefing_bounded,
     read_member_rules,
     write_dm_binding,
     write_member_rules,
@@ -172,6 +176,63 @@ class TestMemberBriefing:
         assert out.startswith("y" * 100)
         assert "briefing truncated" in out
         assert len(out) < MEMBER_BRIEFING_MAX_CHARS + 100
+        # The bounded read hands back the uncut buffer (the whole file fits
+        # the byte bound here) and says the read bound was NOT hit; the cut is
+        # the cap helper's call.
+        text, mtime, read_bounded = read_member_briefing_bounded(CREW)
+        assert len(text) == MEMBER_BRIEFING_MAX_CHARS + 500
+        assert mtime is not None
+        assert read_bounded is False
+
+    @requires_nofollow
+    def test_huge_briefing_reports_the_read_bound(self):
+        path = member_briefing_path(CREW)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("z" * (MEMBER_BRIEFING_MAX_CHARS * 100), encoding="utf-8")
+        text, mtime, read_bounded = read_member_briefing_bounded(CREW)
+        assert len(text) <= (MEMBER_BRIEFING_MAX_CHARS + 2) * 4
+        assert mtime is not None
+        assert read_bounded is True
+
+    @requires_nofollow
+    def test_under_cap_read_reports_no_bound(self):
+        path = member_briefing_path(CREW)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("short notes\n", encoding="utf-8")
+        text, mtime, read_bounded = read_member_briefing_bounded(CREW)
+        assert text == "short notes"
+        assert mtime is not None
+        assert read_bounded is False
+
+    def test_cap_helper_cuts_at_the_cap_and_can_drop_the_split_word(self):
+        """The dashboard redacts the bounded buffer and THEN caps it; with
+        ``drop_split_tail`` the cut never ends in the first half of a word
+        (every credential pattern is a whitespace-free run). The cut is judged
+        on the text GIVEN, so a redaction that shrank it below the cap leaves
+        it whole."""
+        assert cap_member_briefing("as is\n", False) == ("as is", False)
+        assert cap_member_briefing("short but the read hit its bound", True) == (
+            "short but the read hit its bound" + MEMBER_BRIEFING_TRUNCATION_MARKER,
+            True,
+        )
+        text = "word " * (MEMBER_BRIEFING_MAX_CHARS // 5 - 1) + "SPLIT-TOKEN-HERE and more"
+        plain, cut = cap_member_briefing(text, False)
+        assert cut is True
+        assert plain.startswith("word ")
+        assert plain.endswith(MEMBER_BRIEFING_TRUNCATION_MARKER)
+        assert len(plain) == MEMBER_BRIEFING_MAX_CHARS + len(MEMBER_BRIEFING_TRUNCATION_MARKER)
+        assert "SPLIT" in plain  # the prompt path keeps the plain cut
+        safe, cut = cap_member_briefing(text, False, drop_split_tail=True)
+        assert cut is True
+        assert "SPLIT" not in safe
+        assert safe == ("word " * (MEMBER_BRIEFING_MAX_CHARS // 5 - 1)).rstrip() + (
+            MEMBER_BRIEFING_TRUNCATION_MARKER
+        )
+        # No whitespace at all in the first cap's worth: fail closed to the marker.
+        assert cap_member_briefing("x" * 9000, False, drop_split_tail=True) == (
+            MEMBER_BRIEFING_TRUNCATION_MARKER,
+            True,
+        )
 
     @requires_nofollow
     def test_huge_briefing_read_is_byte_bounded(self):
@@ -206,15 +267,17 @@ class TestMemberBriefing:
         outside = tmp_path / "outside-dir"
         outside.mkdir()
         (outside / "briefing.md").write_text("gateway-readable secret", encoding="utf-8")
-        # Compute the path while the parent is a REAL directory — this is the
-        # pre-swap resolution. member_dir's own resolve would catch a link
-        # already sitting there; the walk must hold for one swapped in after.
+        # A link sitting at ``members/<slug>`` BEFORE the read is refused just
+        # the same: the read resolves the members root once and appends the
+        # slug lexically, so ``member_dir``'s own resolve never gets to follow
+        # the link first (which is how a peer's briefing would be read as this
+        # member's). No patching needed -- this is the ordinary read path.
         path = member_briefing_path(CREW)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.parent.rmdir()
         path.parent.symlink_to(outside, target_is_directory=True)
-        with patch("kiro_crew.members.member_briefing_path", return_value=path):
-            assert read_member_briefing(CREW) == ""
+        assert read_member_briefing(CREW) == ""
+        assert read_member_briefing_bounded(CREW) == ("", None, False)
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
     def test_fifo_briefing_is_refused_without_blocking(self):
@@ -620,12 +683,20 @@ class TestMemberSectionInjection:
         assert "[MEMBER IDENTITY]" not in ctx
         assert "[HOW YOU WORK]" not in ctx
 
-    def test_unregistered_crew_still_gets_identity_floor(self, tmp_path):
-        """The auto floor is FOR the crew with no description — Grok Bot's
-        'General Assistant' failure mode is exactly what this covers."""
+    def test_unregistered_crew_refuses_but_configured_empty_description_keeps_floor(self, tmp_path):
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
         with patch(
             "kiro_crew.context.KiroCrewConfig.load",
             return_value=_empty_config(),
+        ):
+            with pytest.raises(UnknownMemoryStore, match="member identity"):
+                _builder(tmp_path).build_session_context(
+                    session_key="dashboard:member-code-reviewer", agent=CREW, member=CREW
+                )
+        with patch(
+            "kiro_crew.context.KiroCrewConfig.load",
+            return_value=_fake_config(description="", triggers=""),
         ):
             ctx = _builder(tmp_path).build_session_context(
                 session_key="dashboard:member-code-reviewer", agent=CREW, member=CREW
@@ -638,7 +709,9 @@ class TestMemberSectionInjection:
         """slug_for_name falls back to the safe noun for unslugifiable names, so
         even a hostile member string resolves to a contained path — the block
         renders (identity floor) and no path escapes the members root."""
-        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_empty_config()):
+        config = _empty_config()
+        config.agents["!!!"] = KiroCrewAgentConfig()
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=config):
             ctx = _builder(tmp_path).build_session_context(
                 session_key="dashboard:member-x", agent=CREW, member="!!!"
             )
@@ -730,6 +803,27 @@ def _as_owner():
 
 
 class TestMemberRulesRoutes:
+    @pytest.mark.asyncio
+    async def test_rules_validation_reuses_config_loaded_off_loop(self, monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = _fake_config()
+        loop_thread = threading.get_ident()
+        loads = []
+
+        def load():
+            loads.append(threading.get_ident())
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", load)
+        with _as_owner():
+            async with TestClient(TestServer(_make_rules_app())) as client:
+                response = await client.put(
+                    f"/api/members/{CREW}/rules", json={"member": CREW, "rules": "Be concise."}
+                )
+                assert response.status == 200
+        assert loads and loop_thread not in loads
+
     @pytest.mark.asyncio
     async def test_get_missing_rules_is_empty_not_404(self):
         async with TestClient(TestServer(_make_rules_app())) as client:

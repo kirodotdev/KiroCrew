@@ -19,6 +19,9 @@ import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, se
 import { fetchSlots, removeSlotOptimistic } from './dashboardSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
+import { buildErrorPrompt } from '../utils/errorReport.prompt'
+import { findReport, recordError } from '../utils/errorReport'
+import { i18nT } from '../i18n/t'
 
 function makeStore() {
   return configureStore({
@@ -551,12 +554,12 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     const n = goneNotices(actions)
     expect(n).toHaveLength(1)
     // The NAME is stored; ChatPage resolves the sentence at render time.
-    expect(n[0].payload).toEqual({ name: 'Ghost session', kind: 'gone' })
+    expect(n[0].payload).toMatchObject({ name: 'Ghost session', kind: 'gone' })
     const ev = evictions(actions)
     expect(ev).toHaveLength(1)
     expect(ev[0].payload).toBe('gone')
     // The page-level half: ChatPage renders this through its ErrorNotice.
-    expect(store.getState().chat.switchSlotGone).toEqual({ name: 'Ghost session', kind: 'gone' })
+    expect(store.getState().chat.switchSlotGone).toMatchObject({ name: 'Ghost session', kind: 'gone' })
   })
 
   it('the gone-notice survives a programmatic switch and clears on the next user gesture', async () => {
@@ -643,7 +646,7 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     detail.mockRejectedValue(apiError(404, 'slot unavailable'))
     const { store } = makeRecordingStore()
     await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
-    expect(store.getState().chat.switchSlotGone).toEqual({ name: '', kind: 'gone' })
+    expect(store.getState().chat.switchSlotGone).toMatchObject({ name: '', kind: 'gone' })
   })
 
 
@@ -721,7 +724,7 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     expect(e).toEqual({ status: 500, message: 'gateway hiccup' })
     const n = goneNotices(actions)
     expect(n).toHaveLength(1)
-    expect(n[0].payload).toEqual({ name: 'Alive session', kind: 'failed' })
+    expect(n[0].payload).toMatchObject({ name: 'Alive session', kind: 'failed' })
     expect(evictions(actions)).toHaveLength(0)
   })
 
@@ -732,8 +735,109 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     expect(e).toMatchObject({ message: 'Failed to fetch' })
     const n = goneNotices(actions)
     expect(n).toHaveLength(1)
-    expect(n[0].payload).toEqual({ name: '', kind: 'failed' })
+    expect(n[0].payload).toMatchObject({ name: '', kind: 'failed' })
     expect(evictions(actions)).toHaveLength(0)
+  })
+
+  /** The notice's "ask the agent" hand-off reads `report`, not the sentence:
+   *  ChatPage renders a LOCALIZED line, which no journal lookup by message can
+   *  recover. A failure that never passed through the transport's journaling
+   *  (a rejected fetch has no Response for `apiFailure` to record) used to ship
+   *  a prompt carrying only that line — no route, no request, no underlying
+   *  error — so the agent asked to diagnose it had nothing to diagnose. */
+  describe('the announced notice carries a report the hand-off can prompt with', () => {
+    const payload = (actions: Array<{ type: string; payload?: unknown }>) =>
+      goneNotices(actions)[0].payload as { report?: { message: string; endpoint?: string; status?: number; detail?: string; route: string } }
+
+    it('a rejected fetch (no Response, so nothing journaled) is recorded with the request and the raw error', async () => {
+      detail.mockRejectedValue(new TypeError('Failed to fetch'))
+      const { store, actions } = makeRecordingStore([{ key: 'chat-9-916', title: 'Prompt Language' }])
+      await unwrapRejection(store.dispatch(switchSlot({ key: 'chat-9-916', announceOnMissing: true })).unwrap())
+      const { report } = payload(actions)
+      const shown = i18nT('store.chatSlice.session_open_error_named', { name: 'Prompt Language' })
+      expect(report).toMatchObject({
+        source: 'api',
+        // The journal key is the message as the UI shows it — the notice's
+        // sentence — and the raw error is the detail.
+        message: shown,
+        endpoint: '/api/chat/slots/chat-9-916',
+        detail: 'TypeError: Failed to fetch',
+      })
+      // No HTTP status was received, so none is invented for the prompt.
+      expect(report?.status).toBeUndefined()
+      // The prompt the Ask-agent button builds from it names the request and the
+      // raw error; the pre-fix prompt was the `- Message:` line alone.
+      const prompt = buildErrorPrompt(report!, 'lead')
+      expect(prompt).toContain('- Request: /api/chat/slots/chat-9-916')
+      expect(prompt).toContain(`- Message: ${shown}`)
+      expect(prompt).toContain('TypeError: Failed to fetch')
+      // The journal's own message lookup resolves the notice's sentence too.
+      expect(findReport(shown)?.id).toBe(report?.id)
+    })
+
+    it('does not become the newest "Failed to fetch" entry another surface would recover by message alone', async () => {
+      // Other surfaces still call findReport(e.message). If this entry were
+      // keyed by the raw text, their Ask-agent prompt would name a session-open
+      // request they never made.
+      detail.mockRejectedValue(new TypeError('Failed to fetch'))
+      const { store } = makeRecordingStore([{ key: 'k', title: 'K' }])
+      await unwrapRejection(store.dispatch(switchSlot({ key: 'k', announceOnMissing: true })).unwrap())
+      expect(findReport('Failed to fetch')?.endpoint).not.toBe('/api/chat/slots/k')
+    })
+
+    it('a status-bearing failure with no journal entry still records the status it carried', async () => {
+      // A transport mock (as here) or a non-`apiFailure` thrower carries a
+      // status but never journaled — the recorded report keeps the number.
+      detail.mockRejectedValue(apiError(502, 'bad gateway'))
+      const { store, actions } = makeRecordingStore([{ key: 'alive', title: 'Alive session' }])
+      await unwrapRejection(store.dispatch(switchSlot({ key: 'alive', announceOnMissing: true })).unwrap())
+      expect(payload(actions).report).toMatchObject({
+        message: i18nT('store.chatSlice.session_open_error_named', { name: 'Alive session' }),
+        detail: 'Error: bad gateway',
+        status: 502,
+        endpoint: '/api/chat/slots/alive',
+      })
+    })
+
+    it('the slot key is URL-encoded in the recorded endpoint, matching the request that failed', async () => {
+      detail.mockRejectedValue(new TypeError('Failed to fetch'))
+      const { store, actions } = makeRecordingStore()
+      await unwrapRejection(store.dispatch(switchSlot({ key: 'a/b c', announceOnMissing: true })).unwrap())
+      expect(payload(actions).report?.endpoint).toBe('/api/chat/slots/a%2Fb%20c')
+    })
+
+    it('two sessions failing with the same words each get their OWN request, not the older one\'s', async () => {
+      // The journal is keyed by message; a message-only lookup would hand the
+      // second failure the first failure's endpoint and the prompt would name a
+      // session the user did not click.
+      detail.mockRejectedValue(new TypeError('Failed to fetch'))
+      const { store, actions } = makeRecordingStore()
+      await unwrapRejection(store.dispatch(switchSlot({ key: 'first', announceOnMissing: true })).unwrap())
+      await unwrapRejection(store.dispatch(switchSlot({ key: 'second', announceOnMissing: true })).unwrap())
+      const reports = goneNotices(actions).map(a => (a.payload as { report?: { endpoint?: string } }).report?.endpoint)
+      expect(reports).toEqual(['/api/chat/slots/first', '/api/chat/slots/second'])
+    })
+
+    it('a message-less rejection on an unlisted key records the generic copy and no empty detail', async () => {
+      detail.mockRejectedValue({})
+      const { store, actions } = makeRecordingStore()
+      await unwrapRejection(store.dispatch(switchSlot({ key: 'k', announceOnMissing: true })).unwrap())
+      const { report } = payload(actions)
+      expect(report?.message).toBe(i18nT('store.chatSlice.session_open_error'))
+      expect(report?.detail).toBeUndefined()
+      expect(report?.endpoint).toBe('/api/chat/slots/k')
+    })
+
+    it('a journaled transport failure for THIS request is reused, not re-recorded', async () => {
+      // `apiFailure` journals a non-2xx under the ApiError's own message; the
+      // thunk must hand that entry through (status, code, body intact) rather
+      // than record a second one.
+      const journaled = recordError({ source: 'api', message: 'HTTP 503', status: 503, code: 'slot_detail_failed', endpoint: '/api/chat/slots/alive' })
+      detail.mockRejectedValue(apiError(503, 'HTTP 503'))
+      const { store, actions } = makeRecordingStore([{ key: 'alive', title: 'Alive session' }])
+      await unwrapRejection(store.dispatch(switchSlot({ key: 'alive', announceOnMissing: true })).unwrap())
+      expect(payload(actions).report?.id).toBe(journaled.id)
+    })
   })
 
   it('a plain-string non-404 stays quiet: failure copy is announced-gesture-only', async () => {

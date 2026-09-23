@@ -894,7 +894,7 @@ describe('cost discipline', () => {
 
 describe('theme tokens', () => {
   it('paints its two pinned bars with real surface tokens', () => {
-    // A Tailwind utility only exists if its key is MAPPED in tailwind.config.js.
+    // A Tailwind utility only exists if its key is MAPPED in src/tailwind-theme.css.
     // `--panel` / `--panel-strong` are defined in index.css but never mapped, so
     // `bg-panel` and `bg-panel-strong` compile to nothing and the element paints
     // the colour behind it — which is invisible in code review and, on a dark

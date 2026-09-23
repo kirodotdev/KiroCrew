@@ -40,10 +40,22 @@
         "mcpServers": [
           {
             "command": "pinned-core",
+            "env": [
+              {
+                "name": "KIROCREW_STUB_SESSION_TOKEN",
+                "value": "pinned-session-token"
+              }
+            ],
             "name": "kirocrew-core"
           },
           {
             "command": "pinned-cron",
+            "env": [
+              {
+                "name": "KIROCREW_STUB_SESSION_TOKEN",
+                "value": "pinned-session-token"
+              }
+            ],
             "name": "kirocrew-cron"
           }
         ],

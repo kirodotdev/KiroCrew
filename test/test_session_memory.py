@@ -37,9 +37,14 @@ class _FakeSubagents:
 
 
 def _row(
-    key: str, pid: int | None, *, owns: bool = True, created: float = 1000.0
+    key: str,
+    pid: int | None,
+    *,
+    owns: bool = True,
+    created: float = 1000.0,
+    sid: str | None = None,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "key": key,
         "agent": "kirocrew",
         "pid": pid,
@@ -47,6 +52,9 @@ def _row(
         "created_at": created,
         "prompts": 3,
     }
+    if sid is not None:
+        row["sid"] = sid
+    return row
 
 
 # ── session_title ──────────────────────────────────────────────────────────
@@ -125,7 +133,9 @@ def test_first_cpu_sample_reports_unknown_not_zero(monkeypatch: pytest.MonkeyPat
     """CPU is a rate: one observation cannot produce one, and reporting 0.0 would
     claim the session is idle."""
     monkeypatch.setattr(sm.sys, "platform", "linux")
-    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: 100)
+    # ``**kw`` because the sampler hands the subtree it already walked over as
+    # ``pids=`` rather than letting the CPU reading enumerate the tree again.
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 100)
     sampler = sm.SessionMemorySampler()
     assert sampler._cpu_cores(42, 10.0) is None
 
@@ -133,7 +143,7 @@ def test_first_cpu_sample_reports_unknown_not_zero(monkeypatch: pytest.MonkeyPat
 def test_second_cpu_sample_uses_the_delta(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sm.sys, "platform", "linux")
     jiffies = iter([100, 100 + sm._CLK_TCK * 2])
-    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: next(jiffies))
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: next(jiffies))
     sampler = sm.SessionMemorySampler()
     sampler._cpu_cores(42, 10.0)
     # 2 core-seconds of CPU over 4 wall seconds = 0.5 cores.
@@ -153,10 +163,14 @@ def test_dead_pid_baselines_are_pruned() -> None:
 @pytest.fixture()
 def stub_proc(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sm.sys, "platform", "linux")
-    monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid: {7: 3238.0, 8: 843.0}.get(pid, 0.0))
-    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid: [pid, pid + 100, pid + 200])
+    monkeypatch.setattr(
+        sm, "_get_rss_tree_mb", lambda pid, **kw: {7: 3238.0, 8: 843.0}.get(pid, 0.0)
+    )
+    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid, **kw: [pid, pid + 100, pid + 200])
     monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "python -m kiro_crew.mcp_gateway.stub")
-    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: 0)
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
+    # The poll builds the host's parent map once; keep that off real /proc too.
+    monkeypatch.setattr(sm, "proc_child_map", lambda: {})
     monkeypatch.setattr(sm, "_get_static_system_info", lambda: {"mem_total_gb": 124.0})
 
 
@@ -268,7 +282,7 @@ async def test_tasks_are_passed_through_and_history_records_the_total(stub_proc:
 async def test_a_dying_pid_does_not_fail_the_whole_page(
     stub_proc: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(pid: int) -> float:
+    def boom(pid: int, **kw: object) -> float:
         raise OSError("vanished")
 
     monkeypatch.setattr(sm, "_get_rss_tree_mb", boom)
@@ -322,9 +336,7 @@ def test_runtime_pids_resolves_both_provider_shapes() -> None:
 
     mgr = _manager()
     mgr._sessions["dashboard:nested"] = _Session(provider=_ClientShapedProvider(4242))
-    mgr._sessions["taskrunner:flat"] = _Session(
-        provider=_SelfShapedProvider(5353, owns=False)
-    )
+    mgr._sessions["taskrunner:flat"] = _Session(provider=_SelfShapedProvider(5353, owns=False))
 
     rows = {r["key"]: r for r in mgr.runtime_pids()}
 
@@ -448,7 +460,8 @@ def test_runtime_pids_skips_dead_manager_runtimes() -> None:
 
 
 def test_slot_spend_sums_credits_and_counts_turns(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
 ) -> None:
     """A slot with shard rows gets summed credits and a turns count."""
     import json as _json
@@ -482,7 +495,8 @@ def test_slot_spend_sums_credits_and_counts_turns(
 
 
 def test_slot_spend_returns_empty_for_no_shards(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
 ) -> None:
     """A slot with no rows means credits=None and turns=None in the payload."""
     from pathlib import Path
@@ -501,7 +515,8 @@ def test_slot_spend_returns_empty_for_no_shards(
 
 
 def test_slot_spend_drops_nan_and_infinity(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
 ) -> None:
     """NaN/Infinity in a shard row must not poison the slot total."""
     import json as _json
@@ -532,7 +547,8 @@ def test_slot_spend_drops_nan_and_infinity(
 
 
 def test_slot_spend_cache_expires_as_the_cutoff_moves(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
 ) -> None:
     """A row aging past the cutoff drops out even when no shard file changes.
 
@@ -553,12 +569,15 @@ def test_slot_spend_cache_expires_as_the_cutoff_moves(
     row_ts = real_now - timedelta(days=usage.SPEND_WINDOW_DAYS) + timedelta(seconds=30)
     shard = tmp / real_now.strftime("%Y-%m-%d.jsonl")
     shard.write_text(
-        _json.dumps({
-            "_type": "tokens",
-            "ts": row_ts.isoformat(),
-            "slot": "chat-9-777",
-            "credits": 4.0,
-        }) + "\n",
+        _json.dumps(
+            {
+                "_type": "tokens",
+                "ts": row_ts.isoformat(),
+                "slot": "chat-9-777",
+                "credits": 4.0,
+            }
+        )
+        + "\n",
     )
 
     # Pin the shard SET so this exercises the cache key alone; otherwise a clock
@@ -580,13 +599,14 @@ def test_slot_spend_cache_expires_as_the_cutoff_moves(
     # is untouched, so the signature is identical.
     clock["t"] += usage._SLOT_SPEND_TTL_S + 1
     second = usage.slot_spend()
-    assert "dashboard:chat-9-777" not in second, (
-        "row aged past the cutoff but the cache still served it"
-    )
+    assert (
+        "dashboard:chat-9-777" not in second
+    ), "row aged past the cutoff but the cache still served it"
 
 
 def test_slot_spend_excludes_non_session_slots(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
 ) -> None:
     """A non-session slot must not appear in the mapping."""
     import json as _json
@@ -615,7 +635,8 @@ def test_slot_spend_excludes_non_session_slots(
 
 
 def test_slot_spend_cache_invalidates_on_shard_growth(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
 ) -> None:
     """Cache returns the same object when shards unchanged, recomputes on growth."""
     import json as _json
@@ -628,8 +649,10 @@ def test_slot_spend_cache_invalidates_on_shard_growth(
     now = datetime.now(timezone.utc)
     shard = tmp / now.strftime("%Y-%m-%d.jsonl")
     shard.write_text(
-        _json.dumps({"_type": "tokens", "ts": now.isoformat(),
-                     "slot": "chat-7-333", "credits": 1.0}) + "\n"
+        _json.dumps(
+            {"_type": "tokens", "ts": now.isoformat(), "slot": "chat-7-333", "credits": 1.0}
+        )
+        + "\n"
     )
 
     monkeypatch.setattr(usage, "_TOKEN_USAGE_DIR", tmp)
@@ -644,8 +667,10 @@ def test_slot_spend_cache_invalidates_on_shard_growth(
     # Append a new row -> shard grows
     with shard.open("a") as fh:
         fh.write(
-            _json.dumps({"_type": "tokens", "ts": now.isoformat(),
-                         "slot": "chat-7-333", "credits": 2.0}) + "\n"
+            _json.dumps(
+                {"_type": "tokens", "ts": now.isoformat(), "slot": "chat-7-333", "credits": 2.0}
+            )
+            + "\n"
         )
 
     third = usage.slot_spend()
@@ -678,7 +703,8 @@ def test_slot_spend_window_matches_cost_breakdown_window() -> None:
 
 
 def test_slot_spend_applies_per_row_timestamp_cutoff(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
 ) -> None:
     """A row inside the boundary shard but older than the cutoff is NOT counted.
 
@@ -715,3 +741,169 @@ def test_slot_spend_applies_per_row_timestamp_cutoff(
     # Only the recent row is counted; the 100-credit old row is excluded.
     assert result["dashboard:chat-1-999"]["credits"] == pytest.approx(5.0)
     assert result["dashboard:chat-1-999"]["turns"] == 1
+
+
+# ── lineage: who opened whom ───────────────────────────────────────────────
+
+
+def tree_cap() -> int:
+    from kiro_crew.crew_log.session_tree import TREE_UNIT_CAP
+
+    return TREE_UNIT_CAP
+
+
+def _crew_log_with_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, *, creator_running: bool
+) -> None:
+    """A creator log and a child log whose session/opened cites it."""
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+
+    def opened(handle: CrewLog, slot: str, parent: dict[str, str] | None = None) -> None:
+        data: dict[str, object] = {
+            "agent": "kirocrew",
+            "slot": slot,
+            "model": "opus",
+            "cwd": "/w",
+            "owner": "raymond",
+            "resumed": False,
+        }
+        if parent is not None:
+            data["parent"] = parent
+        handle.append("session/opened", data, src="gateway")
+
+    if creator_running:
+        creator = CrewLog.create(
+            lg.KIND_SESSION, "p-sid", owner="raymond", agent="kirocrew", slot="p"
+        )
+        opened(creator, "p")
+    child = CrewLog.create(lg.KIND_SESSION, "c-sid", owner="raymond", agent="kirocrew", slot="c")
+    opened(child, "c", parent={"slot": "p", "sid": "p-sid"})
+
+
+@pytest.mark.asyncio
+async def test_a_created_session_names_its_live_creator_as_parent(
+    stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _crew_log_with_parent(monkeypatch, tmp_path, creator_running=True)
+    sessions = _FakeSessions([_row("dashboard:p", 7), _row("dashboard:c", 8)])
+    out = await sm.SessionMemorySampler().sample(sessions, None)
+
+    rows = {r["key"]: r for r in out["sessions"]}  # type: ignore[union-attr]
+    # The child cites its creator; ``key`` is the creator's LIVE row, which is
+    # the edge the table nests on -- the same edge a task row carries. The
+    # entry's ``parent.sid`` stays in the log: the wire carries the slot only.
+    assert rows["dashboard:c"]["parent"] == {"slot": "p", "key": "dashboard:p"}
+    assert rows["dashboard:p"]["parent"] is None
+    # Two logs, far inside the cap: nothing went unread; the cap rides along so
+    # the page can say "N+" when something does.
+    assert out["totals"]["lineage_over_cap"] is False  # type: ignore[index]
+    assert out["totals"]["lineage_cap"] == tree_cap()  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_a_channel_bound_creator_is_found_through_its_slot_alias(
+    stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # A slot bound to a Slack or cron conversation runs under its
+    # linked_session_key while its crew log -- and any child citing it -- carries
+    # the dashboard slot key. The alias the handler supplies for spend is the
+    # same bridge, so the child nests under the bound row instead of staying a
+    # root with an absent creator.
+    _crew_log_with_parent(monkeypatch, tmp_path, creator_running=True)
+    sessions = _FakeSessions([_row("slack:C1:1.2", 7), _row("dashboard:c", 8)])
+    out = await sm.SessionMemorySampler().sample(
+        sessions, None, spend_slot_by_session={"slack:C1:1.2": "p"}
+    )
+    rows = {r["key"]: r for r in out["sessions"]}  # type: ignore[union-attr]
+    assert rows["dashboard:c"]["parent"] == {"slot": "p", "key": "slack:C1:1.2"}
+    assert rows["slack:C1:1.2"]["parent"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_creator_that_is_not_running_leaves_the_child_a_root_with_its_citation(
+    stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _crew_log_with_parent(monkeypatch, tmp_path, creator_running=False)
+    sessions = _FakeSessions([_row("dashboard:c", 8)])
+    out = await sm.SessionMemorySampler().sample(sessions, None)
+
+    [row] = out["sessions"]  # type: ignore[misc]
+    assert row["parent"] == {"slot": "p", "key": None}
+
+
+@pytest.mark.asyncio
+async def test_logs_past_the_scan_cap_are_counted_on_the_payload_not_dropped_silently(
+    stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # The cap is the scanner's count bound (a-bound rule). Past it a log is
+    # neither read nor cached, and the payload says how many, on every sample.
+    # The live rows' own logs are admitted first, so what goes unread is a
+    # closed session's log and every row on screen still folds.
+    from kiro_crew.crew_log import session_tree as tree_mod
+
+    _crew_log_with_parent(monkeypatch, tmp_path, creator_running=True)
+    # A third, closed session's log sorts first in the store: with a cap of two
+    # it is what goes unread, because the live rows name their own units.
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog
+
+    closed = CrewLog.create(
+        lg.KIND_SESSION, "a-closed", owner="raymond", agent="kirocrew", slot="z"
+    )
+    closed.append(
+        "session/opened",
+        {
+            "agent": "kirocrew",
+            "slot": "z",
+            "model": "opus",
+            "cwd": "/w",
+            "owner": "raymond",
+            "resumed": False,
+        },
+        src="gateway",
+    )
+    monkeypatch.setattr(tree_mod, "TREE_UNIT_CAP", 2)
+    sessions = _FakeSessions(
+        [_row("dashboard:p", 7, sid="p-sid"), _row("dashboard:c", 8, sid="c-sid")]
+    )
+    out = await sm.SessionMemorySampler().sample(sessions, None)
+    assert out["totals"]["lineage_over_cap"] is True  # type: ignore[index]
+    assert out["totals"]["lineage_cap"] == 2  # type: ignore[index]
+    # Both rows on screen fold, closed log or not: the child still nests.
+    rows = {r["key"]: r for r in out["sessions"]}  # type: ignore[union-attr]
+    assert rows["dashboard:c"]["parent"] == {"slot": "p", "key": "dashboard:p"}
+    assert rows["dashboard:p"]["parent"] is None
+    assert all("log_skipped" not in r for r in out["sessions"])  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_without_a_crew_log_root_every_session_is_a_root(
+    stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    sessions = _FakeSessions([_row("dashboard:a", 7), _row("slack:C1:1.2", 9)])
+    out = await sm.SessionMemorySampler().sample(sessions, None)
+    assert [r["parent"] for r in out["sessions"]] == [None, None]  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_with_the_crew_log_off_no_scan_runs_and_no_row_has_a_parent(
+    stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # The store is optional and this module is on the boot path: with the flag
+    # unset the scanner is never built, so the storage package is never loaded
+    # on its account (the launch-level pin is test_crew_log_emit's).
+    _crew_log_with_parent(monkeypatch, tmp_path, creator_running=True)
+    monkeypatch.delenv("KIROCREW_CREW_LOG", raising=False)
+    sampler = sm.SessionMemorySampler()
+    sessions = _FakeSessions([_row("dashboard:p", 7), _row("dashboard:c", 8)])
+    out = await sampler.sample(sessions, None)
+    assert [r["parent"] for r in out["sessions"]] == [None, None]  # type: ignore[union-attr]
+    assert out["totals"]["lineage_over_cap"] is False  # type: ignore[index]
+    assert out["totals"]["lineage_cap"] == 0  # type: ignore[index]
+    assert sampler._tree is None

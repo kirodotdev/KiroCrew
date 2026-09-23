@@ -46,11 +46,12 @@ async def test_reap_process_group_kills_children() -> None:
         # Parent (sh) reaped.
         assert proc.returncode is not None
 
-        # The forked `sleep` child in the same group must be gone too.
+        # The forked `sleep` child in the same group must be gone too. Liveness
+        # through the repo's own probe (AGENTS.md "Cross-platform"): a raw
+        # ``os.kill(pid, 0)`` TERMINATES the target on Windows, and the sweep's
+        # caller filter recognises only the sanctioned helper.
         for _ in range(50):
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
+            if not platform_compat.pid_exists(child_pid):
                 child_reaped = True
                 break
             await asyncio.sleep(0.1)

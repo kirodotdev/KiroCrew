@@ -22,7 +22,7 @@ no public endpoint, webhook, or tunnel is required.
 
 ## Setup
 
-1. Open **Settings → Channels → WeChat**.
+1. Open **Settings → Messaging Channels → WeChat**.
 2. Click **Connect via QR**.
 3. Scan the code with the WeChat mobile app and confirm on your phone.
 4. Restart the gateway. The status pill turns **Connected**.

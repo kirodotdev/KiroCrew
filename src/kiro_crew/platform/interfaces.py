@@ -143,6 +143,23 @@ class PublishRegistry(Protocol):
         ...
 
 
+class GatewayLifecycleProvider(Protocol):
+    """Edition-owned gateway launch selection, independent of update policy."""
+
+    def restart_launcher(self) -> str | None:
+        """Return an absolute stable launcher, or None for the core Python path.
+
+        The launcher receives the original CLI arguments without Python's ``-m``
+        prefix. It owns selecting the installed version and rebuilding its import
+        environment. Preserve its pathname: a symlink basename may select the app.
+        Return a native executable on Windows, not a shell command or batch file.
+        Implementations must be cheap and have their dependencies loaded at boot:
+        an update can remove the running package tree before this method is called.
+        Errors refuse restart; they must not silently select the old interpreter.
+        """
+        ...
+
+
 class AgentRuntime(Protocol):
     """The agent runtime: managed MCP servers + first-run setup."""
 
@@ -1367,6 +1384,20 @@ class RemoteProvisioner:
     label: str
     posix_only: bool = True
     step_labels: Tuple[Tuple[str, str], ...] = ()
+    #: What the operator must SEE and confirm before this lane may launch, resolved by the
+    #: provider, or ``""`` for a lane with nothing to confirm.
+    #:
+    #: It rides on the DESCRIPTOR because the descriptor is what a launch card is drawn from,
+    #: and the point of the confirmation is that the operator reads the value and recognises
+    #: a wrong one. A value obtainable only by attempting a launch and reading the refusal
+    #: would make confirming a copy-paste ritual rather than a decision.
+    #:
+    #: ``POST /api/cloud/launch`` requires ``confirm_recipient`` exactly when the resolved
+    #: descriptor carries this, so the requirement is derived from the lane rather than
+    #: hard-coded to one id, and a client cannot obtain the value without first reading the
+    #: list. The built-in EC2 lane leaves it empty: nothing in a configuration file chooses
+    #: what its credential reaches.
+    confirm_before_launch: str = ""
 
 
 class RemoteProvisionerProvider(Protocol):
@@ -1390,13 +1421,23 @@ class RemoteProvisionerProvider(Protocol):
         """
         ...
 
-    def engine_for(self, provisioner_id: str) -> Any:
+    def engine_for(self, provisioner_id: str, *, confirmed_recipient: str = "") -> Any:
         """Return the ``cloud.launch_job.LaunchEngine`` that drives *provisioner_id*.
 
         Raise ``KeyError`` for an id not in :meth:`provisioners`; the handler
         answers 400 ``unknown_provisioner``. Typed ``Any`` here only to keep
         this module import-light (``cloud/launch_job.py`` is heavy); the
         contract is the five-method ``LaunchEngine`` Protocol.
+
+        ``confirmed_recipient`` is what the OPERATOR confirmed this launch may hand a
+        credential to, taken from the launch request (``confirm_recipient`` on
+        ``POST /api/cloud/launch``) and passed through to the engine unresolved and
+        unchecked. A lane whose launch delivers a credential to something its own
+        configuration names must refuse an empty or mismatched value, and must do the
+        comparison against what it is about to run rather than against the configuration it
+        just read -- otherwise the configuration confirms itself. A lane with no such
+        choice to make ignores it. Default empty so an implementation that has nothing to
+        confirm needs no signature change.
 
         WIRED: ``dashboard/handlers_cloud.py::_engine``.
         """
@@ -1528,6 +1569,43 @@ class DashboardContributor(Protocol):
 
     def sso_login_handler(self) -> Optional[Callable]:
         """Return the SSO-login WS handler, or ``None`` to keep the core stub."""
+        ...
+
+    def mixed_internal_api_paths(self) -> "frozenset[str]":
+        """Edition paths an internal loopback caller may reach (Default: empty).
+
+        WIRED: ``dashboard/server.py`` unions the returned set into its own
+        ``_MIXED_INTERNAL_API_PATHS`` when it builds ``token_auth_middleware`` —
+        for the dashboard chain AND the headless ``--slack-only`` one, so the two
+        entrypoints cannot drift.
+
+        This exists because ``contribute_routes`` is the only way an edition mounts
+        a route, and the core cannot name those paths in a module-level frozenset.
+        Without the seam, an edition's own MCP tool authenticating with the loopback
+        ``X-Internal-Secret`` handshake is not recognized as internal at all:
+        token_auth ignores the secret, falls through to cookie auth, and the tool
+        answers ``Token required`` on every call.
+
+        ADD-ONLY, and the core enforces two limits rather than trusting the
+        contributor:
+
+        * a contributed path that matches a CORE STRICT entry is DROPPED. Strict
+          and mixed differ off-loopback — strict hard-denies, mixed accepts a
+          validated cookie — so admitting such a path would soften a route the
+          core deliberately keeps loopback-only. The overlap is checked in BOTH
+          directions: a contributed ANCESTOR of a strict entry reclassifies it
+          just as a child does, because the request is what gets prefix-matched.
+        * the union can never remove a core entry, by construction.
+
+        Contribute the AGENT SURFACE, never an app root: ``internal_path_matches``
+        matches ``path == entry or path.startswith(entry + "/")`` and carries no
+        method, so a root entry admits every route beneath it to any holder of the
+        machine secret. Enumerate. Where a dynamic segment forces a prefix entry,
+        re-assert at the handler for the legs no tool calls.
+
+        The Default returns an empty set, so public behaviour is unchanged.
+        v1 method addition (no ``CONTRACT_VERSION`` bump).
+        """
         ...
 
     def on_user_message(self, app: "web.Application", message: str) -> None:

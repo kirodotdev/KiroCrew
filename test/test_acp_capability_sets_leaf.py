@@ -42,9 +42,12 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
     model_registry_namespace,
 )
@@ -67,7 +70,9 @@ CAPABILITY_SETS = (
     "ACP_BACKENDS_COMPACT",
     "ACP_BACKENDS_INTERNAL_SANDBOX",
     "ACP_BACKENDS_SEED_LOCAL_SETTINGS",
+    "ACP_BACKENDS_SESSION_EVICTION",
     "ACP_BACKENDS_SESSION_SHARING",
+    "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE",
     "ACP_BACKENDS_STEER",
 )
 
@@ -159,11 +164,36 @@ def test_membership_is_unchanged_by_the_move() -> None:
     Opting a harness in is a deliberate edit with evidence (harness-parity H5/H6);
     a relocation is not the place for it.
     """
-    assert ACP_BACKENDS_SESSION_SHARING == frozenset({ACP_BACKEND_KIRO})
-    assert ACP_BACKENDS_COMPACT == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
+    # kiro and codex are in all three; KAS is on the runtime and in eviction, and
+    # out of sharing. No two of these sets may be derived from another, and KAS is
+    # the case that shows it: eviction and sharing both read its teardown verb and
+    # reach opposite conclusions, because ``_kiro/session/delete`` frees the session
+    # (eviction) by REMOVING the record a continuation would load (no sharing).
+    # codex's ``session/close`` frees the session and leaves the record, so it is in
+    # both.
+    assert ACP_BACKENDS_SESSION_SHARING == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
+    # The three harnesses added on captured evidence are named here too, so a
+    # relocation still cannot grant the capability quietly -- the pin moves with
+    # the deliberate edit rather than being loosened to accommodate it.
+    assert ACP_BACKENDS_COMPACT == frozenset(
+        {
+            ACP_BACKEND_KIRO,
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_OPENCODE,
+        }
+    )
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO})
     assert ACP_BACKENDS_STEER == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
-    assert ACP_BACKENDS_ACP_RUNTIME == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+    assert ACP_BACKENDS_ACP_RUNTIME == frozenset(
+        {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+    )
+    assert ACP_BACKENDS_SESSION_EVICTION == frozenset(
+        {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+    )
+    # The spec's own servers reach kiro-cli from disk and KAS as a projected agent
+    # definition; codex mounts exactly the array it is sent, so it is judged by it.
+    assert ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     assert backends_retired_by_host_logout() == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     # The provider-advertised-model seams. claude for the spelling fold; codex
     # because its configOptions ``model`` select is the ONLY source of ids the
@@ -236,10 +266,24 @@ def test_acp_runtime_is_a_superset_of_session_sharing() -> None:
     """The documented relationship between the two sets, asserted rather than described.
 
     Running on AcpRuntime is necessary for session sharing but not sufficient: KAS
-    runs there yet is excluded from sharing until keep-aware teardown lands. A future
-    edit that adds a harness to sharing without adding it to the runtime set would
-    describe a backend that multiplexes sessions without a multiplexer.
+    runs there and is still excluded, because its teardown removes the record a
+    continuation would load. A future edit that adds a harness to sharing without
+    adding it to the runtime set would describe a backend that multiplexes sessions
+    without a multiplexer.
     """
     assert ACP_BACKENDS_SESSION_SHARING <= ACP_BACKENDS_ACP_RUNTIME
     assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
     assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
+    # Sharing is a PROPER subset, and KAS is now the only member of the runtime that
+    # demonstrates it -- so the assertion is kept rather than dropped when codex
+    # moved across, or nothing would hold the two sets apart.
+    assert ACP_BACKENDS_SESSION_SHARING != ACP_BACKENDS_ACP_RUNTIME
+    # codex is in ALL THREE, and the pair below is the fact that puts it in sharing
+    # without softening its teardown: the session is evicted, and the record the
+    # harness owns is what a ``session/load`` restores.
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_EVICTION
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_HARNESS_OWNED_SESSIONS
+    # KAS is in eviction too, so eviction cannot be what sharing is read off.
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_SESSION_EVICTION

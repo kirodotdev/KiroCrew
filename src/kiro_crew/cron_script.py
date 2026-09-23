@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.config.loader import config_dir, read_local_secret
-from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import sanitize_spec_env
 from kiro_crew.github_runner import prevalidated_gh_env
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
@@ -52,6 +52,8 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
+    CANONICAL_TEMP_KEYS,
+    CRON_SCRIPT_CHILD_ENV,
     SandboxUnavailableError,
     cgroup_scope_argv,
     popen_limited,
@@ -59,7 +61,12 @@ from kiro_crew.sandbox import (
     wrap_argv,
 )
 from kiro_crew.secrets import SecretVault
-from kiro_crew.security import is_sensitive_path, redact
+from kiro_crew.security import (
+    _REDACTED_CREDENTIAL_TAG,
+    _STREAM_HOLDBACK_JWT_MAX,
+    is_sensitive_path,
+    redact,
+)
 from kiro_crew.sel import sel
 
 # Env vars stripped from EVERY cron subprocess (command and script), regardless
@@ -81,12 +88,83 @@ _GRANTED_ENV_KEYS: set[str] = set()
 
 
 def _clean_cron_env() -> dict[str, str]:
-    """Return os.environ minus the cron env-deny set (secrets never inherited)."""
-    return {
+    """Return os.environ minus the cron env-deny set (secrets never inherited).
+
+    The temp triple (``TMPDIR``/``TMP``/``TEMP``) is not copied verbatim: every
+    key of it that is present is re-pointed at :func:`_default_temp_dir`, so a
+    child never inherits a temp directory that has vanished under this
+    process (see that function). Absent keys stay absent.
+    """
+    env = {
         k: v
         for k, v in os.environ.items()
         if k not in _CRON_ENV_DENY and k not in _GRANTED_ENV_KEYS
     }
+    present = [k for k in CANONICAL_TEMP_KEYS if k in env]
+    if present:
+        temp_dir = _default_temp_dir()
+        for k in present:
+            env[k] = temp_dir
+    return env
+
+
+def _default_temp_dir() -> str:
+    """``tempfile``'s default directory, re-resolved if the cached one has vanished.
+
+    ``tempfile`` resolves ``dir=None`` from a process-wide cache seeded ONCE
+    from ``TMPDIR``/``TMP``/``TEMP`` -- an ``execve`` snapshot. The gateway's
+    own value can name a per-process scratch directory (``agent_scratch``)
+    inherited from whichever agent session started it: a directory owned by a
+    pid this process is not, which the hourly sweep reclaims once that owner is
+    dead and the tree has been idle for an hour -- exactly what a daily or
+    weekly job's few-second touch guarantees. ``mkstemp`` then raises ``ENOENT``
+    for a file it is trying to CREATE, and the job silently does not run until
+    the gateway restarts. So the directory is checked at every run, not once:
+    the value that was valid at spawn is the one that goes stale.
+
+    A vanished directory is dropped by re-resolving through ``tempfile``'s own
+    candidate chain (a ``None`` cache re-probes each candidate by creating a
+    file in it, so the dead ``TMPDIR`` is skipped and the platform default
+    wins). It is never recreated: a bare ``makedirs`` under the managed scratch
+    root would put back a directory with no owner record, which the sweep
+    never deletes on purpose -- a permanent leak in place of a skipped run.
+    Nothing in this process can be using a directory that does not exist, so
+    the re-resolution takes nothing from any other ``tempfile`` caller.
+    """
+    current = tempfile.gettempdir()
+    if os.path.isdir(current):
+        return current
+    logger.warning("cron: temp dir %r has vanished; re-resolving the default temp dir", current)
+    tempfile.tempdir = None
+    return tempfile.gettempdir()
+
+
+# A script child inherits its parent's seccomp filter, and seccomp survives fork /
+# exec / setsid: when the sandbox that installed it is torn down underneath the
+# child, every file syscall returns ENOSYS while the process looks healthy, the user
+# function still returns, and the parent records a successful run for a job that
+# banked nothing. So the child probes its data home with the gateway's own probe.
+
+#: Exit code for a child that cannot persist (sysexits.h EX_CONFIG: the
+#: environment is wrong, not the script). Only "non-zero" is load-bearing.
+CHILD_PERSISTENCE_EXIT_CODE = 78
+
+CHILD_PERSISTENCE_PREFIX = "❌ Cron child cannot persist state: "
+
+
+def child_persistence_preflight() -> None:
+    """Refuse the run when this child's own filesystem cannot persist state.
+
+    Called from the launcher preamble, after ``boot_platform`` (so a composition
+    failure still surfaces as itself) and before the script body runs. The probe
+    names an inherited seccomp filter when ``errno`` says ``ENOSYS``.
+    ``SystemExit``, so no handler can reshape it into a status envelope.
+    """
+    reason = platform_compat.probe_file_persistence(data_home())
+    if reason is None:
+        return
+    print(f"{CHILD_PERSISTENCE_PREFIX}{reason}", file=sys.stderr, flush=True)
+    raise SystemExit(CHILD_PERSISTENCE_EXIT_CODE)
 
 
 # ---------------------------------------------------------------------------
@@ -1524,6 +1602,187 @@ def _resolve_dial_port() -> int:
     return resolve_serving_port()
 
 
+# How far BEYOND its kept slice each diagnostic-site pattern redaction reads. A
+# credential straddling the slice boundary is only detectable while the bytes
+# on the far side are still present -- but redacting the WHOLE capture to get
+# them costs a multiple of an unbounded string (``proc.communicate`` caps
+# neither stream, and ``redact_credentials`` materialises its base64 runs), so
+# a script streaming gigabytes would OOM the gateway in redaction that survived
+# capture. Redacting a fixed window that overshoots the slice by the streaming
+# redactor's credential-holdback ceiling keeps the footprint constant. Two
+# credential classes are exempted from the margin because a fixed window
+# cannot cover them: granted vault values (shapeless, unbounded -- so
+# ``_scrub_grant_values`` runs over the whole capture BEFORE the window is
+# cut; exact-substring replacement carries none of the amplification this
+# window exists to bound) and severed credentials on the tail-keeping
+# window, where the cut removes the ANCHOR a pattern needs --
+# ``_safe_tail_redaction_window`` masks both severed shapes as classes
+# (label-paired open private-key blocks, and the severed line's leading
+# non-whitespace run) rather than per pattern.
+_REDACT_STRADDLE_MARGIN = _STREAM_HOLDBACK_JWT_MAX
+
+# How much of a failed script's stderr is reported, taken from the END.
+_MAX_SCRIPT_STDERR_TAIL = 500
+
+# How much of an unparsable script stdout is reported, taken from the START.
+_MAX_BAD_OUTPUT_HEAD = 200
+
+#: Private-key PEM block markers, with the SAME label class the batch
+#: redactor's PEM alternative anchors on (``[A-Z ]*PRIVATE KEY``). Only
+#: private-key blocks are tracked: they are the one secret PEM class the
+#: redactor masks, and they have no length ceiling, so they are the one class
+#: the straddle margin cannot cover on a tail-keeping window. The label is
+#: captured so an END can only close a block whose label it MATCHES -- a
+#: certificate footer (or any foreign END line) interleaved inside an open
+#: private-key block is body text, not a close.
+_PEM_KEY_MARKER_RE = re.compile(r"-----(BEGIN|END) ([A-Z ]*PRIVATE KEY)-----")
+
+#: Everything a complete private-key BEGIN marker could start with. Recognises
+#: the cut landing INSIDE a marker, where neither the prefix scan (marker
+#: incomplete before the cut) nor the window's own pattern pass (anchor
+#: destroyed) can see the block that just opened.
+_PEM_BEGIN_LITERAL = "-----BEGIN "
+_PEM_SEVERED_LABEL_RE = re.compile(r"[A-Z ]*-{0,4}\Z")
+
+
+def _may_end_inside_begin_marker(pre_cut_line: str) -> bool:
+    """True when ``pre_cut_line`` could end with a BEGIN marker cut mid-marker.
+
+    ``pre_cut_line`` is the severed line's content BEFORE the cut (bounded by
+    the caller). A marker severed by the cut leaves a nonempty PREFIX of
+    ``-----BEGIN <label>-----`` at the line's end -- possibly after arbitrary
+    inline prose (``Error: dumping -----BEG``), so the check is on the line's
+    SUFFIX, not its start. Two forms: the suffix is a proper prefix of the
+    ``-----BEGIN `` literal itself, or the literal is complete and everything
+    after it to the cut is label characters plus at most four closing dashes.
+    Either way the label (and whether it names a private key) is unknowable
+    from this side of the cut alone, so the caller fails closed. A trailing
+    dash of ordinary prose also matches the first form; that costs a
+    tag-only report for one rare line shape, the safe direction.
+    """
+    for k in range(1, len(_PEM_BEGIN_LITERAL)):
+        if pre_cut_line.endswith(_PEM_BEGIN_LITERAL[:k]):
+            return True
+    idx = pre_cut_line.rfind(_PEM_BEGIN_LITERAL)
+    if idx == -1:
+        return False
+    return (
+        _PEM_SEVERED_LABEL_RE.fullmatch(pre_cut_line[idx + len(_PEM_BEGIN_LITERAL) :]) is not None
+    )
+
+
+def _pem_open_label(text: str, pos: int, endpos: int, open_label: str | None = None) -> str | None:
+    """Walk PEM key markers in ``text[pos:endpos]``; return the open label.
+
+    Label-paired: an END closes only the block whose label it matches, so a
+    foreign END line (a certificate footer) inside an open key block is body
+    text. A BEGIN inside an open block cannot nest (PEM has no nesting): the
+    outer block stays open -- fail closed.
+    """
+    for m in _PEM_KEY_MARKER_RE.finditer(text, pos, endpos):
+        kind, label = m.group(1), m.group(2)
+        if open_label is None:
+            if kind == "BEGIN":
+                open_label = label
+        elif kind == "END" and label == open_label:
+            open_label = None
+    return open_label
+
+
+def _mask_from_open_block(window: str, label: str) -> str:
+    """Mask ``window`` through the labelled END line of an open PEM block."""
+    close = window.find(f"-----END {label}-----")
+    if close == -1:
+        return _REDACTED_CREDENTIAL_TAG
+    close_nl = window.find("\n", close)
+    kept_after = window[close_nl + 1 :] if close_nl != -1 else ""
+    return _REDACTED_CREDENTIAL_TAG + "\n" + kept_after
+
+
+def _safe_tail_redaction_window(text: str, keep: int) -> str:
+    """Return the pattern-redaction input for a TAIL-keeping ``keep`` slice.
+
+    The window is the last ``keep + _REDACT_STRADDLE_MARGIN`` chars of
+    ``text``. Cutting there can sever a credential's ANCHOR from the body the
+    pattern would mask, so fail-closed rules cover the shapes a severed
+    credential can take, without enumerating credential patterns:
+
+    - MULTI-LINE (private-key PEM, unbounded): walk the discarded prefix's
+      PEM markers (bounded ``finditer`` state machine, no copies) pairing
+      each END with its matching BEGIN label; when the window starts inside a
+      block that never closed, mask the retained bytes through that block's
+      OWN labelled END line -- or the whole window when it never closes. The
+      SEVERED LINE gets the same walk: a BEGIN marker sitting after the cut
+      on that line opens a block whose body follows it, so masking the line
+      alone would delete the anchor and hand the body to the pattern pass
+      unanchored -- the walk continues through the severed segment and an
+      open block at its end is masked through its END like any other.
+
+    - SINGLE-LINE (JWT, Bearer, token URL, base64 run): when the window
+      starts mid-line, a broken single-line credential can sit anywhere on
+      the severed line -- directly at the cut, after whitespace, or stranded
+      from an anchor word (``Bearer``) the cut left in the prefix -- so the
+      severed line's whole in-window remainder is masked as a unit. The cost
+      is one partial line of diagnostics that was already cut anyway. When
+      the cut lands inside a BEGIN marker itself -- with or without inline
+      prose before the marker on that line -- the block's label is split
+      across the cut and unknowable, so the whole window fails closed to the
+      tag.
+    """
+    start = len(text) - (keep + _REDACT_STRADDLE_MARGIN)
+    if start <= 0:
+        return text
+    window = text[start:]
+    open_label = _pem_open_label(text, 0, start)
+    if open_label is not None:
+        return _mask_from_open_block(window, open_label)
+    if text[start - 1] not in "\r\n":
+        line_start = text.rfind("\n", 0, start) + 1
+        pre_cut_line = text[max(line_start, start - 256) : start]
+        if _may_end_inside_begin_marker(pre_cut_line):
+            return _REDACTED_CREDENTIAL_TAG
+        line_end = window.find("\n")
+        if line_end == -1:
+            return _REDACTED_CREDENTIAL_TAG
+        severed_open = _pem_open_label(window, 0, line_end)
+        if severed_open is not None:
+            # A BEGIN marker after the cut on the severed line: its block's
+            # body follows in the remainder, and the line mask below would
+            # delete the anchor -- mask through the labelled END instead.
+            return _mask_from_open_block(window[line_end:], severed_open)
+        return _REDACTED_CREDENTIAL_TAG + window[line_end:]
+    return window
+
+
+def _publish_script_session_token(clean_env: dict[str, str], job_id: str) -> str:
+    """Attach the signed token naming ``cron:<job id>`` to a script child's env.
+
+    A script cron's MCP children reach the gateway's internal API under the job's
+    session key, and that API accepts a declared key only behind a transport
+    attestation. The unix-socket peer walk cannot supply one here: nothing
+    publishes a signed pid mapping for the sandbox launcher's pid, so the
+    ancestry walk resolves no session and the middleware attaches no kernel
+    attestation. The signed token is the channel that remains, minted with the
+    same primitive every ACP session uses.
+
+    One token per run: its mapping exists for the life of the run and is removed
+    when the run ends, so completed runs accumulate no mappings or orphans.
+    There is no cache and nothing to evict. The caller retracts the returned
+    token in its finally block; a refused unlink is reported at WARNING.
+
+    Blocking file I/O, on the cron worker thread rather than the event loop.
+    A publication failure leaves a token the verifier refuses, which costs the
+    child calls that need an attested identity, never the run itself.
+    """
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV, mint_stub_session_token
+    from kiro_crew.session_token_sig import publish_session_token
+
+    token = mint_stub_session_token()
+    publish_session_token(token, f"cron:{job_id}")
+    clean_env[STUB_SESSION_TOKEN_ENV] = token
+    return token
+
+
 def run_script_sandboxed(
     script_path: str,
     job_id: str,
@@ -1569,6 +1828,11 @@ def run_script_sandboxed(
     resolved_secret_env: dict[str, str] = {}
     script_body: bytes | None = None
     pinned_dir: str | None = None
+    # Validated BEFORE the first temp file of this run: the pinned dir, the
+    # launcher and the secret file below all use ``dir=None``, which is the
+    # process-wide default -- a value cached at gateway start that can name a
+    # directory reclaimed since. See ``_default_temp_dir``.
+    _default_temp_dir()
     if secret_env:
         try:
             script_body = _read_script_body(file_path_str)
@@ -1651,6 +1915,10 @@ def run_script_sandboxed(
         "from kiro_crew.config.loader import KiroCrewConfig\n"
         "from kiro_crew.platform.bootstrap import boot_platform\n"
         "boot_platform(KiroCrewConfig.load())\n"
+        # Before the script body, so a dead filesystem can never be reported as
+        # a successful no-op run.
+        "from kiro_crew.cron_script import child_persistence_preflight\n"
+        "child_persistence_preflight()\n"
         "from kiro_crew.cron_script import ScriptContext, Skip, Done, Report\n"
         # Record the granted key NAMES so _clean_cron_env strips them from
         # every descendant env (ctx.call_tool's MCP server subprocess): the
@@ -1710,6 +1978,9 @@ def run_script_sandboxed(
     internal_secret = _child_internal_secret(internal_secret_provider, dial_port)
     # Write secret to temp file for ScriptContext (scrubbed from env)
     secret_fd, secret_path = tempfile.mkstemp(prefix="kirocrew_secret_")
+    from kiro_crew.session_token_sig import retract_session_token
+
+    script_session_token = ""
     try:
         try:
             # Tighten the DACL BEFORE writing the secret bytes so the file is
@@ -1814,6 +2085,9 @@ def run_script_sandboxed(
         # The child must dial the gateway the credential above was minted for:
         # same dial_port, resolved once above, not a second resolution here.
         clean_env["_KIROCREW_DIAL_PORT"] = str(dial_port)
+        # Marks the script child for ``refuse_unaudited_on_dead_fs``: an ENOSYS SEL
+        # write is fatal for THIS child, not "proceeding unaudited", and for it only.
+        clean_env[CRON_SCRIPT_CHILD_ENV] = "1"
         # Give the child the SAME identity the gateway hands every agent
         # subprocess (acp/client.py injects KIROCREW_SESSION_KEY for agent crons
         # too): the strict resolver behind every state-mutating MCP tool
@@ -1831,6 +2105,11 @@ def run_script_sandboxed(
         # agent-cron sessions run under, so ownership and audit see one
         # principal per job regardless of which surface the job uses.
         clean_env["KIROCREW_SESSION_KEY"] = f"cron:{job_id}"
+        # The key states an identity; the token PROVES it. Session-scoped gateway
+        # routes accept a declared key only behind an attestation, and this is the
+        # only one a script cron can carry, so its MCP children reach those routes
+        # as this job instead of as a caller that merely holds the internal secret.
+        script_session_token = _publish_script_session_token(clean_env, job_id)
         # Pre-resolve gh OUTSIDE the sandbox and pin its identity for the
         # child: the sandbox's single-uid user namespace maps every root-owned
         # path component to the overflow uid, so the child's own ownership
@@ -1931,12 +2210,22 @@ def run_script_sandboxed(
             # budget, and so an all-whitespace stderr still falls through to the
             # exit-code fallback rather than reporting blank text.
             #
-            # Redact the WHOLE stream before bounding: slicing first would cut
-            # a credential that straddles the 500-char boundary in half, and
-            # ``redact`` cannot recognise the surviving fragment, so it would
-            # reach logs and the persisted ``last_error`` unmasked.
-            tail = redact(_scrub_grant_values(stderr.rstrip(), resolved_secret_env))
-            error_text = tail[-500:] if tail else f"exit {proc.returncode}"
+            # Redact BEFORE bounding: slicing first would cut a credential that
+            # straddles the 500-char boundary in half, and ``redact`` cannot
+            # recognise the surviving fragment, so it would reach logs and the
+            # persisted ``last_error`` unmasked. The two passes get DIFFERENT
+            # inputs, matching what each costs and needs. The grant scrub runs
+            # over the WHOLE capture: it is exact-substring replacement of
+            # values the parent already holds -- O(len) scans, no base64
+            # materialisation -- and a vault value has no shape, so a value
+            # straddling any window edge would stop matching ``value in text``
+            # and its fragment would leak with nothing downstream able to
+            # recognise it. Pattern ``redact`` is the memory amplifier, so ITS
+            # input is a TAIL window reaching ``_REDACT_STRADDLE_MARGIN`` back
+            # past the kept region (see ``_REDACT_STRADDLE_MARGIN``).
+            scrubbed = _scrub_grant_values(stderr.rstrip(), resolved_secret_env)
+            tail = redact(_safe_tail_redaction_window(scrubbed, _MAX_SCRIPT_STDERR_TAIL))
+            error_text = tail[-_MAX_SCRIPT_STDERR_TAIL:] if tail else f"exit {proc.returncode}"
             return {"status": "error", "error": error_text}
 
         try:
@@ -1957,12 +2246,19 @@ def run_script_sandboxed(
                         parsed[k] = _scrub_grant_values(v, resolved_secret_env)
             return parsed
         except (json.JSONDecodeError, IndexError):
+            # Redact BEFORE truncating: slicing first could cut a credential at
+            # the boundary, leaving its unredacted head in the diagnostic. Same
+            # split as the stderr tail above: the grant scrub reads the WHOLE
+            # capture (shapeless values, cheap exact replacement), pattern
+            # ``redact`` reads a HEAD window overshooting the kept region by
+            # ``_REDACT_STRADDLE_MARGIN``.
+            scrubbed_out = _scrub_grant_values(stdout, resolved_secret_env)
             return {
                 "status": "error",
-                # Redact the complete stdout BEFORE truncating: slicing first
-                # could cut a credential at the boundary, leaving its unredacted
-                # head in the diagnostic.
-                "error": f"Bad output: {redact(_scrub_grant_values(stdout, resolved_secret_env))[:200]}",
+                "error": (
+                    "Bad output: "
+                    f"{redact(scrubbed_out[: _MAX_BAD_OUTPUT_HEAD + _REDACT_STRADDLE_MARGIN])[:_MAX_BAD_OUTPUT_HEAD]}"
+                ),
             }
     except subprocess.TimeoutExpired:
         return {"status": "error", "error": f"Script timed out after {timeout}s"}
@@ -1972,6 +2268,7 @@ def run_script_sandboxed(
         # exception the scheduler cannot attribute to this job.
         return {"status": "error", "error": f"{_SANDBOX_UNAVAILABLE_PREFIX}{exc}"}
     finally:
+        retract_session_token(script_session_token)
         Path(launcher_path).unlink(missing_ok=True)
         Path(secret_path).unlink(missing_ok=True)
         if pinned_dir:

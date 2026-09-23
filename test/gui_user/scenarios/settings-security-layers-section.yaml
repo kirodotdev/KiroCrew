@@ -1,0 +1,33 @@
+# Smoke: the read-only Layers pane of Settings > Security. The security panel
+# is a list-detail inspector whose rail separates the knobs the user owns
+# (approval, rules, third-party apps) from the controls that are enforced for
+# them; the Layers pane is the enforced side, one card headed
+# "Defense-in-Depth Architecture" with an intro line and a divided list of
+# feature rows (icon, title, one-line description). Nothing here is a control,
+# so the scenario only reads: it never clicks a row. The expectations name
+# three row titles taken from the feature catalog rather than counting rows,
+# so adding a layer does not break the smoke while a pane that rendered its
+# heading but no rows (a common i18n or data regression) still fails.
+name: settings-security-layers-section
+tier: smoke
+feature: security
+user_story: >-
+  As a user, I want to open the Layers pane of Settings > Security, so that I
+  can see which independent protections are always on for me.
+docs_url: docs/system-specs/modules/security.md
+summary: Open Settings > Security > Layers and read the enforced defense-in-depth rows
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/security/layers
+steps:
+  - You are on the Settings page with its Security tab selected and the Layers pane open. Look at the pane on the right without clicking anything. It is headed "Defense-in-Depth Architecture" and opens with a short line saying that six security layers are implemented and that each operates independently.
+  - Below that line is a list of rows separated by thin dividers. Each row has a small icon, a bold title and a one-line description under it. Read the titles from top to bottom, scrolling the pane if the list runs off the bottom. Do not click any row.
+  - Wait a second.
+expectations:
+  - A section headed "Defense-in-Depth Architecture" is visible, with an intro line mentioning six (6) security layers that operate independently.
+  - The list under it includes rows titled "OS-Level Sandbox", "Sensitive Path Blocking" and "Credential Redaction", each with a short description beneath the title.
+  - Every row shows an icon to the left of its title, and no row is empty, clipped or overlapping its neighbour.
+  - No red error banner is visible anywhere on the page.
+max_steps: 6
+max_seconds: 200

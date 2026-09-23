@@ -4,60 +4,60 @@ One repository's crews live under its repo data dir::
 
     repos/<owner>/<repo>/crews/settings.json      protocol constants, repo-wide
     repos/<owner>/<repo>/crews/<crew_id>.json     one crew
-    repos/<owner>/<repo>/crews/<crew_id>/<n>.json one work item (crew × issue)
-    repos/<owner>/<repo>/crews/events.jsonl       append-only progress log
+
+Those two are operator configuration and are files. The crew's WORK -- its work
+items, its progress lines and its passes -- is not: it is a projection of the
+crew's own crew log. ``issue_radar_crew_record`` appends one ``radar/recorded``
+entry per call to the session log of the slot the crew runs on, and every read of
+a work item, a progress line or the repository's shared skip index folds those
+entries (the ``radar`` projection in ``kiro_crew.crew_log.projection``). See the
+ledger section below for what that buys and what it costs.
 
 Every file carries ``schema``. Issue Radar's usual versioning strategy — a schema
 mismatch is a cache miss, refetch from the forge — does NOT transfer here: a crew
 record has no upstream to refetch from, so readers coerce forward on read and a
 real migration is required if the shape ever changes incompatibly.
 
-Locking. ``store.py``'s per-record lock is the model, with one deliberate
-difference: work-item writes take the **crew-level** lock, not a per-item one.
-The "at most one item in an editing phase" invariant is a statement about the
-whole crew, so the check and the write must be atomic together; a per-item lock
-would let two concurrent writes each observe no other editor and both proceed.
-
-LOCK ORDER, for the one path that holds more than one lock. A crew's progress
-write spans three files, so :func:`commit_work_progress` holds locks across the
-WHOLE transaction and takes the remaining ones from inside that hold:
-**crew -> skip(number) -> records -> events**. Nothing anywhere takes two of
-these in the other relative order, so the order is total.
-
-The outer two are held across the whole transaction, INCLUDING its rollback,
-because each of them guards a value the rollback has to still be entitled to
-change:
-
-  * the CREW lock, for the work item. The transaction restores a snapshot taken
-    before the first write, and a rollback target another writer can move while
-    the snapshot is held is not a rollback — it puts a stale snapshot over a value
-    that committed.
-  * the SKIP lock, for one issue number in the shared index. The index is
-    REPO-WIDE and the crew lock is PER-CREW, so the crew lock serialises nothing
-    at all between two crews passing on the same issue: the second crew's
-    ``record_skip`` finds the first crew's entry, commits its own item and ledger
-    line against it, and the first crew's rollback then deletes an entry the
-    second one has already committed against. Per-NUMBER rather than repo-wide, so
-    two crews passing on two DIFFERENT issues still run concurrently — the pair
-    that has to be serialised is the pair contending for one index entry.
-
-See :func:`commit_work_progress`.
+Locking. ``store.py``'s per-record lock is the model for the crew record. The
+ledger takes no lock of its own: an append to a crew log is serialised by the
+crew log's writer, and every invariant the old three-file transaction held under
+three locks -- a phase never moves without its logged reason, an issue is never
+skipped without being indexed -- is a property of ONE entry instead.
 """
 
 from __future__ import annotations
 
-import contextlib
-import hashlib
 import json
 import logging
 import math
+import os
 import re
 import secrets
+import threading
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import atomic_write as atomic_write_module
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.paths import data_home
+from kiro_crew.crew_log.entry_types import (
+    RADAR_CLEARABLE_FIELDS,
+    RADAR_CREW_LEVEL_EVENT_KIND,
+    RADAR_DEFAULT_SKIP_SCOPE,
+    RADAR_EDITING_PHASES,
+    RADAR_ENTRY_TYPE,
+    RADAR_EVENT_KINDS,
+    RADAR_NUMBER_BOUNDS,
+    RADAR_PHASES,
+    RADAR_SKIP_SCOPES,
+    RADAR_TERMINAL_PHASES,
+    RADAR_TTL_ACTIVE_PHASES,
+)
+from kiro_crew.crew_log.store import log_exception_text
 
 from . import store
 
@@ -75,52 +75,32 @@ CREW_SCHEMA = 1
 #                         heartbeat could be, and a crew waiting on a human's
 #                         review for three days has no progress to record.
 #   EDITING             — a worktree with uncommitted changes. At most one per
-#                         crew, enforced in `upsert_work_item`.
+#                         crew, enforced in `commit_work_progress`.
 #
 # A crew NEVER holds an issue waiting for a human. When it needs a human decision
 # or a human investigation it says so on the issue, labels it, records the pass
 # (`skipped`, with a scope naming which of the two it needs) and releases the
 # claim — so every non-terminal phase is one the crew is itself the actor in, and
 # every one of them occupies a work slot.
-PHASES = (
-    "selected",          # local only, pre-claim — never public
-    "claimed",
-    "investigating",
-    "implementing",
-    "awaiting-ci",
-    "addressing-review",
-    "awaiting-merge",
-    "awaiting-reply",
-    "resolved",
-    "skipped",
-    "yielded",
-    "handed-back",
-    "preempted",
-)
-TERMINAL_PHASES = frozenset({"resolved", "skipped", "yielded", "handed-back", "preempted"})
-TTL_ACTIVE_PHASES = frozenset({"claimed", "investigating", "implementing"})
-EDITING_PHASES = frozenset({"implementing", "addressing-review"})
+PHASES = RADAR_PHASES
+TERMINAL_PHASES = RADAR_TERMINAL_PHASES
+TTL_ACTIVE_PHASES = RADAR_TTL_ACTIVE_PHASES
+EDITING_PHASES = RADAR_EDITING_PHASES
 
 #: ``sweep`` is the one kind that does NOT belong to an issue: it records that the
 #: crew looked at the queue and took nothing, which is the only step in the
 #: protocol with no work item behind it. Every other kind names something done TO
-#: an item, so those lines carry a number and ``sweep`` lines do not (see
-#: :func:`append_event`). Without it a crew that found an empty queue could only
-#: report the cycle by attributing it to some issue it did not act on.
-EVENT_KINDS = (
-    "claim", "investigate", "reply", "implement", "ci",
-    "review", "conflict", "merge", "handback", "skip", "yield", "sweep",
-)
+#: an item, so those lines carry a number and ``sweep`` lines do not. Without it a
+#: crew that found an empty queue could only report the cycle by attributing it to
+#: some issue it did not act on.
+EVENT_KINDS = RADAR_EVENT_KINDS
 
 #: The one kind that records a crew-level step rather than one issue's. It is the
-#: only kind :func:`append_event` accepts without a number, and the only one the
-#: write route accepts with no work-item patch. A named constant rather than a set
-#: of one: the frontend already tests `kind === 'sweep'` by equality, and a
-#: collection whose only justification is a second member that does not exist
-#: reads as generality this app has not earned. A second crew-level kind turns
-#: these three equality tests into a membership test then, against a set that has
-#: two real members.
-CREW_LEVEL_EVENT_KIND = "sweep"
+#: only kind the write route accepts without a number and with no work-item patch.
+#: A named constant rather than a set of one: the frontend already tests
+#: `kind === 'sweep'` by equality, and a collection whose only justification is a
+#: second member that does not exist reads as generality this app has not earned.
+CREW_LEVEL_EVENT_KIND = RADAR_CREW_LEVEL_EVENT_KIND
 
 #: Why an issue was passed over, as a closed vocabulary. Two things need it to be
 #: closed rather than free prose: a crew reads the recent-skip list to calibrate
@@ -137,21 +117,16 @@ CREW_LEVEL_EVENT_KIND = "sweep"
 #:
 #: An unrecognised value is COERCED to ``other`` rather than refused — see
 #: :func:`coerce_skip_scope`.
-SKIP_SCOPES = (
-    "architecture",
-    "new-feature",
-    "needs-design",
-    "needs-decision",
-    "needs-investigation",
-    "duplicate",
-    "already-fixed",
-    "not-reproducible",
-    "wrong-root-cause",
-    "breaking-change",
-    "gate-config",
-    "other",
-)
-DEFAULT_SKIP_SCOPE = "other"
+SKIP_SCOPES = RADAR_SKIP_SCOPES
+DEFAULT_SKIP_SCOPE = RADAR_DEFAULT_SKIP_SCOPE
+
+#: Work-item fields an update may EMPTY by name. An omitted field means
+#: "unchanged"; the only way to erase one is to name it here (the route's and the
+#: tool's ``clear`` list, or an explicit ``None`` in a store-level patch), which the
+#: entry carries as its declared ``clear`` field and the fold applies before the
+#: same update's set fields. Declared with the entry type so the fold and every
+#: writer agree on the list.
+CLEARABLE_FIELDS = RADAR_CLEARABLE_FIELDS
 
 #: Galaxy names. No two share their first two letters, so a crew name is
 #: unambiguous at a glance in a log line — `Cartwheel`/`Pinwheel` and
@@ -371,48 +346,6 @@ def _crew_lock_path(owner: str, repo: str, crew_id: str, root: Path | None = Non
     return crews_dir(owner, repo, root) / f"{_require_crew_id(crew_id)}.lock"
 
 
-def _skip_lock_path(owner: str, repo: str, number: int, root: Path | None = None) -> Path:
-    """The lock that serialises PASSES ON ONE ISSUE across every crew in the repo.
-
-    Distinct from ``_records_lock_path`` because the two protect different things.
-    That one makes a single read-modify-write of the whole ``skipped.json`` file
-    atomic; this one makes one crew's OWNERSHIP of an index entry hold still for
-    longer than the write that created it — from before the entry is inserted until
-    after the transaction that inserted it has either committed or rolled back.
-
-    Nothing shorter works, and the crew lock in particular does not. The index is
-    repo-wide; the crew lock is per-crew. Two crews passing on the same issue hold
-    two DIFFERENT crew locks, so they are not serialised against each other on the
-    shared entry at all: the second one's :func:`record_skip` finds the first one's
-    entry, reports no creation, and commits its own work item and ledger line
-    against it — after which the first one's rollback removes the entry the second
-    one has just committed against. The issue then reads as un-passed to the whole
-    fleet while a crew's own item and log say it passed on it.
-
-    Per-NUMBER, not repo-wide, and that is the whole design: only two transactions
-    contending for the SAME index entry can do this to each other, so that is the
-    only pair worth serialising. A repo-wide hold across the ledger append would
-    park every other crew in the repo behind one transaction's slowest write for no
-    additional safety.
-
-    ``int(number)`` is the only sanitising this needs — the result is always
-    ``-?\\d+``, so unlike a crew id it cannot escape the directory. Same convention
-    as :func:`work_item_path` and ``store.issue_write_lock``.
-    """
-    return crews_dir(owner, repo, root) / f"skip-{int(number)}.lock"
-
-
-@contextlib.contextmanager
-def _skip_lock(owner: str, repo: str, number: int, root: Path | None = None):
-    """Hold :func:`_skip_lock_path` for *number*. See it for why, and the module
-    docstring for where this sits in the lock order."""
-    lock_path = _skip_lock_path(owner, repo, number, root)
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            yield
-
-
 def _records_lock_path(owner: str, repo: str, root: Path | None = None) -> Path:
     """The ONE lock every crew-RECORD write takes, repo-wide.
 
@@ -426,30 +359,11 @@ def _records_lock_path(owner: str, repo: str, root: Path | None = None) -> Path:
     Holding it for retire as well costs nothing (crew edits are human-paced and a
     repo has a handful of crews) and closes a second, quieter window: update and
     retire both read-modify-write the same record, so on separate locks one could
-    overwrite the other's field. Work ITEMS keep the per-crew lock — different
-    files, different invariant.
+    overwrite the other's field.
 
-    The shared SKIP INDEX takes this lock too, for the same reason and not merely
-    by analogy: ``skipped.json`` is one file every crew in the repo writes, so two
-    crews passing on two different issues under two different per-crew locks would
-    each read an index that predates the other and each write it back whole,
-    dropping one of the two decisions. Losing a skip is not cosmetic — the issue
-    it dropped goes back to being re-investigated by every crew.
-
-    This lock makes ONE read-modify-write of that file atomic, and that is all it
-    does. It does NOT keep a crew's entry its own for the length of a transaction —
-    it is released the moment :func:`record_skip` returns, and two crews passing on
-    one issue then race over who may un-index the entry. That is
-    ``_skip_lock_path``'s job, and it is a different lock because it is a different
-    granularity: per-issue and held far longer.
-
-    No path nests this OUTSIDE ``_crew_lock_path`` or ``_skip_lock_path``. The one
-    path that holds more than one lock, :func:`commit_work_progress`, takes the crew
-    lock and then the per-issue skip lock and takes THIS one from inside both — so
-    the order is **crew -> skip(number) -> records** everywhere, and it is total.
-    Two crews passing at once both wait for this lock while holding locks the other
-    does not want in a conflicting order, so neither waits on a lock the other
-    holds. See the module docstring for the full order.
+    Crew records are the only files this module still writes: the work items, the
+    progress lines and the skip index are appends to the crew log and take no lock
+    here (see the ledger section).
     """
     return crews_dir(owner, repo, root) / "_create.lock"
 
@@ -663,10 +577,10 @@ def create_crew(
     lock_path = _records_lock_path(owner, repo, root)
     lock_path.touch(exist_ok=True)
     with open(lock_path, "r+") as fd:
-        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+        with platform_compat.file_lock(fd.fileno(), exclusive=True), _mint_lock(root):
             if name in taken_names(owner, repo, root):
                 raise CrewStoreError(f"crew name {name!r} is already taken in this repo")
-            crew_id = f"c_{secrets.token_hex(4)}"
+            crew_id = _mint_crew_id(root)
             now = store._now_iso()
             record = dict(_DEFAULT_CREW)
             record.update(
@@ -686,6 +600,81 @@ def create_crew(
                 crew_path(owner, repo, crew_id, root), json.dumps(record, indent=2)
             )
     return _coerce_crew(record)
+
+
+#: How many fresh ids are tried before creation gives up. One try all but always
+#: suffices; the bound exists so a broken random source cannot spin forever.
+_CREW_ID_MINT_TRIES = 8
+
+
+def _mint_crew_id(root: Path | None) -> str:
+    """A crew id no crew in ANY repository of this data home holds.
+
+    A crew's id names its slot (``crew-<id>``), and a slot is a data-home-wide name:
+    the crew log lists a slot's units by that key alone, so two crews in different
+    repositories with one id would fold each other's ledgers into one record. The id
+    is random (32 bits), so a clash is improbable; it is made impossible here by
+    checking every repository's crew records -- under the legacy GitHub root and
+    under every provider subtree -- and the crew log's own slot listing before the
+    id is taken, instead of trusting the odds. Called under :func:`_mint_lock`, so
+    two repositories minting at once cannot both pass the check with one id.
+    """
+    for _ in range(_CREW_ID_MINT_TRIES):
+        crew_id = f"c_{secrets.token_hex(4)}"
+        if not _crew_id_in_use(crew_id, root):
+            return crew_id
+    raise CrewStoreError("could not mint an unused crew id")
+
+
+def _app_root(root: Path | None) -> Path:
+    """The app's data root, whichever provider subtree *root* points into.
+
+    ``root`` is the legacy GitHub root or a provider subtree beneath it
+    (``<root>/@providers/<provider>/<host>``); a data-home-wide check has to start
+    from the root above every subtree.
+
+    Only the EXACT trailing three components :func:`store.provider_root` appends are
+    stripped. Matching the first ``@providers`` component anywhere in the path would
+    truncate an operator base path that itself carries that segment, putting both the
+    mint lock and the uniqueness glob above the data home -- where the glob matches
+    no crew record at all, so :func:`_crew_id_in_use` answers False for an id that IS
+    held and two crews fold one ledger.
+    """
+    base = store.data_dir(root)
+    parts = base.parts
+    if len(parts) >= 3 and parts[-3] == store._PROVIDER_SUBTREE:
+        return Path(*parts[:-3])
+    return base
+
+
+def _crew_id_in_use(crew_id: str, root: Path | None) -> bool:
+    """Whether any repository's crew record holds *crew_id*, or a crew-log slot names it."""
+    from kiro_crew.crew_log.store import session_units_for_slot
+
+    app_root = _app_root(root)
+    for pattern in (
+        f"repos/*/*/crews/{crew_id}.json",
+        f"{store._PROVIDER_SUBTREE}/*/*/repos/*/*/crews/{crew_id}.json",
+    ):
+        if any(app_root.glob(pattern)):
+            return True
+    return bool(session_units_for_slot(slot_key_for(crew_id)))
+
+
+@contextmanager
+def _mint_lock(root: Path | None) -> Iterator[None]:
+    """One data-home-wide lock around minting a crew id and writing its record.
+
+    The per-repository records lock serializes creations within one repository;
+    two repositories creating at once hold different locks and could both mint one
+    id between the check and the write. Taken INSIDE the repository lock, always in
+    that order, so the two cannot deadlock.
+    """
+    lock_path = _app_root(root) / "crew-id-mint.lock"
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
+        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            yield
 
 
 def _validated_crew_patch(patch: dict[str, Any]) -> dict[str, Any]:
@@ -781,41 +770,486 @@ def retire_crew(
     return _coerce_crew(record)
 
 
-# ── work items ──────────────────────────────────────────────────────────────
+# ── the ledger: work items, progress lines and passes ───────────────────────
+#
+# A crew's work items, its progress lines and its passes are not files of their
+# own. Each ``issue_radar_crew_record`` call appends ONE ``radar/recorded`` entry to
+# the crew's own crew log -- the session log of the slot the crew runs on -- and
+# everything below is a FOLD of those entries: the ``radar`` projection in
+# ``kiro_crew.crew_log.projection``. One entry carries the item's delta, the event
+# that explains it and, when the phase is ``skipped``, the skip row, so the three
+# writes the old store made all-or-nothing under three locks are one append that a
+# crash cannot separate.
+#
+# A crew's slot owns one ACP session id at a time, so its record is spread over a
+# unit per id it ran under and the read joins them (:func:`crew_log_units`). The
+# repository's shared skip index is the UNION of every crew's folded passes
+# (:func:`read_skips`); that is the one read made across crews, and it is a fold
+# rather than a second mutable file.
+#
+# The pre-projection files (``crews/<crew_id>/<n>.json``, ``events.jsonl``,
+# ``skipped.json``) are read once more, to be CARRIED into the log on a crew's
+# first write after the upgrade (:func:`_carry_legacy_forward`), and never written.
+
+LEDGER_ENTRY_TYPE = RADAR_ENTRY_TYPE
+FOLD_NAME = "radar"
+_ENTRY_SRC = "gateway"
+
+#: How long a write waits for the crew log writer to drain before answering. The
+#: route runs the write on a worker thread, so this costs no event-loop time.
+_APPEND_FLUSH_SECONDS = 5.0
+
+#: Folded checkpoints kept in memory, per (data home, crew). Bounded by count; an
+#: evicted crew folds cold on its next read, which costs time and never correctness.
+#: Reads and writes run on worker threads, so every get, set and eviction holds the
+#: guard: an eviction that picks the oldest key and pops it is two steps, and two
+#: threads taking them unguarded can pop the same key or change the dict under the
+#: other's iterator, which surfaces as a failed read for a crew that did nothing.
+_FOLD_CACHE_SLOTS = 64
+#: A unit's mark: the log file's creation identity and its newest seq, as the file
+#: on disk reports them (:func:`_unit_mark`). Both are in the cache key because a seq
+#: alone cannot tell a log that GREW from a log REMOVED AND RECREATED under the same
+#: id whose seq has already climbed back to or past the cached one.
+_UnitMark = tuple[str | None, int]
+_fold_cache: dict[tuple[str, str], tuple[tuple[str, ...], tuple[_UnitMark, ...], Any]] = {}
+_fold_cache_guard = threading.Lock()
+
+#: One lock per (data home, crew) held across a WRITE's fold, refusals, append and
+#: answer. The refusals are checked against the folded record, so two requests for
+#: one crew validating against the same fold could both pass the one-editor rule and
+#: both append; the route runs writes on worker threads, so the serialization is a
+#: thread lock, taken for the whole write including the drain. Reads take nothing.
+_crew_write_locks: dict[tuple[str, str], threading.Lock] = {}
+_crew_write_locks_guard = threading.Lock()
+
+#: Crews whose last append had not drained to the log when the write answered, each
+#: mapped to the RECEIPT for that append: the unit whose log it belongs in, the seq it
+#: followed, and the entry itself. The crew's next write drains again BEFORE it folds,
+#: so it does not validate against a record missing that entry -- two requests could
+#: otherwise both pass the one-editor rule. The receipt is what makes the clearing
+#: honest: a drained writer is not a landed entry (a dropped write empties the buffer
+#: too), so the mark is released only once the entry is found in that unit's log BY
+#: CONTENT. Touched only under the crew's write lock.
+_undrained: dict[tuple[str, str], tuple[str, int, dict[str, Any]]] = {}
+
+
+def _landed_since(
+    projection: Any, session_id: str, after_seq: int, data: dict[str, Any]
+) -> tuple[tuple[Any, ...] | None, bool]:
+    """The entries after *after_seq* in *session_id*'s log, and whether *data* is among
+    them BY CONTENT.
+
+    Content rather than seq arithmetic, because the crew's own turn appends to the same
+    log while it records, so the span holds more than the entry being looked for. Tried
+    twice: a read that fails once (a transient I/O error) must not turn a landed entry
+    into a refusal, and a second failure is the same answer as a missing entry -- the
+    writer is done and nothing shows the entry in the file. A log that is gone answers
+    ``(None, False)``: nothing landed and nothing will.
+    """
+    for attempt in (1, 2):
+        try:
+            handle = projection.open_session_log(session_id)
+            if handle is None:
+                return None, False
+            since = tuple(handle.iter_from(after_seq + 1, known=projection.KNOWN_TYPES))
+            return since, any(
+                e.type == LEDGER_ENTRY_TYPE and e.data == data for e in since
+            )
+        except Exception:
+            log_exception_text(
+                logger,
+                logging.DEBUG,
+                "crew ledger: could not read the appended entry back (attempt %d)",
+                attempt,
+            )
+    return None, False
+
+
+def _crew_write_lock(crew_id: str) -> threading.Lock:
+    key = (str(data_home()), crew_id)
+    with _crew_write_locks_guard:
+        lock = _crew_write_locks.get(key)
+        if lock is None:
+            lock = _crew_write_locks[key] = threading.Lock()
+        return lock
+
+
+#: Marker files the one-time carry leaves behind, so the pre-projection files are
+#: never read twice and a second crew does not re-carry the repository's passes.
+_ITEMS_CARRIED_MARKER = ".carried"
+_SKIPS_CARRIED_MARKER = "skipped.json.carried"
+
+#: Written when a carry BEGINS. A carry that began and has no finished marker did not
+#: fully land, and the next write runs it again -- the only case in which files that
+#: appear beside a crew with a live record are read: a file that shows up later (a
+#: restore from a backup) is otherwise left alone rather than merged over live state.
+_ITEMS_CARRY_BEGUN_MARKER = ".carrying"
+_SKIPS_CARRY_BEGUN_MARKER = "skipped.json.carrying"
+
+#: Text ceiling the carry applies to what it re-states. It MUST equal the fold's
+#: ``RADAR_TEXT_LIMIT``, which equals the cap the record tool accepts: the carry is
+#: one-shot and marks itself finished, so a legacy value this cuts is gone from the
+#: live ledger with nothing left to re-read it from.
+_MAX_CARRIED_TEXT = 5000
+
+
+class CrewLedgerUnavailable(CrewStoreError):
+    """The crew's session has no crew log to record into.
+
+    The crew log is switched off, or the session has not run its first turn yet.
+    A :class:`CrewStoreError` so the crew routes' conflict mapping still answers it,
+    and its own class so the write route can name the condition (409
+    ``crew_log_unavailable``) instead of a generic conflict.
+    """
+
+
+class CrewLedgerEntryTooLarge(CrewStoreError):
+    """The update does not fit one crew log entry, so it can never land."""
+
+
+class CrewLedgerNotRecorded(CrewStoreError):
+    """The crew log writer drained without landing the update: it was refused.
+
+    The session's log was deleted under the write, or the writer gave up on it.
+    Nothing was recorded, so the caller is told so (503 ``ledger_not_recorded``)
+    rather than handed a record that exists nowhere; the same body may be retried.
+    """
+
+
+def slot_key_for(crew_id: str) -> str:
+    """The slot a crew runs on -- the key its crew log units are headed with."""
+    return f"crew-{_require_crew_id(crew_id)}"
+
+
+def _projection() -> Any:
+    """The fold package, imported where it is used so a crew record read never pulls it."""
+    from kiro_crew.crew_log import projection
+
+    return projection
+
+
+#: The crew's units in the order they first RECORDED, one id per line, kept beside the
+#: crew's record (``crews/<crew_id>.unit-order``; NOT inside ``crews/<crew_id>/``,
+#: which is the pre-projection items dir the one-time carry reads, and whose mere
+#: existence it takes as legacy state to carry). Append order is what makes it
+#: causal: a unit is written here by the write that records into it, so the sequence
+#: is what happened, not what a clock said. Unit headers carry a wall clock, and a
+#: clock stepped backward before a replacement unit was created sorts the
+#: replacement BEFORE its predecessor, which applies a retired session's phases over
+#: the current ones -- on the READ path, where no caller is inside a unit to pin it
+#: last. The newest ids are kept.
+_UNIT_ORDER_SUFFIX = ".unit-order"
+_MAX_ORDERED_UNITS = 64
+#: Reads at most this many bytes of the order file, so a file that grew before the
+#: bound existed cannot make a crew's every cycle read unboundedly.
+_MAX_ORDER_READ_BYTES = _MAX_ORDERED_UNITS * 2 * 256
+
+
+def _unit_order_path(owner: str, repo: str, crew_id: str, root: Path | None) -> Path:
+    return crews_dir(owner, repo, root) / f"{_require_crew_id(crew_id)}{_UNIT_ORDER_SUFFIX}"
+
+
+def _recorded_unit_order(owner: str, repo: str, crew_id: str, root: Path | None) -> tuple[str, ...]:
+    """The units this crew recorded into, oldest first; ``()`` when none is recorded.
+
+    Deduplicated, then the newest :data:`_MAX_ORDERED_UNITS` kept. A failure to read
+    answers ``()``: the caller falls back to header order, which is what every read
+    did before the order existed. The file is opened refusing a link at its name
+    (:func:`platform_compat.open_file_no_reparse`): the order lives where a sandboxed
+    agent may be able to plant a link, and a read through one would take another
+    file's lines for unit ids -- and, since the writer re-states what it read, copy
+    them into this crew's order file.
+    """
+    try:
+        path = _unit_order_path(owner, repo, crew_id, root)
+        if not path.is_file():
+            return ()
+        fd = platform_compat.open_file_no_reparse(path)
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            text = fh.read(_MAX_ORDER_READ_BYTES)
+    except (OSError, ValueError):
+        return ()
+    seen: list[str] = []
+    known: set[str] = set()
+    for line in text.splitlines():
+        unit = line.strip()
+        if unit and unit not in known:
+            known.add(unit)
+            seen.append(unit)
+    return tuple(seen[-_MAX_ORDERED_UNITS:])
+
+
+def _record_unit_order(
+    owner: str, repo: str, crew_id: str, session_id: str, root: Path | None
+) -> None:
+    """Note that *session_id* is the unit this crew records into now.
+
+    Called under the crew's write lock once that unit's entry is read back from its
+    own log by content, so a line here always names a unit whose append LANDED and a
+    refused or queued write cannot claim precedence it never earned. A unit already
+    newest is a bare read; one recorded earlier that records again is MOVED to the
+    end, not appended twice, so the fold never folds a unit twice. The file is
+    compacted to the bound once it outgrows it. Best-effort: a crew whose order
+    cannot be written folds its units in header order instead.
+    """
+    if not session_id:
+        return
+    try:
+        path = _unit_order_path(owner, repo, crew_id, root)
+        known = _recorded_unit_order(owner, repo, crew_id, root)
+        if known and known[-1] == session_id:
+            return
+        ordered = tuple(u for u in known if u != session_id) + (session_id,)
+        _write_unit_order(path, ordered[-_MAX_ORDERED_UNITS:])
+    except (OSError, ValueError):
+        logger.warning("crew ledger: could not record crew %s's unit order", crew_id, exc_info=True)
+
+
+def _write_unit_order(path: Path, lines: tuple[str, ...]) -> None:
+    """Replace *path* with *lines*: a reader sees the old file or the new, and no link
+    is followed on the way.
+
+    The file is never appended to in place -- an ``open("a")`` follows a link planted
+    at the name and would append to whatever it points at -- and never staged under a
+    predictable temp name, which a link could be planted at just the same. It is
+    written by :func:`atomic_write`: a UNIQUELY named temp file created ``O_EXCL``
+    and renamed over the name, which replaces a planted link rather than writing
+    through it. Where the platform supports descriptor-relative writes the parent is
+    PINNED first (``O_DIRECTORY | O_NOFOLLOW``), so a link planted at the directory
+    is refused too; elsewhere every ancestor and the name itself are screened with
+    :func:`platform_compat.is_link_or_junction`, which unlike ``is_symlink`` also
+    answers for a Windows directory junction -- the platform without descriptor-
+    relative writes is the one where junctions exist, so an ``islink``-only check
+    would leave that fallback with no boundary at all.
+    Whole-file writes are cheap here: the file holds at most
+    :data:`_MAX_ORDERED_UNITS` short lines.
+    """
+    content = "".join(f"{line}\n" for line in lines)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if atomic_write_module.pinned_parent_replace_supported():
+        parent_fd = platform_compat.pin_directory(path.parent)
+        try:
+            atomic_write(path, content, fsync=True, newline="", parent_dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+        return
+    if platform_compat.is_link_or_junction(path) or platform_compat.first_linked_ancestor(path):
+        raise OSError(f"{path} is reached through a link; the unit order is not written through it")
+    atomic_write(path, content, fsync=True, newline="")
+
+
+def crew_log_units(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    root: Path | None = None,
+    *,
+    live_session_id: str = "",
+    strict: bool = False,
+) -> tuple[str, ...]:
+    """Every crew log holding *crew_id*'s ledger entries, oldest unit first.
+
+    Units are listed by the wall clock their headers carry, then re-ordered by the
+    order this crew RECORDED into them (:data:`_UNIT_ORDER_SUFFIX`): a unit nothing
+    recorded into contributes no entries, so its place among them is immaterial and
+    header order is kept for it, and every unit absent from the order log is older
+    than everything in it -- the log keeps the newest ids -- so those apply FIRST.
+    The LIVE unit applies LAST whatever either says: a writer knows which unit it is
+    in, and the fold cannot be wrong about it.
+
+    ``()`` when the crew has none -- a crew that never recorded, or a gateway whose
+    crew log is off -- and, unless *strict*, on every failure to LIST them, because
+    this runs on the read path of a crew's every cycle and a listing that cannot be
+    made must not raise into one; a read then answers the empty record. A WRITE lists
+    strictly: a listing that failed, and one that is INCOMPLETE because a unit already
+    holding entries cannot be proved, are both raised rather than folded, because a
+    write that validated against a record missing a unit could admit a second editor.
+    """
+    try:
+        from kiro_crew.crew_log.store import session_units_for_slot
+
+        units = session_units_for_slot(slot_key_for(crew_id), strict=strict)
+        recorded = _recorded_unit_order(owner, repo, crew_id, root)
+        if recorded:
+            known = [u for u in recorded if u in units]
+            rest = [u for u in units if u not in recorded]
+            units = tuple(rest + known)
+        if live_session_id and live_session_id in units:
+            units = tuple(u for u in units if u != live_session_id) + (live_session_id,)
+        return units
+    except Exception:
+        logger.warning("crew ledger: could not list the crew logs for crew %s", crew_id, exc_info=True)
+        if strict:
+            raise
+        return ()
+
+
+def _unit_last_seq(unit_id: str) -> int:
+    """The newest seq in *unit_id*'s log as the file itself reports it, or 0."""
+    try:
+        handle = _projection().open_session_log(unit_id)
+    except Exception:
+        return 0
+    if handle is None:
+        return 0
+    return int(getattr(handle, "last_seq", 0) or 0)
+
+
+def _unit_mark(unit_id: str) -> _UnitMark:
+    """*unit_id*'s log identity and newest seq, read from the file; ``(None, 0)`` if not.
+
+    The identity is :func:`kiro_crew.crew_log.projection.log_origin` -- the value the
+    session fold and the on-disk savepoints compare with -- stamped once when the log
+    file is created, so a log removed and recreated under the same id carries a NEW
+    one however far its seq has climbed. ``None`` is an unknown identity and never
+    matches: a cached checkpoint is neither reused nor continued against it, and the
+    read folds cold, which costs time and never correctness.
+    """
+    projection = _projection()
+    try:
+        handle = projection.open_session_log(unit_id)
+        if handle is None:
+            return (None, 0)
+        return (projection.log_origin(handle), int(getattr(handle, "last_seq", 0) or 0))
+    except Exception:
+        return (None, 0)
+
+
+def _fold_checkpoint(crew_id: str, units: tuple[str, ...]) -> Any:
+    """This crew's ledger fold, continued from where the last read left it.
+
+    Folding is O(the log), not O(the record): the reader walks every line of every
+    unit to find the ``radar/recorded`` ones, and a crew's session log carries its
+    message bodies. A crew is read on every cycle it wakes, so the checkpoint is kept
+    in memory and ADVANCED over the entries that arrived since, through the same
+    seq-anchored machinery a cold fold uses -- the resumed answer and the from-scratch
+    answer come out of one implementation.
+
+    The cache is keyed by every unit's MARK -- its log file's creation identity and
+    its newest seq (:func:`_unit_mark`) -- and three things force a cold rebuild, each
+    of which would otherwise be a wrong answer rather than a slow one: a different
+    unit list, a unit whose identity changed (its log was removed and recreated under
+    the same id, whether or not the new log's seq has climbed back to the cached one)
+    or is unknown, and nothing cached. An earlier unit can still grow -- a forced
+    reset tears a session down while a turn is still appending through the handle it
+    holds -- so EVERY unit's mark is in the check, and only growth confined to the
+    newest unit of the SAME identity is continued incrementally.
+    """
+    projection = _projection()
+    cache_key = (str(data_home()), crew_id)
+    with _fold_cache_guard:
+        cached = _fold_cache.get(cache_key)
+    marks = tuple(_unit_mark(unit) for unit in units)
+    known = all(origin is not None for origin, _seq in marks)
+    if cached is not None and cached[0] == units and cached[1] != marks:
+        continuable = (
+            known
+            and len(marks) == len(cached[1])
+            and marks[:-1] == cached[1][:-1]
+            and bool(marks)
+            and marks[-1][0] == cached[1][-1][0]
+            and marks[-1][1] > cached[1][-1][1]
+        )
+        if continuable:
+            handle = projection.open_session_log(units[-1])
+            if handle is not None:
+                grown = projection.advance(
+                    cached[2],
+                    handle.iter_from(cached[1][-1][1] + 1, known=projection.KNOWN_TYPES),
+                )
+                # Cache only a snapshot the fold AGREES with: ``marks`` was sampled
+                # before ``iter_from`` ran, so an append landing during it is folded
+                # into ``grown`` but not into that sample, and caching the pair would
+                # make the next read advance from an entry already folded -- which
+                # ``advance`` refuses, surfacing as an EMPTY record.
+                if tuple(_unit_mark(unit) for unit in units) == marks:
+                    _remember_fold(cache_key, units, marks, grown)
+                return grown
+    elif cached is not None and cached[0] == units and known:
+        return cached[2]
+    checkpoint = projection.fold_slot_checkpoint(FOLD_NAME, units)
+    if known and tuple(_unit_mark(unit) for unit in units) == marks:
+        _remember_fold(cache_key, units, marks, checkpoint)
+    return checkpoint
+
+
+def _remember_fold(
+    cache_key: tuple[str, str],
+    units: tuple[str, ...],
+    marks: tuple[_UnitMark, ...],
+    checkpoint: Any,
+) -> None:
+    with _fold_cache_guard:
+        _fold_cache[cache_key] = (units, marks, checkpoint)
+        while len(_fold_cache) > _FOLD_CACHE_SLOTS:
+            _fold_cache.pop(next(iter(_fold_cache)))
+
+
+def read_ledger(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    root: Path | None = None,
+    *,
+    live_session_id: str = "",
+) -> dict[str, Any]:
+    """*crew_id*'s whole ledger -- the ``radar`` projection's value.
+
+    ``items`` newest progress first, ``events`` newest first, ``skips`` keyed by
+    ``str(number)`` (this crew's own passes), ``phase_lines`` per item, ``counts``.
+    The empty record when the crew has no crew log and nothing to carry forward.
+
+    A crew upgraded from the pre-projection files reads its PENDING carry
+    (:func:`_legacy_preview`) until a write consumes it, because the carry can only
+    run from a write and the reads that happen first are the ones the crew acts on.
+    """
+    projection = _projection()
+    units = crew_log_units(owner, repo, crew_id, root, live_session_id=live_session_id)
+    try:
+        base = _fold_checkpoint(crew_id, units)
+        value = projection.projection_of(base).value
+    except Exception:
+        # A crew whose log cannot be FOLDED reads as the empty record, the same answer
+        # as a crew whose logs could not be listed and the same contract the
+        # pre-projection reader kept when its index would not parse. This is the read
+        # path: one crew's damaged log, a segment boundary a reader cannot follow, or
+        # an entry type a newer writer introduced would otherwise raise into the crew
+        # page and the pre-investigate briefing for EVERY crew in the repository,
+        # because those read across crews. The write path does not come through here:
+        # it folds strictly (:func:`_prepare_write`), since a write that validated
+        # against an empty record could admit a second editor.
+        #
+        # NOT previewed here either. A refused fold means a reader older than the
+        # writer, so the log may hold entries this build could not read -- answering
+        # with the pre-projection files would assert that the upgrade has not happened
+        # on the strength of a log it failed to read.
+        logger.warning(
+            "crew ledger: could not fold crew %s's crew log; reading it as empty",
+            crew_id,
+            exc_info=True,
+        )
+        return projection.projection_of(projection.initial(FOLD_NAME)).value
+    return _legacy_preview(owner, repo, crew_id, root, base) or value
 
 
 def read_work_item(
     owner: str, repo: str, crew_id: str, number: int, root: Path | None = None
 ) -> dict[str, Any] | None:
-    path = work_item_path(owner, repo, crew_id, number, root)
-    if not path.is_file():
-        return None
-    try:
-        rec = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return rec if isinstance(rec, dict) else None
+    number = int(number)
+    for record in read_ledger(owner, repo, crew_id, root)["items"]:
+        if record.get("number") == number:
+            return record
+    return None
 
 
 def list_work_items(
     owner: str, repo: str, crew_id: str, root: Path | None = None, *, open_only: bool = False
 ) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    d = crews_dir(owner, repo, root) / crew_id
-    if not d.is_dir():
-        return out
-    for path in sorted(d.glob("*.json")):
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(rec, dict):
-            continue
-        if open_only and rec.get("phase") in TERMINAL_PHASES:
-            continue
-        out.append(rec)
-    out.sort(key=lambda r: r.get("last_progress_at") or "", reverse=True)
-    return out
+    """This crew's work items, newest progress first -- the fold's own order."""
+    items = read_ledger(owner, repo, crew_id, root)["items"]
+    if open_only:
+        items = [record for record in items if record.get("phase") not in TERMINAL_PHASES]
+    return items
 
 
 def open_slot_count(
@@ -830,423 +1264,13 @@ def open_slot_count(
     return len(list_work_items(owner, repo, crew_id, root, open_only=True))
 
 
-def serialize_work_item(record: dict[str, Any]) -> str:
-    """The exact text a work item occupies on disk.
-
-    The ONE serialisation of this file, so a record and the bytes standing for it
-    cannot drift: :func:`_upsert_work_item_locked` stores what this returns, and the
-    store's own test pins the two against each other.
-
-    Byte-for-byte, on every platform: the write passes ``newline=""``, so the file
-    holds this string literally. With the default translation it would hold
-    ``\\r\\n`` on Windows and no reader could match it.
-    """
-    return json.dumps(record, indent=2)
-
-
-def upsert_work_item(
-    owner: str,
-    repo: str,
-    crew_id: str,
-    number: int,
-    patch: dict[str, Any],
-    root: Path | None = None,
-) -> dict[str, Any]:
-    """Merge *patch* into one work item, per field, and return the stored record.
-
-    Takes the crew-level lock (see the module docstring for why it is not per-item)
-    and delegates to :func:`_upsert_work_item_locked`. A caller that already holds
-    that lock — :func:`commit_work_progress` — must call the locked form directly:
-    the lock is a file lock taken on a fresh descriptor, so re-entering it from the
-    same thread blocks on itself forever rather than nesting.
-    """
-    lock_path = _crew_lock_path(owner, repo, crew_id, root)
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            return _upsert_work_item_locked(owner, repo, crew_id, number, patch, root)
-
-
-def _upsert_work_item_locked(
-    owner: str,
-    repo: str,
-    crew_id: str,
-    number: int,
-    patch: dict[str, Any],
-    root: Path | None = None,
-) -> dict[str, Any]:
-    """:func:`upsert_work_item`'s body. THE CALLER MUST HOLD THE CREW LOCK.
-
-    ``claimed_at`` is stamped once. ``last_progress_at`` moves ONLY when the patch
-    carries real progress — a phase change, a new ``next``, a PR number, a CI
-    reading, or an appended ``tried`` entry. A bare read-back must not renew a
-    claim, because the TTL is measured from this field.
-
-    Refuses a second item entering an editing phase. That check reads the crew's
-    OTHER items, which is why the lock it needs is the crew's and not the item's.
-    """
-    number = int(number)
-    now = store._now_iso()
-    existing = read_work_item(owner, repo, crew_id, number, root) or {}
-    phase = existing.get("phase") if existing.get("phase") in PHASES else "selected"
-
-    if "phase" in patch:
-        new_phase = str(patch["phase"] or "").strip()
-        if new_phase not in PHASES:
-            raise CrewStoreError(f"unknown phase {new_phase!r}")
-        if new_phase in EDITING_PHASES and phase not in EDITING_PHASES:
-            other = _editing_item(owner, repo, crew_id, root, exclude=number)
-            if other is not None:
-                raise CrewStoreError(
-                    f"crew {crew_id} is already editing #{other} — finish or "
-                    "commit that before entering an editing phase on another issue"
-                )
-        phase = new_phase
-
-    record: dict[str, Any] = {
-        "schema": CREW_SCHEMA,
-        "crew_id": crew_id,
-        "owner": owner,
-        "repo": repo,
-        "number": number,
-        "phase": phase,
-        "outcome": existing.get("outcome"),
-        "decision": existing.get("decision", ""),
-        "why": existing.get("why", ""),
-        "next": existing.get("next", ""),
-        "tried": list(existing.get("tried") or []),
-        "worktree": existing.get("worktree", ""),
-        "branch": existing.get("branch", ""),
-        "base_sha": existing.get("base_sha", ""),
-        # Carried forward through `_finite_int` rather than copied, so a value that
-        # was hand-edited into the file cannot be re-serialised by this write: once
-        # `Infinity` is written back the record stops being JSON any strict parser
-        # will read, and the crew's own page is served from it.
-        "pr_number": _finite_int(existing.get("pr_number")),
-        "ci_state": existing.get("ci_state") or {},
-        "claim_comment_id": _finite_int(existing.get("claim_comment_id")),
-        "labels_applied": list(existing.get("labels_applied") or []),
-        "claimed_at": existing.get("claimed_at") or (
-            now if phase not in ("selected",) else None
-        ),
-        "last_progress_at": existing.get("last_progress_at") or now,
-        "finished_at": existing.get("finished_at"),
-    }
-
-    progressed = "phase" in patch and patch["phase"] != existing.get("phase")
-
-    for key in ("decision", "why", "next", "worktree", "branch", "base_sha"):
-        if key in patch and isinstance(patch[key], str):
-            record[key] = patch[key]
-            if key == "next" and patch[key] != existing.get("next"):
-                progressed = True
-    if "pr_number" in patch:
-        record["pr_number"] = _finite_int(patch["pr_number"])
-        progressed = True
-    if "claim_comment_id" in patch:
-        record["claim_comment_id"] = _finite_int(patch["claim_comment_id"])
-    if "ci_state" in patch and isinstance(patch["ci_state"], dict):
-        record["ci_state"] = {**record["ci_state"], **patch["ci_state"]}
-        progressed = True
-    if "labels_applied" in patch and isinstance(patch["labels_applied"], list):
-        record["labels_applied"] = [
-            str(x) for x in patch["labels_applied"] if isinstance(x, str)
-        ]
-    if "outcome" in patch and isinstance(patch["outcome"], str):
-        record["outcome"] = patch["outcome"].strip() or None
-    tried = patch.get("tried_approach")
-    if isinstance(tried, str) and tried.strip():
-        record["tried"].append(
-            {
-                "approach": tried.strip(),
-                "rejected_because": str(patch.get("tried_rejected_because") or ""),
-                "at": now,
-            }
-        )
-        progressed = True
-
-    if progressed:
-        record["last_progress_at"] = now
-    if phase in TERMINAL_PHASES:
-        # Stamp once per terminal ARRIVAL, not once per item's lifetime.
-        if not record["finished_at"]:
-            record["finished_at"] = now
-    else:
-        # Reopened: a resolved issue can come back and be handled again by the
-        # same crew, which reuses this very item. EVERY field that describes a
-        # finished result has to be dropped here, or the item reports a terminal
-        # outcome while it is demonstrably being worked again.
-        #
-        # These two are the whole terminal set, and they are cleared together on
-        # purpose — clearing one and not the other is exactly how this bug got
-        # reported twice. The other carried-forward fields are deliberately NOT
-        # cleared: `decision`/`why`/`next`/`tried` are the crew's memory of what
-        # it already ruled out (losing them makes it repeat rejected approaches),
-        # and `worktree`/`branch`/`base_sha`/`pr_number`/`ci_state`/
-        # `claim_comment_id`/`labels_applied` describe where the work lives and
-        # what is on the forge right now, which a reopen does not invalidate.
-        #
-        # `finished_at`: a stale stamp put the second resolution outside the
-        # `resolved24h` window, so the crew's page under-reported its own work.
-        # `outcome`: a stale outcome made the ledger assert a terminal result on
-        # active work — a reader cannot tell that from a genuinely finished item.
-        record["finished_at"] = None
-        record["outcome"] = None
-
-    atomic_write(
-        work_item_path(owner, repo, crew_id, number, root),
-        serialize_work_item(record),
-        newline="",
-    )
-    return record
-
-
-def _editing_item(
-    owner: str, repo: str, crew_id: str, root: Path | None = None, *, exclude: int | None = None
-) -> int | None:
-    """The issue number this crew is currently editing, if any."""
-    for it in list_work_items(owner, repo, crew_id, root, open_only=True):
-        if it.get("phase") in EDITING_PHASES and it.get("number") != exclude:
-            num = it.get("number")
-            if isinstance(num, int):
-                return num
+def _editing_item(state: dict[str, Any], *, exclude: int | None = None) -> int | None:
+    """The issue number the folded crew is currently editing, if any."""
+    for record in state["items"].values():
+        num = record.get("number")
+        if record.get("phase") in EDITING_PHASES and num != exclude and isinstance(num, int):
+            return num
     return None
-
-
-# ── event ledger ────────────────────────────────────────────────────────────
-
-
-def _event_id(ts: str, crew_id: str, number: int | None, kind: str, text: str) -> str:
-    """Content-addressed id for one ledger line.
-
-    ``number`` is ``None`` for a crew-level line. It renders as the empty string
-    so the formula for a NUMBERED line is byte-identical to what it has always
-    been -- changing that would give every existing line a new id and defeat the
-    merge-on-read dedupe for the whole ledger. The empty string cannot collide
-    with a real number, so the two families stay distinct.
-    """
-    shown = "" if number is None else int(number)
-    raw = f"{ts}|{crew_id}|{shown}|{kind}|{text}".encode()
-    return hashlib.sha256(raw).hexdigest()[:16]
-
-
-def _event_entry(
-    crew_id: str,
-    number: int | None,
-    kind: str,
-    text: str,
-    *,
-    phase: str | None = None,
-) -> dict[str, Any]:
-    """Validate one ledger line and build it. The ONLY place a line is shaped.
-
-    Both writers go through here -- :func:`append_event` for an issue's line and
-    :func:`record_crew_checkpoint` for a crew-level one -- so the vocabulary
-    check, the number/kind pairing and the key order are stated once. Two
-    builders would let the numberless line drift from the numbered one, which is
-    the drift the pairing exists to prevent.
-
-    The pairing is enforced in BOTH directions: a numberless line must carry a
-    crew-level kind, and a crew-level kind must not carry a number. ``number`` is
-    typed ``int | None`` here and ``int`` on :func:`append_event`, so the
-    numberless case is unreachable through the public issue-line writer by type
-    as well as by this check.
-
-    CALL THIS UNDER THE EVENTS LOCK, immediately before writing the line. It
-    stamps ``ts``, and the stamp must be taken in the same order the lines are
-    appended: a caller that built its entry first and then blocked on the lock
-    would write a line whose timestamp PRECEDES the line already above it. That
-    inverts file order against timestamp order, and the two readers disagree ---
-    :func:`_latest_crew_event` walks the file backwards, so it would keep
-    coalescing onto that trailing sweep, while the crew page sorts by ``ts`` and
-    would never see it as the newest line. The idle stretch would then stay
-    hidden for as long as the crew kept idling, which is precisely what the
-    ongoing-stretch wording exists to show.
-    """
-    if kind not in EVENT_KINDS:
-        raise CrewStoreError(f"unknown event kind {kind!r}")
-    if number is None and kind != CREW_LEVEL_EVENT_KIND:
-        raise CrewStoreError(f"event kind {kind!r} needs an issue number")
-    if number is not None and kind == CREW_LEVEL_EVENT_KIND:
-        raise CrewStoreError(f"event kind {kind!r} is crew-level and takes no issue number")
-    ts = store._now_iso()
-    # Built in the original key order so a NUMBERED line serializes exactly as it
-    # always has; the numberless line simply omits the key in place.
-    entry: dict[str, Any] = {
-        "id": _event_id(ts, crew_id, number, kind, text),
-        "ts": ts,
-        "crew_id": crew_id,
-    }
-    if number is not None:
-        entry["number"] = int(number)
-    entry["kind"] = kind
-    entry["text"] = text
-    if phase is not None:
-        entry["phase"] = phase
-    return entry
-
-
-def append_event(
-    owner: str,
-    repo: str,
-    crew_id: str,
-    number: int,
-    kind: str,
-    text: str,
-    root: Path | None = None,
-    *,
-    phase: str | None = None,
-) -> dict[str, Any]:
-    """Append one issue's progress line.
-
-    The id is content-addressed so a duplicated line merges on read rather than
-    conflicting — the same discipline as ops-mission-control's ledger, whose own
-    docstring records that it shipped without a lock and was caught in review.
-
-    ``text`` BECOMES PUBLIC: it is rendered both on the crew page and inside the
-    ``<details>`` block of the claim comment on the forge. Callers must keep
-    absolute paths, host names and anything else environment-specific out of it;
-    worktree paths belong in the work item's own fields.
-
-    A line that belongs to NO issue is written by
-    :func:`record_crew_checkpoint`, not here: that case has to read the crew's
-    tail and decide whether to append at all, under the same lock hold. This
-    function therefore requires a number, and the shared builder refuses a
-    crew-level kind through it.
-
-    ``phase`` is the work item's phase AFTER this write, and it is the sole datum
-    that makes a per-phase dwell fold possible (:func:`crew_routes` folds it).
-    Recorded because ``kind`` is NOT it: :data:`EVENT_KINDS` is not 1:1 with
-    :data:`PHASES` (a ``ci`` line can leave an item in ``awaiting-ci`` or move it to
-    ``addressing-review``), so the phase cannot be recovered from the kind. It is
-    keyword-only and defaults to ``None`` — ``None`` is OMITTED from the stored line
-    rather than written as a null, because a write that carried no phase (the id is
-    content-addressed and does not depend on it) should leave a line indistinguishable
-    from the pre-feature lines the fold already has to tolerate. Not part of the
-    event id: two lines that differ only in the phase they record are still the same
-    logged reason, and folding one in twice must still merge.
-    """
-    lock_path = crews_dir(owner, repo, root) / "events.lock"
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            entry = _event_entry(crew_id, number, kind, text, phase=phase)
-            _write_event_line(owner, repo, entry, root)
-    return entry
-
-
-def _write_event_line(
-    owner: str, repo: str, entry: dict[str, Any], root: Path | None = None
-) -> None:
-    """Append one already-built line. CALLER MUST HOLD the events lock.
-
-    Split out so a writer that has to READ the tail before deciding whether to
-    append can do both inside ONE lock hold (see :func:`record_crew_checkpoint`).
-    Re-entering :func:`append_event` there would take the lock on a second
-    descriptor and block on the hold this frame already has.
-    """
-    with open(events_path(owner, repo, root), "a", encoding="utf-8") as out:
-        out.write(json.dumps(entry) + "\n")
-
-
-def _latest_crew_event(
-    owner: str, repo: str, crew_id: str, root: Path | None = None
-) -> dict[str, Any] | None:
-    """This crew's newest ledger line, or ``None``. CALLER MUST HOLD the lock.
-
-    Reads through :func:`read_events`, so it inherits that function's tolerance of
-    a torn tail and its duplicate collapse rather than re-parsing the file here.
-    """
-    recent = read_events(owner, repo, root, crew_id=crew_id, limit=1)
-    return recent[0] if recent else None
-
-
-def record_crew_checkpoint(
-    owner: str,
-    repo: str,
-    crew_id: str,
-    event_text: str,
-    root: Path | None = None,
-) -> dict[str, Any]:
-    """Append one crew-level ledger line -- a step that belongs to no issue.
-
-    TAKES NO KIND. There is exactly one crew-level kind, and the route that calls
-    this already 400s anything else on the numberless path, so a parameter here
-    could only ever carry :data:`CREW_LEVEL_EVENT_KIND` -- a value to be re-checked
-    and rejected rather than a choice a caller makes. Writing the constant directly
-    removes the argument and the guard that policed it; :func:`_event_entry` still
-    enforces the number/kind pairing, so the shape is validated in one place either
-    way.
-
-    Returns the same ``{"item", "event", "skip"}`` shape as
-    :func:`commit_work_progress`, with ``item`` and ``skip`` as ``None``, so the
-    write route answers one shape and no caller has to branch on which kind of
-    write it made. ``coalesced`` says whether a line was actually written.
-
-    CONSECUTIVE SWEEPS COALESCE, and this is the whole reason the function reads
-    before it writes. "I checked and took nothing" is a recurring LATEST-VALUE
-    fact, not an event: an idle crew is nudged on a timer, so appending one line
-    per cycle would add an unbounded run of them. Every ledger read is capped and
-    discards the OLDEST line first (:data:`crew_routes._DEFAULT_EVENTS` is 200), so
-    a crew idling for a couple of hundred cycles would push its entire real work
-    history out of its own work log -- the feature would bury exactly what the log
-    exists to show. Recording the TRANSITION rather than the state is the same
-    discipline :func:`commit_work_progress` already applies to ``phase``, which is
-    stamped only when an item is created or actually moves.
-
-    So the FIRST sweep after real work is written, and a sweep whose crew already
-    has one as its newest line is answered with that existing line. The crew still
-    sees its checkpoint acknowledged; the log just does not grow a duplicate. The
-    timestamp therefore marks when the idle stretch BEGAN, which is the more useful
-    of the two readings -- "nothing to take since 09:12" beats "nothing to take as
-    of one minute ago", and how long the stretch has run is the question a human
-    opening a quiet crew is asking.
-
-    WHAT THE SURVIVING TIMESTAMP DOES NOT MEAN. It records when this crew last
-    REPORTED an empty queue, and nothing about the present: consecutive reports
-    fold, and a crew that stops -- an operator pause, a crash, a lost nudge timer
-    -- stops reporting without saying so, because nothing on the crew record
-    evidences liveness. So the ledger cannot distinguish a crew still checking from
-    one that quietly died mid-stretch, and the crew page therefore renders this line
-    as the past instant it is rather than as a claim about now. An earlier revision
-    qualified it as "checking since ...", which read as present-tense activity and
-    so masked exactly the failure an operator opens that page to notice. Closing
-    that properly needs a real last-seen datum, which is a separate change.
-
-    Deliberately NOT a branch inside :func:`commit_work_progress`. That function
-    exists to make three durable writes all-or-nothing, and every line of its lock
-    ordering and rollback is about reconciling an item, a repo-wide skip entry and
-    a ledger line. A crew-level line has nothing to reconcile and nothing to roll
-    back, so threading a ``None`` number through that transaction would add
-    branches to the most order-sensitive code in the store to describe a case that
-    has no transaction in it.
-
-    ``event_text`` BECOMES PUBLIC on the crew page under the same rule as any other
-    line -- see :func:`append_event`. Unlike an item line it is not rendered into a
-    claim comment, because a crew-level step has no issue to comment on.
-    """
-    # ONE lock hold spans the read and the write. Checking the tail and appending
-    # under two separate holds is a check-then-act: two crew turns waking together
-    # would both see no trailing sweep and both append, which is the exact run of
-    # duplicates this exists to prevent.
-    #
-    # COST, stated because the hold is exclusive: the tail read goes through
-    # `read_events`, which reads the WHOLE repo-wide events file and then walks it
-    # backwards to the first matching line. Nothing compacts that file today, so
-    # the hold grows with total ledger volume, not with this crew's share of it.
-    # Coalescing is what keeps an idle crew from being the thing that grows it --
-    # an idle crew appends once per stretch, not once per wake -- but a compaction
-    # story is still owed if the file becomes large enough to matter here.
-    lock_path = crews_dir(owner, repo, root) / "events.lock"
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            latest = _latest_crew_event(owner, repo, crew_id, root)
-            if latest is not None and latest.get("kind") == CREW_LEVEL_EVENT_KIND:
-                return {"item": None, "event": latest, "skip": None, "coalesced": True}
-            entry = _event_entry(crew_id, None, CREW_LEVEL_EVENT_KIND, event_text)
-            _write_event_line(owner, repo, entry, root)
-    return {"item": None, "event": entry, "skip": None, "coalesced": False}
 
 
 def read_events(
@@ -1258,109 +1282,91 @@ def read_events(
     limit: int = 200,
     require_phase: bool = False,
 ) -> list[dict[str, Any]]:
-    """Newest first, duplicate ids collapsed. A malformed line is skipped rather
-    than failing the whole read — the ledger is append-only and a torn tail must
-    not hide the history in front of it.
+    """Progress lines, newest first: one crew's, or every crew's in the repository.
 
-    ``require_phase`` keeps only lines that carry a ``phase``. It exists for the
-    fabric fold, whose ``limit`` would otherwise be spent on lines it discards:
-    the cap drops the OLDEST events, so a lane parked in one phase for a long
-    time is exactly the one whose entry line falls outside the window — and the
-    longer it stalls, the more certain that is. Filtering to the phase-bearing
-    subset makes the cap bound real transitions instead of write volume.
+    Each crew's fold already collapses a duplicated line and drops a malformed one,
+    so the union here only merges and orders. ``require_phase`` keeps the lines that
+    carry a ``phase`` -- the ENTRIES into a phase, which is what a dwell reader wants.
     """
-    path = events_path(owner, repo, root)
-    if not path.is_file():
-        return []
-    seen: set[str] = set()
-    out: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict):
-            continue
-        rid = str(rec.get("id") or "")
-        if rid and rid in seen:
-            continue
-        if crew_id and rec.get("crew_id") != crew_id:
-            continue
-        if require_phase and not rec.get("phase"):
-            continue
-        seen.add(rid)
-        out.append(rec)
-        if len(out) >= limit:
-            break
-    return out
-
-
-# ── shared skip index ───────────────────────────────────────────────────────
-#
-# One file per repo, keyed by issue number as a STRING because that is what JSON
-# object keys are: round-tripping ints through `json.dump` would turn 42 into
-# "42" on write and leave the reader guessing which form it holds. Callers pass
-# ints and this module does the conversion at both ends.
+    if crew_id:
+        sources = [read_ledger(owner, repo, crew_id, root)]
+    else:
+        sources = [
+            read_ledger(owner, repo, str(crew.get("id") or ""), root)
+            for crew in list_crews(owner, repo, root, include_retired=True)
+            if crew.get("id")
+        ]
+    rows = [line for source in sources for line in source["events"]]
+    if require_phase:
+        rows = [line for line in rows if line.get("phase")]
+    rows.sort(key=lambda line: str(line.get("ts") or ""), reverse=True)
+    return rows[: max(0, limit)]
 
 
 def coerce_skip_scope(scope: Any) -> str:
     """*scope* if it is a known one, else ``other``.
 
-    Coerced rather than refused, deliberately. The alternative — raising on an
-    unknown scope — makes an imperfect label cost the entire skip record, and a
+    Coercing rather than refusing -- the alternative, a 400 on a crew that used an
+    unknown scope -- makes an imperfect label cost the entire skip record, and a
     skip that fails to record is exactly the waste this index exists to remove.
     The scope is a filter label; the ``reason`` is the substance, and it is free
-    text precisely so nothing forces a decision into the wrong bucket.
+    text precisely so nothing forces a decision into the wrong bucket. Case and
+    padding are forgiven for the same reason.
     """
     text = str(scope or "").strip().lower()
     return text if text in SKIP_SCOPES else DEFAULT_SKIP_SCOPE
 
 
 def read_skips(owner: str, repo: str, root: Path | None = None) -> dict[str, dict[str, Any]]:
-    """The whole index, keyed by ``str(number)``.
+    """The repository's shared skip index, keyed by ``str(number)``.
 
-    A malformed or missing file reads as empty rather than raising: this is
-    consulted on the path where a crew decides whether to investigate, and a torn
-    file must degrade into "nothing is known to be skipped" (one wasted
-    investigation) rather than into a crash that stops the crew.
+    The one read made ACROSS crews: every crew of the repository, retired ones
+    included, contributes the passes its own fold holds, and on each number the
+    FIRST decision stands -- the same first-decision-wins rule the index always had.
+    Which row is first is decided by :func:`_skip_precedence`: a row recorded while
+    another crew's decision already stood carries ``deferred`` and never stands over
+    it, so an established decision cannot be replaced by a later pass whatever the
+    clocks say; only two passes neither of which saw the other -- recorded inside the
+    propagation window below -- fall back to the recorded time, and between two
+    concurrent decisions neither was established.
+
+    STALENESS. A pass another crew recorded is visible here once that crew's append
+    has DRAINED to its log, and each crew's fold is re-checked against its log on
+    every read, so nothing is cached past a write. The flush budget
+    (``_APPEND_FLUSH_SECONDS``) does not bound that wait: it bounds how long the
+    WRITE waits before answering ``durable: false``, and an append still held by the
+    writer past it lands whenever the writer drains, with no bound on when. That is
+    why the rule above turns on what was ESTABLISHED rather than on how long ago
+    something was recorded -- an unbounded lag cannot let a later pass displace a
+    decision that already stood. A pass whose unit crew-log retention has already
+    collected is gone from this index; that is the same bound every fold of the crew
+    log lives under, and the spec states it.
     """
-    path = skips_path(owner, repo, root)
-    if not path.is_file():
-        return {}
-    try:
-        stored = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    if not isinstance(stored, dict):
-        return {}
     out: dict[str, dict[str, Any]] = {}
-    for key, val in stored.items():
-        if not isinstance(val, dict):
+    for crew in list_crews(owner, repo, root, include_retired=True):
+        cid = str(crew.get("id") or "")
+        if not cid:
             continue
-        number = val.get("number")
-        if not isinstance(number, int) or isinstance(number, bool):
-            # Tolerate an entry whose `number` was written as a string by an older
-            # writer: the KEY is authoritative, and an entry that cannot be read
-            # back as an int would silently drop out of `skipped_numbers`.
-            try:
-                number = int(str(key))
-            except (TypeError, ValueError):
-                continue
-        out[str(number)] = {
-            "number": number,
-            "reason": str(val.get("reason") or ""),
-            "scope": coerce_skip_scope(val.get("scope")),
-            "crew_id": str(val.get("crew_id") or ""),
-            "decided_at": str(val.get("decided_at") or ""),
-        }
+        for key, row in read_ledger(owner, repo, cid, root)["skips"].items():
+            standing = out.get(key)
+            if standing is None or _skip_precedence(row) < _skip_precedence(standing):
+                out[key] = dict(row)
     return out
+
+
+def _skip_precedence(row: dict[str, Any]) -> tuple[bool, str, str]:
+    """Sort key under which the row that STANDS on a number sorts first.
+
+    A ``deferred`` row -- recorded while another crew's decision already stood --
+    sorts after every row that is not, so the writer's own observation orders the
+    two and a clock stepped backward cannot re-order them. Rows that never saw each
+    other order by recorded time, crew id as the tie-break.
+    """
+    return (
+        row.get("deferred") is True,
+        str(row.get("decided_at") or ""),
+        str(row.get("crew_id") or ""),
+    )
 
 
 def is_skipped(owner: str, repo: str, number: int, root: Path | None = None) -> bool:
@@ -1368,121 +1374,10 @@ def is_skipped(owner: str, repo: str, number: int, root: Path | None = None) -> 
     return str(int(number)) in read_skips(owner, repo, root)
 
 
-def record_skip(
-    owner: str,
-    repo: str,
-    number: int,
-    reason: str,
-    scope: str,
-    crew_id: str,
-    root: Path | None = None,
-) -> tuple[dict[str, Any], bool]:
-    """Index a pass on *number*: the entry that now STANDS, and whether THIS call
-    is the one that created it.
-
-    Idempotent by keeping the FIRST decision. A re-skip is not an error and does
-    not overwrite: the first crew's reason is the audit trail, and it is the one a
-    human reads when asking why this issue keeps being passed over. A later crew
-    that reaches the same conclusion adds no information; one that reaches a
-    DIFFERENT conclusion is a disagreement to surface on its own work item, not a
-    silent edit of someone else's record. So the first element is what is stored
-    after the call, which for a re-skip is the earlier crew's entry — the caller can
-    compare ``crew_id`` to see that its own reason was not the one kept.
-
-    THE SECOND ELEMENT IS NOT DERIVABLE BY THE CALLER, which is why it is returned
-    rather than left to be inferred. Only this function, holding the repo-wide lock
-    across the read and the write, can say whether the entry standing afterwards is
-    the one it just added. A caller comparing a pre-read of the index, or matching
-    the stored entry's fields against the ones it supplied, cannot separate two
-    IDENTICAL concurrent passes: both pre-read an empty index and both recognise
-    the winner's entry as their own, so the loser un-indexes a decision that
-    committed — putting the issue back in front of every crew in the fleet. Anything
-    that compensates a failed write needs this flag to be the truth, so it is part
-    of the single return contract rather than an opt-in a later caller could go
-    around.
-
-    Takes the repo-wide record lock, not the calling crew's: see
-    ``_records_lock_path``. Every crew writes this one file whole, so a per-crew
-    lock would let two of them drop each other's decisions.
-
-    THE FLAG IS TRUE AT THE MOMENT OF THE WRITE AND NOT AFTER IT. It says this call
-    inserted the entry; it cannot say the entry is still this caller's to remove,
-    because this function's lock is released before it returns. A caller that will
-    later COMPENSATE the write — un-index the entry if a subsequent write of its own
-    fails — must hold ``_skip_lock_path`` for *number* across both, or a second crew
-    slips in between, adopts this entry and commits against it, and the
-    compensation deletes a decision that stood. :func:`commit_work_progress` is
-    that caller and holds it.
-    """
-    number = int(number)
-    key = str(number)
-    entry: dict[str, Any] = {
-        "number": number,
-        "reason": str(reason or ""),
-        "scope": coerce_skip_scope(scope),
-        "crew_id": str(crew_id or ""),
-        "decided_at": store._now_iso(),
-    }
-    lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            index = read_skips(owner, repo, root)
-            existing = index.get(key)
-            if existing is not None:
-                return existing, False
-            index[key] = entry
-            atomic_write(skips_path(owner, repo, root), json.dumps(index, indent=2))
-    return entry, True
-
-
-def unrecord_skip(
-    owner: str, repo: str, number: int, entry: dict[str, Any], root: Path | None = None
-) -> None:
-    """Remove *entry* from the repo's shared skip index — and only *entry*.
-
-    Compared before deleting, never deleted by key. The index is repo-wide and
-    :func:`record_skip` keeps the first decision, so the entry standing under this
-    number may belong to another crew; deleting by key would let one crew's failed
-    request erase another crew's recorded pass, which sends every crew in the fleet
-    back to re-investigating an issue somebody already decided about.
-
-    Takes the same repo-wide record lock :func:`record_skip` takes, for the reason
-    that function's docstring gives: every crew writes this one file whole, so an
-    unlocked read-modify-write here would drop a skip recorded in between.
-
-    THE COMPARISON IS AN OWNERSHIP CHECK, NOT A STALENESS CHECK, and it is not what
-    makes a compensating caller safe. *entry* is the value the caller itself wrote,
-    so equality means "still the entry I inserted" — but a second crew that ADOPTED
-    that entry rather than writing its own leaves it byte-identical, so equality
-    also holds in exactly the interleaving where deleting is wrong. What excludes
-    that interleaving is the caller holding ``_skip_lock_path`` for *number* from
-    before its insert until after this call, which is why
-    :func:`_rollback_work_progress` documents that hold as a precondition rather
-    than relying on the comparison below.
-    """
-    key = str(int(number))
-    lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            index = read_skips(owner, repo, root)
-            if index.get(key) != entry:
-                return
-            del index[key]
-            atomic_write(skips_path(owner, repo, root), json.dumps(index, indent=2))
-
-
 def recent_skips(
     owner: str, repo: str, root: Path | None = None, *, limit: int = 20
 ) -> list[dict[str, Any]]:
-    """The newest *limit* entries, newest first.
-
-    Ordered by ``decided_at`` with the issue number as the tie-break, so the order
-    is total: several skips inside one clock tick would otherwise come back in
-    whatever order the JSON object happened to hold, and a list that reshuffles
-    between two reads of the same data reads as churn on the crew page.
-    """
+    """The newest *limit* entries, newest first, issue number as the tie-break."""
     rows = sorted(
         read_skips(owner, repo, root).values(),
         key=lambda r: (str(r.get("decided_at") or ""), int(r.get("number") or 0)),
@@ -1491,42 +1386,396 @@ def recent_skips(
     return rows[: max(0, limit)]
 
 
-# ── one progress write, all or nothing ──────────────────────────────────────
-#
-# A crew's progress write touches THREE files — its work item, the repo-wide skip
-# index, and the append-only ledger — and no ordering makes three files atomic:
-# whichever write goes last can fail with the earlier ones committed. So the
-# transaction compensates, and it holds a lock on each thing it may have to
-# compensate for the WHOLE of that span.
-#
-# Why held across the span and not just across each write. Compensation restores a
-# value the transaction observed before it wrote, so that observation has to still
-# be true when the rollback uses it. Taking and releasing a lock per write leaves
-# gaps on both sides, and a writer that commits in either gap invalidates the
-# observation:
-#
-#   * for the WORK ITEM the observation is a text snapshot, and a writer in the gap
-#     makes it stale — the rollback then puts a value that PREDATES that writer over
-#     a value that committed, which is a lost update rather than a rollback.
-#   * for the SKIP INDEX the observation is `record_skip`'s `created` flag, and a
-#     writer in the gap makes it obsolete rather than stale: the entry is still
-#     exactly the one this transaction inserted, but a second crew has since ADOPTED
-#     it — found it standing, reported no creation of its own, and committed its item
-#     and its ledger line against it. Un-indexing then erases a decision the fleet
-#     is already relying on.
-#
-# No comparison closes either gap, which is why no compare-and-set appears below. A
-# comparison can only prove the file still holds what THIS transaction wrote, and in
-# both interleavings that is precisely what it does hold: in the first because this
-# transaction wrote last, in the second because the adopter wrote nothing.
-#
-# Reordering was considered and rejected. Appending the ledger line first would
-# trade a missing line for a FALSE one, and the ledger is append-only and
-# content-addressed: there is no retraction, so a line asserting a phase change the
-# store then refuses (the second-editing-item refusal is routine, not only an I/O
-# fault) stays in the crew's memory for good, and the retry appends a second line
-# contradicting the first. A missing line is recoverable; a lie in the log is not.
-# Indexing the skip first is worse again — see `record_skip`.
+def _require_crew_log(session_id: str) -> Any:
+    """The fold package, once *session_id* is known to HAVE a crew log.
+
+    The ledger writes through the emitter, which treats a session with no crew log
+    as a policy no-op -- correct for a turn entry nobody asked for, wrong for an
+    update a crew explicitly recorded. So the log's existence is established here,
+    where the caller can be told, instead of being discovered as silence.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    if not session_id:
+        raise CrewLedgerUnavailable(
+            "this crew has no live session, so there is no crew log to record into"
+        )
+    if not crew_log_emit.enabled():
+        raise CrewLedgerUnavailable(
+            "the crew ledger is recorded in the crew's crew log, which is switched off; "
+            f"set {crew_log_emit.CREW_LOG_ENV}=1 to record one"
+        )
+    from kiro_crew.crew_log.schema import KIND_SESSION
+    from kiro_crew.crew_log.store import CrewLog
+
+    try:
+        present = CrewLog.exists(KIND_SESSION, session_id)
+    except Exception as exc:
+        raise CrewLedgerUnavailable(f"the crew's crew log could not be read: {exc}") from exc
+    if not present:
+        raise CrewLedgerUnavailable(
+            "the crew's session has no crew log yet, so there is nothing to record into; "
+            "it is created on the session's first turn"
+        )
+    return _projection()
+
+
+def _entry_data(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    number: int | None,
+    patch: dict[str, Any],
+    event_kind: str,
+    event_text: str,
+    *,
+    skip_reason: str | None = None,
+    skip_scope: str = "",
+    skip_deferred: bool = False,
+) -> dict[str, Any]:
+    """The ``radar/recorded`` entry for one update -- only the fields the call set.
+
+    An omitted field means "unchanged", which is what lets a partial patch be one
+    line. An EXPLICIT null means "empty this field" and is carried as a name in
+    ``clear``, because a typed field cannot hold a null: the fold empties each named
+    field before applying the fields the same update sets. A number that cannot be
+    read as a finite int, or that falls outside the range the record tool would have
+    accepted, is left out rather than written, so a hand-typed ``pr_number`` of
+    ``Infinity`` or ``0`` costs that field and not the whole entry -- and, because an
+    omitted field reads as "unchanged", does not erase the number already stored.
+    """
+    data: dict[str, Any] = {"crew_id": crew_id, "owner": owner, "repo": repo}
+    if number is not None:
+        data["number"] = int(number)
+    cleared = [
+        key for key in RADAR_CLEARABLE_FIELDS if key in patch and patch[key] is None
+    ]
+    if cleared:
+        data["clear"] = cleared
+    for key in ("decision", "why", "next", "worktree", "branch", "base_sha", "outcome"):
+        if key in patch and isinstance(patch[key], str):
+            data[key] = patch[key]
+    if "phase" in patch:
+        data["phase"] = str(patch["phase"] or "").strip()
+    for key in ("pr_number", "claim_comment_id"):
+        if key in patch:
+            value = _finite_int(patch[key])
+            # The MAGNITUDE bound belongs here, not only in the fold. An out-of-range
+            # but finite number (a dashboard ``pr_number`` of 0, a comment id past the
+            # forge's range) would otherwise be written, and the fold -- which applies
+            # RADAR_NUMBER_BOUNDS to the bytes it reads -- drops it, so the update
+            # lands and ERASES the association the item already held. Left out here it
+            # reads as "unchanged", which is the same answer this entry already gives
+            # a number it cannot read as a finite int at all.
+            if value is not None:
+                low, high = RADAR_NUMBER_BOUNDS[key]
+                if not low <= value <= high:
+                    value = None
+            if value is not None:
+                data[key] = value
+    if isinstance(patch.get("ci_state"), dict):
+        data["ci_state"] = dict(patch["ci_state"])
+    if isinstance(patch.get("labels_applied"), list):
+        data["labels_applied"] = [x for x in patch["labels_applied"] if isinstance(x, str)]
+    tried = patch.get("tried_approach")
+    if isinstance(tried, str) and tried.strip():
+        data["tried"] = {
+            "approach": tried.strip(),
+            "rejected_because": str(patch.get("tried_rejected_because") or ""),
+        }
+    if skip_reason is not None:
+        data["skip"] = {"reason": str(skip_reason or ""), "scope": coerce_skip_scope(skip_scope)}
+        if skip_deferred:
+            # Another crew's decision on this number already stood when this pass was
+            # recorded: the token that orders the two without a clock.
+            data["skip"]["deferred"] = True
+    data["event"] = event_text
+    data["event_kind"] = event_kind
+    return data
+
+
+def _append(
+    crew_id: str,
+    session_id: str,
+    data: dict[str, Any],
+    base: Any,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Append *data* as ONE entry to *session_id*'s crew log and answer with the
+    record it produces. ``{"item", "event", "skip", "coalesced", "durable"}``.
+
+    ``skip`` is the row the SHARED index answers for the number -- the first
+    decision across the repository's crews -- so a crew re-skipping an issue is told
+    what stands rather than what it sent (:func:`_standing_skip`).
+
+    A crew-level line landing on a crew-level line is COALESCED here, before the
+    append, by the same rule the fold applies to the bytes: the existing sweep is
+    answered and nothing is written, so an idle crew appends once per stretch.
+
+    The answer is the fold advanced over the entry AS THE FILE HOLDS IT once the
+    writer has drained -- the line's id and ``ts`` come off the log's own clock, so
+    the answer a crew is handed is the line every later reader sees. Only when the
+    writer did not drain inside the budget is the answer the fold advanced over the
+    entry on its way to the file, stamped with this side's clock: an approximation
+    the next read corrects. ``durable`` says which of the two this was. A writer
+    that drained WITHOUT landing the entry refused it, and the write raises
+    :class:`CrewLedgerNotRecorded`: a refusal is answered as one, never as a record.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log.schema import Entry
+
+    projection = _projection()
+    number = data.get("number")
+    events = base.state["events"]
+    if number is None and events and events[-1].get("kind") == CREW_LEVEL_EVENT_KIND:
+        return {"item": None, "event": dict(events[-1]), "skip": None, "coalesced": True, "durable": True}
+    if not crew_log_emit.radar_entry_fits(data):
+        raise CrewLedgerEntryTooLarge(
+            "this update does not fit one crew log entry; record fewer or shorter fields"
+        )
+    refused_before = crew_log_emit.dropped_writes()
+    overflow_before = crew_log_emit.overflow_writes(session_id)
+    recorded_ms = int(time.time() * 1000)
+    crew_log_emit.on_radar_recorded(session_id, data)
+    drained = crew_log_emit.flush(timeout=_APPEND_FLUSH_SECONDS)
+    # Remembered for the crew's NEXT write, which drains again before it folds: a
+    # write that validated against a fold missing this entry could pass the
+    # one-editor rule a second time. Set and cleared under the crew's write lock.
+    undrained_key = (str(data_home()), crew_id)
+    if drained:
+        _undrained.pop(undrained_key, None)
+    else:
+        _undrained[undrained_key] = (session_id, base.last_seq, data)
+    grown = None
+    landed = False
+    if drained:
+        since, landed = _landed_since(projection, session_id, base.last_seq, data)
+        if landed and since is not None:
+            grown = projection.advance(base, since)
+    if landed:
+        # PUBLISH THIS UNIT'S PRECEDENCE ONLY ONCE ITS ENTRY IS IN THE FILE. The order
+        # file's whole claim is "among the units that recorded, this one holds the
+        # newest entry", so it is earned by an append that LANDED, and noting it any
+        # earlier would let a refused or still-queued append claim precedence it never
+        # earned -- pinning a unit ahead of its successor, whose next fold would then
+        # read the pinned unit's phase and next step as current and act on them.
+        # ``_undrained`` above is that queued case, so the window is real.
+        #
+        # Gated on ``landed`` rather than on ``drained`` or the refusal counters:
+        # ``landed`` is read back from this unit's OWN log by content, while
+        # ``dropped_writes`` is process-wide, so another session's refusal must not
+        # suppress a precedence note this unit has genuinely earned.
+        _record_unit_order(
+            str(data.get("owner", "")), str(data.get("repo", "")), crew_id, session_id, root
+        )
+    refused = crew_log_emit.dropped_writes() != refused_before
+    overflowed = crew_log_emit.overflow_writes(session_id) != overflow_before
+    if overflowed and not landed:
+        # The buffer rejected one of THIS session's appends at SUBMISSION for
+        # crossing its memory ceiling while this one was in flight, and this entry is
+        # not in the file: it was never queued and will never land, whatever the
+        # drain says. Counted per session and apart from a storage refusal
+        # (``overflow_writes`` against ``dropped_writes``), so it is checked apart --
+        # a rejected entry answered as queued state would be published without ever
+        # being persisted, and another session's rejection cannot flip this one.
+        logger.warning("crew ledger: the crew log writer rejected this update at its ceiling")
+        _undrained.pop(undrained_key, None)  # nothing of this write is queued to drain
+        raise CrewLedgerNotRecorded(
+            "this update was not recorded: the crew log writer is at its ceiling and "
+            "rejected the append; nothing changed, send it again once it has drained"
+        )
+    if drained and not landed:
+        # The writer is done and the entry is not in the file -- refused (the log
+        # deleted under the write, the writer gave up on it) or unreadable twice. A
+        # refusal is not a commit, and an entry that cannot be shown to exist is
+        # answered the same way: the caller is told, never handed a record that may
+        # be nowhere. The synthetic answer is made ONLY while the writer still holds
+        # the entry.
+        logger.warning("crew ledger: the crew log writer drained without landing this update")
+        raise CrewLedgerNotRecorded(
+            "this update was not recorded: the crew log did not take the append; "
+            "nothing changed, the same update may be sent again"
+        )
+    durable = drained and landed and not refused
+    if not drained:
+        logger.warning(
+            "crew ledger: the crew log writer did not drain within %.1fs; this update is "
+            "queued and counted, not yet durable",
+            _APPEND_FLUSH_SECONDS,
+        )
+    elif not durable:
+        logger.warning(
+            "crew ledger: the crew log refused an append while this update was in flight; "
+            "this update landed, but a neighbouring one may not have"
+        )
+    if grown is None:
+        # Reached only while the writer still holds the entry (not drained): the fold
+        # advanced over the entry as sent, stamped with this side's clock -- an
+        # approximation the next read corrects.
+        pending = Entry(
+            type=LEDGER_ENTRY_TYPE,
+            seq=base.last_seq + 1,
+            time=recorded_ms,
+            src=_ENTRY_SRC,
+            data=data,
+        )
+        grown = projection.advance(base, (pending,))
+    state = projection.projection_of(grown).value
+    key = str(number) if number is not None else ""
+    item = next((record for record in state["items"] if str(record.get("number")) == key), None)
+    skip_row = state["skips"].get(key)
+    if skip_row is not None:
+        skip_row = _standing_skip(data["owner"], data["repo"], root, key, skip_row)
+    return {
+        "item": item,
+        "event": state["events"][0] if state["events"] else None,
+        "skip": skip_row,
+        "coalesced": False,
+        "durable": durable,
+    }
+
+
+def _standing_skip(
+    owner: str, repo: str, root: Path | None, key: str, own: dict[str, Any]
+) -> dict[str, Any]:
+    """The row the shared index answers for *key*, given this crew's own row *own*.
+
+    A crew that passes on a number another crew already decided is told what
+    STANDS -- the first decision, with the crew that made it -- not what it sent, so
+    it can see its own reason was not the one kept. *own* is included explicitly
+    because the just-appended entry may not have drained to the log yet.
+    """
+    rows: list[dict[str, Any]] = [own]
+    rows.extend(row for k, row in read_skips(owner, repo, root).items() if k == key)
+    standing = min(rows, key=_skip_precedence)
+    return dict(standing)
+
+
+def record_crew_checkpoint(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    event_text: str,
+    root: Path | None = None,
+    *,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """Append one crew-level line -- a step that belongs to no issue.
+
+    Takes no kind: there is exactly one crew-level kind, and the route already
+    refuses anything else on the numberless path. Consecutive sweeps coalesce (see
+    :func:`_append`): the first sweep after real work is written and a sweep landing
+    on a sweep is answered with the existing line, whose timestamp marks when the
+    idle stretch BEGAN.
+
+    *session_id* is the crew's live crew log unit; the route resolves it from the
+    crew's slot. Without one the write is refused (:class:`CrewLedgerUnavailable`).
+    """
+    _require_crew_log(session_id)
+    with _crew_write_lock(crew_id):
+        base = _prepare_write(owner, repo, crew_id, session_id, root)
+        data = _entry_data(owner, repo, crew_id, None, {}, CREW_LEVEL_EVENT_KIND, event_text)
+        return _append(crew_id, session_id, data, base, root)
+
+
+def _prepare_write(
+    owner: str, repo: str, crew_id: str, session_id: str, root: Path | None
+) -> Any:
+    """The fold a write validates against, with the one-time carry run -- the SAME
+    sequence for every writer.
+
+    The crew's unit order is published by :func:`_append`, once the entry is in this
+    unit's log: the order file claims this unit holds the newest entry, and only a
+    landed append earns that. The carry runs on a crew's first write after the
+    upgrade whichever
+    kind of write it is: an idle sweep is a routine first write, and a sweep that
+    appended without carrying would leave the crew's open items unread -- reads
+    reporting zero open items -- until some later item write happened to carry
+    them. Called under the crew's write lock.
+    """
+    undrained_key = (str(data_home()), crew_id)
+    receipt = _undrained.get(undrained_key)
+    if receipt is not None:
+        # The crew's last append was still in the writer when that write answered.
+        # Drain it now, before folding, so this write validates against a record
+        # that holds it. A writer STILL not draining refuses this write: a fold taken
+        # now would be missing that entry, and the one-editor rule checked against
+        # it could admit a second editor -- both entries would later land. Nothing
+        # is changed by the refusal; the caller sends the same update again once the
+        # writer has caught up, and the mark stays until the entry is SEEN.
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        if not crew_log_emit.flush(timeout=_APPEND_FLUSH_SECONDS):
+            raise CrewLedgerNotRecorded(
+                "the crew's previous update is still queued in the crew log writer; "
+                "send this update again shortly"
+            )
+        # A QUIET WRITER IS NOT A LANDED ENTRY. A drop empties the buffer exactly as a
+        # successful write does, so ``flush`` answers True either way; releasing the
+        # mark on that alone would fold a record short one entry and hand the
+        # one-editor rule a record that permits a second editor -- silently, because
+        # the earlier call already answered. So the receipt is checked against the
+        # unit's own log by content, and the mark is released only when the entry is
+        # there. It is not, this write is refused like any other undrained one: the
+        # caller resends, and that resend is what puts the missing update back.
+        if not _landed_since(_projection(), receipt[0], receipt[1], receipt[2])[1]:
+            raise CrewLedgerNotRecorded(
+                "the crew's previous update never reached its crew log; send that "
+                "update again before this one"
+            )
+        # AND PUBLISH THAT UNIT'S PRECEDENCE NOW, which is the only moment anything
+        # can. The append path notes precedence only for an entry it saw land inside
+        # the flush budget; an append the writer still held when that budget expired
+        # lands later, and its own call has already returned. Its unit may by then be
+        # RETIRED, so it has no next write of its own to make the claim -- but the
+        # CREW does, and this is it. Left unpublished, a successor unit stamped by a
+        # clock that went backwards sorts ahead of it in header order, and every read
+        # then folds the retired unit's phase and next step as the current ones.
+        #
+        # Correctly ordered by WHERE this sits: the receipt's entry is the newest one
+        # this crew has landed at this instant, and this runs before this write's own
+        # append, whose landing moves the live unit after it.
+        _record_unit_order(
+            str(receipt[2].get("owner", "")),
+            str(receipt[2].get("repo", "")),
+            crew_id,
+            receipt[0],
+            root,
+        )
+        _undrained.pop(undrained_key, None)
+    units = _units_for_write(owner, repo, crew_id, session_id, root)
+    base = _fold_checkpoint(crew_id, units)
+    # The carry runs when NO radar entry has ever folded into this crew's record --
+    # the fold's ``crew_id`` is set by the first entry that names the crew, whichever
+    # kind it is -- or when an earlier carry began and did not finish. Not when the
+    # record merely holds no items and no passes: a crew whose every write was an
+    # idle sweep has that shape for good, and keying on it would carry the
+    # pre-projection files again whenever they are present without their marker,
+    # re-stating retired work as live over a record that has moved on.
+    if not base.state["crew_id"] or _carry_pending(owner, repo, crew_id, root):
+        if _carry_legacy_forward(owner, repo, crew_id, session_id, root, folded=base.state):
+            units = _units_for_write(owner, repo, crew_id, session_id, root)
+            base = _fold_checkpoint(crew_id, units)
+    return base
+
+
+def _units_for_write(
+    owner: str, repo: str, crew_id: str, session_id: str, root: Path | None
+) -> tuple[str, ...]:
+    """The crew's units for a WRITE: listed strictly, a failed listing refuses the write.
+
+    A read that cannot list the units answers the empty record and says nothing
+    false about what it could read. A write that folded an empty record because the
+    listing failed would validate against it -- and the one-editor rule, checked
+    against no items, admits a second editor into a log that cannot take a line back.
+    """
+    try:
+        return crew_log_units(owner, repo, crew_id, root, live_session_id=session_id, strict=True)
+    except Exception as exc:
+        raise CrewLedgerNotRecorded(
+            "the crew's logs could not be listed, so this update was not recorded; "
+            "nothing changed, send it again"
+        ) from exc
 
 
 def commit_work_progress(
@@ -1540,243 +1789,690 @@ def commit_work_progress(
     skip_reason: str | None = None,
     skip_scope: str = "",
     root: Path | None = None,
+    *,
+    session_id: str = "",
 ) -> dict[str, Any]:
-    """Write one work item, optionally index a pass, append one ledger line —
-    or leave all three as they were. Returns ``{"item", "event", "skip"}``.
+    """Record one work-item update: the fields it sets, its progress line and, when
+    it records a pass, the skip row -- as ONE entry. ``{"item", "event", "skip"}``.
 
-    *skip_reason* is what makes this index a pass: ``None`` means "no skip", and any
-    string (the caller derives it from the request) records one. The reason is a
-    caller's to choose, but the COUPLING is not: an issue cannot be recorded as
-    passed without the same call storing the item and the line that explain it.
+    *skip_reason* is what makes this a pass: ``None`` means "no skip", and any string
+    indexes one. The reason is the caller's to choose, but the COUPLING is not: an
+    issue cannot be recorded as passed without the same entry carrying the item and
+    the line that explain it, and there is no ordering in which a reader can see one
+    without the others.
 
-    ORDER: item -> skip index -> ledger line. The item first because the store's own
-    refusals (an unknown phase, a second editing item) then happen before anything
-    else is written. The index after it because indexing first could mark an issue
-    passed repo-wide that the store then refused to move — an issue permanently
-    filtered out of every crew's queue with no decision behind it. The ledger last
-    because a line is the one write with no retraction.
+    The store's own refusals happen BEFORE anything is appended, against the crew's
+    folded record: an unknown kind or phase, a crew-level kind with a number, and a
+    second item entering an editing phase are all :class:`CrewStoreError`, and an
+    append-only log cannot take a line back, so nothing is written until they pass.
 
-    LOCKS, in this order: the crew's, then — only when this call records a pass —
-    the shared index's lock for THIS ISSUE NUMBER, then the repo-wide record lock
-    for the index file, then the ledger's. The first two are held across
-    everything, including the rollback; the last two are taken and released inside
-    that hold, by :func:`record_skip` and :func:`append_event`.
-
-    The per-number skip lock is the one that cannot be dropped, and the crew lock
-    cannot stand in for it: the index is repo-wide and the crew lock is per-crew, so
-    two crews passing on the same issue hold two different crew locks and are
-    serialised on the shared entry by nothing at all. See ``_skip_lock_path``. It is
-    acquired only on the skip path because a transaction that indexes nothing has
-    nothing there to compensate, and skipping the acquisition can never invert an
-    order.
-
-    Nothing anywhere takes any two of these four in the other relative order, so
-    the order is total and two crews cannot deadlock. A crew lock is only ever
-    acquired FIRST, so nobody waits for one while holding a skip, records or events
-    lock; the skip lock for one number is the only skip lock a frame ever holds;
-    and records and events are each taken and released without acquiring anything
-    else. The work-item write calls :func:`_upsert_work_item_locked` rather than
-    :func:`upsert_work_item` because that one would take the crew lock again — a
-    file lock on a second descriptor, which blocks on the lock this frame already
-    holds instead of nesting.
+    On a crew's FIRST write after the upgrade the pre-projection files are carried
+    into the log first (:func:`_carry_legacy_forward`), so a crew upgraded mid-work
+    finds its open items and the repository keeps its passes.
     """
     number = int(number)
-    lock_path = _crew_lock_path(owner, repo, crew_id, root)
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            # Under the lock that also guards the write, so no writer can land
-            # between the two and leave this holding a value that is already stale.
-            before = _read_work_item_text(owner, repo, crew_id, number, root)
-            item = _upsert_work_item_locked(owner, repo, crew_id, number, patch, root)
-            skip: dict[str, Any] | None = None
-            own_skip: dict[str, Any] | None = None
-            with contextlib.ExitStack() as held:
-                try:
-                    if skip_reason is not None:
-                        # Acquired INSIDE the try so that failing to acquire is
-                        # rolled back like any other step. The item is already
-                        # written by this point, so an exception here — the lock
-                        # file is one more open descriptor, and fd exhaustion or a
-                        # permission fault raises — would escape past the rollback
-                        # and leave the item changed with neither its skip-index
-                        # entry nor its ledger event: the one outcome this
-                        # transaction exists to prevent.
-                        #
-                        # Release is unaffected: the ExitStack encloses this try, so
-                        # the lock is still dropped only after the rollback has run,
-                        # which is what keeps `created` below describing the entry
-                        # the rollback acts on. Another crew passing on this same
-                        # issue still waits here and cannot commit against an entry
-                        # this transaction may withdraw.
-                        held.enter_context(_skip_lock(owner, repo, number, root))
-                        # `created` comes from inside the index's own lock because
-                        # that is the only place it is knowable: two identical
-                        # passes on one number both see it unindexed beforehand and
-                        # both recognise the winner's entry as their own, so
-                        # anything computed out here would let the loser un-index a
-                        # decision that committed.
-                        skip, created = record_skip(
-                            owner, repo, number, skip_reason, skip_scope, crew_id, root
-                        )
-                        if created:
-                            own_skip = skip
-                    # The event line carries `phase` ONLY when this transaction
-                    # created the item or actually moved it, because a reader can
-                    # only treat "an event line carrying a phase" as "an ENTRY into
-                    # that phase" if a no-move write stays silent about it.
-                    #
-                    # Stamping it on every write looks harmless and is not. Most
-                    # writes here do not move the item -- a CI round lands
-                    # `ci_state`/`ci_passed` while the phase stays `awaiting-ci` --
-                    # so the ledger would gain a fresh phase-bearing line every few
-                    # minutes, and the fabric's open dwell (the MOST RECENT entry
-                    # into the current phase, which is what a round-trip legitimately
-                    # restarts) would reset to each of them. An item parked in
-                    # `awaiting-ci` for nine hours would read as minutes old, and
-                    # `longestWait` with it: the item being polled most often is
-                    # exactly the one whose stall gets hidden, which inverts the one
-                    # question the pipeline view exists to answer.
-                    prev_phase = None
-                    if before:
-                        with contextlib.suppress(ValueError, TypeError):
-                            snapshot = json.loads(before)
-                            # isinstance, not a truthiness test: a corrupted or
-                            # hand-edited item file can hold any JSON shape, and a
-                            # non-empty list or a bare string is TRUTHY, so `or {}`
-                            # would let `.get` raise AttributeError -- which this
-                            # suppress does not catch, so the write would 500. The
-                            # rollback then restores the same bad file, making every
-                            # retry fail the same way. Treating an unreadable snapshot
-                            # as "no previous phase" degrades to recording the phase,
-                            # which is the safe direction: an extra entry is a visible
-                            # dwell reset, a missing one loses the entry entirely.
-                            if isinstance(snapshot, dict):
-                                prev_phase = snapshot.get("phase")
-                    moved = before is None or prev_phase != item.get("phase")
-                    event = append_event(
-                        owner, repo, crew_id, number, event_kind, event_text, root,
-                        phase=item.get("phase") if moved else None,
+    if event_kind not in EVENT_KINDS:
+        raise CrewStoreError(f"unknown event kind {event_kind!r}")
+    if event_kind == CREW_LEVEL_EVENT_KIND:
+        raise CrewStoreError(f"event kind {event_kind!r} is crew-level and takes no issue number")
+    _require_crew_log(session_id)
+    with _crew_write_lock(crew_id):
+        base = _prepare_write(owner, repo, crew_id, session_id, root)
+        current = base.state["items"].get(str(number))
+        if "phase" in patch:
+            new_phase = str(patch["phase"] or "").strip()
+            if new_phase not in PHASES:
+                raise CrewStoreError(f"unknown phase {new_phase!r}")
+            prev_phase = current["phase"] if current is not None else "selected"
+            if new_phase in EDITING_PHASES and prev_phase not in EDITING_PHASES:
+                other = _editing_item(base.state, exclude=number)
+                if other is not None:
+                    raise CrewStoreError(
+                        f"crew {crew_id} is already editing #{other} — finish or "
+                        "commit that before entering an editing phase on another issue"
                     )
-                except BaseException:
-                    _rollback_work_progress(
-                        owner, repo, crew_id, number, before, own_skip, root
-                    )
-                    raise
-                return {"item": item, "event": event, "skip": skip}
+        deferred = False
+        if skip_reason is not None:
+            # Observe the shared index BEFORE recording: a pass on a number another
+            # crew already decided defers to that decision, and says so in the entry,
+            # so the union orders the two by what this writer saw and not by clocks.
+            standing = read_skips(owner, repo, root).get(str(number))
+            deferred = standing is not None and str(standing.get("crew_id") or "") != crew_id
+        data = _entry_data(
+            owner, repo, crew_id, number, patch, event_kind, event_text,
+            skip_reason=skip_reason, skip_scope=skip_scope, skip_deferred=deferred,
+        )
+        return _append(crew_id, session_id, data, base, root)
 
 
-def _read_work_item_text(
-    owner: str, repo: str, crew_id: str, number: int, root: Path | None = None
-) -> str | None:
-    """The work item's stored text as it stands, or ``None`` if there is no item.
+# ── carrying the pre-projection files forward ───────────────────────────────
 
-    Text rather than the parsed record: a rollback has to reproduce the FILE, and a
-    dict round-trip is a re-serialisation that can legitimately differ from what was
-    on disk. ``newline=""`` here and on the write back is what makes that literal —
-    the default translates line endings, so a snapshot taken and restored on Windows
-    would come back with different bytes than it started with.
 
-    Only a MISSING file reads as ``None``. Anything else — a permission fault, bytes
-    that are not UTF-8 — propagates, and it propagates from BEFORE the first
-    mutation, so such a call fails having written nothing rather than mutating with a
-    snapshot it could not roll back to.
-    """
-    path = work_item_path(owner, repo, crew_id, number, root)
+def _read_legacy_json(path: Path) -> Any:
     try:
-        with path.open("r", encoding="utf-8", newline="") as fh:
-            return fh.read()
-    except FileNotFoundError:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
-def _restore_work_item_locked(
-    owner: str,
-    repo: str,
-    crew_id: str,
-    number: int,
-    snapshot: str | None,
-    root: Path | None = None,
-) -> None:
-    """Put the work item back exactly as *snapshot* found it. HOLD THE CREW LOCK.
+def _legacy_text(value: Any, limit: int = _MAX_CARRIED_TEXT) -> str:
+    return value[:limit] if isinstance(value, str) else ""
 
-    ``None`` means there was no item, so the compensation is a DELETE rather than a
-    write: the upsert CREATES as well as updates, and an item the failed transaction
-    brought into existence has no earlier value to return to. Leaving a stub would
-    count toward the crew's open slots and against its one-editing-item limit for an
-    issue it never took.
 
-    Unconditional, and that is only safe because the caller has held the crew lock
-    since before the snapshot was taken: no other writer can have touched the file,
-    so the snapshot still describes it and there is nothing for a comparison to
-    detect.
+def _legacy_ci_state(value: dict[str, Any]) -> dict[str, Any]:
+    """The members of a legacy ``ci_state`` the record tool would have accepted.
+
+    The fold's own bounder (:func:`projection.radar_ci_state`): only the kept keys,
+    each with the tool's type and ceiling, anything else dropped -- one oversized
+    value is what could make a row unfit for an entry. Legacy files were written by
+    ``json.dumps``, so a counter can only be an int or a float here; a float is not
+    a counter and is dropped like any other wrong shape.
     """
-    path = work_item_path(owner, repo, crew_id, number, root)
-    if snapshot is None:
-        path.unlink(missing_ok=True)
-        return
-    atomic_write(path, snapshot, newline="")
+    return _projection().radar_ci_state(value)
 
 
-def _rollback_work_progress(
-    owner: str,
-    repo: str,
-    crew_id: str,
-    number: int,
-    before: str | None,
-    own_skip: dict[str, Any] | None,
-    root: Path | None = None,
-) -> None:
-    """Undo a failed transaction's committed writes, newest first. HOLD THE CREW
-    LOCK, AND — whenever *own_skip* can be non-``None`` — THE SKIP LOCK FOR
-    *number*, both since before the writes being undone.
+#: Free-text members of a carried entry, clamped together when the row must shrink.
+_CARRIED_TEXT_FIELDS = ("decision", "why", "next", "worktree", "branch", "base_sha", "event")
+#: The clamps tried in turn when a carried row does not fit one entry. The text
+#: ceiling is in characters and the entry ceiling in bytes, and a character can
+#: serialize to six bytes, so a row of long non-ASCII text can be over the ceiling
+#: at the first clamp and under it at a later one.
+_CARRY_SHRINK_STEPS = (_MAX_CARRIED_TEXT, 2000, 1000, 500, 256)
 
-    What this buys: the work item moves only if the progress line explaining the
-    move landed, and an issue enters the shared skip index only if the same is true.
-    Without it a failed write leaves the crew's state disagreeing with the crew's
-    memory — and in the skipped case leaves an issue passed over repo-wide, filtered
-    out by every other crew, with nothing in the log saying who passed on it or why.
-    The crew's retry cannot tell which of the writes stood.
 
-    Never raises, and each step is guarded separately: the caller already has an
-    error and that error is the one it must surface, while a failure to undo one file
-    must not skip the other. A step that does fail is logged at error, because the
-    log is then the only record that the two disagree.
+def _shrink_to_fit(data: dict[str, Any], fits: Any) -> dict[str, Any] | None:
+    """*data* clamped until *fits* accepts it, or ``None`` when no clamp does.
 
-    Only ``own_skip`` — the entry THIS transaction created — is un-indexed. A
-    re-skip found somebody else's decision standing and has nothing to undo. That
-    test is necessary but not sufficient on its own: an entry this transaction
-    created is one a SECOND crew may since have adopted and committed against, and
-    the adopter leaves it byte-identical, so nothing readable here can tell the two
-    apart. The caller's skip-lock hold is what excludes the adopter — it makes the
-    other crew wait until this rollback has finished, after which it records a pass
-    of its own and owns it. See ``_skip_lock_path``.
+    Clamping loses the tail of a long text; refusing the row loses the record. The
+    fold clamps every text on the way in, so the first step costs nothing the fold
+    would have kept, and a later step is taken only when the first does not fit.
     """
-    if own_skip is not None:
-        try:
-            unrecord_skip(owner, repo, number, own_skip, root)
-        except Exception:
-            logger.error(
-                "crew %s: could not un-index the skip on #%s after a failed work "
-                "write — the issue reads as skipped repo-wide with no event for it",
-                crew_id, number, exc_info=True,
-            )
-    try:
-        _restore_work_item_locked(owner, repo, crew_id, number, before, root)
-    except Exception:
-        logger.error(
-            "crew %s: could not restore work item #%s after a failed work write — "
-            "its phase may have moved with no event explaining it",
-            crew_id, number, exc_info=True,
+    for limit in _CARRY_SHRINK_STEPS:
+        shrunk = dict(data)
+        for key in _CARRIED_TEXT_FIELDS:
+            if isinstance(shrunk.get(key), str):
+                shrunk[key] = shrunk[key][:limit]
+        for nested in ("tried", "skip"):
+            inner = shrunk.get(nested)
+            if isinstance(inner, dict):
+                shrunk[nested] = {
+                    k: (v[:limit] if isinstance(v, str) and k != "scope" else v)
+                    for k, v in inner.items()
+                }
+        if fits(shrunk):
+            return shrunk
+    return None
+
+
+def _legacy_number(value: Any, field: str = "number") -> int | None:
+    """*value* as a number inside the record tool's range for *field*, or ``None``.
+
+    The carry applies the magnitude bound the fold applies to the bytes it reads
+    (:data:`RADAR_NUMBER_BOUNDS`), for the same reason the carry re-applies the CI
+    bounds: a pre-projection file can hold any number, and one outside the range the
+    tool would have accepted is dropped by the fold -- which on an item row would
+    silently fold it as a crew-level line instead. Bounded here, such a row is unfit
+    and named, so the carry does not finish and the write is refused.
+    """
+    number = _finite_int(value)
+    if number is None:
+        return None
+    low, high = RADAR_NUMBER_BOUNDS[field]
+    return number if low <= number <= high else None
+
+
+def _legacy_item_entries(
+    owner: str, repo: str, crew_id: str, legacy: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The carried entries for one pre-projection work item, or ``[]`` without a number.
+
+    Carries the record a resume needs -- phase, next, decision, EVERY rejected
+    approach, where the work lives and what is on the forge -- plus its own stamps,
+    and an event that says where it came from. The phase rides with the event,
+    keeping the rule that a phase never appears without a logged reason.
+
+    One entry holds ONE ``tried``, so a `tried` history of *n* rows is *n* entries,
+    each re-stating the whole record and differing only in the approach it carries.
+    Order is the file's own, so the folded list ends with the same newest row the file
+    ended with. Carrying the newest approach alone would delete the field's whole
+    purpose for every pre-upgrade item the moment the marker is written, and the loss
+    is not recoverable afterwards because the files are never read again. It needs
+    nothing new in the fold: a carried ``tried`` is already deduplicated by content
+    there and the list is already clamped, so a carry run twice is not a history listed
+    twice, and re-stated scalars apply idempotently.
+
+    The entries after the first carry no new ``phase`` VALUE, which is what keeps them
+    quiet: the fold writes a phase line only for an entry that MOVED the item, so the
+    item still enters its phase exactly once however long its history is.
+    """
+    number = _legacy_number(legacy.get("number"))
+    if number is None:
+        return []
+    data: dict[str, Any] = {"crew_id": crew_id, "owner": owner, "repo": repo, "number": number}
+    phase = legacy.get("phase")
+    data["phase"] = phase if isinstance(phase, str) and phase in PHASES else "selected"
+    for key in ("decision", "why", "next", "worktree", "branch", "base_sha"):
+        if isinstance(legacy.get(key), str) and legacy[key]:
+            data[key] = _legacy_text(legacy[key])
+    if isinstance(legacy.get("outcome"), str) and legacy["outcome"]:
+        data["outcome"] = _legacy_text(legacy["outcome"], 256)
+    for key in ("pr_number", "claim_comment_id"):
+        value = _legacy_number(legacy.get(key), key)
+        if value is not None:
+            data[key] = value
+    if isinstance(legacy.get("ci_state"), dict) and legacy["ci_state"]:
+        # Only the members the fold keeps, each bounded the way the record tool
+        # bounds it on the way in: the file could hold any keys and any values, and
+        # one oversized member is the one thing that could push an otherwise valid
+        # row past the entry ceiling and leave it uncarried. Nothing the record tool
+        # would have accepted is dropped.
+        ci = _legacy_ci_state(legacy["ci_state"])
+        if ci:
+            data["ci_state"] = ci
+    if isinstance(legacy.get("labels_applied"), list):
+        # The record tool's own bounds (20 labels, short strings), for the same reason.
+        data["labels_applied"] = [
+            x[:256] for x in legacy["labels_applied"] if isinstance(x, str)
+        ][:20]
+    rows: list[dict[str, str]] = []
+    dropped = 0
+    tried = legacy.get("tried")
+    if isinstance(tried, list):
+        for row in tried:
+            if (
+                isinstance(row, dict)
+                and isinstance(row.get("approach"), str)
+                and row["approach"].strip()
+            ):
+                rows.append(
+                    {
+                        "approach": _legacy_text(row["approach"]),
+                        "rejected_because": _legacy_text(row.get("rejected_because", "")),
+                    }
+                )
+            else:
+                # Not a row the fold would have kept either -- it drops a ``tried``
+                # without a non-blank ``approach``. Counted so the event says so.
+                dropped += 1
+    tried_limit = _projection().RADAR_TRIED_LIMIT
+    if len(rows) > tried_limit:
+        # The fold keeps an item's newest ``tried_limit`` approaches, so rows past
+        # that ceiling would be evicted by the very read that folded them. Left out
+        # here instead, where the count can be SAID once rather than each row costing
+        # an entry to be discarded.
+        dropped += len(rows) - tried_limit
+        del rows[: len(rows) - tried_limit]
+    for stamp in ("claimed_at", "last_progress_at", "finished_at"):
+        if isinstance(legacy.get(stamp), str) and legacy[stamp]:
+            data[stamp] = _legacy_text(legacy[stamp], 64)
+    data["carried"] = True
+    note = "carried forward from the pre-projection crew ledger files"
+    if dropped > 0:
+        note += f"; not carried: {dropped} unreadable or over-ceiling rejected approach(es)"
+    data["event"] = note
+    data["event_kind"] = "claim"
+    if rows:
+        data["tried"] = rows[0]
+    entries = [data]
+    for position, row in enumerate(rows[1:], start=2):
+        entries.append(
+            {
+                # The WHOLE record again, not just the identity and the row. A carried
+                # entry re-states a record, and the fold applies the same scalars
+                # idempotently, so repeating them costs a re-read and buys the one
+                # thing an identity-only continuation cannot: if the writer takes this
+                # entry and refuses the first, the item folds with its real phase and
+                # next step instead of appearing as a bare ``selected`` placeholder
+                # the crew would read as live work it never claimed.
+                **data,
+                "tried": row,
+                "event": (
+                    f"rejected approach {position} of {len(rows)} carried forward from "
+                    "the pre-projection crew ledger files"
+                ),
+            }
         )
+    return entries
 
 
-# ── crew fabric fold ─────────────────────────────────────────────────────────
-#
-# The "pipeline" dashboard view draws every crew work item as a lane across the
-# phase enum. The fold that turns a crew's ledger into that drawing is SERVER-SIDE
-# and unit-testable in Python precisely so the three mistakes a naive version makes
-# (below) are pinned by tests rather than re-made in TypeScript.
+def _legacy_skip_entry(owner: str, repo: str, crew_id: str, row: dict[str, Any]) -> dict[str, Any] | None:
+    """The carried entry for one pre-projection pass -- a skip row and no work item."""
+    number = _legacy_number(row.get("number"))
+    if number is None:
+        return None
+    skip: dict[str, Any] = {
+        "reason": _legacy_text(row.get("reason")),
+        "scope": coerce_skip_scope(row.get("scope")),
+    }
+    if isinstance(row.get("crew_id"), str) and row["crew_id"]:
+        skip["crew_id"] = _legacy_text(row["crew_id"], 64)
+    if isinstance(row.get("decided_at"), str) and row["decided_at"]:
+        skip["decided_at"] = _legacy_text(row["decided_at"], 64)
+    return {
+        "crew_id": crew_id,
+        "owner": owner,
+        "repo": repo,
+        "number": number,
+        "skip": skip,
+        "carried": True,
+        "event": "pass carried forward from the pre-projection shared skip index",
+        "event_kind": "skip",
+    }
+
+
+def _tried_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    """A rejected approach's identity, the way the fold deduplicates one.
+
+    The fold strips the approach and keeps the reason as it is, so the same two
+    members compared the same way are what make a row already present.
+    """
+    return (
+        str(row.get("approach") or "").strip(),
+        str(row.get("rejected_because") or ""),
+    )
+
+
+def _carried_history_complete(held: Mapping[str, Any], entries: list[dict[str, Any]]) -> bool:
+    """Whether *held* already holds every rejected approach *entries* would carry.
+
+    An item is several entries, so a carry can land some of them and have the rest
+    refused -- and the run after it must be able to tell the two apart. A record that
+    already has the whole history is left alone, because re-stating the file's fields
+    over an item the crew has since worked would set it back to its pre-projection
+    state. A record MISSING a row is carried again: the refused entries are the only
+    copy of those approaches, the files are never read again once the carry is marked
+    finished, and re-emitting costs nothing wrong -- the fold drops a carried approach
+    it already has and re-applies the other fields to the same values.
+
+    Wrong in either direction is safe, which is why it compares content rather than
+    counting: a false "incomplete" re-emits rows the fold then deduplicates, and a
+    false "complete" is no worse than not asking at all.
+    """
+    have = {
+        _tried_key(row)
+        for row in held.get("tried") or []
+        if isinstance(row, Mapping)
+    }
+    return all(
+        _tried_key(data["tried"]) in have
+        for data in entries
+        if isinstance(data.get("tried"), Mapping)
+    )
+
+
+def _legacy_carry_rows(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    root: Path | None,
+    *,
+    folded: Mapping[str, Any] | None,
+    fits: Any,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The payloads a carry WOULD append, in order, and the rows it could not build.
+
+    Shared by :func:`_carry_legacy_forward` and its read-side preview
+    (:func:`_legacy_preview`), so the two cannot answer differently about what the
+    upgrade brings forward: the preview FOLDS exactly these payloads where the carry
+    appends them, which makes the previewed record the post-carry record by
+    construction rather than by two implementations agreeing. Pure -- it reads the
+    pre-projection files and writes nothing, not even the begun markers, which belong
+    to the carry alone and are what make it a write.
+
+    A work item *folded* already holds with its WHOLE carried history is left out: it
+    landed on an earlier run, or the crew has since worked it, and a carried entry
+    re-states the file's fields as an update. One whose history the record is missing
+    a row of is carried again, because those refused entries are the only copy of
+    those approaches (:func:`_carried_history_complete`). A pass the record holds is
+    left out outright -- a pass is one entry, so holding it is holding all of it. A row
+    that cannot be built -- unreadable, not a record, without a recoverable number,
+    too large at every clamp -- is NAMED in the second list rather than passed over,
+    because a carry that finished with a row left behind would discard that row's
+    state for good.
+    """
+    crew_dir = crews_dir(owner, repo, root) / _require_crew_id(crew_id)
+    items_marker = crew_dir / _ITEMS_CARRIED_MARKER
+    legacy_skips = skips_path(owner, repo, root)
+    skips_marker = crews_dir(owner, repo, root) / _SKIPS_CARRIED_MARKER
+    held_items: Mapping[str, Any] = folded["items"] if folded else {}
+    held_skips: set[str] = set(folded["skips"]) if folded else set()
+    rows: list[dict[str, Any]] = []
+    unfit: list[str] = []
+    if crew_dir.is_dir() and not items_marker.exists():
+        for path in sorted(crew_dir.glob("*.json")):
+            legacy = _read_legacy_json(path)
+            if not isinstance(legacy, dict):
+                # Unreadable, or not a record. Named, not skipped: a skipped row
+                # would be left behind by a finished carry.
+                unfit.append(path.name)
+                continue
+            if _legacy_number(legacy.get("number")) is None:
+                # The pre-projection writer named each item file by its number, so
+                # a row without one still has it in the file name.
+                try:
+                    legacy = {**legacy, "number": int(path.stem)}
+                except ValueError:
+                    unfit.append(path.name)
+                    continue
+            entries = _legacy_item_entries(owner, repo, crew_id, legacy)
+            if not entries:
+                unfit.append(path.name)
+                continue
+            standing = held_items.get(str(entries[0]["number"]))
+            if standing is not None and _carried_history_complete(standing, entries):
+                continue
+            fitted: list[dict[str, Any]] = []
+            for data in entries:
+                shrunk = _shrink_to_fit(data, fits)
+                if shrunk is None:
+                    # One entry of an item that fits at no clamp makes the WHOLE row
+                    # unfit: appending the rest and marking the carry finished would
+                    # leave that part of the item's history nowhere, and the files are
+                    # never read again once marked.
+                    fitted = []
+                    break
+                fitted.append(shrunk)
+            if not fitted:
+                unfit.append(path.name)
+                continue
+            rows.extend(fitted)
+    if legacy_skips.is_file() and not skips_marker.exists():
+        stored = _read_legacy_json(legacy_skips)
+        if not isinstance(stored, dict):
+            unfit.append(legacy_skips.name)
+        else:
+            for key, row in stored.items():
+                if not isinstance(row, dict):
+                    unfit.append(f"{legacy_skips.name}#{key}")
+                    continue
+                if _legacy_number(row.get("number")) is None:
+                    try:
+                        row = {**row, "number": int(str(key))}
+                    except (TypeError, ValueError):
+                        unfit.append(f"{legacy_skips.name}#{key}")
+                        continue
+                skip_data = _legacy_skip_entry(owner, repo, crew_id, row)
+                if skip_data is None:
+                    unfit.append(f"{legacy_skips.name}#{key}")
+                    continue
+                if str(skip_data["number"]) in held_skips:
+                    continue
+                fitted_skip = _shrink_to_fit(skip_data, fits)
+                if fitted_skip is None:
+                    unfit.append(f"{legacy_skips.name}#{key}")
+                    continue
+                rows.append(fitted_skip)
+    return rows, unfit
+
+
+def _legacy_preview(owner: str, repo: str, crew_id: str, root: Path | None, base: Any) -> dict[str, Any] | None:
+    """The record *crew_id*'s pending carry WOULD fold to, or ``None`` for no carry.
+
+    The read half of the upgrade carry. A carry appends, so it can only run from a
+    write: it needs a crew log to append into, it takes the crew's write lock, and it
+    refuses its caller when a row did not land. A READ has none of those -- it may be
+    asked with no live session at all, and it must not raise -- so without this the
+    first read after an upgrade answers the EMPTY record while the pre-projection
+    files sit there waiting for a write to consume them. Those reads are not
+    cosmetic: they are the pre-investigate nudge snapshot (``list_work_items``,
+    ``open_slot_count``) and the repository's shared skip index (``read_skips``), so
+    the first turn of an upgraded crew would be told it has no open items and that no
+    issue has been passed on -- and act on it, with forge comments that cannot be
+    taken back, before any carry runs.
+
+    So the read FOLDS the pending entries in without appending them, over the same
+    base, through the same projection, from the same payloads the carry builds
+    (:func:`_legacy_carry_rows`). The answer is the post-carry record by construction
+    rather than by agreement, and the carry stays the only thing that makes it
+    PERMANENT -- which is why this is not a second authority: it appends nothing,
+    marks nothing, and stops answering the moment the log holds the rows.
+
+    Three things stop it resurrecting state the log has settled. It is reached only
+    on the write path's OWN carry trigger -- no radar entry has ever folded into this
+    crew's record, or a carry began and did not finish -- so the two agree on when a
+    carry is owed as well as on what it carries, and a crew whose every write was an
+    idle sweep is not previewed for good. A row whose number the folded base already
+    holds is left out by the shared builder, so a half-finished carry previews only
+    what is still missing rather than re-stating an item the crew has since worked.
+    And it folds ONTO the base, so entries that carry events but no item keep them.
+
+    Never raises: every failure answers ``None``, which is the record the caller
+    already had.
+    """
+    try:
+        if not (not base.state["crew_id"] or _carry_pending(owner, repo, crew_id, root)):
+            return None
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        projection = _projection()
+        pending, _unfit = _legacy_carry_rows(
+            owner,
+            repo,
+            crew_id,
+            root,
+            folded=base.state,
+            # The same size gate the carry applies, so a row the carry will shrink is
+            # previewed shrunk. Asked through the emitter because that is the
+            # serializer the append uses; it is a pure byte check that does not need
+            # the log switched ON, which is what lets a crew whose recording is off
+            # still READ its pre-projection state instead of the empty record.
+            fits=crew_log_emit.radar_entry_fits,
+        )
+        if not pending:
+            # Nothing to bring forward: an upgraded install with no pre-projection
+            # files, or every row already carried. Not an error and not an empty
+            # answer -- the caller keeps the record it folded.
+            return None
+        from kiro_crew.crew_log.schema import Entry
+
+        entries = tuple(
+            Entry(
+                type=LEDGER_ENTRY_TYPE,
+                # One past what the fold consumed, which is all ``advance`` asks.
+                # These objects are never written: the carry's own append takes each
+                # seq from the store under the store's lock.
+                seq=base.last_seq + offset,
+                time=int(time.time() * 1000),
+                src=_ENTRY_SRC,
+                data=data,
+            )
+            for offset, data in enumerate(pending, start=1)
+        )
+        return dict(projection.projection_of(projection.advance(base, entries)).value)
+    except Exception:
+        logger.warning(
+            "crew ledger: could not preview crew %s's pending carry; reading the "
+            "record as folded",
+            crew_id,
+            exc_info=True,
+        )
+        return None
+
+
+def _carry_legacy_forward(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    session_id: str,
+    root: Path | None = None,
+    *,
+    folded: Mapping[str, Any] | None = None,
+) -> bool:
+    """Append the pre-projection files' state into *session_id*'s crew log, once.
+
+    Runs on a crew's first write -- the one before any radar entry has folded into
+    its record -- and again on a later write while an earlier carry is unfinished.
+    Two things are carried: the crew's own work-item files, and -- by whichever crew
+    of the repository writes first -- the repository's shared skip index, whose rows
+    keep the crew that decided them and when. A pass is one entry and a work item is
+    one entry per rejected approach it carries (at least one), so the work is bounded
+    by the files and by each item's clamped `tried` history, and happens once per crew
+    and once per repository.
+
+    *folded* is the crew's record as folded before this carry. A row whose number
+    the record already holds is NOT emitted again: it landed on an earlier run, or
+    the crew has since written that item itself, and a carried entry re-states the
+    file's fields as an update, so re-emitting it would set a live item back to its
+    pre-projection state. Only rows the record lacks are appended.
+
+    A marker beside the carried files records that the carry FINISHED; the files
+    are left in place and never read again. The marker is written only when every
+    row was carried and read back from the log -- a drained writer is not proof,
+    since the writer can refuse an entry and drain quietly. A row that could not be
+    carried -- unreadable, not a record, without a number that can be recovered,
+    or too large for one entry at every clamp -- is named in the log and leaves the
+    carry unfinished, so the files stay unmarked and the next write tries again:
+    marking a carry finished with a row left behind would discard that row's state
+    for good.
+
+    Returns whether anything was appended, so the caller re-folds.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    crew_dir = crews_dir(owner, repo, root) / _require_crew_id(crew_id)
+    items_marker = crew_dir / _ITEMS_CARRIED_MARKER
+    legacy_skips = skips_path(owner, repo, root)
+    skips_marker = crews_dir(owner, repo, root) / _SKIPS_CARRIED_MARKER
+    seq_before = _unit_last_seq(session_id)
+    # Marked BEGUN before a single row is read, so a crash mid-carry leaves the marker
+    # pair ``_carry_pending`` reads as unfinished. Written HERE and not in the shared
+    # row builder, which is what lets the read-side preview use the same builder and
+    # still be a read.
+    if crew_dir.is_dir() and not items_marker.exists():
+        _mark_carry_begun(crew_dir / _ITEMS_CARRY_BEGUN_MARKER)
+    if legacy_skips.is_file() and not skips_marker.exists():
+        _mark_carry_begun(legacy_skips.parent / _SKIPS_CARRY_BEGUN_MARKER)
+    carried, unfit = _legacy_carry_rows(
+        owner, repo, crew_id, root, folded=folded, fits=crew_log_emit.radar_entry_fits
+    )
+    for data in carried:
+        crew_log_emit.on_radar_recorded(session_id, data)
+    if carried:
+        if not crew_log_emit.flush(timeout=_APPEND_FLUSH_SECONDS):
+            # The carried rows are still in the writer. The write that triggered the
+            # carry would now refold a record MISSING them -- a carried editing item
+            # among them, and the one-editor rule could admit a second editor into a
+            # log that cannot take a line back. So the write is refused, the crew is
+            # marked undrained (its next write drains before it folds), and the files
+            # stay unmarked so the carry runs again if anything did not land.
+            logger.warning("crew ledger: the carry-forward did not drain within the flush budget")
+            _undrained[(str(data_home()), crew_id)] = (session_id, seq_before, carried[-1])
+            raise CrewLedgerNotRecorded(
+                "the carry of this crew's pre-projection files is still queued in the "
+                "crew log writer; send this update again shortly"
+            )
+        if not _all_landed(session_id, seq_before, carried):
+            # Drained, but a row the writer was handed is not in the file: it refused
+            # it. The record this write would fold is short of that row, so the write
+            # is refused too; the files stay unmarked and are carried again next time,
+            # and the warning names the crew so a row refused every time is found.
+            logger.warning(
+                "crew ledger: the carry-forward for crew %s did not fully land; the "
+                "pre-projection files stay unmarked and are carried again on the next write",
+                crew_id,
+            )
+            raise CrewLedgerNotRecorded(
+                "a row of this crew's pre-projection files did not land in the crew "
+                "log; send this update again"
+            )
+    if unfit:
+        # A row that could not be carried -- unreadable, not a record, without a
+        # recoverable number in the tool's range, or too large for one entry at every
+        # clamp -- REFUSES this write, the same answer as a row that did not land.
+        # Marking the carry finished would discard that row's stored state for good,
+        # since the files are never read again once marked; folding without it is
+        # worse than refusing, because an omitted row in an editing phase leaves its
+        # item out of the record the one-editor rule reads, so another item can enter
+        # that phase while the row still holds it, and a later carry then brings a
+        # second editor into the record. The files stay unmarked and the rows are
+        # named, so a retry appends only what is still missing once the named files
+        # are repaired or moved aside.
+        logger.warning(
+            "crew ledger: %d pre-projection record(s) could not be carried into the crew "
+            "log; the files stay unmarked and are tried again on the next write: %s",
+            len(unfit),
+            ", ".join(unfit),
+        )
+        raise CrewLedgerNotRecorded(
+            "a row of this crew's pre-projection files could not be carried into the "
+            f"crew log ({', '.join(unfit[:5])}); repair or move the named file(s) "
+            "aside, then send this update again"
+        )
+    try:
+        if crew_dir.is_dir():
+            items_marker.touch(exist_ok=True)
+            (crew_dir / _ITEMS_CARRY_BEGUN_MARKER).unlink(missing_ok=True)
+        if legacy_skips.is_file():
+            skips_marker.touch(exist_ok=True)
+            (legacy_skips.parent / _SKIPS_CARRY_BEGUN_MARKER).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("crew ledger: could not mark the pre-projection files as carried", exc_info=True)
+    return bool(carried)
+
+
+def _touch(path: Path) -> None:
+    try:
+        path.touch(exist_ok=True)
+    except OSError:
+        logger.warning("crew ledger: could not write the carry marker %s", path, exc_info=True)
+
+
+def _mark_carry_begun(path: Path) -> None:
+    """Write a carry's BEGUN marker, or refuse the write that would have carried.
+
+    The begun marker is what makes a carry that stops half-way run again: without it
+    a partial carry leaves a record that has folded a radar entry, and such a record
+    never carries on its own.
+    So a begun marker that cannot be written is not best-effort like the finished one
+    (a lost finished marker only re-runs an idempotent carry) -- nothing is emitted, and
+    the write is refused so the caller sends it again once the marker can be written.
+    """
+    try:
+        path.touch(exist_ok=True)
+    except OSError as exc:
+        logger.warning("crew ledger: could not write the carry marker %s", path, exc_info=True)
+        raise CrewLedgerNotRecorded(
+            "the carry of this crew's pre-projection files could not be marked as begun; "
+            "nothing was carried, send this update again"
+        ) from exc
+
+
+def _carry_pending(owner: str, repo: str, crew_id: str, root: Path | None = None) -> bool:
+    """Whether an earlier carry for this crew or its repository began and did not finish."""
+    crew_dir = crews_dir(owner, repo, root) / _require_crew_id(crew_id)
+    repo_dir = crews_dir(owner, repo, root)
+    items_unfinished = (crew_dir / _ITEMS_CARRY_BEGUN_MARKER).exists() and not (
+        crew_dir / _ITEMS_CARRIED_MARKER
+    ).exists()
+    skips_unfinished = (repo_dir / _SKIPS_CARRY_BEGUN_MARKER).exists() and not (
+        repo_dir / _SKIPS_CARRIED_MARKER
+    ).exists()
+    return items_unfinished or skips_unfinished
+
+
+def _all_landed(session_id: str, seq_before: int, payloads: list[dict[str, Any]]) -> bool:
+    """Whether every one of *payloads* is in *session_id*'s log past *seq_before*.
+
+    Read from the file rather than inferred from the writer: a drained writer can
+    have REFUSED an entry (too large, undeclared field) and be quiet about it.
+    """
+    projection = _projection()
+    try:
+        handle = projection.open_session_log(session_id)
+        if handle is None:
+            return False
+        since = [
+            e.data
+            for e in handle.iter_from(seq_before + 1, known=projection.KNOWN_TYPES)
+            if e.type == LEDGER_ENTRY_TYPE
+        ]
+    except Exception:
+        log_exception_text(
+            logger, logging.DEBUG, "crew ledger: could not read the carried entries back"
+        )
+        return False
+    return all(any(landed == data for landed in since) for data in payloads)
+
 
 #: Bump on any incompatible change to :func:`fold_fabric`'s item shape. Its own
 #: field, not :data:`CREW_SCHEMA`: the fabric payload is derived, not stored, so it
@@ -1918,14 +2614,6 @@ def _fold_one_item(
     }
 
 
-#: Ceiling on the ledger read the fabric fold joins against. The fold reads the
-#: WHOLE repo's ledger (every crew, every item) in one pass, unlike the per-crew
-#: ``GET /crew`` read, so its bound is larger — but still bounded, because the
-#: ledger is append-only and a repo that has run crews for months has thousands of
-#: lines that would otherwise all land in RAM on a page open.
-_FABRIC_PHASE_EVENT_LIMIT = 200_000
-
-
 def _fabric_title_hints(owner: str, repo: str, root: Path | None = None) -> dict[int, str]:
     """``number -> issue/PR title``, seeded from the issues and pulls list caches.
 
@@ -1982,32 +2670,16 @@ def _fabric_title_hints(owner: str, repo: str, root: Path | None = None) -> dict
 def fold_fabric(owner: str, repo: str, root: Path | None = None) -> list[dict[str, Any]]:
     """Every crew work item in this repo, folded into a fabric lane, newest first.
 
-    ONE pass over the repo's crews and their work items, joined to the phase-bearing
-    slice of the append-only ledger. The join is per ``(crew_id, number)``: a work
-    item's lane is drawn from its own lines only, and a line with no ``phase`` (a
-    pre-feature line) contributes nothing, so an old ledger degrades the drawing
-    rather than breaking the fold.
+    ONE pass over the repo's crews, each read from its folded ledger: the item
+    records and, per item, the lines that ENTERED a phase (the fold keeps those per
+    item, so a lane parked in one phase for a long time keeps its entry line however
+    much the other lanes chatter). A pre-projection line that carried no phase
+    contributed nothing then and contributes nothing now, so an old history degrades
+    the drawing rather than breaking the fold.
 
     Ordered newest-progress-first — the same order the crew page lists items in — so
     an operator scanning the pipeline sees the freshly-moved lanes at the top.
     """
-    # Group phase-bearing events by (crew_id, number), oldest first. read_events
-    # returns newest-first with duplicate ids already collapsed; reverse once here
-    # so each item's slice is in TIME order for the fold. The read is filtered to
-    # phase-bearing lines because the cap discards the OLDEST events: spending it
-    # on writes this fold ignores is what would truncate a long-stalled lane's
-    # entry line, and the lane that has sat in one phase longest is the one the
-    # board exists to show.
-    by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
-    for ev in reversed(
-        read_events(owner, repo, root, limit=_FABRIC_PHASE_EVENT_LIMIT, require_phase=True)
-    ):
-        cid = ev.get("crew_id")
-        num = ev.get("number")
-        if not isinstance(cid, str) or not isinstance(num, int) or isinstance(num, bool):
-            continue
-        by_key.setdefault((cid, num), []).append(ev)
-
     # Real issue/PR titles from the list caches Issue Radar already keeps — one
     # read per cache for the WHOLE fold, not per lane.
     title_hints = _fabric_title_hints(owner, repo, root)
@@ -2017,11 +2689,16 @@ def fold_fabric(owner: str, repo: str, root: Path | None = None) -> list[dict[st
         cid = str(crew.get("id") or "")
         if not cid:
             continue
-        for rec in list_work_items(owner, repo, cid, root):
+        ledger = read_ledger(owner, repo, cid, root)
+        phase_lines = ledger.get("phase_lines") or {}
+        for rec in ledger["items"]:
             num = rec.get("number")
             if not isinstance(num, int) or isinstance(num, bool):
                 continue
-            events = by_key.get((cid, num), [])
+            events = [
+                {"phase": row.get("phase"), "ts": row.get("at")}
+                for row in phase_lines.get(str(num), [])
+            ]
             item = _fold_one_item(rec, events, title_hints)
             item["_sort"] = str(rec.get("last_progress_at") or "")
             items.append(item)

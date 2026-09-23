@@ -3081,6 +3081,83 @@
       }
     },
     {
+      "name": "kiro-cli purpose-less auto-title is a digest of the command's arguments, not a description",
+      "input": {
+        "kind": "execute",
+        "title": "-la, src",
+        "rawInput": {
+          "command": "ls -la src"
+        }
+      },
+      "expect": {
+        "action": {
+          "type": "list_files",
+          "path": "src"
+        },
+        "more": 0,
+        "title": "List files in src",
+        "kind": "read",
+        "derived": true
+      }
+    },
+    {
+      "name": "argument-digest title over a command the classifier refuses falls to the raw command",
+      "input": {
+        "kind": "execute",
+        "title": "--title, Three, …",
+        "rawInput": {
+          "command": "cd ~/backend && $PY ledger.py ticket-log --id P1 --title \"Three\""
+        }
+      },
+      "expect": {
+        "action": null,
+        "more": 0,
+        "title": "cd ~/backend && $PY ledger.py ticket-log --id P1 --title \"Three\"",
+        "kind": "execute",
+        "derived": false
+      }
+    },
+    {
+      "name": "a single fragment lifted from the command is a digest too",
+      "input": {
+        "kind": "execute",
+        "title": "status",
+        "rawInput": {
+          "command": "git status"
+        }
+      },
+      "expect": {
+        "action": {
+          "type": "git",
+          "sub": "status"
+        },
+        "more": 0,
+        "title": "Git status",
+        "kind": "execute",
+        "derived": true
+      }
+    },
+    {
+      "name": "a one-word sentence the command does not contain stays the description",
+      "input": {
+        "kind": "execute",
+        "title": "Inspect",
+        "rawInput": {
+          "command": "git status"
+        }
+      },
+      "expect": {
+        "action": {
+          "type": "git",
+          "sub": "status"
+        },
+        "more": 0,
+        "title": "Inspect",
+        "kind": "execute",
+        "derived": true
+      }
+    },
+    {
       "name": "KAS replayed row keeps the persisted description over the raw pipeline",
       "input": {
         "kind": "execute",

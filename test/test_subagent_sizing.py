@@ -9,7 +9,10 @@ patched ``_available_memory_gb``.
 
 from __future__ import annotations
 
+import time
 import types
+from io import StringIO
+from typing import Any
 
 import pytest
 
@@ -66,47 +69,79 @@ def patch_host(monkeypatch):
     return _apply
 
 
+# --- memory is the only host term ------------------------------------------
+
+
+class TestMemoryIsTheOnlyHostTerm:
+    """``compute_max_subagents`` sizes the AUTO cap from memory alone.
+
+    Over-committing memory ends in the OOM killer, an unrecoverable hard
+    failure, so it is sized up front. Over-committing CPU only slows work down,
+    and the adaptive controller already backs off on the pressure that slowness
+    produces; a static CPU term stacked on that loop priced every slot at the
+    busiest agent's one-minute burst and pinned a 32-core host at 4.
+    """
+
+    def test_cpu_count_and_cpu_cost_do_not_bind(self, patch_host) -> None:
+        # 174.7 GB with the §3.3 memory cost: mem_term=443, clamp(443,3,64) = 64
+        # whether the host has 1 core or 48, and whatever the CPU cost says.
+        patch_host(174.7, 1)
+        cfg = _cfg(mem_cost=0.315, cpu_cost=100.0, hard_cap=64)
+        assert compute_max_subagents(cfg) == 64
+        patch_host(174.7, 48)
+        assert compute_max_subagents(cfg) == 64
+
+    def test_memory_still_binds(self, patch_host) -> None:
+        patch_host(8.0, 64)  # mem_term = floor(8*0.8/0.5) = 12
+        cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=64)
+        assert compute_max_subagents(cfg) == 12
+
+    def test_the_deprecated_cpu_cost_key_is_not_a_sizing_input(self) -> None:
+        from kiro_crew.subagent import SubagentManager
+
+        assert "agent.subagent_cpu_cost_cores" not in SubagentManager.SIZING_CONFIG_PATHS
+        assert "agent.subagent_cpu_cost_cores" not in SubagentManager.LIVE_CONFIG_PATHS
+
+
 # --- Worked examples from dynamic-subagent-sizing.md §3.3 -------------------
 
 
 def test_example_a_hard_cap_binds(patch_host) -> None:
-    # 174.7 GB / 48 cores: mem_term=443, cpu_term=48, clamp(min,3,16) = 16
+    # 174.7 GB: mem_term=443, clamp(443,3,16) = 16
     patch_host(174.7, 48)
     cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
     assert compute_max_subagents(cfg) == 16
 
 
 def test_example_b_floor(patch_host) -> None:
-    # 8 GB / 4 cores, fallback costs: mem_term=12, cpu_term=3, floor = 3
-    patch_host(8.0, 4)
+    # 2 GB, fallback cost: mem_term = floor(2*0.8/0.5) = 3, floor = 3
+    patch_host(2.0, 4)
     cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=16)
     assert compute_max_subagents(cfg) == 3
 
 
-def test_example_c_cpu_binds_with_pool(patch_host) -> None:
-    # 32 GB / 12 cores, pool=5: mem_term=59, cpu_term=12, min = 12
-    patch_host(32.0, 12)
+def test_example_c_pool_reservation_binds(patch_host) -> None:
+    # 8 GB, pool=5: mem_term = floor((8*0.8 - 5*0.4)/0.4) = 11, clamp(11,3,16) = 11
+    patch_host(8.0, 12)
     cfg = _cfg(mem_cost=0.4, cpu_cost=0.8, hard_cap=16, pool_size=5)
-    assert compute_max_subagents(cfg) == 12
+    assert compute_max_subagents(cfg) == 11
 
 
 def test_example_d_memory_binds(patch_host) -> None:
-    # Effective 4 GB (cgroup headroom fed directly) / 48 cores:
-    # mem_term=10, cpu_term=48, min = 10
+    # Effective 4 GB (cgroup headroom fed directly): mem_term=10
     patch_host(4.0, 48)
     cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
     assert compute_max_subagents(cfg) == 10
 
 
 def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
-    # Stage 1: with session-shared marginal costs (mem≈0.05 GB, cpu≈0.25 core),
-    # even a modest 8 GB / 4 core host is not RAM-bound — the cap rises to
-    # the provider ceiling (hard_cap) instead of the legacy floor of 3.
-    # mem_term = floor((8*0.8)/0.05) = 128; cpu_term = floor((4*0.8)/0.25) = 12;
-    # min(128, 12, 16) = 12 (was 3 when the whole shared process was charged).
+    # Stage 1: with the session-shared marginal memory cost (≈0.05 GB), even a
+    # modest 8 GB host is not RAM-bound — the cap rises to the provider ceiling
+    # (hard_cap) instead of the legacy floor of 3.
+    # mem_term = floor((8*0.8)/0.05) = 128; clamp(128, 3, 16) = 16.
     patch_host(8.0, 4)
     cfg = _cfg(mem_cost=0.05, cpu_cost=0.25, hard_cap=16)
-    assert compute_max_subagents(cfg) == 12
+    assert compute_max_subagents(cfg) == 16
 
 
 # --- Edge cases ------------------------------------------------------------
@@ -114,7 +149,7 @@ def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
 
 def test_pool_reservation_reduces_memory_budget(patch_host) -> None:
     # Same host, with vs without a warm pool: reservation lowers mem_term.
-    patch_host(20.0, 64)  # CPU generous so memory binds
+    patch_host(20.0, 64)
     no_pool = compute_max_subagents(_cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=0, hard_cap=100))
     with_pool = compute_max_subagents(_cfg(mem_cost=0.5, cpu_cost=0.1, pool_size=10, hard_cap=100))
     # no_pool: floor(20*0.8/0.5)=32 ; with_pool: floor((16-5)/0.5)=22
@@ -197,6 +232,24 @@ def test_manager_reports_resolved_cap_for_auto_sentinel(patch_host) -> None:
     assert mgr.max_concurrent == 16  # live manager is the source of truth (§5.2)
 
 
+def test_manager_effective_cap_sits_under_the_resolved_ceiling(patch_host) -> None:
+    """The adaptive controller's ``set_effective_cap`` bounds the live value
+    beneath the resolved cap; the resolved cap stays readable as the ceiling
+    and is never written by the bound."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.subagent import SubagentManager
+
+    patch_host(174.7, 48)
+    cap = resolve_max_subagents(_cfg(max_subagents=0, mem_cost=0.315, cpu_cost=0.8, hard_cap=16))
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock(), max_concurrent=cap)
+    assert mgr.set_effective_cap(4) == 4  # fresh-process start: min(user_max, 4)
+    assert mgr.max_concurrent == 4
+    assert mgr.user_max_concurrent == 16
+    assert mgr.set_effective_cap(40) == 16  # ceiling binds
+    assert mgr.set_effective_cap(None) == 16
+
+
 # ---------------------------------------------------------------------------
 # Unified spawn staggering (Stage 4, dynamic-subagent-sizing.md §5.3)
 # ---------------------------------------------------------------------------
@@ -208,8 +261,10 @@ def _mgr(*, running: int, max_concurrent: int, last_ts: float, stagger: float = 
 
     from kiro_crew.subagent import SubagentManager
 
+    sessions = MagicMock()
+    sessions.get_agent_selection.return_value = ("template", "")
     m = SubagentManager(
-        sessions=MagicMock(),
+        sessions=sessions,
         ctx_builder=MagicMock(),
         max_concurrent=max_concurrent,
     )
@@ -217,6 +272,31 @@ def _mgr(*, running: int, max_concurrent: int, last_ts: float, stagger: float = 
     m._last_spawn_ts = last_ts
     m._spawn_stagger_secs = stagger
     return m
+
+
+class _PinnedClock:
+    """``time`` stand-in whose ``monotonic()`` is frozen; everything else forwards."""
+
+    def __init__(self, now: float) -> None:
+        self._now = now
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+def _pin_pump_clock(monkeypatch, now: float) -> None:
+    """Freeze the clock the spawn gate and the drain pump read at ``now``.
+
+    Both read ``time.monotonic()`` through ``kiro_crew.subagent``'s globals (the
+    admission ``*_impl`` functions are rebound onto that namespace), so swapping
+    that one ``time`` name pins them. The process-wide module stays untouched:
+    ``asyncio.run()`` keeps reading it for its own scheduling, and ``_mgr()`` may
+    take seconds of real I/O on a loaded runner without moving this clock.
+    """
+    monkeypatch.setattr(subagent, "time", _PinnedClock(now))
 
 
 class TestStaggerGate:
@@ -258,15 +338,29 @@ class TestStaggerGate:
 class TestDrainPump:
     """_drain_queue: one start per interval, reschedules when too soon."""
 
-    def test_too_soon_does_not_pop(self) -> None:
+    def test_too_soon_does_not_pop(self, monkeypatch) -> None:
         import asyncio
-        import time as _t
         from unittest.mock import MagicMock
 
+        now = 1_000.0
+        _pin_pump_clock(monkeypatch, now)
+
         async def run() -> None:
-            now = _t.monotonic()
             m = _mgr(running=0, max_concurrent=16, last_ts=now, stagger=2.0)
-            m._queue = [{"task": "task", "parent_session_key": "", "agent": "", "max_turns": 0, "model": None, "allowed_tools": None, "bare": False, "cwd": "", "approval_mode": None, "silent": False}]
+            m._queue = [
+                {
+                    "task": "task",
+                    "parent_session_key": "",
+                    "agent": "",
+                    "max_turns": 0,
+                    "model": None,
+                    "allowed_tools": None,
+                    "bare": False,
+                    "cwd": "",
+                    "approval_mode": None,
+                    "silent": False,
+                }
+            ]
             m.spawn = MagicMock()  # type: ignore[method-assign]
             m._drain_queue()
             m.spawn.assert_not_called()  # too soon → no burst
@@ -283,8 +377,30 @@ class TestDrainPump:
             now = _t.monotonic()
             m = _mgr(running=0, max_concurrent=16, last_ts=now - 5.0, stagger=2.0)
             m._queue = [
-                {"task": "task-a", "parent_session_key": "", "agent": "", "max_turns": 0, "model": None, "allowed_tools": None, "bare": False, "cwd": "", "approval_mode": None, "silent": False},
-                {"task": "task-b", "parent_session_key": "", "agent": "", "max_turns": 0, "model": None, "allowed_tools": None, "bare": False, "cwd": "", "approval_mode": None, "silent": False},
+                {
+                    "task": "task-a",
+                    "parent_session_key": "",
+                    "agent": "",
+                    "max_turns": 0,
+                    "model": None,
+                    "allowed_tools": None,
+                    "bare": False,
+                    "cwd": "",
+                    "approval_mode": None,
+                    "silent": False,
+                },
+                {
+                    "task": "task-b",
+                    "parent_session_key": "",
+                    "agent": "",
+                    "max_turns": 0,
+                    "model": None,
+                    "allowed_tools": None,
+                    "bare": False,
+                    "cwd": "",
+                    "approval_mode": None,
+                    "silent": False,
+                },
             ]
             m.spawn = MagicMock()  # type: ignore[method-assign]
             m._drain_queue()
@@ -300,7 +416,20 @@ class TestDrainPump:
 
         async def run() -> None:
             m = _mgr(running=16, max_concurrent=16, last_ts=_t.monotonic() - 99, stagger=2.0)
-            m._queue = [{"task": "task", "parent_session_key": "", "agent": "", "max_turns": 0, "model": None, "allowed_tools": None, "bare": False, "cwd": "", "approval_mode": None, "silent": False}]
+            m._queue = [
+                {
+                    "task": "task",
+                    "parent_session_key": "",
+                    "agent": "",
+                    "max_turns": 0,
+                    "model": None,
+                    "allowed_tools": None,
+                    "bare": False,
+                    "cwd": "",
+                    "approval_mode": None,
+                    "silent": False,
+                }
+            ]
             m.spawn = MagicMock()  # type: ignore[method-assign]
             m._drain_queue()
             m.spawn.assert_not_called()
@@ -456,14 +585,15 @@ class TestQueuedIdentityRoundTrip:
 
     def test_drained_spawn_reuses_the_announced_id(self, monkeypatch) -> None:
         import re
-        import time as _t
         from unittest.mock import MagicMock
 
         import kiro_crew.subagent as sub
 
         monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
 
-        m = _mgr(running=1, max_concurrent=16, last_ts=_t.monotonic(), stagger=2.0)
+        now = 1_000.0
+        _pin_pump_clock(monkeypatch, now)
+        m = _mgr(running=1, max_concurrent=16, last_ts=now, stagger=2.0)
         info = m.spawn(task="x", parent_session_key="dashboard:s1")
 
         assert info is not None and info.queued is True
@@ -471,7 +601,7 @@ class TestQueuedIdentityRoundTrip:
 
         # Drain: the gate is open now (stagger elapsed, slot free), so the
         # popped entry must be re-spawned under the SAME id.
-        m._last_spawn_ts = _t.monotonic() - 10.0
+        m._last_spawn_ts = now - 10.0
         m.spawn = MagicMock()  # type: ignore[method-assign]
         m._drain_queue()
 
@@ -702,12 +832,28 @@ class TestReadIntFile:
 
 
 class TestCgroupAvailable:
+    @pytest.fixture(autouse=True)
+    def cgroup_files(self, monkeypatch):
+        """All kernel inputs are synthetic, including membership and mounts."""
+        files = {}
+
+        def read(path, **kwargs):
+            value = files.get(str(path))
+            if value is None:
+                raise FileNotFoundError(path)
+            if isinstance(value, Exception):
+                raise value
+            return StringIO(str(value))
+
+        monkeypatch.setattr(subagent, "open", read, raising=False)
+        return files
+
     def test_v2_headroom(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
         vals = {
-            "/sys/fs/cgroup/memory.max": 16 * 1024 ** 3,
-            "/sys/fs/cgroup/memory.current": 2 * 1024 ** 3,
+            "/sys/fs/cgroup/memory.max": 16 * 1024**3,
+            "/sys/fs/cgroup/memory.current": 2 * 1024**3,
         }
         monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
         assert sub._cgroup_available_gb() == pytest.approx(14.0, abs=0.01)
@@ -731,11 +877,181 @@ class TestCgroupAvailable:
 
         vals = {
             "/sys/fs/cgroup/memory.max": None,  # v2 absent
-            "/sys/fs/cgroup/memory/memory.limit_in_bytes": 8 * 1024 ** 3,
-            "/sys/fs/cgroup/memory/memory.usage_in_bytes": 3 * 1024 ** 3,
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": 8 * 1024**3,
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes": 3 * 1024**3,
         }
         monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
         assert sub._cgroup_available_gb() == pytest.approx(5.0, abs=0.01)
+
+    @pytest.mark.parametrize("used_gb", [2, 3])
+    def test_nested_exhaustion_blocks_admission(self, monkeypatch, cgroup_files, used_gb):
+        monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)
+        cgroup_files.update(
+            {
+                "/proc/meminfo": "MemAvailable: 67108864 kB\n",
+                "/proc/self/cgroup": "0::/user.slice/crew.service\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+                "/sys/fs/cgroup/user.slice/crew.service/memory.max": 2 * 1024**3,
+                "/sys/fs/cgroup/user.slice/crew.service/memory.current": used_gb * 1024**3,
+            }
+        )
+        # Explicit production path gets past the file's healthy-host fixture.
+        assert subagent.check_memory_available(min_gb=1.0, path="/proc/meminfo") == (False, 0.0)
+
+    def test_parent_usage_includes_siblings(self, cgroup_files):
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": "0::/slice/crew\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+                "/sys/fs/cgroup/slice/crew/memory.max": 8 * 1024**3,
+                "/sys/fs/cgroup/slice/crew/memory.current": 1024**3,
+                "/sys/fs/cgroup/slice/memory.max": 16 * 1024**3,
+                "/sys/fs/cgroup/slice/memory.current": 15 * 1024**3,
+            }
+        )
+        # The looser parent ceiling still has less headroom due to siblings.
+        assert subagent._cgroup_available_gb() == 1.0
+
+    @pytest.mark.parametrize("usage", [None, PermissionError(), "garbage", "max", -1])
+    @pytest.mark.parametrize("v2", [True, False])
+    def test_unknown_usage_does_not_become_zero(self, cgroup_files, usage, v2):
+        base = "/sys/fs/cgroup" if v2 else "/sys/fs/cgroup/memory"
+        limit = "memory.max" if v2 else "memory.limit_in_bytes"
+        current = "memory.current" if v2 else "memory.usage_in_bytes"
+        cgroup_files.update({f"{base}/{limit}": 8 * 1024**3, f"{base}/{current}": usage})
+        assert subagent._cgroup_available_gb() == 0.0
+
+    @pytest.mark.parametrize("v2", [True, False])
+    @pytest.mark.parametrize("unknown_at_parent", [True, False])
+    @pytest.mark.parametrize("parent_limit_gb", [4, 16])
+    def test_known_constraint_survives_unknown_usage_at_either_level(
+        self, cgroup_files, v2, unknown_at_parent, parent_limit_gb
+    ):
+        membership = "0::" if v2 else "5:memory:"
+        filesystem = "cgroup2 cgroup rw" if v2 else "cgroup cgroup rw,memory"
+        limit = "memory.max" if v2 else "memory.limit_in_bytes"
+        usage = "memory.current" if v2 else "memory.usage_in_bytes"
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": f"{membership}/crew\n",
+                "/proc/self/mountinfo": f"31 20 0:28 / /mem rw - {filesystem}\n",
+                f"/mem/crew/{limit}": 8 * 1024**3,
+                f"/mem/crew/{usage}": 1024**3 if unknown_at_parent else None,
+                f"/mem/{limit}": parent_limit_gb * 1024**3,
+                f"/mem/{usage}": None if unknown_at_parent else 1024**3,
+                "/mem/memory.use_hierarchy": 1,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 0.0
+
+    @pytest.mark.parametrize("limit", [None, "max", "garbage", -1, 1 << 62])
+    def test_absent_or_unlimited_limit_preserves_unknown(self, cgroup_files, limit):
+        cgroup_files["/sys/fs/cgroup/memory.max"] = limit
+        assert subagent._cgroup_available_gb() == -1.0
+
+    @pytest.mark.parametrize(
+        "meminfo",
+        ["MemAvailable: 33554432 kB\n", None, PermissionError(), "MemAvailable: bad\n", ""],
+    )
+    @pytest.mark.parametrize("usage, expected", [(None, 0.0), (0, 2.0), (1024**3, 1.0)])
+    def test_finite_limit_binds_admission_and_autosizing(
+        self, monkeypatch, cgroup_files, meminfo, usage, expected
+    ):
+        monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(subagent.os, "cpu_count", lambda: 64)
+        cgroup_files.update(
+            {
+                "/proc/meminfo": meminfo,
+                "/sys/fs/cgroup/memory.max": 2 * 1024**3,
+                "/sys/fs/cgroup/memory.current": usage,
+            }
+        )
+        # Route the healthy-host fixture through the real reader for sizing too.
+        check = subagent.check_memory_available
+        monkeypatch.setattr(
+            subagent,
+            "check_memory_available",
+            lambda min_gb=0.0: check(min_gb=min_gb, path="/proc/meminfo"),
+        )
+        assert subagent.check_memory_available(min_gb=expected) == (True, expected)
+        assert subagent.check_memory_available(min_gb=expected + 0.01) == (False, expected)
+        assert subagent._available_memory_gb() == expected
+        cfg = _cfg(buffer_pct=0, mem_cost=0.25, cpu_cost=1.0, hard_cap=32)
+        assert compute_max_subagents(cfg) == max(3, int(expected / 0.25))
+
+    @pytest.mark.parametrize("limit", [None, "max"])
+    @pytest.mark.parametrize(
+        "meminfo, expected", [(None, -1.0), ("MemAvailable: 33554432 kB\n", 32.0)]
+    )
+    def test_no_finite_limit_keeps_host_fallback(
+        self, monkeypatch, cgroup_files, limit, meminfo, expected
+    ):
+        monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)
+        cgroup_files.update({"/proc/meminfo": meminfo, "/sys/fs/cgroup/memory.max": limit})
+        assert subagent.check_memory_available(min_gb=1.0, path="/proc/meminfo") == (True, expected)
+
+    @pytest.mark.parametrize("usage", [None, "max"])
+    def test_unknown_child_keeps_known_parent_constraint(self, cgroup_files, usage):
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": "0::/slice/crew\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+                "/sys/fs/cgroup/slice/crew/memory.max": 8 * 1024**3,
+                "/sys/fs/cgroup/slice/crew/memory.current": usage,
+                "/sys/fs/cgroup/slice/memory.max": 4 * 1024**3,
+                "/sys/fs/cgroup/slice/memory.current": 4 * 1024**3,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 0.0
+
+    @pytest.mark.parametrize("v2", [True, False])
+    def test_bind_mount_root_and_escaped_mountpoint(self, cgroup_files, v2):
+        membership = "0::" if v2 else "5:cpu,memory:"
+        filesystem = "cgroup2 cgroup rw" if v2 else "cgroup cgroup rw,cpu,memory"
+        limit = "memory.max" if v2 else "memory.limit_in_bytes"
+        usage = "memory.current" if v2 else "memory.usage_in_bytes"
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": f"{membership}/tenant/crew\n",
+                "/proc/self/mountinfo": f"31 20 0:28 /tenant /mounted\\040group rw - {filesystem}\n",
+                f"/mounted group/crew/{limit}": 8 * 1024**3,
+                f"/mounted group/crew/{usage}": 1024**3,
+                f"/mounted group/{limit}": 4 * 1024**3,
+                f"/mounted group/{usage}": 3 * 1024**3,
+                "/mounted group/memory.use_hierarchy": 1,
+                # Outside the mount and unrelated conventional roots cannot bind.
+                f"/{limit}": 0,
+                f"/{usage}": 0,
+                "/sys/fs/cgroup/memory.max": 0,
+                "/sys/fs/cgroup/memory.current": 0,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 1.0
+
+    def test_v1_nonhierarchical_parent_does_not_bind(self, cgroup_files):
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": "5:memory:/crew\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /mem rw - cgroup cgroup rw,memory\n",
+                "/mem/crew/memory.limit_in_bytes": 8 * 1024**3,
+                "/mem/crew/memory.usage_in_bytes": 1024**3,
+                "/mem/memory.limit_in_bytes": 4 * 1024**3,
+                "/mem/memory.usage_in_bytes": 4 * 1024**3,
+                "/mem/memory.use_hierarchy": 0,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 7.0
+
+    def test_namespaced_root_with_zero_usage(self, cgroup_files):
+        cgroup_files.update(
+            {
+                "/proc/self/cgroup": "0::/\n",
+                "/proc/self/mountinfo": "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+                "/sys/fs/cgroup/memory.max": 8 * 1024**3,
+                "/sys/fs/cgroup/memory.current": 0,
+            }
+        )
+        assert subagent._cgroup_available_gb() == 8.0
 
 
 class TestAvailableMemoryClamp:
@@ -834,7 +1150,7 @@ class TestMacosMemoryProbe:
             lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n),  # 16 KiB pages
         )
         monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 200000)
-        expected = round(200000 * 16384 / (1024 ** 3), 2)
+        expected = round(200000 * 16384 / (1024**3), 2)
         assert sub._macos_available_memory_gb() == pytest.approx(expected, abs=0.01)
 
     def test_none_page_count_fails_open(self, monkeypatch) -> None:
@@ -944,9 +1260,20 @@ class TestForceReapDrainsQueue:
         from kiro_crew.subagent import SubagentInfo
 
         m = _mgr(running=3, max_concurrent=3, last_ts=_t.monotonic() - 100.0)
-        m._queue.append({"task": "queued", "parent_session_key": "", "agent": "",
-                         "max_turns": 0, "model": None, "allowed_tools": None,
-                         "bare": False, "cwd": "", "approval_mode": None, "silent": False})
+        m._queue.append(
+            {
+                "task": "queued",
+                "parent_session_key": "",
+                "agent": "",
+                "max_turns": 0,
+                "model": None,
+                "allowed_tools": None,
+                "bare": False,
+                "cwd": "",
+                "approval_mode": None,
+                "silent": False,
+            }
+        )
         m._drain_queue = MagicMock()  # type: ignore[method-assign]
         m._sessions = MagicMock()
         m._write_tombstone = MagicMock()  # type: ignore[method-assign]

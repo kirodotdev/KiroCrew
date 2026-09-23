@@ -149,12 +149,18 @@ def cjk_inventory(folded: str) -> str:
 
     The projection the ``unicode61`` column indexes. Order is stable only to keep
     the value diffable while debugging; nothing depends on it.
+
+    ``dict.fromkeys`` dedupes the whole string first — a C-level pass whose
+    result is bounded by the number of DISTINCT characters, never by transcript
+    length — and ``is_cjk_char`` then classifies only those survivors, a few
+    thousand calls at most. The naive orderings both lose on what may be
+    megabytes of transcript on the index write path: classifying per character
+    holds the GIL for a Python-level walk of the full text, and projecting with
+    ``_CJK_PATTERN.findall`` materializes one list element per CJK occurrence,
+    which on a CJK-heavy transcript is a transient allocation proportional to
+    the whole document.
     """
-    seen: dict[str, None] = {}
-    for ch in folded:
-        if ch not in seen and is_cjk_char(ch):
-            seen[ch] = None
-    return " ".join(seen)
+    return " ".join(ch for ch in dict.fromkeys(folded) if is_cjk_char(ch))
 
 
 def _sqlite_stat_identity(value: int) -> int | str:

@@ -9,7 +9,8 @@ Kiro Crew and kiro-cli each own:
   dashboard history, search and memory consolidation — and
   ``sessions/<stem>.attachments/`` — the images its messages show, which
   ``/api/file-raw`` serves by the paths the transcript holds
-  (:mod:`kiro_crew.chat_attachments`).
+  (:mod:`kiro_crew.chat_attachments`) — and ``sessions/.threads/<stem>.json``,
+  the reply threads on its messages (``dashboard/chat_threads.py``).
 * ``<kiro home>/sessions/cli/<sid>.json`` + ``<sid>.jsonl`` — kiro-cli's replay
   log, read to resume the session.
 
@@ -100,8 +101,11 @@ from kiro_crew.history import (
     ARCHIVE_DIR_NAME,
     ARCHIVE_SEGMENT_DELIMITER,
     SESSIONS_DIR_NAME,
+    THREADS_DIR_NAME,
+    THREADS_SIDECAR_SUFFIX,
     ConversationLog,
     HistoryLockTimeout,
+    threads_sidecar_for_stem,
     transcript_lock_stems,
 )
 from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
@@ -633,6 +637,55 @@ def _scan_raw_uncached(sid_for_stem: Mapping[str, str]) -> list[_RawUnit]:
         for _path, size, mtime in segments:
             record(uid, size, mtime)
 
+    # Reply-thread half: ``.threads/<stem>.json`` beside the transcripts. One
+    # file per session; its bytes and its last write belong to the same unit. A
+    # reply writes ONLY this file, so a sidecar's mtime is what keeps a recently
+    # threaded session young: each entry is judged on its own, as the transcripts
+    # are above -- one sidecar renamed away by a concurrent delete must not cost
+    # every other session its freshness. An entry that is there but cannot be
+    # stat'ed, or a directory that cannot be listed, is read as "fresh now": the
+    # scan cannot say how old those sessions are, and the answer that cannot
+    # stage a live thread is the young one.
+    thread_entries: list[tuple[str, os.stat_result | None]] = []
+    threads_unreadable = False
+    try:
+        with os.scandir(_crew_sessions_dir() / THREADS_DIR_NAME) as it:
+            for entry in it:
+                if not entry.name.endswith(THREADS_SIDECAR_SUFFIX):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    thread_entries.append((entry.name, entry.stat(follow_symlinks=False)))
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    logger.debug("thread sidecar %r unreadable", entry.name, exc_info=True)
+                    thread_entries.append((entry.name, None))
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        logger.warning("thread sidecar directory unreadable; ages read as now", exc_info=True)
+        threads_unreadable = True
+    scan_now = time.time()
+    for name, sidecar_st in thread_entries:
+        stem = name[: -len(THREADS_SIDECAR_SUFFIX)]
+        if not _UNIT_ID_RE.match(stem):
+            continue
+        uid = attribute(stem)
+        if uid not in sizes and uid not in stems:
+            # A thread file outliving its transcript still costs space and still
+            # belongs to a session, so it forms a unit of its own.
+            sids.setdefault(uid, "")
+        add_stem(uid, stem)
+        if sidecar_st is None:
+            record(uid, 0, scan_now)
+        else:
+            record(uid, sidecar_st.st_size, sidecar_st.st_mtime)
+    if threads_unreadable:
+        for uid in list(sizes):
+            record(uid, 0, scan_now)
+
     return [
         _RawUnit(
             uid=uid,
@@ -709,6 +762,26 @@ def _unit_paths(
         adir = attachments_dir(_crew_sessions_dir(), stem)
         for path in _attachment_files(adir):
             found.append((path, f"{STAGE_CREW_LEAF}/{adir.name}/{path.name}"))
+        # The reply threads on the transcript's messages: primary content, one
+        # file per session, so it travels with the transcript or the reclaim
+        # would leave the session's replies orphaned in the live store.
+        # A sidecar that is absent is a session with no threads; one that cannot
+        # be looked at (permission drift, a file where the `.threads` directory
+        # should be) RAISES, as `_attachment_files` does: answering "none" would
+        # let the transcript move and leave the replies behind.
+        sidecar = threads_sidecar_for_stem(_crew_sessions_dir(), stem)
+        if sidecar.parent.exists() and platform_compat.is_link_or_junction(sidecar.parent):
+            # A link where `.threads` should be points this scan -- and the move
+            # it feeds -- outside the session store. Refuse, as the write, delete
+            # and restore paths do; the reclaim then answers with the reason.
+            raise NotADirectoryError(
+                errno.ENOTDIR, "thread sidecar directory is a link", str(sidecar.parent)
+            )
+        try:
+            if stat.S_ISREG(os.lstat(sidecar).st_mode):
+                found.append((sidecar, f"{STAGE_CREW_LEAF}/{THREADS_DIR_NAME}/{sidecar.name}"))
+        except FileNotFoundError:
+            pass
     return found
 
 
@@ -1263,7 +1336,7 @@ def _open_source_no_follow(src: Path) -> IO[bytes]:
     return open(src, "rb", opener=lambda path, flags: os.open(path, flags | _O_NOFOLLOW))
 
 
-def _publish_then_drop(src: Path, dst: Path) -> None:
+def _publish_then_drop(src: Path, dst: Path, *, dst_dir_fd: int | None = None) -> None:
     """Make a just-created *dst* durable, then remove *src*. Both movers end here.
 
     One code path for both of :func:`_move_file_exclusive`'s branches, because they have
@@ -1295,10 +1368,21 @@ def _publish_then_drop(src: Path, dst: Path) -> None:
     duplicate — never lose the copy now at *dst*.
     """
     try:
-        fsync_dir(dst.parent)
+        if dst_dir_fd is not None:
+            # The destination directory is the one the leaf was created in --
+            # the pinned descriptor -- not whatever the path resolves to now:
+            # a directory swapped under the name after the open would otherwise
+            # be the one synced (and the source then dropped) while the leaf
+            # sits in the old one, unreachable.
+            os.fsync(dst_dir_fd)
+        else:
+            fsync_dir(dst.parent)
     except OSError:
         with suppress(OSError):
-            dst.unlink()
+            if dst_dir_fd is not None:
+                os.unlink(dst.name, dir_fd=dst_dir_fd)
+            else:
+                dst.unlink()
         raise
     # Propagates untouched on failure, leaving *dst* where it is. Withdrawing it would
     # be guessing: a filesystem can report a failure for an unlink that DID commit (a
@@ -1314,8 +1398,16 @@ def _publish_then_drop(src: Path, dst: Path) -> None:
     fsync_dir(src.parent, best_effort=True)
 
 
-def _move_file_exclusive(src: Path, dst: Path) -> bool:
+def _move_file_exclusive(src: Path, dst: Path, *, dst_dir_fd: int | None = None) -> bool:
     """Move *src* to *dst*, never replacing an existing *dst*. False if occupied.
+
+    With *dst_dir_fd* (POSIX), the destination is created relative to that
+    already-pinned directory descriptor -- ``dst.name`` under it -- so a parent
+    swapped for a link between the caller's check and this move cannot carry the
+    file elsewhere, and every later step (metadata, the directory sync, a
+    withdrawal) addresses that same descriptor, never the path, so a swap after
+    the open cannot make a sync of the swapped-in directory count for the one
+    the leaf landed in.
 
     Restore's preflight checks that the origin is free, but the session can be
     recreated in the interval before the move — and ``os.rename`` replaces the
@@ -1326,15 +1418,31 @@ def _move_file_exclusive(src: Path, dst: Path) -> bool:
     Both branches finish through :func:`_publish_then_drop`, which is where the
     durability ordering lives.
     """
+    # The plain ``link()`` call never dereferences *src*, but the descriptor-relative
+    # form is ``linkat`` and CPython hands that ``AT_SYMLINK_FOLLOW`` unless told
+    # otherwise -- a planted link in the staged trash would then be resolved and a
+    # hard link to its TARGET published under ``.threads``. Say so on both branches
+    # where the platform lets us, so the two halves mean the same thing.
+    link_kwargs: dict[str, Any] = {}
+    if os.link in os.supports_follow_symlinks:
+        link_kwargs["follow_symlinks"] = False
     try:
-        os.link(src, dst)
+        if dst_dir_fd is not None:
+            os.link(src, dst.name, dst_dir_fd=dst_dir_fd, **link_kwargs)
+        else:
+            os.link(src, dst, **link_kwargs)
     except FileExistsError:
         return False
     except OSError:
         # A different filesystem, or one without hard links: copy into a file that
         # must not already exist, which keeps the no-clobber guarantee.
         try:
-            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            if dst_dir_fd is not None:
+                fd = os.open(
+                    dst.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dst_dir_fd
+                )
+            else:
+                fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
             return False
         try:
@@ -1349,16 +1457,47 @@ def _move_file_exclusive(src: Path, dst: Path) -> bool:
                 #
                 # copystat first so the fsync forces the metadata with the bytes.
                 out.flush()
-                shutil.copystat(src, dst)
+                if dst_dir_fd is not None:
+                    # Metadata onto the descriptor we wrote, not a path lookup.
+                    st = os.stat(src)
+                    os.utime(out.fileno(), ns=(st.st_atime_ns, st.st_mtime_ns))
+                else:
+                    shutil.copystat(src, dst)
                 os.fsync(out.fileno())
         except OSError:
             with suppress(OSError):
-                dst.unlink()
+                if dst_dir_fd is not None:
+                    os.unlink(dst.name, dir_fd=dst_dir_fd)
+                else:
+                    dst.unlink()
             raise
-        _publish_then_drop(src, dst)
+        _publish_then_drop(src, dst, dst_dir_fd=dst_dir_fd)
         return True
-    _publish_then_drop(src, dst)
+    _publish_then_drop(src, dst, dst_dir_fd=dst_dir_fd)
     return True
+
+
+def _move_sidecar_pinned(src: Path, dst: Path) -> bool:
+    """:func:`_move_file_exclusive` into a `.threads` directory pinned by descriptor.
+
+    Opens the parent ``O_DIRECTORY|O_NOFOLLOW`` (a link at that name is an
+    ``OSError`` the caller treats as "not taken") and publishes the leaf
+    relative to it. Windows has no descriptor-relative link; there the by-name
+    move runs after the preflight's link check, as the store's writer degrades.
+    """
+    if not platform_compat.IS_POSIX:
+        if platform_compat.is_link_or_junction(dst.parent):
+            raise NotADirectoryError(
+                errno.ENOTDIR, "thread sidecar directory is a link", str(dst.parent)
+            )
+        return _move_file_exclusive(src, dst)
+    dir_fd = os.open(
+        dst.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        return _move_file_exclusive(src, dst, dst_dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _move_file(src: Path, dst: Path) -> None:
@@ -1557,6 +1696,15 @@ def _canonical_origin(rel: str) -> Path | None:
             if not _UNIT_ID_RE.match(stem):
                 return None
             return attachments_dir(_crew_sessions_dir(), stem) / name
+        if len(parts) == 3 and parts[1] == THREADS_DIR_NAME:
+            # ``crew/.threads/<stem>.json``: the file name IS the session's
+            # identity, checked as one, the way the transcript's is.
+            if not name.endswith(THREADS_SIDECAR_SUFFIX):
+                return None
+            stem = name[: -len(THREADS_SIDECAR_SUFFIX)]
+            if not _UNIT_ID_RE.match(stem):
+                return None
+            return threads_sidecar_for_stem(_crew_sessions_dir(), stem)
     return None
 
 
@@ -3052,14 +3200,31 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
             remaining.append(entry)
             continue
         crew_sessions = _crew_sessions_dir()
+        threads_dir = crew_sessions / THREADS_DIR_NAME
         live_transcripts: list[tuple[Path, Path]] = []
         prelock_files: list[tuple[Path, Path]] = []
         for item in planned:
             _src, origin = item
             if origin.parent == crew_sessions and origin.suffix == _TRANSCRIPT_SUFFIX:
                 live_transcripts.append(item)
+            elif origin.parent == threads_dir and origin.suffix == THREADS_SIDECAR_SUFFIX:
+                # The reply-thread sidecar is written under the transcript's lock
+                # (``append_thread_reply``), so it is published and rolled back
+                # under that same lock, beside the transcript: a reply a recreated
+                # chat commits between publish and a lost-race rollback would
+                # otherwise ride the sidecar back to trash.
+                live_transcripts.append(item)
             else:
                 prelock_files.append(item)
+        if any(
+            platform_compat.is_link_or_junction(origin.parent)
+            for _src, origin in live_transcripts
+            if origin.parent == threads_dir and origin.parent.exists()
+        ):
+            # A link where the sidecar directory should be would carry the
+            # restore outside the session store; leave the batch staged.
+            remaining.append(entry)
+            continue
         done_prelock: list[tuple[Path, Path]] = []
         done_transcripts: list[tuple[Path, Path]] = []
         try:
@@ -3085,6 +3250,8 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
 
             transcript_keys: set[str] = set()
             for _src, origin in live_transcripts:
+                # A sidecar's stem IS its transcript's stem, so it takes the
+                # same lock aliases.
                 transcript_keys.update(transcript_lock_stems(origin.stem))
             transcript_log = ConversationLog(base_dir=crew_sessions)
             with transcript_log.locked_stems(transcript_keys):
@@ -3092,9 +3259,12 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
                 # acquisition. Recheck every physical alias of each live
                 # transcript here; prelock origins now exist because this
                 # transaction restored them and are tracked separately for
-                # rollback.
+                # rollback. A sidecar takes the same recheck on ITS stem: its
+                # replies belong to the transcript that was deleted with it, so a
+                # transcript recreated under that stem since is a different chat,
+                # and the old thread must not be attached to it.
                 if any(
-                    (origin.parent / f"{stem}{_TRANSCRIPT_SUFFIX}").exists()
+                    (crew_sessions / f"{stem}{_TRANSCRIPT_SUFFIX}").exists()
                     for _src, origin in live_transcripts
                     for stem in transcript_lock_stems(origin.stem)
                 ):
@@ -3103,7 +3273,15 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
                     try:
                         for src, origin in live_transcripts:
                             origin.parent.mkdir(parents=True, exist_ok=True)
-                            if not _move_file_exclusive(src, origin):
+                            if origin.parent == threads_dir:
+                                # The sidecar is published relative to the pinned
+                                # `.threads` descriptor: a link swapped in for the
+                                # directory after preflight is refused by the open
+                                # (O_NOFOLLOW) and cannot redirect the publish.
+                                moved = _move_sidecar_pinned(src, origin)
+                            else:
+                                moved = _move_file_exclusive(src, origin)
+                            if not moved:
                                 logger.warning(
                                     "session %r was recreated while being restored; "
                                     "leaving it staged",

@@ -20,7 +20,7 @@ driver of that substrate. TaskRunner is another, stricter product layer: it uses
 the common substrate but keeps its planning, approval, retry, test,
 git/worktree, replan, persistence, and cleanup semantics.
 
-The subsystem lives in `src/kiro_crew/workflows/` (13 modules). This file is the
+The subsystem lives in `src/kiro_crew/workflows/` (14 modules, including `__init__.py`). This file is the
 **frozen contract** those modules cite: `workflows/__init__.py` declares the `ctx`
 Protocol and the event vocabulary and points here, `events.py` says the per-type
 `data` field table lives here, and `validate.py` says never to relax a check here
@@ -58,7 +58,7 @@ intra-package imports per module, so the direction cannot drift:
 
 ```
 __init__, validate, dsl, schema, events, registry, store,
-agent_exec, agent_pool          (leaves: no sibling imports, or __init__ only)
+agent_exec, agent_pool, preview   (leaves: no sibling imports, or __init__ only)
 library                         (definition persistence; may import store)
     ↑
 context      (may import: __init__, validate)
@@ -213,6 +213,30 @@ outside any combinator
 (`test_workflows_resilience.py::test_concurrency_is_bounded_across_separate_combinators`).
 The run-global slot is held only across the model call, so no thunk holds a slot
 while waiting for another to release one.
+
+A third bound sits beneath both when the service has a task admission attached
+(`WorkflowService(task_admission=...)` / `attach_task_admission`): every
+`ctx.agent()` call is a `workflow_agent` row admitted through the shared runner
+lane (`taskq.adapters.runner`, § Agent execution adapters below). The lane's
+bound is the LIVE effective cap the adaptive controller moves through
+`SubagentManager.set_effective_cap`; the lane reads it as its ceiling, and a
+RAISE reaches its parked waiters as a `RunnerLane.pump()` from the manager
+(`agent.adaptive_concurrency_mode=fixed` pins the bound instead). So a pressure
+decision lowers workflow fan-out together with the subagent queue, and live
+workers never exceed `min(max_workers, lane.effective)`.
+
+Two facts about that occupancy, and they pull in opposite directions. The lane's
+count is its OWN against the subagent gate's: the shared ceiling bounds runner
+entries and queued sub-agents separately, not their total. But it is SHARED
+between the two runner consumers — the gateway attaches one `RunnerAdmission` to
+this service and to the TaskRunner, and one admission owns one lane, so a
+`ctx.agent()` call and a TaskRunner step compete for the same slots (the `lane=`
+argument is the row's label, not a second gate). Since an admitted call holds its
+slot for the whole model turn, a call whose row DESCENDS from a row already
+holding a slot would wait on a release only its own ancestor can make; the lane
+refuses that wait (`RunnerLaneSelfBlocked`, reported as a failed call) instead of
+parking on it for ever, and refuses nothing else —
+[taskq.md](taskq.md) § A descendant is never parked behind its own ancestor.
 
 ### Progress
 
@@ -579,8 +603,8 @@ objects (in particular never the `asyncio.Task`).
 `RunHandle` holds `run_id`, `name`, `status`, the growing `events` list, `result`,
 `error`, `author`, `session_key`, `source`, `args`, `agent_results`,
 `agent_errors`, exact saved-definition provenance, optional `derived_from`
-ancestry, and the driving `task`. Statuses: `running`, `finished`, `failed`,
-`cancelled`.
+ancestry, and the driving `task`. Statuses: `running`, `paused`, `finished`,
+`failed`, `cancelled`; `running` and `paused` are active states.
 
 Two distinct serializations:
 
@@ -613,32 +637,30 @@ Two distinct serializations:
   a new process and would otherwise wedge the registry as a zombie that eviction
   refuses to reclaim.
 
-Before each model turn, authoring, pooled workers, named sessions and non-pooled
-workers use `messaging.identity.publish_turn_identity` for their own acquired
-session key and provider PID. Identity publication precedes context construction
-and model dispatch, including author revisions and warm worker turns. It uses the
-shared protected publisher, not an ambient parent key or a fabricated MCP header;
-private store binding and request-side identity verification remain required.
-The MCP `workflow_status`, `workflow_result` and `workflow_list` reads use the
-same strict caller gate as workflow mutations. An unidentified caller is refused
-before any GET, even if the lenient resolver could inherit a parent identity.
-Reads pass the verified key unchanged to HTTP and their result audit; HTTP still
-verifies the private store and run ownership. The explicitly global saved-definition
-library is not a private run listing and retains its existing scope.
-Start, author-start and rerun check the gateway's admission gate both before
-allocating an ID and after awaiting scope binding, before launching the run. A
-gate closed during that await rejects the launch without registering a run.
+Before each model turn, authoring, pooled workers and named sessions publish the
+ordinary strict transport identity for their acquired key. The run itself owns
+one frozen `execution_context` in `RunHandle` and its ordinary JSON checkpoint.
+Service admission captures it once off-loop before admission and passes it into
+the handle before initial registration. A supplied carrier bypasses parent reads;
+later awaits and parent closure cannot change its routing. Workers receive that
+same record; no protected workflow binding or hidden private payload copy exists. Status,
+result and mutations retain ordinary caller, owner/app and governance checks.
+Scope admission snapshots stricter live gateway restrictions and inherited modes
+before capture awaits, then combines them with the captured mode. Its live policy
+port does not read persisted parent records; an absent parent cannot invalidate an
+owned carrier, and invalid retention inputs still refuse admission.
 
-Scope admission also freezes the originating sessions' strictest memory mode in
-the protected binding. Worker preparation carries that mode, not the current
-state of a replacement parent tab. Temporary workers suppress memory-context
-reads; incognito and temporary modes refuse durable-memory writes. A legacy
-binding without a mode remains inspectable but cannot establish a worker's memory
-permission. The gateway supplies policy resolution; standalone engine embedders
-without a session-policy resolver use persistent mode. Re-running a bound run
-combines its frozen mode with the current caller's mode, even for Global V1;
-changing or closing the original parent cannot loosen the rerun. This does not
-change the run's store binding or grant a caller access to another member.
+The carrier freezes the member ID, store ID, namespace, template, app and privacy
+mode. Reruns use the prior handle's carrier even if the parent closed, and combine
+its mode with any stronger requesting mode. Incognito and Temporary runs stay in
+memory and never write source/events/results through the checkpoint store.
+Their agent calls use storeless task admission over the same live lane and
+resource-pressure checks. Call parameters, failure details and dependency waits
+stay in memory; cancellation releases the shared slot without a durable task row.
+Incognito may read memory; Temporary suppresses reads. Both refuse learned-memory
+writes. Missing or malformed member identity is an error, never Global fallback.
+Admission still checks gateway closure before and after awaited registration and
+never launches an unreturned run.
 
 `mark_terminal` is idempotent: only the first terminal transition counts. Its async
 counterpart is used by live workflows and host drivers; it drains queued checkpoints,
@@ -659,7 +681,7 @@ persistence before returning the identity. Cancellation drains admission before
 removing its partial run; no driver is launched for an unreturned identity. Source,
 intent and subtree-rerun entrypoints recheck gateway admission after this new await;
 a closed gate deletes the unlaunched run and returns the existing admission error.
-All live writes, including private directory ACL preparation, use the existing per-run
+All permitted persistent writes use the existing per-run
 snapshot/generation/lock path. Tests simulating an orderly restart await the
 background driver's terminal flush before constructing the replacement service;
 a terminal status in RAM alone is not a durable-completion barrier. A delayed-write
@@ -692,20 +714,7 @@ registry and reset the legacy ID floor to zero. Missing directories on first
 boot are empty only when their nearest existing ancestor is a directory. This
 also checks Windows path-not-found errors beneath a plain file, rather than
 mistaking that broken inventory for a first boot. An unreadable or non-directory
-inventory is an error. Failure
-to resolve the private inventory root is also fatal, before returning any public
-rows: a public-only subset is not a complete recovery. Errors identify inventory
-unavailability and direct storage repair/restart without disclosing private paths.
-This preserves legacy binding-less run files. Explicit `persist=False` remains the
-in-memory choice. Malformed payload records are still rejected independently.
-However, a missing, unreadable or malformed protected binding for a bound record
-(or any record discovered in the private payload root) makes inventory recovery
-fail with a sanitized `WorkflowInventoryError`. The gateway then exposes its
-existing workflows-unavailable response rather than an apparently complete list
-that silently omits that run. Original files are retained for operator repair;
-editable payloads never reconstruct protected authority. This intentionally
-blocks the shared workflow service, not just the unreadable record, until repair
-and restart; it does not claim that corrupt records can be recovered.
+inventory is an error.
 
 The trusted host lifecycle follows the same off-loop persistence rule. Its
 service methods mutate loop-affine handles and event streams on the event loop, then
@@ -742,36 +751,24 @@ Properties that matter:
 
 - **Atomic writes:** temp file plus `os.replace`, then `chmod 0o600`, so a crash
   mid-write cannot corrupt a run file.
-- **Redaction before disk:** every string in the record passes through
-  `redact_exfiltration_urls` then `redact_credentials`, recursively. Defense in
-  depth; the HTTP and chat surfaces redact again on the way out.
+- **Redaction before disk:** every string **value** in the record passes through
+  `redact_exfiltration_urls` then `redact_credentials`, recursively. Mapping keys
+  are retained as-is by `WorkflowRunStore`; the HTTP and chat response redactors
+  independently cover both keys and values on the way out.
 - **Injective paths:** a `run_id` is sanitized to alphanumerics plus `_`/`-` so a
   malformed id cannot traverse out of the runs dir. Because sanitizing is lossy,
   when it changes the id a 12-hex-char sha256 prefix of the original is appended,
   so `wf/1` and `wf1` cannot collapse onto one file. Well-formed ids
   (`wf_NNNNNN`) are unchanged.
-- **Bound target first:** `save` validates the protected binding and resolves the
-  actual payload path before preparing a directory. A private save prepares only
-  the hidden target parent, so a broken public workflows directory cannot suppress
-  it. Both private and public directory preparation failures propagate. Neither
-  branch falls back to the other root.
-- **Explicit checkpoint failures:** serialization/write/replace failures are logged
-  by exception type and propagate as fixed, sanitized errors. The registry reports
-  its storage warning separately while preserving the in-memory execution result.
-  Binding and private parent preparation refusals also propagate rather than
-  selecting a public fallback.
-  `load_all` skips corrupt files and returns records oldest-file-first by
-  mtime. Recovery resolves each discovery root once, allowing legitimate data-home
-  ancestor aliases. Each leaf is opened through the cross-platform no-reparse
-  helper; regular-file, single-link, POSIX ownership, exact resolved-root path
-  and JSON reads all use that same descriptor. Protected binding and private
-  payload placement checks still apply before registry hydration. Discovery errors
-  are isolated per root, including private-root resolution, so an unavailable
-  root cannot suppress valid records from the other root. Startup discovery logs
-  retain only the exception type and an opaque record digest, never paths,
-  exception bodies or tracebacks, even outside a private task context. Record
-  digest encoding tolerates surrogate filename characters so logging an unreadable
-  file cannot abort recovery of other records.
+- **One owner record:** every persistent run writes its complete record and
+  canonical execution context to this ordinary run path. Restricted modes are
+  suppressed defensively by both registry and store. No second inventory or
+  member-specific payload root exists.
+- **Explicit checkpoint failures:** serialization/write/replace failures propagate
+  as fixed sanitized errors while live execution results remain available.
+  Recovery retains ordinary descriptor/path/owner checks, rejects malformed
+  records and returns records oldest-first. Inventory access failures propagate;
+  corrupt individual records cannot manufacture a replacement member identity.
 
 `RunRegistry.load_persisted()` rehydrates on startup, fills only ids not already
 in memory, and re-runs eviction so a store with more records than `max_runs`
@@ -795,7 +792,7 @@ callers retaining `orch.task_runner` as well as dashboard admission paths.
 `attach_workflow_service(service)` releases admission atomically with attachment;
 `attach_workflow_service(None)` explicitly releases standalone fallback. Gateway
 failure cleanup detaches and immediately defers again without yielding, preserving
-fail-closed private admission with `workflow_initialization_failed` and a restart
+fail-closed workflow admission with `workflow_initialization_failed` and a restart
 message. Pending recovery alone asks callers to retry. If storage blocks
 indefinitely, mutation requests deliberately keep returning 503 with
 `code: workflow_initializing`; reads and cancellation remain available. Treating
@@ -835,9 +832,11 @@ mutation remain on the owning loop. This is startup-only on an unpublished
 registry, never concurrent with live runs or host reopen. Cancellation (including
 repeated cancellation) drains the owned load before propagating, leaving no late
 writer to race a subsequent initialization. The synchronous constructor and
-`load_persisted()` remain available for standalone callers. Both paths retain the
-store's best-effort failure semantics: awaiting I/O does not certify a successful
-write when the store itself reports failure only through debug logging.
+`load_persisted()` remain available for standalone callers. Inventory failures
+propagate. Snapshot-save failures raised by the store are converted by the registry
+into the run's sanitized persistence-health error, so awaiting the I/O drains the
+attempt but does not by itself certify durable success; store deletion remains
+best-effort.
 
 ### Reusable definition library
 
@@ -956,6 +955,28 @@ state, like `state.subagents` / `state.sessions`. It owns one `RunRegistry` (wit
 `WorkflowRunStore` unless `persist=False`) and builds a fresh `WorkflowRunner` per
 run.
 
+After the dashboard (or the headless API server) is up, the gateway's
+`_wire_runner_admission` builds ONE `RunnerAdmission`
+(`taskq.adapters.runner.runner_admission_for` over the subagent manager's
+store and effective cap) and attaches it to both the TaskRunner and this
+service; the manager's `DependencyCoordinator` gets the admission's `on_wake`
+(and its `on_fail`, as a wake) through `coordinator.subscribe(...)`, so a 429
+seen by a workflow agent call and one seen by a sub-agent share one retry
+schedule.
+
+That first pass can run before the coordinator exists: a manager built on the
+loop opens its store on a worker, and there is no coordinator until there are
+rows. It is deliberately not deferred — both consumers need the admission (and
+its typed refusal) as soon as the socket is bound. So `run()` awaits a second,
+idempotent pass, `_runner_admission_store_ready`, right after
+`wait_taskq_ready()`: it binds the coordinator, subscribes, re-reads the waiting
+rows and runs the adoption sweep the store-less pass skipped
+([taskq.md](taskq.md) § Runner adapters). Binding it is not optional — the
+reaper pump calls the admission's own `tick()` only while there is NO store, so
+a wait parked in that window would otherwise have no wake path at all. The
+fallback `tick()` is the steady state only for a durable queue that is genuinely
+off. Shutdown detaches it (`attach_task_admission(None)`).
+
 Entry points: `author`, `start`, `start_from_intent`, `status`, `result`,
 `list_runs`, `cancel`, `rerun_subtree`, `list_definitions`, `get_definition`,
 `save_definition`, `update_definition`, and `start_definition`, plus the trusted
@@ -964,23 +985,18 @@ host lifecycle (`begin_host_run`, `bind_task`, `phase`, `log`, `step`, `pause`,
 `timeout_secs` property. Every trusted host lifecycle mutation is async when it can
 produce a durable checkpoint, so host drivers await the off-loop persistence path.
 
-Dynamic workflows freeze a gateway-owned execution binding before scheduling.
-The immutable record lives below `member-memory-bindings/workflows`; a private
-run's source, results and replay cache live below the hidden
-`memory_stores/.workflow-runs` root. Ordinary run JSON, source, templates and
-session labels grant no private authority. New records carry an explicit binding
-version; missing or corrupt authority refuses rather than becoming legacy V1.
+Dynamic workflows freeze their canonical execution context before scheduling.
+The ordinary run record owns identity and payload together; the in-memory
+`RunHandle` owns restricted runs. Author attempts and every worker receive the
+frozen carrier before SessionManager allocation and prompt construction. Named
+sessions are local run labels, not references that can adopt arbitrary chat
+memory. Missing or wrong-store data produces an explicit memory error.
 
-Author attempts and pooled, overflow and named workers inherit the run's protected
-anchor before SessionManager allocation. Private prompts pass through
-`ContextBuilder.build_message` after store preparation. Named sessions are labels
-inside a run, not arbitrary existing session keys. Every send, warm reset and
-replay boundary revalidates the scope; invalidation fails without a V1 fallback.
-The author retains REJECT_ALL, and the existing tool and governance ceilings stay
-in force. Private access to run list/detail/cancel/rerun requires matching scope;
-owner-browser management retains owner authority. Reruns inherit protected run
-identity, not a current template or mutable caller field. Completion delivery
-checks the original binding before publishing private content.
+The author retains REJECT_ALL, and ordinary caller, app/owner, tool and governance
+ceilings stay in force. Member memory is not an additional authorization domain.
+Reruns inherit their original handle rather than today's member alias, template
+or parent. Completion delivery checks the original run record and ordinary
+recipient permissions.
 
 Host-driven runs carry `driver`, `source_format`, `task_id`, `capabilities`, and
 saved-definition provenance in every compact and full snapshot. `paused` is an
@@ -995,10 +1011,10 @@ multiple snapshots behind an active write, superseded intermediate snapshots are
 discarded and the newest snapshot is written last; deletion uses the same queue
 so an in-flight checkpoint cannot resurrect a removed run.
 
-Run ids are `wf_NNNNNN` from a per-process monotonic counter, deliberately with no
-time or random component so they stay resume-stable. On startup, after rehydrating
-persisted runs, the counter continues past the highest persisted sequence so new
-ids cannot collide with restored ones.
+Run ids are durable monotonic `wf_NNNNNN` values allocated by
+`workflow_memory.allocate_run_id()`. The service's recovered sequence is only a
+lower bound; the cross-process, fsync-backed high-water allocator is authoritative.
+See [Atomic run identity allocation](#atomic-run-identity-allocation).
 
 ### Authoring
 
@@ -1101,6 +1117,42 @@ never break a run start. The runner's `on_complete` hook fires on every exit pat
 (success, failure, cancellation) to shut the pool down, so warm sessions are always
 released.
 
+- **`agent_pool.admitted_agent_fn`** (the task-queue wrapper, applied by
+  `WorkflowService._runner` to WHICHEVER of the two adapters above it chose,
+  when a `RunnerAdmission` is attached). Each `ctx.agent()` call becomes the row
+  `workflow:{run_id}:agent{n}` (`kind=workflow_agent`, `params={run_id, call,
+  agent, session, lane}`, `provider=<model override>`, class `unknown`):
+  written before the call runs (write-before-ack), admitted through the lane
+  (memory-pressure defer, effective-cap slot, lease + generation), marked
+  `running`, and settled `done` / `failed` / `cancelled` from the outcome. That
+  mark is a FENCE: `admit` committed `starting` one statement earlier, so a
+  refusal is a newer owner or a store outage, and the call does not run under a
+  row that reaches no WAITING state (the dependency park below could not
+  persist) — the row is failed and the wrapper raises `RunnerAdmissionRefused`
+  (`taskq.md` § Every store write whose result is DISCARDED). The
+  wrapper is a coroutine on the gateway's loop, so every one of those writes is
+  off-loop: `accept_async`, `admit` (which routes its own store touches through
+  `_db`), `running_async`, `done_async` / `fail_async`. The `except
+  CancelledError` arm keeps the SYNCHRONOUS `cancel` -- an `await` there can be
+  interrupted before the write is submitted, and a dropped terminal write leaves
+  the row active for the next boot's reconciler. That arm only covers a cancel
+  landing on the CALL; a run cancel or the wall-clock ceiling arriving while the
+  call is still waiting for a lane slot, or while it is parked in
+  `waiting_dependency`, is settled `cancelled` by the admission itself
+  (`taskq.md` § Runner adapters), so a cancelled run leaves no `workflow_agent`
+  row behind and none is left `queued` for a dispatcher this kind does not have.
+  A
+  dependency error the adapters recognise parks the row in `waiting_dependency`
+  with its slot released and re-runs the call on the wake, at most
+  `DEFAULT_MAX_ATTEMPTS` times; terminal signals fail it. The lane for a run is
+  its launching `session_key`, or `system` when the run has none or was
+  launched by a cron / hook (`lane_for`). Pinned by the taskq tests in
+  `test_workflows_agent_pool.py` (cap beneath `max_workers`, a mid-run cap
+  change, `fixed` mode, rows per call, failure and rate-limit settlement, a
+  cancel while queued for a slot, a cancel while parked on a dependency, a call
+  whose row descends from the slot holder, and the attach sweep over a row that
+  was accepted and never claimed).
+
 The gateway pins workflow agent concurrency at **4** on purpose, rather than
 sizing it from `resolve_max_subagents()`: because the pool keeps a separate
 sub-pool per identity with an aggregate bound of `(max_identities + 1) *
@@ -1116,13 +1168,12 @@ Registered in `dashboard/server.py`, handled in
 caller's `X-Session-Key` header becomes the run's `author` and `session_key`.
 
 Before author, source run, intent run, saved-definition run or subtree rerun
-calls the service, `internal_memory_scope` verifies the request's protected
-caller against its claimed session. Verification refusals pass through unchanged;
-a verified private caller may execute within that scope. Omitting or replacing
-the session header cannot turn a private process into an unbound caller. Run
-list/detail/cancel/rerun separately compare the caller with protected run identity.
-A run id never grants access to another store. Owner-browser and verified V1
-dispatch retain their authentication paths.
+calls the service, ordinary transport authentication and owner/app permissions
+apply. The session's canonical execution record is captured before asynchronous
+dispatch; missing or malformed member identity refuses instead of selecting Global.
+Run list/detail/cancel/rerun keep ordinary execution permissions. A permitted
+rerun retains the original run's member/store and strictest privacy mode, even
+when requested from another member. Member stores add no separate cross-member ACL.
 
 | Route | Body / params | Response |
 |-------|---------------|----------|
@@ -1130,7 +1181,7 @@ dispatch retain their authentication paths.
 | `POST /api/workflows/run` | `{source, args?, name?, budget_total?, timeout_secs?}` | `{run_id}` or `{error}` (400) |
 | `POST /api/workflows/run_intent` | `{intent, args?, name?, budget_total?, timeout_secs?}` | `{run_id}` immediately |
 | `GET /api/workflows/runs` | | `{runs: [...]}` compact, newest first |
-| `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events` (404 if absent) |
+| `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events`; adds `plan` under `?plan=1` when one is readable (404 if the run is absent) |
 | `POST /api/workflows/runs/{run_id}/promote` | `{name?, description?, slug?}` | save exact source from a finished run or paused TaskRunner plan; 404 when unknown, 409 when not promotable or only a restored redacted source remains |
 | `POST /api/workflows/runs/{run_id}/cancel` | | `{run_id, cancelled}` |
 | `POST /api/workflows/runs/{run_id}/rerun` | `{from_index?, source?}` | `{run_id, from, replayed_before, edited}`; 400 on an invalid edited script, 404 on an unknown run |
@@ -1163,9 +1214,97 @@ budget snapshot. On a terminal state, `dashboard/workflow_inject.py` posts the
 result into the originating chat slot and starts (or queues) an agent turn so the
 user gets a synthesized answer rather than a raw blob.
 
+### Plan preview and the graph view
+
+The event stream says what a run DID. `workflows/preview.py` says what its script
+SAYS it will do, so a run can be drawn as a flow chart before its first agent
+starts and lit up as it goes. `plan_from_source` reads the already-validated source
+with `ast` and returns `{phases: [{title, certain, nodes: [{kind, label, certain}]}],
+truncated, titleLimit}`, or `None` when no plan is readable. `None` and an empty plan
+are deliberately different: the run-detail response then OMITS `plan` rather than
+sending null, so the view can say "no plan" instead of drawing an empty one. A
+task-plan source lands there, having no `workflow(ctx)` entrypoint.
+
+Deriving the plan parses the script, and only the graph mode draws it, so it is
+**opt-in**: `GET /api/workflows/runs/{run_id}` reads it only under `?plan=1`. The run
+panel polls that endpoint every couple of seconds, and the tree mode must not pay for
+a parse it never renders.
+
+Every retained field is bounded. `MAX_PLAN_PHASES` / `MAX_PLAN_NODES` bound how MANY
+rows come back and set `truncated`; `MAX_PHASE_TITLE_CHARS` bounds a phase title, and a
+node label is bounded by whichever cut the RUN will apply to it. A literal `label=` is
+the runner's own label, which it never cuts, so `MAX_LABEL_CHARS` bounds it. A label
+that falls back to the prompt is cut by the runner at `RUNNER_PROMPT_LABEL_CHARS`,
+because the runner emits `label or prompt[:40]` -- and each word of that expression is
+mirrored: a falsy `label=""` loses to the prompt exactly as a missing one does, and
+`prompt` is read under both its positional and keyword spellings. Drawing a label the
+run will not emit makes a planned box rename itself the moment it lights up. Both cuts go through `_bounded`, which
+**redacts first and cuts second**. The order is load-bearing: the response-level
+redactors match a credential by its full shape, so a cut landing inside one leaves a
+prefix they no longer recognize -- measured against the real redactor, 33 of a
+40-character `ghp_` token and 19 of a 20-character AWS key id survive a cut-then-redact
+order. A title is cut before anything retains or compares it, so phase reuse and the
+stored row cannot disagree. The bound travels as
+`titleLimit` because the consumer pairs a plan row with a `phase_started` event by
+title and the runner emits that title whole: without the number, a cut title would
+read as a phase the plan missed.
+
+An `unknown` node is the whole safety property. A construct whose shape depends on a
+runtime value is never guessed at: `if` / `for` / `while` / `try` / `match`, a
+conditional expression, a comprehension, `ctx.parallel` over anything but a literal
+list or tuple, `ctx.pipeline`, `ctx.workflow`, a `ctx.phase` whose title is not a
+literal, and
+a call into a helper the script defines each contribute exactly one `unknown` node
+naming the construct, and every node found inside such a region is `certain: false`.
+`MAX_PLAN_PHASES` / `MAX_PLAN_NODES` bound the output and set `truncated`.
+
+That property has a precondition: the previewer must know every `ctx` method the DSL
+offers. `MODELLED_CTX_METHODS` holds the ones it draws and `NARRATION_CTX_METHODS` the
+ones that draw nothing on purpose, and together they cover the `WorkflowContext`
+Protocol exactly. `test_workflows_conformance.py` freezes that Protocol, but freezing
+the CONTRACT says nothing about whether the previewer classified a method added to it,
+so a deliberate re-freeze could introduce a work-spawning verb the previewer silently
+ignores. Two things close that: a parity test derived from the Protocol (never a
+hand-written copy of it, which is the enumeration that would go stale), and
+`_visit_call` degrading an unclassified method to an `unknown` node rather than drawing
+nothing -- honest at run time even if the pin is ever relaxed.
+
+`website/src/apps/workflows/planModel.ts` merges the plan with the stream. Both inputs
+are coerced to text at that seam, because nothing between a script and the graph
+guarantees a string: `ctx.phase(123)` records a numeric `title`, `ctx.agent(...,
+label=123)` a numeric `label`, and `runModel` reads event fields with a cast and no
+runtime narrowing -- deliberately, since narrowing there would change what the tree view
+renders for a malformed event. The graph does string work on those values (cutting a
+title to the plan's limit, sanitizing a label), so an uncoerced number reached `.slice`
+and blanked the whole view rather than making one node read oddly. The coercion is total
+and lives only at the two entry maps; the title cut is not a second coercion point,
+because no input can reach it uncoerced. Ordinal
+pairing is what makes planned node *i* the same work as actual node *i* — the
+script's calls run in source order — and an `unknown` node is a FENCE that stops it,
+because past an unpredictable region no position means anything. Past the fence the
+view shows the markers, then reality once reality exists, so a prediction never sits
+beside the thing that superseded it. A marker whose region HAS materialized carries
+`resolvedCount`, and the view then says how much ran there instead of still saying the
+shape is undecided — a marker that keeps asking beside real boxes cannot be told from
+one still being waited on. Run status and plan provenance are separate
+fields: an unpredicted agent that failed is both, and the failure matters more.
+
+`WorkflowRunGraph` is a MODE of the run panel, not a second tab, so the graph reads
+the one snapshot the panel already fetches. It is deliberately **not a control
+surface** — nothing in the drawing is clickable. Wiring a node to
+`workflow_rerun_subtree` would let a misclick spend tokens and restart real agents;
+rerun stays on the run controls, where the control names what it does.
+
+Per-node token cost is absent by necessity, not by choice: the stream carries a
+run-level budget only (`run_started.budget_total`, `budget_update.spent`) and no
+per-agent cost attribution, so drawing one would mean inventing a number. Per-node
+TIMING needs no new data, which is why it shipped first (#11795): `agent_started`
+and `agent_finished` each already carry a `ts`.
+
 ### MCP tools
 
-`mcp_core.py` exposes eight tools that forward to the routes above:
+`mcp_tools/workflows.py` exposes eight tools that forward through the shared MCP
+HTTP helpers to the routes above:
 `workflow_author`, `workflow_run` (takes `source`, `intent`, or an exact saved
 `workflow` reference, plus `input`, `name`, `args`, `budget_total`),
 `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
@@ -1192,7 +1331,9 @@ exact saved runs; its Runs view owns common history and explicit promotion.
 
 The `workflows` builtin app (`apps/builtins/workflows/`) is `defaultEnabled:
 false` and `hidden: true`; it exposes `/validate`, `/run` and `/examples` over its
-own stdlib HTTP server.
+own stdlib HTTP server. Its `/run` endpoint uses the deterministic `_stub_agent`;
+real agent orchestration runs through the gateway service and the MCP/HTTP surfaces
+above.
 
 `/examples` serves the scripts in [`examples/workflows/`](examples/workflows/),
 which `server.py::_examples_dir()` locates by walking up from the module toward the
@@ -1415,33 +1556,27 @@ scripts, so the rate is a measurement and not a tautology.
 
 ### Provider receipts and unavailable-store cancellation
 
-Private workflow prompt construction passes the acquired provider and actual
+Member workflow prompt construction passes the acquired provider and actual
 resume state to `ContextBuilder.build_message(context_provider=...)`, after
-`prepare_store_vectors`. The provider's `EssentialDelivery` owns acknowledgment
+best-effort `prepare_store_vectors`. V2 preparation opens only an existing
+database and attaches the lazy embedding callable; it does not warm a model,
+enqueue embeddings or search fragments. Healthy cold starts therefore retain
+query-free scoped lessons. Failed preparation leaves manual essentials usable
+and emits an unavailable-memory diagnostic; prompt construction never creates
+the learned-memory facade or substitutes Global. Temporary skips preparation
+and learned lessons. The provider's `EssentialDelivery` owns acknowledgment
 of a productive, successful raw terminal. Author and pool `is_new` flags describe
 lifecycle only; they never acknowledge essential delivery. Failed or cancelled
 attempts retain the full candidate, and a new conversation has its own receipt.
 
-Completion delivery checks protected run identity even when a supplied snapshot
-omits its binding-version field. A surviving hidden private payload cannot be
-classified as a legacy global run. Owner cancellation may use a valid protected
-run record without opening an unavailable member store; ordinary content reads
-and non-owner operations still require an active, matching memory scope.
-
-The private HTTP scope regression initializes and closes a real Global
-`VectorMemoryStore` off-loop, matching the database normally created by gateway
-startup. Its macOS-only companion compares the native Seatbelt query and
-protected PID lookup before and after that initialization; neither verifier is
-stubbed. Failure diagnostics observe the original request's checks, including
-native result/errno and database existence, and preserve any coverage tracer.
-They report only safe state fields, never private paths, proofs or payloads.
-Passing this fixture on Linux does not establish the macOS native result or the
-separate real-gateway private workflow E2E.
+Completion delivery reads the canonical context even when callers omit display
+fields. Owner cancellation can use an existing run record when learned memory
+is unavailable. Missing or malformed member identity does not become Global.
 
 ### Atomic run identity allocation
 
 Before returning a new `wf_NNNNNN` identity, the service burns its number in
-`config_dir()/member-memory-bindings/workflows/.run-id.json`. The version-1
+`<workflows dir>/.run-id.json`. The version-1
 record has exactly `version` and `high_water`: both are strict integers, and
 `high_water` is a nonnegative uint64. Booleans, floats, unknown versions and
 out-of-range values refuse allocation. Six digits are a minimum display width;
@@ -1466,7 +1601,7 @@ First-use protocol, entirely under that lock:
    atomic replacement, owner-only access, file fsync and parent-directory fsync.
 3. Only after the initial counter is durable, write byte `1` to the permanent
    lock and fsync it and the directory chain. Only then may an ID be allocated.
-4. Select `max(high_water, recovered_floor) + 1`, skip occupied legacy candidates,
+4. Select `max(high_water, recovered_floor) + 1`,
    atomically persist the selected number and sync its parent before returning.
 
 A crash before witness publication leaves either no counter or a valid initial
@@ -1482,26 +1617,43 @@ existing platform limits, including Windows and filesystems without directory
 sync support. This protocol does not detect restoring a syntactically valid old
 backup or destroying both allocator records.
 
-Existing hashed `.reserved/` entries and binding directories are checked for each
-candidate, including binding directories without `memory.json`. They are never
-deleted or replaced by allocation. New allocation creates no per-run reservation.
-New allocator bookkeeping is O(1) space; skipping K consecutive legacy collisions
-is O(K) work. Immutable bindings, including global bindings, still grow with runs,
-so the whole identity store is not O(1). No GC or reclamation is introduced.
-Allocation grants no store or caller authority. Proof, ownership, namespace and
-immutable no-replacement binding publication remain separate and unchanged.
-Exact path checks ignore only Windows' extended-length prefix, including UNC;
-redirects, non-regular or multiply-linked allocator files refuse allocation.
+The counter is ordinary workflow allocation state and creates no per-run grant
+or reservation registry. Allocation grants no memory or caller permission.
+No legacy V2 identity migration, rollback or retirement path is introduced.
 
-This replaces the unmerged reservation protocol in
-[PR #10586](https://github.com/kirodotdev/KiroCrew/pull/10586), verified open before
-implementation. It does not promise mixed-version writers: stop all old
-allocators before using this protocol on the same data home. Old writers do not
-read the new lock or counter. This is a stop-and-upgrade constraint, not a new
-rolling-upgrade coordination mechanism. Do not delete allocator or legacy
-identity records as stale caches.
+On Windows, allocator objects must belong to the current user or to the local
+Administrators group (`S-1-5-32-544`), the default owner for elevated creation.
+The group exception requires a confirmed local volume: the same SID on a network
+share denotes that server's administrators, not this machine's. An unknown user
+SID, unreadable owner or any other owner still refuses. The existing fail-loud
+owner-only DACL lockdown remains required for both directories and files; no
+ownership is rewritten. POSIX retains its exact-current-UID check.
 
-Saved task-plan execution passes the effective protected caller session to
-TaskRunner, including calls that supply only `author`. TaskRunner's existing
-runtime, worker and reviewer binding path then retains that private store;
-`author` cannot be silently discarded into a Global V1 execution.
+Saved task-plan execution passes its captured execution context to TaskRunner,
+including calls supplying only `author`. Runtime, worker and reviewer contexts
+retain that record; closing the author cannot select Global for the saved work.
+
+### What one in-process run costs, and the budget that awaits it
+
+`finished()` in `test/test_workflows_private_execution.py` is the ONE wall budget
+over a whole run in the in-process suite, shared by every module that imports it
+(`test_workflows_run_identity.py`, `test_workflows_private_paths.py`), and its
+size — `WORKFLOW_RUN_BUDGET_SECS` — comes from CI measurements, never from a
+local run: a local run is not evidence about the runner that reds. One private
+run of that module's `SCRIPT` (five `ctx.agent()` calls, the last two a named
+`session=` chain) spends its wall in filesystem thread hops rather than in the
+model — about 600 `asyncio.to_thread` round trips per run, because
+`WorkflowScope.validate()` is four hops, `prepare()` is that plus two more, and
+`prepare` runs TWICE per call by construction (the adapter's own, before
+`get_or_create`, so the worker session inherits the store before its provider
+exists, plus the one inside `WorkflowScope.prompt`), with `build_message` on the
+embed pool on top. That class of work is what a 4-vCPU windows-latest runner
+under `-n auto` is slowest at: measured ~6x its Linux cost, and 1.42x spread
+across identical params inside a single job. A budget a HEALTHY run can exceed
+there reports a cost as a hang, so the failure text names the pending call set
+and the instant that set last changed. The CHANGE INSTANT is what separates the
+two unconditionally: a capacity park shows a pending set that never moves, a slow
+run one that moved inside the budget. Frame names cannot be relied on for it —
+they differ for a lane park (`admit` → `acquire`) but CAN be identical for the
+park that matters most here, a wedged store-writer hop, which shows the same
+`to_thread` frame a merely slow run does.

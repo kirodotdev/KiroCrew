@@ -55,6 +55,73 @@ Operating on a stale `origin/<base>` ref was the root cause of the 2026-07-31
 clobber, where a force-push replayed 114 duplicate commits. The fetch therefore fails
 closed rather than proceeding on the cached ref.
 
+## Why a green expires, and why the check is client-side
+
+A pull request's green is a verdict about `refs/pull/<N>/merge` at the moment the
+run was triggered. Nothing re-derives it when the base moves, so a head that
+passed and then waited for review can merge against a base its tests never saw.
+Measured: a PR ran CI once at 15:39, waited about ten hours, and merged at 01:32
+with no re-run; two PRs merged in between had added tests that the merged change
+makes fail. The red surfaced two hours later on an unrelated PR, because this
+repo's `main` CI is routinely cancel-evicted by the next merge — three
+consecutive main runs read `cancelled` — so there is no per-commit verdict on
+`main` to catch it either.
+
+Two obvious server-side fixes were rejected by the constraint that matters here:
+merge velocity. The median merge gap is about 1.4 minutes and CI takes about 19,
+so a merge queue or strict up-to-date protection would serialise the repository
+behind its own CI. `green_age.py` is the soft version of the same idea. It runs
+client-side during the review wait, and it costs a rebase only on a PR whose
+files actually collide with what the base gained — not on every PR, and not at
+merge time.
+
+That is also why the exit code is consumed by the skill and by nothing else.
+`pr_status.py` prints the line and carries the summary in `advisory.green_age`,
+but never feeds it to `decide()`: a client-side heuristic in front of a required
+check would be a merge gate the maintainers declined, and a probe that cannot
+measure (exit 2) must not be able to turn a readable PR red.
+
+`babysit`'s `BEHIND` trigger does not cover this. `mergeStateStatus` reports
+`BEHIND` only under strict up-to-date protection, which is off here
+(`strict_required_status_checks_policy: false`), so on this repo that trigger is
+dead and the exit-30 signal is what replaces it.
+
+### What this does not close
+
+The re-sync half only reaches a PR the loop is actively driving. A PR a human
+merges by hand gets the `green age:` line `pr_status.py` prints and nothing else,
+so the incident class is narrowed rather than closed: a merger who does not read
+that line can still merge an expired green. Closing it outright needs a
+server-side signal, which is the thing the merge-velocity constraint refuses.
+
+Exit 2 is deliberately neither of the other two. A base that cannot be read is not
+a fresh green and not a stale one, so it satisfies no criterion and blocks none;
+after three consecutive 2s the loop reports the reason and hands the PR over rather
+than polling forever on an environment it cannot fix.
+
+## Why the Backwards compatibility section is not a required one
+
+The same observed incident has a writer-side half, and it is the half that actually
+broke. The PR that waited ten hours TIGHTENED a contract: it made a ledger entry's
+`data` validate against a registry, so a payload that main accepted before now
+raises. That is a `Breaking:` change, and the writers it broke are exactly the ones
+the two PRs merging in between added -- `test/test_ledger_kinds.py`,
+`test/test_ledger_retention.py` and `test/test_remove_slot_for_history_key.py` all
+hand-write payloads without the new required fields. A writer sweep taken when that
+PR opened would have found none of them, because none of them existed yet. So the
+rule is not symmetry with the tests-side check: it is the same expiry, on the same
+merge, read from the callers instead of the tests -- which is why a tightening diff
+owes a `Breaking:` line plus a writer sweep re-run on fresh `origin/main` right
+before the last push, with that sha written into the body. `green_age.py` asks that
+question of the tests; the sweep asks it of the callers.
+
+The section is deliberately absent from `fork-pr-description.yml`'s
+`REQUIRED_SECTIONS`. That list is matched against the body of every open fork PR
+on each `edited`/`synchronize`, so adding a heading to it would fail every body
+written before this change -- a red that says nothing about the diff. The rule
+reaches the author through the template's own prompt and through prepare-pr's
+Phase 1.5 instead, where it costs an existing PR nothing.
+
 ## Why force-with-lease must be SHA-pinned
 
 The implicit form (`--force-with-lease` with no SHA) silently accepts a

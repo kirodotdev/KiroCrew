@@ -102,6 +102,45 @@ describe('McpBrowserModal', () => {
     expect(screen.getByText('Searching: official, capability')).toBeInTheDocument()
   })
 
+  it('keeps partial results visible with an incomplete-results notice and whole-search Retry', async () => {
+    mockApi.mcpDiscover.mockResolvedValue({
+      results: [officialServer()],
+      providers: ['official', 'capability'],
+      provider_outcomes: [
+        { name: 'official', status: 'ok' },
+        { name: 'capability', status: 'timeout' },
+      ],
+    })
+    renderModal()
+    await search('widgets')
+
+    const notice = await screen.findByTestId('mcp-browser-provider-warning')
+    expect(notice).toHaveTextContent('1 of 2 providers did not answer — results may be incomplete.')
+    expect(screen.getByText('Widgets MCP')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(mockApi.mcpDiscover).toHaveBeenCalledTimes(2))
+  })
+
+  it('renders the ErrorNotice instead of the empty state when all providers fail', async () => {
+    mockApi.mcpDiscover.mockResolvedValue({
+      results: [],
+      providers: ['official', 'capability'],
+      provider_outcomes: [
+        { name: 'official', status: 'timeout' },
+        { name: 'capability', status: 'error' },
+      ],
+    })
+    renderModal()
+    await search('widgets')
+
+    const notice = await screen.findByTestId('mcp-browser-provider-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent('2 of 2 providers did not answer — results may be incomplete.')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText(/No servers found for/)).not.toBeInTheDocument()
+  })
+
   it('install flow flips the row to Installed and invalidates mcp-servers + mcp-discover', async () => {
     mockApi.mcpDiscover.mockResolvedValue({ results: [officialServer()], providers: ['official'] })
     // Real official-registry contract: every fresh install lands disabled.

@@ -32,9 +32,17 @@ async def test_workflow_memory_recognition_tracks_registration(prefix):
         )
 
     assert (await recognize(key)).status == 400
-    from kiro_crew.workflow_memory import publish_binding
+    from kiro_crew.execution_context import (
+        ExecutionContext,
+        MemoryStoreRef,
+        bind_session_execution,
+    )
 
-    await asyncio.to_thread(publish_binding, "wf_1", "", "", memory_mode="persistent")
+    await asyncio.to_thread(
+        bind_session_execution,
+        key,
+        ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew"),
+    )
     try:
         await sessions.get_or_create(key)
         assert sessions.has_session(key)

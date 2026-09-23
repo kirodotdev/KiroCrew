@@ -29,13 +29,12 @@ from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.renderer import (
     Renderer,
+    count_redaction_tags,
     redaction_notice,
     render_options_as_text,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import (
-    CREDENTIAL_REDACTION_TAGS,
-    EXFILTRATION_REDACTION_TAG_PREFIX,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -186,8 +185,7 @@ class IMessageRenderer(Renderer):
         # must NOT re-raise and convert an already-delivered answer into a failed
         # turn. That trade is deliberate -- the answer is out; losing the notice
         # is a degraded warning, losing the turn would discard a delivered reply.
-        _cred_redactions = sum(content.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-        _url_redactions = content.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+        _cred_redactions, _url_redactions = count_redaction_tags(content)
         if _cred_redactions > 0 or _url_redactions > 0:
             try:
                 await self._client.send(

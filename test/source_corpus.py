@@ -41,6 +41,7 @@ import ast
 import functools
 import os
 import subprocess
+import tempfile
 import unicodedata
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -223,7 +224,7 @@ def repo_files() -> tuple[Path, ...]:
     root = repo_root()
     argv = ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
     try:
-        out = subprocess.run(argv, capture_output=True, check=True, timeout=60)
+        out = subprocess.run(argv, capture_output=True, check=True, timeout=60, cwd=str(root))
     except OSError:
         # No git binary to ask. The walk is the only enumeration left.
         paths = _fallback_walk()
@@ -253,7 +254,74 @@ def repo_files() -> tuple[Path, ...]:
     # tree but not yet staged (the index entry survives, so git still names it),
     # and a submodule gitlink, which arrives as a DIRECTORY path -- and ``--others``
     # lists a nested repository as its bare directory. ``is_file`` drops all three.
-    return tuple(sorted(path for path in paths if path.is_file()))
+    scratch = _run_scratch_roots(root)
+    return tuple(
+        sorted(
+            path for path in paths if not _is_run_scratch(path, root, scratch) and path.is_file()
+        )
+    )
+
+
+#: pytest's per-user temp root. ``_pytest/tmpdir.py`` creates every ``tmp_path``
+#: under ``<platform temp dir>/pytest-of-<user>/pytest-<n>/``; the name is pytest's
+#: own marker, the same one the root conftest recognises in its residue scan.
+_PYTEST_TEMP_ROOT_PREFIX = "pytest-of-"
+
+#: The temp dir as this process FIRST saw it: the platform root every temp tree on
+#: the host descends from. Read at import because nothing can recover it later --
+#: the root conftest redirects ``tempfile`` to a per-run root UNDER it before the
+#: first test runs, and a module is imported at collection, before that fixture.
+#: Never resolved at import: that would ``stat`` on every import of a gate helper.
+_TEMP_ROOT_AT_IMPORT = tempfile.gettempdir()
+
+
+def _run_scratch_roots(root: Path) -> tuple[Path, ...]:
+    """The temporary-file roots this process knows of that lie inside the checkout.
+
+    Where the platform keeps temporary files is a property of the host, not of the
+    checkout. A harness that pins ``TMPDIR`` under the repository (so a ``/tmp``
+    reaper cannot delete a run's scratch mid-flight) puts every fixture the suite
+    writes in front of ``git ls-files --others``: copies of shipped scripts under
+    fake homes, nested repositories, and files another worker deletes between the
+    enumeration and a gate's ``read_text``. None of that is what the checkout
+    holds, and on a host whose temp dir is outside the checkout none of it is ever
+    listed -- so a gate that reads it asserts the host's temp layout, not the tree.
+
+    Two roots are named: the platform temp dir as it was at import
+    (:data:`_TEMP_ROOT_AT_IMPORT`, the ancestor of every run's scratch on the host,
+    including a concurrent run's ``--basetemp``) and the process's CURRENT
+    ``tempfile`` dir, which the root conftest has redirected by the time a gate
+    runs. pytest's ``basetemp`` is a child of the first; when a lazy import misses
+    that, :func:`_is_run_scratch` still recognises it by pytest's own marker.
+    Empty when the temp dir is not inside the checkout, which is every CI runner.
+    """
+    roots: list[Path] = []
+    for candidate in (_TEMP_ROOT_AT_IMPORT, tempfile.gettempdir()):
+        try:
+            resolved = Path(candidate).resolve()
+        except OSError:
+            continue
+        if resolved != root and resolved.is_relative_to(root) and resolved not in roots:
+            roots.append(resolved)
+    return tuple(roots)
+
+
+def _is_run_scratch(path: Path, root: Path, scratch: tuple[Path, ...]) -> bool:
+    """Whether *path* is one of this run's temporary files rather than the checkout's.
+
+    True under a root from :func:`_run_scratch_roots`, or under a directory pytest
+    names as its temp root (:data:`_PYTEST_TEMP_ROOT_PREFIX`) anywhere strictly
+    below the checkout root. A shipped directory carrying that name would be
+    hidden from every gate, which is why the marker is pytest's own and not a
+    generic ``tmp``.
+    """
+    if any(path.is_relative_to(candidate) for candidate in scratch):
+        return True
+    try:
+        parents = path.relative_to(root).parts[:-1]
+    except ValueError:
+        return False
+    return any(part.startswith(_PYTEST_TEMP_ROOT_PREFIX) for part in parents)
 
 
 def repo_files_named(*suffixes: str) -> tuple[Path, ...]:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import socket
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
@@ -39,6 +39,7 @@ def _make_site() -> AsyncMock:
     site = AsyncMock()
     site.start = AsyncMock()
     site.stop = AsyncMock()
+    site._server = MagicMock()
     return site
 
 
@@ -76,8 +77,11 @@ async def test_start_site_retries_then_succeeds() -> None:
         await _start_site(site, 7777, retries=5, delay=0.01, reclaim=_no_reclaim())
 
     assert site.start.await_count == 4
-    # site.stop() called once per failure to unregister
-    assert site.stop.await_count == 3
+    # The partially-started site is released listener-only once per failure:
+    # its LISTEN socket is closed and it is unregistered, without TCPSite.stop()
+    # firing the application's on_shutdown signals.
+    assert site._server.close.call_count == 3
+    site.stop.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -92,8 +96,9 @@ async def test_start_site_exits_after_exhausting_retries() -> None:
 
     assert exc_info.value.code == 1
     assert site.start.await_count == 3
-    # stop called for each failed attempt
-    assert site.stop.await_count == 3
+    # released once per failed attempt, listener-only
+    assert site._server.close.call_count == 3
+    site.stop.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -253,6 +258,61 @@ async def test_start_site_real_bind_retry() -> None:
 # ---------------------------------------------------------------------------
 # Regression test: prove naive retry WITHOUT stop() raises RuntimeError
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_boot_retry_releases_the_listener_without_shutting_the_app_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The EADDRINUSE retry frees the port listener-only, never via ``TCPSite.stop``.
+
+    ``stop()`` is not a listener-only operation across the declared
+    ``aiohttp>=3.9,<4`` range: on 3.9/3.10 it also runs the application's
+    ``on_shutdown`` signals and waits on the runner's shutdown timeout. Running
+    those at boot tears down an application that has not started serving yet,
+    so the retry releases the LISTEN socket and unregisters the site itself.
+    """
+    port = _find_free_port()
+
+    occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupier.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    occupier.bind(("127.0.0.1", port))
+    occupier.listen(1)
+
+    fired: list[str] = []
+
+    async def _on_shutdown(_app: web.Application) -> None:
+        fired.append("app")
+
+    async def _forbidden_stop(self: web.TCPSite) -> None:
+        raise AssertionError("the boot retry must not call TCPSite.stop")
+
+    app = web.Application()
+    app.router.add_get("/", lambda _: web.Response(text="ok"))
+    app.on_shutdown.append(_on_shutdown)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", port)
+
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.4, occupier.close)
+
+    monkeypatch.setattr(web.TCPSite, "stop", _forbidden_stop, raising=False)
+    try:
+        await _start_site(site, port, retries=40, delay=0.1, reclaim=_no_reclaim())
+        assert len(runner.sites) == 1
+        assert fired == []
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{port}/") as resp:
+                assert resp.status == 200
+    finally:
+        # Undone before cleanup: runner.cleanup() legitimately stops the sites.
+        monkeypatch.undo()
+        await runner.cleanup()
+        try:
+            occupier.close()
+        except OSError:
+            pass
 
 
 @pytest.mark.asyncio

@@ -21,12 +21,12 @@ function harness() {
     ready: ReturnType<typeof deferred>
     terminate: ReturnType<typeof vi.fn>
   }> = []
-  const warn = vi.fn()
+  const onUnavailable = vi.fn()
   const lifecycle = new WorkerPoolLifecycle({
     retryDelaysMs: [250, 1_000],
     cooldownMs: 30_000,
     stableAfterMs: 60_000,
-    warn,
+    onUnavailable,
     create: (reportFailure): WorkerPoolHandle => {
       const generation = attempts.length + 1
       const ready = deferred()
@@ -39,7 +39,7 @@ function harness() {
       }
     },
   })
-  return { lifecycle, attempts, warn }
+  return { lifecycle, attempts, onUnavailable }
 }
 
 beforeEach(() => {
@@ -70,7 +70,11 @@ describe('Pierre worker pool lifecycle', () => {
     await Promise.resolve()
 
     attempts[0].reportFailure('boom')
-    expect(lifecycle.getSnapshot()).toEqual({ phase: 'recovering', generation: 1 })
+    expect(lifecycle.getSnapshot()).toEqual({
+      phase: 'recovering',
+      generation: 1,
+      failure: { classification: 'error', message: 'boom', generation: 1, attempt: 1 },
+    })
     expect(attempts[0].terminate).not.toHaveBeenCalled()
     // Subscribers commit in microtasks; termination must outlast all of them.
     await Promise.resolve()
@@ -104,7 +108,7 @@ describe('Pierre worker pool lifecycle', () => {
   })
 
   it('bounds repeated initialization failures with a cooldown', async () => {
-    const { lifecycle, attempts } = harness()
+    const { lifecycle, attempts, onUnavailable } = harness()
     lifecycle.start()
     attempts[0].reportFailure(new Error('one'))
     await vi.advanceTimersByTimeAsync(250)
@@ -112,18 +116,46 @@ describe('Pierre worker pool lifecycle', () => {
     await vi.advanceTimersByTimeAsync(1_000)
     attempts[2].reportFailure(new Error('three'))
 
-    expect(lifecycle.getSnapshot()).toEqual({ phase: 'recovering', generation: 3 })
+    expect(lifecycle.getSnapshot()).toEqual({
+      phase: 'recovering',
+      generation: 3,
+      failure: { classification: 'error', message: 'three', generation: 3, attempt: 3 },
+    })
     expect(attempts).toHaveLength(3)
+    expect(onUnavailable).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(29_999)
     expect(attempts).toHaveLength(3)
     await vi.advanceTimersByTimeAsync(1)
     expect(attempts).toHaveLength(4)
     attempts[3].reportFailure(new Error('half-open failed'))
-    expect(lifecycle.getSnapshot()).toEqual({ phase: 'unavailable', generation: 4 })
+    const terminal = {
+      classification: 'error',
+      message: 'half-open failed',
+      generation: 4,
+      attempt: 4,
+    }
+    expect(lifecycle.getSnapshot()).toEqual({ phase: 'unavailable', generation: 4, failure: terminal })
+    expect(onUnavailable).toHaveBeenCalledOnce()
+    expect(onUnavailable).toHaveBeenCalledWith(terminal)
     await vi.advanceTimersByTimeAsync(60_000)
     expect(attempts).toHaveLength(4)
   })
 
+  it.each([
+    ['error', 'worker failed'],
+    ['messageerror', 'worker message could not be deserialized'],
+    ['postMessage throw', 'DataCloneError'],
+    ['init timeout', 'worker initialization timed out'],
+  ] as const)('records %s with its generation and attempt', (classification, message) => {
+    const { lifecycle, attempts } = harness()
+    lifecycle.start()
+    attempts[0].reportFailure({ classification, message })
+    expect(lifecycle.getSnapshot()).toEqual({
+      phase: 'recovering',
+      generation: 1,
+      failure: { classification, message, generation: 1, attempt: 1 },
+    })
+  })
 
   it('preserves the failure budget until a replacement remains stable', async () => {
     const { lifecycle, attempts } = harness()
@@ -141,24 +173,6 @@ describe('Pierre worker pool lifecycle', () => {
     expect(attempts).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(attempts).toHaveLength(3)
-  })
-
-  it('warns once through retries and cooldown, then resets after stability', async () => {
-    const { lifecycle, attempts, warn } = harness()
-    lifecycle.start()
-    attempts[0].reportFailure('one')
-    await vi.advanceTimersByTimeAsync(250)
-    attempts[1].reportFailure('two')
-    await vi.advanceTimersByTimeAsync(1_000)
-    attempts[2].reportFailure('three')
-    expect(warn).toHaveBeenCalledTimes(1)
-
-    await vi.advanceTimersByTimeAsync(30_000)
-    attempts[3].ready.resolve()
-    await Promise.resolve()
-    await vi.advanceTimersByTimeAsync(60_000)
-    attempts[3].reportFailure('new episode')
-    expect(warn).toHaveBeenCalledTimes(2)
   })
 
   it('publishes to subscribers and removes listeners on unsubscribe', async () => {

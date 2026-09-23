@@ -45,13 +45,24 @@ export interface SecretFieldProps {
   permanentRemoval?: SecretFieldPermanentRemoval
   /** Optional "where do I get this" link rendered as an external-link icon. */
   setupLink?: { href: string; label?: string }
+  /**
+   * Accessible name for the REPLACE control, when "Replace" alone is ambiguous.
+   *
+   * Passing it also makes the wording VISIBLE on the button rather than only its
+   * accessible name: the default control is an icon, and an icon alone says neither
+   * the verb nor what it acts on — next to a stored credential a reader cannot tell
+   * "replace the stored key" from "discard what I just typed", and those differ by
+   * whether work is lost. A caller that knows the noun passes it; every other caller
+   * keeps the icon and the shared wording, so this changes no panel that does not ask.
+   */
+  replaceLabel?: string
 }
 
 export function SecretField({
   label, description, placeholder, isSet, preview, value, onChange,
   editing: controlledEditing, onEditingChange,
   cleared, onClearedChange, permanentRemoval,
-  setupLink, readOnly = false,
+  setupLink, readOnly = false, replaceLabel,
 }: SecretFieldProps) {
   const [localEditing, setLocalEditing] = useState(false)
   const [revealed, setRevealed] = useState(false)
@@ -118,8 +129,19 @@ export function SecretField({
             <code className="flex-1 truncate rounded-md border border-border bg-bg-elevated px-3 py-2 text-[13px] text-text font-mono">
               {preview}
             </code>
-            <button type="button" className={iconBtn} onClick={startReplace} aria-label={i18nT('components.secretField.replace')} title={i18nT('components.secretField.replace')}>
+            {/* A caller that named the noun gets it as the button's own TEXT, and then
+                no aria-label or title beside it: a second accessible name over a
+                visible one is the duplicate the accessibility rule catches. Without a
+                noun the control stays icon-only and the title carries the name. */}
+            <button
+              type="button"
+              className={replaceLabel ? `${buttonBase} gap-1.5 px-2` : iconBtn}
+              onClick={startReplace}
+              aria-label={replaceLabel ? undefined : i18nT('components.secretField.replace')}
+              title={replaceLabel ? undefined : i18nT('components.secretField.replace')}
+            >
               <RotateCcw size={14} />
+              {replaceLabel && <span className="text-[12px] font-medium">{replaceLabel}</span>}
             </button>
             {permanentRemoval?.confirmation ? (
               <div className="flex basis-full flex-wrap items-center gap-2">

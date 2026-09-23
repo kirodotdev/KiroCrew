@@ -21,6 +21,11 @@ Deliberately WIDER than the fixture acts on, the same way
 a reason, so adding one forces a decision instead of an omission. Files whose
 ``spawn`` is ``AcpRuntime.spawn`` never name ``SubagentManager`` and so are not
 swept up -- that method has no memory gate.
+
+A second ratchet below covers the other half: being pinned is not enough if the
+test throws the pin away mid-body with a bare ``monkeypatch.undo()``, which
+reverts the fixture's patches too because pytest hands the test and the fixture
+the same ``monkeypatch`` instance.
 """
 
 from __future__ import annotations
@@ -99,6 +104,10 @@ class TestTheSpawnHostMemoryPinRatchet:
         # not break them -- an inner patch lands on top -- but it would state a
         # precondition the opposite of what they exist to vary.
         "test_admission_gate.py": "drives both guards itself, to refused and to admitted",
+        # A shared fake, not a collected test module: ``ManagerHarness`` pins
+        # both host-memory readings itself for as long as it is open, so every
+        # module that spawns through it is pinned without naming the fixture.
+        "overload_fakes.py": "fake harness pins the host readings itself",
     }
 
     def test_every_spawning_module_is_pinned_or_excluded(self) -> None:
@@ -124,3 +133,72 @@ class TestTheSpawnHostMemoryPinRatchet:
         stale = sorted(name for name in self._EXCLUDED if name not in reached)
 
         assert not stale, f"_EXCLUDED names modules that no longer reach spawn: {stale}"
+
+
+@functools.lru_cache(maxsize=1)
+def _pinned_modules_that_undo() -> tuple[str, ...]:
+    """Pinned spawning modules that also call a bare ``monkeypatch.undo()``.
+
+    Textual precheck first, then an AST walk for a ``.undo()`` call taking no
+    arguments, so a helper of the same name on some other object still counts --
+    the hazard is the call shape, not which object it is spelled on.
+    """
+    pinned = {name for name, is_pinned in _spawning_modules() if is_pinned}
+    offenders: list[str] = []
+    for path in sorted(_TEST_DIR.glob("*.py")):
+        if path.name not in pinned:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if ".undo()" not in text:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        if any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "undo"
+            and not node.args
+            and not node.keywords
+            for node in ast.walk(tree)
+        ):
+            offenders.append(path.name)
+    return tuple(offenders)
+
+
+class TestTheHostPinSurvivesTheTestsOwnPatches:
+    """A pinned module must not throw the pin away half way through a test.
+
+    pytest hands the test function and every fixture it requests the SAME
+    ``monkeypatch`` instance, so ``monkeypatch.undo()`` inside a test body
+    reverts ``healthy_host_memory``'s two pins along with the test's own
+    patches. Everything after that line reads the runner's real free memory,
+    which is the exact state the module-scope pin exists to remove -- so the
+    file is pinned, looks pinned, and is not pinned where it matters.
+
+    Measured on a macos-15 nightly backend shard reading 2.58 GB available,
+    under the 4.5 GB floor: ``test_taskq_admission_integration.py``'s drain
+    deferred a second time. The only failure text was
+    ``assert 'queued' == 'starting'``; nothing named memory, and the whole
+    nightly publish chain was skipped behind it.
+
+    The remedy is a scoped patch -- ``with monkeypatch.context() as scoped:`` --
+    which reverts only what the block set and leaves the fixture's readings in
+    place.
+    """
+
+    def test_no_pinned_spawning_module_reverts_the_pin(self) -> None:
+        offenders = _pinned_modules_that_undo()
+
+        assert not offenders, (
+            "these modules pin the host-memory reading and then throw it away "
+            "with a bare monkeypatch.undo():\n    " + "\n    ".join(offenders) + "\n"
+            "Wrap the patches the test wants reverted in "
+            "`with monkeypatch.context() as scoped:` and set them on `scoped` "
+            f'instead, so leaving the block restores "{_FIXTURE}"\'s readings '
+            "rather than the runner's."
+        )

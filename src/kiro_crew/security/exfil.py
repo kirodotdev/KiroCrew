@@ -874,6 +874,7 @@ def _exfil_url_warning(
     is_https: bool = True,
     allow_safe_presigned: bool = True,
     allow_oauth_entropy: bool = False,
+    assume_oauth_endpoint: bool = False,
     _rule_out: list[str] | None = None,
 ) -> str | None:
     """Classify one matched URL — the single per-URL exfil verdict.
@@ -882,6 +883,11 @@ def _exfil_url_warning(
     redact_exfiltration_urls (which redacts every URL that returns non-None), so
     the two paths can never drift. Returns the warning string, or None if clean.
     ``_rule_out`` receives only a stable rule id, never URL-derived text.
+    ``assume_oauth_endpoint`` answers a counterfactual, never a verdict: it
+    treats the endpoint as if it were on the OAuth allowlist WITHOUT consulting
+    the builtin set or the operator file, so a caller can ask "would this URL
+    pass if the operator added its endpoint?". HTTPS-only / no-explicit-port
+    are not assumed away, because the allowlist never relaxes them either.
     """
 
     def trace(rule: str) -> None:
@@ -961,7 +967,10 @@ def _exfil_url_warning(
         allow_oauth_entropy
         and is_https
         and not port
-        and _approved_oauth_authorization_endpoint(_dom, path_and_query.split("?", 1)[0])
+        and (
+            assume_oauth_endpoint
+            or _approved_oauth_authorization_endpoint(_dom, path_and_query.split("?", 1)[0])
+        )
     )
     if _oauth_endpoint:
         # Names are matched literally and case-sensitively; encoded/mixed-case
@@ -1177,8 +1186,19 @@ def _oauth_credential_scan_target(
     return url[: query_start + 1] + sanitized_query + suffix
 
 
-def diagnose_oauth_url_credential(url: str) -> OAuthUrlCredentialDiagnostic | None:
-    """Return a safe rejection signature, never URL/value bytes or derivatives."""
+def diagnose_oauth_url_credential(
+    url: str, *, assume_approved_endpoint: bool = False
+) -> OAuthUrlCredentialDiagnostic | None:
+    """Return a safe rejection signature, never URL/value bytes or derivatives.
+
+    ``assume_approved_endpoint`` runs the SAME gate as if the URL's endpoint
+    were on the OAuth allowlist (builtin or operator file), without reading
+    either. It exists so a rejection surface can tell whether the
+    ``oauth_endpoints.json`` remedy would actually clear THIS rejection before
+    advertising it; every unconditional rule (fixed credentials, userinfo,
+    fragments, path params, heavy percent-encoding, http, explicit port) still
+    rejects under the assumption, exactly as it does for an approved endpoint.
+    """
     if not url:
         return None
 
@@ -1242,7 +1262,10 @@ def diagnose_oauth_url_credential(url: str) -> OAuthUrlCredentialDiagnostic | No
     approved_endpoint = (
         parsed.scheme.lower() == "https"
         and not port
-        and _approved_oauth_authorization_endpoint(parsed.hostname.lower(), parsed.path)
+        and (
+            assume_approved_endpoint
+            or _approved_oauth_authorization_endpoint(parsed.hostname.lower(), parsed.path)
+        )
     )
     scan_target = _oauth_credential_scan_target(
         url,
@@ -1291,6 +1314,7 @@ def diagnose_oauth_url_credential(url: str) -> OAuthUrlCredentialDiagnostic | No
         is_https=parsed.scheme.lower() == "https",
         allow_safe_presigned=False,
         allow_oauth_entropy=True,
+        assume_oauth_endpoint=assume_approved_endpoint,
         _rule_out=rules,
     )
     if warning is None:
@@ -1380,6 +1404,23 @@ def oauth_url_contains_credential(url: str) -> bool:
         shape.other,
     )
     return True
+
+
+def oauth_rejection_is_endpoint_exemptible(url: str) -> bool:
+    """True when *url* is rejected today AND would pass with its endpoint allowlisted.
+
+    This is the question a rejection surface must answer before it names the
+    endpoint and points at ``oauth_endpoints.json``: the allowlist relaxes only
+    the query-entropy heuristics on standard front-channel parameters, so a URL
+    refused for a fixed credential, userinfo, a fragment, path parameters, heavy
+    percent-encoding, ``http`` or an explicit port is refused again after the
+    entry is added, and naming it would advertise a remedy that cannot work.
+    Reads the operator file only through the ordinary gate (memoized stat), so
+    callers treat it like the gate itself: run it off the event loop.
+    """
+    if diagnose_oauth_url_credential(url) is None:
+        return False
+    return diagnose_oauth_url_credential(url, assume_approved_endpoint=True) is None
 
 
 # Data-egress / reverse-shell command shapes — the exfiltration-specific subset

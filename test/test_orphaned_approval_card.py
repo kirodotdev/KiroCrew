@@ -12,6 +12,7 @@ and the card could not be dismissed.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from unittest.mock import MagicMock, patch
 
@@ -27,6 +28,7 @@ class _FakeSlot:
         self.messages: list[dict] = []
         self._dirty = False
         self._approval_futures: dict[str, asyncio.Future] = {}
+        self._approval_stopped: set[str] = set()
 
     def add_pending_approval(self, request_id: str) -> asyncio.Future:
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -53,6 +55,31 @@ class _FakeSlot:
 
 class TestRejectPendingApprovalsMarksMessage:
     """Stop/interrupt path — chat_handlers._reject_pending_approvals."""
+
+    @pytest.mark.asyncio
+    async def test_a_stop_records_which_approvals_it_rejected(self) -> None:
+        """The stop's provenance is recorded, because the future cannot carry it.
+
+        A stop resolves the approval with an ordinary ``"rejected"`` and raises
+        nothing, so the runner sees the same value a person's Reject produces. The
+        ledger reads an unattributed decision as a person's answer, so without this
+        mark a stop is written into an append-only file as a human refusal. Marked
+        BEFORE the future resolves, since resolving can wake the runner at once.
+        """
+        from kiro_crew.dashboard.chat_handlers import _reject_pending_approvals
+
+        slot = _FakeSlot()
+        slot.add_pending_approval("ap-1")
+        slot.add_pending_approval("ap-2")
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel", return_value=MagicMock()):
+            _reject_pending_approvals(slot)  # type: ignore[arg-type]
+
+        assert slot._approval_stopped == {"ap-1", "ap-2"}
+        source = inspect.getsource(_reject_pending_approvals)
+        marked = source.index("_approval_stopped.add(aid)")
+        resolved = source.index('fut.set_result("rejected")')
+        assert marked < resolved, "the mark must precede the resolution that wakes the reader"
 
     @pytest.mark.asyncio
     async def test_marks_permission_resolved(self) -> None:
@@ -141,6 +168,95 @@ class TestRunnerBackstopContract:
             "finally backstop is total over cancellation"
         )
 
+    def test_a_decision_is_folded_to_the_schema_enum(self) -> None:
+        """The ``approval/decided`` closer carries only values the registry lists.
+
+        The approval future can resolve to ``approved_trust_reads`` (a scoped-trust
+        approval), which the ``approval/decided`` schema does not list. Emitting the
+        raw ``outcome`` there is schema-refused and drops the closer, leaving the
+        request open in a file nothing rewrites. So the site folds first -- and it
+        folds only where it must: ``rejected_once`` IS in the enum and reaches the
+        ledger as itself.
+
+        Checked against the registry rather than against expected text, so adding a
+        value at the site without declaring it fails here instead of at write time.
+        """
+        import inspect
+        import re
+
+        from kiro_crew.crew_log.entry_types import SESSION_ENTRY_TYPES
+        from kiro_crew.dashboard import chat_runner
+
+        src = inspect.getsource(chat_runner._run_chat)
+        assert (
+            "decision=_crew_log_decision" in src
+        ), "on_approval_decided must emit the folded value, not the raw outcome"
+        assert "decision=outcome" not in src, (
+            "raw outcome (e.g. approved_trust_reads) is not in the schema enum "
+            "and would be refused, dropping the approval closer"
+        )
+        assigned = set(re.findall(r'_crew_log_decision = "([a-z_]+)"', src))
+        assert assigned, "the fold must assign literal decision values"
+        spec = SESSION_ENTRY_TYPES["approval/decided"]
+        allowed = set(next(f for f in spec.fields if f.name == "decision").enum)
+        assert (
+            assigned <= allowed
+        ), f"the site emits {sorted(assigned - allowed)}, which the registry refuses"
+        assert "rejected_once" in assigned, (
+            "rejected_once is in the registry enum and the UI-mark keeps that "
+            "outcome distinct, so the ledger must not fold it into rejected"
+        )
+        assert (
+            'outcome in ("approved", "approved_trust_reads")' in src
+        ), "the scoped-trust approval must fold to approved"
+
+    def test_a_host_cancelled_prompt_is_not_recorded_as_a_person(self) -> None:
+        """A turn cancelled mid-prompt attributes its decision to the host.
+
+        The ledger reads an empty ``by`` as a person's answer. A turn cancelled
+        out from under an open prompt sets no deny cause, so without a cancel
+        flag the closer would name nobody and read as a human rejection the
+        person never made. The cancel handler must flag it and the emit must let
+        that flag set ``by=host``.
+        """
+        import inspect
+
+        from kiro_crew.dashboard import chat_runner
+
+        src = inspect.getsource(chat_runner._run_chat)
+        # The cancel path flags a host cancellation and re-raises.
+        cancel = src.index("except asyncio.CancelledError:")
+        flag = src.index("_host_cancelled = True")
+        reraise = src.index("raise", flag)
+        assert (
+            cancel < flag < reraise
+        ), "the CancelledError handler must flag _host_cancelled then re-raise"
+        # The emit attributes to the host on an auto-decline, a cancel, or a stop.
+        assert "_host_deny_cause or _host_cancelled or _host_stopped" in src
+
+    def test_a_stopped_approval_is_not_recorded_as_a_person(self) -> None:
+        """A stop's rejection is attributed to the host, and read exactly once.
+
+        A stop resolves the future with an ordinary ``"rejected"`` and raises
+        nothing, so neither host flag can see it and the decision would be written
+        as a person's answer. The slot carries the ids a stop rejected; this site
+        reads one and DISCARDS it, because leaving it would let a later human
+        rejection on the same slot inherit the host attribution.
+        """
+        import inspect as _inspect
+
+        from kiro_crew.dashboard import chat_runner
+
+        src = _inspect.getsource(chat_runner._run_chat)
+        read = src.index("_host_stopped = _approval_id in slot._approval_stopped")
+        discard = src.index("slot._approval_stopped.discard(_approval_id)")
+        emit = src.index("crew_log_emit.on_approval_decided(")
+        assert (
+            read < discard < emit
+        ), "the stop mark must be read and discarded before the decision is emitted"
+        # No cause is borrowed for it: that vocabulary renders user-facing text.
+        assert "cause=_host_deny_cause," in src
+
     @pytest.mark.asyncio
     async def test_cancellation_shape_marks_and_reraises(self) -> None:
         """Mirror of the runner's try/finally under cancellation.
@@ -195,9 +311,7 @@ class TestRunnerBackstopContract:
                 "ts": "1",
             }
         )
-        wrote = _mark_permission_resolved(
-            slot.messages, "ap-1", "rejected", only_if_pending=True
-        )
+        wrote = _mark_permission_resolved(slot.messages, "ap-1", "rejected", only_if_pending=True)
         assert wrote is True
         assert slot.resolved_for("ap-1") == "rejected"
 
@@ -214,9 +328,7 @@ class TestRunnerBackstopContract:
                 "ts": "1",
             }
         )
-        wrote = _mark_permission_resolved(
-            slot.messages, "ap-1", "approved", only_if_pending=True
-        )
+        wrote = _mark_permission_resolved(slot.messages, "ap-1", "approved", only_if_pending=True)
         assert wrote is False
         assert slot.resolved_for("ap-1") == "yolo"
 

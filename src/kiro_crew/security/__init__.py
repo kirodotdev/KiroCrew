@@ -61,6 +61,7 @@ from . import (
     diagnostics,
     exfil,
     helpers,
+    inline_payload,
     paths,
     redaction,
     shell_normalizer,
@@ -78,7 +79,6 @@ from .argv_floor import (
     _GIT_PUBLISH_SUBST_PROGRAM_RE,
     _HOSTNAME_SUBSTITUTION_HINTS,
     _HOSTNAME_VARIABLE_FORMS,
-    _INLINE_DYNAMIC_EXEC_RE,
     _LOOPBACK_HOST_NAMES,
     _PROCESS_SUBSTITUTION_SAFE_CHARS,
     _PROTECTED_BRANCHES,
@@ -105,9 +105,7 @@ from .argv_floor import (
     _bare_kill_raw_bodies,
     _git_publish_floor_tags,
     _git_push_args,
-    _has_self_importing_inline_program,
     _host_is_self,
-    _inline_payload_reaches_cli,
     _is_credential_mint,
     _is_dev_mode_out_of_root_confirm,
     _is_git_publish,
@@ -115,6 +113,7 @@ from .argv_floor import (
     _is_kill_by_name_program,
     _is_push_to_protected_branch,
     _is_self_cloud_destructive,
+    _is_self_file_delivery,
     _is_self_gateway_restart,
     _is_self_kill,
     _is_self_module_flag,
@@ -134,7 +133,6 @@ from .argv_floor import (
     _process_substitution_word_is_opaque,
     _proxyjump_value_targets_self,
     _push_segment_targets_protected,
-    _python_reads_stdin,
     _resolve_own_host_names,
     _resolve_own_host_names_into_cache,
     _routing_option_key_value_targets_self,
@@ -149,8 +147,6 @@ from .argv_floor import (
     _shell_payload_sources,
     _ssh_family_verb,
     _static_substitution_output,
-    _stdin_program_text,
-    _stdin_redirect_carriers,
     _unmask_separators,
 )
 from .denied_rules import (
@@ -296,6 +292,7 @@ from .exfil import (
     canonicalize_ip,
     diagnose_oauth_url_credential,
     exfil_query_min_len,
+    oauth_rejection_is_endpoint_exemptible,
     oauth_url_contains_credential,
     redact_exfiltration_urls,
     scan_exfiltration_urls,
@@ -309,9 +306,16 @@ from .helpers import (
     contains_injection,
     resource_limit_spec,
 )
+from .inline_payload import (
+    _INLINE_DYNAMIC_EXEC_RE,
+    _has_self_importing_inline_program,
+    _inline_payload_reaches_cli,
+)
 from .paths import (
     _CREW_HOME_PREFIXES,
     _CREW_SECRET_LEAVES,
+    _HOME_TARGETS_TTL_COST_RATIO,
+    _HOME_TARGETS_TTL_MAX_SECS,
     _HOME_TARGETS_TTL_SECS,
     _KEYSTONE_ARTIFACT_PARENTS,
     _KEYSTONE_ARTIFACT_SUFFIXES,
@@ -323,6 +327,8 @@ from .paths import (
     _PATH_RESOLVE_COOLDOWN_SECS,
     _PATH_RESOLVE_TIMEOUT_SECS,
     _SENSITIVE_HOME_DIRS,
+    _TTL_COST_RATIO_ENV,
+    _TTL_MAX_SECS_ENV,
     _UNC_PREFIX_RE,
     _WRITE_PROTECTED_HOME_PATHS,
     DENIED_ROOT_PARTS,
@@ -330,11 +336,14 @@ from .paths import (
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
     UNVERIFIABLE_PATH_PREFIX,
     PathResolutionStalled,
+    _BuiltTargets,
     _candidate_forms,
+    _env_float,
     _expanded_env_root,
     _home_dir_targets,
     _home_dir_targets_uncached,
     _home_targets_cache,
+    _home_targets_ttl,
     _is_keystone_publish_artifact,
     _is_unc_path,
     _lexical_root,
@@ -358,7 +367,9 @@ from .paths import (
     _wedged_workers,
     crew_home_prefixes,
     is_sensitive_bash_command,
+    is_sensitive_canonical_path,
     is_sensitive_path,
+    is_sensitive_resolved_path,
     is_sensitive_write_path,
     is_unverifiable_path_refusal,
     path_contains_sensitive,
@@ -391,6 +402,9 @@ from .redaction import (
     _SECRET_MAX_SLASHES,
     _SECRET_MAX_VOWEL_RATIO,
     _SECRET_PRINTABLE_DECODE_RATIO,
+    _TOKEN_PARAM_PARTIAL_RE,
+    _TOKEN_PARAM_RE,
+    _TOKEN_PARAM_VALUE_CLASS,
     _VOWELS,
     CREDENTIAL_REDACTION_TAGS,
     REDACTED_CREDENTIAL_TAG,
@@ -504,6 +518,7 @@ from .shell_normalizer import (
     _push_option_matches,
     _push_token_redirection,
     _push_token_shell_read,
+    _python_reads_stdin,
     _redirect_consumes_next,
     _redirect_glue_point,
     _resolve_function_aliases,
@@ -522,6 +537,8 @@ from .shell_normalizer import (
     _split_glued_operators,
     _split_push_command_segments,
     _split_shell_words,
+    _stdin_program_text,
+    _stdin_redirect_carriers,
     _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
@@ -685,7 +702,8 @@ def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
       and a credential-bearing HOSTNAME makes the whole helper return ``None``
       — a host is an identity, so a redacted host would name nothing;
     * both components are length-capped, so a pathological URL cannot bloat a
-      banner or a log line.
+      banner or a log line; a capped component ends in ``…`` so a reader can
+      tell a chopped name from a whole one.
 
     Returns ``None`` when the URL does not parse to a hostname, so callers fall
     back to their existing unnamed message. Deliberately independent of WHY the
@@ -736,13 +754,59 @@ def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
         # transformed form and refuse to name it.
         if _oauth_component_is_unsafe(host):
             return None
-    host = host[:_SANITIZED_OAUTH_HOST_MAX_LEN]
+    if len(host) > _SANITIZED_OAUTH_HOST_MAX_LEN:
+        # Marked like the path below: a silently chopped host reads as a whole
+        # hostname that nothing on disk will ever match.
+        host = host[:_SANITIZED_OAUTH_HOST_MAX_LEN] + "…"
     path = parsed.path or "/"
     if _oauth_component_is_unsafe(path):
         path = _REDACTED_CREDENTIAL_TAG
     elif len(path) > _SANITIZED_OAUTH_PATH_MAX_LEN:
         path = path[:_SANITIZED_OAUTH_PATH_MAX_LEN] + "…"
     return host, path
+
+
+def sanitized_oauth_endpoint_display(url: str) -> str | None:
+    """A rejected endpoint as one copy-ready ``host/path`` string, or ``None``.
+
+    :func:`sanitized_oauth_endpoint` answers a diagnostic ``(host, path)`` pair
+    and, by contract, may hand back a component that is NOT pasteable: the
+    shared redaction tag for a credential-bearing path, or a ``…``-capped host
+    or path. A surface whose whole point is "write THIS into
+    ``oauth_endpoints.json``" must not join those into text that reads as
+    actionable and is not.
+
+    So this helper returns a string only when writing the entry would WORK:
+
+    * the host matches ``_OAUTH_EXTENSION_HOST_RE`` (lowercase DNS name with a
+      letter TLD — so ``localhost``, IP literals and a capped host are refused);
+    * the path passes ``_valid_oauth_extension_path`` (leading ``/``, no
+      ``; ? # % \\ ..`` or whitespace) and is neither redacted nor capped;
+    * the rejection is one the allowlist can clear
+      (:func:`oauth_rejection_is_endpoint_exemptible`): the gate is re-run as
+      if the endpoint were approved, and only a URL that then PASSES is named.
+      A URL refused for a fixed credential, userinfo, a fragment, path
+      parameters, heavy percent-encoding, ``http`` or an explicit port would be
+      refused again after the entry is added, so it stays unnamed rather than
+      advertise a remedy that cannot work.
+
+    Callers fall back to their unnamed message on ``None``. Because the
+    counterfactual re-runs the gate, this can stat the operator file (memoized),
+    so callers treat it like the gate itself and run it off the event loop.
+    """
+    endpoint = sanitized_oauth_endpoint(url)
+    if endpoint is None:
+        return None
+    host, path = endpoint
+    # A capped host needs no check of its own: the host rule below ends in a
+    # letter TLD, which a trailing "…" can never satisfy.
+    if path == _REDACTED_CREDENTIAL_TAG or path.endswith("…"):
+        return None
+    if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host) or not _valid_oauth_extension_path(path):
+        return None
+    if not oauth_rejection_is_endpoint_exemptible(url):
+        return None
+    return f"{host}{path}"
 
 
 # ── Binary File MIME Allowlist ──
@@ -853,6 +917,22 @@ _PEM_HOLD_RE = re.compile(
 # is rejoined before emission while still keeping the buffer bounded.
 _STREAM_HOLDBACK_JWT_MAX = 4096
 
+# A sticky discard consumes only bytes that the ARMING anchor defines as value
+# bytes. These two classes are the existing classes from the partial JWT and
+# Bearer anchors below, named so the anchors and discard cannot drift apart.
+_JWT_SEGMENT_VALUE_CLASS = r"[A-Za-z0-9_-]"
+_BEARER_VALUE_CLASS = r"[A-Za-z0-9._~+/=-]"
+_STREAM_DISCARD_RUN_RES = {
+    "token-param": re.compile(rf"{_TOKEN_PARAM_VALUE_CLASS}*"),
+    "jwt": re.compile(rf"(?:{_JWT_SEGMENT_VALUE_CLASS}|\.)*"),
+    "bearer": re.compile(rf"{_BEARER_VALUE_CLASS}*"),
+}
+# Bytes of terminator-less continuation dropped silently between two tags. It is
+# NOT an exit: at the bound the discard re-emits the tag, zeroes the counter and
+# keeps dropping, so the counter stays O(1) and a credential's continuation never
+# resumes raw. Only a byte outside the arming anchor's value class ends the discard.
+_STREAM_DISCARD_MAX = 1 << 20
+
 # The withheld tail is a partial JWT/JWE when it ends with the `eyJ` base64url
 # header prefix optionally followed by up to FOUR `.`-separated base64url segments
 # (the final segment may be empty mid-stream). Three segments = a JWS/JWT
@@ -860,7 +940,9 @@ _STREAM_HOLDBACK_JWT_MAX = 4096
 # `{0,4}` trailing quantifier admits the full JWE shape too — matching the batch
 # `_CREDENTIAL_PATTERNS` JWE ceiling — instead of bisecting a >512-char JWE at the
 # 512 floor. Anchored to the buffer end (`\Z`).
-_PARTIAL_JWT_TAIL_RE = re.compile(r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){0,4}\Z")
+_PARTIAL_JWT_TAIL_RE = re.compile(
+    rf"eyJ{_JWT_SEGMENT_VALUE_CLASS}+(?:\.{_JWT_SEGMENT_VALUE_CLASS}*){{0,4}}\Z"
+)
 
 # Trailing (possibly incomplete) `Authorization: Bearer <token>` anchor at the end
 # of the stream buffer. Unlike a bare credential run, this anchor embeds WHITESPACE
@@ -889,9 +971,22 @@ _PARTIAL_JWT_TAIL_RE = re.compile(r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){0,4}\Z
 # and stream its raw tail.
 _BEARER_ANCHOR_PARTIAL_RE = re.compile(
     r"""Authorization["']?\s*[:=]\s*["']?"""
-    r"(?:Bearer(?:\s+[A-Za-z0-9._~+/=-]*)?|Beare|Bear|Bea|Be|B)?\Z",
+    rf"(?:Bearer(?:\s+{_BEARER_VALUE_CLASS}*)?|Beare|Bear|Bea|Be|B)?\Z",
     re.IGNORECASE,
 )
+
+
+def _complete_token_match_crossing(
+    matches: tuple[re.Match[str], ...], cut: int
+) -> re.Match[str] | None:
+    """Return the first token-parameter value strictly bisected by *cut*, if any."""
+    for match in matches:
+        # A cut at end(1) or end(1)+1 leaves the whole separator-name-equals-
+        # value inside the commit, where the batch pass redacts it whole. Only a
+        # cut inside the value strands an anchor-less suffix.
+        if match.start() < cut < match.end(1):
+            return match
+    return None
 
 
 class StreamRedactor:
@@ -905,60 +1000,197 @@ class StreamRedactor:
     character, while a credential is a contiguous credential-class run.
     """
 
-    __slots__ = ("_buf", "_redact")
+    __slots__ = ("_buf", "_redact", "_discarding", "_discard_kind", "_discarded")
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
         self._buf = ""
         # Resolve at call time so module-load order is irrelevant.
         self._redact = redactor or redact
+        self._discarding = False
+        self._discard_kind: str | None = None
+        self._discarded = 0
 
     def feed(self, chunk: str) -> str:
         """Accept a chunk; return the redacted prefix that is safe to emit now."""
         if not chunk:
             return ""
         self._buf += chunk
-        # Start of the maximal trailing credential-class run.
-        i = len(self._buf)
-        while i > 0 and self._buf[i - 1] in _CRED_CLASS:
-            i -= 1
+
+        # Invariant: `_buf` is always "" on entry when `_discarding` is true;
+        # this chunk is solely the continuation of the already-tagged drop.
+        # Only a terminator byte exits the discard. Reaching the bound with no
+        # terminator re-emits the tag and resets the counter but stays armed:
+        # clearing the flag there would hand the credential's remaining bytes
+        # to Phase A as an anchorless run, which the 512 floor streams raw.
+        if self._discarding:
+            assert self._discard_kind is not None
+            run_match = _STREAM_DISCARD_RUN_RES[self._discard_kind].match(self._buf)
+            assert run_match is not None
+            run = run_match.end()
+            self._discarded += run
+            if run == len(self._buf):
+                self._buf = ""
+                if self._discarded < _STREAM_DISCARD_MAX:
+                    return ""
+                self._discarded = 0
+                return _REDACTED_CREDENTIAL_TAG
+            self._discarding = False
+            self._discard_kind = None
+            self._buf = self._buf[run:]
+
+        # PHASE A -- SAFETY CUT.
+        # Invariant: every candidate can only move the cut backward. Bytes before
+        # the minimum do not bisect any known in-progress credential anchor.
+        natural_cut = len(self._buf)
+        while natural_cut > 0 and self._buf[natural_cut - 1] in _CRED_CLASS:
+            natural_cut -= 1
+        partial_jwt = _PARTIAL_JWT_TAIL_RE.search(self._buf)
+        safety_cuts = [natural_cut]
+
+        # Canonical credential tags are fixed points only when a batch-redaction
+        # call sees the WHOLE tag. Their interior space is outside `_CRED_CLASS`,
+        # so a chunk boundary inside a tag can otherwise commit its head and let
+        # token-parameter pass 4 re-redact that fragment. Hold only a STRICT tag
+        # prefix ending at the buffer tail. The nested search examines at most
+        # the longest module-owned tag and only defers the cut: it is not a
+        # credential anchor and therefore cannot escalate a cap or authorize a
+        # fail-closed drop.
+        partial_tag_start: int | None = None
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            max_prefix = min(len(self._buf), len(tag) - 1)
+            for prefix_len in range(max_prefix, 0, -1):
+                if self._buf.endswith(tag[:prefix_len]):
+                    start = len(self._buf) - prefix_len
+                    partial_tag_start = (
+                        start if partial_tag_start is None else min(partial_tag_start, start)
+                    )
+                    break
         # PEM header hold-back (ported from the upstream project): the
-        # multi-word phrase "BEGIN RSA PRIVATE KEY" splits on whitespace.  If the
+        # multi-word phrase "BEGIN RSA PRIVATE KEY" splits on whitespace. If the
         # tail of the commit window contains an in-progress PEM header prefix,
         # refuse to commit at this boundary.
-        if i > 0 and _PEM_HOLD_RE.search(self._buf[max(0, i - 50) : i]):
-            i = 0
-        # Also withhold from the start of any trailing (possibly incomplete)
-        # `Authorization: Bearer <token>` anchor. Its embedded whitespace is not in
-        # _CRED_CLASS, so the run scan above would otherwise commit the anchor
-        # prefix and the opaque token in separate chunks — leaking the token, since
-        # the batch Bearer pattern only fires on the joined anchor.
-        anchor = _BEARER_ANCHOR_PARTIAL_RE.search(self._buf)
-        if anchor is not None:
-            i = min(i, anchor.start())
-        # Escalate the holdback cap to the JWT ceiling when the withheld tail is
-        # (the start of) a credential that legitimately exceeds the 512-char DoS
-        # floor: a partial JWT/JWE (`eyJ…`) OR a trailing `Authorization: Bearer`
-        # anchor. Bearer must be included alongside JWT — an opaque OAuth/refresh/
-        # SSO Bearer token > 512 chars has no `eyJ` prefix, so keying escalation on
-        # `_PARTIAL_JWT_TAIL_RE` alone left its 512-char tail streaming raw. Still
-        # bounded: a run with no credential anchor stays on the 512 floor.
-        cred_anchored = _PARTIAL_JWT_TAIL_RE.search(self._buf) is not None or anchor is not None
+        if natural_cut > 0 and _PEM_HOLD_RE.search(
+            self._buf[max(0, natural_cut - 50) : natural_cut]
+        ):
+            safety_cuts.append(0)
+
+        # Bearer anchors are STRONG: their embedded whitespace is not in
+        # _CRED_CLASS, so the natural cut could otherwise split anchor and value.
+        bearer_anchor = _BEARER_ANCHOR_PARTIAL_RE.search(self._buf)
+        if bearer_anchor is not None:
+            safety_cuts.append(bearer_anchor.start())
+
+        # A token-name prefix without '=' is WEAK. It still needs a short
+        # holdback so a chunk boundary cannot split the name, but it is not yet a
+        # credential and must never escalate the cap or authorize data loss.
+        token_anchor = _TOKEN_PARAM_PARTIAL_RE.search(self._buf)
+        weak_token_anchor = None
+        strong_token_anchor = False
+        if token_anchor is not None:
+            safety_cuts.append(token_anchor.start())
+            strong_token_anchor = token_anchor.group("eq") is not None
+            if not strong_token_anchor:
+                weak_token_anchor = token_anchor
+
+        i = min(safety_cuts)
+        complete_token_matches = tuple(_TOKEN_PARAM_RE.finditer(self._buf))
+        # Invariant: the complete-match crossing predicate is re-evaluated after
+        # every assignment to `i`; both Phase A and the Phase B floor call the
+        # same helper rather than letting their predicate copies drift.
+        complete_token_crossing = _complete_token_match_crossing(complete_token_matches, i)
+        if complete_token_crossing is not None:
+            i = min(i, complete_token_crossing.start())
+
+        strong_anchored = (
+            partial_jwt is not None
+            or bearer_anchor is not None
+            or complete_token_crossing is not None
+            or strong_token_anchor
+        )
+
+        # A partial canonical tag is already-redacted material. It lowers only
+        # the safety cut and is deliberately applied AFTER STRONG classification,
+        # so the tag prefix itself can neither raise a cap nor authorize a drop.
+        if partial_tag_start is not None:
+            i = min(i, partial_tag_start)
+
+        # PHASE B -- BOUNDS.
+        # Invariant: STRONG anchors may fail closed instead of exposing a secret;
+        # WEAK name prefixes never drop data. Any forced cut is repaired before
+        # emission so it cannot strand an anchor-less token-value suffix.
         cap = _STREAM_HOLDBACK_MAX
-        if len(self._buf) - i > cap and cred_anchored:
+        if len(self._buf) - i > cap and strong_anchored:
             cap = _STREAM_HOLDBACK_JWT_MAX
         if len(self._buf) - i > cap:
-            if cred_anchored:
-                # Fail closed: a credential-anchored tail (JWT/JWE/Bearer) has blown
-                # past the 4096 ceiling. Bisecting here would emit the token's head
-                # raw, so instead redact+emit the safe prefix, append the tag, and
-                # DROP the oversized tail. A plain cred-class run with no credential
-                # anchor falls through to the bisect below and is committed
-                # (bisecting an opaque non-credential run cannot leak a structured
-                # secret and preserves the DoS bound with no data loss).
-                commit, self._buf = self._buf[:i], ""
+            if strong_anchored:
+                # Preserve the fail-closed ceiling for a real credential anchor:
+                # redact the safe prefix, tag the event, and drop the oversized
+                # tail rather than bisecting it and exposing the token head.
+                # Only STRONG evidence arms the sticky discard. A WEAK trailing
+                # name prefix (`&tok`, no `=`) is held by the safety cut but is
+                # not yet a credential: it authorizes no drop and names no value
+                # class to drop with.
+                credential_reaches_end = (
+                    partial_jwt is not None
+                    or bearer_anchor is not None
+                    or strong_token_anchor
+                    or (
+                        complete_token_crossing is not None
+                        and complete_token_crossing.end(1) == len(self._buf)
+                    )
+                )
+                self._discarding = credential_reaches_end
+                self._discard_kind = None
+                if credential_reaches_end:
+                    # Every arming term above maps to exactly one kind, carrier
+                    # first: a STRONG token anchor or a complete crossing ending
+                    # the buffer -> "token-param"; a Bearer anchor -> "bearer";
+                    # a partial JWT -> "jwt". No other term can arm, so the
+                    # final `else` holds a true invariant.
+                    # Prefer an enclosing carrier over a token shape inside its
+                    # value: its value class defines where that credential ends.
+                    token_param_reaches_end = strong_token_anchor or (
+                        complete_token_crossing is not None
+                        and complete_token_crossing.end(1) == len(self._buf)
+                    )
+                    if token_param_reaches_end:
+                        self._discard_kind = "token-param"
+                    elif bearer_anchor is not None:
+                        self._discard_kind = "bearer"
+                    else:
+                        assert partial_jwt is not None
+                        self._discard_kind = "jwt"
+                self._discarded = 0
+                # A complete value may cross the safety cut yet end before a
+                # benign suffix in the same buffer. Drop only through the value;
+                # the suffix remains buffered for normal processing. Sticky
+                # discard is reserved for credential material that reaches the
+                # buffer end, where a continuation can still arrive.
+                drop_end = len(self._buf)
+                if complete_token_crossing is not None and not credential_reaches_end:
+                    drop_end = complete_token_crossing.end(1)
+                commit, self._buf = self._buf[:i], self._buf[drop_end:]
                 out = self._redact(commit) if commit else ""
                 return out + _REDACTED_CREDENTIAL_TAG
+
             i = len(self._buf) - cap
+
+            # The floor was computed after Phase A, so re-check complete token
+            # parameters against the actual cut. Advancing through the value is
+            # safe because the whole parameter reaches one batch-redaction call,
+            # and it shrinks the buffer rather than weakening the DoS bound.
+            floor_crossing = _complete_token_match_crossing(complete_token_matches, i)
+            if floor_crossing is not None:
+                i = floor_crossing.end(1)
+
+            # Repair the complete-match cut first, then preserve a trailing WEAK
+            # prefix if that repair crossed it. An encoded separator is at most
+            # 14 bytes and a name letter at most 42 (three `&#x0{0,8}HH;` slots),
+            # so the clamp is <=224 bytes -- still under
+            # `_STREAM_HOLDBACK_MAX = 512`.
+            if weak_token_anchor is not None and weak_token_anchor.start() < i:
+                i = weak_token_anchor.start()
+
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
         commit, self._buf = self._buf[:i], self._buf[i:]
@@ -966,6 +1198,11 @@ class StreamRedactor:
 
     def flush(self) -> str:
         """Redact and return the buffered remainder; clears the buffer."""
+        if self._discarding:
+            self._buf = ""
+            self._discarding = False
+            self._discard_kind = None
+            return ""
         out = self._redact(self._buf) if self._buf else ""
         self._buf = ""
         return out
@@ -973,6 +1210,9 @@ class StreamRedactor:
     def reset(self) -> None:
         """Discard the buffer without emitting (segment abandoned/cleared)."""
         self._buf = ""
+        self._discarding = False
+        self._discard_kind = None
+        self._discarded = 0
 
 
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:
@@ -1154,9 +1394,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                     seen_views.add(candidate)
                     views.append(candidate)
             joined_here: set[str] = set()
-            payloads = _nested_shell_payloads(
-                tokens, allow_join=allow_join, joined_out=joined_here
-            )
+            payloads = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
             programs = _argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -1405,9 +1643,7 @@ def is_denied(
         agent cannot diagnose at all. The span is the whole subject because a floor
         decides on the argv's SHAPE rather than at an offset.
         """
-        diagnostic = (
-            refusal_diagnostic(rule, component, tool_name) if rule and component else None
-        )
+        diagnostic = refusal_diagnostic(rule, component, tool_name) if rule and component else None
         return _deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
         )
@@ -1586,7 +1822,15 @@ def is_denied(
         pattern = _SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:
             continue
-        if predicate(lower):
+        # The mint predicate also gets the command AS SUBMITTED: it decodes base64
+        # literals to read the name they hide, and base64 does not survive the
+        # lower-casing every other predicate reads.
+        hit = (
+            _is_credential_mint(lower, raw_text=tool_name)
+            if predicate is _is_credential_mint
+            else predicate(lower)
+        )
+        if hit:
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id —
             # plus a second line saying the match was STRUCTURAL, because a floor
@@ -1609,6 +1853,7 @@ def is_denied(
     for rule_id, predicate in (
         ("self-protection-restart", _is_self_restart),
         ("self-protection-update", _is_self_update),
+        ("self-protection-file-delivery", _is_self_file_delivery),
         ("self-protection-gateway-restart", _is_self_gateway_restart),
         ("self-protection-cloud", _is_self_cloud_destructive),
     ):
@@ -2030,7 +2275,9 @@ def _memory_stores_to_scan() -> list[tuple[str, Path | None]]:
                     path,
                 )
                 continue
-            if not path.exists():
+            from kiro_crew.memory_stores import memory_store_version
+
+            if not path.exists() and memory_store_version(name) != 2:
                 logger.warning(
                     "memory store %r has no vector file yet; its vector tier is not audited",
                     name,
@@ -2137,6 +2384,10 @@ def _lessons_files_to_scan() -> list[tuple[str, Path]]:
     files: list[tuple[str, Path]] = []
     for name in memory_stores_declared_names():
         try:
+            from kiro_crew.memory_stores import memory_store_version
+
+            if memory_store_version(name) == 2:
+                continue
             if name == DEFAULT_MEMORY_STORE:
                 # No ``base_dir``: byte-identical with the global ``LessonStore()`` every
                 # write path constructs, so the default store's file is the one the
@@ -2296,7 +2547,12 @@ def _scan_memory_record_history(
     The same poisoned leaf repeated in an active row and its journal is one finding
     for that record; a different historical payload remains separately reportable.
     """
-    for table, kind in (("memory_record_meta", "metadata"), ("memory_revisions", "revision")):
+    for table, kind, identity, prefix in (
+        ("memory_record_meta", "metadata", "record_id", ""),
+        ("memory_revisions", "revision", "record_id", ""),
+        ("memory_history", "history", "day", "history:"),
+        ("memory_consolidations", "consolidation", "source_id", "consolidation:"),
+    ):
         with store._db_lock:
             if not store.db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",  # wokeignore:rule=master
@@ -2313,7 +2569,7 @@ def _scan_memory_record_history(
                 break
             for values in rows:
                 row = dict(zip(columns, values))
-                record_id = str(row["record_id"])
+                record_id = prefix + str(row[identity])
                 matches = list(_memory_audit_matches(row))
                 fresh = [
                     value
@@ -2325,7 +2581,7 @@ def _scan_memory_record_history(
                 reported.update(
                     (record_id, _hashlib.sha256(value.encode()).digest()) for value in matches
                 )
-                key = f"{record_id}@{row['id']}" if kind == "revision" else record_id
+                key = f"{record_id}@{row['id']}" if "id" in row else record_id
                 findings.append(
                     {
                         "type": kind,
@@ -2396,13 +2652,10 @@ def scan_memory() -> list[dict]:
     Returns one flat list of findings, each carrying the ``store`` it came from.
     The default store comes first, then each declared named store in name order.
 
-    Covers the vector store's semantic and episodic rows, its metadata and immutable
-    revision journal (including proposals), then every store's JSONL lessons file.
-    History is audit-only and is not added to model context. The lessons tier is not
-    completeness for its own sake — a silo-bound crew's corrections land there exactly
-    when that silo has no vector store, so an install whose only populated,
-    prompt-injected tier is a ``lessons.jsonl`` is precisely the install a vector-only
-    audit hands a clean verdict to.
+    Covers SQLite facts, directives, episodes, metadata, immutable revisions,
+    learned history and consolidation receipts, then V1's JSONL lessons file.
+    Historical values are audit-only and are not added to model retrieval. V2
+    never consults an old learned-file sidecar as another authority.
 
     Scanning named stores is not completeness for its own sake either: a crew silo's
     directive tier is loaded into that crew's prompt, so it is the highest-value
@@ -2439,7 +2692,23 @@ def scan_memory() -> list[dict]:
 
     for store_name, db_path in _memory_stores_to_scan():
         try:
-            store = VectorMemoryStore() if db_path is None else VectorMemoryStore(db_path=db_path)
+            from kiro_crew.memory_stores import memory_store_version
+
+            member_store = db_path is not None and memory_store_version(store_name) == 2
+            if member_store and db_path is not None:
+                from kiro_crew.config.loader import KiroCrewConfig
+                from kiro_crew.vector_memory import open_member_database
+
+                config = KiroCrewConfig.load()
+                store = open_member_database(
+                    db_path,
+                    member_id=config.memory_stores[store_name].owner_member_id,
+                    store_id=store_name,
+                )
+            else:
+                store = (
+                    VectorMemoryStore() if db_path is None else VectorMemoryStore(db_path=db_path)
+                )
         except Exception:
             logger.warning(
                 "could not open memory store %r for an injection audit", store_name, exc_info=True
@@ -2447,7 +2716,8 @@ def scan_memory() -> list[dict]:
             findings.append(_unauditable_finding(store_name))
             continue
         try:
-            store.init()
+            if not member_store:
+                store.init()
             _scan_memory_store(store, store_name, findings)
         except Exception:
             logger.warning(
@@ -2609,6 +2879,7 @@ _SUBMODULES: tuple[ModuleType, ...] = (
     denied_rules,
     redaction,
     exfil,
+    inline_payload,
     argv_floor,
 )
 

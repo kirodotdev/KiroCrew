@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from conftest import MockSlackClient
+from kiro_crew import agent_discovery
 from kiro_crew.config.loader import ConfigReadError
 from kiro_crew.messaging import auto_title
 from kiro_crew.messaging import commands as mc
@@ -30,6 +31,13 @@ from kiro_crew.slack import handler as h
 # ──────────────────────────────────────────────────────────────────────
 # doubles
 # ──────────────────────────────────────────────────────────────────────
+
+
+#: These tests exercise the SLACK side (thread renaming), not the record
+#: pin, so they pass the value production supplies when there is nothing to
+#: pin. ``maybe_auto_title`` requires it, which is what stops a call site
+#: from reading the record inside the task and reopening the window.
+_PRESENT_PIN = auto_title.RecordPin(auto_title.RECORD_PRESENT, "")
 
 
 class FlakySlack(MockSlackClient):
@@ -354,7 +362,11 @@ class TestResolveAgentName:
         (agents / "helper.json").write_text('{"name": "helper"}', encoding="utf-8", newline="\n")
         monkeypatch.setattr(h, "_discover_project_agents", lambda _d: [])
         monkeypatch.setattr(h, "kiro_agents_dir", lambda: agents)
-        monkeypatch.setattr(h, "validate_file_path", lambda _s: None)
+        # The hardened reader vets the RESOLVED target in the same step as the
+        # read, so the refusal is injected at its gate, not at a path check
+        # here. That gate is is_sensitive_canonical_path; is_sensitive_path in
+        # agent_discovery gates only the project dir and the cache key.
+        monkeypatch.setattr(agent_discovery, "is_sensitive_canonical_path", lambda _p: True)
         assert h._resolve_agent_name("helper") is None
 
     def test_unparseable_spec_falls_back_to_the_file_stem(self, monkeypatch, tmp_path):
@@ -363,7 +375,6 @@ class TestResolveAgentName:
         (agents / "helper.json").write_text("{not json", encoding="utf-8", newline="\n")
         monkeypatch.setattr(h, "_discover_project_agents", lambda _d: [])
         monkeypatch.setattr(h, "kiro_agents_dir", lambda: agents)
-        monkeypatch.setattr(h, "validate_file_path", lambda s: s)
         assert h._resolve_agent_name("helper") == "helper"
 
 
@@ -490,13 +501,15 @@ class TestUnknownBangCommand:
 # small command helpers — empty-argument early returns
 # ──────────────────────────────────────────────────────────────────────
 class TestCommandHelperEarlyReturns:
-    def test_spawn_with_no_task_declines(self):
+    @pytest.mark.asyncio
+    async def test_spawn_with_no_task_declines(self):
         manager = MagicMock()
-        assert mc.spawn_task_reply("", manager) is None
+        assert await mc.spawn_task_reply("", manager) is None
         manager.spawn.assert_not_called()
 
-    def test_spawn_keyword_without_prefix_declines(self):
-        assert h._handle_spawn_command("summarize this", MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_spawn_keyword_without_prefix_declines(self):
+        assert await h._handle_spawn_command("summarize this", MagicMock()) is None
 
     @pytest.mark.asyncio
     async def test_task_run_with_no_argument_declines(self):
@@ -556,7 +569,7 @@ class TestAutoTitle:
         slack = FlakySlack()
         h._titled_threads["slack:t1"] = "manual"
         await h._maybe_auto_title_slack(
-            slack, title_sessions, "C1", "slack:t1", None, "hello", "hi there"
+            slack, title_sessions, "C1", "slack:t1", None, "hello", "hi there", pin=_PRESENT_PIN,
         )
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
 
@@ -566,7 +579,7 @@ class TestAutoTitle:
         log = MagicMock()
         log.set_title = MagicMock(side_effect=RuntimeError("log locked"))
         await h._maybe_auto_title_slack(
-            slack, title_sessions, "C1", "slack:t1", log, "hello", "hi there"
+            slack, title_sessions, "C1", "slack:t1", log, "hello", "hi there", pin=_PRESENT_PIN,
         )
         titled = [a for a in slack.actions if a[0] == "set_thread_title"]
         assert titled and titled[0][1]["title"] == "Deploy the gateway"
@@ -579,7 +592,7 @@ class TestAutoTitle:
         title_sessions.get_or_create = AsyncMock(return_value=(_TitleClient("SKIP"), None, None))
         h._titled_threads["slack:t1"] = "auto"
         await h._maybe_auto_title_slack(
-            slack, title_sessions, "C1", "slack:t1", None, "hello", "hi"
+            slack, title_sessions, "C1", "slack:t1", None, "hello", "hi", pin=_PRESENT_PIN,
         )
         assert "slack:t1" not in h._titled_threads
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]

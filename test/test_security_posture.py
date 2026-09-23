@@ -259,7 +259,7 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
     "dashboard/chat_orchestrator.py": 1,
-    "dashboard/chat_runner.py": 10,
+    "dashboard/chat_runner.py": 9,
     "dashboard/chat_title.py": 1,
     "dashboard/handlers/discover.py": 3,
     "dashboard/handlers/files.py": 1,
@@ -282,7 +282,6 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "slack/events.py": 2,
     "slack/gateway.py": 7,
     "slack/handler.py": 3,
-    "subagent_manager/admission.py": 4,
     "voice_reply.py": 4,
 }
 
@@ -986,6 +985,10 @@ class TestRedactionSinkRegistry:
             # the generic scanners cannot know about — strictly more than either
             # scanner alone, so a sink using it is fully covered.
             "redact_mcp_error",
+            # _redact_projection_value (eventlog/service.py) recursively runs the
+            # exfil scanner THEN the credential scanner over every string in a
+            # projection view or event `data`, so a sink using it is fully covered.
+            "_redact_projection_value",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

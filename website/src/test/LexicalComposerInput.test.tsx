@@ -30,6 +30,7 @@ function ControlledHost({
   onUploadFiles,
   onSelectionChange,
   sentMessages,
+  showFullPastes,
 }: {
   initial?: string
   initialBlocks?: PasteBlock[]
@@ -39,6 +40,7 @@ function ControlledHost({
   onUploadFiles?: (files: File[]) => void
   onSelectionChange?: (selection: { start: number; end: number }) => void
   sentMessages?: string[]
+  showFullPastes?: boolean
 }) {
   const [value, setValue] = useState(initial)
   const [blocks, setBlocks] = useState(initialBlocks)
@@ -49,6 +51,7 @@ function ControlledHost({
         blocks={blocks}
         onChange={setValue}
         onBlocksChange={setBlocks}
+        showFullPastes={showFullPastes}
         onSend={onSend}
         ariaLabel="Message input"
         placeholder="Write a message"
@@ -346,6 +349,21 @@ describe('LexicalComposerInput', () => {
       )
     })
     const payload = 'one\ntwo\nthree\nfour\n\n'
+    const event = new Event('paste', { cancelable: true }) as ClipboardEvent
+    Object.defineProperty(event, 'clipboardData', {
+      value: { types: ['text/plain'], items: [], getData: () => payload },
+    })
+    await dispatchAtEnd(editorRef.current!, PASTE_COMMAND, event)
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(payload))
+    expect(screen.getByTestId('blocks')).toHaveTextContent('[]')
+    expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
+  })
+
+  it('keeps a large paste inline when showFullPastes is on', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    render(<ControlledHost editorRef={editorRef} showFullPastes />)
+    await waitFor(() => expect(editorRef.current).not.toBeNull())
+    const payload = 'one\ntwo\nthree\nfour'
     const event = new Event('paste', { cancelable: true }) as ClipboardEvent
     Object.defineProperty(event, 'clipboardData', {
       value: { types: ['text/plain'], items: [], getData: () => payload },

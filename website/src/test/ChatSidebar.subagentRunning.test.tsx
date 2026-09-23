@@ -130,7 +130,7 @@ describe('chat sidebar — "N agents running" subtitle', () => {
     const slots = [{ key: 'k', title: 'r', running: true, messages: 1 }] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(
       slots,
-      { activeSlot: 'k', subagents: { a: sa('running') }, slotStatusDetail: { k: { text: 'Thinking…' } } },
+      { activeSlot: 'k', subagents: { a: sa('running') }, slotStatusDetail: { k: { kind: 'thinking' } } },
       'k',
     )
     expect(getByText('1 agent running')).toBeTruthy()

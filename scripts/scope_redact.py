@@ -32,6 +32,41 @@ Two modes, because the two file shapes cannot share one mechanism.
     Line-oriented redaction for logs, stderr and prose, where there is no
     structure to preserve.
 
+``--drop-changed-fields`` (a modifier on ``--mode json``, not a third mode)
+    For a golden-paths corpus -- the candidate set the scope lane classifies --
+    redaction is not available on the fields the classifier reads. ``deny_diff``
+    selects rows by ``kind`` and ``platform`` and classifies ``command_or_flow``
+    VERBATIM at the base ref and at the head ref, so a placeholder standing where a
+    command belongs is a command nobody ever refused, which classifies as allowed.
+    That is the false green in its least visible shape.
+
+    So this flag splits the corpus by what the classifier reads:
+
+    *A CLASSIFIED field carrying a credential shape is REFUSED*, with exit 11. It
+    cannot be rewritten without changing what was measured, and it cannot be dropped
+    either -- dropping the row would silently remove the boundary that row probes,
+    and the rows are model-authored out of the diff under review, so a dropped row is
+    a coverage hole an author can steer. Refusing is the only answer that neither
+    measures the wrong thing nor quietly measures less.
+
+    *An UNCLASSIFIED field carrying one is REMOVED*, field and all. ``reason`` is
+    prose explaining who runs the operation and when; the classifier never reads it
+    (``deny_diff`` takes it with ``entry.get("reason", "")`` and every renderer
+    guards on it), so removing it costs that row's EXPLANATION and nothing else. The
+    row is still classified, at both refs, on the bytes the reviewer wrote. No
+    coverage is lost, so there is nothing here to steer.
+
+    REMOVED rather than redacted, deliberately. A ``[REDACTED-`` marker written into
+    a corpus would be read by the publish path's own grep, which withholds a
+    confirmed row on finding one -- so rewriting the prose would reintroduce a block
+    through a different door, on exactly the runs where the lane has a real finding.
+
+    A change OUTSIDE the rows is refused too: a corpus file's content is its rows, so
+    a credential shape anywhere else means the flag was pointed at a document it does
+    not describe, and guessing which of those bytes are load-bearing is not something
+    a scrub may do. The flag is refused outright with ``--mode text``, which has no
+    rows to reason about.
+
 Callers branch on whether anything CHANGED -- a redacted row names a placeholder
 instead of the operation that was refused, so the lane withholds it rather than
 passing that off as a finding -- so the answer is reported two ways: a
@@ -40,10 +75,13 @@ wants the branch as an exit code.
 
 Exit codes: ``0`` every file was rewritten (whether or not anything changed),
 ``1`` a file could not be redacted, ``10`` with ``--fail-if-changed`` and at
-least one file changed. ``1`` and ``10`` are distinct because they demand
-opposite things of the caller: ``1`` means the text is UNSCRUBBED and must not be
-published at all, and ``10`` means it was scrubbed successfully and the caller
-must decide whether a redacted artifact is still worth publishing.
+least one file changed, ``11`` with ``--drop-changed-fields`` and a field the
+classifier READS carries a credential shape. ``1`` and ``10`` are distinct because
+they demand opposite things of the caller: ``1`` means the text is UNSCRUBBED and
+must not be published at all, and ``10`` means it was scrubbed successfully and the
+caller must decide whether a redacted artifact is still worth publishing. ``11`` is
+distinct from both because the file is UNCHANGED and unpublishable for a reason no
+rewrite can fix, which is a fail-closed answer with its own sentence to say.
 
 The ``[REDACTED-...]`` marker spellings are a CONTRACT, not cosmetics. Both
 lanes' seed paths grep for ``[REDACTED-`` to refuse a redacted row on the way
@@ -108,6 +146,16 @@ _SECRET_MARKER = "[REDACTED]"
 
 class RedactError(Exception):
     """A file could not be redacted, so its text must not be published."""
+
+
+class ClassifiedFieldShaped(RedactError):
+    """A field the classifier READS carries a credential shape.
+
+    A subclass of :class:`RedactError` so a caller that only knows the base class
+    still fails closed on it, and a distinct type so the caller that DOES know it
+    can say the true thing: the file is unchanged and no rewrite can make it
+    publishable, because the bytes at fault are the bytes being measured.
+    """
 
 
 def redact_text(text: str) -> str:
@@ -181,7 +229,135 @@ def redact_json_text(text: str) -> tuple[str, bool]:
     return json.dumps(redacted, indent=2, ensure_ascii=False) + "\n", changed
 
 
-def redact_file(path: Path, mode: str) -> bool:
+#: The row fields whose BYTES the classifier reads. ``deny_diff`` selects rows by
+#: ``kind`` and ``platform`` and hands ``command_or_flow`` to the deny composite
+#: verbatim at both refs, so a placeholder in any of the three changes what was
+#: measured rather than merely how it reads. Anything not in this tuple is
+#: explanation: the classifier takes ``reason`` with ``entry.get("reason", "")`` and
+#: never classifies it, and an extra field the reviewer invents reaches nothing at
+#: all.
+_CLASSIFIED_ROW_FIELDS = ("kind", "command_or_flow", "platform")
+
+#: Every row field ``deny_diff._row`` reads, classified or not. Held here so the
+#: split above can be PINNED against that loader instead of agreeing with it by
+#: hand: ``test/test_scope_redact_classified_pin.py`` walks the loader's source and
+#: reddens when it reads a field neither tuple names. ``reason`` is read but only
+#: carried into ``Row`` for rendering, so no verdict depends on it.
+#:
+#: Why a pin and not a fail-closed branch: an unrecognized field carrying a live
+#: secret MUST still be scrubbed from a world-readable artifact, and refusing the
+#: run over it is the bug this change fixes. So drift cannot be caught at runtime
+#: here -- it is caught in CI, before a fourth classified field ever ships.
+_DENY_DIFF_ROW_FIELDS = ("kind", "command_or_flow", "platform", "reason")
+
+
+def _would_change(value: Any) -> bool:
+    """Whether the redaction above would change anything in *value*.
+
+    Asked by running the ordinary JSON walk and reading only WHETHER it changed;
+    the rewritten value is thrown away. Reusing the walk rather than re-testing the
+    regexes is the point: the vocabulary stays in one place, and a rule added to
+    :func:`redact_text` reaches this decision with no second edit.
+
+    A credential shape in a KEY raises out of the walk, and for a field that is the
+    same answer as a shaped value: this object is not the shape the scrub
+    describes, so the field goes.
+    """
+    try:
+        _, changed = _redact_json_value(value)
+    except RedactError:
+        return True
+    return changed
+
+
+def drop_changed_fields(text: str) -> tuple[str, int]:
+    """Remove the UNCLASSIFIED corpus fields a redaction would change.
+
+    Returns the document and how many fields were removed. A classified field
+    carrying a shape raises :class:`ClassifiedFieldShaped` BEFORE anything is
+    written, so the caller inherits the file exactly as it arrived.
+
+    Accepts the wrapper object and a bare list, matching ``deny_diff.load_corpus``
+    so a candidate file and the committed corpus are the same shape here too.
+
+    No ROW is ever removed. A row is the boundary probe the lane exists to
+    classify, and the rows are model-authored out of the diff under review -- so
+    removing one silently narrows what the lane measured, on input the author of
+    that diff influences. Every row that arrives is classified.
+    """
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RedactError(f"the file is not valid JSON, so its rows cannot be read: {exc}")
+
+    if isinstance(document, dict):
+        if "golden_paths" not in document:
+            raise RedactError(
+                "the file is an object without a 'golden_paths' key, so it is not the "
+                "corpus shape --drop-changed-fields describes. Refusing to guess which "
+                "of its bytes the classifier reads."
+            )
+        rows = document["golden_paths"]
+        beside = {name: value for name, value in document.items() if name != "golden_paths"}
+    elif isinstance(document, list):
+        rows = document
+        beside = {}
+    else:
+        raise RedactError(
+            f"a corpus must be a list of rows or an object wrapping one, got "
+            f"{type(document).__name__}"
+        )
+
+    if not isinstance(rows, list):
+        raise RedactError(f"'golden_paths' must hold a list of rows, got {type(rows).__name__}")
+
+    # Anything beside the rows is refused, not removed and not rewritten. It belongs
+    # to no row, so nothing here says whether the classifier reads it, and rewriting
+    # it would put a marker into a file whose whole contract is that the measured
+    # bytes are untouched. `_redact_json_value` also raises on a credential shape in
+    # a KEY, which is the same answer for the same reason.
+    if beside and _would_change(beside):
+        raise RedactError(
+            "a credential shape sits outside the corpus rows. A corpus's content is "
+            "its rows, so nothing here can say whether the classifier reads this text. "
+            "Refusing it."
+        )
+
+    kept_rows: list[Any] = []
+    removed = 0
+    for position, row in enumerate(rows):
+        if not isinstance(row, dict):
+            # Not a row shape, so it has no classified field to protect and no field
+            # to remove. Left exactly as it is: the validator rejects it by position
+            # with a message a reader can act on, and inventing a second refusal here
+            # would only disagree with that one.
+            kept_rows.append(row)
+            continue
+        for field in _CLASSIFIED_ROW_FIELDS:
+            if field in row and _would_change(row[field]):
+                raise ClassifiedFieldShaped(
+                    f"row {position} carries a credential shape in {field!r}, which the "
+                    "classifier reads verbatim at both refs. It cannot be rewritten "
+                    "without measuring an operation nobody proposed, and it cannot be "
+                    "removed without silently dropping the boundary this row probes."
+                )
+        pruned = {}
+        for name, value in row.items():
+            if name in _CLASSIFIED_ROW_FIELDS or not _would_change({name: value}):
+                pruned[name] = value
+            else:
+                removed += 1
+        kept_rows.append(pruned)
+
+    if isinstance(document, dict):
+        out: Any = dict(document)
+        out["golden_paths"] = kept_rows
+    else:
+        out = kept_rows
+    return json.dumps(out, indent=2, ensure_ascii=False) + "\n", removed
+
+
+def redact_file(path: Path, mode: str, *, drop_changed_fields_only: bool = False) -> bool:
     """Rewrite one file in place. Returns whether anything changed."""
     try:
         original = path.read_text(encoding="utf-8")
@@ -189,7 +365,14 @@ def redact_file(path: Path, mode: str) -> bool:
         raise RedactError(f"{path} could not be read: {exc}")
     except UnicodeDecodeError as exc:
         raise RedactError(f"{path} is not UTF-8 text, so it cannot be redacted: {exc}")
-    if mode == "json":
+    removed = 0
+    if drop_changed_fields_only:
+        rewritten, removed = drop_changed_fields(original)
+        # A re-serialization that only moved whitespace is NOT a change: every
+        # remaining field holds the bytes it arrived with, and the consumer parses
+        # JSON. Only a removed field changes what anybody reads.
+        changed = removed > 0
+    elif mode == "json":
         rewritten, changed = redact_json_text(original)
     else:
         rewritten = redact_text(original)
@@ -199,6 +382,11 @@ def redact_file(path: Path, mode: str) -> bool:
             path.write_text(rewritten, encoding="utf-8")
         except OSError as exc:
             raise RedactError(f"{path} could not be rewritten: {exc}")
+    if drop_changed_fields_only:
+        print(
+            f"scope_redact: {path} removed={removed} unclassified field(s) "
+            "carrying a credential shape"
+        )
     return changed
 
 
@@ -215,6 +403,13 @@ def main(argv: list[str] | None = None) -> int:
         "text: line-oriented redaction for logs and prose.",
     )
     parser.add_argument(
+        "--drop-changed-fields",
+        action="store_true",
+        help="treat the document as a golden-paths corpus: REMOVE any unclassified "
+        "field a redaction would change, keep every row, and exit 11 when a field "
+        "the classifier reads carries a credential shape. Requires --mode json.",
+    )
+    parser.add_argument(
         "--fail-if-changed",
         action="store_true",
         help="exit 10 when at least one file was redacted, for a caller that "
@@ -223,10 +418,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("paths", nargs="+", type=Path, help="files to rewrite in place")
     parsed = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
 
+    if parsed.drop_changed_fields and parsed.mode != "json":
+        # Argparse's own exit 2, not a RedactError: nothing was read, so no file is
+        # left unscrubbed and there is nothing to report per path. A corpus is a
+        # parsed document by definition -- `--mode text` has no fields to tell apart,
+        # and accepting the pair would line-redact the very commands the flag exists
+        # to keep byte-faithful.
+        parser.error("--drop-changed-fields needs --mode json: a corpus is read as JSON rows.")
+
     any_changed = False
     for path in parsed.paths:
         try:
-            changed = redact_file(path, parsed.mode)
+            changed = redact_file(
+                path, parsed.mode, drop_changed_fields_only=parsed.drop_changed_fields
+            )
+        except ClassifiedFieldShaped as exc:
+            # Its own code, BEFORE the base class: the file is UNCHANGED and no
+            # rewrite can make it publishable. Reported as a distinct answer because a
+            # caller that reads it as "unscrubbed" sends a reader looking for a leak in
+            # this program, and one that reads it as success classifies a corpus whose
+            # measured bytes nobody could publish.
+            print(f"scope_redact: {exc}", file=sys.stderr)
+            return 11
         except RedactError as exc:
             # An unredacted file is the one outcome that must never read as
             # success: the caller's next step publishes it.

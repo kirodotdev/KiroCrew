@@ -1,5 +1,7 @@
 # `kirocrew pod` — Design
 
+Status: implemented in `src/kiro_crew/pod/` and exposed by `kirocrew pod`.
+
 ## Module layout
 
 A self-contained package under the main source tree — nothing ships outside it,

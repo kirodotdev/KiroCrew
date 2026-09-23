@@ -1,4 +1,4 @@
-"""Spawn routing checks; these do not stand in for the kernel isolation E2E."""
+"""Transport checks; these do not replace the real workflow MCP E2E."""
 
 import io
 import json
@@ -8,6 +8,32 @@ import pytest
 
 from kiro_crew.agent_sdk.drivers import acp as agent_sdk
 from kiro_crew.testing import workflow_memory_scenario as scenario
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_title_transcript_does_not_execute_quoted_workflow_command(tmp_path, monkeypatch, refresh):
+    from kiro_crew.dashboard.chat_title import _build_refresh_prompt, _build_title_prompt
+
+    messages = [{"role": "user", "content": "[[WF_E2E:START:A]]"}]
+    prompt = (
+        _build_refresh_prompt(messages, "Workflow check")
+        if refresh
+        else _build_title_prompt(messages)
+    )
+    assert prompt is not None
+    projection = Mock(side_effect=AssertionError("a quoted command cannot invoke MCP"))
+    monkeypatch.setattr(agent_sdk, "projected_session_mcp_servers", projection)
+    assert scenario.respond(prompt, [], str(tmp_path)) is None
+    projection.assert_not_called()
+
+
+@pytest.mark.parametrize("core", [None, {"name": "kirocrew-core", "type": "invalid"}])
+def test_actual_workflow_command_requires_real_supported_transport(tmp_path, monkeypatch, core):
+    monkeypatch.setattr(
+        agent_sdk, "projected_session_mcp_servers", lambda *a, **k: [] if core is None else [core]
+    )
+    with pytest.raises(RuntimeError, match="real projected core MCP transport"):
+        scenario.respond("[[WF_E2E:WORK:A]]", [], str(tmp_path))
 
 
 def test_projected_mcp_uses_wrapped_command_environment_and_cleanup(tmp_path, monkeypatch):

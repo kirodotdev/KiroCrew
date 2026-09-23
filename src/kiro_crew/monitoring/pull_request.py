@@ -12,13 +12,18 @@ from dataclasses import dataclass
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET,
     MAX_MONITOR_CHECK_IDENTITY_CHARS,
+    MAX_MONITOR_CONDITION_KEY_CHARS,
+    MAX_MONITOR_CONDITIONS,
     PULL_REQUEST_MERGEABILITY,
     PULL_REQUEST_MONITOR_KINDS,
     PULL_REQUEST_REVIEW_DECISIONS,
     PULL_REQUEST_STATES,
+    MonitorCondition,
     MonitorObservation,
     MonitorObservationStatus,
     MonitorProbeResult,
+    MonitorResetsOn,
+    MonitorSeverity,
     ProviderErrorKind,
 )
 from kiro_crew.security import redact
@@ -134,6 +139,12 @@ class PullRequestFacts:
     unresolved_review_threads: int
     review_threads_complete: bool
     checks_complete: bool = True
+    #: A stable digest over the pull request's PR-level (issue) comment bodies,
+    #: or "" when there are none. Provider-specific: only the GitHub adapter reads
+    #: them today. This is the surface a review bot's verdict comment actually
+    #: lives on -- created_at frozen at PR open, body rewritten in place -- so it
+    #: is the digest that catches the four bot verdicts a thread digest cannot see.
+    pr_comment_body_digest: str = ""
 
     def __post_init__(self) -> None:
         if self.kind not in PULL_REQUEST_MONITOR_KINDS:
@@ -166,6 +177,8 @@ class PullRequestFacts:
             raise ValueError("review_threads_complete must be a boolean")
         if not isinstance(self.checks_complete, bool):
             raise ValueError("checks_complete must be a boolean")
+        if not isinstance(self.pr_comment_body_digest, str):
+            raise ValueError("pr_comment_body_digest must be a string")
 
 
 @dataclass(frozen=True)
@@ -213,6 +226,15 @@ def build_pull_request_probe_result(
             supplemental_provider_error=supplemental_provider_error,
             reason_code=reason_code,
             head_changed=head_changed,
+            # Conditions are carried only for an ACTIONABLE subject, because the
+            # coalescing window is the only thing that reads them and nothing
+            # else is put through it. A PENDING subject naming conditions would
+            # be state with no reader, which is the shape that rots.
+            conditions=(
+                pull_request_conditions(canonical)
+                if status is MonitorObservationStatus.ACTIONABLE
+                else ()
+            ),
         ),
     )
 
@@ -259,7 +281,7 @@ def canonical_pull_request_facts(facts: PullRequestFacts) -> dict[str, object]:
         blocking_review = "unknown"
     else:
         blocking_review = "none"
-    return {
+    canonical: dict[str, object] = {
         "blocking_review": blocking_review,
         "checks": checks,
         "checks_complete": not overflow,
@@ -273,6 +295,18 @@ def canonical_pull_request_facts(facts: PullRequestFacts) -> dict[str, object]:
         "target": facts.target,
         "unresolved_review_threads": facts.unresolved_review_threads,
     }
+    # Present ONLY when there is a digest to carry, so a subject with no PR-level
+    # comment bodies keeps the exact canonical shape every provider shared before
+    # this field existed -- a hard requirement, because the shape is pinned by
+    # full-dict equality tests and hashed into the fingerprint. It is deliberately
+    # NOT in ``PULL_REQUEST_OBSERVATION_FIELDS``: that list drives the public
+    # projection, which fail-closes on an absent field and would inject an
+    # always-present key into the projected observation. This is a per-condition
+    # wake signal that ``pull_request_conditions`` reads, not a projected public
+    # fact.
+    if facts.pr_comment_body_digest:
+        canonical["pr_comment_body_digest"] = facts.pr_comment_body_digest
+    return canonical
 
 
 def actionable_fingerprint_facts(canonical: Mapping[str, object]) -> dict[str, object]:
@@ -298,6 +332,145 @@ def actionable_fingerprint_facts(canonical: Mapping[str, object]) -> dict[str, o
         "target": canonical.get("target"),
         "unresolved_review_threads": canonical.get("unresolved_review_threads"),
     }
+
+
+def _check_condition_key(identity: str) -> str:
+    """The dedupe key for one failing check, kept distinct under the length bound.
+
+    Truncating to the bound is what a key must never do on its own: two check
+    identities sharing a long prefix -- the shape a matrix job produces, where the
+    varying part is the SUFFIX -- collapse to one key, and one key is one
+    condition, so the second failure is masked and aged as the first and is never
+    reported. Appending a digest of the whole identity keeps the key inside the
+    bound while preserving what the bound would otherwise erase.
+    """
+    key = f"red:{identity}"
+    if len(key) <= MAX_MONITOR_CONDITION_KEY_CHARS:
+        return key
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"{key[: MAX_MONITOR_CONDITION_KEY_CHARS - len(digest) - 1]}-{digest}"
+
+
+def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCondition, ...]:
+    """Name every actionable condition a pull request is carrying at once.
+
+    One base derivation for all four pull-request kinds: every adapter funnels
+    through :func:`build_pull_request_probe_result`, so the conditions come from
+    the canonical facts rather than from any provider's response shape. An
+    adapter whose evidence streams must stay in separate namespaces keeps them
+    apart by CHECK IDENTITY -- the identity a provider puts in ``checks`` is what
+    ends up inside ``red:<identity>`` -- so nothing here merges two streams that
+    the provider kept apart.
+
+    This is where the representation defect is repaired. ``blocking_review`` is a
+    single precedence winner, so a pull request carrying BOTH
+    ``changes_requested`` and unresolved review threads records only the first
+    and the second is lost before anything can act on it. Here they are two
+    conditions, each masked, aged and reset on its own, and both survive.
+
+    Both are ``NEVER``: a review verdict and a review thread belong to the
+    conversation, not to the commit under review, so a force-push must not
+    replay them. A failing check is the opposite -- it is a property of the
+    revision that dispatched it, so a new head genuinely clears it.
+
+    ``conflict`` is the ``IMMEDIATE`` one. A conflicted pull request dispatches
+    no checks, so the pending count the coalescing floor waits on never drains,
+    and holding the wake would strand the owner for the whole floor on a signal
+    that is already actionable. ``behind`` is not urgent in that way: the branch
+    still builds, so waiting continues to observe something.
+
+    Conditions are capped, and the cap is on the CHECK expansion alone because it
+    is the only unbounded one: the canonical projection already bounds each check
+    bucket, and the review conditions are three fixed keys.
+    """
+    checks = canonical.get("checks")
+    if not isinstance(checks, Mapping):
+        raise ValueError("canonical pull-request checks are malformed")
+    conditions: list[MonitorCondition] = []
+    failed = checks.get("failed")
+    if isinstance(failed, (list, tuple)):
+        for identity in list(failed)[:MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET]:
+            if isinstance(identity, str) and identity:
+                conditions.append(
+                    MonitorCondition(
+                        key=_check_condition_key(identity),
+                        severity=MonitorSeverity.WAKE,
+                        brief=f"check failed: {identity}",
+                        resets_on=MonitorResetsOn.REVISION,
+                    )
+                )
+    if canonical.get("review_decision") == "changes_requested":
+        conditions.append(
+            MonitorCondition(
+                key="changes_requested",
+                severity=MonitorSeverity.WAKE,
+                brief="a reviewer requested changes",
+                resets_on=MonitorResetsOn.NEVER,
+            )
+        )
+    unresolved = canonical.get("unresolved_review_threads")
+    if isinstance(unresolved, int) and not isinstance(unresolved, bool) and unresolved > 0:
+        conditions.append(
+            MonitorCondition(
+                key="unresolved_threads",
+                severity=MonitorSeverity.WAKE,
+                brief=f"{unresolved} unresolved review threads",
+                resets_on=MonitorResetsOn.NEVER,
+            )
+        )
+    mergeability = canonical.get("mergeability")
+    if mergeability == "conflicting":
+        conditions.append(
+            MonitorCondition(
+                key="conflict",
+                severity=MonitorSeverity.IMMEDIATE,
+                brief="the branch conflicts with its target",
+                resets_on=MonitorResetsOn.REVISION,
+            )
+        )
+    elif mergeability == "behind":
+        conditions.append(
+            MonitorCondition(
+                key="behind",
+                severity=MonitorSeverity.WAKE,
+                brief="the branch is behind its target",
+                resets_on=MonitorResetsOn.REVISION,
+            )
+        )
+    comment_digest = canonical.get("pr_comment_body_digest")
+    if isinstance(comment_digest, str) and comment_digest:
+        # The digest is inside the KEY, not only the brief: the engine dedupes
+        # per condition key, so a stable key with a changing brief would be
+        # masked and never wake again. A bot rewrites a verdict comment IN PLACE
+        # -- created_at does not move -- so a count or a newest-timestamp probe
+        # cannot see it, only a digest over the bodies can. WAKE / NEVER: a
+        # comment belongs to the conversation, not the commit, so a force-push
+        # must not replay it (the same reasoning as the two review conditions
+        # above). Fail-closed lives in the provider: it emits "" (so this key is
+        # absent) on an incomplete comment read, so an empty/absent digest is the
+        # incomplete-read signal and no condition is emitted. There is no separate
+        # ``pr_comments_complete`` canonical field because an always-present key
+        # would break the pinned full-canonical shape and the public projection,
+        # and PR-level comment completeness has no bearing on readiness anyway.
+        conditions.append(
+            MonitorCondition(
+                key=f"review_comment_bodies:{comment_digest}",
+                severity=MonitorSeverity.WAKE,
+                brief="pull request comments changed",
+                resets_on=MonitorResetsOn.NEVER,
+            )
+        )
+    # Deduplicate by key while keeping order: a provider is free to report two
+    # checks under one identity, and two conditions under one key is one
+    # condition the engine would mask and age twice.
+    seen: set[str] = set()
+    unique: list[MonitorCondition] = []
+    for condition in conditions:
+        if condition.key in seen:
+            continue
+        seen.add(condition.key)
+        unique.append(condition)
+    return tuple(unique[:MAX_MONITOR_CONDITIONS])
 
 
 def classify_pull_request_facts(

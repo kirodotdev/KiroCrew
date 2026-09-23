@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
+from kiro_crew.cron_history import _SUMMARY_CAP, CronHistoryStore, CronRunRecord
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -62,12 +62,20 @@ async def test_append_writes_job_file_and_index(store: CronHistoryStore, tmp_pat
 
 @pytest.mark.asyncio
 async def test_append_caps_summary_and_trace(store: CronHistoryStore, tmp_path: Path) -> None:
-    rec = _record(summary="x" * 500, trace="y" * 60_000)
+    rec = _record(summary="x" * 900, trace="y" * 60_000)
     await store.append(rec)
 
     job_file = tmp_path / "cron-history" / "job1.jsonl"
     data = json.loads(job_file.read_text(encoding="utf-8").strip())
-    assert len(data["summary"]) == 200
+    # An EXACT length, not a bound: a cut summary spends the whole budget, so
+    # anything shorter means a cap moved or the split lost characters.
+    assert len(data["summary"]) == _SUMMARY_CAP
+    # Head, marker on its own line, then the kept end — see truncate_summary
+    # and test_cron_history_summary_truncation.py for what survives a cut.
+    head, marker, kept = data["summary"].split("\n")
+    assert marker == "..."
+    assert set(head) == set(kept) == {"x"}
+    assert len(head) + len(kept) + len(marker) + 2 == _SUMMARY_CAP
     assert data["trace"].endswith("...[truncated]")
 
 
@@ -321,7 +329,7 @@ async def test_run_job_stores_manual_trigger_meta() -> None:
     svc._loop = None
     svc._file = None
 
-    async def fake_run(job):
+    async def fake_run(job, meta=None):
         pass
 
     with patch.object(svc, "_run_job_isolated", side_effect=fake_run), patch.object(
@@ -423,7 +431,7 @@ class TestRunResultFreshness:
 
         from kiro_crew.cron import CronService
 
-        async def _produce(job):
+        async def _produce(job, meta=None):
             job.set_run_result("new run output")
             job.last_status = "ok"
             job.last_error = None
@@ -453,7 +461,7 @@ class TestRunResultFreshness:
 
         from kiro_crew.cron import CronService
 
-        async def _script_ok(job):
+        async def _script_ok(job, meta=None):
             job.set_run_result("ok")  # interned literal, same object every run
             job.last_status = "ok"
             job.last_error = None
@@ -481,7 +489,7 @@ class TestRunResultFreshness:
 
         from kiro_crew.cron import CronService
 
-        async def _one_char(job):
+        async def _one_char(job, meta=None):
             job.set_run_result("y")
             job.last_status = "ok"
             job.last_error = None
@@ -507,7 +515,7 @@ class TestRunResultFreshness:
 
         from kiro_crew.cron import CronService
 
-        async def _no_output(job):
+        async def _no_output(job, meta=None):
             job.last_status = "ok"
             job.last_error = None
 
@@ -532,12 +540,12 @@ class TestRunResultFreshness:
 
         from kiro_crew.cron import CronService
 
-        async def _produce(job):
+        async def _produce(job, meta=None):
             job.set_run_result("run one output")
             job.last_status = "ok"
             job.last_error = None
 
-        async def _no_output(job):
+        async def _no_output(job, meta=None):
             job.last_status = "ok"
             job.last_error = None
 

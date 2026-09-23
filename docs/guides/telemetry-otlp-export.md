@@ -16,11 +16,11 @@ collection, then egress.
 |---|---|---|
 | `telemetry.enabled` | `false` | Nothing is recorded. Metric call sites are cheap no-ops. |
 | `telemetry.otlp_endpoint` | `""` (empty) | Nothing leaves the machine. Local JSONL sink only. |
-| `kirocrew[otlp]` extra | not installed | The OTLP exporter is not even importable. |
+| OTLP exporter package | not installed | The OTLP exporter is not importable until installed separately. |
 
 Collection and egress are deliberately separate switches. Enabling collection
 gives you the local sink and the Telemetry panel; it does **not** send anything
-anywhere. Egress needs the endpoint set *and* the extra installed.
+anywhere. Egress needs the endpoint set *and* the exporter package installed.
 
 The local sink is never replaced by OTLP — it is additive. When you configure an
 endpoint you get both readers, so the dashboard keeps working and you keep a
@@ -30,16 +30,26 @@ local copy.
 
 ### 1. Install the exporter
 
+From a source checkout, install the declared extra without replacing the editable
+Kiro Crew install:
+
 ```bash
-pip install "kirocrew[otlp]"
+pip install -e ".[otlp]"
 ```
 
-This pulls `opentelemetry-exporter-otlp-proto-http`. Transport is **OTLP over
-HTTP only** — there is no gRPC exporter, so your collector needs its OTLP
-receiver's `http` protocol enabled (port 4318 by convention, not 4317).
+For an existing install, install the extra's pinned distribution directly:
 
-If the extra is missing but an endpoint is configured, Kiro Crew logs a warning
-and stays local-only rather than failing to start.
+```bash
+pip install "opentelemetry-exporter-otlp-proto-http==1.44.0"
+```
+
+The project is not published on the default package index, so
+`pip install "kirocrew[otlp]"` is not a supported command. The exporter uses
+**OTLP over HTTP only** — there is no gRPC exporter, so your collector needs its
+OTLP receiver's `http` protocol enabled (port 4318 by convention, not 4317).
+
+If the exporter package is missing but an endpoint is configured, Kiro Crew logs
+a warning and stays local-only rather than failing to start.
 
 ### 2. Enable collection
 
@@ -72,7 +82,7 @@ are leaving the machine:
 
 ```
 telemetry enabled; local JSONL sink at /home/you/.kiro/crew/metrics (otlp=on)
-telemetry OTLP export active; metrics leave this machine (default)
+telemetry OTLP export active; metrics leave this machine (telemetry.otlp_endpoint)
 ```
 
 The second line is the one to look for. The endpoint value is never logged — only
@@ -303,38 +313,29 @@ series, so they are what you group by. `service.name` is always `kirocrew`.
 
 ### Before you build a per-host dashboard
 
-One limitation to know up front, because it will bite a dashboard rather than
-announce itself. Separating machines depends entirely on the resource attributes,
-and today the only identity there comes from the OpenTelemetry SDK's own detector:
-a `service.instance.id` that is **generated fresh for each process**. Two hosts are
-therefore distinguishable at any given moment, but a single host's series *restarts
-whenever its gateway restarts*, so a longitudinal "this machine over time" panel
-will show a new series after every restart rather than one continuous line.
+Kiro Crew sets `service.instance.id` explicitly to a random, persisted install
+identifier, so group by that attribute to distinguish machines and follow an
+install across gateway restarts. It is not derived from a hostname or username.
+`process.pid` is a separate resource attribute: it prevents the gateway, agents,
+and app processes on one install from interleaving their per-process gauges.
 
-That id comes from the SDK's default resource, so whether you have it at all depends
-on your installed SDK: current versions supply it (including `1.44.0`, the version
-pinned for the `kirocrew[otlp]` extra), while the declared floor is
-`opentelemetry-sdk>=1,<2` and an older SDK in that range may contribute none — in
-which case two hosts are not separable either. Check yours before building on it:
-
-```bash
-python -c "from opentelemetry.sdk.resources import Resource; print(Resource.create({}).attributes)"
-```
-
-This applies to every `kirocrew.*` metric, not just the inventory family, and it is
-closed by giving the resource a persisted install-scoped identity. Until then,
-prefer panels that group by the current instance and read point-in-time state, and
-treat cross-restart continuity as unavailable.
+That process attribute means an individual series normally turns over when a
+restart receives a different PID even though the install identity stays stable.
+For longitudinal host panels, aggregate the relevant process series by
+`service.instance.id`; for lifetime-total gauges, also treat a new PID as a reset.
+If the data home is unwritable and the install-id mint fails, Kiro Crew omits its
+explicit id and the SDK may fall back to a per-process identity, so cross-restart
+continuity is unavailable on that broken host.
 
 ### What these can and cannot tell you
 
 They describe **the machines you run and have opted in**, and nothing wider. Both
-switches default off and OTLP additionally needs the `kirocrew[otlp]` extra, so an
-aggregate over these gauges is a statement about your own fleet — useful for
-spotting a host that stopped scheduling crons or whose skills tree drifted, not a
-measurement of how a feature is used in general. Kiro Crew's own install analytics
-are a separate, deliberately unrelated channel (`beacon.py`), for reasons its
-docstring sets out.
+switches default off and OTLP additionally needs the optional exporter package,
+so an aggregate over these gauges is a statement about your own fleet — useful
+for spotting a host that stopped scheduling crons or whose skills tree drifted,
+not a measurement of how a feature is used in general. Kiro Crew's own install
+analytics are a separate, deliberately unrelated channel (`beacon.py`), for
+reasons its docstring sets out.
 
 One practical consequence: `kirocrew.inventory.*` comes from the **gateway process
 only**, while `kirocrew.process.*` comes from every telemetry-enabled process
@@ -372,9 +373,9 @@ pytest test/metrics/test_otlp_wire_e2e.py
 
 Two tiers. The first drives a real build through a real exporter and asserts the
 instrument roster, resource-attribute fidelity, attribute values, and
-temporality. The second stands up an in-process OTLP receiver on loopback, exports
-to it with the real OTLP exporter, and decodes the protobuf — that tier skips
-unless `kirocrew[otlp]` is installed.
+temporality. The second stands up an in-process OTLP receiver on loopback,
+exports to it with the real OTLP exporter, and decodes the protobuf — that tier
+skips unless the OTLP exporter package is installed.
 
 ### Against a real collector
 
@@ -426,7 +427,8 @@ recorder:
 KIROCREW_TELEMETRY=1 kirocrew gateway
 # after one export interval (60s by default)
 ls ~/.kiro/crew/metrics/
-python3 -m json.tool < ~/.kiro/crew/metrics/metrics-*.jsonl | head -40
+latest="$(ls -t ~/.kiro/crew/metrics/metrics-*.jsonl | head -1)"
+tail -n 1 "$latest" | python3 -m json.tool | head -40
 ```
 
 If instruments appear there but not at your backend, the problem is the endpoint,
@@ -436,7 +438,7 @@ the collector, or temporality — not collection.
 
 | Symptom | Likely cause |
 |---|---|
-| No `telemetry OTLP export active` line | `otlp_endpoint` empty, or `kirocrew[otlp]` not installed — check for the warning naming the missing extra. |
+| No `telemetry OTLP export active` line | `otlp_endpoint` empty, or the OTLP exporter package is not installed — check for the warning naming the missing package. |
 | `OTLP exporter init failed` warning | Malformed endpoint. The message deliberately omits the URL, since it can carry a credential. |
 | Local shards fill, nothing at the backend | Endpoint missing `/v1/metrics`, collector on 4317 (gRPC) instead of 4318 (HTTP), or the collector's `http` protocol not enabled. |
 | Metrics arrive but counters look like resets | Temporality mismatch. See the temporality section. |

@@ -107,6 +107,27 @@ class TestBrowseFiles:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_drive_root_reports_empty_parent_on_windows(self, tmp_path, mock_sel):
+        # Same contract as /api/browse-dirs: a Windows drive root has no directory
+        # above it, so the parent is "" rather than the root itself.
+        from kiro_crew import platform_compat
+
+        with (
+            patch.object(platform_compat, "IS_WINDOWS", True),
+            patch(
+                "kiro_crew.dashboard.handlers.files._resolve_search_root",
+                return_value=("C:\\", True),
+            ),
+            patch("kiro_crew.dashboard.handlers.files._browse_files_sync", return_value=([], [])),
+        ):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/browse-files?path=C:%5C")
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["path"] == "C:\\"
+        assert data["parent"] == ""
+
+    @pytest.mark.asyncio
     async def test_returns_parent(self, tmp_path, mock_sel):
         child = tmp_path / "child"
         child.mkdir()

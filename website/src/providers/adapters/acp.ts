@@ -131,6 +131,7 @@ interface RawDailyHistory {
   sessions: number
   messages: number
   tool_calls: number
+  credits?: number
 }
 
 /** Raw provider-hook entry from /api/kiro-hooks. */
@@ -302,6 +303,7 @@ export class AcpAdapter implements ProviderAdapter {
           sessions: d.sessions,
           messages: d.messages,
           toolCalls: d.tool_calls,
+          credits: typeof d.credits === 'number' && Number.isFinite(d.credits) ? d.credits : undefined,
         })),
       },
       billing: b.plan ? {

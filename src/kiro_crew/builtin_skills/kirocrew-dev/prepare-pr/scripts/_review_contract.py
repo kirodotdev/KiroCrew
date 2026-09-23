@@ -69,6 +69,50 @@ DEFAULT_MARKER_BINDINGS = (
     ("first-principles-review", "FIRST-PRINCIPLES"),
 )
 _COMMENT_KEY_RE = re.compile(r"\A\s*<!--\s*([a-z0-9-]+)\s*-->")
+
+# ---- Human override records ------------------------------------------------
+# `ai-review-human-override.yml` records a repository writer's SHA-scoped
+# decision to supersede an AI finding, as a bot-authored comment whose LEADING
+# bytes are the marker below. The named lane then REPLACES its own keyed comment
+# with a stampless "human override accepted" body, because the model was
+# deliberately not re-run and no model verdict exists to stamp.
+#
+# So the two markers prove DIFFERENT things and neither substitutes for the
+# other: `[<NAME>-REVIEWED] <sha>` is proof a MODEL produced a verdict for this
+# commit, and this record is proof a HUMAN adjudicated it. A consumer that
+# knows only the stamp reads an overridden head as an unreviewed one.
+#
+# Spelled to match the producer's `printf` byte for byte, which is also what
+# every lane workflow selects on (`startswith("<!-- ai-review-human-override
+# target=gpt head=$HEAD ")`, then an anchored read of `actor=`/`source=`).
+# Every field is REQUIRED for the same reason it is there: a record missing
+# attribution is not a record, and the lanes resolve such a comment to inactive
+# rather than clearing on it. A future field added ahead of `actor=` stops
+# matching here, which withholds the clearance -- the fail-closed direction.
+OVERRIDE_MARKER_RE = re.compile(
+    r"\A<!-- ai-review-human-override target=([a-z0-9-]+) head=([0-9a-fA-F]{7,40})"
+    r" actor=(\S+) source=([0-9]+) -->"
+)
+OVERRIDE_TARGET_ALL = "all"
+# The command's target spellings, mapped to each lane's WORKFLOW-AUTHORED
+# comment key rather than straight to a reviewer name. Reviewer identity then
+# still resolves through ``bindings`` -- the module's one source of truth for
+# what a lane is called -- so a ``--marker-bindings`` override flows through and
+# this table cannot drift into disagreeing with it. `fable` is the override
+# spelling of the lane whose key is `claude-ai-review`, i.e. reviewer OPUS.
+#
+# One target the command accepts is deliberately ABSENT: `scope`, whose lane
+# writes `<!-- security-scope-review -->` and has no entry in
+# DEFAULT_MARKER_BINDINGS, so there is no reviewer for a row to resolve to and a
+# row would clear no lane. The parity test derives this table from the lane
+# workflows, so binding that lane fails a test until the row is added.
+DEFAULT_OVERRIDE_TARGET_KEYS = (
+    ("gpt", "codex-ai-review"),
+    ("fable", "claude-ai-review"),
+    ("design", "design-review"),
+    ("ux", "ux-review"),
+    ("first-principles", "first-principles-review"),
+)
 FINDING_RE = re.compile(
     r"^\s*(?:\*\*)?(BLOCKING|FINDING)(?:\*\*)?\s*(?:--|\u2014)\s*"
     r"(?:\*\*)?(\S+?):(\d+)(?:\*\*)?\s*(?:(?:--|\u2014)\s*)?(.*)$",
@@ -93,6 +137,86 @@ def comment_key(body):
     """Return the workflow-authored leading comment key, if present."""
     match = _COMMENT_KEY_RE.match(body or "")
     return match.group(1) if match else ""
+
+
+def parse_override_record(comment, authors=DEFAULT_MARKER_AUTHORS):
+    """Return ``(target, head, actor)`` for a trusted override record, else None.
+
+    Authority is the BOT AUTHORSHIP of the record, never the marker bytes.
+    ai-review-human-override.yml reads the commenting human's collaborator
+    permission and refuses to post unless it is write, maintain or admin -- and
+    refuses equally when that read merely FAILS -- so a record existing under the
+    workflow's own login already carries an authorization decision that was made
+    before the bytes were written. The identical bytes from any other author are
+    a forgery attempt and are ignored, which is the asymmetry the stamp
+    allowlist already encodes: injection can deny a review, never forge one.
+
+    The permission is deliberately NOT re-read here. It was checked at the
+    moment of the decision, so re-checking would let a later access change
+    rewrite a recorded historical judgment, and it would put a network call
+    inside a pure parse.
+    """
+    user = comment.get("user") or {}
+    if user.get("type") != "Bot":
+        return None
+    allowed = {a.lower() for a in authors or ()}
+    if (user.get("login") or "").lower() not in allowed:
+        return None
+    match = OVERRIDE_MARKER_RE.match(comment.get("body") or "")
+    if not match:
+        return None
+    target, head, actor, _source = match.groups()
+    return target.lower(), head.lower(), actor
+
+
+def override_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS):
+    """Reviewer names one override target answers for, resolved via ``bindings``."""
+    if target == OVERRIDE_TARGET_ALL:
+        return {name for name in (bindings or {}).values() if name}
+    key = dict(keys or ()).get(target)
+    name = (bindings or {}).get(key) if key else ""
+    return {name} if name else set()
+
+
+def human_override_actors(comments, head_sha, bindings, authors=DEFAULT_MARKER_AUTHORS):
+    """Return ``(named, blanket)`` -- the override actors valid for ``head_sha``.
+
+    ``named`` maps reviewer name to actor for records naming ONE lane. Those
+    ENROL their lane into the evaluation, because the record is independent
+    proof that lane was answered for and has to keep standing on its own. A
+    stamp is otherwise the only thing that puts a lane in the discovered set, so
+    a lane whose only stamp sits in a DUPLICATE comment from an older head drops
+    out of the evaluation the moment that comment is deleted, and the report
+    reads clean having proved nothing. An enrolling record closes that exit.
+
+    ``blanket`` is the actor of a ``target=all`` record, or "". It SATISFIES
+    every lane already under evaluation but enrols none: in discovery mode a
+    lane that never posted is not required, and inventing rows for it would
+    claim a human adjudicated lanes that never ran.
+
+    The head must match EXACTLY. ``sha_matches`` accepts >=7-hex prefixes and
+    elided splices because a MODEL transcribes the stamp it was handed; this
+    record is written by the workflow from ``.head.sha`` with no model anywhere
+    in the path, so that tolerance would only widen what can satisfy the clause.
+    """
+    named: dict = {}
+    blanket = ""
+    head = (head_sha or "").lower()
+    if not head:
+        return named, blanket
+    for comment in comments or []:
+        parsed = parse_override_record(comment, authors)
+        if not parsed:
+            continue
+        target, marked_head, actor = parsed
+        if marked_head != head:
+            continue
+        if target == OVERRIDE_TARGET_ALL:
+            blanket = actor
+            continue
+        for name in override_reviewer_names(target, bindings):
+            named[name] = actor
+    return named, blanket
 
 
 def span_hash(path, rule_class):

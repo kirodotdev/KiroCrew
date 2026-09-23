@@ -35,7 +35,7 @@ RESULT_SUMMARY_WORDS = 200
 
 # Default character cap for the completion event injected into the parent
 # session. The full transcript stays in result.txt (capped by
-# RESULT_FILE_MAX_BYTES above) until cleanup removes it after delivery.
+# RESULT_FILE_MAX_BYTES above) for a retention window after delivery.
 # Override per-installation via ``agent.completion_keep_chars`` in
 # ``~/.kiro/crew/config.json``. Pair with ``agent.completion_keep`` to choose
 # whether the head, tail, or both ends of the transcript are kept (see
@@ -116,6 +116,8 @@ class OrchestrationTracker:
         self._plan_timeout: int = 0  # 0 = disabled
         self._plan_start: float = 0.0  # set when the plan's first stage is entered
         self._plan_warned: bool = False  # the 75% notice fires once per plan
+        # 1-based stage the next loop entry must RE-ENTER instead of advancing
+        # past it; 0 means "advance normally". Set when a stage produced nothing.
 
     def stop(self) -> None:
         """User requested stop after escalation."""
@@ -424,21 +426,134 @@ Stage N: Verification
 [OPTION: Go | Go All | Cancel]"""
 
 
-# Loose pre-filter: catches plan-like text cheaply. False positives are
-# handled by rephrase_plan(might_not_be_plan=True) which asks the LLM.
-_PLAN_LIKE_RE = re.compile(
-    r"(?:^|\n)\s*(?:Phase|Step|Stage|Part)\s+\d+\s*[:\-—]" r"|(?:^|\n)\s*\d+\.\s+\*\*[A-Z]",
-    re.IGNORECASE,
+# Loose pre-filter: catches plan-like text cheaply, in two shapes — a
+# `Stage 2:` style stage line, and an ordered list whose items are bold-led.
+# Still deliberately loose: a residual false positive is caught downstream by
+# rephrase_plan(might_not_be_plan=True), which asks the LLM. But that answer
+# costs a 2–8s round trip on the cheap background session, so the shapes that
+# carry no plan NUMBERING at all are refused here instead — see
+# ``_ordered_plan_run``.
+_PLAN_STAGE_LINE_RE = re.compile(
+    r"^[ \t]*(?:Phase|Step|Stage|Part)[ \t]+(\d{1,4})[ \t]*[:\-—]",
+    re.IGNORECASE | re.MULTILINE,
 )
+# IGNORECASE is load-bearing here, not decoration: a model writes
+# ``1. **setup the repo**`` as readily as ``1. **Setup the repo**``, and the
+# single alternation this pair replaced carried the flag for both shapes.
+# Without it every lowercase-led bold plan is invisible to the filter.
+_PLAN_NUMBERED_BOLD_RE = re.compile(
+    r"^[ \t]*(\d{1,4})\.[ \t]+\*\*[A-Z]",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# The step number is captured with a LENGTH BOUND, and it is not cosmetic:
+# ``int()`` refuses a string of more than 4300 digits (CPython's integer-string
+# conversion limit), and this runs on every assistant turn over text the model
+# wrote, so an unbounded capture turns a completed response into an error turn.
+# Four digits is far past any real plan and keeps the conversion free.
+#
+# How long a run has to be, and it depends on what the run is MADE OF.
+#
+# A run containing a `Phase|Step|Stage|Part N:` line names a stage explicitly, so
+# two items is enough -- a two-stage plan is ordinary, and refusing it is a miss
+# the downstream rephrase never gets the chance to correct. A run of bold-led
+# ordered items ALONE carries no stage vocabulary, and two of those is the
+# commonest shape of ordinary prose ("1. **Yes** ... 2. **No** ...", a
+# two-option write-up), so that shape still needs three.
+#
+# The two thresholds are unchanged from the predecessor of this comment. What
+# changed is that one run may now be made of BOTH shapes, and a stage line
+# anywhere in it is what buys the shorter threshold.
+_PLAN_STAGE_RUN_MIN = 2
+_PLAN_BOLD_LIST_MIN = 3
+
+
+def _longest_run_from_one(numbered: "list[tuple[int, int, bool]]") -> tuple[int, int]:
+    """Longest run numbered 1, 2, 3 … in *numbered*, as ``(length, with stage)``.
+
+    *numbered* is ``(position, number, is a stage line)`` in document order. The
+    second value counts only runs holding at least one stage line, which is what
+    lets the caller demand a shorter run of that kind.
+
+    The run is the LONGEST one starting at 1, not the run at the head of the
+    text: stopping at the first mismatch let one stray ``Step 3:``-shaped line
+    earlier in the turn — a sentence about the code, a quoted log — zero the
+    score of the real plan printed below it.
+    """
+    best = 0
+    best_staged = 0
+    expected = 1
+    run_has_stage = False
+    for _, value, is_stage in numbered:
+        if value == expected:
+            expected += 1
+            run_has_stage = run_has_stage or is_stage
+        elif value == 1:
+            # A mismatch is not the end of the scan, it is where the next
+            # candidate run may start -- and a line numbered 1 is such a start.
+            expected = 2
+            run_has_stage = is_stage
+        else:
+            expected = 1
+            run_has_stage = False
+            continue
+        best = max(best, expected - 1)
+        if run_has_stage:
+            best_staged = max(best_staged, expected - 1)
+    return best, best_staged
+
+
+def _ordered_plan_runs(text: str) -> tuple[int, int, int]:
+    """Three readings of *text*: ``(stage lines alone, bold alone, mixed)``.
+
+    A plan numbers its steps from 1 and counts up, which is what separates one
+    from a list that merely happens to be numbered. Counting a RUN rather than
+    the matches is what stops an excerpt starting mid-list (``3. **Alpha**`` /
+    ``4. **Beta**``), the same line repeated in two worked examples (``Step 1:``
+    … ``Step 1:``), and an unordered enumeration.
+
+    Three readings rather than one, because no single sequence serves every real
+    plan:
+
+    * **Stage lines alone.** A plan states its stages and numbers its substeps
+      under them — ``Stage 1: Setup`` / ``1. **Install**`` / ``2. **Configure**``
+      / ``Stage 2: Build``. Read as one merged sequence the substeps carry the
+      count past 2, so ``Stage 2`` fails to continue its own run and a plan
+      plainly written as a plan scores 1. The stage shape therefore keeps a
+      reading of its own, where substep numbering cannot reach it.
+    * **Bold items alone.** The symmetric case: stage vocabulary interleaved with
+      a bold-led list must not break that list's own count either.
+    * **Mixed.** A model also writes ONE sequence in both shapes
+      (``Stage 1: Survey`` then ``2. **Build**``), which neither isolated reading
+      sees as longer than 1.
+
+    The mixed reading is returned only for runs holding at least one stage line.
+    A mixed run of bold items alone is just the bold reading, and letting it
+    qualify at the shorter threshold is what would turn ``1. **Yes**`` /
+    ``2. **No**`` into a plan.
+    """
+    stage_matches = [(m.start(), int(m.group(1)), True) for m in _PLAN_STAGE_LINE_RE.finditer(text)]
+    bold_matches = [
+        (m.start(), int(m.group(1)), False) for m in _PLAN_NUMBERED_BOLD_RE.finditer(text)
+    ]
+    stage_run, _ = _longest_run_from_one(stage_matches)
+    bold_run, _ = _longest_run_from_one(bold_matches)
+    _, mixed_staged_run = _longest_run_from_one(sorted(stage_matches + bold_matches))
+    return stage_run, bold_run, mixed_staged_run
 
 
 def looks_like_plan(text: str) -> bool:
     """Cheap heuristic: does the text look like it might be a plan?
 
-    Intentionally loose — false positives are caught downstream by the
-    LLM-based rephrase which can reject non-plans.
+    Intentionally loose — a residual false positive is caught downstream by the
+    LLM-based rephrase, which can answer ``NOT_A_PLAN``. It is not loose enough
+    to fire on any numbered text, because every false positive here buys that
+    LLM call.
     """
-    return len(_PLAN_LIKE_RE.findall(text)) >= 2
+    _stage_run, _bold_run, _mixed_staged_run = _ordered_plan_runs(text)
+    if _stage_run >= _PLAN_STAGE_RUN_MIN or _mixed_staged_run >= _PLAN_STAGE_RUN_MIN:
+        return True
+    return _bold_run >= _PLAN_BOLD_LIST_MIN
 
 
 _GO_ALL_RE = re.compile(r"\[OPTION:\s*Go\s*\|\s*Cancel\s*\]")
@@ -469,6 +584,41 @@ def validate_plan_format(text: str) -> tuple[bool, bool, list[str]]:
     return True, len(issues) == 0, issues
 
 
+# Cap on the assistant turn handed to the plan rephrase. The turn can be a
+# whole long answer that merely ENDS in something plan-shaped, and the rephrase
+# fires on every such turn, so an uncapped input pays for the entire answer on a
+# call whose only job is to reshape a header and a stage list. Tail-heavy split:
+# a plan a model appended to an explanation sits at the end.
+REPHRASE_INPUT_MAX_CHARS = 4000
+
+
+def cap_rephrase_input(text: str) -> str:
+    """Return *text* capped at ``REPHRASE_INPUT_MAX_CHARS`` (25% head, 75% tail).
+
+    A plan is small — the template above is ~200 chars and a ten-stage plan
+    under 2000 — so a text that trips this cap is an answer with a plan in it
+    rather than a plan. That matters because the rephrase result REPLACES the
+    turn text when it validates: keeping the cap well above any real plan is
+    what makes the replacement lossless in the case the caller acts on, and the
+    ``[...truncated N chars...]`` marker is what makes a genuinely over-long
+    input visible rather than silently shortened.
+    """
+    if len(text) <= REPHRASE_INPUT_MAX_CHARS:
+        return text
+    # The marker is part of what the model receives, so it is budgeted INSIDE the
+    # cap: splitting the cap between head and tail and then adding a marker would
+    # make the real ceiling the cap plus however long the marker rendered, which
+    # is not the number the name states. Sized from the finished marker (its digit
+    # count varies with the input), and floored so a cap smaller than the marker
+    # still yields both ends rather than negative budgets.
+    dropped = len(text) - REPHRASE_INPUT_MAX_CHARS
+    marker = f"\n\n[...truncated {dropped:,} chars...]\n\n"
+    body_budget = max(2, REPHRASE_INPUT_MAX_CHARS - len(marker))
+    head_budget = body_budget // 4  # 25%
+    tail_budget = body_budget - head_budget  # 75%
+    return f"{text[:head_budget]}{marker}{text[-tail_budget:]}"
+
+
 async def rephrase_plan(
     text: str, issues: list[str], client: Any, *, might_not_be_plan: bool = False
 ) -> str | None:
@@ -477,9 +627,13 @@ async def rephrase_plan(
     When *might_not_be_plan* is True, the LLM is instructed to return the
     input unchanged (prefixed with ``NOT_A_PLAN:``) if it is not an
     execution plan.
+
+    *text* is capped by :func:`cap_rephrase_input` before it reaches either
+    prompt.
     """
     from kiro_crew.llm_helpers import stream_and_collect
 
+    text = cap_rephrase_input(text)
     if might_not_be_plan:
         prompt = (
             "First, decide: is the following text an execution plan with "
@@ -577,11 +731,11 @@ def apply_completion_keep(text: str, mode: str, max_chars: int) -> str:
     in ``config/loader.py``; callers may rely on receiving one of
     ``head``/``tail``/``both``.
 
-    The full untruncated transcript stays in
-    ``~/.kiro/crew/subagents/<id>/result.txt`` until the completion event is
-    delivered to the parent session, after which it is cleaned up by
-    ``subagent.py`` (see ``delete_agent_folder``). Use the ``spawn_status``
-    MCP tool to read it before delivery completes.
+    The transcript stays in ``~/.kiro/crew/subagents/<id>/result.txt``, trimmed towards
+    ``RESULT_FILE_MAX_BYTES``, for at least ``agent.subagent_result_ttl_secs`` (default
+    3600) after the completion event reaches the parent: delivery writes a
+    ``cause="delivered"`` tombstone instead of deleting the folder, and the reaper prunes
+    a tombstoned folder once that window closes. Read it there with ``spawn_status``.
     """
     if max_chars <= 0 or len(text) <= max_chars:
         return text

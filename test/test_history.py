@@ -3197,7 +3197,7 @@ class TestProcessAutoSkillsIntegration:
         for i in range(10):
             conv_log.append("dashboard:chat-1", "assistant", f"step {i}", tools=["fs_read"])
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "did 10 things",
                 "new_skill": {
@@ -3240,7 +3240,7 @@ class TestProcessAutoSkillsIntegration:
                 "dashboard:chat-2", "assistant", f"step {i}", tools=["Running: grep foo bar.txt"]
             )
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "did 6 things",
                 "new_skill": {
@@ -3294,7 +3294,7 @@ class TestProcessAutoSkillsIntegration:
 
         llm_called = False
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             nonlocal llm_called
             llm_called = True
             # The prompt built for this session should NOT include new_skill
@@ -3332,7 +3332,7 @@ class TestProcessAutoSkillsIntegration:
         for i in range(5):
             conv_log.append("dashboard:chat-4", "assistant", f"step {i}", tools=["fs_read"])
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 "new_skill": {
@@ -3386,7 +3386,7 @@ class TestProcessAutoSkillsIntegration:
         for i in range(5):
             conv_log.append("dashboard:chat-5", "assistant", f"step {i}", tools=["fs_read"])
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 "new_skill": {
@@ -3440,7 +3440,7 @@ class TestProcessAutoSkillsIntegration:
         conv_log.append("dashboard:chat-schema", "tool", "✅ Running: @builder-mcp/InternalCodeSearch")
         conv_log.append("dashboard:chat-schema", "assistant", "Here's the full list.")
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "explored grading services",
                 "new_skill": {
@@ -3485,7 +3485,7 @@ class TestProcessAutoSkillsIntegration:
                 "dashboard:chat-stage", "assistant", f"step {i}", tools=["Running: grep foo bar.txt"]
             )
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "did staged things",
                 "new_skill": {
@@ -3524,7 +3524,7 @@ class TestProcessAutoSkillsIntegration:
         for i in range(3):
             conv_log.append("dashboard:chat-scr", "assistant", f"s{i}", tools=["fs_read"])
 
-        async def fake_llm(_p):
+        async def fake_llm(_p, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 "new_skill": {
@@ -3562,7 +3562,7 @@ class TestProcessAutoSkillsIntegration:
         for i in range(3):
             conv_log.append("dashboard:chat-bad", "assistant", f"s{i}", tools=["fs_read"])
 
-        async def fake_llm(_p):
+        async def fake_llm(_p, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 "new_skill": {
@@ -3617,7 +3617,7 @@ class TestAutoSkillSELAudit:
         for i in range(5):
             conv_log.append("dashboard:chat-refine", "assistant", f"s{i}", tools=["fs_read"])
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 # LLM tries to refine a NON-auto skill (attack surface)
@@ -3677,7 +3677,7 @@ class TestAutoSkillSELAudit:
         for i in range(5):
             conv_log.append("dashboard:chat-bad-slug", "assistant", f"s{i}", tools=["fs_read"])
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 "new_skill": {
@@ -3741,7 +3741,7 @@ class TestAutoSkillSELAuditCompleteness:
         for i in range(5):
             conv_log.append("dashboard:chat-empty", "assistant", f"s{i}", tools=["fs_read"])
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 "new_skill": {
@@ -3806,7 +3806,7 @@ class TestAutoSkillSELAuditCompleteness:
         for i in range(5):
             conv_log.append("dashboard:chat-refine-empty", "assistant", f"s{i}", tools=["fs_read"])
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 "refined_skill": {
@@ -3877,7 +3877,7 @@ class TestAutoSkillSELAuditCompleteness:
 
         huge = "x" * (AUTO_SKILL_MAX_PROCEDURE_CHARS + 1)
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "x",
                 "refined_skill": {
@@ -3977,7 +3977,7 @@ class TestConsolidationPromptJsonShape:
 
         captured: dict = {}
 
-        async def fake_llm(prompt):
+        async def fake_llm(prompt, *, memory_store: str = "", session_key: str = ""):
             captured["prompt"] = prompt
             return {"new_skill": None}
 
@@ -4191,7 +4191,7 @@ class TestConsolidateSession:
         for i in range(5):
             conv_log.append("dashboard:chat-expire", "assistant", f"s{i}", tools=["fs_read"])
 
-        async def fake_llm(_prompt):
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
             return {
                 "history_entry": "did stuff",
                 "new_skill": {
@@ -5158,7 +5158,7 @@ async def test_all_invalid_scripts_are_rejected_when_approval_disabled(tmp_path)
     for i in range(6):
         conv_log.append("dashboard:chat-x", "assistant", f"step {i}", tools=["fs_read"])
 
-    async def fake_llm(_prompt):
+    async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
         return {
             "history_entry": "did stuff",
             "new_skill": {
@@ -5621,6 +5621,245 @@ class TestConsolidationDoesNotImpersonateUser:
             store.close()
 
 
+class TestConsolidationEmbedBreaker:
+    """One consolidation pass must not pay a slow embedder once per item.
+
+    Every memory a pass writes embeds its text inline, so an embedder that is slow
+    for the first row is slow for all of them — and each failed embed stores the
+    same NULL-vector row the repair sweep would have filled anyway. The pass
+    therefore measures its own write time and, past the budget, defers the
+    remaining embeddings instead of re-paying the latency per item.
+    """
+
+    @staticmethod
+    def _consolidator(store):
+        memory = MagicMock()
+        memory.read_preferences.return_value = ""
+        memory.read_projects.return_value = ""
+        return HistoryConsolidator(
+            log=MagicMock(),
+            memory=memory,
+            sessions=None,
+            vector_store=store,
+            migrated=True,
+        )
+
+    @staticmethod
+    def _store(tmp_path):
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        return store
+
+    @staticmethod
+    def _episodes(count):
+        return [
+            {"text": f"episode {i}: the operator asked for a fresh status sweep", "importance": 0.5}
+            for i in range(count)
+        ]
+
+    @staticmethod
+    def _rows(store):
+        return store.db.execute(
+            "SELECT embedding FROM episodic_memories WHERE is_deleted = 0"
+        ).fetchall()
+
+    def test_slow_embedder_is_attempted_once_and_every_row_is_still_written(
+        self, tmp_path, caplog, monkeypatch
+    ) -> None:
+        """N items cost one embed attempt, not N."""
+        from kiro_crew import history_consolidation
+
+        store = self._store(tmp_path)
+        calls = []
+
+        def slow_embed(text):
+            calls.append(text)
+            time.sleep(0.05)
+            raise TimeoutError("timed out")
+
+        store.embed_fn = slow_embed
+        monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
+        try:
+            with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+                self._consolidator(store)._write_structured_memory(
+                    {"episodic": self._episodes(5)}, "sess-1"
+                )
+
+            assert len(calls) == 1, (
+                f"the pass kept embedding after the first overrun ({len(calls)} attempts); "
+                "a degraded embedder is paid once per item again"
+            )
+            rows = self._rows(store)
+            assert len(rows) == 5, "deferring the embedding must not drop the memory itself"
+            assert all(row["embedding"] is None for row in rows)
+            deferrals = [
+                r
+                for r in caplog.records
+                if "embedding is deferred to the repair sweep" in r.getMessage()
+            ]
+            assert len(deferrals) == 1, (
+                "the deferral must be logged once per pass, not once per row; got "
+                f"{[r.getMessage() for r in deferrals]}"
+            )
+            assert deferrals[0].levelno == logging.WARNING
+        finally:
+            store.close()
+
+    def test_healthy_embedder_embeds_every_row(self, tmp_path) -> None:
+        """Control: an embedder that answers promptly never arms the latch."""
+        store = self._store(tmp_path)
+        calls = []
+
+        def fast_embed(text):
+            index = len(calls)
+            calls.append(text)
+            # Orthogonal per row: identical vectors would hit the similarity dedup
+            # and reject rows this control needs written.
+            vec = [0.0] * 8
+            vec[index % 8] = 1.0
+            return vec
+
+        store.embed_fn = fast_embed
+        try:
+            self._consolidator(store)._write_structured_memory(
+                {"episodic": self._episodes(5)}, "sess-1"
+            )
+
+            assert len(calls) == 5, "a healthy pass must still embed every row inline"
+            rows = self._rows(store)
+            assert len(rows) == 5
+            assert all(row["embedding"] is not None for row in rows)
+        finally:
+            store.close()
+
+    def test_both_tiers_share_one_budget_and_stop_after_the_first_overrun(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Every row a pass writes embeds inline, so both tiers latch together."""
+        from kiro_crew import history_consolidation
+
+        store = self._store(tmp_path)
+        calls = []
+
+        def slow_embed(text):
+            calls.append(text)
+            time.sleep(0.05)
+            raise TimeoutError("timed out")
+
+        store.embed_fn = slow_embed
+        monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
+        keys = [f"project.p{i}.status" for i in range(4)]
+        try:
+            self._consolidator(store)._write_structured_memory(
+                {
+                    "semantic": [
+                        {"key": k, "value": f"green {i}", "confidence": 0.9}
+                        for i, k in enumerate(keys)
+                    ],
+                    "episodic": self._episodes(3),
+                },
+                "sess-1",
+            )
+
+            assert len(calls) == 1, (
+                "a tier kept embedding after the pass had already overrun "
+                f"({len(calls)} attempts across 4 semantic + 3 episodic rows)"
+            )
+            assert len(self._rows(store)) == 3, "deferral must not drop an episode"
+            rows = [store.get_semantic(k) for k in keys]
+            assert all(row is not None for row in rows), "deferral must not drop a fact"
+            assert all(row["embedding"] is None for row in rows)
+        finally:
+            store.close()
+
+    def test_a_deferred_episode_never_evicts_an_existing_memory(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A row admitted without dedup must not displace one it never compared.
+
+        Deferring leaves the vector NULL, which skips the similarity dedup. On a
+        legacy V1 store at its episodic cap the insert would then tombstone the
+        lowest-importance row to make room for a possible paraphrase. The refusal
+        is the cheaper loss: the transcript is still on disk, the evicted row is
+        not.
+        """
+        from kiro_crew import history_consolidation
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", episodic_max=2)
+        store.init()
+        assert store.algorithm_version == "v1"
+        kept = ["the canary stage runs before production", "the release owner signs the ledger"]
+        for text in kept:
+            assert store.write_episodic(text=text, importance=0.9, source="user_explicit")
+
+        calls = []
+
+        def slow_embed(text):
+            calls.append(text)
+            time.sleep(0.05)
+            raise TimeoutError("timed out")
+
+        store.embed_fn = slow_embed
+        monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
+        try:
+            self._consolidator(store)._write_structured_memory(
+                {
+                    # One semantic write spends the budget, so every episode below
+                    # is written deferred rather than only the ones after the first.
+                    "semantic": [
+                        {"key": "project.alpha.status", "value": "green", "confidence": 0.9}
+                    ],
+                    "episodic": self._episodes(3),
+                },
+                "sess-1",
+            )
+
+            surviving = {
+                row["text"]
+                for row in store.db.execute(
+                    "SELECT text FROM episodic_memories WHERE is_deleted = 0"
+                ).fetchall()
+            }
+            assert surviving == set(kept), (
+                "a deferred episode displaced a memory it could not be compared "
+                f"against; store now holds {surviving}"
+            )
+            assert len(calls) == 1
+        finally:
+            store.close()
+
+    def test_a_deferred_semantic_row_is_left_for_the_repair_sweep(self, tmp_path) -> None:
+        """The deferred vector is work the standing sweep can still see and finish."""
+        store = self._store(tmp_path)
+        store.embed_fn = lambda _text: [1.0, 0.0, 0.0, 0.0]
+        try:
+            assert (
+                store.set_semantic(
+                    "project.alpha.status",
+                    "green",
+                    0.9,
+                    "consolidation:sess-1",
+                    defer_embedding=True,
+                )
+                is None
+            )
+
+            row = store.get_semantic("project.alpha.status")
+            assert row is not None and row["embedding"] is None
+            assert store.has_pending_embeddings(), (
+                "a deferred row the repair sweep cannot see is a vector lost forever"
+            )
+            # The returned count is episodic-only, so the repaired row itself is
+            # the evidence the semantic sub-sweep ran.
+            store.backfill_missing_embeddings(pace=False)
+            assert store.get_semantic("project.alpha.status")["embedding"] is not None
+        finally:
+            store.close()
+
+
 class TestConsolidationLessonScope:
     """Consolidation forwards a model-supplied ``repo_scope`` into the lesson write.
 
@@ -5807,3 +6046,168 @@ class TestConsolidationLessonScope:
             )
         finally:
             store.close()
+
+
+class TestConsolidationLessonApplies:
+    """Consolidation states the authored ``applies`` tier on both lesson write paths.
+
+    Every other write surface (``learn_add``, ``POST /api/lessons``) states the
+    tier; consolidation is the highest-volume writer, so without this its rows
+    all land unstated and are served as standing rules. The tier is untrusted
+    model output: the two literals round-trip, an omitted key lands unstated,
+    and a misspelling is logged and lands unstated rather than dropping the
+    correction.
+    """
+
+    _consolidator = staticmethod(TestConsolidationLessonScope._consolidator)
+    _jsonl_consolidator = staticmethod(TestConsolidationLessonScope._jsonl_consolidator)
+
+    def _store(self, tmp_path):
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda _text: [1.0, 0.0]
+        return store
+
+    @staticmethod
+    def _by_rule(store) -> dict[str, dict]:
+        return {
+            json.loads(row["value_json"])["rule"]: json.loads(row["value_json"])
+            for row in store.get_lessons()
+        }
+
+    @pytest.mark.parametrize("tier", ["always", "on_topic"])
+    def test_tier_round_trips_on_vector_path(self, tmp_path, tier) -> None:
+        store = self._store(tmp_path)
+        try:
+            self._consolidator(store)._save_lessons(
+                [{"rule": "Read the job log before classifying a red", "applies": tier}]
+            )
+
+            [lesson] = store.get_lessons()
+            assert json.loads(lesson["value_json"])["applies"] == tier
+            assert lesson["source"] == "consolidation"
+        finally:
+            store.close()
+
+    def test_omitted_tier_lands_unstated_on_vector_path(self, tmp_path) -> None:
+        store = self._store(tmp_path)
+        try:
+            self._consolidator(store)._save_lessons(
+                [{"rule": "Prefer explicit timezones in timestamps"}]
+            )
+
+            [lesson] = store.get_lessons()
+            # Unstated is ABSENT, not null: the row is byte-identical to one
+            # written before the field existed (see write_lesson's lesson_value).
+            assert "applies" not in json.loads(lesson["value_json"])
+        finally:
+            store.close()
+
+    def test_misspelled_tier_logs_and_lands_unstated_on_vector_path(self, tmp_path, caplog) -> None:
+        """A misspelling is a bug in the writer and must be audible, but the
+        correction itself is not lost: it lands unstated, never dropped."""
+        store = self._store(tmp_path)
+        # Orthogonal embeddings: the two rows must not be judged duplicates of
+        # each other, or the dedup pass (not the tier seam) decides which lands.
+        store.embed_fn = lambda text: [1.0, 0.0] if "Misspelled" in text else [0.0, 1.0]
+        try:
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
+                self._consolidator(store)._save_lessons(
+                    [
+                        {"rule": "Misspelled tier still lands", "applies": "Directive"},
+                        {"rule": "Clean sibling keeps its tier", "applies": "on_topic"},
+                    ]
+                )
+
+            by_rule = self._by_rule(store)
+            assert "applies" not in by_rule["Misspelled tier still lands"]
+            assert by_rule["Clean sibling keeps its tier"]["applies"] == "on_topic"
+            assert any("unrecognized applies tier" in rec.getMessage() for rec in caplog.records)
+            # Only the closed-set reason is logged, never the untrusted value.
+            assert all("Directive" not in rec.getMessage() for rec in caplog.records)
+        finally:
+            store.close()
+
+    def test_tier_round_trips_on_jsonl_fallback(self, tmp_path) -> None:
+        from kiro_crew.learn import LessonStore
+
+        lesson_store = LessonStore(base_dir=tmp_path)
+        c = self._jsonl_consolidator(lesson_store)
+
+        c._save_lessons(
+            [
+                {"rule": "Never force-push a shared branch here", "applies": "always"},
+                {"rule": "The flaky shard was the arm64 runner", "applies": "on_topic"},
+                {"rule": "A rule with no tier stays unstated"},
+            ]
+        )
+
+        by_rule = {le.rule: le for le in lesson_store.load_all()}
+        assert by_rule["Never force-push a shared branch here"].applies == "always"
+        assert by_rule["The flaky shard was the arm64 runner"].applies == "on_topic"
+        assert by_rule["A rule with no tier stays unstated"].applies is None
+        # The unstated row carries NO applies key on disk (not ``null``), so the
+        # two stores agree on what absence means.
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "lessons.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        unstated = [r for r in rows if r["rule"] == "A rule with no tier stays unstated"]
+        assert unstated and "applies" not in unstated[0]
+
+    def test_misspelled_tier_logs_and_lands_unstated_on_jsonl_fallback(
+        self, tmp_path, caplog
+    ) -> None:
+        from kiro_crew.learn import LessonStore
+
+        lesson_store = LessonStore(base_dir=tmp_path)
+        c = self._jsonl_consolidator(lesson_store)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
+            c._save_lessons([{"rule": "Misspelled on the fallback path", "applies": "ALWAYS "}])
+        # Case and surrounding whitespace are canonicalised, not refused.
+        [lesson] = lesson_store.load_all()
+        assert lesson.applies == "always"
+        assert not any("unrecognized applies tier" in r.getMessage() for r in caplog.records)
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
+            c._save_lessons([{"rule": "Truly misspelled on the fallback path", "applies": 7}])
+        by_rule = {le.rule: le for le in lesson_store.load_all()}
+        assert by_rule["Truly misspelled on the fallback path"].applies is None
+        assert any("unrecognized applies tier" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_extraction_prompt_asks_for_the_tier(self, tmp_path) -> None:
+        """The prompt the code actually builds names the field and the two
+        literals, tells the model to decide from what the user said, and to omit
+        the field when it cannot tell -- the same instruction ``learn_add`` carries."""
+        from kiro_crew.memory import MemoryStore
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        consolidator = HistoryConsolidator(log=conv_log, memory=mem)
+        conv_log.append("dashboard:chat-tier", "user", "no, always run the gate first")
+        conv_log.append("dashboard:chat-tier", "assistant", "Understood, running it.")
+
+        captured: dict[str, str] = {}
+
+        async def fake_llm(prompt, *, memory_store: str = "", session_key: str = ""):
+            captured["prompt"] = prompt
+            return {"history_entry": "did stuff", "lessons": []}
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            consolidator.consolidate_session("dashboard:chat-tier")
+            await asyncio.sleep(0.05)
+            for t in list(consolidator._tasks):
+                await t
+
+        prompt = " ".join(captured["prompt"].split())
+        assert '"applies": "always|on_topic"' in prompt
+        assert "YOU decide it from what the user actually said" in prompt
+        assert "Omit the field when you genuinely cannot tell" in prompt

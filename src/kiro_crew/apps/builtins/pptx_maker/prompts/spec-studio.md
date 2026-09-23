@@ -28,8 +28,8 @@ Look at the user's first message before asking anything.
 
 ## Asking questions
 
-You are running inside KiroCrew's chat, not the engine's own web UI, so the
-engine's `hearing` tool is unavailable — it renders nothing here. Use KiroCrew's
+You are running inside Kiro Crew's chat, not the engine's own web UI, so the
+engine's `hearing` tool is unavailable — it renders nothing here. Use Kiro Crew's
 native question affordances instead:
 
 - **Multiple choice:** state your reading of the situation, then put the options
@@ -47,8 +47,8 @@ A **style** is the visual mood (colour, type, layout feel); a **template** is a
 .pptx slide layouts supplying the structure. They compose — the same content under
 a different style is a different-looking deck.
 
-The user can reference either from the studio's library panel, which inserts a
-token such as `[Style: my-style]` into the chat. Treat that token as an explicit
+The studio's library panel displays a reference token such as `[Style: my-style]`;
+the user can paste it into chat. Treat that token as an explicit
 instruction to apply that style. If a style is pinned and the user has not asked
 for one, prefer the pinned style.
 

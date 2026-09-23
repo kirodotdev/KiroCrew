@@ -166,30 +166,43 @@ def test_an_existing_baseline_is_actually_compared(tmp_path: Path) -> None:
 # ── The accept step must see an untracked baseline ───────────────────────────
 
 
+#: Confines every real git these tests run -- the fixture's and the step's -- to
+#: the scratch repository: the operator's global and system config are pointed
+#: away (a ``commit.gpgsign``, ``credential.helper`` or ``init.templateDir`` there
+#: would reach the step's own commit and push), and an inherited ``GIT_DIR``
+#: cannot redirect the fixture's writes at some other repository.
+_HERMETIC_GIT = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+_GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
+
+
+def _git_env() -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
+    env.update(_HERMETIC_GIT)
+    return env
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, env=_git_env(), check=True, capture_output=True)
+
+
 def _git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    for args in (
-        ["init", "-q", "-b", "main"],
-        ["config", "user.email", "t@example.invalid"],
-        ["config", "user.name", "t"],
-    ):
-        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.invalid")
+    _git(repo, "config", "user.name", "t")
     (repo / "seed.txt").write_text("seed\n")
-    subprocess.run(["git", "add", "seed.txt"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True, capture_output=True)
-    # A real bare remote, because the step under test runs `git push`. Stubbing
+    _git(repo, "add", "seed.txt")
+    _git(repo, "commit", "-qm", "seed")
+    # A real bare remote, because the step under test pushes to one. Stubbing
     # git instead would exercise the stub rather than the script.
     bare = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "-q", "--bare", str(bare)], check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "remote", "add", "origin", str(bare)],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
+    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    _git(repo, "remote", "add", "origin", str(bare))
     return repo
 
 
@@ -222,13 +235,14 @@ def test_a_brand_new_baseline_tree_is_detected_and_committed(tmp_path: Path) -> 
     out = _run(
         script,
         repo,
-        {"PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "GH_TOKEN": "x"},
+        {"PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "GH_TOKEN": "x", **_HERMETIC_GIT},
     )
     assert out.returncode == 0, out.stdout + out.stderr
     assert "nothing to accept" not in out.stdout
     committed = subprocess.run(
         ["git", "show", "--name-only", "--format=", "HEAD"],
         cwd=repo,
+        env=_git_env(),
         capture_output=True,
         text=True,
         check=True,
@@ -248,19 +262,15 @@ def test_an_unchanged_baseline_opens_no_pr(tmp_path: Path) -> None:
         d = repo / "bench_baselines" / sub
         d.mkdir(parents=True)
         (d / "locomo10_now.json").write_text(payload)
-    subprocess.run(
-        ["git", "add", "bench_baselines/accepted"], cwd=repo, check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "commit", "-qm", "accept baseline"], cwd=repo, check=True, capture_output=True
-    )
+    _git(repo, "add", "bench_baselines/accepted")
+    _git(repo, "commit", "-qm", "accept baseline")
 
     script = _step("Open a PR to accept the new baseline", job="accept")["run"]
     stubs = _stub_dir(tmp_path, gh='echo "gh SHOULD NOT RUN"; exit 1')
     out = _run(
         script,
         repo,
-        {"PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "GH_TOKEN": "x"},
+        {"PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "GH_TOKEN": "x", **_HERMETIC_GIT},
     )
     assert out.returncode == 0, out.stdout + out.stderr
     assert "nothing to accept" in out.stdout

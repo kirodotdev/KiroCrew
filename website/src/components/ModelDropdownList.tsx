@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { Check, LoaderCircle } from 'lucide-react'
 
+import { JEV_ROUTE_MODEL } from '../lib/jevRoute'
 import { isPricedMultiplier } from '../providers/modelList'
 import type { ModelInfo } from '../providers/types'
 import { fmtNumber } from '../i18n/format'
@@ -20,6 +21,24 @@ export type ModelItem =
 
 /** The multiplier Auto is pinned at, and the baseline the badges are relative to. */
 const BASELINE = 1
+
+/**
+ * What a row SHOWS for its model.
+ *
+ * Every real row shows its own id, verbatim: the id is what the user
+ * cross-references against `kiro-cli chat --list-models`, the composer chip and
+ * the config file, so translating or prettifying it would break that match.
+ *
+ * `auto:jev` is the one row that is not a model. It is a request to let Jev pick
+ * one per turn, and its wire id exists only so the gateway can recognise the
+ * choice — showing it would put an internal spelling where a user expects a name.
+ * A catalog key resolved HERE rather than a label carried on the row, for the same
+ * reason Auto's description is: a string baked in at fetch time would freeze the
+ * language in the React Query cache.
+ */
+function rowLabel(name: string): string {
+  return name === JEV_ROUTE_MODEL ? i18nT('components.modelDropdownList.auto_jev') : name
+}
 
 /**
  * ASCII 'x', not the multiplication sign U+00D7 (`×`).
@@ -132,7 +151,10 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
         return (
           <button key={m.name} ref={active ? activeRef : undefined} role="option" aria-selected={active} tabIndex={-1} className={`w-full text-left px-2.5 py-2 flex flex-col gap-0.5 rounded-md cursor-pointer transition-all border-none bg-transparent ${active ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`} onClick={() => onSelect(m.name)}>
             <div className="flex items-center gap-2">
-              <span data-model-name className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{m.name}</span>
+              {/* `data-model-name` carries the ID, not the label: the harnesses and
+                  the keyboard-nav tests select rows by the value that is sent, and a
+                  translated label would make that selector locale-dependent. */}
+              <span data-model-name data-model-id={m.name} className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{rowLabel(m.name)}</span>
               {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
               {/* Credit multiplier. Rendered only when the backend reported a
                   usable one — a cold-start or pre-feature cached row has none,

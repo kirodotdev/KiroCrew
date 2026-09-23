@@ -8,12 +8,12 @@ history, and a stable handle the agent can iterate on across sessions.
 A typical flow:
 
 1. Agent emits an `<mcwidget>` in chat ("here's your CR queue")
-2. Agent (or user) calls `artifact_save` — the widget is persisted under
-   `~/.kiro/crew/artifacts/<slug>/current.html`
-3. Days later, in a fresh session, the user says "iterate on the cr-queue
-   artifact and add an age column"
-4. Agent calls `artifact_get("cr-queue")` to read the current HTML, modifies
-   it, then `artifact_update("cr-queue", content=…)` to publish a new version
+2. When the assistant segment finalizes, the backend auto-registers the widget
+   as an unpinned artifact under `~/.kiro/crew/artifacts/<slug>/current.html`
+3. Days later, in a fresh session, the user asks to iterate on that stable slug
+   and add an age column
+4. Agent calls `artifact_get("<slug>")` to read the current HTML, modifies it,
+   then calls `artifact_update("<slug>", content=…)` to publish a new version
 5. The previous version is preserved under `versions/v1.html` for rollback
 
 The dashboard provides a `/artifacts` library page for browse/search and a
@@ -50,12 +50,12 @@ Loading, empty results, filtering, and read errors therefore keep the same mode.
 | `slug` | string | URL-safe handle. Derived from `name` when not given, resolving a collision by suffixing (`-2`, `-3`, …); an explicitly-passed slug is refused — never renamed — when it is already taken or malformed |
 | `name` | string | Human-readable display name |
 | `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)) |
-| `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import` |
+| `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import`, `dashboard`, `slack`, `cli`, `task-runner`, `unknown` |
 | `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
 | `auto_registered` | bool | `true` when the store created this record automatically from a chat-emitted `<mcwidget>` (see [Widget auto-registration](#widget-auto-registration)) rather than from an explicit save. Sweepable by the retention pass while unpinned; tolerant-loaded (pre-existing artifacts default `false`, so they are never swept). |
 | `description` | string | Optional, ≤ 2,000 chars |
 | `tags` | string[] | ≤ 16 tags, alphanumeric / `_`, `:`, `.`, `-` |
-| `version` | int | Latest version number; bumps on every content change |
+| `version` | int | Latest snapshot version; bumps when a content change is snapshotted |
 | `created_at` / `updated_at` | string | ISO 8601 UTC microseconds |
 
 ## Public API
@@ -68,7 +68,7 @@ from kiro_crew.artifacts import ArtifactStore, get_default_store
 store = get_default_store()
 art = store.create(name="CR Queue", content="<table>…</table>", tags=["ops"])
 art = store.get(art.slug)
-art = store.update(art.slug, content="<table>… age column …</table>")
+art = store.update(art.slug, content="<table>… age column …</table>", snapshot=True)
 versions = store.list_versions(art.slug)
 items = store.list(tag="ops")
 store.delete(art.slug)
@@ -81,6 +81,14 @@ store.merge_remote_comments(art.slug, "artifactory", remote_comments)
 The store is thread-safe. A module-level singleton is available via
 `get_default_store()`; pass an explicit `root` to `ArtifactStore(root=...)`
 for isolated test instances.
+
+`list()` returns newest first on a TOTAL order, `(updated_at, slug)` descending.
+The tie-break is load-bearing, not cosmetic: `updated_at` is microsecond ISO, so
+two artifacts written inside one microsecond carry the identical stamp, and
+sorting on it alone is a stable sort over equal keys that preserves directory
+scan order — which differs per platform and per filesystem, making the library
+UI, the MCP list tool and the auto-widget pruning sweep disagree about which
+artifact is newest on otherwise identical data.
 
 ### Kind inference
 
@@ -95,9 +103,10 @@ source_path, explicit)`:
    `.json` → `json`, `.txt` → `text`, any other extension → `text`.
 3. **Content sniff** — for inline content with no `source_path`: HTML-ish
    markup (`<div`, `<span`, `<style`, `<table`, `<mcwidget`, `<html`,
-   `<!doctype html`) → `widget`; a leading markdown heading (`#`…`######`) or
-   content with **no** `<` at all → `markdown`; otherwise the legacy `widget`
-   default (ambiguous blobs keep prior behavior).
+   `<!doctype html`) → `widget`; an empty body → `widget`; a leading markdown
+   heading (`#`…`######`) or non-empty content with **no** `<` at all →
+   `markdown`; otherwise the legacy `widget` default (ambiguous blobs keep prior
+   behavior).
 
 Only `widget` and `markdown` are inferred from inline content; the richer
 kinds need the extension signal. This is the safety prerequisite that lets
@@ -121,7 +130,7 @@ doc stored as `widget` renders as raw inner HTML).
 | `artifact_folder_move` | Reparent a folder; cycle-guarded |
 | `artifact_folder_delete` | Delete a folder; default keeps contents (re-parent), `delete_contents=true` cascades |
 | `artifact_move` | Move an artifact into a folder / unfile it (metadata-only, no version bump) |
-| `artifact_get_comments` | Read all comments on an artifact (local + provider-synced) |
+| `artifact_get_comments` | Read all comments on an artifact (local + provider-synced); `exclude_resolved=true` omits resolved threads (root-granular) so a mid-review read is not re-handed feedback already addressed |
 | `artifact_post_comment` | Post a comment; agent comments carry the structured `is_agent` flag (no emoji stamped into the body — dashboard renders a lucide `Bot` icon, CLI prefixes a plain-text `[agent]` marker) + SEL-audited; `scope='shared'` syncs to the provider |
 | `artifact_mark_review` | Advance a comment thread to REVIEW status (agent can mark_review but NEVER resolve) |
 | `artifact_reply_comment` | Reply to an existing comment thread; a reply to a provider-origin parent posts back to the provider |
@@ -152,9 +161,10 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `GET` | `/api/artifacts` | `?tag&kind&q` filters + `?folder=` scoping (absent = all; empty = unfiled/root; id = that folder) + `?session=` scoping (same absent/empty distinction; validated like `origin_session_key`) + `?pinned=` (tri-state — unrecognized values don't scope); returns `{artifacts: […]}` |
 | `POST` | `/api/artifacts` | JSON body — creates, returns full artifact + content; optional `folder` key (id or human path, mkdir -p) |
 | `GET` | `/api/artifacts/{slug}` | Returns full artifact + content |
-| `PATCH` | `/api/artifacts/{slug}` | Partial update; `content` bumps version; optional `folder` key (metadata-only) |
+| `PATCH` | `/api/artifacts/{slug}` | Partial update; MCP-authenticated content updates snapshot by default, dashboard saves snapshot only with `snapshot: true`; optional `folder` key is metadata-only |
 | `DELETE` | `/api/artifacts/{slug}` | Permanent delete |
 | `PATCH` | `/api/artifacts/{slug}/pin` | Star/unstar — body `{pinned: bool}` (strictly boolean; non-booleans rejected). Metadata-only, no version bump |
+| `PATCH` | `/api/artifacts/{slug}/relocate` | Point a file-backed artifact at a validated `source_path`; dashboard HTTP surface only (the `artifact_move` MCP tool moves folders instead) |
 | `GET` | `/api/artifacts/session-docs` | Virtual, read-only list of non-code documents produced across chat sessions (the "All" firehose). `?session=<slot>` scopes to one session. Creates nothing; each entry carries `saved` (pinned) + `slug`. Registered before the `/{slug}` dynamic route |
 | `POST` | `/api/artifacts/materialize` | Turn a recorded chat document into a real, pinned file-backed artifact — body `{path}`. The path MUST be a document recorded in chat `file_changes` (authorization allowlist); the read goes through `hooks.safe_read_file_bytes` (is_sensitive_path + `O_NOFOLLOW` + `MAX_FILE_BYTES` cap). Idempotent by `source_path` |
 | `GET` | `/api/artifacts/{slug}/versions` | `{slug, versions: [int]}` |
@@ -178,17 +188,22 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `POST` | `/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}/review` | Advance a provider thread to REVIEW (`mark_review`); **egress — gated by `_publish_governance_denied`** |
 | `DELETE` | `/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}` | Delete a provider comment (`delete_comment`); **egress — gated by `_publish_governance_denied`** |
 
-`external_id` (and `comment_id`) travel as percent-encoded path segments on
-these routes; aiohttp's `path_safe` matching (3.9.2+) preserves `%2F`, so a
-provider-native id containing `/` round-trips correctly (browse-listing ids are
-slash-free in practice). Clone/fork keep the id in the JSON body instead.
+Detail and comment operations carry `external_id` (and `comment_id`) in path
+segments, so the browse/detail ids used there must be slash-free; aiohttp decodes
+an encoded slash before route matching. Clone and fork keep `external_id` in the
+JSON body specifically so provider-native ids containing `/` round-trip safely.
 
 POST/PATCH/DELETE require an unrestricted session. The HTTP body envelope is
 capped at 2 MiB; the store enforces a per-content cap of 25 MiB
 (`artifacts.MAX_CONTENT_BYTES`), large enough for cloned/pulled rich artifacts
-(HTML reports, CSVs). The MCP save/update field cap
-(`validation.ARTIFACT_CONTENT_MAX`) imports that same constant so the tool and
-store paths never disagree.
+(HTML reports, CSVs). The number is owned by `constants.ARTIFACT_MAX_CONTENT_BYTES`;
+`artifacts.MAX_CONTENT_BYTES` and the MCP save/update field cap
+(`validation.ARTIFACT_CONTENT_MAX`) are both that name, so the tool and store
+paths never disagree. It lives in the `constants` leaf rather than in `artifacts`
+because `validation` importing `artifacts` closed the cycle `artifacts -> hooks
+-> webhooks -> validation -> artifacts`, which raised ImportError in any process
+whose first `kiro_crew` import reached `artifacts` before `validation`;
+`test_agent_import_hoist.py` pins that `validation` never imports `artifacts`.
 
 **Folders:** `Artifact.folder_id` (`""` = unfiled) is an opaque,
 rename-safe membership id, tolerant-loaded for legacy meta.json.
@@ -451,9 +466,25 @@ wrong bytes at a URL the user already knows about; a stale withdrawal leaves con
 served that the user believes they took down, which is the worse failure and the one
 worth surfacing as an error the user can act on.
 
-The public-exposure warning and the blocking `PublicPublishAckModal` are
-unchanged and unconditional — every destination gets both, on the clean path and
-on a scan override.
+The public-exposure warning and the blocking `PublicPublishAckModal` are gated
+on the selected destination's `public_reachable` descriptor field
+(`PublishProvider.public_reachable`, class attribute, default `True`, carried
+on each `GET /api/artifacts/publish-providers` row). A destination whose
+published link is served with no authentication gets both, on the clean path
+and on a scan override, exactly as before. A destination that declares `False`
+-- one that stores content privately behind a login -- gets neither: the
+confirm click publishes directly, because both surfaces say the content is
+going onto the open internet, and a gate that lies where the destination is
+private teaches the user to click past it where it is public. The publish flow
+always requests `visibility: PUBLIC`, so `False` asserts that even a
+publication the provider files as PUBLIC is served only to an authenticated
+reader; a provider whose PUBLIC publications are readable by anyone must leave
+it `True`. The default is
+`True` and the frontend treats an omitted field as `True`, so a provider must
+declare that it needs authentication; the failure mode of the wrong default is
+a public link with no warning. App-registered rows from
+`GET /api/publish-providers` are the public-web deploy surface and are always
+treated as reachable.
 
 ## Widget auto-registration
 
@@ -529,17 +560,16 @@ pristine to every metadata signal above, and the sweep would otherwise delete th
 user's comments along with it.
 
 The edit test is `updated_at == created_at`, **not** `version == 1`: `update()`
-bumps `version` only when `snapshot=True`, so a plain content save — the common
-agent-iteration path — leaves the version at 1 while rewriting the body. Keying on
+bumps `version` only when `snapshot=True`, so a non-snapshot dashboard or direct
+store save can leave the version at 1 while rewriting the body. Keying on
 the version would let the sweep delete freshly-iterated widgets. Conversely
 `set_pinned` / `set_folder` deliberately don't touch `updated_at`, which is why
 they are separate signals.
 
-Ordering is newest-first, re-sorted on `(updated_at, slug)` inside the sweep:
-`list()`'s `updated_at`-only sort is not a total order, so widgets registered in
-the same microsecond would otherwise tie-break by directory scan order and make
-*which* one gets deleted nondeterministic. The candidate snapshot is taken
-unlocked, so eligibility is **re-checked and the directory removed in a single
+Ordering is newest-first on the same total `(updated_at, slug)` order used by
+`list()`. The sweep re-sorts defensively so its destructive boundary does not
+inherit an ordering assumption from the candidate source. The candidate snapshot
+is taken unlocked, so eligibility is **re-checked and the directory removed in a single
 lock acquisition** — otherwise a star landing mid-sweep would lose to a stale
 verdict and silently delete an artifact the user had just claimed. Note the sweep
 deliberately does NOT delegate to `delete()`: re-checking under the lock and then
@@ -564,10 +594,30 @@ inputs, distinguished by the leading **star** column:
   `PATCH /api/artifacts/{slug}/pin` (metadata-only, no version bump).
 - **Session documents** — a *virtual* firehose of non-code documents the agent
   produced across chats (from message `file_changes`), surfaced only in the
-  **All** view via `GET /api/artifacts/session-docs`. Nothing is written to disk
-  for these until the user stars one, which **materializes** it into a real,
+  **All** view via `GET /api/artifacts/session-docs`. Clicking a row opens a
+  **read-only preview** (`SessionDocPreview`) that fetches the file through the
+  redacting `GET /api/file-read` endpoint — a pure read that registers nothing.
+  A document recorded with a **relative path is refused client-side** (no
+  request is sent): `resolve=1` would resolve it against the gateway's
+  *current* project directory, not the project it was recorded under, so a
+  project switch would silently read a same-named file from the wrong project.
+  An unresolved **`~name` tilde form is refused the same way** — `expanduser`
+  leaves an unknown account name unchanged and the backend then anchors it to
+  the process CWD, the same wrong-project read; only the gateway user's own
+  `~`/`~/…` (deterministic, project-independent) counts as absolute. The
+  refusal renders as a **status, not an error** (nothing failed — the feature
+  is declining an unsafe read), and the preview header's save button is
+  **disabled in the refusal state**, mirroring the backend materialize
+  allowlist, which only trusts paths absolute after expansion.
+  Nothing is written to disk
+  for these until the user stars one (from the row or from the preview
+  header's labeled **Save to artifacts** button — named after the surface the
+  save lands on, not the Apps "Library"), which **materializes** it into
+  a real,
   pinned, file-backed artifact via `POST /api/artifacts/materialize`
-  ("Virtual All + materialize-on-save"). Search matches name/source (incl. the
+  ("Virtual All + materialize-on-save"); a clean save is acknowledged by a
+  transient status notice on the page (a colliding slug shows the collision
+  banner instead). Search matches name/source (incl. the
   originating session title); the file-type filter applies to both inputs.
 
 The page opens on the **All** view by default. The Starred/All selection is
@@ -637,8 +687,8 @@ every write-side unit test still green — so test the round-trip
 | `description` | ≤ 2,000 chars |
 | `tags` | ≤ 16 tags; each ≤ 64 chars |
 | `content` | ≤ 25 MiB (`MAX_CONTENT_BYTES`) |
-| `kind` | one of `widget` / `html` / `markdown` / `svg` / `json` / `text` / `webapp` |
-| `source` | one of `chat` / `cron` / `subagent` / `manual` / `import` |
+| `kind` | one of `widget` / `html` / `markdown` / `svg` / `json` / `text` / `image` / `webapp` |
+| `source` | stored values: `chat` / `cron` / `subagent` / `manual` / `import` / `dashboard` / `slack` / `cli` / `task-runner` / `unknown`; the MCP save schema accepts the first five explicitly |
 | `MAX_VERSIONS` | 50 (oldest pruned beyond cap) |
 | `MAX_AUTO_WIDGET_ARTIFACTS` | 200 (oldest **unpinned auto-registered** widgets pruned beyond cap) |
 
@@ -647,10 +697,23 @@ every write-side unit test still green — so test the round-trip
 - **Path traversal** — slugs are regex-validated; the store resolves every
   path and refuses any that escape the artifact root.
 - **Sensitive paths** — every read and write goes through
-  `security.is_sensitive_path()`; the store refuses to instantiate at any
-  sensitive root.
-- **Relocate root confinement** — `PATCH /relocate` (and the `artifact_move`
-  MCP tool) point a file-backed artifact at a `source_path`; a later GET reads
+  the sensitive-path fence. The store's own file helpers (`_read_text` /
+  `_write_text` / `_read_bytes` / `_write_bytes`) canonicalise the path with
+  `os.path.realpath` and ask `security.is_sensitive_canonical_path()` (through
+  `_fence_refuses`), the shared entry point for a caller-canonicalised path: it
+  answers with `security.is_sensitive_path()` on the event loop and with
+  `security.is_sensitive_resolved_path()` off it, so a caller earns the
+  off-pool gate by offloading, never by declaring anything; `GET
+  /api/artifacts` runs `store.list()` on a worker for that reason. The two read
+  helpers then open through `pinned_fs.open_fenced_for_read` (bound as
+  `_open_pinned_for_read`): a link at the final name is refused, the inode must
+  be a regular file with one link, and the fence judges the kernel's path for
+  the opened inode whenever it differs from the path already judged. The root
+  check and the file-backed `source_path` pointers stay on
+  `security.is_sensitive_path()` unconditionally; the store refuses to
+  instantiate at any sensitive root.
+- **Relocate root confinement** — `PATCH /api/artifacts/{slug}/relocate`
+  points a file-backed artifact at a `source_path`; a later GET reads
   that file, so an unconfined relocate would be an agent-reachable
   arbitrary-local-file read primitive. The target is therefore confined to the
   user's home dir by default (an operator can widen to additional absolute roots
@@ -741,12 +804,13 @@ every write-side unit test still green — so test the round-trip
 ## Versioning
 
 Each `create()` writes the initial content to `current.html` and snapshots
-it as `versions/v1.html`. Each subsequent `update(slug, content=…)` that
-changes the content bumps the version number, writes the new content as
-both `current.html` and `versions/v{N}.html`. Older versions remain in
-`versions/` untouched until the prune cap is reached, so any prior version
-can be re-read via `get(slug, version=N)` or rolled back into `current.html`
-via a follow-up `update()`.
+it as `versions/v1.html`. `update(slug, content=…, snapshot=False)` updates the
+live state without adding a numbered version; `snapshot=True` also increments
+`version` and writes `versions/v{N}.html`. The MCP `artifact_update` path defaults
+to snapshots, while dashboard Save does not unless it sends `snapshot: true`.
+Older versions remain untouched until the prune cap is reached, so any retained
+version can be read via `get(slug, version=N)` or restored as a fresh snapshot by
+`artifact_revert`.
 
 `list_versions(slug)` returns the sorted set of stored version numbers.
 `get(slug, version=N)` reads a specific version. After pruning, lower-numbered

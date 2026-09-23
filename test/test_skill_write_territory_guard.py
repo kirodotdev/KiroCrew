@@ -30,6 +30,19 @@ import pytest
 import kiro_crew.dashboard.handlers.prompts as prompts_mod
 
 
+@pytest.fixture(autouse=True)
+def _owner(monkeypatch):
+    """Run as the dashboard owner: this module covers the TERRITORY guard.
+
+    The owner gate that also fronts these handlers has its own dedicated
+    coverage in ``test_skill_write_guard.py``; here it would only stand between
+    the test and the read-only-territory behavior under test.
+    """
+    monkeypatch.setattr(
+        prompts_mod, "is_owner_dashboard_request", lambda _request: True, raising=False
+    )
+
+
 class _FakeRequest:
     """The slice of ``web.Request`` the two skill CRUD handlers actually read."""
 

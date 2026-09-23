@@ -67,7 +67,7 @@ function Scenes() {
         <div data-row className="flex items-center gap-2 px-3 py-2 overflow-hidden border-t border-border bg-bg-subtle">
           <input
             type="text"
-            className={`flex-1 ${minW}px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-none focus:border-accent transition-colors`}
+            className={`flex-1 ${minW}px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-hidden focus:border-accent transition-colors`}
             defaultValue="a message long enough to exceed the input's intrinsic minimum width"
           />
           <button data-trailing className="p-2 rounded-md bg-accent text-accent-fg shrink-0" aria-label="Send message">↑</button>

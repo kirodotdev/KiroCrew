@@ -208,6 +208,80 @@ describe('diffOffThread computePairPatch', () => {
       expect(_diffCacheChars()).toBe(before)
     })
 
+    it('keeps exact retention through repeated eviction, bypass, abort and recreation', async () => {
+      const { computePairPatch, CACHE_MAX_CHARS, _diffCacheChars } = await import('../pierre/diffOffThread')
+      expect(CACHE_MAX_CHARS).toBe(4_000_000)
+      const post = vi.spyOn(StubWorker.prototype, 'postMessage')
+      const pair = (name: string, size = 480_000) => {
+        const bulk = '文'.repeat(size)
+        const oldFile = file(name, bulk + '\nold\n')
+        const newFile = file(name, bulk + '\nnew\n')
+        const response = handlePairDiffRequest({
+          id: 0, oldName: name, newName: name,
+          oldContents: oldFile.contents, newContents: newFile.contents,
+        })
+        if (!response.ok) throw new Error(response.error)
+        // Four JSON strings plus two brackets and three commas. Account from
+        // the fixture and real patch, never from the cache's running counter.
+        const chars = [name, name, oldFile.contents, newFile.contents]
+          .reduce((sum, text) => sum + JSON.stringify(text).length, 5) + response.patch.length
+        return { oldFile, newFile, patch: response.patch, chars }
+      }
+      type Pair = ReturnType<typeof pair>
+      let retained: Pair[] = []
+      const check = () => {
+        expect(_diffCacheChars()).toBe(retained.reduce((sum, entry) => sum + entry.chars, 0))
+        expect(_diffCacheChars()).toBeLessThanOrEqual(4_000_000)
+      }
+      const request = async (entry: Pair, hit: boolean, cacheable = true) => {
+        const calls = post.mock.calls.length
+        expect(await computePairPatch(entry.oldFile, entry.newFile)).toBe(entry.patch)
+        expect(post.mock.calls.length - calls).toBe(hit ? 0 : 1)
+        if (cacheable) {
+          // These fixtures each cost between one third and one half of the
+          // budget: exactly two fit. Keep a separate expected two-entry LRU.
+          expect(entry.chars).toBeGreaterThan(4_000_000 / 3)
+          expect(entry.chars).toBeLessThan(4_000_000 / 2)
+          retained = [...retained.filter(item => item !== entry), entry].slice(-2)
+        }
+        check()
+      }
+      try {
+        for (let cycle = 0; cycle < 3; cycle++) {
+          const a = pair(`a-${cycle}.ts`)
+          const b = pair(`b-${cycle}.ts`)
+          const c = pair(`c-${cycle}.ts`)
+          await request(a, false)
+          await request(b, false)
+          await request(a, true) // Refresh A: inserting C must evict B, not A.
+          await request(c, false)
+          await request(a, true)
+          await request(c, true)
+          await request(b, false) // Evicted B is recomputed; A now leaves.
+          const huge = pair(`huge-${cycle}.ts`, 1_400_000)
+          expect(huge.chars).toBeGreaterThan(4_000_000)
+          await request(huge, false, false)
+          await request(huge, false, false)
+          await request(c, true) // Oversized bypass must preserve useful entries.
+
+          const controller = new AbortController()
+          const abandoned = computePairPatch(file(`abort-${cycle}`, 'old\n'), file(`abort-${cycle}`, 'new\n'), controller.signal)
+          const workers = StubWorker.instances.length
+          controller.abort() // Before the stub's queued response, without sleeps.
+          await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' })
+          expect(StubWorker.terminated).toBe(cycle + 1)
+          check() // A late response from the old worker cannot populate the cache.
+          await request(b, true)
+          expect(StubWorker.instances).toHaveLength(workers)
+          await request(a, false)
+          expect(StubWorker.instances).toHaveLength(workers + 1)
+          await request(b, true)
+        }
+      } finally {
+        post.mockRestore()
+      }
+    })
+
     it('two concurrent misses for one pair count its footprint once', async () => {
       const { computePairPatch, _diffCacheChars } = await import('../pierre/diffOffThread')
       const oldF = file('c.ts', 'a\n')

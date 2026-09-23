@@ -488,6 +488,13 @@
       "description": "Compact is the original view. Comfortable and Full use more screen space."
     },
     {
+      "id": "chat.content-filter-fallback-model",
+      "label": "Content-filter fallback model",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Aagent.refusal_fallback_model",
+      "configKey": "agent.refusal_fallback_model"
+    },
+    {
       "id": "chat.default-memory-mode",
       "label": "Default Memory Mode",
       "tab": "chat",
@@ -586,6 +593,20 @@
       "description": "Combine follow-up messages into a single labeled prompt while the agent is busy"
     },
     {
+      "id": "chat.message-font-size",
+      "label": "Message Font Size",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.message-font-size",
+      "description": "Font size for the conversation, in every session: message text, code, tables, suggested replies and the message input. The Compact content width grows to match. Sidebar, session list and the rest of the interface are unaffected."
+    },
+    {
+      "id": "chat.minimap-location",
+      "label": "Minimap location",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.minimap-location",
+      "description": "When located on the right edge, the minimap replaces the scroll bar."
+    },
+    {
       "id": "chat.pin-the-latest-turn",
       "label": "Pin the latest turn",
       "tab": "chat",
@@ -675,6 +696,12 @@
       "tab": "chat",
       "route": "/settings/chat?highlight=chat.show-context-tokens",
       "description": "Display used and total tokens next to the context progress bar"
+    },
+    {
+      "id": "chat.show-pasted-text-in-full",
+      "label": "Show Pasted Text in Full",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.show-pasted-text-in-full"
     },
     {
       "id": "chat.show-thinking-inline",
@@ -851,11 +878,39 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
+      "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
+      "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
+      "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
+    },
+    {
+      "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
+      "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
+      "description": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
+    },
+    {
+      "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
+      "label": "Also send tool-call arguments so Jev can flag risky calls",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
+      "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
+    },
+    {
+      "id": "developer.artifact-deploy",
+      "label": "Artifact Deploy",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.artifact-deploy",
+      "description": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet."
+    },
+    {
       "id": "developer.chat-on-a-crew",
       "label": "Chat on a crew",
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.chat-on-a-crew",
-      "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane."
+      "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane."
     },
     {
       "id": "developer.crew-members",
@@ -865,6 +920,13 @@
       "description": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
     },
     {
+      "id": "developer.decisions-jev",
+      "label": "Decisions (Jev)",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.decisions-jev",
+      "description": "Jev is a small, fast decision model. With this on, Kiro Crew asks Jev which one of your skills fits the message you just sent — or that none does — and uses Jev's pick for the share of your sessions shown under the switch; the rest keep the word-matching rule this build ships with. If Jev is slow, unreachable or answers with nothing usable, that message falls back to the same rule, so a decision never holds up your reply. Each call is also recorded in a log on the machine that runs Kiro Crew, for diagnostics. This switch is saved on the machine that runs Kiro Crew, not in this browser, so it applies on every device you open it from."
+    },
+    {
       "id": "developer.developer-mode",
       "label": "Developer Mode",
       "tab": "developer",
@@ -872,11 +934,32 @@
       "description": "Show Developer page in sidebar with Logs, System metrics, and Memory internals"
     },
     {
-      "id": "developer.remote-instance-sessions",
-      "label": "Remote instance sessions",
+      "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
+      "label": "Earlier conversation one decision may carry, in characters",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.remote-instance-sessions",
-      "description": "Merge a connected remote instance's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
+      "route": "/settings/developer?highlight=developer.earlier-conversation-one-decision-may-carry-in-characters",
+      "description": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine."
+    },
+    {
+      "id": "developer.jev-api-key",
+      "label": "Jev API key",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.jev-api-key",
+      "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
+    },
+    {
+      "id": "developer.model-for-the-small-model-judge",
+      "label": "Model for the small-model judge",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.model-for-the-small-model-judge",
+      "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
+    },
+    {
+      "id": "developer.remote-crew-sessions",
+      "label": "Remote crew sessions",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.remote-crew-sessions",
+      "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
     },
     {
       "id": "developer.run-a-local-gateway",
@@ -891,6 +974,12 @@
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.webhooks",
       "description": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished."
+    },
+    {
+      "id": "developer.which-judge-answers",
+      "label": "Which judge answers",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.which-judge-answers"
     },
     {
       "id": "display.command-completion",
@@ -986,6 +1075,14 @@
       "description": "Choose a color palette for your sidebar sessions."
     },
     {
+      "id": "display.spend-a-few-credits-to-check-your-balance",
+      "label": "Spend a few credits to check your balance",
+      "tab": "display",
+      "route": "/settings/display?highlight=key%3Adashboard.usage_text_scrape_enabled",
+      "description": "When your usage data is not available for free, your balance can still be checked by sending one billed message, about every 10 minutes while a dashboard tab is open. Each check spends a small number of credits.",
+      "configKey": "dashboard.usage_text_scrape_enabled"
+    },
+    {
       "id": "display.theme",
       "label": "Theme",
       "tab": "display",
@@ -1007,7 +1104,7 @@
     },
     {
       "id": "instances.enable-remote-crew-management",
-      "label": "Enable remote instance management",
+      "label": "Enable remote crew management",
       "tab": "instances",
       "route": "/settings/instances?highlight=key%3Ainstances.enabled",
       "configKey": "instances.enabled"
@@ -1066,6 +1163,13 @@
       "tab": "notifications",
       "route": "/settings/notifications?highlight=notifications.sound-category-agent",
       "description": "When the agent proactively messages you outside a chat"
+    },
+    {
+      "id": "notifications.show-a-banner-for-new-notifications",
+      "label": "Show a banner for new notifications",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.show-a-banner-for-new-notifications",
+      "description": "A card slides in under the top bar when a notification arrives, then tucks into the bell."
     },
     {
       "id": "notifications.sound-category-skills",
@@ -1206,7 +1310,7 @@
       "label": "Auto-generate skills from sessions",
       "tab": "skills",
       "route": "/settings/skills?highlight=key%3Askills.auto_create_from_sessions",
-      "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on the Skills tab for review — nothing goes live without your approval (see below).",
+      "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on Agent Capabilities → Skills for review — nothing goes live without your approval (see below).",
       "configKey": "skills.auto_create_from_sessions"
     },
     {
@@ -1229,7 +1333,6 @@
       "label": "Auto-submit when I finish speaking",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.endpointing",
-      "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
       "configKey": "stt.endpointing"
     },
     {
@@ -1264,15 +1367,13 @@
       "id": "voice.dictation-panel",
       "label": "Dictation panel",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.dictation-panel",
-      "description": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion."
+      "route": "/settings/voice?highlight=voice.dictation-panel"
     },
     {
       "id": "voice.enabled",
       "label": "Enabled",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.enabled",
-      "description": "Transcribe voice into the message box when you click the mic"
+      "route": "/settings/voice?highlight=voice.enabled"
     },
     {
       "id": "voice.engine",
@@ -1295,35 +1396,17 @@
       "configKey": "stt.language_code"
     },
     {
-      "id": "voice.live-transcript-refresh-ms",
-      "label": "Live transcript refresh (ms)",
-      "tab": "voice",
-      "route": "/settings/voice?highlight=key%3Astt.partial_interval_ms",
-      "description": "How often the transcript is redrawn while you speak. Lower feels more immediate and costs more processing.",
-      "configKey": "stt.partial_interval_ms"
-    },
-    {
       "id": "voice.microphone",
       "label": "Microphone",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.microphone",
-      "description": "Input device used to capture your voice"
+      "route": "/settings/voice?highlight=voice.microphone"
     },
     {
       "id": "voice.model",
       "label": "Model",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.model",
-      "description": "Models download on demand. Select one and click Download now; the desktop app already includes every other runtime dependency.",
       "configKey": "stt.model"
-    },
-    {
-      "id": "voice.pause-that-ends-a-phrase-ms",
-      "label": "Pause that ends a phrase (ms)",
-      "tab": "voice",
-      "route": "/settings/voice?highlight=key%3Astt.silence_ms",
-      "description": "How much silence commits what you just said. Lower reacts sooner; higher tolerates thinking pauses.",
-      "configKey": "stt.silence_ms"
     },
     {
       "id": "voice.piper-binary",
@@ -1344,7 +1427,6 @@
       "label": "Provider",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.provider",
-      "description": "Local speech recognition runs on this machine and sends nothing anywhere. Transcribe uploads your audio to AWS.",
       "configKey": "stt.provider"
     },
     {
@@ -1386,7 +1468,6 @@
       "label": "Streaming",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.streaming",
-      "description": "Show the transcript in the input box as you speak, instead of only when you stop.",
       "configKey": "stt.streaming"
     },
     {
@@ -1395,6 +1476,14 @@
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.tap-vs-hold-cutoff",
       "description": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on."
+    },
+    {
+      "id": "voice.tidy-up-transcripts-with-ai",
+      "label": "Tidy up transcripts with AI",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.polish",
+      "description": "Sends the finished text, never the audio, to the AI model you already chat with, which fixes punctuation and capitalisation. Your words are never changed.",
+      "configKey": "stt.polish"
     },
     {
       "id": "voice.voice",

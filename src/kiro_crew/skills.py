@@ -10,18 +10,23 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import stat
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
+from contextvars import copy_context
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from itertools import zip_longest
+from itertools import batched, islice, zip_longest
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator, NamedTuple
 
+from kiro_crew import hooks as hooks_module
 from kiro_crew import pinned_fs, skill_trust
 from kiro_crew.atomic_write import (
     atomic_write,
@@ -38,6 +43,7 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
     validate_file_path,
 )
+from kiro_crew.memory_recall import recall_terms
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.platform_compat import (
     ensure_owner_rwx_dirs,
@@ -47,18 +53,34 @@ from kiro_crew.platform_compat import (
 from kiro_crew.project_scope import project_scope_satisfied
 from kiro_crew.security import (
     is_sensitive_path,
+    is_sensitive_resolved_path,
     redact_credentials,
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.skill_search_index import (
+    SKILL_SEARCH_INDEX_FILENAME,
+    SkillSearchIndex,
+    body_fingerprint,
+)
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
-from kiro_crew.skills_script_validator import validate_scripts
+from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
 
 logger = logging.getLogger(__name__)
 
 
 SKILLS_DIR_NAME = "skills"
+# Filesystem latency dominates cold discovery. Bound both active readers and
+# submitted work so a large catalog cannot create one thread/future per skill.
+_CATALOG_READ_WORKERS = 8
+_CATALOG_READ_BATCH = 64
+# One script-entry population budget for the pending verdict and API reports.
+# Reports may additionally retain ONE fixed truncation-summary entry.
+_PENDING_SCRIPT_MAX_ENTRIES = 64
+_VALIDATION_REPORT_MAX_FINDINGS = 16
+_VALIDATION_REPORT_MAX_STRING_CHARS = 1024
+_VALIDATION_REPORT_TRUNCATION_KEY = "<truncated>"
 #: Re-exported from ``trigger_match``, which owns the value and the grammar
 #: it belongs to. Kept as a module name because tests and call sites here
 #: reference it.
@@ -90,6 +112,79 @@ _DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {
     os.rename,
     os.rmdir,
 }.issubset(os.supports_dir_fd)
+
+
+def _body_term_hits(content: str, terms: Iterable[str]) -> int:
+    """How many of *terms* the body carries, by the SAME rule the index uses.
+
+    Tokenized, then prefix-matched per token, because the persisted index answers
+    that way: it stores `recall_terms` output and matches a query term against
+    stored terms it prefixes. A plain substring scan here would score the two paths
+    differently, so whether a skill ranked at all would depend on which path
+    answered for it -- and both can answer inside ONE search, since the index hands
+    individual keys back for a direct read.
+
+    Concretely, substring scoring let `rollback` match a body whose only occurrence
+    is inside `scrollback`; the index calls that a near miss, and so does this.
+    """
+    body_terms = recall_terms(content)
+    if not body_terms:
+        return 0
+    return sum(1 for term in terms if any(bt.startswith(term) for bt in body_terms))
+
+
+def _namespace_groups(skills: list[dict]) -> list[tuple[str, int]]:
+    """Family label and member count for the skills the discovery entry omits.
+
+    Eight names out of a thousand skills describe what the operator used lately,
+    not what the machine can do, and the tail is reachable only by a search whose
+    keywords the model has to guess. A family label plus its size is the cheapest
+    thing that answers "is there anything here about X": one short line, flat in
+    the number of skills, and phrased in the same vocabulary the keys use, so
+    ``app-* (40)`` is already a usable query.
+
+    The label is the key's FIRST segment — the directory for a nested key
+    (``kirocrew-dev/babysit`` -> ``kirocrew-dev/``), otherwise the leading hyphen
+    token (``web-verify`` -> ``web-*``). One rule, so the line cannot reorder
+    itself as skills are added. A family of one is left out: its label would carry
+    no more than the name already does.
+    """
+    counts: dict[str, int] = {}
+    for skill in skills:
+        key = str(skill.get("key", ""))
+        if "/" in key:
+            label = key.split("/", 1)[0] + "/"
+        elif "-" in key:
+            label = key.split("-", 1)[0] + "-*"
+        else:
+            continue
+        counts[label] = counts.get(label, 0) + 1
+    return sorted(
+        ((label, count) for label, count in counts.items() if count > 1),
+        key=lambda pair: (-pair[1], pair[0]),
+    )
+
+
+#: Labels on one family line. A bound rather than a budget trim, so the line
+#: cannot grow long enough to push a named skill (which carries the description,
+#: the only text saying what a skill does) out of a tight allowance.
+_FAMILY_LINE_MAX_LABELS = 6
+
+
+def _family_line(skills: list[dict]) -> str:
+    """One short line naming the families *skills* belong to, or ``""``.
+
+    Bounded at :data:`_FAMILY_LINE_MAX_LABELS` labels, with the rest reported as
+    a count, so the cost of this line does not scale with the catalog.
+    """
+    groups = _namespace_groups(skills)
+    if not groups:
+        return ""
+    shown, rest = groups[:_FAMILY_LINE_MAX_LABELS], groups[_FAMILY_LINE_MAX_LABELS:]
+    text = ", ".join(f"{label} ({count})" for label, count in shown)
+    if rest:
+        text += f", +{len(rest)} more"
+    return text
 
 
 def _matches_any(path: str, globs: list[str]) -> bool:
@@ -144,27 +239,75 @@ _DOLLAR_SKILL_PATTERN = re.compile(r"(?<![\w$])\$([a-z0-9][a-z0-9/_-]*)")
 # Cap how many distinct $skills one message may expand — bounds prompt growth and
 # matches the spirit of the per-message trigger cap.
 _MAX_DOLLAR_SKILLS = 5
-# Cache the discovered skill-file list for this long. get_triggered_skills runs
-# on EVERY message; without this it os.walk()s the skills dir + every extra
-# path per message.
+# How long a discovered skill-file list is served before a REVALIDATION is due.
+# Reaching this deadline never costs the caller a walk: the stale list is handed
+# back and the re-walk is queued onto the catalog-refresh worker (see
+# _request_catalog_refresh). So the deadline bounds how out-of-date an OUT OF BAND
+# change (an AIM sync, a manual cp) may be, and nothing else — the app's own
+# create/update/delete/refresh all call _invalidate_iter_cache(), so a skill
+# written through the app is visible immediately regardless of this value.
 #
-# This was 5.0s, which did not achieve that: a walk of a real skills tree (645
-# files across 21 roots on a dev desktop, incl. AIM-installed package roots)
-# takes ~0.7s, and chat messages arrive MINUTES apart — so every message missed
-# the cache and paid the full walk, and the 5s only ever deduped the several
-# _iter() calls WITHIN one message. At 60s the walk is amortized ~12x with a
-# worst-case staleness of one minute.
-#
-# Staleness only affects skills added OUT OF BAND (AIM sync, a manual cp):
-# the app's own create/update/delete/refresh all call _invalidate_iter_cache(),
-# so a skill written through the app is visible immediately regardless of TTL.
+# The value is sized against the walk it amortizes, not picked for tidiness: a walk
+# of a real skills tree (645 files across 21 roots on a dev desktop, incl.
+# AIM-installed package roots) takes ~0.7s, while chat messages arrive MINUTES
+# apart, so anything on the order of seconds is missed by every message and
+# amortizes nothing. At 60s one walk covers ~12 messages.
 _ITER_CACHE_TTL_SECS = 60.0
+
+# How long a caller with NOTHING to serve waits for the first walk of a root set.
+#
+# This is the one case where a turn can wait on discovery at all: no in-memory
+# list, and no stored snapshot either — a machine's very first run, or one whose
+# index file was deleted. It is a bounded wait on a background build, not a walk
+# on the calling thread: when the budget runs out the caller is served whatever
+# has been published, the scope is marked INCOMPLETE (see `catalog_status`), and
+# the same build keeps going, so the next call adopts the finished snapshot.
+#
+# Why wait at all rather than return empty immediately: a small tree finishes
+# inside this budget, and finishing is what makes `always: true` bodies known and
+# therefore honored. Returning empty would make the first session on every machine
+# start without its required instructions. The budget is what keeps a
+# 5,000-skill tree from turning that guarantee into a minute of silence — such a
+# tree is served from its snapshot on every run but the first.
+_COLD_CATALOG_WAIT_SECS = 2.0
+
+# A snapshot read off disk is revalidated only when it is older than this, so a
+# process that starts, answers one call and exits does not queue a walk of a tree
+# another process enumerated moments ago.
+_CATALOG_REVALIDATE_AFTER_SECS = 60.0
+
+# What an agent is told when its scope is served from an unfinished first walk.
+# Named rather than inlined because two properties are load-bearing: it must say
+# that an always-loaded skill may be MISSING (silence about that is the failure
+# this notice exists to avoid), and it must name the call that re-reads the set,
+# so the agent has an action rather than a warning.
+_DISCOVERY_IN_PROGRESS_NOTICE = (
+    "[Skills: discovery in progress]\n"
+    "This machine's skill directory is still being built, so the set below may be "
+    "incomplete and an always-loaded skill may not have been injected yet. Re-run "
+    "skill_search(action='list', offset=0) before concluding a skill does not exist.\n"
+    "[End of skills notice]\n\n"
+)
 
 # A granted repository remains attacker-controlled after consent. Bound the
 # descriptor-relative walker well below Python's recursion limit so a malicious
 # nesting chain cannot crash discovery for the whole chat turn. Depth counts
 # directories below the project's .kiro/skills root; files at the cap still load.
 _PROJECT_SKILL_MAX_DEPTH = 64
+# Byte bound on any confined project skill body read on behalf of a session:
+# context injection, the skill_search body grep and the /api/skills search
+# route all read through this one cap, so an oversized project SKILL.md is
+# skipped rather than loaded whole.
+PROJECT_SKILL_BODY_CAP = 24_750
+PINNED_SKILL_BODIES_CAP = 99_000
+
+
+class SkillContextCapacityError(ValueError):
+    """Required instructions cannot fit; never silently cut a required skill."""
+
+
+# The "[Skills:]" opener and "[End of skills]" closer wrapping the whole block.
+_MAPPED_BLOCK_OVERHEAD_BYTES = 64
 
 # ── Auto skill creation ──
 
@@ -640,24 +783,6 @@ def _disabled_app_names() -> frozenset[str]:
         return frozenset()
 
 
-def _skill_content_digest(path: str, cache: dict[str, "bytes | None"]) -> "bytes | None":
-    """SHA-256 of the file at *path*, memoized in *cache*; ``None`` if unreadable.
-
-    Only ever called for rows whose cheap fingerprint already collided, so the
-    read cost is zero on the no-duplicate path and one read per colliding copy
-    otherwise. ``None`` (unreadable) never compares equal — a row that cannot
-    be verified identical is kept, not dropped.
-    """
-    if path in cache:
-        return cache[path]
-    try:
-        digest: bytes | None = hashlib.sha256(Path(path).read_bytes()).digest()
-    except OSError:
-        digest = None
-    cache[path] = digest
-    return digest
-
-
 def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
     """Drop later rows that are verified byte-identical copies of an earlier row.
 
@@ -667,9 +792,9 @@ def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
        fields a summary line is rendered from, all already loaded by
        ``list_skills()``. No collision (the overwhelmingly common case) means
        no file I/O at all.
-    2. **Content verification** — on a fingerprint collision only, hash the
-       actual file bytes of both rows and drop the later row **only when the
-       digests match**. Equal-metadata skills whose bodies differ (which the
+    2. **Content verification** — compare the SHA-256 digests captured when
+       metadata was safely read, and drop the later row **only when the digests
+       match**. Equal-metadata skills whose bodies differ (which the
        pinned path would inject in full) are all kept; an unreadable file is
        kept, never dropped.
 
@@ -679,7 +804,6 @@ def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
     only arise from unconfined trees anyway.
     """
     seen: dict[tuple[str, str, int], list[dict]] = {}
-    digest_cache: dict[str, bytes | None] = {}
     out: list[dict] = []
     for s in skills:
         if s.get("confine_root"):
@@ -687,13 +811,9 @@ def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
             continue
         fp = (str(s.get("name", "")), str(s.get("description", "")), int(s.get("size_bytes") or 0))
         rivals = seen.setdefault(fp, [])
-        this_digest = None
         if rivals:
-            this_digest = _skill_content_digest(str(s.get("path", "")), digest_cache)
-            if this_digest is not None and any(
-                _skill_content_digest(str(r.get("path", "")), digest_cache) == this_digest
-                for r in rivals
-            ):
+            this_digest = s.get("content_digest")
+            if this_digest and any(r.get("content_digest") == this_digest for r in rivals):
                 continue  # verified byte-identical copy of an earlier row
         rivals.append(s)
         out.append(s)
@@ -720,7 +840,10 @@ def _builtin_dir_app_name(pkg_dir: str) -> str | None:
 
 
 def _iter_skill_files(
-    base: Path, *, confine_to: tuple[str, ...] | None = None
+    base: Path,
+    *,
+    confine_to: tuple[str, ...] | None = None,
+    exclude_roots: tuple[str, ...] = (),
 ) -> list[tuple[str, Path]]:
     """Recursively find all SKILL.md files under *base*.
 
@@ -748,54 +871,76 @@ def _iter_skill_files(
             results.append((str(rel).replace("\\", "/"), skill_file))
         return sorted(results, key=lambda item: item[0])
 
-    results = []
     if not base.exists():
-        return results
-    real_base = os.path.realpath(base)
-    # A skills-tree symlink into an app's own tree resolves outside ``base`` by
-    # construction — allow those provider roots, and nothing else.
-    allowed_roots = (real_base,) + _trusted_skill_roots()
+        return []
+    allowed_roots = (os.path.realpath(base),) + _trusted_skill_roots()
+
+    def probe(directory: Path) -> tuple[str | None, list[Path], Path | None]:
+        lexical = os.path.abspath(directory)
+        if exclude_roots and _within_any(lexical, exclude_roots):
+            return lexical, [], None
+        real = os.path.realpath(directory)
+        if exclude_roots and _within_any(real, exclude_roots):
+            return real, [], None
+        if not _within_any(real, allowed_roots) or is_sensitive_resolved_path(real):
+            return real, [], None
+        try:
+            with os.scandir(directory) as scan:
+                entries = list(scan)
+        except OSError:
+            # A failed alias has not visited its target. Another spelling may
+            # still enumerate it successfully, as with os.walk's error handling.
+            return None, [], None
+        children = []
+        has_skill = False
+        for entry in entries:
+            if exclude_roots and _within_any(os.path.abspath(entry.path), exclude_roots):
+                continue
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                is_dir = False
+            if is_dir and not entry.name.startswith("."):
+                children.append(directory / entry.name)
+            elif not is_dir and entry.name == "SKILL.md":
+                has_skill = True
+        children.sort(key=lambda path: path.name)
+        skill_file = directory / "SKILL.md"
+        if not has_skill:
+            return real, children, None
+        real_file = os.path.realpath(skill_file)
+        if exclude_roots and _within_any(real_file, exclude_roots):
+            return real, children, None
+        if not _within_any(real_file, allowed_roots) or is_sensitive_resolved_path(real_file):
+            return real, children, None
+        return real, children, skill_file
+
+    results = []
     seen_real: set[str] = set()
-    for dirpath, _dirs, files in os.walk(base, followlinks=True):
-        real = os.path.realpath(dirpath)
-        if real in seen_real:
-            _dirs.clear()  # prune this branch — symlink loop
-            continue
-        seen_real.add(real)
-        # Prune dot-directories (e.g. ``auto/.archive``, ``.pending``) so
-        # archived / pending / hub-state skills are never enumerated as live,
-        # trigger-matchable skills. Mutating ``_dirs`` in place prunes the walk.
-        # SORTED so enumeration is deterministic: ``bridges._register_skills``
-        # registers each app skill twice (``skills/<app>/<skill>`` and a flat
-        # ``skills/<skill>``), both resolving to one target, so the ``seen_real``
-        # guard keeps exactly one — and without a sort ``os.walk`` picks the
-        # winner in arbitrary ``scandir`` order, giving the same skill a
-        # different key on different machines.
-        _dirs[:] = sorted(d for d in _dirs if not d.startswith("."))
-        # Path containment: stay inside the skills base, or inside a trusted
-        # skill-provider root reached through an app's registered symlink.
-        if not _within_any(real, allowed_roots):
-            _dirs.clear()
-            continue
-        if is_sensitive_path(real):
-            _dirs.clear()  # never traverse into credential stores
-            continue
-        if "SKILL.md" in files:
-            skill_file = Path(dirpath) / "SKILL.md"
-            real_file = os.path.realpath(str(skill_file))
-            if is_sensitive_path(real_file):
+    # Commit probes in sorted depth-first order, irrespective of completion
+    # order, so links sharing a target keep the same canonical skill key.
+    stack = [base]
+    pending: dict[Path, Future[tuple[str | None, list[Path], Path | None]]] = {}
+    with ThreadPoolExecutor(
+        max_workers=_CATALOG_READ_WORKERS, thread_name_prefix="skill-walk"
+    ) as pool:
+        while stack:
+            for directory in reversed(stack):
+                if len(pending) >= _CATALOG_READ_BATCH:
+                    break
+                if directory not in pending:
+                    pending[directory] = pool.submit(copy_context().run, probe, directory)
+            directory = stack.pop()
+            future = pending.pop(directory, None)
+            real, children, discovered_file = future.result() if future else probe(directory)
+            if real is None or real in seen_real:
                 continue
-            # Containment for the FILE, not just its directory. The directory
-            # check above cannot cover this: a symlinked SKILL.md sits inside a
-            # perfectly contained directory, and reading it parses attacker-
-            # controlled frontmatter (name/description/triggers) into the
-            # catalog and the injected skills index.
-            if not _within_any(real_file, allowed_roots):
-                continue
-            rel = skill_file.parent.relative_to(base)
-            name = str(rel).replace("\\", "/")
-            results.append((name, skill_file))
-    return sorted(results, key=lambda x: x[0])
+            seen_real.add(real)
+            if discovered_file is not None:
+                name = str(directory.relative_to(base)).replace("\\", "/")
+                results.append((name, discovered_file))
+            stack.extend(reversed(children))
+    return sorted(results, key=lambda item: item[0])
 
 
 # Skills RELOCATED into the kirocrew-dev/ folder (the Kiro Crew development
@@ -1934,6 +2079,56 @@ def remove_retired_conductor_skill() -> bool:
         os.close(root_fd)
 
 
+class _ScopedSkillEntry(NamedTuple):
+    """Admission provenance travels with the entry, independently of its key."""
+
+    key: str
+    path: Path
+    project_root: str | None
+    mapping_root: str | None = None
+
+
+def _fingerprint_mtime_and_size(fingerprint: str) -> tuple[float | None, int]:
+    """Recover ``(mtime, size)`` from a ``dev:ino:ctime_ns:mtime_ns:size`` string.
+
+    Lets a catalog read reuse the stat the WALK already paid instead of taking its
+    own. ``(None, 0)`` for anything that does not parse, which sends the caller
+    down the ordinary stat path rather than serving an invented size — a wrong
+    figure here is reported to the user as a skill's injection cost.
+    """
+    parts = fingerprint.split(":")
+    if len(parts) != 5:
+        return None, 0
+    try:
+        return int(parts[3]) / 1_000_000_000, int(parts[4])
+    except ValueError:
+        return None, 0
+
+
+class PendingApprovalRefused(Exception):
+    """A pending-candidate approval was refused, with a machine-readable reason.
+
+    ``reason`` is one of: ``not_found`` (no such candidate), ``live_exists``
+    (a live skill already holds the name), ``kind_mismatch`` (an update
+    candidate reached the new-skill approve variant, which would promote it
+    fresh while its live target stays unchanged), ``script_validation_failed``
+    (``report`` carries the redacted ``{filename: [findings]}`` map from
+    ``validate_scripts``), ``target_missing`` (an update candidate whose live
+    target is gone), ``stale_base`` (an update merged against an older live
+    version), ``invalid_layout`` (symlink / unexpected candidate entry),
+    ``redaction_failed``, or ``promotion_failed`` (an OS-level I/O failure —
+    a read or write — after all checks passed). Raised by the ``*_checked`` approve variants so
+    the dashboard can tell the user WHY the click did nothing; the legacy
+    ``approve_pending_skill`` / ``approve_pending_update`` wrappers keep the
+    ``None``-on-failure contract for existing callers.
+    """
+
+    def __init__(self, reason: str, report: dict | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.report = report
+
+
 class SkillsLoader:
     """Load skill markdown files from ~/.kiro/crew/skills/.
 
@@ -1985,6 +2180,46 @@ class SkillsLoader:
         # slot would serve one session's project skills to a session working in
         # a different project for the whole TTL. (monotonic_deadline, results)
         self._iter_cache: dict[str, tuple[float, list[tuple[str, Path, str | None]]]] = {}
+        # Stat fingerprints from the walk that produced each scope's list, so
+        # `list_skills` can decide whether a persisted metadata row is still usable
+        # WITHOUT re-stat'ing every skill. Keyed scope key → path → fingerprint;
+        # an absent entry simply means "stat it yourself".
+        self._catalog_fingerprints: dict[str, dict[str, str]] = {}
+        # Scope keys whose served list is known to be partial, because the first
+        # build outran `_COLD_CATALOG_WAIT_SECS`. Read by `catalog_status` so a
+        # search, a list or a directory build can say "still discovering" instead
+        # of reporting a truncated answer as the whole truth.
+        self._catalog_incomplete: set[str] = set()
+        # Unconfined paths adopted from the STORED snapshot that this process has not
+        # itself admitted. The index is an agent-writable crew-home leaf, so a stored
+        # row is not evidence anything vetted the path it names;
+        # `_read_enumerated_skill_bytes` re-runs `validate_file_path` on a path in
+        # here before its first read. A walk that republishes a scope clears it.
+        self._snapshot_unadmitted: set[str] = set()
+        # Single-flight background builds: scope key → the event its build sets on
+        # completion. Concurrent sessions sharing this loader join one walk rather
+        # than each walking the same tree.
+        self._catalog_refreshes: dict[str, tuple[threading.Event, int]] = {}
+        # Scope keys queued for the refresh worker, with the generation current when
+        # each was queued. One worker drains them, so N scopes cost N SERIAL walks
+        # rather than N concurrent ones — a session count must not multiply the
+        # filesystem work a shared corpus costs.
+        self._catalog_pending: dict[str, int] = {}
+        self._catalog_wakeup = threading.Event()
+        self._catalog_worker: threading.Thread | None = None
+        # True while a build holds the search-index handle. `close()` then leaves
+        # shutting the index down to that build, so its store still lands: a host
+        # served only by short-lived loaders converges on nothing else.
+        self._catalog_building = False
+        # Guards the four structures above AND `_iter_cache`: background builds
+        # publish into them from a worker thread while foreground callers read.
+        self._catalog_lock = threading.Lock()
+        # Bumped by every in-process invalidation. A build that started before the
+        # bump is publishing an answer that predates a change already known, so its
+        # result is dropped rather than allowed to overwrite the newer state. The
+        # index's own epoch covers the same race BETWEEN processes.
+        self._catalog_generation = 0
+        self._closed = False
         self._disabled_apps_cache: tuple[float, frozenset[str]] | None = None
         # (canonical key, allowed) pairs already audited, so the enforcement
         # record is written on first use rather than once per message.
@@ -2050,6 +2285,18 @@ class SkillsLoader:
                 exc_info=True,
             )
             self._usage = None
+        # Term index behind `search_skills`'s body fallback, in the same home as
+        # the usage ledger. Best-effort for the same reason: an unusable index
+        # only costs the search its old per-file read path.
+        self._search_index: SkillSearchIndex | None
+        try:
+            self._search_index = SkillSearchIndex(self._dir.parent / SKILL_SEARCH_INDEX_FILENAME)
+        except Exception:  # pragma: no cover — index is best-effort
+            logger.warning(
+                "skill-search-index: init failed; search reads bodies from disk",
+                exc_info=True,
+            )
+            self._search_index = None
         # `skills.extra_paths` is a set of source ROOTS, so it is pushed rather than
         # read at use: re-resolving every root (a realpath plus a sensitivity check
         # per entry) on every message is exactly the cost the iter-cache exists to
@@ -2059,12 +2306,50 @@ class SkillsLoader:
             "skills.extra_paths", callback=self._on_config_change, name="SkillsLoader"
         )
 
+    def close(self) -> None:
+        """Release persistent resources owned by this loader.
+
+        ``_closed`` is set FIRST, so a build already on the worker publishes
+        nothing into a loader that is going away, and so no new build can be queued
+        behind this call. The worker is a DAEMON thread and is not joined: a cold
+        first walk can outlive the loader that triggered it, and the unsigned MCP
+        fallback closes its loader as soon as one search returns, so joining here
+        would charge that call the very walk this design moved off the request path.
+
+        A build still in flight KEEPS the index handle, and closes it itself when it
+        finishes. Closing it here instead would discard that walk's store, and on a
+        host served only by short-lived loaders the store is the one thing that lets
+        the next call skip the walk — so discarding it makes every call re-walk
+        forever. Publishing into this loader's memory is still refused; only the
+        persistence survives.
+
+        Every outstanding completion event is SET, because a queued build the
+        worker abandons never reaches the ``finally`` that would have set it — and a
+        cold caller waiting on that event would otherwise sit out its whole budget
+        for an answer that will never arrive.
+        """
+        with self._catalog_lock:
+            self._closed = True
+            self._catalog_pending.clear()
+            pending_events = [event for event, _gen in self._catalog_refreshes.values()]
+            self._catalog_refreshes.clear()
+            # A build in flight owns the handle until it returns; it closes the
+            # index on its own way out.
+            index = None if self._catalog_building else self._search_index
+        for event in pending_events:
+            event.set()
+        self._catalog_wakeup.set()
+        if index is not None:
+            index.close()
+
     async def _on_config_change(self, change: "live.ConfigChange") -> None:
-        # The screening stats every configured root (resolve + is_dir), and a root
-        # on a slow or network mount would stall the loop, so it runs off-loop;
-        # only the adoption of the screened list happens here.
+        # Both halves run off-loop. The screening stats every configured root
+        # (resolve + is_dir), and a root on a slow or network mount would stall the
+        # loop; the adoption then invalidates the persisted catalog, which takes
+        # SQLite's write lock and can wait out the busy timeout when another process
+        # holds it. Neither belongs on the gateway's event loop.
         screened = await asyncio.to_thread(self._screen_extra_paths, change.new)
-        self._adopt_extra_paths(screened)
+        await asyncio.to_thread(self._adopt_extra_paths, screened)
 
     def reconfigure(self, cfg: KiroCrewConfig) -> None:
         """Re-resolve the configured extra skill roots from *cfg* (synchronously).
@@ -2104,8 +2389,10 @@ class SkillsLoader:
 
         Edition-contributed roots are preserved and stay LAST (lowest precedence);
         they come from the platform context, not config, so a config write must not
-        drop them. The discovery cache is cleared so the next listing walks the new
-        roots instead of serving the old set for the rest of the TTL.
+        drop them. A root-set change is a full catalog invalidation, not just a
+        cleared list: the stored snapshot belongs to the OLD root set, and a walk
+        already in flight over those roots must not publish under the new scope, so
+        the persisted rows are dropped and the generation moved as well.
         """
         self._configured_extra_paths = resolved_paths
         merged = list(resolved_paths)
@@ -2113,7 +2400,7 @@ class SkillsLoader:
             if edition_path not in merged:
                 merged.append(edition_path)
         self._extra_paths = merged
-        self._iter_cache.clear()
+        self._invalidate_iter_cache()
 
     def _max_triggered_now(self) -> int:
         """The per-message trigger cap, read live.
@@ -2204,21 +2491,474 @@ class SkillsLoader:
             logger.warning("could not audit project-skills enforcement", exc_info=True)
 
     def _iter(self, project_dir: str | Path | None = None) -> list[tuple[str, Path, str | None]]:
-        """Return all ``(name, skill_file)`` pairs, TTL-cached per project.
+        """Return all ``(name, skill_file, within)`` triples without walking the tree.
 
         Local skills take precedence over extra paths, and both take precedence
-        over a trusted project's own skills. The underlying os.walk is cached
-        for ``_ITER_CACHE_TTL_SECS`` because this runs on every message via
-        ``get_triggered_skills`` — re-walking the skills tree (plus every extra
-        path) per message was a per-message latency cost.
+        over a trusted project's own skills. Precedence is why enumeration ORDER is
+        part of the answer and not an incidental detail of how it was produced.
+
+        Three tiers, none of which walks on the calling thread:
+
+        1. this loader's in-memory list, while it is inside
+           ``_ITER_CACHE_TTL_SECS``;
+        2. the same list past that deadline. Expiry SCHEDULES a re-walk; it never
+           charges one to the caller that happened to arrive after it;
+        3. the stored snapshot for this root set, adopted into tier 1. A restart,
+           and every short-lived loader (the unsigned MCP fallback builds one per
+           call), lands here rather than walking.
+
+        Only a scope with no snapshot at all — a machine's first run, or one whose
+        index file was deleted — waits, and then for at most
+        ``_COLD_CATALOG_WAIT_SECS`` on a background build. Past that the partial
+        answer is served with the scope marked incomplete, so a caller can say
+        "still discovering" instead of "no skills"; see :meth:`catalog_status`.
+
+        A served list says only which files EXIST. Mapping scope, disabled apps,
+        project consent and ``repo_scope`` are all applied live on top of it, and
+        every body read re-checks confinement on the descriptor it opened — so no
+        snapshot, however stale, can widen what a session reaches.
         """
-        key = self._trusted_project_key(project_dir)
-        cached = self._iter_cache.get(key)
-        if cached is not None and time.monotonic() < cached[0]:
+        key = self._catalog_scope_key(project_dir)
+        now = time.monotonic()
+        with self._catalog_lock:
+            cached = self._iter_cache.get(key)
+            stale = cached is not None and now >= cached[0]
+        if cached is not None:
+            if stale:
+                self._request_catalog_refresh(key)
             return cached[1]
-        results = self._iter_uncached(key or None)
-        self._iter_cache[key] = (time.monotonic() + _ITER_CACHE_TTL_SECS, results)
-        return results
+
+        snapshot = self._load_catalog_snapshot(key)
+        if snapshot is not None:
+            rows, built_at = snapshot
+            self._adopt_catalog(key, rows, {}, complete=True)
+            if time.time() - built_at >= _CATALOG_REVALIDATE_AFTER_SECS:
+                self._request_catalog_refresh(key)
+            return rows
+
+        with self._catalog_lock:
+            already_reported = key in self._catalog_incomplete
+        if already_reported:
+            # "Still discovering" has already been delivered for this scope, so
+            # charging every later turn the same budget would buy nothing and break
+            # the rule that a subsequent turn never waits.
+            self._request_catalog_refresh(key)
+            logger.debug("skill catalog: scope %r still building", key or "<global>")
+            return []
+
+        # Waiting on the WORKER rather than walking here is what bounds the cost:
+        # the walk continues after the budget expires, so the wait buys a complete
+        # answer when one is cheap and costs a fixed ceiling when it is not. The
+        # loop is what makes the budget the only limit: a build can be FENCED by a
+        # mutation that lands while it runs and then publishes nothing, and its
+        # replacement is queued behind it — so waking on one build's completion is
+        # not the same as the answer being ready.
+        deadline = time.monotonic() + _COLD_CATALOG_WAIT_SECS
+        while True:
+            done = self._request_catalog_refresh(key)
+            remaining = deadline - time.monotonic()
+            if done is None or remaining <= 0:
+                break
+            done.wait(timeout=remaining)
+            with self._catalog_lock:
+                cached = self._iter_cache.get(key)
+            if cached is not None:
+                return cached[1]
+        with self._catalog_lock:
+            cached = self._iter_cache.get(key)
+            if cached is not None:
+                return cached[1]
+            # The build is still running. Serve nothing, but RECORD that this is a
+            # partial answer so no caller reports it as a complete "no skills".
+            self._catalog_incomplete.add(key)
+        logger.debug("skill catalog: first build of scope %r still running", key or "<global>")
+        return []
+
+    def _catalog_scope_key(self, project_dir: str | Path | None) -> str:
+        """The scope this request reads, as a string the snapshot layer can key on.
+
+        ``_trusted_project_key`` answers ``""`` for "no trusted project", but a
+        falsy answer of any shape means the same thing, and the two must not select
+        DIFFERENT scopes — one would then be served a snapshot the other built. So
+        the coercion happens once, here, rather than at each of the three call
+        sites that would otherwise each have to remember it.
+        """
+        return self._trusted_project_key(project_dir) or ""
+
+    def catalog_status(self, project_dir: str | Path | None = None) -> str:
+        """``"complete"`` or ``"building"`` for the scope *project_dir* selects.
+
+        The distinction a caller cannot make from an empty result alone: a machine
+        with no skills and a machine whose first discovery pass has not finished
+        both enumerate to nothing. Search, list and directory callers use this to
+        say which one it is rather than presenting a partial answer as the truth.
+        """
+        key = self._catalog_scope_key(project_dir)
+        with self._catalog_lock:
+            return "building" if key in self._catalog_incomplete else "complete"
+
+    def _catalog_fingerprint_hint(self, project_dir: str | Path | None) -> dict[str, str]:
+        """Stat fingerprints from the walk that produced this scope's list.
+
+        Empty when this process has not walked the scope yet, which simply sends
+        ``list_skills`` down its own stat path.
+        """
+        key = self._catalog_scope_key(project_dir)
+        with self._catalog_lock:
+            return self._catalog_fingerprints.get(key, {})
+
+    def _catalog_scope_id(self, project_key: str) -> str:
+        """Stable identity of the ROOT SET a stored snapshot belongs to.
+
+        The project key alone is not enough: two loaders can share it and still
+        enumerate different trees (a different skills dir under a test
+        ``KIROCREW_HOME``, a different ``skills.extra_paths``). Keying on the roots
+        as well is what stops one configuration from being served another's
+        snapshot. It is also what makes a revoked project grant unreachable rather
+        than merely unused: withdrawing trust turns the project key back into ``""``
+        (see ``_trusted_project_key``), which selects a DIFFERENT scope, so the rows
+        naming that project's files cannot be read from. Digested rather than
+        concatenated so the key stays bounded and holds no path text for an
+        unrelated reader of the index file.
+        """
+        material = "\x00".join(
+            [str(self._dir), *(str(path) for path in self._extra_paths), project_key]
+        )
+        return hashlib.sha256(material.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+
+    def _snapshot_admitted_roots(self) -> tuple[str, ...]:
+        """Roots an unconfined row read off disk may legitimately name.
+
+        The walk admits an unconfined path one of two ways: it came out of a walk
+        of this loader's own roots, or ``validate_file_path`` resolved it — which
+        may land on an app provider's tree, since an app symlinks its skills into
+        the skills dir and the resolved target sits outside it by construction. A
+        row read back from the index has neither guarantee, so it is held to the
+        union of both: this loader's roots plus the same provider roots the mapping
+        walker admits. Lexical, so screening a whole snapshot costs no syscalls.
+        """
+        return (
+            os.path.realpath(self._dir),
+            *(os.path.realpath(path) for path in self._extra_paths),
+            *_trusted_skill_roots(),
+        )
+
+    def _load_catalog_snapshot(
+        self, project_key: str
+    ) -> tuple[list[tuple[str, Path, str | None]], float] | None:
+        """Read this scope's stored enumeration, or ``None`` when there is none.
+
+        ``None`` and an empty row list are different answers: the second means this
+        root set was walked and genuinely holds no skills, which must not be
+        re-walked on every message just because the answer is nothing.
+
+        No stat fingerprints come back with it, deliberately. They would record what
+        a walk in some earlier process saw, and nothing here knows how long ago that
+        was, so letting them stand in for metadata validation would make a new
+        process serve a description for a file edited out of band since — the one
+        thing a restart is expected to notice. A stored row may name a file; it may
+        never vouch for its contents.
+
+        The index file is an agent-WRITABLE crew-home leaf, so a stored row is not
+        evidence that anything admitted the path it names. Two things therefore
+        stand between a row and a read. Here, every unconfined row must name a path
+        under :meth:`_snapshot_admitted_roots` — lexical, so a whole snapshot is
+        screened without a syscall — and rows that fail are dropped rather than
+        served. Then each surviving unconfined path is recorded as NOT YET ADMITTED,
+        because containment alone does not say the file is still a regular file in a
+        non-sensitive location; ``_read_enumerated_skill_bytes`` re-runs
+        ``validate_file_path`` on it before the first read.
+        """
+        if self._search_index is None or self._closed:
+            return None
+        stored = self._search_index.catalog_snapshot(self._catalog_scope_id(project_key))
+        if stored is None:
+            return None
+        rows_raw, built_at = stored
+        admitted_roots = self._snapshot_admitted_roots()
+        own_roots = (self._dir, *self._extra_paths)
+        provider_roots = _trusted_skill_roots()
+        rows: list[tuple[str, Path, str | None]] = []
+        unadmitted: set[str] = set()
+        for key, path, confine_root in rows_raw:
+            absolute = os.path.abspath(path)
+            if confine_root:
+                # A confined row's root decides which directory its body is read
+                # under, so taking the stored value on trust would let a forged row
+                # name ANY project and have it read as a granted one. Only the
+                # trusted project key that selected this scope is accepted, the path
+                # must sit inside it, and the key must denote that path — the same
+                # pair check the unconfined branch applies, for the same reason: the
+                # mapping is matched on the path and the body delivered by the key.
+                if (
+                    not project_key
+                    or confine_root != project_key
+                    or not _within_any(absolute, (project_key,))
+                    or os.path.abspath(Path(project_key) / ".kiro" / "skills" / key / _SKILL_FILE)
+                    != absolute
+                ):
+                    logger.warning("skill catalog: refusing a stored row with a foreign root")
+                    return None
+                rows.append((key, Path(path), confine_root))
+                continue
+            if not _within_any(absolute, admitted_roots):
+                logger.warning("skill catalog: refusing a stored row outside every root")
+                return None
+            if not self._key_denotes_path(key, absolute, own_roots, provider_roots):
+                logger.warning("skill catalog: refusing a stored row whose key is not its path")
+                return None
+            rows.append((key, Path(path), None))
+            unadmitted.add(str(Path(path)))
+        with self._catalog_lock:
+            self._snapshot_unadmitted |= unadmitted
+        return rows, built_at
+
+    def _admit_snapshot_path(self, path: Path) -> bool:
+        """Re-run the walk's admission on an unconfined path read off disk.
+
+        ``True`` — and free — for every path this process walked itself, which is
+        the normal case: the set only ever holds rows adopted from the stored
+        snapshot, and a walk that republishes the scope empties it. A path in the
+        set is put through ``validate_file_path`` exactly once; admitting it retires
+        it from the set so later reads cost nothing, and a refusal leaves it in so a
+        second attempt is refused again rather than silently admitted.
+        """
+        key = str(path)
+        with self._catalog_lock:
+            if key not in self._snapshot_unadmitted:
+                return True
+        if validate_file_path(key) is None:
+            logger.warning("Refusing a stored skill path that no longer admits: %s", path)
+            return False
+        with self._catalog_lock:
+            self._snapshot_unadmitted.discard(key)
+        return True
+
+    @staticmethod
+    def _key_denotes_path(
+        key: str, absolute: str, own_roots: tuple[Path, ...], provider_roots: tuple[str, ...]
+    ) -> bool:
+        """Does *key* name the skill that *absolute* holds?
+
+        A stored row carries the key and the path as two independent fields, and they
+        are consumed by DIFFERENT gates: an agent mapping is matched against the
+        PATH (``_matches_any``), while the body is delivered by re-resolving the KEY
+        (``load_skill``). A row that pairs one skill's key with another's path
+        therefore passes a mapping admitting the second and serves the first — so the
+        pair has to be checked, not just each half.
+
+        Two shapes a walk can legitimately produce, both decided lexically:
+
+        * the path IS what the key denotes under one of this loader's own roots, which
+          is what the global tree and an in-root ``extra_paths`` entry record;
+        * the path is an admitted PROVIDER target — an app symlinks its skills into
+          the tree, so ``validate_file_path`` resolves the row out of the root it was
+          named in — and the key's last segment still matches the directory holding
+          the file.
+
+        Anything else is refused, and the caller refuses the whole snapshot with it: a
+        dropped row would leave a truncated catalog being served as a complete one.
+        """
+        if not key:
+            return False
+        for root in own_roots:
+            if os.path.abspath(root / key / _SKILL_FILE) == absolute:
+                return True
+        return _within_any(absolute, provider_roots) and (
+            os.path.basename(os.path.dirname(absolute)) == key.rsplit("/", 1)[-1]
+        )
+
+    def _adopt_catalog(
+        self,
+        project_key: str,
+        rows: list[tuple[str, Path, str | None]],
+        fingerprints: dict[str, str],
+        *,
+        complete: bool,
+    ) -> None:
+        with self._catalog_lock:
+            self._iter_cache[project_key] = (time.monotonic() + _ITER_CACHE_TTL_SECS, rows)
+            if fingerprints:
+                self._catalog_fingerprints[project_key] = fingerprints
+            if complete:
+                self._catalog_incomplete.discard(project_key)
+
+    def _request_catalog_refresh(self, project_key: str) -> threading.Event | None:
+        """Queue one background walk of *project_key*'s roots; join any in flight.
+
+        Returns the event that build sets on completion, so the cold path can wait
+        on it with a budget. ``None`` means no build could be started — a closed
+        loader, or a host that refused the thread — and the caller must then live
+        with what it already has rather than walking on the request path.
+        """
+        with self._catalog_lock:
+            if self._closed:
+                return None
+            existing = self._catalog_refreshes.get(project_key)
+            if existing is not None and not existing[0].is_set():
+                if existing[1] != self._catalog_generation:
+                    # The build in flight was queued before a mutation, so it is
+                    # already fenced and will publish nothing. Queue the current
+                    # generation behind it, or the caller waits out its budget on an
+                    # answer that never lands and the next turn pays cold discovery.
+                    self._catalog_pending[project_key] = self._catalog_generation
+                    self._catalog_wakeup.set()
+                return existing[0]
+            done = threading.Event()
+            self._catalog_refreshes[project_key] = (done, self._catalog_generation)
+            self._catalog_pending[project_key] = self._catalog_generation
+            if self._catalog_worker is None or not self._catalog_worker.is_alive():
+                # Started on first NEED, not in __init__: a loader whose every call
+                # is served from a snapshot never starts a thread, which is what
+                # keeps the short-lived MCP fallback cheap. DAEMON because a build
+                # is deliberately abandonable, and `concurrent.futures` joins its
+                # non-daemon workers at interpreter exit — which would make a walk
+                # this design moved off the request path delay process exit instead
+                # of being dropped.
+                try:
+                    worker = threading.Thread(
+                        target=copy_context().run,
+                        args=(self._catalog_worker_loop,),
+                        name="skill-catalog-refresh",
+                        daemon=True,
+                    )
+                    worker.start()
+                except RuntimeError:  # pragma: no cover — host refused a thread
+                    logger.debug("skill catalog: refresh worker unavailable", exc_info=True)
+                    self._catalog_refreshes.pop(project_key, None)
+                    self._catalog_pending.pop(project_key, None)
+                    return None
+                self._catalog_worker = worker
+        self._catalog_wakeup.set()
+        return done
+
+    def _catalog_worker_loop(self) -> None:
+        """Drain queued scopes one at a time until this loader closes.
+
+        Serial by construction: several sessions in different trusted projects all
+        enumerate the same global tree, so running their builds concurrently would
+        multiply that one corpus's filesystem work by the session count.
+        """
+        while True:
+            with self._catalog_lock:
+                if self._closed:
+                    return
+                if self._catalog_pending:
+                    project_key, generation = self._catalog_pending.popitem()
+                else:
+                    # Cleared under the same lock the producer sets it under, and
+                    # only after observing an empty queue, so a scope queued in
+                    # between cannot lose its wakeup.
+                    self._catalog_wakeup.clear()
+                    project_key, generation = "", -1
+            if generation < 0:
+                self._catalog_wakeup.wait()
+                continue
+            self._run_catalog_build(project_key, generation)
+
+    def _run_catalog_build(self, project_key: str, generation: int) -> None:
+        """Walk *project_key*'s roots off the request path and publish the result.
+
+        Failure is logged and dropped: a scope keeps serving whatever it had, which
+        is strictly better than failing a turn over a tree that could not be read
+        this once.
+        """
+        try:
+            with self._catalog_lock:
+                if self._closed:
+                    return
+                # The handle is READ under the same lock that claims it. Reading it
+                # first and claiming second leaves a gap in which `close()` sees no
+                # build in flight, closes the index, and latches it unusable — the
+                # walk then finishes and persists nothing, which is the one thing the
+                # handover exists to prevent.
+                index = self._search_index
+                self._catalog_building = True
+            # Both captured BEFORE the walk. The epoch is the cross-process half of
+            # the generation check: `store_catalog` refuses a write whose epoch has
+            # moved. The scope is captured because `skills.extra_paths` can be
+            # reconfigured while the walk runs, and a scope id computed afterwards
+            # would file rows walked over the OLD root set under the NEW root set's
+            # key — publishing a catalog that names neither configuration's tree.
+            epoch = index.catalog_epoch() if index is not None else None
+            scope_id = self._catalog_scope_id(project_key)
+            rows = self._iter_uncached(project_key or None)
+            fingerprints = self._catalog_fingerprints_for(rows)
+            # PERSIST BEFORE PUBLISHING. The store is where a cross-process
+            # invalidation is detected: `"stale"` means another process recorded a
+            # mutation while this walk ran, so these rows must not be served either.
+            # `"unavailable"` is the opposite case — the rows are fine and only the
+            # database is missing (a read-only home), and refusing to serve them
+            # would make every turn re-walk.
+            outcome = (
+                index.store_catalog(
+                    scope_id,
+                    [(name, str(path), within or "") for name, path, within in rows],
+                    epoch=epoch,
+                )
+                if index is not None
+                else "unavailable"
+            )
+            if outcome == "stale":
+                logger.debug("skill catalog: another process invalidated mid-walk; dropping")
+                return
+            with self._catalog_lock:
+                if self._closed or generation != self._catalog_generation:
+                    # A mutation landed while this walk ran, so its answer predates
+                    # a change already known. Publishing it would resurrect the
+                    # pre-change list and undo the invalidation. The rows stay
+                    # PERSISTED when only `_closed` stopped the publish: they
+                    # describe the tree this walk saw, and a host served only by
+                    # short-lived loaders converges on nothing else.
+                    return
+                if scope_id != self._catalog_scope_id(project_key):
+                    logger.debug("skill catalog: root set changed mid-walk; dropping the result")
+                    return
+                self._iter_cache[project_key] = (time.monotonic() + _ITER_CACHE_TTL_SECS, rows)
+                self._catalog_fingerprints[project_key] = fingerprints
+                self._catalog_incomplete.discard(project_key)
+                # Only the paths THIS walk returned are admitted. A forged row the
+                # walk rejected keeps its marker, so a reader still holding the old
+                # list cannot read it unadmitted.
+                self._snapshot_unadmitted -= {
+                    str(path) for _name, path, within in rows if within is None
+                }
+        except Exception:  # noqa: BLE001 — a failed walk must not kill the worker
+            logger.warning("skill catalog: background walk failed", exc_info=True)
+        finally:
+            with self._catalog_lock:
+                self._catalog_building = False
+                entry = self._catalog_refreshes.pop(project_key, None)
+                # The handle was held for this build; a close that arrived while it
+                # ran deferred shutting it down to here.
+                index_to_close = self._search_index if self._closed else None
+            if entry is not None:
+                entry[0].set()
+            if index_to_close is not None:
+                index_to_close.close()
+
+    @staticmethod
+    def _catalog_fingerprints_for(
+        rows: list[tuple[str, Path, str | None]],
+    ) -> dict[str, str]:
+        """Stat each unconfined row once, so ``list_skills`` need not stat again.
+
+        Confined project rows are deliberately absent: their cache token comes from
+        bytes the no-link reader admitted, never from a path stat, and recording one
+        here would reintroduce the probe that confinement exists to prevent.
+        """
+        fingerprints: dict[str, str] = {}
+        for _name, path, within in rows:
+            if within is not None:
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            fingerprints[str(path)] = (
+                f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}"
+            )
+        return fingerprints
 
     def _get_disabled_app_names(self) -> frozenset[str]:
         now = time.monotonic()
@@ -2257,7 +2997,9 @@ class SkillsLoader:
         for name, skill_file, confined_root in self._iter_uncached(key):
             if confined_root != key:
                 continue
-            raw = self._read_enumerated_skill_bytes(skill_file, confined_root)
+            raw = self._read_enumerated_skill_bytes(
+                skill_file, confined_root, max_bytes=PROJECT_SKILL_BODY_CAP
+            )
             if raw is None:
                 continue
             meta = self._parse_frontmatter_text(_decode_skill_text(raw, strict=False))
@@ -2347,10 +3089,36 @@ class SkillsLoader:
         read, so keying the frontmatter cache on mtime alone would return the
         stale parse. Dropping it here keeps the mutator's edit immediately
         reflected in ``list_skills`` / ``get_triggered_skills``.
+
+        The stored snapshot goes too, and both generation counters move. Each is
+        required for a different race: leaving the snapshot would let the next
+        process serve the pre-mutation list, and leaving the generations alone would
+        let a walk already in flight publish its pre-mutation answer on top of this
+        clear — an invalidation a background refresh silently undoes. The in-process
+        counter covers this loader's own worker; the index's epoch, which
+        ``drop_catalog`` bumps, covers a walk running in another process.
+
+        Emptying the list rather than serving the pre-mutation one is what makes the
+        mutator's edit visible immediately, and it is also why the re-walk is QUEUED
+        here instead of waiting for the next turn to demand it: on a tree whose walk
+        outlasts ``_COLD_CATALOG_WAIT_SECS`` the next turn would otherwise re-enter
+        the cold path, and starting the walk now bounds that window to the walk's own
+        duration.
         """
         self._disabled_apps_cache = None
-        self._iter_cache = {}
+        with self._catalog_lock:
+            scopes = list(self._iter_cache)
+            self._iter_cache = {}
+            self._catalog_fingerprints = {}
+            self._catalog_incomplete.clear()
+            self._snapshot_unadmitted.clear()
+            self._catalog_generation += 1
+            index = self._search_index
         self._fm_cache.clear()
+        if index is not None:
+            index.drop_catalog()
+        for scope in scopes:
+            self._request_catalog_refresh(scope)
 
     def _read_enumerated_skill_bytes(
         self,
@@ -2358,6 +3126,8 @@ class SkillsLoader:
         within: str | None,
         *,
         max_bytes: int | None = None,
+        refusal_reasons: list[str] | None = None,
+        canonical_root: str | None = None,
     ) -> bytes | None:
         """Read a file `_iter` enumerated, re-checking the root it was vetted against.
 
@@ -2375,10 +3145,26 @@ class SkillsLoader:
 
         A path with no recorded root (global skills dir, extra paths, edition
         roots) is read UNCONFINED, which preserves the app-provider symlink that
-        `_trusted_skill_roots` exists to allow. Confinement applies to project
-        paths only.
+        `_trusted_skill_roots` exists to allow. External mappings instead carry
+        ``canonical_root``: the resolved root admitted during enumeration,
+        including an admitted provider target. Never resolve that root again
+        after an ancestor swap. Their bodies retain the global read budget.
         """
-        if within is None:
+        if within is None and canonical_root is None:
+            # A path this process never walked carries no admission: the index it
+            # came from is an agent-writable crew-home leaf, and the direct read
+            # below applies no sensitive-path or UNC screen of its own, so a row
+            # naming a link into a credential home would be read as a skill body.
+            # The walk's own admission (`validate_file_path`) is therefore re-run
+            # once per snapshot-derived path, at the single point every enumerated
+            # read goes through. The set is checked for emptiness first, which is
+            # the normal case and keeps the lock off this hot path: a scope's
+            # markers are written before its rows are published, so a caller that
+            # holds rows has already observed them.
+            if self._snapshot_unadmitted and not self._admit_snapshot_path(path):
+                if refusal_reasons is not None:
+                    refusal_reasons.append("snapshot_path_refused")
+                return None
             # No project grant is involved: the global skills dir, extra paths,
             # edition roots, and the paths writers construct themselves. These
             # are operator-installed, so there is no directory to confine them
@@ -2391,14 +3177,28 @@ class SkillsLoader:
             # unreadable file raises OSError here, which writers must hear.
             return path.read_bytes()
         try:
-            raw = safe_read_file_bytes_nolink(str(path), within_root=within, max_bytes=max_bytes)
+            confined_max = (
+                hooks_module.MAX_FILE_BYTES
+                if max_bytes is None
+                else min(max_bytes, hooks_module.MAX_FILE_BYTES)
+            )
+            raw = safe_read_file_bytes_nolink(
+                str(path),
+                within_root=canonical_root or within,
+                max_bytes=confined_max,
+                within_root_is_canonical=canonical_root is not None,
+            )
         except FileTooLargeError:
             # A REFUSAL, not an error: an oversized SKILL.md must not abort a
             # chat turn, and the global path applies no cap at all today.
-            logger.warning("Skipping oversized skill file: %s", path)
+            if refusal_reasons is not None:
+                refusal_reasons.append("size_cap")
+            logger.warning("Skipping oversized confined skill file: %s", path)
             return None
         if raw is not None:
             return raw
+        if refusal_reasons is not None:
+            refusal_reasons.append("outside_vetted_root")
         # A confined path is read-only project/provider input. Every refusal,
         # including a file replaced or removed after enumeration, degrades to no
         # metadata/body so one checkout entry cannot abort a chat turn. Writers
@@ -2406,14 +3206,18 @@ class SkillsLoader:
         return None
 
     def _cached_frontmatter(
-        self, path: Path, mtime: float | None = None, *, within: str | None
+        self,
+        path: Path,
+        mtime: float | None = None,
+        *,
+        within: str | None,
+        canonical_root: str | None = None,
     ) -> dict[str, str]:
         """Parse frontmatter with mtime-based caching.
 
         *mtime* lets a caller that already stat()'d the file reuse that result.
         ``list_skills()`` needs the size from the same stat, and this path runs
-        on the event loop during context assembly — one syscall per skill, not
-        two.
+        on a worker during context assembly — one syscall per skill, not two.
 
         Confined project metadata cannot stat by path: `_iter` is TTL-cached,
         so an attacker can replace the enumerated file with a link before this
@@ -2444,7 +3248,7 @@ class SkillsLoader:
         # containment, no O_NOFOLLOW, no regular-file check and no size cap --
         # so an out-of-project `description` reached the injected skills index
         # verbatim and attacker-set `triggers`/`always` decided what auto-loaded.
-        raw = self._read_enumerated_skill_bytes(path, within)
+        raw = self._read_enumerated_skill_bytes(path, within, canonical_root=canonical_root)
         if raw is None:
             logger.warning("Refusing metadata for a skill outside its vetted root: %s", path)
             return {}
@@ -2453,13 +3257,25 @@ class SkillsLoader:
         # as update_auto_skill, which must retain strict decoding so a rewrite
         # cannot silently replace undecodable metadata and lose version fields.
         meta = self._parse_frontmatter_text(_decode_skill_text(raw, strict=within is None))
+        if within is None:
+            meta["_content_digest"] = hashlib.sha256(raw).hexdigest()
         self._fm_cache[key] = (mtime, meta)
         return meta
 
     def _confined_frontmatter_and_size(self, path: Path, within: str) -> tuple[dict[str, str], int]:
         """Read confined metadata before any path-following metadata probe."""
-        raw = self._read_enumerated_skill_bytes(path, within)
+        refusal_reasons: list[str] = []
+        raw = self._read_enumerated_skill_bytes(
+            path,
+            within,
+            max_bytes=PROJECT_SKILL_BODY_CAP,
+            refusal_reasons=refusal_reasons,
+        )
         if raw is None:
+            if "size_cap" in refusal_reasons:
+                # Keep the path-derived catalog row without retaining attacker
+                # metadata. The over-cap sentinel makes every body consumer skip.
+                return {}, PROJECT_SKILL_BODY_CAP + 1
             logger.warning("Refusing metadata for a skill outside its vetted root: %s", path)
             return {}, 0
 
@@ -2472,7 +3288,12 @@ class SkillsLoader:
         self._fm_cache[key] = (token, meta)
         return meta, len(raw)
 
-    def list_skills(self, project_dir: str | Path | None = None) -> list[dict]:
+    def list_skills(
+        self,
+        project_dir: str | Path | None = None,
+        *,
+        _entries: list[_ScopedSkillEntry] | None = None,
+    ) -> list[dict]:
         """Return per-skill metadata for the dashboard's Skills page.
 
         Carries the three fields the injection-cost control needs alongside the
@@ -2496,31 +3317,115 @@ class SkillsLoader:
         through ``skills.extra_paths`` is listed but not ours to edit, so the UI
         must not offer a toggle the endpoint will refuse.
 
-        This runs on the event loop as part of context assembly (the skill
-        index). Unconfined rows take exactly one stat and reuse its mtime for
+        This is blocking filesystem/SQLite work; async callers must offload it.
+        Unconfined rows take exactly one stat and reuse its mtime for
         the frontmatter cache. Confined project rows perform no path stat; their
         size and cache token come from bytes admitted by the no-link reader.
         """
+        started = time.monotonic()
+        cached_metadata = self._search_index.metadata_snapshot() if self._search_index else {}
+        snapshot_done = time.monotonic()
+        changed_metadata: list[tuple[str, str, dict]] = []
+        skill_reads = 0
         skills: list[dict] = []
-        for name, skill_file, _within in self._iter_visible(project_dir):
-            if _within is not None:
-                meta, size_bytes = self._confined_frontmatter_and_size(skill_file, _within)
+        entries = (
+            [_ScopedSkillEntry(*entry) for entry in self._iter_visible(project_dir)]
+            if _entries is None
+            else _entries
+        )
+        # Fingerprints from a walk THIS PROCESS performed, when it has performed
+        # one. They let a warm build skip the stat it would otherwise take purely to
+        # decide whether the persisted metadata is still good — an O(N) syscall pass
+        # every turn pays on a large tree. Restricted to this process's own walk on
+        # purpose: a fingerprint read off disk records what some earlier process
+        # saw, so trusting it would make a restart serve a description for a file
+        # edited out of band since. A row the walk did not fingerprint — a mapped
+        # row, or any row on a process still serving the stored list — stats exactly
+        # as before, which is validation rather than discovery: no walk, and no body
+        # read.
+        fingerprint_hint = self._catalog_fingerprint_hint(project_dir)
+        scanned = time.monotonic()
+
+        def read_entry(
+            entry: _ScopedSkillEntry,
+        ) -> tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int]:
+            name, skill_file, project_root, mapping_root = entry
+            fingerprint = ""
+            changed = None
+            reads = 0
+            if project_root is not None:
+                meta, size_bytes = self._confined_frontmatter_and_size(skill_file, project_root)
             else:
-                try:
-                    st: os.stat_result | None = skill_file.stat()
-                except OSError:
-                    st = None
-                meta = self._cached_frontmatter(
-                    skill_file,
-                    mtime=st.st_mtime if st is not None else None,
-                    within=None,
-                )
-                size_bytes = st.st_size if st is not None else 0
+                st: os.stat_result | None = None
+                # A mapped row's fingerprint carries its mapping root, so the hint
+                # (which records the bare stat) would not match what is stored.
+                hinted = None if mapping_root else fingerprint_hint.get(str(skill_file))
+                if hinted is not None:
+                    fingerprint = hinted
+                    mtime, size_bytes = _fingerprint_mtime_and_size(hinted)
+                else:
+                    try:
+                        st = skill_file.stat()
+                    except OSError:
+                        st = None
+                    fingerprint = (
+                        f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}"
+                        if st is not None
+                        else ""
+                    )
+                    if fingerprint and mapping_root:
+                        fingerprint += f":{mapping_root}"
+                    mtime = st.st_mtime if st is not None else None
+                    size_bytes = st.st_size if st is not None else 0
+                cached = cached_metadata.get(str(skill_file))
+                if cached and cached[0] == fingerprint and cached[1].get("_catalog_key") == name:
+                    meta = cached[1]
+                else:
+                    reads += 1
+                    self._fm_cache.pop(str(skill_file), None)
+                    meta = self._cached_frontmatter(
+                        skill_file,
+                        mtime=mtime,
+                        within=None,
+                        canonical_root=mapping_root,
+                    )
+                    meta["_catalog_key"] = name
+                    if fingerprint:
+                        changed = (str(skill_file), fingerprint, meta)
+                if mtime is not None and meta:
+                    self._fm_cache[str(skill_file)] = (mtime, meta)
+            return meta, size_bytes, fingerprint, changed, reads
+
+        def rows() -> Iterator[
+            tuple[
+                _ScopedSkillEntry,
+                tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int],
+            ]
+        ]:
+            if len(entries) < _CATALOG_READ_BATCH:
+                for entry in entries:
+                    yield entry, read_entry(entry)
+                return
+            with ThreadPoolExecutor(
+                max_workers=_CATALOG_READ_WORKERS, thread_name_prefix="skill-catalog"
+            ) as pool:
+                for batch in batched(entries, _CATALOG_READ_BATCH):
+                    futures = [
+                        pool.submit(copy_context().run, read_entry, entry) for entry in batch
+                    ]
+                    yield from zip(batch, (future.result() for future in futures))
+
+        for entry, (meta, size_bytes, fingerprint, changed, reads) in rows():
+            name, skill_file, project_root, mapping_root = entry
+            if changed is not None:
+                changed_metadata.append(changed)
+            skill_reads += reads
             skills.append(
                 {
                     # Internal: lets a later re-read (see _rank_key) reuse the root
                     # this row was read under instead of guessing at one.
-                    "confine_root": _within,
+                    "confine_root": project_root,
+                    "mapping_root": mapping_root,
                     "key": name,
                     "name": meta.get("name", name),
                     "description": meta.get("description", name),
@@ -2539,14 +3444,36 @@ class SkillsLoader:
                     # the body; only an explicit `false` on an unconfined skill
                     # opts out. A malformed value therefore reads as injecting.
                     "inject_on_trigger": (
-                        _within is not None
+                        project_root is not None
                         or meta.get("inject_on_trigger", "").strip().lower() != "false"
                     ),
                     "size_bytes": size_bytes,
+                    "fingerprint": fingerprint if project_root is None else "",
+                    "content_digest": (
+                        meta.get("_content_digest", "") if project_root is None else ""
+                    ),
+                    "metadata_indexed": project_root is None and bool(fingerprint),
                     "deliveries": self._delivery_count(name),
                     "owned": self._owned_hint(skill_file),
                 }
             )
+        assembled = time.monotonic()
+        if self._search_index and not self._search_index.store_metadata(changed_metadata):
+            changed_paths = {path for path, _, _ in changed_metadata}
+            for row in skills:
+                if row["path"] in changed_paths:
+                    row["metadata_indexed"] = False
+        logger.debug(
+            "skill catalog: %.2fms total, %.2fms snapshot, %.2fms scan, "
+            "%.2fms read/assemble, %.2fms persist, %d rows, %d metadata reads",
+            (time.monotonic() - started) * 1000,
+            (snapshot_done - started) * 1000,
+            (scanned - snapshot_done) * 1000,
+            (assembled - scanned) * 1000,
+            (time.monotonic() - assembled) * 1000,
+            len(skills),
+            skill_reads,
+        )
         return skills
 
     def _owning_app(self, name: str, skill_file: Path) -> str | None:
@@ -2860,7 +3787,9 @@ class SkillsLoader:
         _t0 = time.monotonic()
         skill_file = self._dir / name / "SKILL.md"
         if skill_file.exists():
-            content = skill_file.read_text(encoding="utf-8")
+            content = self._read_global_skill_text(skill_file, max_bytes)
+            if content is None:
+                return None
             self._emit_lazy_load_metric(_t0, hit=True)
             return content
         # Check extra paths
@@ -2871,7 +3800,9 @@ class SkillsLoader:
                 if resolved is None:
                     logger.warning("Refusing to load skill from sensitive path: %s", skill_file)
                     continue
-                content = Path(resolved).read_text(encoding="utf-8")
+                content = self._read_global_skill_text(Path(resolved), max_bytes)
+                if content is None:
+                    return None
                 self._emit_lazy_load_metric(_t0, hit=True)
                 return content
         # A trusted project's own skills, last — same order as _iter_uncached.
@@ -2902,11 +3833,23 @@ class SkillsLoader:
                 # drift apart again -- the previous round hardened this site
                 # alone and left its sibling reading the same cached paths
                 # unchecked.
-                raw = self._read_enumerated_skill_bytes(skill_file, _within, max_bytes=max_bytes)
+                refusal_reasons: list[str] = []
+                confined_max = (
+                    PROJECT_SKILL_BODY_CAP
+                    if max_bytes is None
+                    else min(max_bytes, PROJECT_SKILL_BODY_CAP)
+                )
+                raw = self._read_enumerated_skill_bytes(
+                    skill_file,
+                    _within,
+                    max_bytes=confined_max,
+                    refusal_reasons=refusal_reasons,
+                )
                 if raw is None:
-                    logger.warning(
-                        "Refusing project skill outside its granted root: %s", skill_file
-                    )
+                    if "outside_vetted_root" in refusal_reasons:
+                        logger.warning(
+                            "Refusing project skill outside its granted root: %s", skill_file
+                        )
                     break
                 # Decoded explicitly: an implicit read would use the platform's
                 # locale encoding and mangle non-ASCII bodies on Windows.
@@ -2915,6 +3858,42 @@ class SkillsLoader:
                 return content
         self._emit_lazy_load_metric(_t0, hit=False)
         return None
+
+    def _read_global_skill_text(
+        self, path: Path, max_bytes: int | None, *, canonical_root: str | None = None
+    ) -> str | None:
+        """A global skill body, bounded by *max_bytes* and decode-safe.
+
+        ``max_bytes=None`` reads up to the shared file safety cap with strict
+        UTF-8, preserving the global listing path's decode behavior. Every body
+        read uses the shared validated reader without project confinement:
+        sensitive paths, hardlinks and identity changes are refused on the
+        descriptor supplying the bytes.
+
+        With a bound, refuse rather than truncate. A caller that asked for at
+        most N bytes is deciding whether the body FITS, and half a skill is not
+        a smaller skill: it is a body whose instructions stop mid-sentence.
+        ``None`` says "this one cannot be delivered", which the caller reports
+        instead of silently dropping.
+        """
+        try:
+            raw = safe_read_file_bytes_nolink(
+                str(path),
+                max_bytes=max_bytes,
+                within_root=canonical_root,
+                within_root_is_canonical=canonical_root is not None,
+            )
+        except FileTooLargeError:
+            if max_bytes is None:
+                logger.debug("skill body at %s exceeds the shared file-read bound; refusing", path)
+            else:
+                logger.debug(
+                    "skill body at %s exceeds the %d byte bound; refusing", path, max_bytes
+                )
+            return None
+        if raw is None:
+            return None
+        return _decode_skill_text(raw, strict=max_bytes is None)
 
     @staticmethod
     def _emit_lazy_load_metric(t0: float, *, hit: bool) -> None:
@@ -3969,23 +4948,38 @@ class SkillsLoader:
             if not _AUTO_NAME_PATTERN.match(child.name):
                 continue
             meta = self._read_pending_meta(child.name)
-            out.append(
-                {
-                    "slug": child.name,
-                    "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
-                    "description": meta.get("description", ""),
-                    "triggers": meta.get("triggers", ""),
-                    "has_scripts": bool(meta.get("has_scripts")),
-                    "created_at": meta.get("created_at", ""),
-                    "source": meta.get("source", ""),
-                    "kind": meta.get("kind", "new"),
-                    "target": meta.get("target"),
-                    "base_version": meta.get("base_version"),
-                    # NB: no on-disk ``path`` — this dict is API-facing (feeds
-                    # /api/skills/-/pending) and must not leak the server's home
-                    # / directory layout to dashboard clients.
+            # Same verdict the approve path will reach, so the card can carry a
+            # warning badge WITHOUT the user expanding the row first. The
+            # verdict walk is self-defending — descriptor-pinned, budgeted,
+            # fail-closed (see _pending_scripts_verdict) — so no candidate-wide
+            # pre-walk runs here: an unbudgeted os.walk before the budgeted one
+            # would itself be the unbounded per-poll traversal the budgets
+            # exist to prevent. ``None`` means the platform cannot compute a
+            # trustworthy verdict; the field is omitted rather than serving a
+            # false all-clear.
+            verdict = self._pending_scripts_verdict(child)
+            entry = {
+                "slug": child.name,
+                "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
+                "description": meta.get("description", ""),
+                "triggers": meta.get("triggers", ""),
+                "has_scripts": bool(meta.get("has_scripts")),
+                "created_at": meta.get("created_at", ""),
+                "source": meta.get("source", ""),
+                "kind": meta.get("kind", "new"),
+                "target": meta.get("target"),
+                "base_version": meta.get("base_version"),
+                # NB: no on-disk ``path`` — this dict is API-facing (feeds
+                # /api/skills/-/pending) and must not leak the server's home
+                # / directory layout to dashboard clients.
+            }
+            if verdict is not None:
+                v_ok, v_report = verdict
+                entry["script_validation"] = {
+                    "ok": v_ok,
+                    "report": self._redact_validation_report(v_report),
                 }
-            )
+            out.append(entry)
         return out
 
     @staticmethod
@@ -4074,6 +5068,312 @@ class SkillsLoader:
                         continue
         return out
 
+    _ALLOWED_CANDIDATE_TOP = frozenset({"SKILL.md", ".meta.json", "scripts"})
+
+    def _candidate_layout_findings_at(self, root_fd: int) -> list[str]:
+        """Top-level layout check mirroring ``_candidate_layout_ok``.
+
+        The approve path refuses a candidate whose ROOT layout is wrong — a
+        symlinked ``SKILL.md``/``.meta.json``, a non-regular one (promotion
+        reads their bytes, so a directory there is refused too), or any
+        unexpected top-level entry — so a verdict that only inspects
+        ``scripts/`` would read ``ok: true`` for a candidate approve is
+        guaranteed to refuse, which is the predict-the-refusal contract this
+        verdict exists to keep.
+
+        Operates on the ALREADY-OPEN candidate-root descriptor the caller
+        retains for the whole verdict — this function resolves no path at
+        all. Every entry is stat-ed RELATIVE to that descriptor, so nothing
+        a candidate does to the tree's names after the root was pinned can
+        redirect the scan: the descriptor IS the directory, whatever any
+        path now resolves to.
+
+        This is deliberately NOT the recursive candidate-wide pre-walk the
+        budgets removed: one capped scan of the top level plus a stat per
+        allowed name — no byte is read, nothing recurses (``scripts/``
+        internals stay the pinned walk's job). Findings use the same
+        ``invalid layout:`` vocabulary as the walk so the frontend renders
+        them identically.
+        """
+        names: list[str] = []
+        try:
+            with os.scandir(root_fd) as scanner:
+                for entry in scanner:
+                    names.append(entry.name)
+                    if len(names) > 16:
+                        # The valid top level has at most 3 entries; a
+                        # planted crowd must not grow this per-poll
+                        # scan without limit.
+                        return ["invalid layout: too many top-level entries"]
+        except OSError:
+            return ["verdict unavailable: candidate unreadable"]
+        findings: list[str] = []
+        for nm in sorted(names):
+            if nm not in self._ALLOWED_CANDIDATE_TOP:
+                findings.append(f"invalid layout: unexpected candidate entry {nm!r}")
+                continue
+            est = pinned_fs.stat_at(root_fd, nm)
+            if est is None:
+                findings.append(f"invalid layout: {nm!r} unreadable")
+            elif stat.S_ISLNK(est.st_mode):
+                findings.append(f"invalid layout: {nm!r} is a symlink")
+            elif nm != "scripts" and not stat.S_ISREG(est.st_mode):
+                # Promotion reads these files' bytes; a directory (or
+                # FIFO) named SKILL.md/.meta.json is refused at
+                # approve time, so the verdict must not read clean.
+                findings.append(f"invalid layout: {nm!r} is not a regular file")
+        return findings
+
+    def _pending_scripts_verdict(self, pdir: Path) -> tuple[bool, dict] | None:
+        """Cheap pre-approval validation verdict for the pending LIST path.
+
+        Takes the CANDIDATE ROOT: the top-level layout is prechecked against
+        the same rules the approve path enforces (see
+        :meth:`_candidate_layout_findings_at`) before the ``scripts`` walk, so a
+        symlinked ``SKILL.md`` or a stray top-level file fails the verdict
+        here exactly as approve would refuse it.
+
+        The candidate root is resolved EXACTLY ONCE: one
+        :func:`pinned_fs.open_dir_pinned` call pins it (``O_NOFOLLOW`` on the
+        root and every ancestor), and that descriptor is retained for the
+        whole verdict — the top-level layout scan reads through it, and the
+        ``scripts`` directory is opened RELATIVE to it (``dir_fd``), with an
+        identity check that the opened directory is the same inode the
+        layout scan stat-ed. No name under the candidate is ever re-resolved
+        from a path, so a candidate root swapped between any two steps —
+        whether for a symlink (refused at the pinned open) or for a
+        different REAL directory renamed over it (unreachable, because no
+        second resolution exists to land on it) — cannot redirect any part
+        of the verdict into another tree. Every entry below ``scripts`` is
+        likewise stat-ed, opened and read relative to the walk's own
+        descriptors.
+
+        The verdict fails CLOSED on everything the approve path would refuse:
+        a symlink entry is an invalid layout, an oversized script is flagged
+        from its size alone (its bytes are never loaded — this runs on every
+        dashboard poll, and a crystallize direct-write can plant files the
+        staging cap never saw), an unreadable or undecodable script is a
+        finding rather than a silent omission (approve refuses such a
+        candidate at redaction, so ``ok: true`` would be a false all-clear),
+        and an unexpected walk error degrades to a failing
+        verdict-unavailable finding rather than blanking the caller's whole
+        list. Small, decodable scripts get the real ``validate_scripts`` run,
+        matching the approve path's verdict.
+
+        Returns ``None`` on a platform without descriptor-relative opens,
+        BEFORE the candidate is touched at all. A link/junction check
+        followed by a by-name scan races with replacement of the candidate
+        root: even a refusal can expose the target's filenames. On Windows
+        the pre-click "fails validation" badge disappears entirely, because
+        no trustworthy verdict can be computed without descriptor-relative
+        opens. The caller omits the field; approve remains the authority at
+        click time.
+        """
+        if not pinned_fs.supports_pinned_walk():
+            return None
+        try:
+            root_fd = pinned_fs.open_dir_pinned(pdir, what="pending candidate root")
+        except pinned_fs.PinnedPathRefusal:
+            return False, {
+                "<candidate>": ["invalid layout: candidate root is not a real directory"]
+            }
+        except OSError:
+            return False, {"<candidate>": ["verdict unavailable: candidate unreadable"]}
+        try:
+            return self._pending_scripts_verdict_at(root_fd)
+        finally:
+            os.close(root_fd)
+
+    def _pending_scripts_verdict_at(self, root_fd: int) -> tuple[bool, dict] | None:
+        """The verdict body, entirely relative to the retained root descriptor."""
+        layout = self._candidate_layout_findings_at(root_fd)
+        if layout:
+            return False, {"<candidate>": layout}
+        sst = pinned_fs.stat_at(root_fd, "scripts")
+        if sst is None:
+            # No scripts directory at all — nothing to validate.
+            return True, {}
+        if stat.S_ISLNK(sst.st_mode) or not stat.S_ISDIR(sst.st_mode):
+            return False, {"<candidate>": ["invalid layout: 'scripts' is not a real directory"]}
+        if not pinned_fs.supports_pinned_tree_walk():
+            return None
+        try:
+            scripts_fd = os.open("scripts", pinned_fs.dir_flags(), dir_fd=root_fd)
+        except OSError:
+            return False, {"<candidate>": ["invalid layout: contains a symlink"]}
+        try:
+            # The OPENED directory must be the same inode the stat above
+            # described — a 'scripts' swapped between the stat and the open
+            # (even for another real directory; both live under the pinned
+            # root) fails the verdict closed instead of being walked as if
+            # it were the audited one.
+            ost = os.fstat(scripts_fd)
+            if (ost.st_ino, ost.st_dev) != (sst.st_ino, sst.st_dev):
+                os.close(scripts_fd)
+                return False, {"<candidate>": ["invalid layout: entry changed during scan"]}
+        except OSError:
+            os.close(scripts_fd)
+            return False, {"<candidate>": ["verdict unavailable: candidate unreadable"]}
+        scripts: list[dict] = []
+        extra: dict[str, list[str]] = {}
+        # Hard budgets for the whole walk: this runs on every dashboard poll,
+        # and a crystallize direct-write can plant MANY small files — or many
+        # nested directories — that the per-file size cap never bounds.
+        # Directories count against the same entry budget and recursion is
+        # depth-capped, so a planted tree can neither grow the traversal
+        # without limit nor raise RecursionError into the caller's degraded
+        # ok-true fallback. Exceeding any budget stops the walk immediately
+        # and OMITS the verdict (see the breach return below) — never a false
+        # refusal claim; the approve path remains the authority on the full
+        # set.
+        max_files = _PENDING_SCRIPT_MAX_ENTRIES
+        max_depth = 8
+        budget = {"files": 0, "bytes": 0, "breached": False}
+        max_total_bytes = max_files * MAX_SCRIPT_BYTES
+
+        def _breach(reason: str) -> None:
+            budget["breached"] = True
+            extra.setdefault("<candidate>", []).append(reason)
+
+        def _walk(fd: int, prefix: str, depth: int) -> None:
+            # Collect names LAZILY with a cap before sorting: an eager
+            # sorted(os.listdir(fd)) materializes an attacker-sized directory
+            # in one allocation before any budget applies, which is the exact
+            # per-poll exhaustion the budgets exist to prevent. Scanning stops
+            # at the entry budget, so at most max_files+1 names are ever held.
+            names: list[str] = []
+            with os.scandir(fd) as scanner:
+                for entry in scanner:
+                    names.append(entry.name)
+                    if len(names) > max_files:
+                        _breach(f"too many scripts: over {max_files} entries")
+                        return
+            for nm in sorted(names):
+                if budget["breached"]:
+                    return
+                rel = f"{prefix}{nm}"
+                try:
+                    est = os.stat(nm, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    extra.setdefault(rel, []).append("unreadable script: stat failed")
+                    continue
+                if stat.S_ISLNK(est.st_mode):
+                    extra.setdefault(rel, []).append("invalid layout: entry is a symlink")
+                elif stat.S_ISDIR(est.st_mode):
+                    # Directories spend the same entry budget as files, and
+                    # recursion is depth-capped — a planted tree of many or
+                    # deeply nested dirs must not reintroduce the unbounded
+                    # per-poll traversal (or a RecursionError that the
+                    # caller's fallback would degrade to a false all-clear).
+                    budget["files"] += 1
+                    if budget["files"] > max_files:
+                        _breach(f"too many scripts: over {max_files} entries")
+                        return
+                    if depth >= max_depth:
+                        _breach(f"scripts tree too deep: over {max_depth} levels")
+                        return
+                    try:
+                        sub = os.open(nm, pinned_fs.dir_flags(), dir_fd=fd)
+                    except OSError:
+                        extra.setdefault(rel, []).append("invalid layout: entry is a symlink")
+                        continue
+                    try:
+                        _walk(sub, f"{rel}/", depth + 1)
+                    finally:
+                        os.close(sub)
+                elif stat.S_ISREG(est.st_mode):
+                    if est.st_size > MAX_SCRIPT_BYTES:
+                        extra.setdefault(rel, []).append(
+                            f"too large: {est.st_size} bytes > {MAX_SCRIPT_BYTES} cap"
+                        )
+                        continue
+                    budget["files"] += 1
+                    budget["bytes"] += est.st_size
+                    if budget["files"] > max_files or budget["bytes"] > max_total_bytes:
+                        _breach(
+                            f"too many scripts: over {max_files} entries or "
+                            f"{max_total_bytes} aggregate bytes"
+                        )
+                        return
+                    try:
+                        # O_NONBLOCK: O_NOFOLLOW rejects a swapped symlink but
+                        # NOT a swapped FIFO, and a blocking O_RDONLY open of a
+                        # writerless FIFO wedges this poll thread forever. For
+                        # a regular file O_NONBLOCK is a no-op on open and
+                        # read, so the flag costs nothing on the honest path.
+                        rfd = os.open(
+                            nm,
+                            os.O_RDONLY
+                            | getattr(os, "O_NOFOLLOW", 0)
+                            | getattr(os, "O_NONBLOCK", 0),
+                            dir_fd=fd,
+                        )
+                    except OSError:
+                        extra.setdefault(rel, []).append("unreadable script: open failed")
+                        continue
+                    try:
+                        # The OPENED descriptor must be the same regular inode
+                        # the stat above described: a name swapped between the
+                        # stat and the open (FIFO, device, replaced file) fails
+                        # the verdict closed instead of being read as if it
+                        # were the audited entry.
+                        ost = os.fstat(rfd)
+                        if not stat.S_ISREG(ost.st_mode) or (ost.st_ino, ost.st_dev) != (
+                            est.st_ino,
+                            est.st_dev,
+                        ):
+                            extra.setdefault(rel, []).append(
+                                "invalid layout: entry changed during scan"
+                            )
+                            continue
+                        raw = os.read(rfd, MAX_SCRIPT_BYTES + 1)
+                    except OSError:
+                        extra.setdefault(rel, []).append("unreadable script: read failed")
+                        continue
+                    finally:
+                        os.close(rfd)
+                    try:
+                        scripts.append({"filename": rel, "content": raw.decode("utf-8")})
+                    except UnicodeDecodeError:
+                        extra.setdefault(rel, []).append("unreadable script: not valid UTF-8")
+
+        try:
+            try:
+                _walk(scripts_fd, "", 0)
+            finally:
+                os.close(scripts_fd)
+            if budget["breached"]:
+                # A breached budget means the LIST path declined to do the
+                # work, not that approve will refuse: approve's collector is
+                # unbudgeted, so a candidate with 65 small clean scripts
+                # approves fine. Claiming `ok: false` here makes the badge and
+                # hint over-promise a refusal that never comes — the honest
+                # verdict is NO verdict (the caller omits the field, exactly
+                # like a platform that cannot pin the walk). The exhaustion
+                # defense is unchanged: the walk already STOPPED at its budget.
+                return None
+            v_ok, v_report = validate_scripts(scripts)
+            if v_ok:
+                # Approve validates TWICE: raw, then again after redacting in
+                # place (a credential-shaped token redacts into broken
+                # syntax and is refused). Mirror the second stage on in-memory
+                # copies so a script that is clean raw but breaks under
+                # redaction does not read `ok: true` for a click approve
+                # refuses. Verdict-side only — nothing on disk is touched.
+                redacted = [
+                    {"filename": s["filename"], "content": self._redact_text(s["content"])}
+                    for s in scripts
+                ]
+                v_ok, v_report = validate_scripts(redacted)
+        except Exception:
+            # One broken candidate must not blank the caller's whole pending
+            # list, and an unvalidated candidate must not read clean: degrade
+            # to a failing verdict-unavailable finding.
+            return False, {"<candidate>": ["verdict unavailable: unexpected walk error"]}
+        for fn, findings in extra.items():
+            v_report.setdefault(fn, []).extend(findings)
+        return (v_ok and not extra), v_report
+
     def get_pending_skill(self, slug: str) -> dict | None:
         """Return full pending-candidate detail incl. SKILL.md body + script bodies."""
         if not self._is_pending_slug_safe(slug):
@@ -4090,10 +5390,18 @@ class SkillsLoader:
             return None
         meta = self._read_pending_meta(slug)
         scripts = self._collect_scripts(pdir / "scripts")
+        # Same hardened verdict as the pending LIST (descriptor-pinned walk,
+        # fail-closed on unreadable/oversized entries) — deriving it from the
+        # display collection instead would let a silently omitted unreadable
+        # script present a clean detail verdict while approve refuses. The
+        # display ``scripts`` list below is unchanged. ``None`` (platform
+        # cannot compute a trustworthy verdict) omits the field rather than
+        # serving a false all-clear.
+        verdict = self._pending_scripts_verdict(pdir)
         for s in scripts:
             s["filename"] = self._redact_text(s.get("filename", ""))
             s["content"] = self._redact_text(s.get("content", ""))
-        return {
+        detail = {
             "slug": slug,
             "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
             "meta": meta,
@@ -4103,6 +5411,13 @@ class SkillsLoader:
             "content": self._redact_text(skill_file.read_text(encoding="utf-8")),
             "scripts": scripts,
         }
+        if verdict is not None:
+            v_ok, v_report = verdict
+            detail["script_validation"] = {
+                "ok": v_ok,
+                "report": self._redact_validation_report(v_report),
+            }
+        return detail
 
     def _candidate_layout_ok(self, src: Path, name: str) -> bool:
         """Shared candidate-layout guard for BOTH approve paths.
@@ -4119,7 +5434,9 @@ class SkillsLoader:
         if self._candidate_has_symlink(src):
             logger.warning("Refusing to approve %s: candidate contains a symlink", name)
             return False
-        _allowed_top = {"SKILL.md", ".meta.json", "scripts"}
+        # One copy of the rule: the verdict's precheck reads this same set, so
+        # an entry added here is automatically predicted by the badge.
+        _allowed_top = self._ALLOWED_CANDIDATE_TOP
         for entry in src.iterdir():
             if entry.name not in _allowed_top:
                 logger.warning(
@@ -4133,17 +5450,20 @@ class SkillsLoader:
                 return False
         return True
 
-    def _validate_and_redact_candidate(self, src: Path, name: str) -> dict[Path, bytes] | None:
+    def _validate_and_redact_candidate(self, src: Path, name: str) -> dict[Path, bytes]:
         """Re-validate + redact a candidate's SKILL.md and scripts IN PLACE.
 
         Shared by ``approve_pending_skill`` and ``approve_pending_update`` so
         both enforce the identical discipline: validate every script (covers
         crystallize direct-writes), snapshot each target's ORIGINAL bytes, redact
         in place, then re-validate scripts (redacting a credential-shaped token
-        can break syntax). On ANY failure the originals are restored and ``None``
-        is returned so a rejected candidate is never left corrupted. On success
-        returns the ``{path: original_bytes}`` snapshot so the caller can restore
-        on a LATER failure (e.g. a failed move / snapshot).
+        can break syntax). On ANY failure the originals are restored and a
+        ``PendingApprovalRefused`` is raised naming the reason — a validation
+        failure carries the redacted ``{filename: [findings]}`` report so the
+        refusal can tell the reviewer WHAT was flagged — and a rejected
+        candidate is never left corrupted. On success returns the
+        ``{path: original_bytes}`` snapshot so the caller can restore on a
+        LATER failure (e.g. a failed move / snapshot).
         """
         sdir_src = src / "scripts"
         # Pre-redaction script validation.
@@ -4151,7 +5471,9 @@ class SkillsLoader:
             ok, report = validate_scripts(self._collect_scripts(sdir_src))
             if not ok:
                 logger.warning("Refusing to approve %s: script validation failed: %s", name, report)
-                return None
+                raise PendingApprovalRefused(
+                    "script_validation_failed", report=self._redact_validation_report(report)
+                )
         # Snapshot each target FIRST so an abort after partial in-place redaction
         # restores the candidate's ORIGINAL bytes.
         redact_targets = [src / "SKILL.md"]
@@ -4181,7 +5503,7 @@ class SkillsLoader:
                 logger.warning(
                     "Refusing to approve %s: could not redact %s before promotion", name, fp.name
                 )
-                return None
+                raise PendingApprovalRefused("redaction_failed")
         # Re-validate scripts AFTER redaction so a broken/altered helper never
         # goes live and the pending draft is not corrupted.
         if sdir_src.is_dir():
@@ -4191,8 +5513,51 @@ class SkillsLoader:
                 logger.warning(
                     "Refusing to approve %s: scripts invalid after redaction: %s", name, report
                 )
-                return None
+                raise PendingApprovalRefused(
+                    "script_validation_failed", report=self._redact_validation_report(report)
+                )
         return redact_backup
+
+    def _redact_validation_report(self, report: dict) -> dict:
+        """Bound and redact reports at retention for every pending HTTP surface.
+
+        Keep at most the verdict's script-entry budget, with independently
+        bounded finding lists and strings. Redact BEFORE shortening strings:
+        cutting first could turn a credential into an unrecognised fragment.
+        One fixed summary reports omitted entries (including redacted-key
+        collisions), findings within retained entries, and characters within
+        retained strings. Entries beyond the population cap are never redacted
+        or copied.
+        """
+        safe: dict[str, list[str]] = {}
+        omitted_entries = max(0, len(report) - _PENDING_SCRIPT_MAX_ENTRIES)
+        omitted_findings = 0
+        omitted_chars = 0
+        for fn, findings in islice(report.items(), _PENDING_SCRIPT_MAX_ENTRIES):
+            redacted_key = self._redact_text(str(fn))
+            key = redacted_key[:_VALIDATION_REPORT_MAX_STRING_CHARS]
+            # Redaction and shortening can collapse distinct filenames. Never
+            # overwrite a prior entry or let a filename steal the summary slot.
+            if key in safe or key == _VALIDATION_REPORT_TRUNCATION_KEY:
+                omitted_entries += 1
+                continue
+            omitted_chars += len(redacted_key) - len(key)
+            values: list[str] = []
+            omitted_findings += max(0, len(findings) - _VALIDATION_REPORT_MAX_FINDINGS)
+            for finding in islice(findings, _VALIDATION_REPORT_MAX_FINDINGS):
+                redacted = self._redact_text(str(finding))
+                value = redacted[:_VALIDATION_REPORT_MAX_STRING_CHARS]
+                omitted_chars += len(redacted) - len(value)
+                values.append(value)
+            safe[key] = values
+        if omitted_entries or omitted_findings or omitted_chars:
+            safe[_VALIDATION_REPORT_TRUNCATION_KEY] = [
+                "too large: validation report truncated; "
+                f"omitted {omitted_entries} script entries, "
+                f"{omitted_findings} findings from retained entries, "
+                f"{omitted_chars} characters from retained strings"
+            ]
+        return safe
 
     @staticmethod
     def _auto_slug_from_name(name: str) -> str:
@@ -4445,12 +5810,25 @@ class SkillsLoader:
         return highest + 1
 
     def approve_pending_update(self, slug: str) -> str | None:
+        """``approve_pending_update_checked`` with the legacy ``None`` contract.
+
+        Existing callers branch on ``None`` for "refused for any reason"; the
+        checked variant raises ``PendingApprovalRefused`` so the dashboard can
+        report WHY. This wrapper keeps their behaviour unchanged.
+        """
+        try:
+            return self.approve_pending_update_checked(slug)
+        except PendingApprovalRefused:
+            return None
+
+    def approve_pending_update_checked(self, slug: str) -> str:
         """Promote a pending UPDATE candidate over its live target auto-skill.
 
         Preconditions (all checked BEFORE any live mutation; a failure here
-        leaves BOTH the live skill and the candidate untouched, returns None):
-        the slug is safe, the candidate has a ``SKILL.md``, its ``.meta.json``
-        has ``kind == "update"``, and ``target`` names an EXISTING live auto
+        leaves BOTH the live skill and the candidate untouched and raises
+        ``PendingApprovalRefused`` with the reason): the slug is safe, the
+        candidate has a ``SKILL.md``, its ``.meta.json`` has
+        ``kind == "update"``, and ``target`` names an EXISTING live auto
         skill. Then: the shared symlink/unexpected-entry guard runs, scripts are
         re-validated, and SKILL.md + scripts are redacted in place (originals
         restored on failure).
@@ -4464,26 +5842,26 @@ class SkillsLoader:
         pending dir, and SEL-audit. Returns ``auto/<target>`` on success.
         """
         if not self._is_pending_slug_safe(slug):
-            return None
+            raise PendingApprovalRefused("not_found")
         src = self._pending_root() / slug
         if not (src / "SKILL.md").exists():
-            return None
+            raise PendingApprovalRefused("not_found")
         meta = self._read_pending_meta(slug)
         if meta.get("kind") != "update":
-            return None
+            raise PendingApprovalRefused("not_found")
         target = meta.get("target")
         if not isinstance(target, str) or not target:
-            return None
+            raise PendingApprovalRefused("target_missing")
         target_slug = self._auto_slug_from_name(target)
         if not self._is_pending_slug_safe(target_slug):
-            return None
+            raise PendingApprovalRefused("target_missing")
         live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
         live_skill = live_dir / "SKILL.md"
         if not live_skill.exists():
             logger.warning(
                 "Refusing to approve update %s: target %r is not a live auto skill", slug, target
             )
-            return None
+            raise PendingApprovalRefused("target_missing")
         target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
         # The LIVE side is a write target here (unlike approve_pending_skill, which
         # moves into a fresh dest), so it needs its own symlink guard: a symlinked
@@ -4494,14 +5872,30 @@ class SkillsLoader:
                 "Refusing to approve update %s: live skill directory contains a symlink",
                 target_name,
             )
-            return None
+            raise PendingApprovalRefused("invalid_layout")
         # Shared symlink + unexpected-entry rejection.
         if not self._candidate_layout_ok(src, target_name):
-            return None
-        # Re-validate + redact the candidate in place (restores originals on fail).
+            raise PendingApprovalRefused("invalid_layout")
+        # One verdict, two surfaces: same consult as
+        # ``approve_pending_skill_checked`` — a computable failing verdict
+        # refuses with the badge's own report, so the update click can never
+        # disagree with the badge it stood behind.
+        _fold = self._pending_scripts_verdict(src)
+        if _fold is not None:
+            _fold_ok, _fold_report = _fold
+            if not _fold_ok:
+                logger.warning(
+                    "Refusing to approve update %s: the pending verdict this candidate's "
+                    "badge serves reports failing findings",
+                    target_name,
+                )
+                raise PendingApprovalRefused(
+                    "script_validation_failed",
+                    report=self._redact_validation_report(_fold_report),
+                )
+        # Re-validate + redact the candidate in place (restores originals on
+        # fail, raising PendingApprovalRefused with the reason).
         redact_backup = self._validate_and_redact_candidate(src, target_name)
-        if redact_backup is None:
-            return None
 
         def _restore_redacted() -> None:
             for _fp, _b in redact_backup.items():
@@ -4516,7 +5910,7 @@ class SkillsLoader:
             candidate_body = (src / "SKILL.md").read_text(encoding="utf-8")
         except OSError:
             _restore_redacted()
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         current_version = self.get_auto_skill_version(target_name)
         # Snapshot under a number that is guaranteed free, so an earlier snapshot
         # can never be destroyed by drifted numbering.
@@ -4561,7 +5955,7 @@ class SkillsLoader:
                     "reason": "stale_base",
                 },
             )
-            return None
+            raise PendingApprovalRefused("stale_base")
         live_created_at = self._cached_frontmatter(live_skill, within=None).get("created_at", "")
         # Carry the live skill's pin forward: a pinned skill is exempt from the
         # lifecycle's inactivity / max-N archival, and silently dropping the flag
@@ -4599,7 +5993,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve update %s: could not snapshot live version", target_name
             )
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         # (f) Write candidate over live.
         try:
             atomic_write(live_skill, new_live_content)
@@ -4614,7 +6008,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve update %s: could not write live SKILL.md", target_name
             )
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         # (g) Promote candidate scripts into the live scripts/ dir (exec bit on
         # POSIX). COPY rather than move: the pending dir is deleted in (i), so a
         # move that fails partway would leave the approved script in neither
@@ -4687,7 +6081,7 @@ class SkillsLoader:
                     "Refusing to approve update %s: could not promote candidate scripts",
                     target_name,
                 )
-                return None
+                raise PendingApprovalRefused("promotion_failed")
         # (h) Prune version history to the cap.
         self._prune_versions(versions_dir)
         # (i) Remove the pending candidate.
@@ -4731,37 +6125,86 @@ class SkillsLoader:
         return target_name
 
     def approve_pending_skill(self, slug: str) -> str | None:
+        """``approve_pending_skill_checked`` with the legacy ``None`` contract.
+
+        Existing callers branch on ``None`` for "refused for any reason"; the
+        checked variant raises ``PendingApprovalRefused`` so the dashboard can
+        report WHY. This wrapper keeps their behaviour unchanged.
+        """
+        try:
+            return self.approve_pending_skill_checked(slug)
+        except PendingApprovalRefused:
+            return None
+
+    def approve_pending_skill_checked(self, slug: str) -> str:
         """Promote a pending candidate to a live auto-skill.
 
         Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
         → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
-        live name, or ``None`` if the candidate is missing, a live skill of that
-        name already exists, it contains a symlink, script validation fails, or
-        redaction fails. Every check runs BEFORE the move, so a rejected
-        candidate is left untouched in the pending queue.
+        live name; raises ``PendingApprovalRefused`` (with the reason, and the
+        redacted findings report for a validation failure) if the candidate is
+        missing, a live skill of that name already exists, it contains a
+        symlink, script validation fails, or redaction fails. Every check runs
+        BEFORE the move, so a rejected candidate is left untouched in the
+        pending queue.
         """
         if not self._is_pending_slug_safe(slug):
-            return None
+            raise PendingApprovalRefused("not_found")
         src = self._pending_root() / slug
         if not (src / "SKILL.md").exists():
-            return None
+            raise PendingApprovalRefused("not_found")
+        # An UPDATE candidate must never be consumed down this path: promoting
+        # it fresh would create ``auto/<candidate-slug>`` while its live target
+        # stays unchanged — the update silently never lands. The HTTP handler
+        # routes on the candidate detail's ``kind``, but a raising detail read
+        # drops that to ``None`` and defaults HERE, so the guard has to live at
+        # the consumption point. ``kind_mismatch`` (not ``not_found``): the
+        # candidate exists and is approvable via its own path, and the
+        # not-found recovery copy ("approved or dismissed elsewhere") would be
+        # a lie for a still-pending candidate.
+        if self._read_pending_meta(slug).get("kind") == "update":
+            logger.warning(
+                "Refusing to approve %s as a NEW skill: candidate metadata marks it an update",
+                slug,
+            )
+            raise PendingApprovalRefused("kind_mismatch")
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         dest = self._dir / name
         if dest.exists():
             logger.warning("Cannot approve %s: a live skill already exists", name)
-            return None
+            raise PendingApprovalRefused("live_exists")
         # Reject any symlink in the candidate + any unexpected top-level entry
         # (defense-in-depth on top of the mandatory human review); promotion +
         # chmod must only touch known, real files. Factored into a shared helper
         # so the update-approve path enforces the identical layout guard.
         if not self._candidate_layout_ok(src, name):
-            return None
+            raise PendingApprovalRefused("invalid_layout")
+        # One verdict, two surfaces: approve consults the SAME verdict function
+        # the pre-click badge serves. Where a verdict is computable, a failing
+        # one refuses HERE with the verdict's own report, so the badge and the
+        # click cannot disagree on any candidate the badge judged — an
+        # ``ok: false`` badge is a refusal by construction, not by parallel
+        # re-derivation. ``None`` (no pinned opens, or a budget breach) keeps
+        # this path's own machinery as the sole authority, exactly the
+        # authority split the verdict's contract documents.
+        _fold = self._pending_scripts_verdict(src)
+        if _fold is not None:
+            _fold_ok, _fold_report = _fold
+            if not _fold_ok:
+                logger.warning(
+                    "Refusing to approve %s: the pending verdict this candidate's badge "
+                    "serves reports failing findings",
+                    name,
+                )
+                raise PendingApprovalRefused(
+                    "script_validation_failed",
+                    report=self._redact_validation_report(_fold_report),
+                )
         # Re-validate every script + redact the body + scripts before going live;
         # snapshots each file first so a failure restores the ORIGINAL bytes and
-        # never leaves a corrupted pending draft. Shared with the update path.
+        # never leaves a corrupted pending draft (raising PendingApprovalRefused
+        # with the reason). Shared with the update path.
         redact_backup = self._validate_and_redact_candidate(src, name)
-        if redact_backup is None:
-            return None
 
         def _restore_redacted() -> None:
             for _fp, _b in redact_backup.items():
@@ -4790,7 +6233,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve %s: could not read pending .meta.json before promotion", name
             )
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         try:
             meta_path.unlink()
         except FileNotFoundError:
@@ -4801,7 +6244,7 @@ class SkillsLoader:
                 "Refusing to approve %s: could not remove pending .meta.json before promotion",
                 name,
             )
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Cutoff for notification resolution, captured BEFORE the candidate
         # leaves the pending queue: staging refuses to overwrite an existing
@@ -4822,7 +6265,7 @@ class SkillsLoader:
                     pass
             _restore_redacted()
             logger.warning("Refusing to approve %s: could not move candidate live", name)
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         # Mark scripts executable now that a human approved them (recursively).
         sdir = dest / "scripts"
         if sdir.is_dir():
@@ -4937,7 +6380,13 @@ class SkillsLoader:
         """
         _ensure_builtin_skills(self._dir)
 
-    def get_triggered_skills(self, text: str, project_dir: str | Path | None = None) -> list[str]:
+    def get_triggered_skills(
+        self,
+        text: str,
+        project_dir: str | Path | None = None,
+        *,
+        select: Callable[[], list[str] | None] | None = None,
+    ) -> list[str]:
         """Return names of skills whose triggers match the given text.
 
         Uses word-overlap matching with multi-word trigger phrases and
@@ -4949,14 +6398,31 @@ class SkillsLoader:
         *project_dir* is the session's active project, used only by the
         ``repo_scope`` gate; omitting it suppresses every repo-scoped skill.
 
-        Returns up to ``max_triggered`` skills sorted by best overlap score.
+        *select*, when given, may replace the matched set before the audit row
+        is written; it returns ``None`` to keep the match. It is a callable, not
+        a list, so the caller pays for it only when the match is being audited.
+
+        Returns at most ``max_triggered`` matcher results sorted by best overlap
+        score; the cap does not apply to a list *select* returns, which replaces
+        them as given. A cap of zero (the shipped default) is the matcher
+        switched off: no skill is scanned or scored and no trigger audit row is
+        written; only *select* can still name skills.
         """
-        text_words = words_of(text)
         scored: list[tuple[str, float]] = []
         # Skills a negative trigger actively excluded — a permission DENY that
         # must still be audited (see the audit event below).
         negated_skills: list[str] = []
-        for name, skill_file, _within in self._iter_visible(project_dir):
+        # The cap is read BEFORE the scan. At zero every skill scored below would
+        # be sliced away, so the walk -- a frontmatter read, a repo-scope fence
+        # check and a trigger score per visible skill, on every message -- would
+        # buy nothing, and a `!` veto it recorded would be a DENY for a grant that
+        # could never have happened. Tokenizing the message feeds only that
+        # scoring, so it waits for the cap too. `select` still gets its turn: a
+        # selection point owns its own zero-cap refusal.
+        cap = self._max_triggered_now()
+        visible = self._iter_visible(project_dir) if cap > 0 else ()
+        text_words: set[str] = words_of(text) if cap > 0 else set()
+        for name, skill_file, _within in visible:
             meta = self._cached_frontmatter(skill_file, within=_within)
             if meta.get("always", "").strip().lower() == "true":
                 continue
@@ -4988,7 +6454,20 @@ class SkillsLoader:
                 scored.append((name, best_overlap))
 
         scored.sort(key=lambda x: x[1], reverse=True)
-        triggered = [name for name, _ in scored[: self._max_triggered_now()]]
+        triggered = [name for name, _ in scored[:cap]]
+
+        # An external *select* runs BEFORE the audit below so the one row records
+        # what is actually injected. Its three readings: a list replaces the
+        # trigger match, ``[]`` is a real "no skill applies" that empties it, and
+        # ``None`` (off, unusable answer, failure, expired budget) keeps it.
+        selected = None
+        if select is not None:
+            try:
+                selected = select()
+            except Exception as exc:
+                logger.debug("skills.select: selection failed (%s)", type(exc).__name__)
+            if selected is not None:
+                triggered = list(selected)
 
         # Emit ONE audit event for the matched + denied sets rather than one per
         # skill. A SEL entry per skill (incl. every non-match) on every message
@@ -4996,11 +6475,11 @@ class SkillsLoader:
         # The security-relevant signals are which
         # skills were injected (permission grant) and which were excluded by a
         # negative trigger (permission deny); both are captured here. Skipped
-        # entirely only when nothing triggered and nothing was denied (the
-        # common case).
-        if triggered or negated_skills:
+        # entirely only when nothing triggered or was denied and no selection
+        # ran (the common case): a selection that emptied the match is a row.
+        if triggered or negated_skills or selected is not None:
             metadata = {"text_hash": hashlib.sha256(text.encode()).hexdigest()[:16]}
-            if triggered:
+            if triggered or selected is not None:
                 metadata["skills"] = ",".join(triggered)
                 # Record HOW each match was delivered, not just that it matched.
                 # A pointer is an offer the agent may decline, so an auditor
@@ -5009,6 +6488,10 @@ class SkillsLoader:
                 bodies, pointers = self.split_triggered(triggered, project_dir)
                 metadata["bodies"] = ",".join(bodies)
                 metadata["pointers"] = ",".join(pointers)
+            if selected is not None:
+                # Which mechanism chose: an auditor reading an empty or widened
+                # set needs to know it was a selection, not a matcher change.
+                metadata["selected"] = "true"
             if negated_skills:
                 metadata["negated"] = ",".join(negated_skills)
             sel().log_tool_invocation(
@@ -5142,52 +6625,30 @@ class SkillsLoader:
         only: list[str] | None = None,
         project_dir: str | Path | None = None,
         project_body_budget: int | None = None,
+        *,
+        discovery_only: bool = False,
+        required_parts_out: list[str] | None = None,
     ) -> str:
-        """Build skills context for prompt injection (lazy-loaded).
+        """Build a bounded directory over the agent's resolved available set.
 
-        Unconfined pinned skills (``always: true`` frontmatter) get full content,
-        always — this is the "core" set (mark core skills ``always: true`` to pin
-        them). Confined project skills use bodies instead of mutable checkout
-        paths, up to *project_body_budget*. The remaining unconfined on-demand
-        skills are ranked by usage (hottest first, with a recency boost for
-        freshly-added skills) and summarized top-down until *budget* chars are
-        consumed; the long tail is left discoverable via the ``skill_search``
-        tool, the ``$skillname`` inline token, ``cat``, and the per-message
-        trigger auto-loader. This bounds the unconfined summary block so no
-        single section can blow the context budget.
+        Mapping grants availability, not eager body delivery. Ordinary global and
+        confined skills load on demand through scoped search/list/read. Required
+        ``always:true`` bodies share PINNED_SKILL_BODIES_CAP; exceeding it raises
+        SkillContextCapacityError instead of silently dropping instructions.
 
-        ``budget=None`` (opt-in OFF, the default) returns the LEGACY full-dump
-        block — every on-demand skill summarized, unranked and untruncated,
-        byte-for-byte the pre-lazy-load behavior. An integer ``budget`` (opt-in
-        ON) switches to the bounded, usage-ranked top-K described above.
-
-        *project_body_budget* independently bounds confined bodies, including
-        on the legacy path. Production callers pass the skills section cap so a
-        checkout cannot materialize many large bodies before their final context
-        is truncated. When omitted, an integer *budget* supplies the same bound.
-
-        *only* restricts the block to skills whose ``SKILL.md`` path matches one
-        of the given fnmatch globs — the agent template's ``skill://`` mapping
-        (see ``agent_discovery.agent_skill_globs``). ``None`` (the default) means
-        no restriction. An *only* list that matches nothing yields ``""`` rather
-        than silently falling back to the full catalog: an agent mapped to a
-        skill that has since been deleted must not inherit every other skill.
+        ``budget`` bounds optional discovery characters. ``discovery_only`` selects
+        the shorter pointer; both variants expose complete paginated discovery.
+        ``required_parts_out`` separates complete required bodies for the caller's
+        protected-content admission. ``only=[]`` admits nothing. The explicit
+        ``budget=None`` catalog reader retains its legacy unbudgeted rendering.
         """
-        all_skills = self.list_skills(project_dir)
-        if only is not None:
-            all_skills = [s for s in all_skills if _matches_any(s.get("path", ""), only)]
+        all_skills = self.scoped_skills(project_dir=project_dir, only=only)
         # Scope BEFORE anything is rendered. Dropping a repo-scoped skill only
         # from the injected body still leaves its summary line in the index, and
         # the index tells the agent to read the full file for anything related —
         # so an out-of-scope skill stays one `cat` away and its repo-specific
         # procedure gets applied to the wrong project. Filtering the list is the
         # single place that covers the index, both renderers, and the pinned set.
-        all_skills = [
-            s
-            for s in all_skills
-            if not s.get("repo_scope")
-            or self._repo_scope_satisfied(str(s["repo_scope"]), project_dir)
-        ]
         # Collapse verified byte-identical copies of the same skill before
         # anything is rendered, for the same reason the scope filter above
         # lives here: this is the single place that covers the index, both
@@ -5200,10 +6661,25 @@ class SkillsLoader:
         # `_dedupe_identical_skills` verifies exactly that: same-metadata rows
         # whose content differs are all kept.
         all_skills = _dedupe_identical_skills(all_skills)
+        # A first-run scope whose discovery pass has not finished enumerates to
+        # nothing, and nothing is indistinguishable from a machine with no skills.
+        # That matters here and nowhere else: `always: true` bodies are REQUIRED
+        # instructions, so returning "" would drop them with no signal — the one
+        # outcome this module refuses everywhere else (see SkillContextCapacityError,
+        # which fails loudly rather than trimming a required body). A first run
+        # cannot know which skills are `always: true` without enumerating, so the
+        # honest answer is neither to block the turn on the walk nor to present a
+        # truncated set as complete: state that discovery is still running, so the
+        # agent knows its instructions may be incomplete and can re-read them once
+        # it finishes. Emitted whether or not mapped rows made `all_skills`
+        # non-empty, because an incomplete catalog is incomplete either way.
+        notice = (
+            _DISCOVERY_IN_PROGRESS_NOTICE if self.catalog_status(project_dir) == "building" else ""
+        )
         if not all_skills:
-            return ""
+            return notice
         if budget is None:
-            return self._legacy_context(
+            return notice + self._legacy_context(
                 all_skills,
                 restricted=only is not None,
                 project_dir=project_dir,
@@ -5215,88 +6691,155 @@ class SkillsLoader:
         # pinned check below, _record_use() (also called with the _iter
         # identifier), and _rank_key()'s score(s["key"]) are all consistently
         # keyed by "key" — there is no key/name mismatch here.
-        pinned = set(self.get_always_skills(project_dir))
+        pinned = {str(s["key"]) for s in all_skills if s.get("always")}
 
         parts: list[str] = []
+        pinned_spent = 0
 
         # Pinned global skills: full content, always injected.
         # A confined path must never be offered to the agent for a later direct
         # read, because that read would sit outside the descriptor-pinned gate.
         for s in all_skills:
-            if s.get("confine_root") or s["key"] not in pinned:
+            if s["key"] not in pinned:
                 continue
-            content = self.load_skill(s["key"], project_dir)
-            if content:
-                stripped = self.strip_frontmatter(content)
-                parts.append(f"### Skill: {s['key']}\n\n{stripped}")
-
-        effective_project_budget = budget
-        if project_body_budget is not None:
-            effective_project_budget = (
-                project_body_budget
-                if effective_project_budget is None
-                else min(effective_project_budget, project_body_budget)
+            remaining = max(0, PINNED_SKILL_BODIES_CAP - pinned_spent)
+            if s.get("confine_root"):
+                remaining = min(remaining, PROJECT_SKILL_BODY_CAP)
+            content = self.read_scoped_skill(
+                str(s["key"]), only=only, project_dir=project_dir, max_bytes=remaining
             )
-        self._append_project_skill_bodies(
-            parts,
-            [s for s in all_skills if s.get("confine_root")],
-            project_dir,
-            effective_project_budget,
-        )
+            if content is None:
+                detail = (
+                    f"the {PROJECT_SKILL_BODY_CAP}-byte per-project-skill limit, "
+                    if s.get("confine_root")
+                    else ""
+                )
+                raise SkillContextCapacityError(
+                    f"Required skill {s['key']!r} could not be loaded within {detail}"
+                    f"the {PINNED_SKILL_BODIES_CAP}-byte total startup instruction "
+                    "capacity, or its file was unreadable. Reduce always:true skills "
+                    "or their bodies and verify the file before retrying."
+                )
+            stripped = self.strip_frontmatter(content)
+            rendered = f"### Skill: {s['key']}\n\n{stripped}"
+            pinned_spent += len(rendered.encode("utf-8")) + 8
+            if pinned_spent + 64 > PINNED_SKILL_BODIES_CAP:
+                raise SkillContextCapacityError(
+                    f"Required skills exceed the {PINNED_SKILL_BODIES_CAP}-byte "
+                    "startup instruction capacity; reduce always:true skills."
+                )
+            parts.append(rendered)
 
-        # On-demand: rank by usage (hottest first), fill a summary block up to
-        # `budget`, then point at skill_search for the tail.
-        on_demand = [s for s in all_skills if s["key"] not in pinned and not s.get("confine_root")]
-        if on_demand:
+        def wrap(items: list[str]) -> str:
+            if not items:
+                return ""
+            return "[Skills:]\n" + "\n\n---\n\n".join(items) + "\n[End of skills]\n\n"
+
+        required = wrap(parts)
+        if required_parts_out is not None:
+            if required:
+                required_parts_out.append(required)
+            parts = []
+        # Without a split consumer, required bodies still spend the total
+        # allowance before optional entries. They are never clipped to fit it.
+        # The discovery notice is charged here too, so an incomplete catalog cannot
+        # push the assembled block past the caller's budget.
+        optional_budget = max(
+            0, budget - len(notice) - (len(required) if required_parts_out is None else 0)
+        )
+        optional: list[str] = []
+        on_demand = [s for s in all_skills if s["key"] not in pinned]
+        if on_demand and discovery_only:
+            pointer = (
+                "## Skill discovery\n\n"
+                "Use skill_search(query) to search this agent’s available skills. "
+                "Use skill_search(action='list', offset=0) to browse all pages and "
+                "skill_search(action='read', key='full/key') for exact instructions. "
+                "Search returns confined project bodies safely; never read project paths directly. "
+                "Read returned instructions before use; $skillname loads an explicit skill.\n"
+            )
+            # Equal usage ranks fall back to key order so the eight names shown
+            # do not depend on directory iteration order.
+            by_key = sorted(on_demand, key=lambda s: s["key"])
+            named: set[str] = set()
+            for skill in sorted(by_key, key=self._rank_key, reverse=True)[:8]:
+                line = f"- {skill['key']}: {self._short_desc(skill['description'])[:100]}\n"
+                if len(wrap([pointer + line])) <= optional_budget:
+                    pointer += line
+                    named.add(str(skill["key"]))
+            # Families last, and only over what was NOT named: the line exists to
+            # cover what the entry hides, so repeating a family whose members are
+            # all listed spends the budget saying nothing and can crowd out a
+            # family that is genuinely unreachable. A name that did not fit is
+            # still hidden, so only an admitted one is excluded here.
+            groups = _family_line([s for s in on_demand if str(s["key"]) not in named])
+            if groups:
+                line = f"More families: {groups}\n"
+                if len(wrap([pointer + line])) <= optional_budget:
+                    pointer += line
+            if len(wrap([pointer])) <= optional_budget:
+                optional.append(pointer)
+        elif on_demand:
             ranked = sorted(on_demand, key=self._rank_key, reverse=True)
             header = (
                 "## Available Skills\n\n"
-                "The most-used skills are listed below. If a request relates to "
-                "one, read its full file with `cat <path>` first. To run a "
-                "skill's scripts, `cd` into its directory. Relevant skills also "
-                "auto-load when your message matches their triggers.\n\n"
+                "Search this agent's scope with skill_search(query). "
+                "Browse all pages with skill_search(action='list', offset=0); "
+                "load instructions with skill_search(action='read', key='full/key'). "
+                "Read instructions before use; run scripts from the skill directory.\n\n"
             )
-            # Reserve room for everything that surrounds the summary lines so the
-            # FINAL returned string stays within `budget` and the caller's backstop
-            # truncation never chops the trailing "...N more / skill_search" footer:
-            # the "[Skills:]"/"[End of skills]" wrapper, the "---" separators, the
-            # pinned parts already in `parts`, the header, and the footer line.
-            footer_reserve = (
-                len(
-                    f"- _...and {len(ranked)} more skill(s) not shown here. Find them "
-                    f"with the `skill_search` tool (grep by keyword), the "
-                    f"`$skillname` inline token, or `cat` a known path._"
-                )
-                + 1
-            )  # +1 for the "\n" join before the footer
-            wrap_overhead = len("[Skills:]\n") + len("\n[End of skills]\n\n")
-            sep_overhead = len("\n\n---\n\n") * len(parts)
-            lines: list[str] = []
-            used = wrap_overhead + sep_overhead + sum(len(p) for p in parts) + len(header)
-            shown = 0
-            for s in ranked:
-                line = (
-                    f"- **{s['name']}**: {self._short_desc(s['description'])} " f"-> `{s['path']}`"
-                )
-                if (
-                    budget is not None
-                    and shown > 0
-                    and used + len(line) + 1 + footer_reserve > budget
-                ):
-                    break
-                lines.append(line)
-                used += len(line) + 1
-                shown += 1
-            remaining = len(ranked) - shown
-            if remaining > 0:
-                lines.append(
-                    f"- _...and {remaining} more skill(s) not shown here. Find them "
-                    f"with the `skill_search` tool (grep by keyword), the "
-                    f"`$skillname` inline token, or `cat` a known path._"
-                )
-            parts.append(header + "\n".join(lines))
 
-        return "[Skills:]\n" + "\n\n---\n\n".join(parts) + "\n[End of skills]\n\n"
+            def summary(lines: list[str], hidden: list[dict]) -> str:
+                # *hidden* is passed in rather than derived from the row count: the
+                # admission loop below SKIPS a row that does not fit and keeps
+                # trying later ones, so the admitted rows are not a prefix of
+                # `candidates` and a tail slice would name the wrong skills.
+                footer: list[str] = []
+                if hidden:
+                    footer.append(
+                        f"- _...and {len(hidden)} more skill(s) not shown here. Find them "
+                        "with scoped search or paginated list above._"
+                    )
+                    families = _family_line(hidden)
+                    if families:
+                        footer.append(f"- _Families not shown: {families}._")
+                return header + "\n".join(lines + footer)
+
+            candidates = [
+                f"- **{s['name']}**: {self._short_desc(s['description'])} -> "
+                + (f"skill_search('{s['key']}')" if s.get("confine_root") else f"`{s['path']}`")
+                for s in ranked
+            ]
+            lines: list[str] = []
+            admitted: list[int] = []
+            hidden: list[dict] = []
+            if len(wrap(optional + [summary(candidates, [])])) <= optional_budget:
+                # A complete index needs no omission footer; reserve none when
+                # it fits, including the exact-fit boundary.
+                lines = candidates
+            else:
+                remaining = optional_budget - len(wrap([summary([], ranked)]))
+                for index, candidate in enumerate(candidates):
+                    cost = len(candidate) + 1
+                    if cost <= remaining:
+                        admitted.append(index)
+                        remaining -= cost
+                taken = set(admitted)
+                lines = [candidates[i] for i in admitted]
+                hidden = [s for i, s in enumerate(ranked) if i not in taken]
+            block = summary(lines, hidden)
+            # Removing rows can change which family labels win the bounded hint.
+            # Reconcile that exact footer without slicing a name or instruction.
+            while lines and len(wrap(optional + [block])) > optional_budget:
+                admitted.pop()
+                taken = set(admitted)
+                lines = [candidates[i] for i in admitted]
+                hidden = [row for i, row in enumerate(ranked) if i not in taken]
+                block = summary(lines, hidden)
+            if len(wrap(optional + [block])) <= optional_budget:
+                optional.append(block)
+
+        return notice + (required if required_parts_out is None else "") + wrap(optional)
 
     def _legacy_context(
         self,
@@ -5305,7 +6848,7 @@ class SkillsLoader:
         project_dir: str | Path | None = None,
         project_body_budget: int | None = None,
     ) -> str:
-        """Pre-lazy-load skills block (opt-in OFF, the default).
+        """Explicit unbudgeted reader, not the default startup path.
 
         Full content for unconfined pinned (``always: true``) skills, bounded
         bodies for confined project skills, and a one-line summary for every
@@ -5402,20 +6945,31 @@ class SkillsLoader:
         except Exception:  # pragma: no cover — telemetry must not break injection
             pass
 
-    def _recency_boost(self, path_str: str) -> float:
+    def _recency_boost(self, path_str: str, fingerprint: str = "") -> float:
         """Return the file mtime if the skill is newer than the boost window,
         else 0.0. Lets a freshly-added, never-used skill rank above stale unused
-        ones (cold-start protection) without flooding the top of the list."""
-        try:
-            mtime = Path(path_str).stat().st_mtime
-        except OSError:
-            return 0.0
+        ones (cold-start protection) without flooding the top of the list.
+
+        The mtime comes from the row's stat *fingerprint* when it carries one, so
+        ranking adds no syscall to a turn: ``list_skills`` already recorded that
+        stat, or reused the one the catalog walk took. Ranking every row on the
+        calling thread was the second O(N) stat pass a message paid, next to the
+        metadata validation one. A row with no usable fingerprint — a confined
+        project row, or a mapped row whose fingerprint carries its mapping root —
+        is stat'ed exactly as before.
+        """
+        mtime, _size = _fingerprint_mtime_and_size(fingerprint) if fingerprint else (None, 0)
+        if mtime is None:
+            try:
+                mtime = Path(path_str).stat().st_mtime
+            except OSError:
+                return 0.0
         return mtime if (time.time() - mtime) < _NEW_SKILL_BOOST_WINDOW_SECS else 0.0
 
     def _rank_key(self, s: dict) -> tuple[float, float]:
         """Sort key for on-demand skills: (usage_hits, effective_recency).
         Higher sorts first. Falls back to recency-only if the ledger is absent."""
-        boost = self._recency_boost(s["path"])
+        boost = self._recency_boost(s["path"], str(s.get("fingerprint") or ""))
         if self._usage is None:
             return (0.0, boost)
         return self._usage.score(s["key"], recency_boost=boost)
@@ -5437,45 +6991,318 @@ class SkillsLoader:
             cut = cut[:space]
         return cut.rstrip() + suffix
 
-    def search_skills(self, query: str, limit: int = 20) -> list[dict]:
-        """Grep skills by keyword for on-demand discovery (the skill_search tool).
+    def _body_hits(
+        self,
+        skills: list[dict],
+        terms: Iterable[str],
+        live_keys: list[str],
+        project_dir: str | Path | None,
+    ) -> dict[str, int]:
+        return {
+            key: len(hits)
+            for key, hits in self._body_matches(skills, terms, live_keys, project_dir).items()
+        }
 
-        Scores each skill by how many query terms appear in its key / name /
-        description; only when the metadata misses entirely does it fall back to
-        grepping the skill body (bounded cost, and only on an explicit tool
-        call — never per message). Results are ranked by match strength then
-        usage, capped at *limit*. Does NOT record usage — searching is not using.
-        """
-        q = (query or "").strip().lower()
-        if not q:
+    def _body_matches(
+        self,
+        skills: list[dict],
+        terms: Iterable[str],
+        live_keys: list[str],
+        project_dir: str | Path | None,
+    ) -> dict[str, set[str]]:
+        """Refresh once per query, with bounded work and explicit incomplete recall."""
+        terms = tuple(terms)
+        hits: dict[str, set[str]] = {}
+        unconfined = [s for s in skills if not s.get("confine_root")]
+        fallback = [s for s in skills if s.get("confine_root")]
+        indexed = None
+        started = time.monotonic()
+        if unconfined and self._search_index is not None:
+            rows = []
+            for skill in unconfined:
+                path = str(skill.get("path", ""))
+                fingerprint = skill.get("fingerprint") or body_fingerprint(path)
+                if fingerprint:
+                    rows.append((str(skill["key"]), path, fingerprint))
+            # A scoped query cannot evict the other agents' persistent entries.
+            deferred = self._search_index.sync(
+                rows,
+                budget_seconds=0.25,
+                canonical_roots={
+                    str(s["key"]): str(s["mapping_root"])
+                    for s in unconfined
+                    if s.get("mapping_root")
+                },
+            )
+            if deferred is not None:
+                pending = self._search_index.pending_keys
+                self.search_incomplete = bool(pending)
+                answered = [str(s["key"]) for s in unconfined if str(s["key"]) not in deferred]
+                indexed = self._search_index.body_matches(answered, terms)
+                if indexed is not None:
+                    fallback += [
+                        s
+                        for s in unconfined
+                        if str(s["key"]) in deferred and str(s["key"]) not in pending
+                    ]
+        logger.debug("skill body index refresh/query: %.2fms", (time.monotonic() - started) * 1000)
+        if indexed is None:
+            fallback += unconfined
+        else:
+            hits.update(indexed)
+        deadline = time.monotonic() + 0.25
+        for skill in fallback:
+            if time.monotonic() >= deadline:
+                self.search_incomplete = True
+                break
+            cap = PROJECT_SKILL_BODY_CAP if skill.get("confine_root") else None
+            if cap is not None and int(skill.get("size_bytes", 0)) > cap:
+                continue
+            if skill.get("mapping_root") is not None:
+                body = self._read_global_skill_text(
+                    Path(skill["path"]), cap, canonical_root=skill.get("mapping_root")
+                )
+            else:
+                body = self.load_skill(str(skill["key"]), project_dir, max_bytes=cap)
+            content = (body or "").lower()
+            matched = {term for term in terms if _body_term_hits(content, [term])}
+            if matched:
+                hits[str(skill["key"])] = matched
+        return hits
+
+    def _scoped_entries(
+        self,
+        project_dir: str | Path | None,
+        only: list[str] | None,
+    ) -> list[_ScopedSkillEntry]:
+        if only == []:
             return []
-        terms = [t for t in re.findall(r"\w+", q) if t]
+        entries = [_ScopedSkillEntry(*entry) for entry in self._iter_visible(project_dir)]
+        if only is None:
+            return entries
+        selected = [entry for entry in entries if _matches_any(str(entry[1]), only)]
+        known = {os.path.normcase(os.path.abspath(entry[1])) for entry in entries}
+        # Mapping paths are spec-owned, never caller-supplied read keys. Walk the
+        # literal prefix through the same provider/sensitive-path fence as the
+        # global catalog; do not use glob's unconstrained link traversal.
+        for pattern in only:
+            prefix = Path(pattern)
+            while any(char in str(prefix) for char in "*?["):
+                prefix = prefix.parent
+            catalog_roots = [self._dir, *self._extra_paths]
+            if project_dir:
+                catalog_roots.append(Path(project_dir) / ".kiro" / "skills")
+            if any(
+                _within_any(os.path.abspath(prefix), (os.path.abspath(root),))
+                for root in catalog_roots
+            ):
+                # The regular enumerator owns precedence, disabled apps and
+                # project consent. A mapping must not re-admit a filtered row.
+                continue
+            root = prefix.parent if prefix.name == "SKILL.md" else prefix
+            if not root.is_absolute() or validate_file_path(str(root)) is None:
+                continue
+            admitted_roots = (os.path.realpath(root), *_trusted_skill_roots())
+            # An ancestor glob must not descend through a catalog's filtered
+            # rows or probe a project skills junction before consent admission.
+            excluded = tuple(os.path.abspath(path) for path in catalog_roots)
+            for _name, path in _iter_skill_files(root, exclude_roots=excluded):
+                identity = os.path.normcase(os.path.abspath(path))
+                if identity in known or not _matches_any(str(path), [pattern]):
+                    continue
+                target = os.path.realpath(path)
+                admitted_root = next(
+                    (
+                        candidate
+                        for candidate in admitted_roots
+                        if _within_any(target, (candidate,))
+                    ),
+                    None,
+                )
+                if admitted_root is None:
+                    continue
+                known.add(identity)
+                digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+                selected.append(
+                    _ScopedSkillEntry(
+                        f"mapped/{digest}/{path.parent.name}", path, None, admitted_root
+                    )
+                )
+        return selected
+
+    def scoped_skills(
+        self,
+        *,
+        project_dir: str | Path | None = None,
+        only: list[str] | None = None,
+    ) -> list[dict]:
+        """The same available set for directory, search, list and explicit reads."""
+        started = time.monotonic()
+        entries = self._scoped_entries(project_dir, only)
+        logger.debug(
+            "skill enumeration: %.2fms, %d entries",
+            (time.monotonic() - started) * 1000,
+            len(entries),
+        )
+        rows = self.list_skills(project_dir, _entries=entries)
+        return [
+            row
+            for row in rows
+            if not row.get("repo_scope")
+            or self._repo_scope_satisfied(str(row["repo_scope"]), project_dir)
+        ]
+
+    def read_scoped_skill(
+        self,
+        key: str,
+        *,
+        only: list[str] | None = None,
+        project_dir: str | Path | None = None,
+        max_bytes: int = 99_000,
+    ) -> str | None:
+        """Read an exact catalog key, never an ambiguous leaf or caller path."""
+        entry = next(
+            (entry for entry in self._scoped_entries(project_dir, only) if entry[0] == key), None
+        )
+        if entry is None:
+            content = self._exact_read_while_building(key, only, project_dir, max_bytes)
+        elif entry.mapping_root is not None:
+            content = self._read_global_skill_text(
+                entry.path, max_bytes, canonical_root=entry.mapping_root
+            )
+        else:
+            content = self.load_skill(key, project_dir, max_bytes=max_bytes)
+        if content is None:
+            return None
+        meta = self._parse_frontmatter_text(content)
+        if meta.get("repo_scope") and not self._repo_scope_satisfied(
+            meta["repo_scope"], project_dir
+        ):
+            return None
+        return content
+
+    def _exact_read_while_building(
+        self,
+        key: str,
+        only: list[str] | None,
+        project_dir: str | Path | None,
+        max_bytes: int,
+    ) -> str | None:
+        """Serve a COMPLETE key during an unfinished first walk, or ``None``.
+
+        A cold catalog cannot answer "does this skill exist", so without this an
+        exact read on a machine's first run reports a skill that is right there as
+        absent. Only reachable while :meth:`catalog_status` says ``building``: once
+        the enumeration exists it is the authority, and a second resolution path
+        running alongside it is how the two drift apart.
+
+        *key* is never treated as a path. ``_safe_name`` rejects anything that is not
+        a plain catalog key, and the candidate is composed from a root this loader
+        already owns, so ``../`` reaches nothing. The complete key is required and
+        matched namespace-first — ``team-b/review`` composes only
+        ``<root>/team-b/review/SKILL.md`` and can never resolve ``team-a/review``.
+
+        Every live gate still applies: the mapping must admit the candidate, a
+        disabled app's skill stays hidden, the caller re-checks ``repo_scope``, and
+        the body itself is read through :meth:`load_skill`'s fenced readers. The one
+        thing withheld is the confined project tier, whose containment is only
+        knowable from the enumeration — a project skill therefore waits for the walk
+        rather than being read through a path this method composed.
+        """
+        if self.catalog_status(project_dir) != "building" or not self._safe_name(key):
+            return None
+        disabled_apps = self._get_disabled_app_names()
+        for root in (self._dir, *self._extra_paths):
+            candidate = root / key / "SKILL.md"
+            if not candidate.is_file():
+                continue
+            # Precedence is the enumeration's: the first root holding the key wins,
+            # so a refusal here is final rather than a reason to try a lower root.
+            if only is not None and not _matches_any(str(candidate), only):
+                return None
+            if disabled_apps and self._owning_app(key, candidate) in disabled_apps:
+                return None
+            return self.load_skill(key, project_dir, max_bytes=max_bytes)
+        return None
+
+    def search_skills(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        project_dir: str | Path | None = None,
+        only: list[str] | None = None,
+        offset: int = 0,
+        browse: bool = False,
+    ) -> list[dict]:
+        """Rank total query coverage before rarity, metadata preference and usage.
+
+        Partial matches remain available, with stable full keys and pagination.
+        An empty browse request lists the complete resolved scope in key order.
+        """
+        self.search_incomplete = False
+        rows = self.scoped_skills(project_dir=project_dir, only=only)
+        # An unfinished first walk is the other way this answer can be partial, and
+        # the caller cannot tell it from "no match" without being told: `incomplete`
+        # already travels to the MCP tool and the dashboard, so the existing signal
+        # carries it rather than a second one.
+        building = self.catalog_status(project_dir) == "building"
+        self.search_incomplete = building
+        offset = max(0, offset)
+        if browse:
+            return sorted(rows, key=lambda s: str(s["key"]))[offset : offset + limit]
+        rows = _dedupe_identical_skills(rows)
+        terms = sorted(recall_terms((query or "").strip().lower()))
         if not terms:
             return []
-        scored: list[tuple[int, float, dict]] = []
-        for s in self.list_skills():
-            hay = f"{s['key']} {s['name']} {s['description']}".lower()
-            meta_hits = sum(1 for t in terms if t in hay)
-            body_hits = 0
-            if meta_hits == 0:
-                content = (self.load_skill(s["key"]) or "").lower()
-                body_hits = sum(1 for t in terms if t in content)
-            total = meta_hits * 10 + body_hits
-            if total <= 0:
-                continue
-            usage = self._usage.score(s["key"])[0] if self._usage else 0.0
-            scored.append((total, usage, s))
-        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
-        return [s for _, _, s in scored[:limit]]
+        # Ask every term across both surfaces: a metadata hit must not suppress
+        # the other query words found only in the procedure.
+        matched: dict[str, set[str]] = {}
+        meta_counts: dict[str, int] = {}
+        frequencies: dict[str, int] = {}
+        live = [str(s["key"]) for s in rows if not s.get("confine_root")]
+        bodies = self._body_matches(rows, terms, live, project_dir)
+        # `_body_matches` owns this flag for the body tier and assigns it outright,
+        # so an unfinished catalog — an independent reason the answer is partial —
+        # is re-applied rather than left to be overwritten.
+        self.search_incomplete = self.search_incomplete or building
+        metadata = self._search_index.metadata_matches(terms) if self._search_index else None
+        for row in rows:
+            key = str(row["key"])
+            if metadata is None or not row.get("metadata_indexed"):
+                vocabulary = recall_terms(f"{key} {row['name']} {row['description']}".lower())
+                meta_hits = {t for t in terms if any(word.startswith(t) for word in vocabulary)}
+            else:
+                meta_hits = metadata.get(str(row["path"]), set())
+            hits = meta_hits | bodies.get(key, set())
+            if hits:
+                matched[key] = hits
+                meta_counts[key] = len(meta_hits)
+                for term in hits:
+                    frequencies[term] = frequencies.get(term, 0) + 1
+
+        def rank(row: dict) -> tuple:
+            key = str(row["key"])
+            hits = matched.get(key, set())
+            rarity = sum(math.log1p(len(rows) / max(1, frequencies[t])) for t in hits)
+            usage = self._usage.score(key)[0] if self._usage else 0.0
+            return (-len(hits), -rarity, -meta_counts.get(key, 0), -usage, key)
+
+        candidates = [s for s in rows if str(s["key"]) in matched]
+        return sorted(candidates, key=rank)[offset : offset + limit]
 
     def resolve_dollar_skills(
-        self, text: str, project_dir: str | Path | None = None
+        self,
+        text: str,
+        project_dir: str | Path | None = None,
+        *,
+        only: list[str] | None = None,
     ) -> list[tuple[str, str, str]]:
         """Resolve ``$skillname`` tokens in *text* to loadable skills.
 
         Scans *text* for ``$token`` occurrences (anywhere, multiple allowed) and
-        matches each token against the **last path segment** of every enumerated
-        skill key — so ``$oncall-handover`` resolves the skill whose key is
+        matches a qualified token against its complete key first. An unqualified
+        token matches a unique last path segment of an enumerated skill key — so ``$oncall-handover`` resolves the skill whose key is
         ``WorkforceEmploymentKnowledgeBase/oncall-handover``. Matching is
         case-insensitive on the leaf.
 
@@ -5494,25 +7321,23 @@ class SkillsLoader:
         if not text or "$" not in text:
             return []
 
-        # Build leaf → full-key map once from the enumerated (allowlisted) set.
-        # _iter() already applies local > extra-path precedence and dedupes
-        # by full key, so the first full key seen for a given leaf wins.
-        leaf_to_name: dict[str, str] = {}
-        for name, skill_file, _within in self._iter_visible(project_dir):
-            leaf = name.rsplit("/", 1)[-1].lower()
-            leaf_to_name.setdefault(leaf, name)
+        names = [str(s["key"]) for s in self.scoped_skills(project_dir=project_dir, only=only)]
+        exact = {name: name for name in names}
+        leaves: dict[str, list[str]] = {}
+        for name in names:
+            leaves.setdefault(name.rsplit("/", 1)[-1].casefold(), []).append(name)
 
         resolved: list[tuple[str, str, str]] = []
         seen_names: set[str] = set()
         for match in _DOLLAR_SKILL_PATTERN.finditer(text):
             token = match.group(1)
-            # Match on the leaf segment of the token (supports ``$a/b`` typed by
-            # the user, though the common case is a bare leaf).
-            leaf = token.rsplit("/", 1)[-1].lower()
-            matched: str | None = leaf_to_name.get(leaf)
+            matched = exact.get(token)
+            if matched is None and "/" not in token:
+                choices = leaves.get(token.casefold(), [])
+                matched = choices[0] if len(choices) == 1 else None
             if matched is None or matched in seen_names:
                 continue
-            content = self.load_skill(matched, project_dir)
+            content = self.read_scoped_skill(matched, only=only, project_dir=project_dir)
             if content is None:
                 continue
             seen_names.add(matched)

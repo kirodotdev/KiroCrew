@@ -22,6 +22,7 @@ from kiro_crew.monitoring.models import (
     MonitorDecision,
     MonitorDispatchResult,
     MonitorObservation,
+    MonitorObservationStatus,
     MonitorProbeResult,
     MonitorState,
     MonitorVerdict,
@@ -117,6 +118,12 @@ class _Provider(Protocol):
 
 MonitorDispatcher = Callable[[Any, str], Awaitable[MonitorDispatchResult]]
 OwnerCredentialsAuthorizer = Callable[[_Loop, MonitorState], bool]
+#: Names the crew log unit a loop's OWNER session is writing -- its live ACP session
+#: id -- or ``""`` when the slot has no live session. Injected by the host, which is
+#: the one party that holds the session registry; the controller never opens a
+#: session or a file to find out. Typed on ``Any`` for the loop, as the dispatcher
+#: is, so a host callback annotated with its own loop type satisfies it.
+OwnerSessionResolver = Callable[[Any], str]
 
 
 class MonitorController:
@@ -130,6 +137,7 @@ class MonitorController:
         providers: Mapping[str, _Provider] | None = None,
         clock: Callable[[], float] = time.time,
         owner_credentials_authorized: OwnerCredentialsAuthorizer | None = None,
+        owner_session_id: OwnerSessionResolver | None = None,
     ) -> None:
         self._service = service
         self._dispatch = dispatch
@@ -138,6 +146,7 @@ class MonitorController:
         self._owner_credentials_authorized = (
             owner_credentials_authorized or self._protected_owner_credentials_authorized
         )
+        self._owner_session_id = owner_session_id
         self._providers = dict(providers or {})
         if not self._providers:
             self._providers = {
@@ -206,6 +215,12 @@ class MonitorController:
             return MonitorVerdict(decision=MonitorDecision.STOP_BUDGET)
         config_generation = state.config_generation
         target = state.target
+        kind = state.kind
+        # Read BEFORE the probe. The service publishes an accepted observation into
+        # this same state object, so after apply_monitor_probe returns this field
+        # already names the new fingerprint, and the comparison the record depends
+        # on would compare a value with itself.
+        previous_fingerprint = state.last_fingerprint
         previous_observation = deepcopy(state.last_observation)
         provider = self._providers.get(state.kind)
         result: MonitorProbeResult
@@ -249,9 +264,84 @@ class MonitorController:
             now=now,
             config_generation=config_generation,
         )
+        self._record_observation(
+            loop,
+            state,
+            result,
+            kind=kind,
+            target=target,
+            previous_fingerprint=previous_fingerprint,
+            now=now,
+        )
         if verdict.decision is not MonitorDecision.WAKE_ACTIONABLE:
             return verdict
         return await self._dispatch_claimed(loop, state, now=now, entries=verdict.entries)
+
+    def _record_observation(
+        self,
+        loop: _Loop,
+        state: MonitorState,
+        result: MonitorProbeResult,
+        *,
+        kind: str,
+        target: str,
+        previous_fingerprint: str,
+        now: float,
+    ) -> None:
+        """Append the probe's canonical snapshot to the owner session's crew log.
+
+        Once per CHANGE, never per poll, and independent of the wake decision: a
+        subject that moved from one pending state to another is recorded even
+        though nobody is woken for it, because the record is about the subject,
+        not about what the engine chose to do.
+
+        "Changed" is judged against the state the service PUBLISHED, not against
+        the raw observation. ``apply_monitor_probe`` copies an accepted observation
+        into this live state object before it returns, and declines one taken
+        under a superseded configuration generation without touching it. Reading
+        the published fingerprint back is what keeps the record honest in both
+        directions: a declined observation writes nothing (the next tick will
+        observe the subject again and record it then, once), and a baseline reset
+        that raced this probe cannot be mistaken for a change, because the state
+        then names neither the previous fingerprint nor this one.
+
+        The provider-error result is excluded before any of that: a failed read is
+        no evidence about the subject, carries no fingerprint, and is never
+        published as one.
+
+        The owner session is named by the host's resolver. A slot with no live
+        session -- cold after a restart, or torn down -- records nothing rather
+        than opening one: a probe runs without a model turn and must stay that
+        cheap. Nothing here is allowed to reach the tick: a record that could not
+        be made is logged, and the wake this tick may owe is delivered regardless.
+        """
+        if self._owner_session_id is None:
+            return
+        observation = result.observation
+        if observation.status is MonitorObservationStatus.PROVIDER_ERROR:
+            return
+        if not observation.fingerprint or observation.fingerprint == previous_fingerprint:
+            return
+        if state.last_fingerprint != observation.fingerprint:
+            return
+        try:
+            session_id = self._owner_session_id(loop)
+            if not session_id:
+                return
+            from kiro_crew.crew_log import emit as crew_log_emit
+            from kiro_crew.crew_log.entry_types import OBJECT_PRODUCER_PROBE
+
+            crew_log_emit.on_object_observed(
+                session_id,
+                producer=OBJECT_PRODUCER_PROBE,
+                kind=kind,
+                target=target,
+                fingerprint=observation.fingerprint,
+                facts=result.canonical,
+                observed_at=now,
+            )
+        except Exception:
+            logger.exception("structured monitor could not record its observation")
 
     async def _dispatch_claimed(
         self,

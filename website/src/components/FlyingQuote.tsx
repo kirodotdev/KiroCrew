@@ -181,7 +181,7 @@ export default function FlyingQuote({ from, targetRef, text, onComplete }: Flyin
       }}
       className="fixed z-[99999] pointer-events-none max-w-[280px]"
     >
-      <div className="px-3 py-2 rounded-lg bg-accent/15 border border-accent/30 backdrop-blur-sm shadow-lg">
+      <div className="px-3 py-2 rounded-lg bg-accent/15 border border-accent/30 backdrop-blur-xs shadow-lg">
         <div className="flex items-start gap-2">
           <div className="w-0.5 h-full min-h-[16px] bg-accent rounded-full shrink-0" />
           <span className="text-[12px] text-text font-mono leading-snug line-clamp-2">{truncated}</span>

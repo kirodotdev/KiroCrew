@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import http.client
 import json
@@ -84,26 +85,54 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(scope="session")
-def _throwaway_pair(tmp_path_factory: pytest.TempPathFactory) -> "tuple[Path, Path]":
-    """One throwaway RSA pair for the whole session.
+def _throwaway_pair(tmp_path_factory: pytest.TempPathFactory) -> "tuple[Path, Path, str]":
+    """One throwaway RSA pair for the whole session, with its key id.
 
     Session-scoped because a 3072-bit keygen is ~0.5s and a dozen tests want a
     signing key: minting per test spent most of this file's runtime on openssl.
-    The PINNING stays per-test (below), so no test inherits another's patch.
+    The key id is computed here too, once: ``pin_fixture_key`` recomputes it with
+    an ``openssl pkey`` spawn on every call, and the pair does not change between
+    tests. The PINNING stays per-test (below), so no test inherits another's patch.
     """
-    return fixture.mint_throwaway_key(tmp_path_factory.mktemp("fv-signing-key"))
+    private, public = fixture.mint_throwaway_key(tmp_path_factory.mktemp("fv-signing-key"))
+    return private, public, fixture.key_id_of(public)
+
+
+@pytest.fixture(scope="module")
+def _fixture_key_id() -> str:
+    """The committed fixture key's id, computed once per module (one openssl spawn)."""
+    return fixture.key_id_of(fixture.PUBLIC_KEY_PATH)
+
+
+def _pin(monkeypatch: pytest.MonkeyPatch, public: Path, key_id: str) -> str:
+    """``fixture.pin_fixture_key`` with the key id already known.
+
+    The same three pins, in the same order, minus the per-call ``openssl pkey``
+    spawn that derives the id — the callers above hold a cached one. The openssl
+    pin stays: production resolves it from fixed system directories, and a host
+    whose openssl lives elsewhere would otherwise fail every positive case for a
+    reason unrelated to what it tests.
+    """
+    monkeypatch.setattr(feed_trust, "trusted_system_bin", lambda _n: fixture.openssl_or_skip())
+    monkeypatch.setattr(
+        feed_trust,
+        "PINNED_PUBLIC_KEY_B64",
+        base64.b64encode(public.read_bytes()).decode("ascii"),
+    )
+    monkeypatch.setattr(feed_trust, "PINNED_KEY_ID", key_id)
+    return key_id
 
 
 @pytest.fixture()
-def signing_key(_throwaway_pair: "tuple[Path, Path]", monkeypatch: pytest.MonkeyPatch) -> Path:
+def signing_key(_throwaway_pair: "tuple[Path, Path, str]", monkeypatch: pytest.MonkeyPatch) -> Path:
     """The session key, with ``feed_trust``'s pins repointed at it for this test.
 
     Both halves come from ``feature_video_fixture``, which is also what the
     publishing tool's tests use — one helper, so a key minted here and a key minted
     there cannot differ in a way that hides an encoding disagreement.
     """
-    private, public = _throwaway_pair
-    fixture.pin_fixture_key(monkeypatch, public)
+    private, public, key_id = _throwaway_pair
+    _pin(monkeypatch, public, key_id)
     return private
 
 
@@ -194,8 +223,8 @@ class TestSharedFixture:
     """
 
     @pytest.fixture()
-    def pinned(self, monkeypatch: pytest.MonkeyPatch) -> str:
-        return fixture.pin_fixture_key(monkeypatch)
+    def pinned(self, monkeypatch: pytest.MonkeyPatch, _fixture_key_id: str) -> str:
+        return _pin(monkeypatch, fixture.PUBLIC_KEY_PATH, _fixture_key_id)
 
     def test_the_committed_fixture_verifies_and_parses(self, pinned: str) -> None:
         manifest = manifest_mod.verified_manifest(fixture.load_fixture_manifest())
@@ -256,20 +285,21 @@ class TestSharedFixture:
         signature = subprocess.run(
             [fixture.openssl_or_skip(), "dgst", "-sha256", "-sign", str(signing_key), str(wrong)],
             check=True,
+            cwd=tmp_path,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         ).stdout
         mis_signed = {**document, "signature": base64.b64encode(signature).decode("ascii")}
         assert manifest_mod.verify_manifest(mis_signed) is False
 
-    def test_the_fixture_key_is_not_the_production_trust_root(self) -> None:
+    def test_the_fixture_key_is_not_the_production_trust_root(self, _fixture_key_id: str) -> None:
         """A test key must never be able to become the thing that grants trust.
 
         Asserted WITHOUT the pinning fixture, against the real committed pins: if
         someone ever pasted this key into ``feed_trust``, every fixture-signed
         document would verify on a shipped build.
         """
-        assert fixture.key_id_of(fixture.PUBLIC_KEY_PATH) != feed_trust.PINNED_KEY_ID
+        assert _fixture_key_id != feed_trust.PINNED_KEY_ID
         pem = fixture.PUBLIC_KEY_PATH.read_bytes()
         assert base64.b64encode(pem).decode("ascii") != feed_trust.PINNED_PUBLIC_KEY_B64
 
@@ -1013,6 +1043,183 @@ class TestManifestOnDisk:
             assert stat.S_IMODE(folder.stat().st_mode) == 0o700
             path = manifest_mod.cached_manifest_path("0.6.0")
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(
+        not pinned_fs.supports_pinned_walk(), reason="the descriptor-relative create path"
+    )
+    def test_a_release_folder_removed_before_its_open_names_the_whole_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Creating the folder and opening it are two calls, and a removal fits between.
+
+        The `FileExistsError` half of that race was tolerated and this half was not
+        (GH-12043): the open failed with `ENOENT` on the bare relative name `'0.6.0'`,
+        which names no directory and reads as a working-directory bug. It is reported
+        with the whole path now -- and still reported, not re-created, because the
+        actor that removes a release folder here is the cache's own eviction.
+        """
+        real_mkdir = os.mkdir
+        removals: list[int] = []
+
+        def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+            real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+            if name == "0.6.0":
+                removals.append(1)
+                os.rmdir(name, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+            monkeypatch.setattr(os, "mkdir", vanishing)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+        assert removals == [1], "the race did not happen, so this asserts nothing"
+        assert excinfo.value.filename == str(folder)
+        assert "release folder was removed" in str(excinfo.value)
+        assert not folder.exists(), "an evicted release folder was re-created"
+
+    @pytest.mark.skipif(
+        not pinned_fs.supports_pinned_walk(), reason="the descriptor-relative create path"
+    )
+    def test_a_cache_root_removed_under_its_pin_names_the_release_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other end of the same sequence: the root goes, so the `mkdir` has nowhere.
+
+        Reported separately from the folder's own removal because the two are
+        different conditions, and reported with the path for the same reason: the
+        errno carries only `'0.6.0'`.
+        """
+        real_mkdir = os.mkdir
+
+        def removing_the_root(
+            name: object, mode: int = 0o777, *, dir_fd: int | None = None
+        ) -> None:
+            if name == "0.6.0":
+                os.rmdir(manifest_mod.cache_root())
+            real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+            monkeypatch.setattr(os, "mkdir", removing_the_root)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+        assert excinfo.value.filename == str(folder)
+        assert "cache root was removed" in str(excinfo.value)
+
+    def test_the_by_name_branch_also_names_the_whole_path_when_the_folder_vanishes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The platform WITHOUT `dir_fd` reports the removal with the path too.
+
+        Review asked for the claim to be measured rather than asserted in prose, and
+        measuring it found the prose wrong. That branch pins by path, and on the
+        platform it exists for it does so through `CreateFileW`: the `ctypes.WinError`
+        raised when the folder is gone carries NO `filename` and no path in its
+        message, so the operator was told only that the system cannot find the file.
+        A POSIX `os.open` on the same code path DOES set `filename`, which is why
+        running the branch on this host proves nothing on its own -- the stub below
+        reproduces the one thing that differs, an `ENOENT` with nothing attached.
+        """
+        monkeypatch.setattr(manifest_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+        real_mkdir = os.mkdir
+        real_pin = manifest_mod.platform_compat.pin_directory
+        pinned_by_name: list[str] = []
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+
+            def windows_shaped_pin(path: object) -> int:
+                pinned_by_name.append(str(path))
+                if Path(str(path)) == folder:
+                    # What `ctypes.WinError(ERROR_PATH_NOT_FOUND)` produces: an errno
+                    # and a message, and no filename whatsoever.
+                    raise FileNotFoundError(2, "The system cannot find the file specified")
+                return real_pin(path)  # type: ignore[arg-type]
+
+            def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+                real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+                if Path(str(name)) == folder:
+                    os.rmdir(name)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(manifest_mod.platform_compat, "pin_directory", windows_shaped_pin)
+            monkeypatch.setattr(os, "mkdir", vanishing)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+
+        assert str(folder) in pinned_by_name, "the by-name branch was not the one exercised"
+        assert excinfo.value.filename == str(folder)
+        assert "removed between its creation and its open" in str(excinfo.value)
+        assert not folder.exists()
+
+    def test_the_by_name_branch_translates_a_not_found_that_is_not_the_subclass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The translation keys on the CONDITION, not on the exception class.
+
+        Review asked whether `pin_directory`'s vanished-folder error really arrives
+        as `FileNotFoundError` on a real Windows host, and observed that if it does
+        not, the translation never fires. Rather than depend on CPython's
+        winerror-to-subclass mapping, the handler tests errno and `winerror`. This
+        raises a PLAIN `OSError` carrying `ENOENT` -- the shape the doubt describes --
+        and asserts the path still arrives.
+        """
+        monkeypatch.setattr(manifest_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+        real_mkdir = os.mkdir
+        real_pin = manifest_mod.platform_compat.pin_directory
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+
+            def bare_oserror_pin(path: object) -> int:
+                # The branch pins the cache ROOT first; only the release folder is
+                # made to fail.
+                if Path(str(path)) != folder:
+                    return real_pin(path)  # type: ignore[arg-type]
+                # Constructing OSError(ENOENT, ...) would be mapped to
+                # FileNotFoundError by CPython, which is the very thing not to rely
+                # on, so the errno is attached after construction.
+                exc = OSError()
+                exc.errno = errno.ENOENT
+                raise exc
+
+            def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+                real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+                if Path(str(name)) == folder:
+                    os.rmdir(name)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(manifest_mod.platform_compat, "pin_directory", bare_oserror_pin)
+            monkeypatch.setattr(os, "mkdir", vanishing)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+
+        assert excinfo.value.filename == str(folder)
+        assert "removed between its creation and its open" in str(excinfo.value)
+
+    def test_the_by_name_branch_does_not_swallow_an_unrelated_pin_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Widening the handler to `OSError` must not absorb errors it never owned.
+
+        The handler catches `OSError` so a not-found reaches the translation whatever
+        class the platform picked; this pins the other half of that widening, which is
+        that anything NOT a not-found still propagates as itself.
+        """
+        monkeypatch.setattr(manifest_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+        real_pin = manifest_mod.platform_compat.pin_directory
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+
+            def refusing_pin(path: object) -> int:
+                if Path(str(path)) != folder:
+                    return real_pin(path)  # type: ignore[arg-type]
+                raise PermissionError(errno.EACCES, "permission denied")
+
+            monkeypatch.setattr(manifest_mod.platform_compat, "pin_directory", refusing_pin)
+            with pytest.raises(PermissionError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+
+        assert "removed between its creation and its open" not in str(excinfo.value)
 
 
 # ── eviction ──

@@ -24,7 +24,7 @@ const SelectTrigger = React.forwardRef<
     ref={ref}
     className={cn(
       'flex items-center justify-between w-full px-3 py-2 rounded-md text-sm border border-border bg-bg-elevated text-text',
-      'hover:border-border-strong transition-all cursor-pointer outline-none',
+      'hover:border-border-strong transition-all cursor-pointer outline-hidden',
       // data-[disabled] fires only via the Radix `disabled` prop; an ancestor
       // <fieldset disabled> disables the native button without Radix knowing,
       // so the same look must also hang off the native :disabled state.
@@ -124,7 +124,7 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-md px-3 py-1.5 text-[13px] outline-none transition-colors',
+      'relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-md px-3 py-1.5 text-[13px] outline-hidden transition-colors',
       'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       // Themed selected state (user preference): accent wash + accent text
       // instead of stock shadcn's check-only look.

@@ -27,16 +27,23 @@ ACP runtimes — inherit that value. The backend does re-add a fixed list of
 well-known install locations (Apple Silicon Homebrew's `/opt/homebrew/bin`,
 `~/.local/bin`, common version-manager shim directories), so CLIs there
 resolve already. A CLI anywhere *outside* both the system `PATH` and that
-fixed list — Intel Homebrew's `/usr/local/bin`, a custom `~/bin`, a
-tool-managed directory like `~/.opencode/bin` — is unresolvable inside the
-app even though the same command works in Terminal.
+fixed list — a custom `~/bin`, a tool-managed directory like
+`~/.opencode/bin` — is unresolvable inside the app even though the same
+command works in Terminal.
 
 To recover your real `PATH`, the app reads the **launchd user domain**
 (`launchctl getenv PATH`) just before it spawns the Gateway and appends the
 directories found there. That domain is empty until something writes it: an
 `export PATH=...` in `~/.zprofile` or `~/.zshrc` configures shells only and
-never reaches launchd. That is why the fix below is a `launchctl setenv`, not
-another rc-file edit.
+never reaches launchd. That is why the general fix below is a `launchctl
+setenv`, not another rc-file edit.
+
+If **only an MCP server launcher** is missing, prefer the narrower
+`mcp.extra_path_dirs` config list. It extends MCP resolution and the MCP gateway
+daemon without changing GUI applications' general `PATH`; entries must be
+absolute, and a gateway restart is required because the daemon inherits its
+`PATH` at spawn. It does not affect ordinary agent shell commands, so use the
+launchd fix below when those are missing too.
 
 ### The fix
 

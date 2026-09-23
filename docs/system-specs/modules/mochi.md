@@ -3,7 +3,7 @@
 A desktop pet companion: an always-on-top animated character plus a chat panel,
 a watch list, an appearance gallery, and an autonomous "owner loop" that plans
 moves/moods, checks watched items, and delivers notifications. The pet windows
-render only in the KiroCrew desktop (Electron) shell; the dashboard page is a
+render only in the Kiro Crew desktop (Electron) shell; the dashboard page is a
 browser-visible status/watch/plan surface.
 
 `defaultEnabled: false` and `platform.requiresDesktopApp: true` — it appears in
@@ -14,6 +14,19 @@ The desktop pet keeps polling the gateway while disabled so enabling Mochi in
 the App Store takes effect without restarting the shell. Probe diagnostics are
 deduplicated per outcome for one minute, including alternating HTTP errors and
 disabled responses; actual enabled-state changes still log immediately.
+
+**A non-answer never creates a pet.** Every probe the reconcile tick makes is
+tri-state (`enabled` / `disabled` / `unknown`), including the remote instance's
+own Mochi flag (`instanceGate.remoteEnabledState`). `unknown` means keep
+whatever is on screen: it never tears a pet down, and it never opens one. With
+the host's Mochi disabled, a pet is created only on a definite `enabled` from
+the remote named by the shell's `petInstance` pointer; on a non-answer it is
+kept only if a pet window already exists, and a teardown resets the shown
+pointer to `self`. The pet overlay is a full-display window pinned at the
+`screen-saver` level on every Space, so an opaque page in it covers the whole
+machine with nothing to dismiss: a main-frame `did-fail-load` (gateway
+unreachable) and any `>=400` navigation both hide and latch the overlay, and
+the reconcile tick re-arms it once a target answers.
 
 ## Layout
 

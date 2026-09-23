@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { fireEvent } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ToolCallLine, { resetOpenedDiffCards } from '../pages/chat/ToolCallLine'
 import { presentToolDiff, isDiffToolMessage } from '../pages/chat/toolDiff'
@@ -63,6 +63,20 @@ describe('presentToolDiff', () => {
     // An intact diff is never flagged.
     const intact = presentToolDiff('edit', UNIFIED_DIFF)
     expect(intact?.mode).toBe('card')
+  })
+
+  it('a store-clamped diff (input_cut set) is always a summary, flagged truncated', () => {
+    // The live tool log clamps an oversize input to head + tail and records
+    // the seam as `input_cut` instead of writing a marker line, so the clamped
+    // text has no transport annotation and can sit under the card line cap
+    // (a long-line create diff). Without the seam it would render — and copy —
+    // as a complete patch.
+    const view = presentToolDiff('edit', UNIFIED_DIFF, { at: 40, count: 90_000 })
+    expect(view?.mode).toBe('summary')
+    if (view?.mode === 'summary') expect(view.truncated).toBe(true)
+    // No seam (unclamped live entry, or a historical row) keeps the card.
+    expect(presentToolDiff('edit', UNIFIED_DIFF, null)?.mode).toBe('card')
+    expect(presentToolDiff('edit', UNIFIED_DIFF, undefined)?.mode).toBe('card')
   })
 
   it('degrades an over-cap diff to a summary — never to nothing', () => {
@@ -188,7 +202,7 @@ describe('ToolCallLine diff presentation', () => {
     expect(container.querySelector('.diff-block')).toBeNull()
   })
 
-  it('the chip opens the card and its header control folds it back', async () => {
+  it('the chip opens the card, stays put, and a second click folds it back', async () => {
     const store = createTestStore({
       chat: {
         messages: [editMsg()],
@@ -196,17 +210,25 @@ describe('ToolCallLine diff presentation', () => {
         slotRunning: false,
       } as unknown as ChatState,
     })
-    const { container, getByText, findByLabelText, queryByText } = renderWithProviders(<ToolCallLine message={editMsg()} running={false} />, { store })
+    const { container } = renderWithProviders(<ToolCallLine message={editMsg()} running={false} />, { store })
+    const chip = () => container.querySelector<HTMLElement>('[data-testid="tool-diff-chip"]')!
     // Folded: the chip is the open handle.
     expect(container.querySelector('.diff-block')).toBeNull()
-    fireEvent.click(getByText('app.py'))
-    // An OPEN card shows no chip — its own header carries the facts.
+    expect(chip().getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(chip())
+    // OPEN: the SAME chip is still mounted and now reads expanded — it is the
+    // close handle too. A control that unmounted on open (an earlier design put
+    // a chevron in the card header instead) left the reader hunting for the
+    // way back, and that chevron was painted over by Pierre's header anyway.
     expect(container.querySelector('.diff-block')).toBeTruthy()
-    expect(queryByText('app.py')).toBeNull()
-    // Pierre's header (and the fold control slotted into it) mounts async.
-    fireEvent.click(await findByLabelText('Hide diff'))
+    expect(chip()).toBeTruthy()
+    expect(chip().getAttribute('aria-expanded')).toBe('true')
+    // No second toggle in the card header: one control, one place.
+    await screen.findByTitle('Copy patch')
+    expect(container.querySelectorAll('[data-diff-toggle]')).toHaveLength(1)
+    fireEvent.click(chip())
     expect(container.querySelector('.diff-block')).toBeNull()
-    expect(getByText('app.py')).toBeTruthy()
+    expect(chip().getAttribute('aria-expanded')).toBe('false')
   })
 
   it('an expansion survives unmount/remount (virtualized transcript)', () => {
@@ -227,6 +249,6 @@ describe('ToolCallLine diff presentation', () => {
     // so a card being read does not snap shut on scroll.
     const second = renderWithProviders(<ToolCallLine message={msg} running={false} />, { store: mkStore() })
     expect(second.container.querySelector('.diff-block')).toBeTruthy()
-    expect(second.queryByText('app.py')).toBeNull()
+    expect(second.container.querySelector('[data-testid="tool-diff-chip"]')?.getAttribute('aria-expanded')).toBe('true')
   })
 })

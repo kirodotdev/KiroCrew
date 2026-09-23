@@ -39,6 +39,7 @@ vi.mock('./api', async () => {
       backup: vi.fn(),
       backupRun: vi.fn(),
       backupNightly: vi.fn(),
+      backupNightlySessions: vi.fn(),
       backupRestore: vi.fn(),
       installLabel: vi.fn(),
     },
@@ -185,6 +186,8 @@ async function chooseFromMenu(trigger: HTMLElement, itemTestId: string) {
   fireEvent.keyDown(trigger, { key: 'Enter' })
   fireEvent.click(await screen.findByTestId(itemTestId))
 }
+
+const BLOCKED_HOST_KEY = 'apps.awsControl.console.backup_nightly_sessions_blocked_host'
 
 describe('DrivePage sections', () => {
   it('mints a share link and shows the URL exactly once in the dialog', async () => {
@@ -3194,9 +3197,215 @@ describe('DrivePage sections: error surfaces reach the agent', () => {
     const toggle = within(await screen.findByTestId('backup-nightly')).getByRole('switch')
     fireEvent.click(toggle)
     const notice = await screen.findByTestId('backup-nightly-error')
-    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.backup_nightly_failed'))
+    expect(notice.textContent).toContain(i18nT('apps.awsControl.console.backup_nightly'))
     // Adjacent to the row it explains: the notice is the nightly row's next sibling.
     expect(screen.getByTestId('backup-nightly').nextElementSibling).toContainElement(notice)
+  })
+
+  it('the transcript switch is its own grant: off while the snapshot nightly is on', async () => {
+    // The state most installs are in, and the one a single field could not
+    // render: memory is backed up nightly and conversations are not.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup, nightly: true, nightlySessions: false,
+    })
+    vi.mocked(awsControlApi.backupNightlySessions).mockResolvedValue({ nightlySessions: true } as never)
+    await renderDrive('backup')
+
+    const snapshotToggle = within(await screen.findByTestId('backup-nightly')).getByRole('switch')
+    const sessionsToggle = within(screen.getByTestId('backup-nightly-sessions')).getByRole('switch')
+    expect(snapshotToggle.getAttribute('aria-checked')).toBe('true')
+    expect(sessionsToggle.getAttribute('aria-checked')).toBe('false')
+
+    // Flipping it reaches its OWN endpoint, and never the snapshot one.
+    fireEvent.click(sessionsToggle)
+    await waitFor(() =>
+      expect(awsControlApi.backupNightlySessions).toHaveBeenCalledWith(ACCOUNT_ID, true),
+    )
+    expect(awsControlApi.backupNightly).not.toHaveBeenCalled()
+  })
+
+  it('a backend that does not report the transcript grant renders it off', async () => {
+    // The field is absent from an older backend. Read as undefined it must show
+    // OFF, not an indeterminate switch that a click could flip in the dark: a
+    // page that cannot say whether transcripts are being uploaded must not
+    // imply they are not by accident.
+    const { nightlySessions: _omitted, ...withoutField } = { ...emptyBackup, nightlySessions: false }
+    vi.mocked(awsControlApi.backup).mockResolvedValue(withoutField)
+    await renderDrive('backup')
+
+    const sessionsToggle = within(await screen.findByTestId('backup-nightly-sessions')).getByRole('switch')
+    expect(sessionsToggle.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('a refused transcript toggle says so under its own row', async () => {
+    // Its own notice under its own row. Sharing the snapshot row's notice would
+    // put the explanation under a switch that did not move.
+    vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
+    vi.mocked(awsControlApi.backupNightlySessions).mockRejectedValue(new AwsControlError('restricted_session', 403))
+    await renderDrive('backup')
+
+    const toggle = within(await screen.findByTestId('backup-nightly-sessions')).getByRole('switch')
+    fireEvent.click(toggle)
+    const notice = await screen.findByTestId('backup-nightly-sessions-error')
+    expect(screen.getByTestId('backup-nightly-sessions').nextElementSibling).toContainElement(notice)
+    // Names the transcript setting rather than reusing the snapshot row's copy.
+    // With two nightly switches on the page, "the nightly backup setting" cannot
+    // say which one it failed to change.
+    expect(notice.textContent).toContain(i18nT('apps.awsControl.console.backup_nightly_sessions'))
+  })
+
+  it('a grant that cannot run here says so next to the switch', async () => {
+    // The state a surface reading only the grant would show as healthy: the owner
+    // asked for nightly transcripts, the host cannot produce them, and without
+    // this the console claims the backup is on while nothing is ever uploaded.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightlySessions: true,
+      nightlySessionsBlocked: 'host_unsupported',
+    } as never)
+    await renderDrive('backup')
+
+    const row = await screen.findByTestId('backup-nightly-sessions')
+    const blocked = await screen.findByTestId('backup-nightly-sessions-blocked')
+    expect(blocked.textContent).toContain(i18nT(BLOCKED_HOST_KEY))
+    // The switch still reads back as the owner set it. Flipping it to reflect
+    // the host would answer a question they did not ask.
+    expect(within(row).getByRole('switch').getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('no blocked notice while the grant is off', async () => {
+    // Nothing is being withheld until the owner asks for it, and the hint above
+    // the switch already says what it would do.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightlySessions: false,
+      nightlySessionsBlocked: 'host_unsupported',
+    } as never)
+    await renderDrive('backup')
+    await screen.findByTestId('backup-nightly-sessions')
+    expect(screen.queryByTestId('backup-nightly-sessions-blocked')).toBeNull()
+  })
+
+  it('no blocked notice when the grant is on and nothing is in the way', async () => {
+    // The other half. Without this pair the assertion above is satisfied by a
+    // notice that renders unconditionally, which would tell every healthy install
+    // its transcripts are not being backed up.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup, nightlySessions: true, nightlySessionsBlocked: null,
+    } as never)
+    await renderDrive('backup')
+    await screen.findByTestId('backup-nightly-sessions')
+    expect(screen.queryByTestId('backup-nightly-sessions-blocked')).toBeNull()
+  })
+
+  it('the consent hint states the same scope the archive row does', async () => {
+    // The switch authorizes the row above it, so the hint has to say what that row
+    // says the payload is: every session under this Kiro home, CLI replay logs
+    // included, not only chats started here. A hint that says less asks for a yes
+    // to more than it states, which is the one decision this feature exists for.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup, nightlySessions: false,
+    } as never)
+    await renderDrive('backup')
+
+    const row = await screen.findByTestId('backup-nightly-sessions')
+    expect(row.textContent).toContain(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_hint'),
+    )
+    expect(row.textContent).toContain(i18nT('apps.awsControl.console.backup_sessions_scope'))
+    // And where it goes, naming the manual button rather than quoting it, so the
+    // sentence cannot point at a label that has since been renamed.
+    expect(row.textContent).toContain(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_destination', {
+        button: i18nT('apps.awsControl.console.backup_run_now'),
+      }),
+    )
+  })
+
+  it('a host that cannot make the archive gets no pressable manual run either', async () => {
+    // The notice says the schedule produces nothing here; the manual run answers
+    // the same capability question and refuses with 501, so leaving the button
+    // pressable offers a click that fails.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightlySessions: true,
+      nightlySessionsBlocked: 'host_unsupported',
+    } as never)
+    await renderDrive('backup')
+    expect((await screen.findByTestId('backup-run-sessions')).hasAttribute('disabled')).toBe(true)
+    // The snapshot row is untouched: its payload is producible on every platform.
+    expect(screen.getByTestId('backup-run-snapshot').hasAttribute('disabled')).toBe(false)
+  })
+
+  it('a host that CAN make the archive keeps the manual run pressable', async () => {
+    // The other direction, so the disable cannot be one that fires always.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup, nightlySessions: true, nightlySessionsBlocked: null,
+    } as never)
+    await renderDrive('backup')
+    expect((await screen.findByTestId('backup-run-sessions')).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('a grant on an account the schedule does not visit says so, and offers the manual run', async () => {
+    // The grant is settable on any account while the nightly runs for one, so
+    // this is the state where the switch is genuinely on and genuinely idle. The
+    // manual run IS per-account, so the next step is a real one here.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightlySessions: true,
+      nightlySessionsBlocked: 'other_account',
+    } as never)
+    await renderDrive('backup')
+
+    const blocked = await screen.findByTestId('backup-nightly-sessions-blocked')
+    expect(blocked.textContent).toContain(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_blocked_other_account'),
+    )
+    expect(blocked.textContent).toContain(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_blocked_next'),
+    )
+  })
+
+  it('the redaction hold names what the manual run does to the archive', async () => {
+    // The nightly stands down here because the sessions archive has no redaction
+    // seam, and the manual run uploads those same bytes unredacted. An operator who
+    // asked for redaction is the LAST one who should learn that by pressing it, so
+    // this state gets its own next step and must not fall back to the generic line.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightlySessions: true,
+      nightlySessionsBlocked: 'redaction_on',
+    } as never)
+    await renderDrive('backup')
+
+    const blocked = await screen.findByTestId('backup-nightly-sessions-blocked')
+    expect(blocked.textContent).toContain(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_blocked_redaction'),
+    )
+    expect(blocked.textContent).toContain(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_blocked_next_redaction'),
+    )
+    expect(blocked.textContent).not.toBe(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_blocked_redaction'),
+    )
+  })
+
+  it('a host that cannot produce the archive is NOT offered the manual run', async () => {
+    // The manual run answers the capability question the same way and refuses, so
+    // offering it here names a click that fails. Paired with the test above, which
+    // is what stops this being satisfied by dropping the next step everywhere.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightlySessions: true,
+      nightlySessionsBlocked: 'host_unsupported',
+    } as never)
+    await renderDrive('backup')
+
+    const blocked = await screen.findByTestId('backup-nightly-sessions-blocked')
+    expect(blocked.textContent).toContain(i18nT(BLOCKED_HOST_KEY))
+    expect(blocked.textContent).not.toContain(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_blocked_next'),
+    )
   })
 
   it('a rejected folder name is a notice WITHOUT the hand-off — nothing reached AWS', async () => {
@@ -4595,12 +4804,14 @@ describe('DrivePage sections: keyboard paths and honest copy', () => {
     // Pointer open: the button is NOT focused first, exactly as Safari leaves it.
     fireEvent.pointerDown(trigger, { pointerType: 'mouse', button: 0, ctrlKey: false })
     fireEvent.click(await screen.findByTestId('drive-share'))
-    await screen.findByTestId('share-dialog')
+    const dialog = await screen.findByTestId('share-dialog')
+    // Mounting the dialog precedes useDialogFocusTrap's passive effects:
+    // wait for focus entry before sending Escape to its keydown listener.
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
 
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('share-dialog')).toBeNull())
-    // Focus returns in a passive effect one tick after the dialog unmounts, so
-    // a synchronous read races it under shard load; wait for it to settle.
+    // The opener owns focus restoration, not the previously focused button.
     await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 

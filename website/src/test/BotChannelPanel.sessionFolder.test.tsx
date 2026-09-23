@@ -6,12 +6,14 @@ import { DiscordPanel } from '../pages/settings/DiscordPanel'
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   saveConfig: vi.fn(),
+  backfill: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
   api: {
     getDiscordConfig: mocks.getConfig,
     saveDiscordConfig: mocks.saveConfig,
+    backfillChannelFolder: mocks.backfill,
   },
 }))
 
@@ -114,5 +116,68 @@ describe('per-channel session folder', () => {
 
     const toggle = await screen.findByRole('switch', { name: 'File sessions in a folder' })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
+  })
+})
+
+describe('filing existing conversations (#2661)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.saveConfig.mockResolvedValue({ ok: true, restart_required: false, verify_warning: '' })
+  })
+
+  it('offers the button once a folder is configured', async () => {
+    mocks.getConfig.mockResolvedValue(config('Team chat'))
+    renderPanel()
+
+    expect(
+      await screen.findByRole('button', { name: /File existing sessions/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('does not offer it while the setting is off', async () => {
+    mocks.getConfig.mockResolvedValue(config())
+    renderPanel()
+
+    await screen.findByRole('switch', { name: 'File sessions in a folder' })
+    expect(
+      screen.queryByRole('button', { name: /File existing sessions/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('does not appear from the DRAFT toggle alone', async () => {
+    // The endpoint acts on PERSISTED config, so a button offered for a folder
+    // that has not been saved yet would answer "not configured" on every click
+    // and read as broken. Gated on the server's value for exactly that reason.
+    mocks.getConfig.mockResolvedValue(config())
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'File sessions in a folder' }))
+    expect(await screen.findByText('Folder name')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /File existing sessions/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('names the channel the backend keys on, not the display name', async () => {
+    // BotChannelPanel serves four channels, so the namespace has to arrive from
+    // the spec. Sending the display name would reach no config section at all.
+    // Asserted on the client seam rather than on a stubbed global fetch: the
+    // request goes through api.backfillChannelFolder so that a lapsed session
+    // gets the shared re-auth handling (#12127), and the display name here is
+    // 'Team chat', so passing it instead of the namespace still fails.
+    mocks.getConfig.mockResolvedValue(config('Team chat'))
+    mocks.backfill.mockResolvedValue({
+      folder_name: 'Team chat',
+      moved: [],
+      reason: '',
+      remaining: 0,
+      failed: 0,
+    })
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: /File existing sessions/i }))
+
+    await waitFor(() => expect(mocks.backfill).toHaveBeenCalledTimes(1))
+    expect(mocks.backfill).toHaveBeenCalledWith('discord')
   })
 })

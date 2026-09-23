@@ -425,6 +425,54 @@ def test_provider_executable_not_found_gives_install_guidance(monkeypatch) -> No
     assert "{executable}" not in message
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "expected_reason"),
+    [
+        ("missing", "executable_not_found"),
+        ("candidate_untrusted", "executable_untrusted"),
+        ("override_untrusted", "executable_untrusted"),
+    ],
+)
+async def test_run_json_audits_provider_resolution_failure_reason(
+    monkeypatch, tmp_path, _mock_source_sel, case: str, expected_reason: str
+) -> None:
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    candidate_dir = tmp_path / "provider-bin"
+    candidate_dir.mkdir()
+    candidate = candidate_dir / "gh"
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setattr(
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
+        {"gh": (str(candidate),), "glab": (str(candidate_dir / "glab"),)},
+    )
+    monkeypatch.setattr(github_runner, "_wellknown_windows_dirs", lambda _executable: ())
+
+    if case != "missing":
+        candidate.write_text("#!/bin/sh\nexit 0\n")
+        candidate.chmod(0o755)
+
+        def reject_found(path: str) -> str:
+            assert pathlib.Path(path).is_file()
+            raise ValueError("executable parent is world-writable")
+
+        monkeypatch.setattr(source, "_validate_provider_executable", reject_found)
+    if case == "override_untrusted":
+        monkeypatch.setenv("KIROCREW_GH_BIN", str(candidate))
+
+    with pytest.raises(source.SourceProviderError):
+        await source._run_json("gh", "api", "repos/acme/repo")
+
+    call = _mock_source_sel.log_tool_invocation.call_args
+    assert call.kwargs["outcome"] == "denied"
+    assert call.kwargs["error"] == expected_reason
+    assert call.kwargs["metadata"]["reason"] == expected_reason
+
+
 def test_provider_executable_strict_mode_asks_for_a_root_owned_copy(monkeypatch) -> None:
     monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
     monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
@@ -596,7 +644,6 @@ def test_provider_executable_rejects_binary_owned_by_another_user(
     foreign_stat = github_runner.os.stat_result([*list(real_stat)[:4], 4242, *list(real_stat)[5:]])
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
-    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [])
     monkeypatch.setattr(github_runner.Path, "stat", lambda _path: foreign_stat)
 
     with pytest.raises(ValueError, match="owned by another user"):
@@ -623,7 +670,7 @@ def test_provider_executable_rejects_world_writable_parent(monkeypatch, tmp_path
     parent.chmod(0o777)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
-    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
+    _trust_ancestors_above(monkeypatch, tmp_path)
 
     with pytest.raises(ValueError, match="executable parent is world-writable"):
         source._validate_provider_executable(str(executable))
@@ -644,7 +691,7 @@ def test_provider_executable_tolerates_a_sticky_world_writable_parent(
     parent.chmod(0o1777)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
-    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
+    _trust_ancestors_above(monkeypatch, tmp_path)
 
     assert source._validate_provider_executable(str(executable)) == str(executable.resolve())
 
@@ -670,12 +717,114 @@ def test_provider_executable_strict_mode_rejects_untrusted_ancestor(
         return real_stat(path)
 
     monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
-    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "traversed_components",
+        lambda _path: [parent, executable.resolve()],
+    )
     monkeypatch.setattr(github_runner.Path, "stat", fake_stat)
     monkeypatch.setattr(github_runner.os, "access", lambda _path, mode: mode == github_runner.os.X_OK)
 
     with pytest.raises(ValueError, match="executable parent is not root-owned"):
         source._validate_provider_executable(str(executable))
+
+
+def test_provider_executable_relaxed_mode_declines_a_writable_hop_in_the_middle_of_a_chain(
+    monkeypatch, tmp_path
+) -> None:
+    """``trusted/gh -> writable/hop -> trusted/real-gh``: the hop's directory decides.
+
+    Both ENDPOINTS' directory chains are tight, so two lexical chains over the
+    endpoints (the resolved path's parents, the original's parents) never name
+    ``writable`` and accept the chain end to end. The component walk reads
+    ``writable`` to follow the hop, so it is checked like any other parent.
+    """
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    target = trusted / "real-gh"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    middle = writable / "hop"
+    middle.symlink_to(target)
+    entry = trusted / "gh"
+    entry.symlink_to(middle)
+    writable.chmod(0o777)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    _trust_ancestors_above(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="executable parent is world-writable"):
+        github_runner.validate_provider_executable(str(entry))
+
+
+def test_provider_executable_relaxed_mode_declines_a_writable_ancestor_of_a_symlinked_component(
+    monkeypatch, tmp_path
+) -> None:
+    """``prefix/bin -> holder/bin``: the target's own parent ``holder`` is checked.
+
+    The resolved path's own lexical chain names ``holder``, so this pins a
+    refusal the component walk must keep rather than a gap it closes.
+    """
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    real_bin = holder / "bin"
+    real_bin.mkdir()
+    leaf = real_bin / "gh"
+    leaf.write_text("#!/bin/sh\nexit 0\n")
+    leaf.chmod(0o755)
+    (prefix / "bin").symlink_to(real_bin)
+    holder.chmod(0o777)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    _trust_ancestors_above(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError, match="executable parent is world-writable"):
+        github_runner.validate_provider_executable(str(prefix / "bin" / "gh"))
+
+
+@pytest.mark.skipif(not _tmp_owner_ok, reason="temp dir not owned by root or current user")
+def test_provider_executable_relaxed_mode_still_accepts_a_chain_through_tight_directories(
+    monkeypatch, tmp_path
+) -> None:
+    """The widening is strictly a widening: the same hop chain through directories
+    that pass the policy is accepted, so an ordinary symlinked install (Homebrew's
+    ``bin/gh -> ../Cellar/...``, a ``/usr/local/bin`` link into ``/opt``) gains no
+    new refusal."""
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    hops = tmp_path / "hops"
+    hops.mkdir()
+    target = trusted / "real-gh"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    middle = hops / "hop"
+    middle.symlink_to(target)
+    entry = trusted / "gh"
+    entry.symlink_to(middle)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    _trust_ancestors_above(monkeypatch, tmp_path)
+
+    assert github_runner.validate_provider_executable(str(entry)) == str(target.resolve())
+
+
+def test_provider_executable_refuses_a_chain_the_walk_cannot_enumerate(
+    monkeypatch, tmp_path
+) -> None:
+    """A walk that answers ``None`` is a refusal, never a shorter parent list."""
+    executable = tmp_path / "gh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner.platform_compat, "traversed_components", lambda _path: None)
+
+    with pytest.raises(ValueError, match="executable hierarchy is not accessible"):
+        github_runner.validate_provider_executable(str(executable))
 
 
 def test_redact_provider_data_recurses_through_external_strings() -> None:
@@ -5676,7 +5825,7 @@ async def test_local_token_uses_local_owner_subject_without_configured_owner(mon
 
 @pytest.mark.parametrize("subject", ["local-app", "local-startup"])
 @pytest.mark.asyncio
-async def test_local_dashboard_subjects_can_read_without_configured_owner(
+async def test_local_dashboard_subjects_can_act_without_configured_owner(
     monkeypatch, subject
 ) -> None:
     pull = {"url": "https://github.com/acme/repo/pull/12", "checks": []}
@@ -5702,11 +5851,14 @@ async def test_local_dashboard_subjects_can_read_without_configured_owner(
         assert await detail_response.json() == pull
         assert checks_response.status == 200
         assert await checks_response.json() == {"checks": []}
-        assert resolve_response.status == 403
+        # The mutation passes on the same identity the reads did: with no owner
+        # configured, a signed machine-local subject IS the owner.
+        assert resolve_response.status == 200
+        assert (await resolve_response.json())["resolved"] is True
 
     fetch_pull.assert_awaited_once_with(pull["url"], refresh=False)
     fetch_checks.assert_awaited_once_with(pull["url"])
-    resolve.assert_not_awaited()
+    resolve.assert_awaited_once_with(pull["url"], "PRRT_thread1")
 
     request = _ResolveRequest()
     request.app["state"].owner_id = ""
@@ -5806,27 +5958,30 @@ async def test_read_handler_denies_non_local_subject_when_no_owner(
 
 
 @pytest.mark.asyncio
-async def test_resolve_handler_denies_local_token_when_no_owner(
-    monkeypatch, _mock_source_sel
-) -> None:
-    """The local no-owner fallback is scoped to reads: the resolve *mutation*
-    stays owner-only, so a local-app token with no owner still fails closed —
-    but the refusal names the remedy with a machine-readable code, because this
-    caller class saw live buttons whose reads already succeeded."""
-    resolve = AsyncMock()
+async def test_resolve_handler_allows_local_token_when_no_owner(monkeypatch) -> None:
+    """The resolve mutation runs for a signed local subject with no owner, and
+    the audit records it as completed under that subject rather than denied."""
+    resolve = AsyncMock(return_value=None)
+    audit = MagicMock()
     monkeypatch.setattr(source, "resolve_pull_request_thread", resolve)
+    monkeypatch.setattr(source, "_sel", lambda: audit)
 
     async with TestClient(TestServer(_app(owner_id="", user="local-app", app_name=""))) as client:
         response = await client.post(
             "/api/source/pull-request/resolve",
             json={"url": "https://github.com/acme/repo/pull/1", "threadId": "PRRT_1"},
         )
-        assert response.status == 403
-        body = await response.json()
-        assert body["code"] == source.OWNER_NOT_CONFIGURED_CODE
-        assert "Owner Slack member ID" in body["error"]
+        assert response.status == 200
+        assert (await response.json())["resolved"] is True
 
-    resolve.assert_not_awaited()
+    resolve.assert_awaited_once_with("https://github.com/acme/repo/pull/1", "PRRT_1")
+    audit.log_api_access.assert_called_once_with(
+        caller="local-app",
+        operation="source.pull_request.resolve",
+        outcome="completed",
+        source="dashboard",
+        error="",
+    )
 
 
 @pytest.mark.parametrize(
@@ -6081,23 +6236,24 @@ async def test_resolve_handler_audits_provider_failure_without_provider_text(mon
         ("/api/source/pull-request/ready", "mark_pull_request_ready"),
     ],
 )
-async def test_action_handlers_deny_local_token_when_no_owner(
+async def test_action_handlers_allow_local_token_when_no_owner(
     monkeypatch, _mock_source_sel, path: str, action_name: str
 ) -> None:
-    """The local no-owner fallback is scoped to reads: these mutations stay
-    owner-only, so a local-app token with no owner still fails closed — with
-    the coded, actionable body reserved for signed local dashboard sessions."""
-    action = AsyncMock()
+    """A signed machine-local subject is the owner when none is configured.
+
+    The negative control is
+    ``test_no_owner_mutation_denies_non_local_subjects``: the allowance is the
+    local dashboard identity, not the absence of an owner.
+    """
+    action = AsyncMock(return_value=None)
     monkeypatch.setattr(source, action_name, action)
 
     async with TestClient(TestServer(_app(owner_id="", user="local-app", app_name=""))) as client:
         response = await client.post(path, json={"url": "https://github.com/acme/repo/pull/1"})
-        assert response.status == 403
-        body = await response.json()
-        assert body["code"] == source.OWNER_NOT_CONFIGURED_CODE
-        assert "Owner Slack member ID" in body["error"]
+        assert response.status == 200
 
-    action.assert_not_awaited()
+    # Auto-merge carries the consent flag, ready does not; both must have run.
+    assert action.await_args.args == ("https://github.com/acme/repo/pull/1",)
 
 
 @pytest.mark.asyncio
@@ -6112,12 +6268,14 @@ async def test_action_handlers_deny_local_token_when_no_owner(
         {"owner_id": "", "user": "", "app_name": ""},
     ],
 )
-async def test_no_owner_mutation_code_reserved_for_signed_local_subjects(
+async def test_no_owner_mutation_denies_non_local_subjects(
     monkeypatch, _mock_source_sel, app_kwargs: dict
 ) -> None:
-    """The ``owner_not_configured`` discriminator is scoped exactly like
-    ``stale_owner_session_response``: every caller that is not a signed
-    machine-local dashboard session keeps the generic body."""
+    """The no-owner allowance is the signed machine-local dashboard identity.
+
+    Every other caller keeps the generic forbidden body, which is also what
+    stops the response from disclosing the install's owner state.
+    """
     action = AsyncMock()
     monkeypatch.setattr(source, "enable_pull_request_auto_merge", action)
 

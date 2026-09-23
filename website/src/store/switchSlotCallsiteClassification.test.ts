@@ -30,7 +30,7 @@ const PINNED: Record<string, Counts> = {
   'src/App.tsx': { announced: 2, keepTarget: 0, plain: 0, reason: 'popout nav-intent suppliers announce' },
   'src/app-sdk/ChatPanel.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot the host supplied programmatically' },
   'src/apps/auto-improvement/lib/agentSession.ts': { announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
-  'src/apps/command-bar/CommandBarOverlay.tsx': { announced: 1, keepTarget: 1, plain: 0, reason: 'picker announces; create path keeps target on the create/fetch race' },
+  'src/apps/command-bar/CommandBarOverlay.tsx': { announced: 2, keepTarget: 1, plain: 0, reason: 'attention row and recent row announce; create path keeps target on the create/fetch race' },
   'src/apps/issue-radar/lib/agentSession.ts': { announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
   'src/apps/issue-radar/views/CrewPageView.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'awaited unwrap() with page-level error handling' },
   'src/apps/papyrus/CoAuthorPanel.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot supplied programmatically' },
@@ -47,7 +47,7 @@ const PINNED: Record<string, Counts> = {
   'src/pages/ProjectsPage.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },
   'src/pages/chat/SubagentRunCard.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
   'src/pages/chat/WorkflowRunCard.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
-  'src/pages/chat/useChatPageSessionController.ts': { announced: 2, keepTarget: 0, plain: 5, reason: 'tab-strip select + foreground open-in-tab announce; the plain sites are close-tab successor selection, URL deep-link restore (x2), mount re-sync and tab fallback — programmatic, not gestures on a listed reference' },
+  'src/pages/chat/useChatPageSessionController.ts': { announced: 3, keepTarget: 0, plain: 6, reason: 'tab-strip select + foreground open-in-tab + late-frame deep-link recovery announce; the plain sites are close-tab successor selection, URL deep-link restore (x2), mount re-sync, tab fallback and app-launch activation with its own sidError notice' },
   'src/pages/overview/PromptsTab.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },
   'src/store/chatSlice.ts': { announced: 0, keepTarget: 0, plain: 1, reason: 'deleteSlot internal fallback navigation; self-handles via unwrap().catch' },
 }

@@ -306,6 +306,84 @@ describe('composer collapse', () => {
     await waitFor(() => expect(screen.getByTestId('sketch-dialog')).toBeInTheDocument())
   })
 
+  /**
+   * #5744's cancel control, judged by this file's own rule.
+   *
+   * A third peer in this row is what the two findings above already removed, so
+   * the control REPLACES the attach control for the duration of the upload
+   * instead of joining it. That slot holds no action to displace while
+   * `uploading`: the touch branch drops its `htmlFor` and the pointer branch is
+   * `disabled`. Both pointer classes are asserted, because the row has a
+   * different third member in each (Sketch on a plain surface, the overflow
+   * trigger on the collapsible one) and only one of them is visible per layout.
+   */
+  describe('upload cancel control', () => {
+    /** Every action control the bottom icon row's left group renders, by name.
+     *  The cap counts controls in the visual group, so this counts them all
+     *  rather than only direct children -- the attach control sits in its own
+     *  positioning wrapper inside the group. */
+    const rowControls = (container: HTMLElement) => {
+      const group = container.querySelector('.flex.items-center.gap-0\\.5')
+      if (!group) throw new Error('bottom icon row not found')
+      return Array.from(group.querySelectorAll('button, label'))
+        .map(el => el.getAttribute('aria-label') || el.getAttribute('title'))
+        .filter((n): n is string => !!n)
+    }
+
+    /* Both `collapsible` values, because the row's THIRD member differs between
+     * them -- the overflow trigger on the opted-in composer, the Sketch pencil on
+     * a split pane or side chat -- so a test fixed at one value could pass while
+     * the other branch grew. */
+    describe.each([true, false])('collapsible=%s', (collapsible) => {
+      const props = { ...base, collapsible }
+
+      it('replaces the attach control on touch rather than growing the row', () => {
+        flags.touch = true
+        const { container, unmount } = renderWithProviders(<ChatInput {...props} />)
+        const idle = rowControls(container)
+        expect(idle).toContain('Attach files')
+        expect(idle).not.toContain('Cancel upload')
+        unmount()
+
+        flags.touch = true
+        const uploading = renderWithProviders(<ChatInput {...props} uploading onCancelUpload={vi.fn()} />)
+        const busy = rowControls(uploading.container)
+        // The cap is the assertion: same number of controls, one of them swapped.
+        expect(busy).toHaveLength(idle.length)
+        expect(busy).toContain('Cancel upload')
+        expect(busy).not.toContain('Attach files')
+      })
+
+      it('replaces the plus control on a pointer device rather than growing the row', () => {
+        const { container, unmount } = renderWithProviders(<ChatInput {...props} />)
+        const idle = rowControls(container)
+        expect(idle).toContain('Add files & options')
+        unmount()
+
+        const uploading = renderWithProviders(<ChatInput {...props} uploading onCancelUpload={vi.fn()} />)
+        const busy = rowControls(uploading.container)
+        expect(busy).toHaveLength(idle.length)
+        expect(busy).toContain('Cancel upload')
+        expect(busy).not.toContain('Add files & options')
+      })
+    })
+
+    it('keeps the spinner inside the control, so the wait still reads as live', () => {
+      renderWithProviders(<ChatInput {...base} uploading onCancelUpload={vi.fn()} />)
+      const control = screen.getByRole('button', { name: 'Cancel upload' })
+      // A bare X would trade the way out for the only in-progress signal the
+      // composer has; both have to be in the one control that is left.
+      expect(control.querySelector('.animate-spin')).not.toBeNull()
+    })
+
+    it('leaves the row exactly as it was when the host passes no onCancelUpload', () => {
+      const { container } = renderWithProviders(<ChatInput {...base} uploading />)
+      const busy = rowControls(container)
+      expect(busy).toContain('Add files & options')
+      expect(busy).not.toContain('Cancel upload')
+    })
+  })
+
   it('keeps the upload guard on Sketch after it moved into the overflow', () => {
     // The blocking review finding. The pencil this replaced carried
     // `disabled={uploading}`; moving Sketch into the overflow dropped it, and

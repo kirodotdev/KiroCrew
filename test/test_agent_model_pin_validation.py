@@ -14,7 +14,6 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.model_registry import acp_id_correction
 
@@ -26,7 +25,7 @@ def _owner_caller(monkeypatch):
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
     )
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
 
 
 class TestAcpIdCorrection:

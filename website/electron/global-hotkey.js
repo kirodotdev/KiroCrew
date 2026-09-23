@@ -87,14 +87,16 @@ function resolveGlobalHotkey(saved) {
  *   getWindow: () => ({isDestroyed?: () => boolean, isMinimized?: () => boolean,
  *                      restore?: () => void, show: () => void, focus: () => void}|null|undefined),
  *   createWindow: () => void,
+ *   showApp?: () => void,
  *   focusApp?: () => void,
- * }} deps  `focusApp` runs after the window is surfaced — on macOS the app
- *   must also steal application focus or the window rises behind the frontmost
- *   app without keyboard focus.
+ * }} deps  `showApp` runs before the window is surfaced so macOS does not
+ *   ignore `win.show()` for an application hidden by fullscreen tray-close;
+ *   `focusApp` runs afterwards to steal application focus when needed.
  */
-function createSummonHandler({ getWindow, createWindow, focusApp }) {
+function createSummonHandler({ getWindow, createWindow, showApp, focusApp }) {
   return () => {
     const win = typeof getWindow === "function" ? getWindow() : null;
+    if (typeof showApp === "function") showApp();
     if (win && !(typeof win.isDestroyed === "function" && win.isDestroyed())) {
       // A summon during hideToTray()'s deferred fullscreen-exit hide must win
       // over the pending hide, or the window shown below is hidden again the

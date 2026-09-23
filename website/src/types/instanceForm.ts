@@ -8,13 +8,14 @@
  */
 export interface InstanceFormValues {
   name: string
-  method: 'ssh' | 'ssm'
+  method: 'ssh' | 'ssm' | 'fargate'
   sshHost: string
   ssmTarget: string
   awsProfile: string
   awsRegion: string
   ssmRunAs: string
   remotePort: string
+  remotePortAuto: boolean
   ttl: string
   remoteBin: string
 }

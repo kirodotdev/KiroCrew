@@ -1,27 +1,26 @@
 /**
- * The remote-instance loading hint must name the settings screen that actually
+ * The remote-crew loading hint must name the settings screen that actually
  * exists — a drift guard for issue #7343.
  *
  * ## The defect this guard closes
  *
- * The loading tab shown while a remote instance connects tells the user where
- * to disconnect it: "… in Settings → Instances." That screen was renamed to
- * "Remote Instances" (#6950), but the hint kept the old name, so the
- * instruction pointed at a navigation entry that no longer exists. A plain
- * catalog-parity check cannot catch this: the key existed in every locale with
- * a well-formed value — the VALUE was simply stale relative to another key.
+ * The loading tab shown while a remote crew connects tells the user where to
+ * disconnect it: "… in Settings → <screen>." The screen's nav label and this
+ * sentence are two independent catalog values, so relabelling the screen on its
+ * own leaves the hint pointing at a navigation entry that is not there. A plain
+ * catalog-parity check cannot catch that: the key exists in every locale with a
+ * well-formed value — the VALUE is stale relative to another key.
  *
  * The guard: in every shipped locale, the hint must contain `→ ` immediately
  * followed by that locale's actual instances tab label
  * (`settings.tabs.instances.label`, the string `SettingsPage.tsx` renders in
  * the nav rail). Anchoring at the arrow matters: a bare containment check is
- * one-directional — a rename that SHORTENS the label to a suffix of the stale
- * name (the exact reverse of #6950: "Remote Instances" → "Instances",
- * "Remote-Instanzen" → "Instanzen", "远程实例" → "实例") would still pass,
- * because the shorter label is a substring of the stale hint. `→ <label>`
- * fails that case in every locale, since the stale hint reads
- * `→ Remote Instances` and never `→ Instances`. (A rename to a strict PREFIX
- * of the old name remains uncovered; no realistic tab label is one.)
+ * one-directional — a relabel that SHORTENS the screen name to a suffix of the
+ * stale one (e.g. "Remote Crew" → "Crew") would still pass, because the shorter
+ * label is a substring of the stale hint. `→ <label>` fails that case in every
+ * locale, since the stale hint still carries the longer name straight after its
+ * arrow. (A relabel to a strict PREFIX of the old name remains uncovered; no
+ * realistic tab label is one.)
  *
  * A second assertion pins `LABEL_KEY` liveness: the nav rail in
  * `SettingsPage.tsx` must still resolve its instances tab label from that key,
@@ -57,7 +56,7 @@ function resolve(catalog: Record<string, unknown>, dotted: string): unknown {
   return node
 }
 
-describe('remote-instance disconnect hint names the real settings screen (#7343)', () => {
+describe('remote-crew disconnect hint names the real settings screen (#7343)', () => {
   const shipped = Object.entries(CATALOGS).filter(([code]) => !GENERATED.has(code))
 
   it.each(shipped.map(([code]) => code))(

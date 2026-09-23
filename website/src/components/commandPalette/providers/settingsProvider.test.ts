@@ -7,6 +7,11 @@ import type { Result } from '../types'
  */
 
 import { createSettingsProvider, resolveTabPrefix } from './settingsProvider'
+import type { SettingsSearchGovernance } from '../settingsSearchCore'
+
+/** Governance that offers everything: these cases are about scoring, not availability.
+ *  The withdrawn direction is covered in `settingsSearchGovernance.test.ts`. */
+const OFFERED: SettingsSearchGovernance = { decisionsEnabled: true }
 
 function navigate(): { nav: NavigateFunction; spy: ReturnType<typeof vi.fn> } {
   const spy = vi.fn()
@@ -20,7 +25,7 @@ async function run(p: ReturnType<typeof createSettingsProvider>, q: string): Pro
 describe('createSettingsProvider — identity', () => {
   it('exposes settings provider id, label, and icon', () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     expect(p.id).toBe('settings')
     expect(p.label).toBe('Settings')
     expect(p.icon).toBeTruthy()
@@ -30,7 +35,7 @@ describe('createSettingsProvider — identity', () => {
 describe('createSettingsProvider — search', () => {
   it('finds settings by label match', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'dark mode')
     // Should find Mode (display tab) via keyword synonyms
     const hit = arr.find(r => r.title === 'Mode')
@@ -40,7 +45,7 @@ describe('createSettingsProvider — search', () => {
 
   it('finds settings by keyword synonym', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'theme')
     expect(arr.length).toBeGreaterThan(0)
     // Should match Color Theme or Mode via synonyms
@@ -54,7 +59,7 @@ describe('createSettingsProvider — search', () => {
     // literal keyword "yolo" — so Enter took the wrong destination on the
     // feature's own flagship query. Whole-word keyword hits rank WITH labels.
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'yolo')
     expect(arr.length).toBeGreaterThan(0)
     expect(arr[0].id).toBe('settings:security.how-long-auto-approve-stays-on')
@@ -64,7 +69,7 @@ describe('createSettingsProvider — search', () => {
     // "until shutdown" is a keyword of the same entry; the query aligns with
     // its second word, which must qualify (not just keyword-prefix queries).
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'shutdown')
     expect(arr.length).toBeGreaterThan(0)
     expect(arr[0].id).toBe('settings:security.how-long-auto-approve-stays-on')
@@ -75,7 +80,7 @@ describe('createSettingsProvider — search', () => {
     // Mode. Equal raw scores + the alphabetical tiebreak used to put Mode on
     // top; the 1-point keyword edge keeps the row that IS the term first.
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'theme')
     expect(arr[0].title).toBe('Theme')
     expect(arr.some(r => r.title === 'Mode')).toBe(true)
@@ -86,7 +91,7 @@ describe('createSettingsProvider — search', () => {
     // word boundary, so the promotion predicate must too — space-only
     // matching left every hyphenated synonym in the discounted tier.
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'serif')
     expect(arr.length).toBeGreaterThan(0)
     expect(arr[0].id).toBe('settings:display.font-family')
@@ -97,7 +102,7 @@ describe('createSettingsProvider — search', () => {
     // cursor-motion toggle by scattering letters across
     // label+description+keywords in the joined corpus, burying real hits.
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'yolo')
     const titles = arr.map(r => r.title)
     expect(titles).not.toContain('Show cursor motion')
@@ -106,7 +111,7 @@ describe('createSettingsProvider — search', () => {
 
   it('shows breadcrumb subtitle in "Tab › Label" format', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'zoom')
     const hit = arr.find(r => r.title === 'Zoom Level')
     expect(hit).toBeDefined()
@@ -115,7 +120,7 @@ describe('createSettingsProvider — search', () => {
 
   it('navigates to /settings/<tab>?highlight=... on activate', async () => {
     const { nav, spy } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'zoom')
     const hit = arr.find(r => r.title === 'Zoom Level')
     expect(hit).toBeDefined()
@@ -128,7 +133,7 @@ describe('createSettingsProvider — search', () => {
 
   it('threads entry params into the route so sub-selected panels mount (channels)', async () => {
     const { nav, spy } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'slash command')
     // Channel-panel rows carry the fan-out suffix in their display label.
     const hit = arr.find(r => r.title === 'Slash command (Slack)')
@@ -145,7 +150,7 @@ describe('createSettingsProvider — search', () => {
 
   it('scopes legacy per-channel tab prefixes (slack:) to the channels tab', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     // `slack:` is a legacy per-channel tab filter (the five channel tabs are
     // now collapsed into one); it must keep scoping instead of falling
     // through to a full-corpus query that matches nothing.
@@ -156,21 +161,21 @@ describe('createSettingsProvider — search', () => {
 
   it('returns empty results for empty query', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, '')
     expect(arr).toEqual([])
   })
 
   it('returns empty results for no match', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'zzzzqqqq')
     expect(arr).toEqual([])
   })
 
   it('results are sorted by score descending', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'font')
     expect(arr.length).toBeGreaterThan(1)
     for (let i = 1; i < arr.length; i++) {
@@ -180,7 +185,7 @@ describe('createSettingsProvider — search', () => {
 
   it('enter action uses navigate kind', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'zoom')
     const hit = arr.find(r => r.title === 'Zoom Level')
     expect(hit?.enter?.kind).toBe('navigate')
@@ -190,7 +195,7 @@ describe('createSettingsProvider — search', () => {
 describe('createSettingsProvider — tab filter', () => {
   it('voice: alone lists only voice-tab entries', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'voice:')
     expect(arr.length).toBeGreaterThan(0)
     // Every result must be from voice tab
@@ -205,7 +210,7 @@ describe('createSettingsProvider — tab filter', () => {
 
   it('voice: aws narrows within voice tab; other-tab AWS entries excluded', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'voice: aws')
     // All results in voice tab
     for (const r of arr) {
@@ -225,7 +230,7 @@ describe('createSettingsProvider — tab filter', () => {
 
   it('unambiguous prefix disp: mode works like display: mode', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const full = await run(p, 'display: mode')
     const prefix = await run(p, 'disp: mode')
     // Same results (same IDs, same tab scope)
@@ -242,7 +247,7 @@ describe('createSettingsProvider — tab filter', () => {
 
   it('unknown prefix zzz: foo falls back to normal search (non-crash, sensible results)', async () => {
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     // "zzz:" is unknown; should fall through to normal full-corpus search of "zzz: foo"
     const arr = await run(p, 'zzz: foo')
     // Should not throw. May be empty (no match for "zzz: foo") or partial — just ensure no crash.
@@ -253,7 +258,7 @@ describe('createSettingsProvider — tab filter', () => {
     // Among the real fork tabs: browser, chat, developer, display, notifications, slack, voice
     // "d:" is ambiguous (developer, display) — should fall back to normal search.
     const { nav } = navigate()
-    const p = createSettingsProvider(nav)
+    const p = createSettingsProvider(nav, OFFERED)
     const arr = await run(p, 'd: mode')
     // Fallback means normal search of "d: mode" — may have results from any tab.
     // Key assertion: does NOT crash and does NOT restrict to just one tab.

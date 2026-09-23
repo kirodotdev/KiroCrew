@@ -20,6 +20,11 @@ from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.defaults import DefaultSkillDiscoveryProvider
 
+#: The built-in catalog, in registration order: the public registry and the
+#: GitHub-repo importer. Named once because every assertion below means "the
+#: built-ins" rather than one particular provider.
+_BUILTIN = ["skillsh", "github"]
+
 
 class _FakeProvider:
     """Minimal structural match for the ``SkillProvider`` protocol."""
@@ -113,7 +118,7 @@ def test_default_context_registers_builtin_only(monkeypatch, _reset_registry) ->
     from kiro_crew.dashboard.handlers import discover
 
     _with_context(monkeypatch)
-    assert discover._build_registry().provider_names == ["skillsh"]
+    assert discover._build_registry().provider_names == _BUILTIN
 
 
 def test_contributed_provider_is_registered_after_builtin(monkeypatch, _reset_registry) -> None:
@@ -122,7 +127,7 @@ def test_contributed_provider_is_registered_after_builtin(monkeypatch, _reset_re
     fake = _FakeProvider()
     _with_context(monkeypatch, skill_discovery=_Source([fake]))
     reg = discover._build_registry()
-    assert reg.provider_names == ["skillsh", "edition-fake"]
+    assert reg.provider_names == [*_BUILTIN, "edition-fake"]
     assert reg.get("edition-fake") is fake
 
 
@@ -143,6 +148,27 @@ def test_contributed_provider_passes_the_same_policy_gate(monkeypatch, _reset_re
         kind == "skill" and name == "edition-fake" and base == "https://catalog.example.test"
         for kind, name, base in policy.seen
     )
+
+
+def test_a_refused_policy_keeps_the_github_provider_unregistered(
+    monkeypatch, _reset_registry
+) -> None:
+    """The discovery policy is the GitHub provider's ONLY off-switch.
+
+    It carries no ``enabled`` flag -- a second way to disable one provider is a
+    second thing that has to stay true -- so the claim that the policy gate
+    suffices is pinned here: refused, it is never registered, and with no
+    registration there is no search, preview or install path left.
+    """
+    from kiro_crew.dashboard.handlers import discover
+
+    policy = _AllowOnly("https://skills.sh/api")
+    _with_context(monkeypatch, external_access=policy)
+    reg = discover._build_registry()
+    assert reg.provider_names == ["skillsh"]
+    assert reg.get("github") is None
+    # The gate saw the provider's own identity, not a core-supplied literal.
+    assert ("skill", "github", "https://api.github.com") in policy.seen
 
 
 def test_denied_contributed_provider_is_not_registered(monkeypatch, _reset_registry) -> None:
@@ -176,7 +202,7 @@ def test_name_collision_keeps_the_builtin(monkeypatch, _reset_registry) -> None:
 
     _with_context(monkeypatch, skill_discovery=_Source([_FakeProvider(name="skillsh")]))
     reg = discover._build_registry()
-    assert reg.provider_names == ["skillsh"]
+    assert reg.provider_names == _BUILTIN
     assert isinstance(reg.get("skillsh"), SkillsShProvider)
 
 
@@ -184,7 +210,7 @@ def test_raising_adapter_fails_closed_to_builtin_only(monkeypatch, _reset_regist
     from kiro_crew.dashboard.handlers import discover
 
     _with_context(monkeypatch, skill_discovery=_BoomSource())
-    assert discover._build_registry().provider_names == ["skillsh"]
+    assert discover._build_registry().provider_names == _BUILTIN
 
 
 def test_path_like_provider_name_is_rejected(monkeypatch, _reset_registry) -> None:
@@ -199,7 +225,7 @@ def test_path_like_provider_name_is_rejected(monkeypatch, _reset_registry) -> No
         _FakeProvider(name=""),
     ]
     _with_context(monkeypatch, skill_discovery=_Source(bad))
-    assert discover._build_registry().provider_names == ["skillsh"]
+    assert discover._build_registry().provider_names == _BUILTIN
 
 
 def test_non_protocol_object_is_rejected(monkeypatch, _reset_registry) -> None:
@@ -219,7 +245,7 @@ def test_non_protocol_object_is_rejected(monkeypatch, _reset_registry) -> None:
             return None
 
     _with_context(monkeypatch, skill_discovery=_Source([_Shapeless()]))
-    assert discover._build_registry().provider_names == ["skillsh"]
+    assert discover._build_registry().provider_names == _BUILTIN
 
 
 def test_provider_raising_during_protocol_check_does_not_crash(

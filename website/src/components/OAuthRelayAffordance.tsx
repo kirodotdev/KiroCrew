@@ -251,7 +251,7 @@ export default function OAuthRelayAffordance({
               placeholder={i18nT('pages.connectionsPage.return_address_placeholder')}
               aria-label={i18nT('pages.connectionsPage.return_address')}
               disabled={busy}
-              className="flex-1 min-w-0 px-2 py-1 rounded-md text-[13px] leading-5 font-mono bg-bg text-text ring-1 ring-inset ring-border focus:outline-none focus:ring-accent"
+              className="flex-1 min-w-0 px-2 py-1 rounded-md text-[13px] leading-5 font-mono bg-bg text-text ring-1 ring-inset ring-border focus:outline-hidden focus:ring-accent"
             />
             <button
               type="button"

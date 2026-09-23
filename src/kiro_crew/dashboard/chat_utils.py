@@ -36,6 +36,7 @@ from kiro_crew.dashboard.state import (
     MANUAL_RESUME_RECOVERY_PREFIX,
     POSTTOKEN_RECOVERY_PREFIX,
     PROMISE_ONLY_RECOVERY_PREFIX,
+    REFUSAL_FALLBACK_RECOVERY_PREFIX,
     SUBAGENT_COMPLETION_PREFIXES,
     DashboardState,
     _ChatSlot,
@@ -44,7 +45,7 @@ from kiro_crew.dashboard.state import (
     parse_cls_meta,
 )
 from kiro_crew.history import transcript_sort_key
-from kiro_crew.hooks import safe_read_file
+from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS, safe_read_file
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
@@ -146,18 +147,25 @@ async def run_config_write(fn, /, *args, **kwargs):
         return result
 
 
-async def drained_to_thread(fn, /, *args):
-    """``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation.
+async def run_to_completion(aw):
+    """Await *aw* so that a cancellation cannot abandon it part-way.
 
-    A plain ``await to_thread(...)`` raises ``CancelledError`` at the await
-    while the worker THREAD keeps running — a handler that then performs
-    cleanup (releasing a lock, removing a staging directory) races its own
-    still-running worker. Shielding the task keeps the await alive until the
-    worker actually finishes, then re-raises the cancellation, so control only
-    ever returns with no mutation in flight. Shared by the agents handler's
-    config writers and the files handler's workspace-copy staging.
+    The awaitable runs as its own task behind ``asyncio.shield``; a
+    ``CancelledError`` delivered to the CALLER is remembered and the caller
+    keeps waiting until the task finishes, then the cancellation is re-raised.
+    The loop, not a single re-await, is what makes that hold under repeated
+    cancellation (a graceful shutdown escalating after its timeout): each
+    re-shield absorbs one more cancel, and only a finished task ends it.
+
+    For a multi-phase write -- a channel saver's config.json commit followed by
+    its ``.env`` credential write, the MCP gateway toggle's persist followed by
+    its live apply -- a cancellation between the phases would leave the stored
+    state and the effective state disagreeing; wrapping the whole transaction
+    here is what keeps the pair consistent. Cancellation is deferred, never
+    swallowed: the caller still unwinds with ``CancelledError`` afterwards, and
+    an exception from the task propagates as usual.
     """
-    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    task = asyncio.ensure_future(aw)
     cancelled: asyncio.CancelledError | None = None
     while True:
         try:
@@ -166,12 +174,26 @@ async def drained_to_thread(fn, /, *args):
         except asyncio.CancelledError as exc:
             if task.cancelled():
                 raise
-            # OUR await was cancelled, not the worker: remember it, keep
-            # draining the still-running thread.
+            # OUR await was cancelled, not the task: remember it, keep waiting
+            # for the still-running work.
             cancelled = exc
     if cancelled is not None:
         raise cancelled
     return result
+
+
+async def drained_to_thread(fn, /, *args):
+    """``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation.
+
+    A plain ``await to_thread(...)`` raises ``CancelledError`` at the await
+    while the worker THREAD keeps running — a handler that then performs
+    cleanup (releasing a lock, removing a staging directory) races its own
+    still-running worker. :func:`run_to_completion` keeps the await alive until
+    the worker actually finishes, then re-raises the cancellation, so control
+    only ever returns with no mutation in flight. Shared by the agents handler's
+    config writers and the files handler's workspace-copy staging.
+    """
+    return await run_to_completion(asyncio.to_thread(fn, *args))
 
 
 # Per-turn compaction-failure backoff. See
@@ -614,7 +636,7 @@ def _emit_agent_assignment(slot_key: str, agent: str, outcome: str = "applied") 
     )
 
 
-def _validate_tool_name(tool_name: str, *, is_shell: bool = False) -> str:
+def _validate_tool_name(tool_name: str, *, is_shell: bool = False, canonical_name: str = "") -> str:
     """Validate and sanitize tool display names for hook matching.
 
     ``is_shell`` is the provider-agnostic signal (set at the provider boundary)
@@ -623,11 +645,22 @@ def _validate_tool_name(tool_name: str, *, is_shell: bool = False) -> str:
     on this flag rather than a hardcoded set of provider tool_kind literals
     (e.g. "execute"/"Bash") stops the cap from silently re-breaking long shell
     commands on every engine migration or tool rename.
+
+    ``canonical_name`` is the adapter-authored tool identity that travelled
+    beside the title (``AcpEvent.tool_name``, read from the harness's own
+    ``_meta`` channel, never from the title or the model's ``description``).
+    The length cap protects the case where the title IS the only identity a
+    hook can match on; when a canonical identity is present the title is
+    content (a ``read`` title embeds the paths it reads, exactly as a shell
+    title embeds its command line), so the cap is skipped for it as it is for
+    ``is_shell``. Sanitisation and the empty check apply regardless: only the
+    length predicate is relaxed. A backend that publishes no identity leaves
+    ``canonical_name`` empty and keeps the loud refusal.
     """
     sanitized = sanitize_string(tool_name)
     if not sanitized:
         raise ValueError("Tool name cannot be empty")
-    if not is_shell and len(sanitized) > MAX_TOOL_NAME_LEN:
+    if not is_shell and not canonical_name and len(sanitized) > MAX_TOOL_NAME_LEN:
         raise ValueError(f"Tool name exceeds max length {MAX_TOOL_NAME_LEN}")
     return sanitized
 
@@ -762,6 +795,24 @@ def slot_history_key(slot: _ChatSlot) -> str:
     return _history_key_for(slot.key)
 
 
+def session_key_for(slot_key: str, linked_session_key: str = "") -> str:
+    """:func:`effective_session_key`'s rule, for a slot that does not exist yet.
+
+    The restore paths build slots FROM disk, so a step that has to address the
+    session before the build has only the slot NAME and the persisted
+    ``linked_session_key`` from the transcript's metadata. This is the same
+    relationship :func:`slot_transcript_key` has to the slot's FILE -- except that
+    one resolves the file and cannot recover the session key at all, so it is the
+    wrong fallback here and a channel-born slot would be addressed as a
+    ``dashboard:`` session that does not exist.
+
+    :func:`effective_session_key` delegates to this rather than repeating it: a
+    second spelling of the rule would drift, and a restore asking with a key the
+    live path never uses matches nothing and fails in SILENCE.
+    """
+    return linked_session_key or _history_key_for(slot_key)
+
+
 def effective_session_key(slot: _ChatSlot) -> str:
     """The session key for *slot* — the session its turns run on.
 
@@ -776,9 +827,10 @@ def effective_session_key(slot: _ChatSlot) -> str:
     turns run on, mirroring its links. For the slot's TRANSCRIPT use
     :func:`slot_history_key`, which resolves the unbound-channel-slot case onto
     the file the read paths actually use. Reserve :func:`_history_key_for` for
-    the cases that genuinely start from a slot key with no slot in hand.
+    the cases that genuinely start from a slot key with no slot in hand, and
+    :func:`session_key_for` for the ones that have no slot YET.
     """
-    return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
+    return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
 
 
 def subagents_attached(
@@ -808,8 +860,20 @@ def subagents_attached(
       with no children, and mistaking the two is exactly the hazard this guard
       exists to prevent.
 
+    The queued probe fails closed in TWO layers, because a raise is not how the
+    common failure arrives: an unreadable task store is absorbed one layer down
+    and answers ``taskq_bridge.UNKNOWN_PENDING`` rather than 0, so the ``except``
+    below is what covers a probe that raises for any OTHER reason — a registry
+    double without the count, an attribute gone. Neither layer may answer 0 for a
+    queue nobody could read.
+
     A state with no ``subagents`` registry answers False — there is no runtime
     for a child to be attached to.
+
+    SYNCHRONOUS variant, for a caller with no event loop under it. The queued
+    probe counts rows that live only in the task store, so it takes the SQLite
+    connection: a caller ON the gateway loop takes
+    :func:`subagents_attached_async` instead.
     """
     subs = getattr(state, "subagents", None)
     if subs is None:
@@ -823,11 +887,63 @@ def subagents_attached(
             # An unreadable queue is unknown children, not zero children.
             logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
             queued = 1
+    return _attached_verdict(running, queued, slot)
+
+
+async def subagents_attached_async(
+    state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
+) -> bool:
+    """:func:`subagents_attached` for a caller on the event loop.
+
+    The same three probes with the same fail-closed rules; only WHERE the
+    queued half runs differs. ``_queued_depth`` counts this parent's rows that
+    live only in the store, so it takes the connection — and the store's writer
+    thread holds that connection's lock across ``BEGIN IMMEDIATE``'s busy wait,
+    so taking it here would stall every session's turn and the watchdog
+    heartbeat behind one teardown probe. ``queued_count_for_async`` is the same
+    count with the read on the writer thread.
+
+    A manager double without the async sibling is asked synchronously — it
+    models the pre-queue manager and has no store to block on — which is the
+    probe ``slack.gateway._subagent_queued_count`` and
+    ``handlers.messaging._spawn_on_loop`` already make.
+    """
+    subs = getattr(state, "subagents", None)
+    if subs is None:
+        return False
+    running = subs.running_agents_for(session_key)
+    queued = 0
+    if running is not None:
+        try:
+            queued = await _queued_depth_off_loop(subs, session_key)
+        except Exception:
+            # An unreadable queue is unknown children, not zero children.
+            logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
+            queued = 1
+    return _attached_verdict(running, queued, slot)
+
+
+async def _queued_depth_off_loop(subs: Any, session_key: str) -> int:
+    """This parent's queued-spawn count with its store half off the loop."""
+    import inspect
+
+    entry = getattr(subs, "queued_count_for_async", None)
+    if inspect.iscoroutinefunction(entry):
+        return int(await entry(session_key))
+    return int(subs._queued_depth(session_key))
+
+
+def _attached_verdict(running: Any, queued: int, slot: _ChatSlot | None) -> bool:
+    """The verdict both entry points return, so the two cannot drift.
+
+    *slot* may be ``None``: ``getattr`` on ``None`` reads the in-flight
+    delivery probe as 0 and the two registry probes still decide.
+    """
     inflight = getattr(slot, "_subagent_deliveries_inflight", 0)
     return bool(running is None or running or queued or inflight)
 
 
-def chat_done_payload(
+async def chat_done_payload(
     state: DashboardState, slot: _ChatSlot, *, continuing: bool = False
 ) -> dict[str, Any]:
     """Describe whether a turn boundary actually hands the floor to the user.
@@ -837,6 +953,11 @@ def chat_done_payload(
     attached-child guard that protects session teardown, including queued spawns
     and results still being delivered. This is a notification hint only; it never
     changes dispatch, transcript finalization, or the slot's running state.
+
+    A coroutine for one reason: that guard's queued half reads the task store,
+    and every caller here is a turn-boundary frame on the gateway loop, so the
+    read belongs on the store's writer thread
+    (:func:`subagents_attached_async`).
     """
     # Avoid a circular import: autonudge's slot lookup imports dashboard.state.
     from kiro_crew.autonudge import get_instance
@@ -850,7 +971,9 @@ def chat_done_payload(
             or slot._in_stage_execution
             or slot._pending_synthesis
             or (slot.queue_depth and not slot._last_turn_auth_required)
-            or subagents_attached(state, slot, effective_session_key(slot), "completion_sound")
+            or await subagents_attached_async(
+                state, slot, effective_session_key(slot), "completion_sound"
+            )
             or (
                 workflows is not None
                 and workflows.registry.has_pending_work_for(effective_session_key(slot))
@@ -873,16 +996,21 @@ def wire_session_subagent_probe(state: DashboardState) -> None:
     """Hand ``SessionManager`` the sub-agent probe its RSS ceiling consults.
 
     The manager cannot see the dashboard's sub-agent registry or slots, so the
-    predicate is built here, over :func:`subagents_attached`, and installed via
-    ``set_subagent_probe``. The slot is resolved through
+    predicate is built here, over :func:`subagents_attached_async`, and
+    installed via ``set_subagent_probe``. The slot is resolved through
     :func:`dashboard_slot_key` (the same mapping the recycle notice uses); a
     session with no open tab passes ``None``, which the predicate accepts.
+
+    A COROUTINE predicate: the RSS sweep that consults it runs on the gateway
+    loop, and the queued half of the guard reads the task store. The manager
+    accepts either shape and awaits an awaitable answer, so a sync probe (a
+    test double, a build with no queue) still works.
     """
 
-    def _probe(session_key: str) -> bool:
+    async def _probe(session_key: str) -> bool:
         slot_key = dashboard_slot_key(session_key)
         slot = state.get_slot(slot_key) if slot_key else None
-        return subagents_attached(state, slot, session_key, "rss_recycle")
+        return await subagents_attached_async(state, slot, session_key, "rss_recycle")
 
     state.sessions.set_subagent_probe(_probe)
 
@@ -2319,6 +2447,81 @@ def should_notice_mixed_turn_leak(
     return has_leaked_tool_call(final_segment_text)
 
 
+def should_notice_compaction_dropped_leak(
+    *,
+    dropped_leak: bool,
+    leak_already_noticed: bool,
+    stop_reason: str,
+    end_turn_reason: str,
+    prompt_depth: int,
+    is_cancelled: bool,
+    refusal_reasons: list,
+) -> bool:
+    """Decide whether to surface a notice for a leak the COMPACTION BOUNDARY ate.
+
+    The shape neither sibling can see. A real (non-synthesized) mid-turn
+    compaction terminal is a segment boundary, so the runner resets
+    ``assistant_text`` there: text streamed before the summarization belongs to
+    the window that was just summarized and must not carry into the segment
+    flushed afterwards. That reset is correct for the text path and wrong for
+    this one — the leak scan reads the accumulator AT TURN END, so a leak that
+    streamed before the boundary is gone by the time either
+    :func:`should_notice_leaked_tool_call` or
+    :func:`should_notice_mixed_turn_leak` runs, and both decline on an empty
+    segment.
+
+    The leak still reached the user: chunks stream to the wire as they arrive,
+    so the raw invoke block was on screen before the boundary wiped the
+    accumulator. Nothing persisted it (the boundary does not flush) and nothing
+    explained it, so the turn shows raw machine syntax, runs no tool, and
+    carries no account of either — the silent pass-through this predicate
+    closes.
+
+    The turn then usually takes the post-compaction continuation arm, which
+    fires precisely BECAUSE the segment is blank
+    (:func:`should_continue_after_compaction`). So the user sees the leaked XML
+    followed by "continuing automatically", with no statement that a tool call
+    was written as prose instead of run.
+
+    Takes the FACT, not the text: at turn end the text is already gone, which is
+    the defect. The boundary is the only place it exists, so the scan
+    (:func:`has_leaked_tool_call`) runs there and only the boolean travels.
+
+    NOTICE-ONLY, and more strictly so than its siblings. It does not un-land the
+    turn and sets no flag any recovery arm reads, so it never competes with the
+    continuation the compaction path injects — a leaked block must not be
+    re-issued by this layer under any of the three auto-approval routes
+    (:func:`should_notice_leaked_tool_call` documents why). It therefore needs
+    no ``turn_tool_calls`` gate: that gate exists to protect UN-LANDING, and
+    there is nothing here to un-land. It needs no ``in_stage_execution`` gate
+    either, for the reason its mixed-turn sibling does not: a notice changes no
+    turn result the orchestrator's stage loop reads.
+
+    Owning no outcome is also why the caller evaluates this OUTSIDE the
+    ``if``/``elif`` chain its siblings sit in. Every arm of that chain owns the
+    turn's outcome, and two of them are RECOVERIES (the L1 infrastructure retry
+    and the promise-only guard); a turn can both drop a leak at its boundary and
+    need one of those, and the gates below exclude neither shape. An exclusive
+    slot would therefore starve the recovery, so the card is evaluated
+    independently and the turn keeps whatever outcome its own arm gave it.
+    ``leak_already_noticed`` — not the ordering — is what keeps one turn to one
+    leak card: the caller sets it on whichever sibling already carded.
+
+    Gates are the turn-shape ones only: the boundary recorded a leak, no sibling
+    has carded this turn, the turn ended NORMALLY, was not cancelled, carried no
+    tool refusals (those paths own their own reporting), and is top-level.
+    """
+    if not dropped_leak:
+        return False
+    if leak_already_noticed:
+        return False
+    if is_cancelled or refusal_reasons:
+        return False
+    if stop_reason != end_turn_reason:
+        return False
+    return prompt_depth == 0
+
+
 #: Normalised, CLOSED stop-reason vocabulary for the empty-turn diagnostic. The
 #: raw wire value is never logged: a backend is free to invent a reason string,
 #: and an unbounded value in a diagnostic is both a cardinality hazard and a
@@ -2478,6 +2681,97 @@ def classify_empty_turn(activity: EmptyTurnActivity) -> str:
     return EMPTY_CAUSE_OTHER
 
 
+# A current-turn blocker the model can only have invented.  Kiro Crew receives
+# real tool failures through a refusal/error/result frame; a normal end_turn that
+# follows a successful read/search call carries no runtime signal that tools were
+# disabled.  Match the complete terminal response, not just its prefix: otherwise
+# untrusted content could append an action and mint a synthetic action turn.
+_FALSE_CURRENT_TOOL_BLOCKER_RE = re.compile(
+    r"^\s*(?:"
+    r"i(?:'|’)m blocked from further tool execution in the resumed session: "
+    r"the screenshot delivery tools are no longer callable here\."
+    r"|i(?:'|’)m proceeding, but this turn(?:'|’)s tool budget was exhausted "
+    r"immediately after loading the workflow\. "
+    r"No publish or deployment has happened yet\."
+    r")\s*$",
+    re.IGNORECASE,
+)
+_FALSE_CURRENT_TOOL_BLOCKER_NEAR_MISS_RE = re.compile(
+    r"^\s*i(?:'|’)?m\b"
+    r"(?=[^\n]*(?:tool|read|search|fetch))"
+    r"(?=[^\n]*(?:block|unavail|inaccess|no\s+longer|budget|exhaust))"
+    r"[^\n]+$",
+    re.IGNORECASE,
+)
+# Replay additionally admits two first-party discovery tools whose contracts are
+# read-only but which are not auto-approval candidates. Keep the shared host
+# builtins sourced from the approval gate so those identities cannot drift.
+_READ_ONLY_PREPARATION_TOOLS = _HOST_READ_ONLY_BUILTIN_TOOLS | frozenset(
+    {"introspect", "tool_search"}
+)
+
+
+def is_false_current_tool_blocker(final_segment_text: str) -> bool:
+    """Whether the assistant falsely claims THIS turn lost tool execution.
+
+    This is deliberately narrower than a generic ``budget`` search.  A model may
+    legitimately explain a subagent cap or quote an earlier failure; only a
+    first-person claim about the live turn is actionable here.
+    """
+    return bool(_FALSE_CURRENT_TOOL_BLOCKER_RE.search(final_segment_text or ""))
+
+
+def is_false_current_tool_blocker_near_miss(final_segment_text: str) -> bool:
+    """Whether blocker-adjacent text missed the replay grammar.
+
+    Diagnostic only: this predicate never grants replay authority. It lets the
+    runner count wording drift without logging model text or widening the two
+    incident statements accepted by :func:`is_false_current_tool_blocker`.
+    """
+    text = final_segment_text or ""
+    return not is_false_current_tool_blocker(text) and bool(
+        _FALSE_CURRENT_TOOL_BLOCKER_NEAR_MISS_RE.search(text)
+    )
+
+
+def tool_calls_are_read_only_preparation(
+    turn_tool_calls: int,
+    turn_tool_identities: tuple[tuple[str, str, str, bool], ...],
+    successful_tool_call_ids: frozenset[str],
+    *,
+    builtin_identity_trusted: bool,
+) -> bool:
+    """True when every dispatch is a proven successful read-only builtin.
+
+    Each identity is ``(tool_call_id, mcp_server_name, tool_name,
+    tool_identity_trusted)``. The caller must positively prove the serving
+    backend is Kiro, and every name must carry extractor provenance rather than
+    merely being non-empty. MCP tools are excluded even when their names look
+    read-only; their schemas are not owned by this host. Missing provenance,
+    duplicate ids, absent identity, an unknown builtin, an incomplete/failed
+    result, or any count mismatch fails closed.
+    """
+    if not builtin_identity_trusted:
+        return False
+    if turn_tool_calls <= 0 or len(turn_tool_identities) != turn_tool_calls:
+        return False
+    call_ids: list[str] = []
+    for call_id, server_name, tool_name, identity_trusted in turn_tool_identities:
+        if not all(isinstance(value, str) for value in (call_id, server_name, tool_name)):
+            return False
+        if (
+            not call_id
+            or server_name
+            or identity_trusted is not True
+            or tool_name not in _READ_ONLY_PREPARATION_TOOLS
+        ):
+            return False
+        call_ids.append(call_id)
+    if len(set(call_ids)) != len(call_ids):
+        return False
+    return frozenset(call_ids) == successful_tool_call_ids
+
+
 def should_recover_promise_only(
     *,
     stop_reason: str,
@@ -2489,13 +2783,17 @@ def should_recover_promise_only(
     is_cancelled: bool,
     refusal_reasons: list,
     turn_tool_calls: int = 0,
+    turn_tool_identities: tuple[tuple[str, str, str, bool], ...] = (),
+    successful_tool_call_ids: frozenset[str] = frozenset(),
+    builtin_identity_trusted: bool = False,
+    directive_user_origin: bool = False,
     in_stage_execution: bool = False,
     stop_in_progress: bool = False,
     stop_generation_unchanged: bool = True,
     queue_empty: bool = True,
     no_pending_steers: bool = True,
 ) -> bool:
-    """Decide whether to inject ONE promise-only continuation.
+    """Decide whether to inject ONE unacted-turn continuation.
 
     All must hold (each guards a distinct failure mode):
       * NO Stop is in progress (``stop_in_progress`` is the runner's
@@ -2524,22 +2822,26 @@ def should_recover_promise_only(
         those have their own paths and must stay unchanged;
       * it produced visible output (a promise IS visible output) and is not the
         empty-response case (that path owns ``not produced_visible_output``);
-      * the turn made NO tool calls (``turn_tool_calls == 0``). The segment-buffer
-        reset at each tool boundary is not an airtight "never replay an executed
-        action" proxy on its own: a turn that completed a side-effecting tool
-        (e.g. ``send_message``) and then emitted trailing promise-shaped text
-        ("I'll send that now") still matches the detector, and the continuation
-        would REISSUE the completed action (duplicate external message). The
-        promise-only bug is by definition a turn that announced an action and made
-        NO tool call, so requiring a zero tool-call count closes the replay hole
-        directly. A turn that ran a read then promised a further action is excluded
-        too — a false negative, which is the safe direction;
-      * the final segment is a terminal promise-to-act
-        (:func:`is_promise_only_terminal`). Because the runner resets its segment
-        buffer at every tool boundary, ``final_segment_text`` is exactly the text
-        AFTER the last tool call — so a turn that executed a tool and then
-        summarised has a summary here, not a promise; the ``turn_tool_calls`` gate
-        above is the airtight backstop for the same guarantee;
+      * ordinary promise-only recovery still requires ZERO tool calls. A second,
+        narrower shape may contain calls only when every dispatch has a unique id,
+        the runner positively identified the serving backend as Kiro, the provider
+        supplied a canonical non-MCP builtin identity carrying explicit extractor
+        provenance, that identity is one of the fixed read/search/fetch tools,
+        and a final
+        ``status=completed`` result arrived for exactly the same id set. Display
+        ``tool_kind`` and name non-emptiness are never authorization evidence.
+        Unknown/MCP/missing/untrusted identity,
+        duplicate ids, incomplete or failed calls, and every count/status mismatch
+        fail closed. The tool-bearing shape also requires
+        ``directive_user_origin``: the runner replays the authenticated user's
+        exact message, never the model-authored blocker or an announced action.
+        This lets a skill read or deferred-tool search retry without replaying a
+        completed mutation or minting authority from fetched content;
+      * the final segment is either a terminal promise-to-act
+        (:func:`is_promise_only_terminal`) on a zero-call turn, or the narrowly
+        full-matched false current-tool blocker above after read-only preparation.
+        Because the runner resets its segment buffer at every tool boundary,
+        ``final_segment_text`` is exactly the text AFTER the last tool call;
       * this is NOT a stage-execution turn (``in_stage_execution``). A turn run by
         the orchestrator's stage loop must not spawn async recovery: the loop
         records the stage complete and advances before the continuation finishes,
@@ -2559,7 +2861,14 @@ def should_recover_promise_only(
         return False
     if is_cancelled or refusal_reasons:
         return False
-    if turn_tool_calls != 0:
+    if turn_tool_calls != 0 and not tool_calls_are_read_only_preparation(
+        turn_tool_calls,
+        turn_tool_identities,
+        successful_tool_call_ids,
+        builtin_identity_trusted=builtin_identity_trusted,
+    ):
+        return False
+    if turn_tool_calls and not directive_user_origin:
         return False
     if in_stage_execution:
         return False
@@ -2569,6 +2878,8 @@ def should_recover_promise_only(
         return False
     if prompt_depth != 0 or promise_only_retries >= 1:
         return False
+    if turn_tool_calls:
+        return is_false_current_tool_blocker(final_segment_text)
     return is_promise_only_terminal(final_segment_text)
 
 
@@ -2702,6 +3013,33 @@ _MANUAL_CONTINUE_MSG = (
     "request is genuinely complete, say so in one line instead of inventing "
     "further work."
 )
+# Injected INSTEAD of the user's message when a content-filter refusal landed
+# after the turn had already dispatched tool calls and agent.refusal_fallback_model
+# names a different model (chat_runner._refusal_fallback_retry). Replaying the
+# message would run those tool calls a second time, so the session -- moved to
+# the fallback model -- is asked to carry on from the completed work, which is
+# what a person gets by pressing Continue. The nudge goes to the SAME harness
+# session the refused turn ran on (the retention every Continue relies on), and
+# Kiro Crew itself never re-sends the message once a tool ran. Unlike
+# ``_MANUAL_RESUME_MSG`` it offers no restart clause: it is sent only when the
+# turn dispatched a tool, so "nothing was done yet" is never true of it, and a
+# model that cannot see the partial turn (a session that did not keep it) is
+# told to stop rather than start over -- failing safe instead of re-running the
+# writes.
+#
+# Deliberately silent about the content filter and the model swap: the FALLBACK
+# model reads this body, and telling it the request was just declined primes it
+# to decline too. The user learns both from the retry notice card beside it.
+# Not in ``_SYNTHETIC_RECOVERY_MSGS``: the retry turn is recognized by its queue
+# id, not by text, and the turn-start re-arm already skips recovery-kind entries.
+_REFUSAL_FALLBACK_RESUME_MSG = (
+    f"{REFUSAL_FALLBACK_RECOVERY_PREFIX}\n"
+    "The previous turn ended before it finished. Look at the conversation above, "
+    "work out what was already completed, and finish the user's most recent "
+    "request from there. Do NOT re-run steps or tools that already completed "
+    "successfully. If the completed work is not visible in the conversation "
+    "above, do NOT start the request over — say so and stop."
+)
 
 
 class ResetCause(str, Enum):
@@ -2781,6 +3119,11 @@ def is_system_injection(content: str) -> bool:
 #: Structural queue-entry kind for runner-injected recovery instructions.
 SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 
+#: Structural kind for a false-tool-blocker retry whose TEXT is the authenticated
+#: user's original request.  It is recovery orchestration (so it breaks merges and
+#: can be purged), but its ``RecoveryPayload.ORIGINAL`` remains user-authored.
+FALSE_TOOL_BLOCKER_REPLAY_KIND = "false_tool_blocker_replay"
+
 #: Row-level kind for the `error` notice appended when a recovery has ALREADY
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
 TRANSIENT_RETRY_KIND = "transient_retry"
@@ -2831,32 +3174,49 @@ AUTH_REQUIRED_KIND = "auth_required"
 SUBAGENT_COMPLETION_KIND = "subagent_completion"
 CRON_NOTIFICATION_KIND = "cron_notification"
 
+#: Queue-entry kinds whose turns must settle before an Autopilot stage advances.
+STAGE_DELIVERY_KINDS = frozenset((SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND))
+
+
+def owned_stage_delivery_entry(boundary: Any, entries: list[dict]) -> dict | None:
+    """Return the first stage-delivery entry owned by *boundary* (S1)."""
+    return next(
+        (
+            entry
+            for entry in entries
+            if entry.get("kind") in STAGE_DELIVERY_KINDS and boundary.owns_entry(entry)
+        ),
+        None,
+    )
+
+
 #: All system-injection kinds (for set-membership checks).
-_SYSTEM_INJECTION_KINDS = frozenset(
-    (SUBAGENT_COMPLETION_KIND, CRON_NOTIFICATION_KIND, SYNTHETIC_RECOVERY_KIND)
+_SYSTEM_INJECTION_KINDS = STAGE_DELIVERY_KINDS | frozenset(
+    (CRON_NOTIFICATION_KIND, FALSE_TOOL_BLOCKER_REPLAY_KIND)
 )
 
 
 def is_synthetic_recovery_item(item: dict) -> bool:
-    """True when a queue ENTRY is a runner-injected synthetic recovery
-    instruction (post-transient CONTINUE / empty-response nudge).
+    """True when a queue ENTRY is runner-injected recovery orchestration.
 
-    Classification is structural — the ``kind`` tag set at ``queue_insert``
-    time — never content equality: metadata survives any queue transformation
-    (merge, prefixing, truncation) and cannot collide with a user pasting the
-    transcript-visible recovery text verbatim (which must classify as a plain
-    user message)."""
-    return item.get("kind") == SYNTHETIC_RECOVERY_KIND
+    The false-tool-blocker replay carries the authenticated user's own text, but
+    its distinct kind still identifies the runner-owned retry for queue ordering
+    and late-cancellation purge. Payload provenance remains a separate question.
+    """
+    return item.get("kind") in (
+        SYNTHETIC_RECOVERY_KIND,
+        FALSE_TOOL_BLOCKER_REPLAY_KIND,
+    )
 
 
 class RecoveryPayload(str, Enum):
     """Whether a recovery entry's TEXT is runner-authored or the user's own words.
 
     ``build_recovery_requeue`` already draws this line — a continuation once the
-    turn emitted output, the original request before that — but both re-queue
-    under ``SYNTHETIC_RECOVERY_KIND``, because both must render as an inject row
-    rather than a second user bubble. The kind therefore cannot also answer
-    whether the text may be mirrored to a linked thread as user speech.
+    turn emitted output, the original request before that. Most re-queue under
+    ``SYNTHETIC_RECOVERY_KIND``; false-tool-blocker user replays use their own
+    purgeable kind. Neither kind can answer whether text may be mirrored to a
+    linked thread as user speech, so payload remains the authority classifier.
 
     ``str`` mixin (not ``StrEnum``) for Py3.10 compat, matching ``ResetCause``.
     """
@@ -2948,8 +3308,13 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     return item["content"], [item]
 
 
-def _dequeue_next_system_message(slot, *, exclude_cron: bool = False) -> tuple:
-    """Pop the first queued sub-agent-completion or cron injection, leaving
+def _dequeue_next_system_message(
+    slot,
+    *,
+    exclude_cron: bool = False,
+    preferred_id: str = "",
+) -> tuple:
+    """Pop a preferred queued system injection, or the first one, leaving
     plain user messages queued.
 
     Implements the (always-on) queue-during-subagents behavior: while background
@@ -2963,14 +3328,27 @@ def _dequeue_next_system_message(slot, *, exclude_cron: bool = False) -> tuple:
     runs each stage as its own ``_run_chat`` whose tail-drain fires while
     ``_in_stage_execution`` is still set; without this a cron notification
     queued during the plan is pulled BETWEEN stages and starts a turn that
-    scatters the plan's output. Sub-agent completions and synthetic recovery
-    still flow (a stage may legitimately spawn sub-agents or re-queue a
-    continuation) -- only the external cron injection waits for the plan to end.
+    scatters the plan. Sub-agent completions and synthetic recovery still flow
+    (a stage may legitimately spawn sub-agents or re-queue a continuation) --
+    only the external cron injection waits for the plan to end.
+
+    ``preferred_id`` is selected by the stage boundary's single owner predicate.
+    It changes queue order only for that owned row; this helper never re-decides
+    ownership.
     """
+
+    def _eligible(item: dict) -> bool:
+        return is_system_injection_item(item) and not (
+            exclude_cron and item.get("kind") == CRON_NOTIFICATION_KIND
+        )
+
+    if preferred_id:
+        for i, item in enumerate(slot._queue):
+            if item.get("id") == preferred_id and _eligible(item):
+                popped = slot.queue_pop(i)
+                return popped["content"], [popped]
     for i, item in enumerate(slot._queue):
-        if is_system_injection_item(item):
-            if exclude_cron and item.get("kind") == CRON_NOTIFICATION_KIND:
-                continue
+        if _eligible(item):
             popped = slot.queue_pop(i)
             return popped["content"], [popped]
     return None, []

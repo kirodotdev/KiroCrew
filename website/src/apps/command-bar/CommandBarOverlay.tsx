@@ -8,6 +8,8 @@ import {
   Clock,
   Command,
   Cog,
+  Component,
+  Folder,
   GitMerge,
   Loader2,
   MessageSquare,
@@ -24,9 +26,12 @@ import {
 import { api } from '../../api/client'
 import { commandFolderName, fileSessionInCommandFolder } from './sessionFolder'
 import type { ChatFolderRow } from './sessionFolder'
+import type { ChatFolder } from '../../types'
 import { appNavTargets } from '../../appNav'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { createSlot, setPendingInput, switchSlot } from '../../store/chatSlice'
+import { createSlot, setPendingInput, switchSlot, requestFolderReveal } from '../../store/chatSlice'
+import { findReport } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Highlighted } from '../../components/commandPalette/Highlighted'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
@@ -35,9 +40,21 @@ import { settingsRoute } from '../../components/commandPalette/settingsRoute'
 import { settingsSubtitle } from '../../components/commandPalette/settingsTabLabel'
 import { usePaletteActions } from '../../components/commandPalette/paletteActions'
 import { appIcon } from '../../components/commandPalette/providers/appsProvider'
-import { sessionStatus, useRecentsProvider } from '../../components/commandPalette/providers/recentsProvider'
+import {
+  isEmptyNewSlot,
+  recencyEpoch,
+  sessionStatus,
+  useRecentsProvider,
+} from '../../components/commandPalette/providers/recentsProvider'
+import { createArtifactsProvider } from '../../components/commandPalette/providers/artifactsProvider'
+import type { ArtifactsResponse } from '../../components/commandPalette/providers/artifactsProvider'
+import { createFoldersProvider, FOLDERS_STALE_MS } from './foldersProvider'
 import { useSessionsProvider } from '../../components/commandPalette/providers/sessionsProvider'
 import type { Result } from '../../components/commandPalette/types'
+import { resolveCopyTarget, type CopyableRow } from '../../components/commandPalette/copyTarget'
+import { copyToClipboard } from '../../utils/clipboard'
+import { platformShortcut } from '../../utils/platform'
+import { buildShareableUrl } from '../../utils/shareUrl'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useVisualViewport } from '../../hooks/useVisualViewport'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
@@ -74,15 +91,55 @@ import { useImeGuard } from '../../hooks/useImeGuard'
  */
 
 /** Scoped views the bar can enter. Each one owns its own engine. */
-type Scope = null | 'sessions'
+type Scope = null | 'sessions' | 'artifacts' | 'folders'
 
 const SESSIONS_MIN_CHARS = 2
+/**
+ * Shortest query the artifacts view will send.
+ *
+ * Two characters for a different reason than the sessions threshold above, which
+ * mirrors a backend floor that returns nothing below it. The artifacts endpoint
+ * answers a one-character name query perfectly well — what it costs is a scan over
+ * every artifact's metadata to return most of the corpus, which is what the view
+ * already shows for free when the query is empty. So the floor buys a cheaper
+ * keystroke, not a correct answer.
+ */
+const ARTIFACTS_MIN_CHARS = 2
+/**
+ * Rows the artifacts view renders, listing and search alike.
+ *
+ * The endpoint returns the whole matching set with no page size, so this is the
+ * only thing between a heavy instance and a thousand-row option list inside a
+ * dialog. Sized to the list's own height rather than to the corpus: a name search
+ * that needs more than this many rows to find its artifact needs a narrower query,
+ * and the listing state is a shortcut to something recent, not an inventory.
+ */
+const ARTIFACTS_ROW_LIMIT = 12
 const DEBOUNCE_MS = 150
+
+/**
+ * Sessions the root lifts into its `recent` group.
+ *
+ * Three, because the value of this group is that the reader does not have to READ
+ * it — at three rows the one they want is recognised at a glance and reached with
+ * one arrow key, and the group costs the commands below it almost nothing. Sized to
+ * the glance, not to the corpus: a fourth row buys a little more coverage and takes
+ * the "no reading required" property with it, and the whole corpus is one row below
+ * under Search Sessions.
+ */
+const RECENT_SESSION_ROWS = 3
 
 function groupLabel(group: RootGroup): string {
   switch (group) {
     case 'attention':
       return i18nT('apps.commandBar.group_attention')
+    case 'recent':
+      // Its own header key beside `group_attention`, not the recents listing's bare
+      // "Recent" (which `group_recent` already carries for the artifacts view): these
+      // rows are the same session objects as "New Session" and "Search Sessions"
+      // beside them, and a header naming the group ("Recent sessions") says so, where
+      // a lone adjective borrowed from another surface reads as a different thing.
+      return i18nT('apps.commandBar.group_recent_sessions')
     case 'commands':
       return i18nT('apps.commandBar.group_commands')
     case 'apps':
@@ -105,6 +162,10 @@ function groupLabel(group: RootGroup): string {
  */
 function kindLabel(row: { kind: RootRowKind; group: RootGroup; appLabel?: string }): string | null {
   if (row.group === 'attention') return null
+  // A recent row is named by its own group header and its session glyph, and its
+  // right-hand column belongs to whatever the session is DOING. Labelling it
+  // "Command" would be both wrong and the widest thing on the row.
+  if (row.group === 'recent') return null
   if (row.kind === 'view') return i18nT('apps.commandBar.kind.view')
   if (row.group === 'apps') return i18nT('apps.commandBar.kind.app')
   if (row.group === 'settings') return i18nT('apps.commandBar.kind.setting')
@@ -115,9 +176,30 @@ function kindLabel(row: { kind: RootRowKind; group: RootGroup; appLabel?: string
   return row.appLabel ? `${row.appLabel}${META_SEP}${kind}` : kind
 }
 
+/**
+ * The root list's own row model, expressed as something the copy layer can read.
+ *
+ * The root index is not the palette's `Result` — it predates the declarative Enter
+ * matrix and says where a row goes with `kind` + `route`. That is the same fact in
+ * different words, so the adapter is a restatement rather than new wiring, and every
+ * `navigate` row in the index (each settings row, each app row, each page row) becomes
+ * copyable without touching the place that builds it.
+ *
+ * The other kinds have no address on purpose. A `view` row opens a surface INSIDE the
+ * bar, so there is nothing to hand anybody; `invoke` runs a callback; `prompt` is a
+ * question the reader has not answered yet.
+ */
+function rootRowCopyable(row: RootRow): CopyableRow {
+  return row.kind === 'navigate' && row.route
+    ? { enter: { kind: 'navigate', route: row.route } }
+    : {}
+}
+
 function groupIcon(group: RootGroup) {
   switch (group) {
     case 'attention':
+      return <MessageSquare size={14} className="lucide-inline" />
+    case 'recent':
       return <MessageSquare size={14} className="lucide-inline" />
     case 'commands':
       return <Terminal size={14} className="lucide-inline" />
@@ -194,14 +276,43 @@ type Slot =
   | { key: string; tag: 'result'; row: Result }
   /** Carry the typed text into the sessions view. */
   | { key: string; tag: 'fallback' }
+  /**
+   * Carry the typed text into the artifacts view.
+   *
+   * A separate tag rather than a scope field on `fallback` so the footer's action
+   * name, the rendered row and activation each switch on the tag and cannot
+   * disagree about which corpus the Enter reaches.
+   */
+  | { key: string; tag: 'fallback-artifacts' }
+  /**
+   * Carry the typed text into the folders view.
+   *
+   * Its own tag for the reason the artifacts tag above gives: the footer's action
+   * name, the rendered row and the activation all switch on the tag, so none of
+   * them can disagree about which corpus the Enter reaches.
+   */
+  | { key: string; tag: 'fallback-folders' }
   /** Hand the typed text to an agent — the active session, or a new one. */
   | { key: string; tag: 'ask' }
   /** The dead end's way out: the corpora this surface does not reach. */
   | { key: string; tag: 'recovery' }
   /** Re-run a scoped search that failed. */
   | { key: string; tag: 'retry' }
+  /** Re-run an artifact search that failed. */
+  | { key: string; tag: 'retry-artifacts' }
+  /** Re-run a folder listing that failed. */
+  | { key: string; tag: 'retry-folders' }
   /** Drop the query and fall back to the recent sessions listing. */
   | { key: string; tag: 'clear-query' }
+  /**
+   * Drop the query and fall back to the whole folder list.
+   *
+   * Separate from `clear-query` because the two rows name different destinations:
+   * a session listing is the RECENT ones, while the folder listing is all of them
+   * in sidebar order. One tag would have to read the live scope to pick the verb,
+   * and `actionLabel` is pure over the slot precisely so it cannot.
+   */
+  | { key: string; tag: 'clear-query-folders' }
 
 /**
  * What Enter on this slot will do, named for the footer.
@@ -226,17 +337,36 @@ function actionLabel(slot: Slot): string {
       if (slot.row.kind === 'navigate') return i18nT('apps.commandBar.action_open')
       return i18nT('apps.commandBar.action_run')
     case 'result':
+      // An artifact row, a folder row and a session row are the same SHAPE and three
+      // different promises, and the footer names the promise. Keyed off the producing
+      // provider rather than the live scope because this function is pure over the
+      // slot — and because the row carries where it came from, while the scope is
+      // state next to it that a future view could disagree with.
+      //
+      // A folder gets `action_open` rather than "Run": pressing Enter reveals it in
+      // the sidebar, and "Run" is the strongest verb this footer has, reserved for
+      // the rows that approve or merge.
+      if (slot.row.providerId === 'artifacts') return i18nT('apps.commandBar.action_open_artifact')
+      if (slot.row.providerId === 'folders') return i18nT('apps.commandBar.action_open')
       return i18nT('apps.commandBar.action_open_session')
     case 'fallback':
       return i18nT('apps.commandBar.action_search_sessions')
+    case 'fallback-artifacts':
+      return i18nT('apps.commandBar.action_search_artifacts')
+    case 'fallback-folders':
+      return i18nT('apps.commandBar.action_search_folders')
     case 'ask':
       return i18nT('apps.commandBar.action_ask')
     case 'recovery':
       return i18nT('apps.commandBar.action_open_app')
     case 'retry':
+    case 'retry-artifacts':
+    case 'retry-folders':
       return i18nT('apps.commandBar.retry')
     case 'clear-query':
       return i18nT('apps.commandBar.action_show_recent')
+    case 'clear-query-folders':
+      return i18nT('apps.commandBar.action_show_all_folders')
   }
 }
 
@@ -273,6 +403,14 @@ const SKELETON_WIDTHS = ['58%', '46%', '34%'] as const
  * untranslated-literal gate is not asked to judge a lone punctuation mark.
  */
 const ENTER_KEY = '\u21B5'
+/**
+ * The copy chord, spelled for the machine the reader is on.
+ *
+ * Through the product's own formatter rather than a literal, because the chord is not
+ * the same everywhere: a hardcoded glyph would name a key Windows and Linux readers do
+ * not have.
+ */
+const COPY_KEY = platformShortcut('Cmd+C')
 
 /**
  * Separator between a session row's folder and its timestamp.
@@ -369,6 +507,32 @@ export default function CommandBarOverlay({
   const [selected, setSelected] = useState(0)
   const [usage, setUsage] = useState<UsageMap>(() => loadUsage())
   const [actionError, setActionError] = useState<string | null>(null)
+  /**
+   * What the last copy did, held until the reader moves.
+   *
+   * A copy is the one action on this surface with NO observable result: the bar looks
+   * identical afterwards, the clipboard is not visible, and the reader finds out
+   * whether it worked when they paste somewhere else. So it is stated here, and it is
+   * stated from `copyToClipboard`'s own return value rather than from having called
+   * it -- that helper explicitly warns that a tick over an unchanged clipboard is
+   * worse than no affordance at all, and it fails for real on a plain-HTTP LAN
+   * gateway, where the async clipboard API is unavailable.
+   */
+  const [copyNotice, setCopyNotice] = useState<{ text: string; what?: string } | null>(null)
+  /**
+   * A clipboard write that did NOT land.
+   *
+   * Held apart from `copyNotice` because it is a different kind of thing: a failed
+   * write is an error, and an error renders through `ErrorNotice` like every other one
+   * on this surface. A copy with no target is not an error -- the reader asked a row
+   * with no address for its address -- so it stays on the status line.
+   *
+   * Carries `what` as well as the message, because the message names a REMEDY -- select
+   * the text and copy it by hand -- and this is the one path where the text is not on
+   * screen: the clipboard refused, so nothing else put it there. An instruction that
+   * points at nothing is worse than no instruction.
+   */
+  const [copyError, setCopyError] = useState<{ text: string; what: string } | null>(null)
   /** Row id whose `invoke` work is still resolving, or null. */
   const [pendingRow, setPendingRow] = useState<string | null>(null)
   /**
@@ -446,6 +610,84 @@ export default function CommandBarOverlay({
   const chatFoldersRef = useRef<unknown>(chatFolders)
   chatFoldersRef.current = chatFolders
   const queryClient = useQueryClient()
+
+  /**
+   * The artifacts view's engine.
+   *
+   * Built here from the palette provider's factory rather than taken from its hook,
+   * for two reasons that both matter to this surface. The request is ours: the hook
+   * asks for `content=1` and `snippet=1`, and `snippet=1` alone makes the server
+   * read every listed artifact's body to build a preview — so a name search that
+   * left it on would pay for the full-corpus content read it was avoiding. And the
+   * navigation is ours: every other row in this file leaves through
+   * `usePaletteActions().navigate`, and the hook would bring a second router
+   * mechanism in beside it.
+   *
+   * What IS reused is the part worth reusing: how an artifact becomes a row, so a
+   * result here and a result in the palette are the same row built by the same code.
+   *
+   * Inert on construction, like the two engines above — `fetchQuery` runs from
+   * `search()`, and the only call site is gated on the artifacts scope.
+   *
+   * Content search is the next step, and it is this one request that changes.
+   */
+  const artifacts = useMemo(
+    () =>
+      createArtifactsProvider({
+        fetchArtifacts: q =>
+          queryClient.fetchQuery<ArtifactsResponse>({
+            queryKey: ['artifacts', 'command-bar', 'name', q],
+            queryFn: () => api.artifacts({ q: q || undefined }),
+            staleTime: 15_000,
+          }),
+        openArtifact: slug => navigate(`/artifacts/${slug}`),
+      }),
+    [navigate, queryClient],
+  )
+
+  /**
+   * The folders view's engine — this app's own folders corpus
+   * (`./foldersProvider`), wired to THIS surface's seams.
+   *
+   * It lives beside this file rather than under the host palette's providers, and
+   * that is the point: the host carries no Folders tab, so there is one
+   * implementation of "find a folder and land on it" and the app owns it. The
+   * corpus itself is hook-free precisely so the wiring stays here — React-Query for
+   * the fetch, `usePaletteActions` for the route change. Every route change in this
+   * overlay goes through that hook, and one component holding two navigation
+   * mechanisms is how one of them ends up unexercised.
+   *
+   * Inert on construction, like the two engines above: the fetch runs from
+   * `search()`, and the only call site is gated on the folders scope.
+   */
+  const folders = useMemo(
+    () =>
+      createFoldersProvider({
+        fetchFolders: async () => {
+          const rows = await queryClient.fetchQuery<ChatFolder[]>({
+            // The SHARED key the sidebar and the filing path below read, so entering
+            // the view on a warm cache costs nothing and a cold one pays once.
+            queryKey: ['chat-folders'],
+            queryFn: () => api.chatFolders(),
+            staleTime: FOLDERS_STALE_MS,
+          })
+          // The key is shared, so what comes back is whatever the last writer put
+          // there. A non-array reaches `folders.map` inside the ordering helper and
+          // throws in render, which would take the whole launcher down over a bad
+          // payload that only this one view needs.
+          return Array.isArray(rows) ? rows : []
+        },
+        revealFolder: folderId => {
+          // Store write BEFORE the route change: the request is held in the store
+          // precisely because the sidebar may not be mounted yet, and its consuming
+          // effect runs on mount as well as on change, so an early request is
+          // replayed rather than dropped.
+          dispatch(requestFolderReveal(folderId))
+          navigate('/chat')
+        },
+      }),
+    [dispatch, navigate, queryClient],
+  )
 
   useEffect(() => {
     if (!open) return
@@ -543,9 +785,11 @@ export default function CommandBarOverlay({
     // the user to ignore it, and the whole value is that its presence means
     // something. A running session is not waiting on anyone and stays in the
     // sessions view where it belongs.
+    const lifted = new Set<string>()
     for (const slot of liveSlots) {
       const st = sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
       if (st.style !== 'pill' || !st.label || !st.colorVar) continue
+      lifted.add(slot.key)
       rows.push({
         id: `attention:${slot.key}`,
         title: slot.title || slot.key,
@@ -561,6 +805,48 @@ export default function CommandBarOverlay({
         },
       })
     }
+    // Then the sessions the reader was last in.
+    //
+    // This is the one thing the surface is opened for most and the one thing it used
+    // to answer worst: switching back to yesterday's conversation meant entering the
+    // sessions view and typing a name the reader had to remember. The facts are in
+    // the same live store the block above reads, so the root pays no request for
+    // them — which is the property that decides WHERE this can live. The full corpus
+    // stays behind Search Sessions; this is the shortcut, not the index.
+    //
+    // Empty untitled slots are excluded: switching into a blank chat is what the New
+    // Session command is for, and one of those rows is indistinguishable from
+    // another. A slot already lifted into `attention` is excluded too — it is on
+    // screen, above this, carrying more information than a second copy would.
+    const recentSlots = liveSlots
+      .filter(slot => !lifted.has(slot.key) && !isEmptyNewSlot(slot))
+      .sort((a, b) => recencyEpoch(b) - recencyEpoch(a))
+      .slice(0, RECENT_SESSION_ROWS)
+    recentSlots.forEach(slot => {
+      const st = sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
+      rows.push({
+        id: `recent:${slot.key}`,
+        title: slot.title || slot.key,
+        group: 'recent',
+        kind: 'invoke',
+        icon: <MessageSquare size={14} className="lucide-inline" />,
+        // Running state only, and never a pill: a pill means the session is waiting
+        // on the reader, and every session that is has already been lifted into the
+        // block above. Two treatments of "needs me" on one page is how the signal
+        // stops meaning anything.
+        status:
+          st.style === 'dot' && st.label && st.colorVar
+            ? { colorVar: st.colorVar, label: st.label, detail: st.detail, pulse: st.pulse }
+            : undefined,
+        // Pushed in recency order — recentSlots is sorted newest-first — which is the
+        // order the root's idle-ordered `recent` group keeps, so the row needs no
+        // sort key of its own.
+        run: async () => {
+          dispatch(switchSlot({ key: slot.key, announceOnMissing: true }))
+          navigate('/chat')
+        },
+      })
+    })
     rows.push(
       {
         id: 'command:new-session',
@@ -607,6 +893,42 @@ export default function CommandBarOverlay({
         view: 'sessions',
         icon: <Search size={14} className="lucide-inline" />,
         keywords: ['history', 'chat', 'conversation'],
+      },
+      {
+        id: 'command:search-artifacts',
+        title: i18nT('apps.commandBar.cmd_search_artifacts'),
+        // "Artifacts" is this product's word, not the reader's: a first-time reader
+        // called them "whatever they are". The subtitle names the things instead of
+        // the category, which is what the settings rows in this same list do. The
+        // sessions row above needs none, because "Sessions" already says it.
+        subtitle: i18nT('apps.commandBar.cmd_search_artifacts_sub'),
+        group: 'commands',
+        kind: 'view',
+        view: 'artifacts',
+        // The glyph artifacts carry everywhere else in the product — the side
+        // panel's view and the opened-artifact tab both use this one.
+        icon: <Component size={14} className="lucide-inline" />,
+        // `widget` earns its place: what the user saved is usually an mcwidget, and
+        // that is the word they watched the chat call it. The rest are the nouns the
+        // artifact list itself is filed under.
+        keywords: ['widget', 'html', 'saved', 'document', 'chart'],
+      },
+      {
+        // The sidebar's own folders, reached the way sessions and artifacts are: ONE
+        // row that opens a view, not the folder list flattened into the first page.
+        // A folder list is a corpus, and the reader has already learned from the two
+        // rows above what a corpus costs them here — press Enter, then type.
+        // Spreading tens of folder rows through the root instead made the same
+        // collection behave unlike every other corpus this surface holds: demoted and
+        // capped while the query was empty, so the feature read as missing, and
+        // competing with commands once it was not.
+        id: 'command:search-folders',
+        title: i18nT('apps.commandBar.cmd_search_folders'),
+        group: 'commands',
+        kind: 'view',
+        view: 'folders',
+        icon: <Folder size={14} className="lucide-inline" />,
+        keywords: ['sidebar', 'tree', 'group'],
       },
     )
     // Commands contributed by installed apps. This is the seam that lets a row live
@@ -683,7 +1005,13 @@ export default function CommandBarOverlay({
   const scopedQuery = scope === 'sessions' ? debounced.trim() : ''
   /** The scoped SEARCH is armed only once the query is long enough to answer. */
   const searchArmed = scope === 'sessions' && scopedQuery.length >= SESSIONS_MIN_CHARS
-  const { data: scopedResults, isFetching, isError, refetch: refetchSessions } = useQuery({
+  const {
+    data: scopedResults,
+    error: sessionsSearchError,
+    isFetching,
+    isError,
+    refetch: refetchSessions,
+  } = useQuery({
     queryKey: ['command-bar', 'sessions', scopedQuery],
     queryFn: () => Promise.resolve(sessions.search(scopedQuery)) as Promise<Result[]>,
     enabled: searchArmed,
@@ -709,6 +1037,84 @@ export default function CommandBarOverlay({
     queryKey: ['command-bar', 'recents'],
     queryFn: () => Promise.resolve(recentSessions.search('')) as Promise<Result[]>,
     enabled: listingArmed,
+    staleTime: 15_000,
+  })
+
+  /**
+   * Artifacts view. ONE query for both of its states, unlike the sessions view
+   * above.
+   *
+   * The sessions view needs two engines because its listing is a different thing
+   * from its search — live slots and history buckets, not a query with no words in
+   * it. Artifacts has no such split: the list endpoint with no `q` already answers
+   * "the newest ones", which is exactly the listing, so an empty query is a
+   * narrowing of zero rather than a second mode. Sending it through one query keeps
+   * the two states on one cache key and removes the window where a view could show
+   * a listing and a search at once.
+   */
+  const artifactsQuery =
+    scope === 'artifacts' && debounced.trim().length >= ARTIFACTS_MIN_CHARS ? debounced.trim() : ''
+  const {
+    data: artifactRows,
+    error: artifactsSearchError,
+    isFetching: artifactsFetching,
+    isError: artifactsError,
+    refetch: refetchArtifacts,
+  } = useQuery({
+    // Distinct from the provider's own `['artifacts', 'command-bar', 'name', q]`
+    // key, which caches the RESPONSE. This one caches the mapped rows. Both live
+    // under `['artifacts']` so artifact mutations invalidate them, while the
+    // `view` discriminator keeps their different response shapes on separate keys.
+    queryKey: ['artifacts', 'command-bar', 'view', artifactsQuery],
+    queryFn: () => artifacts.search(artifactsQuery) as Promise<Result[]>,
+    enabled: scope === 'artifacts',
+    staleTime: 15_000,
+  })
+  /**
+   * The rows the view may render, capped — see {@link ARTIFACTS_ROW_LIMIT}.
+   *
+   * The LISTING state carries a group label, so the list says what it is. Without
+   * one the view opened on five unexplained rows: a reader can guess they are the
+   * recent ones, but nothing on screen said so, while every group in the root
+   * announces itself with a header. A filtered list gets no header — what those
+   * rows are is the word the reader just typed.
+   */
+  const artifactSlotRows = useMemo(
+    () => (artifactRows ?? [])
+      .slice(0, ARTIFACTS_ROW_LIMIT)
+      .map(row => (artifactsQuery ? row : { ...row, groupLabel: i18nT('apps.commandBar.group_recent') })),
+    [artifactRows, artifactsQuery],
+  )
+
+  /**
+   * Folders view — the same two states the sessions view has, from ONE engine, for
+   * the reason the artifacts view has one.
+   *
+   * The provider answers an empty query with every folder in the order the sidebar
+   * draws them, so the listing the view lands on and the filtered list a query
+   * produces are the same call with a different argument. There is deliberately no
+   * {@link SESSIONS_MIN_CHARS} or {@link ARTIFACTS_MIN_CHARS} equivalent: the corpus
+   * is the folder list already cached under `['chat-folders']`, so one character
+   * costs a local filter rather than a round trip, and a view that refused to narrow
+   * on one character would make the shortest names the hardest to reach. There is no
+   * row cap either, for the same reason the sidebar draws every folder: the count is
+   * the user's own filing, not a corpus that grows on its own.
+   *
+   * `enabled` on the scope is what keeps the root request-free. Entering the view is
+   * the activation event that may pay for one folder fetch on a cold cache — the
+   * same bargain the two views above make.
+   */
+  const folderQuery = scope === 'folders' ? debounced.trim() : ''
+  const {
+    data: folderRows,
+    isFetching: foldersFetching,
+    isError: foldersError,
+    error: foldersSearchError,
+    refetch: refetchFolders,
+  } = useQuery({
+    queryKey: ['command-bar', 'folders', folderQuery],
+    queryFn: () => Promise.resolve(folders.search(folderQuery)) as Promise<Result[]>,
+    enabled: scope === 'folders',
     staleTime: 15_000,
   })
 
@@ -939,6 +1345,34 @@ export default function CommandBarOverlay({
       }
       return out
     }
+    if (scope === 'artifacts') {
+      const out: Slot[] = artifactSlotRows.map(row => ({ key: row.id, tag: 'result' as const, row }))
+      if (artifactsError) {
+        out.push({ key: 'slot:retry', tag: 'retry-artifacts' })
+      } else if (!artifactsFetching && out.length === 0 && artifactsQuery) {
+        // A name that matched nothing still has somewhere to go — back to the
+        // listing — so the view never bottoms out with nothing selectable. Gated on
+        // there BEING a query: an instance with no artifacts at all has no listing
+        // to return to, and offering one would be a row that does nothing.
+        out.push({ key: 'slot:clear-query', tag: 'clear-query' })
+      }
+      return out
+    }
+    if (scope === 'folders') {
+      const out: Slot[] = (folderRows ?? []).map(row => ({ key: row.id, tag: 'result' as const, row }))
+      // The same two dead ends the views above have, told apart the same way: a
+      // folder list that could not be read is a failure to retry, an empty result for
+      // a query the user typed is a filter to drop. Both are ROWS so the keyboard can
+      // reach them without leaving the list. The drop row is gated on there BEING a
+      // query for the same reason it is above — a reader with no folders at all has no
+      // listing to return to.
+      if (foldersError) {
+        out.push({ key: 'slot:retry', tag: 'retry-folders' })
+      } else if (!foldersFetching && out.length === 0 && folderQuery) {
+        out.push({ key: 'slot:clear-query', tag: 'clear-query-folders' })
+      }
+      return out
+    }
     const out: Slot[] = ranked.map(row => ({ key: row.id, tag: 'root' as const, row }))
     if (query.trim().length > 0) {
       // The agent goes FIRST among the tail rows. Every other surface in this
@@ -947,6 +1381,19 @@ export default function CommandBarOverlay({
       // the general case, and the command list above it is the shortcut layer.
       out.push({ key: ASK_SLOT_KEY, tag: 'ask' })
       out.push({ key: 'slot:fallback', tag: 'fallback' })
+      // Typed text that is an ARTIFACT's name matched nothing above it: the root
+      // ranks launcher rows on their own vocabulary, so "Q3 Revenue Chart" reaches
+      // the artifacts view only by first typing a word like "artifact". This row is
+      // the same way out the sessions corpus already had. Placed after it rather
+      // than before so the row the sessions fallback has always occupied does not
+      // move under a reader who navigates by position.
+      out.push({ key: 'slot:fallback-artifacts', tag: 'fallback-artifacts' })
+      // And the same way out for the folders corpus, for the same reason: the root
+      // holds ONE row per corpus, so a typed folder name would otherwise reach
+      // nothing until the reader thought to enter the view first and retype it. Last
+      // of the three because a typed word is a session title or an artifact name far
+      // more often than a folder name.
+      out.push({ key: 'slot:fallback-folders', tag: 'fallback-folders' })
       // The recovery row exists for the dead end — a typed query that matched
       // nothing — not for every keystroke. Riding the fallback's own condition put a
       // row about switching the feature off under every successful search, and
@@ -954,7 +1401,7 @@ export default function CommandBarOverlay({
       if (ranked.length === 0) out.push({ key: 'slot:recovery', tag: 'recovery' })
     }
     return out
-  }, [argCommand, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed])
+  }, [argCommand, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed, artifactSlotRows, artifactsError, artifactsFetching, artifactsQuery, folderQuery, folderRows, foldersError, foldersFetching])
 
   const rowCount = slots.length
   /**
@@ -966,7 +1413,10 @@ export default function CommandBarOverlay({
    * landed.
    */
   const scopeLoading =
-    scope === 'sessions' && rowCount === 0 && (isFetching || (listingArmed && recentRows === undefined))
+    rowCount === 0 &&
+    ((scope === 'sessions' && (isFetching || (listingArmed && recentRows === undefined))) ||
+      (scope === 'artifacts' && (artifactsFetching || artifactRows === undefined)) ||
+      (scope === 'folders' && (foldersFetching || folderRows === undefined)))
 
   useEffect(() => {
     if (selected >= rowCount) setSelected(Math.max(0, rowCount - 1))
@@ -986,6 +1436,12 @@ export default function CommandBarOverlay({
           return
         case 'fallback':
           enterScope('sessions', query)
+          return
+        case 'fallback-artifacts':
+          enterScope('artifacts', query)
+          return
+        case 'fallback-folders':
+          enterScope('folders', query)
           return
         case 'ask': {
           // Stops at a FILLED composer rather than sending: the user wrote this
@@ -1007,7 +1463,14 @@ export default function CommandBarOverlay({
         case 'retry':
           void refetchSessions()
           return
+        case 'retry-artifacts':
+          void refetchArtifacts()
+          return
+        case 'retry-folders':
+          void refetchFolders()
+          return
         case 'clear-query':
+        case 'clear-query-folders':
           // Emptying the query is what re-arms the listing; the debounced copy has to
           // go with it or the view stays on the failed search for one more tick.
           setQuery('')
@@ -1017,8 +1480,69 @@ export default function CommandBarOverlay({
           return
       }
     },
-    [activateRoot, enterScope, navigate, onClose, pendingRow, query, refetchSessions, seedNewSession, slots],
+    [activateRoot, enterScope, navigate, onClose, pendingRow, query, refetchArtifacts, refetchFolders, refetchSessions, seedNewSession, slots],
   )
+
+  /**
+   * Put the selected row's address on the clipboard.
+   *
+   * Returns whether the gesture was CLAIMED, so the key handler can decline ⌘C in the
+   * one state where the bar has no row to answer with and let the browser's own copy
+   * run instead.
+   *
+   * The address itself is resolved, never stored per row: `resolveCopyTarget` reads
+   * what the row already says about where it points. That is the whole reason this is
+   * a layer rather than a command -- a launcher that lists sessions, artifacts, pages
+   * and settings can copy all four without any of the four knowing about copying, and
+   * the next corpus added to the bar arrives copyable.
+   */
+  const copyTarget = useMemo(() => {
+    const slot = slots[Math.min(selected, Math.max(0, slots.length - 1))]
+    if (!slot) return null
+    const row: CopyableRow | null =
+      slot.tag === 'root' ? rootRowCopyable(slot.row) : slot.tag === 'result' ? slot.row : null
+    if (!row) return null
+    return resolveCopyTarget(row, {
+      origin: window.location.origin,
+      // The chat surface's own copy button builds the session link with this, and one
+      // builder is the point: two would drift into two different links for one session.
+      sessionLink: buildShareableUrl,
+    })
+  }, [selected, slots])
+
+  const copySelected = useCallback(() => {
+    if (slots.length === 0) return false
+    if (!copyTarget) {
+      // Claimed anyway, and answered. A launcher row is a thing the reader pressed a
+      // key at, so the honest reply to "copy this" is that this one has no address --
+      // silence would read as a copy that worked.
+      setCopyError(null)
+      setCopyNotice({ text: i18nT('apps.commandBar.copy_nothing') })
+      return true
+    }
+    setCopyNotice(null)
+    setCopyError(null)
+    void copyToClipboard(copyTarget).then(ok => {
+      if (!ok) {
+        setCopyError({ text: i18nT('apps.commandBar.copy_failed'), what: copyTarget })
+        return
+      }
+      // The address travels with the confirmation. "Copied" alone left the reader to
+      // find out WHICH address on paste, and the two are genuinely different things: a
+      // deployed artifact yields its public URL where every other row yields a link
+      // into this dashboard.
+      setCopyNotice({ text: i18nT('apps.commandBar.copied'), what: copyTarget })
+    })
+    return true
+  }, [copyTarget, slots.length])
+
+  // The outcome describes ONE row's copy, so it must not outlive the reader's attention
+  // on that row: a "Copied" line still sitting there after they arrow somewhere else
+  // reads as a claim about the row they arrived at.
+  useEffect(() => {
+    setCopyNotice(null)
+    setCopyError(null)
+  }, [selected, query, scope])
 
   /**
    * Enter in the argument state: check the value, then hand the command to a session.
@@ -1127,6 +1651,25 @@ export default function CommandBarOverlay({
           return
         }
         activateIndex(selected)
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.key === 'c' || e.key === 'C')
+      ) {
+        // The launcher's copy gesture, on the chord every other application already
+        // uses for copying, which is why it needs no affordance to teach.
+        //
+        // Declined in two states rather than claimed unconditionally. The input holds
+        // focus the entire time the bar is open, so a reader who SELECTED part of what
+        // they typed means that selection, and taking ⌘C from it would make this field
+        // behave unlike every other text box on the machine. And the argument state
+        // lists no rows at all -- what is on screen there is the value they are
+        // pasting in, which is theirs for the same reason.
+        const input = e.currentTarget
+        const selecting = input.selectionStart !== null && input.selectionStart !== input.selectionEnd
+        if (selecting || argCommand) return
+        if (copySelected()) e.preventDefault()
       } else if (e.key === 'Backspace' && query === '' && (scope || argCommand)) {
         // Leaving a scope is Backspace on an empty input — the same gesture that
         // deletes a character, so it needs no separate key to learn. An argument
@@ -1143,6 +1686,7 @@ export default function CommandBarOverlay({
     [
       activateIndex,
       argCommand,
+      copySelected,
       exitArgumentState,
       ime,
       query,
@@ -1165,7 +1709,60 @@ export default function CommandBarOverlay({
     ? argCommand.title
     : scope === 'sessions'
       ? i18nT('apps.commandBar.cmd_search_sessions')
+      : scope === 'artifacts'
+        ? i18nT('apps.commandBar.cmd_search_artifacts')
+        : scope === 'folders'
+          ? i18nT('apps.commandBar.cmd_search_folders')
+          : ''
+  /**
+   * The failure this change is responsible for, and the only one that gets a notice.
+   *
+   * Each scope's retry ROW is pushed by that scope's own branch in the slot builder
+   * above, so there is no shared failure flag to key this on: the notice belongs to
+   * the artifacts scope alone.
+   */
+  const artifactsFailed = scope === 'artifacts' && !!artifactsError
+  const foldersFailed = scope === 'folders' && !!foldersError
+  const searchError =
+    scope === 'sessions'
+      ? sessionsSearchError
+      : scope === 'artifacts'
+        ? artifactsSearchError
+        : scope === 'folders'
+          ? foldersSearchError
+          : undefined
+  /**
+   * What the failure SAYS, for the scope this change adds.
+   *
+   * ARTIFACTS AND FOLDERS. The sessions scope keeps the failure row it already had:
+   * its text was the static `search_failed`, never a backend string, so nothing about
+   * it misled the reader whose report motivated the wording here -- that reader met
+   * this view. Reshaping it would have been this PR changing a surface it does not
+   * own, on a symmetry argument.
+   *
+   * The concrete rejection is deliberately NOT rendered. Reading it off the error
+   * yielded backend wording like "gateway unavailable", which a first-time reader
+   * read as the "Run a local gateway" setting and then would not touch -- at the
+   * moment of failure that is a cause they cannot interpret next to a fix they are
+   * afraid of. Its structured journal report is resolved from the raw rejection
+   * and passed directly to `ErrorNotice` below rather than recovered from the
+   * friendly rendered sentence. That preserves the endpoint, status, and backend
+   * code without exposing backend wording in visible text, a tooltip, or an aria
+   * label.
+   */
+  const searchFailedText = artifactsFailed
+    ? i18nT('apps.commandBar.artifact_search_failed')
+    : foldersFailed
+      ? i18nT('apps.commandBar.search_failed')
       : ''
+  /**
+   * How many name matches the cap is hiding.
+   *
+   * The endpoint returns every match, so this count is the real remainder rather
+   * than a page boundary. Without it the cap was the one silent state left in the
+   * view: a name matching thirty artifacts drew twelve rows and said nothing.
+   */
+  const artifactOverflow = Math.max(0, (artifactRows?.length ?? 0) - ARTIFACTS_ROW_LIMIT)
   const listId = 'command-bar-list'
   const rowId = (i: number) => `command-bar-row-${i}`
 
@@ -1179,7 +1776,7 @@ export default function CommandBarOverlay({
    */
   const slotParts = (
     slot: Slot,
-  ): { icon: ReactNode; title: ReactNode; subtitle?: ReactNode; accessory?: ReactNode; arrow?: boolean; dim?: boolean } => {
+  ): { icon: ReactNode; title: ReactNode; subtitle?: ReactNode; accessory?: ReactNode; arrow?: boolean; dim?: boolean; wrap?: boolean } => {
     switch (slot.tag) {
       case 'root': {
         const row = slot.row
@@ -1272,15 +1869,83 @@ export default function CommandBarOverlay({
           arrow: true,
           dim: true,
         }
+      case 'fallback-artifacts':
+        // Named with the query so the row states which text it carries, the same way
+        // the sessions row above it does. Both are dim: they are ways out of the
+        // root, not results, and a reader scanning for a match should read past them.
+        //
+        // Its subtitle is its OWN, not the view row's. It needs a gloss at all because
+        // "artifact" is our word and a reader who arrives here by typing a name has
+        // not necessarily read the view row. But when the typed word also matches the
+        // command ("widget", "saved"), both rows are on screen at once, and sharing
+        // one subtitle made them read as duplicates -- a reader could not tell how
+        // their results would differ. So this one names what it does with the text
+        // that is already typed, while the view row still describes the corpus.
+        return {
+          icon: <Package size={13} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.fallback_artifacts', { query }),
+          subtitle: i18nT('apps.commandBar.fallback_artifacts_sub'),
+          arrow: true,
+          dim: true,
+        }
+      case 'fallback-folders':
+        // Named with the query, dim, and arrowed like the two rows above it, for the
+        // same reasons. No subtitle: "folder" is the reader's own word for the thing
+        // the sidebar already shows them, so there is nothing to gloss.
+        return {
+          icon: <Folder size={14} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.fallback_folders', { query }),
+          arrow: true,
+          dim: true,
+        }
       case 'recovery':
-        // Sessions is the only corpus this surface reaches. Naming the ones it does
-        // not -- at the moment the user is looking for them -- is what keeps a typed
-        // artifact name from being a silent dead end.
+        // Naming the corpora this surface does NOT reach -- at the moment the user is
+        // looking for them -- is what keeps a typed knowledge or skill name from being
+        // a silent dead end. Artifacts is no longer among them: it has a view of its
+        // own now, so the string stopped listing it.
+        //
+        // The second clause names what CLICKING does, not what the user must switch
+        // off, and names it without implying a transaction. Three readers in sequence
+        // failed it. "disable Command Bar" described the end state, so the row itself
+        // read as the thing that would disable their search box. Naming the App Store
+        // fixed that and introduced a cost: "App Store sounds like it might want me to
+        // install or buy something." The destination is neither -- it is AppDetailPage
+        // at `/apps/detail/command-bar`, this app's OWN page under Apps, carrying its
+        // Enabled switch. So the row names that section. Wording that blocks the users
+        // a row exists for is not a smaller bug than a broken link.
+        //
+        // What is NOT solvable here: the same reader did not know what "Command Bar"
+        // is. They are inside it. A row cannot teach the name of the app it lives in,
+        // and the instruction is unactionable without naming the app to turn off.
+        //
+        // This is the one row that WRAPS. Every other row is a short label, but this
+        // one is a sentence, and a sentence truncated mid-clause loses exactly the
+        // half that explains itself, so the row is allowed two lines to finish. The
+        // capture harness measures that: it asserts this row renders with no ellipsis
+        // and that the clamp still engages when the text is longer than two lines.
         return {
           icon: <Package size={13} className="lucide-inline" />,
           title: i18nT('apps.commandBar.other_search_hint'),
           arrow: true,
           dim: true,
+          wrap: true,
+        }
+      case 'retry-artifacts':
+        // Separate tags keep the sessions row byte-identical to main, so this change
+        // does not reshape a surface it does not own.
+        return {
+          icon: <RotateCcw size={14} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.retry'),
+        }
+      case 'retry-folders':
+        // Plain Retry, like the artifacts row above: WHAT failed is said by the
+        // `ErrorNotice` above the list, which is where an error surfaced to the user
+        // belongs (AUTOSDE `errors-use-error-notice`). Its own tag keeps the sessions
+        // row below byte-identical to main, whose hand-written text this change does
+        // not own and does not touch.
+        return {
+          icon: <RotateCcw size={14} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.retry'),
         }
       case 'retry':
         return {
@@ -1293,7 +1958,19 @@ export default function CommandBarOverlay({
         // to read; as a row it is one thing to do.
         return {
           icon: <Clock size={14} className="lucide-inline" />,
-          title: i18nT('apps.commandBar.no_match_show_recent', { query: scopedQuery }),
+          title:
+            scope === 'artifacts'
+              ? i18nT('apps.commandBar.no_artifact_match_show_recent', { query: artifactsQuery })
+              : i18nT('apps.commandBar.no_match_show_recent', { query: scopedQuery }),
+          dim: true,
+        }
+      case 'clear-query-folders':
+        // The same row for the folders view, with the folder glyph rather than the
+        // clock: what it returns to is the whole list in sidebar order, which has no
+        // recency for a clock to stand for.
+        return {
+          icon: <Folder size={14} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.no_match_show_all_folders', { query: folderQuery }),
           dim: true,
         }
     }
@@ -1305,7 +1982,7 @@ export default function CommandBarOverlay({
       <>
         <span className="shrink-0 w-4 flex justify-center text-muted">{parts.icon}</span>
         <span className="flex-1 min-w-0">
-          <span className={`block truncate${parts.dim ? ' text-muted' : ''}`}>{parts.title}</span>
+          <span className={`block ${parts.wrap ? 'line-clamp-2' : 'truncate'}${parts.dim ? ' text-muted' : ''}`}>{parts.title}</span>
           {parts.subtitle && (
             <span className="block truncate text-[11px] text-muted">{parts.subtitle}</span>
           )}
@@ -1334,7 +2011,7 @@ export default function CommandBarOverlay({
 
   return createPortal(
     <div
-      className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-sm animate-rise"
+      className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-xs animate-rise"
       style={{ top: vv.offsetTop, height: vv.height }}
       // The backdrop is a click target for dismissal, not a control: the dialog role
       // belongs to the card below, and screen readers should skip this layer.
@@ -1415,7 +2092,7 @@ export default function CommandBarOverlay({
                 // where you are, what follows is what you type. The focus ring stays,
                 // and unlike the field's it only ever paints on Tab, so it is never the
                 // permanent box.
-                className="shrink-0 max-w-[40%] truncate text-[13px] text-text bg-transparent border-none p-0 cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+                className="shrink-0 max-w-[40%] truncate text-[13px] text-text bg-transparent border-none p-0 cursor-pointer focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
               >
                 {navName}
               </button>
@@ -1443,9 +2120,13 @@ export default function CommandBarOverlay({
             placeholder={
               argCommand
                 ? argCommand.argument?.placeholder || i18nT('apps.commandBar.placeholder_argument')
-                : scope
-                  ? i18nT('apps.commandBar.placeholder_sessions')
-                  : i18nT('apps.commandBar.placeholder')
+                : scope === 'artifacts'
+                  ? i18nT('apps.commandBar.placeholder_artifacts')
+                  : scope === 'folders'
+                    ? i18nT('apps.commandBar.placeholder_folders')
+                    : scope
+                      ? i18nT('apps.commandBar.placeholder_sessions')
+                      : i18nT('apps.commandBar.placeholder')
             }
             aria-label={i18nT('apps.commandBar.title')}
             // Selection stays on the input and is announced through
@@ -1471,7 +2152,7 @@ export default function CommandBarOverlay({
             // around the one element that is ALWAYS focused read as the loudest thing
             // on a surface whose entire visual weight is supposed to sit on the
             // selected row.
-            className={`flex-1 min-w-0 bg-transparent border-none outline-none rounded text-[13px] text-text placeholder:text-muted${
+            className={`flex-1 min-w-0 bg-transparent border-none outline-hidden rounded text-[13px] text-text placeholder:text-muted${
               rowCount === 0 ? ' focus-visible:ring-1 focus-visible:ring-border-strong' : ''
             }`}
           />
@@ -1482,6 +2163,23 @@ export default function CommandBarOverlay({
         {actionError && (
           <div className="px-3 py-2 border-t border-border">
             <ErrorNotice message={actionError} variant="inline" />
+          </div>
+        )}
+
+        {/* ARTIFACTS AND FOLDERS: the sessions scope keeps the failure row it
+            already had.
+            No hand-off: the combobox query is unsaved local state, and the
+            hand-off navigation would unmount the command bar and discard it.
+            Keep the notice outside the listbox so ErrorNotice can never put an
+            interactive control inside an option; Retry remains a separate option
+            on the combobox's Arrow/Enter path. */}
+        {(artifactsFailed || foldersFailed) && (
+          <div className="px-3 py-2 border-b border-border">
+            <ErrorNotice
+              message={searchFailedText}
+              report={findReport(errMessage(searchError))}
+              variant="inline"
+            />
           </div>
         )}
 
@@ -1557,7 +2255,7 @@ export default function CommandBarOverlay({
                       // halt on inert text.
                       // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
                       tabIndex={0}
-                      className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-hover/40 p-2 text-[11px] text-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-hover/40 p-2 text-[11px] text-text focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
                     >
                       {resolvePrompt(argCommand, query)}
                     </pre>
@@ -1578,8 +2276,25 @@ export default function CommandBarOverlay({
             ) : (
               // Every other state now carries rows of its own, so this is the one
               // case left: a corpus that is genuinely empty.
+              //
+              // In the artifacts view that is the ONLY way to reach this branch, and
+              // the copy depends on it: a query that matched nothing pushes the
+              // clear-query row, a failure pushes the retry row, and a load in
+              // flight renders the skeleton above. So an empty list here means the
+              // user has saved nothing yet, and the string says that instead of
+              // reporting a failed match against a query they never typed.
+              //
+              // The folders view reaches it the same way and for the same reason, so
+              // it gets the same treatment: a reader with no folders is told they
+              // have none, not that no sessions matched.
               <div role="status" className="px-3 py-6 text-center text-[12px] text-muted">
-                {scope ? i18nT('apps.commandBar.no_sessions') : i18nT('apps.commandBar.no_matches')}
+                {scope === 'artifacts'
+                  ? i18nT('apps.commandBar.no_artifacts_yet')
+                  : scope === 'folders'
+                    ? i18nT('apps.commandBar.no_folders_yet')
+                    : scope
+                      ? i18nT('apps.commandBar.no_sessions')
+                      : i18nT('apps.commandBar.no_matches')}
               </div>
             )
           ) : (
@@ -1611,6 +2326,15 @@ export default function CommandBarOverlay({
           )}
         </div>
 
+        {/* What the row cap is hiding. Outside the listbox on purpose: it is a fact
+            about the list, not a row in it, and as an option it would be the one
+            Enter did nothing to. Only in the artifacts view, where the cap exists. */}
+        {scope === 'artifacts' && artifactOverflow > 0 && (
+          <div className="px-3 py-1.5 border-t border-border text-[11px] text-muted">
+            {i18nT('apps.commandBar.artifacts_more_keep_typing', { count: artifactOverflow })}
+          </div>
+        )}
+
         {/* What Enter does, named. The bar's promise is that Enter does something
             specific to the highlighted row, and nothing said what: the row carried
             its TYPE ("Command", "App") while the verb was left to be inferred from
@@ -1619,10 +2343,78 @@ export default function CommandBarOverlay({
             a keycap — the panel's weight belongs on the selected row. */}
         {rowCount > 0 && (
           <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-t border-border text-[11px] text-muted">
-            <span className="truncate">{actionLabel(slots[Math.min(selected, rowCount - 1)])}</span>
-            <span className="shrink-0 px-1 rounded border border-border leading-4">{ENTER_KEY}</span>
+            {copyNotice ? (
+              /* The copy outcome takes the footer's OWN line rather than a strip of its
+                 own. The panel is height-capped, so any strip added anywhere shortens
+                 the list: a row at the bottom vanished on every copy and a reader could
+                 not tell whether it had scrolled away or been pushed out. One line in,
+                 one line out, and nothing else moves. Affordable because the outcome is
+                 transient -- it clears on the next keystroke, which is exactly when the
+                 Enter hint starts mattering again.
+
+                 `role="status"` on the WRAPPER, so the address is announced together
+                 with the word: a reader who cannot see the line still learns which of
+                 two possible addresses landed. */
+              <span role="status" className="flex items-center gap-1.5 min-w-0 flex-1">
+                <span className={`shrink-0 ${copyNotice.what ? 'text-accent' : 'text-warn'}`}>
+                  {copyNotice.text}
+                </span>
+                {copyNotice.what && (
+                  <span className="min-w-0 truncate" title={copyNotice.what}>
+                    {copyNotice.what}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <>
+                <span className="truncate">{actionLabel(slots[Math.min(selected, rowCount - 1)])}</span>
+                <span className="shrink-0 px-1 rounded border border-border leading-4">
+                  {ENTER_KEY}
+                </span>
+                {/* The copy chord, named only while the selected row HAS an address. A
+                    gesture with no visible counterpart is one most readers never learn
+                    exists, and this footer is already where the surface says what a key
+                    does to the highlighted row. Withheld rather than greyed on a row
+                    with no address: the hint doubles as the answer to "can this one be
+                    copied", which a permanently-present label could not give. */}
+                {copyTarget && (
+                  <>
+                    <span className="shrink-0">{i18nT('apps.commandBar.copy_hint')}</span>
+                    <span className="shrink-0 px-1 rounded border border-border leading-4">
+                      {COPY_KEY}
+                    </span>
+                  </>
+                )}
+              </>
+            )}
           </div>
         )}
+        {/* BELOW the footer, not above the list, and that placement is the point: a
+            notice mounted over the rows pushed the whole list down on every copy, and a
+            reader watching the row they had just copied saw it move and could not tell
+            whether it had scrolled away or gone. At the bottom of the panel a copy
+            changes nothing about where anything else sits.
+
+            A clipboard write that did not land is an ERROR, so it goes through the
+            product's error surface rather than the status line below it.
+            No hand-off: the query typed into the bar is unsaved -- the navigation would
+            close the bar and take it along. */}
+        {copyError && (
+          <div className="px-3 py-2 border-t border-border">
+            <ErrorNotice message={copyError.text} variant="inline" />
+            {/* The address the write did not land, in FULL and selectable. The message
+                above names a remedy -- select the text and copy it yourself -- and on
+                this path nothing else on screen holds that text. Not truncated, for the
+                same reason: a reader who selects half an address gets half a link. */}
+            <div
+              className="mt-1 text-[12px] text-muted select-all"
+              style={{ overflowWrap: 'anywhere' }}
+            >
+              {copyError.what}
+            </div>
+          </div>
+        )}
+
         {/* The argument state has no row to name an action for, and it is the state
             that most needs one: the verb here is "approve" or "merge", and it fires on
             the next Enter. The spinner lives here for the same reason -- the work is

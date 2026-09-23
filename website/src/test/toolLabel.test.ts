@@ -19,7 +19,7 @@ describe('deriveShellSummary', () => {
 
   it('reads past a bookkeeping first line in a multi-line script', () => {
     const label = 'Running: export PATH=/usr/local/bin\ndocker-compose up --build | tee /tmp/build.log'
-    expect(deriveShellSummary(label)).toBe('Running: docker-compose, tee')
+    expect(deriveShellSummary(label)).toBe('Running: docker-compose up, tee')
   })
 
   it('stops parsing at a heredoc so body lines contribute no binaries', () => {
@@ -33,11 +33,39 @@ describe('deriveShellSummary', () => {
   })
 
   it('does not treat 2>&1 as a segment or a target', () => {
-    expect(deriveShellSummary('Running: make build 2>&1')).toBe('Running: make')
+    expect(deriveShellSummary('Running: make build 2>&1')).toBe('Running: make build')
   })
 
   it('skips env assignments before the binary', () => {
     expect(deriveShellSummary('Running: FOO=1 BAR=2 python3 -m pytest')).toBe('Running: python3')
+  })
+
+  it('names the script behind an interpreter, with its subcommand', () => {
+    expect(deriveShellSummary('Running: python3 ledger.py ticket-log --id P1 --type root-cause')).toBe(
+      'Running: ledger.py ticket-log',
+    )
+    // Versioned interpreter, and inline code keeps the interpreter name.
+    expect(deriveShellSummary('Running: python3.12 tool.py')).toBe('Running: tool.py')
+    expect(deriveShellSummary("Running: python3 -c 'print(1)'")).toBe('Running: python3')
+  })
+
+  it('steps over variable-reference and wrapper heads', () => {
+    // The observed oncall shape: interpreter behind a shell variable, after a
+    // cd — the readable name is the script and its subcommand.
+    const cmd = 'Running: PY=/app/bin/python3; cd ~/backend && $PY ledger.py ticket-log --id X'
+    expect(deriveShellSummary(cmd)).toBe('Running: ledger.py ticket-log')
+    expect(deriveShellSummary('Running: sudo make install')).toBe('Running: make install')
+  })
+
+  it('attaches the subcommand only to the first meaningful name', () => {
+    expect(deriveShellSummary('Running: git fetch && git rebase upstream/main')).toBe('Running: git fetch')
+    expect(deriveShellSummary('Running: cd /repo && npm run build | tee log')).toBe('Running: npm run, tee')
+  })
+
+  it('attaches a subcommand only to tools and scripts that take one', () => {
+    // A coreutil's first bare word is a file operand, not an action.
+    expect(deriveShellSummary('Running: cat notes && wc -l notes')).toBe('Running: cat, wc')
+    expect(deriveShellSummary('Running: ./deploy.sh staging --dry-run')).toBe('Running: deploy.sh staging')
   })
 
   it('names the binaries inside a loop, not the loop keywords', () => {

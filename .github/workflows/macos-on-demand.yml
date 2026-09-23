@@ -84,7 +84,7 @@ jobs:
   # absence, so none of these switches can put a macOS queue in front of a merge.
   decide:
     name: Decide whether the macOS suite runs
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -113,6 +113,12 @@ jobs:
               - "src/kiro_crew/mcp_gateway/socketsec.py"
               - "src/kiro_crew/peer_resolve.py"
               - "src/kiro_crew/platform_compat.py"
+              # Descriptor identity and containment depend on native APFS spelling.
+              - "src/kiro_crew/hooks.py"
+              - "src/kiro_crew/pinned_fs.py"
+              - "src/kiro_crew/dashboard/handlers/files.py"
+              - "test/test_safe_read_file_bytes_descriptor.py"
+              - "test/test_theme_install.py"
               # The singleton home lock: its durable anchor is POSIX-only, and
               # its guard tests skip themselves where a directory cannot be
               # locked, so a darwin regression would read as green without this
@@ -133,6 +139,12 @@ jobs:
               - "test/test_socketsec.py"
               - "test/test_member_memory_filesystem.py"
               - "test/test_terminal_handler.py"
+              # Native lifecycle contracts must not depend on the SHA sample.
+              - "src/kiro_crew/session_pid.py"
+              - "src/kiro_crew/session_lifecycle.py"
+              - "src/kiro_crew/session_cleanup.py"
+              - "src/kiro_crew/session_pool.py"
+              - "test/test_darwin_native_provider_reap.py"
               - "test/macos-expected-failures.txt"
               - "test/macos-collect-ignore.txt"
               # This lane and the workflow it calls.

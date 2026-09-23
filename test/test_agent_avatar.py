@@ -15,7 +15,6 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.appearance_packs import MAX_PACK_ID_LEN, safe_pack_id
 from kiro_crew.config.loader import (
@@ -205,7 +204,7 @@ class TestAvatarEndpoints:
 
     @pytest.fixture(autouse=True)
     def _owner_caller(self, monkeypatch):
-        patch_private_memory_supported(monkeypatch)
+        pass  # Member routing does not depend on OS isolation.
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
             lambda request: True,
@@ -1606,7 +1605,7 @@ class TestPackAvatarThroughTheEndpoints:
 
     @pytest.fixture(autouse=True)
     def _owner_caller(self, monkeypatch):
-        patch_private_memory_supported(monkeypatch)
+        pass  # Member routing does not depend on OS isolation.
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
             lambda request: True,

@@ -759,8 +759,23 @@ class TestConsentCoversOnlyTheGrantedDirectory:
 
         monkeypatch.setattr(skill_trust, "project_skill_traversal_supported", lambda: False)
 
-        def unsafe_realpath(*_args, **_kwargs):
-            raise AssertionError("unsupported project path was resolved")
+        # ``skill_trust.os.path`` IS the process-wide ``os.path`` module, so this
+        # patch is seen by every caller in the interpreter -- pytest's own tmpdir
+        # bookkeeping and any audit hook that canonicalises the paths it records
+        # included. A fake that raised for EVERY argument therefore blew up in
+        # code that had nothing to do with the property under test (the hygiene
+        # probe counted 11 hook failures per run and marked this test
+        # under-measured). Refuse only what the test is about: the project tree.
+        real_realpath = os.path.realpath
+        project_prefix = str(project)
+
+        def unsafe_realpath(path, *args, **kwargs):
+            resolved = os.fspath(path)
+            if isinstance(resolved, bytes):
+                resolved = os.fsdecode(resolved)
+            if resolved == project_prefix or resolved.startswith(project_prefix + os.sep):
+                raise AssertionError("unsupported project path was resolved")
+            return real_realpath(path, *args, **kwargs)
 
         monkeypatch.setattr(skill_trust.os.path, "realpath", unsafe_realpath)
         loader = SkillsLoader(skills_path=tmp_path / "home-skills", install_builtins=False)
@@ -1785,7 +1800,7 @@ class TestTrustEndpointAuthorization:
         monkeypatch.setattr(prompts, "_sel", lambda: audit)
         request = SimpleNamespace(get=lambda key, default=None: {"user": "owner"}.get(key, default))
 
-        assert prompts._deny_non_owner_skill_trust(request, "skill_trust_read") is None
+        assert prompts._deny_non_owner_skill_operation(request, "skill_trust_read") is None
         assert audit.log_api_access.call_args.kwargs == {
             "caller": "owner",
             "operation": "skill_trust_read",
@@ -2339,8 +2354,11 @@ class TestProjectSkillsIndexConfinement:
 
         context = loader.get_context(budget=budget, project_dir=project)
 
-        assert "CONFINED RELEASE BODY" in context
+        assert ("CONFINED RELEASE BODY" in context) is (budget is None)
         assert str(skill_file) not in context
+        assert "CONFINED RELEASE BODY" in (
+            loader.read_scoped_skill("release", project_dir=project) or ""
+        )
 
     def test_project_bodies_stop_at_the_skills_section_budget(self, project, tmp_path):
         """Many large confined bodies must not be accumulated before truncation."""

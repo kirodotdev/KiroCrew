@@ -90,7 +90,7 @@ export default function ConnectRepoModal({
         * (the role="dialog", the checkboxes, the text input). */}
       <div className="absolute inset-0 z-50 flex items-center justify-center p-3">
         <Clickable
-          className="absolute inset-0 bg-bg/50 backdrop-blur-sm"
+          className="absolute inset-0 bg-bg/50 backdrop-blur-xs"
           onClick={requestClose}
           aria-label={i18nT('apps.issueRadar.connectRepoModal.close_connect_dialog')}
         />
@@ -104,7 +104,7 @@ export default function ConnectRepoModal({
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.98 }}
           transition={{ duration: 0.18, ease: 'easeOut' }}
-          className={`relative border border-border rounded-[14px] bg-card flex flex-col items-center justify-between p-10 shadow-2xl outline-none transition-[width,height] duration-200 ease-out ${
+          className={`relative border border-border rounded-[14px] bg-card flex flex-col items-center justify-between p-10 shadow-2xl outline-hidden transition-[width,height] duration-200 ease-out ${
             expanded ? EXPANDED_CARD : COLLAPSED_CARD
           }`}
           onKeyDown={(e) => e.stopPropagation()}

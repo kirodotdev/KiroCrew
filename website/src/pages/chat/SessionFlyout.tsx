@@ -295,7 +295,7 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
               aria-disabled={!connected}
               title={label}
               onClick={() => { if (connected) onSwitch(slot.key) }}
-              className={`flex w-full items-center gap-2 rounded-md border-none bg-transparent px-2 py-1.5 text-left text-[13px] outline-none transition-colors ${
+              className={`flex w-full items-center gap-2 rounded-md border-none bg-transparent px-2 py-1.5 text-left text-[13px] outline-hidden transition-colors ${
                 isActive
                   ? '!bg-accent-subtle text-text-strong'
                   : connected

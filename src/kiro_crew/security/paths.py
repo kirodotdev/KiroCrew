@@ -34,6 +34,7 @@ prefix until the mount answers again.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import os
@@ -203,6 +204,12 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 # one leaf list means a new secret is added once and covered in both locations.
 _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 _CREW_SECRET_LEAVES: list[str] = [
+    # Gateway diagnostics, for the reason the sandbox mask gives: the rows carry
+    # frame labels, folded stacks and process detail, and the owner-gated read
+    # routes redact them on the way out while the files themselves do not. A file
+    # tool reading the directory would bypass that filter. Whole directory: the
+    # day files rotate by name.
+    "diag",
     ".env",
     # Owner-authored meetings edits are deliberately outside the meeting
     # directories agents write. They are returned verbatim to the owner and may
@@ -319,6 +326,16 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens all of it directly rather than through this gate, so spooling and
     # the notice pass keep working.
     "inbound-spool",
+    # The durable task queue (taskq/store.py): ``tasks/tasks.db`` plus its WAL
+    # and journal siblings. Every row is another session's accepted work --
+    # the task prompt, its parameters, its lease and generation -- and the
+    # store is the scheduler's authority: an agent that could write it could
+    # cancel or re-dispatch another session's task, or forge a claim. Whole
+    # DIRECTORY (SQLite writes ``-wal`` / ``-journal`` / ``-shm`` siblings).
+    # Every legitimate reader and writer is the GATEWAY process (the subagent
+    # manager, the runner adapters, ``/api/tasks``), which opens the path
+    # directly; the MCP tools reach the queue through ``/api/spawn``.
+    "tasks",
     # Per-session work ledgers (session_ledger.py). Not credentials, but each
     # directory is one session's private work state, and the ledger's whole
     # authorization model is "a session reaches only its OWN ledger" (the HTTP
@@ -338,8 +355,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # straight off disk, and a corrupted record reads as ABSENT to the store —
     # silent loss the conductor cannot see. No legitimate file-tool reader.
     "work-ledger",
-    # Every append-only per-unit ledger, crew and session alike (ledger/store.py).
-    # Not credentials, but the design's whole premise is that the ledger is the
+    # Every append-only per-unit crew log, crew and session alike (crew_log/store.py).
+    # Not credentials, but the design's whole premise is that the crew log is the
     # AUTHORITY and the context window only a cache: a conductor reads a unit's
     # history as fact instead of re-deriving it. An agent's auto-approved file
     # tools reaching this subtree would let it forge an entry attributed to the
@@ -349,10 +366,17 @@ _CREW_SECRET_LEAVES: list[str] = [
     # library, so they bind only callers who go through it; this entry is what
     # keeps a file tool from going around it, and the sandbox mask on the same
     # leaf is what keeps a spawned subprocess from going around BOTH. Named at the
-    # shared ``ledgers`` root so every unit kind is fenced by one entry — session
-    # ledgers included, which is why they do not live under the ``sessions``
+    # shared ``crew-log`` root so every unit kind is fenced by one entry — session
+    # crew logs included, which is why they do not live under the ``sessions``
     # transcript root. The store opens these paths directly rather than through
     # this gate, so nothing breaks.
+    "crew-log",
+    # The RETIRED root the same store used before it was renamed. Kept because this
+    # rename ships no migration: a machine that ran the old build with the feature
+    # flag on still has real entries under ``<home>/ledgers``, and dropping the leaf
+    # would un-fence them from the agent's file tools on upgrade. Nothing writes here
+    # any more, so the entry costs a retired name and refuses nothing legitimate --
+    # the same reasoning the retired browser leaves above are kept under.
     "ledgers",
     # The optional Playwright extension token. It removes the browser-side approval
     # click for an attach, so a process that could read it could attach to the
@@ -383,6 +407,25 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``workspace/`` was itself replaceable with one ``ln -s``, and the app opens the
     # path directly (as keystone writers must), so it would have followed the link.
     "trust",
+    # Retained V1 member-memory binding records. The leaf name says "bindings",
+    # but a binding FILE carries the RAW session key it binds: a record on disk
+    # holds ``{"version": 1, "session_key": <raw>, "memory_store": ...}`` under
+    # ``sessions/<digest>/`` and ``pids/``, so reading the directory hands over a
+    # usable key rather than a digest of one. Memory V2 writes no such record and
+    # migrates none, so an upgraded install keeps every one it already has and the
+    # READ side needs this floor rather than write protection alone.
+    #
+    # ``sandbox._CREW_CHILD_WITHHELD_LEAVES`` classifies the leaf as one no child
+    # may read; this entry is what makes that classification enforceable, because
+    # ``agent_sdk.tool_gate.adapter_hidden_credential_dirs`` projects THIS floor
+    # into an enforced adapter's OS mask rather than that list.
+    #
+    # The one legitimate reader, ``subagent_persistence.read_run_execution``,
+    # opens the path directly in the gateway -- the keystone-reader pattern every
+    # reader of a floor leaf uses -- so cold continuation of a retained V1 run is
+    # unaffected. Crew's own sandbox keeps the directory OS-readable through
+    # ``sandbox._CREW_READONLY_LEAVES``, which this entry does not touch: the
+    # reader it fences is the AGENT'S OWN FILE TOOLS.
     "member-memory-bindings",
     "security_events.jsonl",
     # Rotated SEL segments. sel.py closes the live log at a size cap and renames
@@ -458,6 +501,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Recovery is a re-import, but a prompt-injected agent corrupting user data
     # is the mainline threat these leaves exist for.
     "appearance-library",
+    # The chat_tag authorization store. Grant rows decide which tags an agent
+    # may self-apply, so agent file tools must neither read nor write them;
+    # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
+    # gateway opens the path.
+    "tag-grants",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
@@ -567,6 +615,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # and the ``kirocrew aws-consent`` CLI are the only writers and open the
     # path directly, not through this gate, so both keep working.
     "aws_service_consent.json",
+    # Recorded consent to send conversation state to the external decision
+    # provider (Jev). Same class of control as ``aws_service_consent.json``
+    # above: the record is what AUTHORIZES message text and skill descriptions
+    # to leave the machine, so an agent that could write it would consent on the
+    # owner's behalf to its own egress. The authenticated, browser-only dashboard
+    # ``/api/decisions/consent`` handler is the only writer and opens the path
+    # directly, not through this gate.
+    "decisions_consent.json",
     # Recorded consent to deliver a file whose contents the credential scanner
     # flagged. Same class of control as ``aws_service_consent.json`` above: the
     # record is what AUTHORIZES a flagged file past four independent content
@@ -579,6 +635,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     # writer and opens the path directly, not through this gate, so it keeps
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
+    "ssh_auth_sock_consent.json",
+    # The single-use step-up nonce that authorizes RECORDING a flagged-file
+    # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
+    # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level
+    # leaf rather than under ``trust/`` on purpose: ``trust/`` is sandbox-VISIBLE
+    # (it holds SEL append targets an in-sandbox MCP server writes), so a
+    # prompt-injected agent could FORGE a nonce there with a runtime-constructed
+    # shell path (the acknowledged evadable tier) and then drive the owner's
+    # loopback browser to POST that chosen nonce -- recording a grant with no
+    # human present. This leaf has NO in-sandbox reader (the gateway writes it on
+    # arm, the host ``kirocrew file-delivery approve`` reads it), so it is also
+    # bind-masked in ``sandbox._CREW_HIDDEN_LEAVES``; masking is what actually
+    # closes the forge path, since the text/argv file gate alone does not stop a
+    # runtime-constructed shell write.
+    "file-delivery-consent-pending",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
@@ -653,6 +724,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # gateway's own writers open these paths directly and do NOT route through this
     # gate, so legitimate startup/spawn writes still work.
     "run",
+    # Pi gate artifacts have asymmetric readers. The OS mask deliberately excludes
+    # this directory from an enforced harness's credential mask so its child can exec
+    # the launcher and read the sealed extension. This floor still keeps the agent's
+    # own file tools out; the controls cover different readers rather than cancelling.
+    "pi-gate",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
     # unreadable to the agent through any Kiro Crew-mediated channel.
@@ -699,32 +775,20 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``identity_stores`` and opens it directly, not through this gate.
     AUTH_SQLITE_DB,
     *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
-    # Named memory stores. Each subdirectory is ONE crew's private memory silo --
-    # its markdown tree, its FTS index and its vector-store SQLite file -- and the
-    # whole point of a named store is that a crew reaches only its own. Agent file
-    # tools run as the same UID as every store on disk, so owner-only modes decide
-    # nothing here: without this entry any crew's agent could read another crew's
-    # preferences and lessons straight off disk, or rewrite them, which is the
-    # boundary the split exists to draw. Read AND write, because reading another
-    # crew's memory is the primary harm and writing it is steering that crew's
-    # future turns.
-    #
-    # A DIRECTORY entry, for the reason ``routing`` and ``webhooks`` above are:
-    # markdown files are published through ``atomic_write``'s ``mkstemp`` sibling,
-    # so fencing final names only would leave a writable path to the same bytes
-    # under a random temp name.
-    #
-    # DELIBERATE ASYMMETRY, do not "tidy" it: the DEFAULT store's own ``memory.db``
-    # and ``workspace/memory/`` stay readable, because that is the agent's own
-    # memory and reading it is the product working. Fencing them would be a
-    # default-path behaviour change, which the coexistence constraint forbids. So
-    # ``is_sensitive_path(<home>/memory.db)`` is False and
-    # ``is_sensitive_path(<home>/memory_stores/work/memory.db)`` is True, on
-    # purpose. Full reasoning: docs/system-specs/modules/security.md.
-    #
-    # Every legitimate reader opens a store path DIRECTLY rather than through this
-    # gate -- the established keystone-reader pattern -- so the memory subsystem is
-    # unaffected.
+    # Published crew webview RECORDS (agent_panel.py). Fenced because the record
+    # is an OWNERSHIP claim the store reads back to refuse a colliding write, and
+    # because it is the REDACTED copy of untrusted text: a direct write would
+    # forge another crew's panel past both the ownership check and the redactors
+    # in one step, and the drawer would render the result. The sandbox masks the
+    # same leaf (sandbox._CREW_HIDDEN_LEAVES) so a runtime-constructed path inside
+    # a sandboxed command cannot reach around this gate either.
+    "crew-panels",
+    # Managed memory uses bound tools. This directory guard keeps ordinary raw
+    # file operations away from DB/WAL/SHM and manual context publication files;
+    # glob-based project guidance skips it. It is a best-effort path guard, not
+    # confidentiality against arbitrary code run by the same OS user. Memory
+    # services open their captured store directly. Global V1 retains its existing
+    # file access behavior. See docs/system-specs/modules/security.md.
     MEMORY_STORES_DIR_NAME,
 ]
 _SENSITIVE_HOME_DIRS += [
@@ -820,7 +884,21 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # turn the browser sandbox OFF for every later browse, and the change persists
     # until the next gateway start re-converges the file. Kiro Crew generates it
     # directly and does NOT route through this gate, so its own write still works.
-    for leaf in ("config.json", "config.local.json", "playwright-cli-config.json")
+    # subagents: the canonical run records a cold continuation restores app
+    # ownership from. Gateway writers bypass this tool gate; an agent may read a
+    # run's results but cannot turn an app-owned run into a personal run. Its
+    # retained V1 companion ``member-memory-bindings`` belongs on the read+write
+    # floor above instead, because a legacy binding record carries a raw session
+    # key while a V2 run's results live in the run record here -- so the agent may
+    # NOT read that leaf, and an entry on this tier as well would make
+    # ``security_posture`` publish "Reads allowed" for a path the read gate
+    # refuses.
+    for leaf in (
+        "config.json",
+        "config.local.json",
+        "playwright-cli-config.json",
+        "subagents",
+    )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write
     # sensitive: it holds no secret and every teammate's instance must READ it to
@@ -839,6 +917,42 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # a direct `git checkout` on the merge path, not through this gate, so team
     # sync still converges.
     f"{prefix}/apps/ops-mission-control/data/rotation.yaml"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The cloud launcher's config. WRITE-protected for the same reason as
+    # ``playwright-cli-config.json`` above and by the same placement-not-logic fix:
+    # it holds no credential (its own module docstring is explicit that it stores a
+    # profile NAME, and the Fargate block stores secret names and ARNs, never
+    # values), and the gateway must READ it on every request to build the remote
+    # provisioner list, so sealing it against reads would break the Set-up tab.
+    #
+    # But it is an INPUT TO A SECURITY DECISION. ``fargate.image`` chooses the
+    # container image a launch runs, and the task's execution role delivers the
+    # model credential into that container before it starts. An agent that could
+    # rewrite this file could name a digest-pinned image of its own -- the digest
+    # rule constrains the FORM of the reference, not who owns the registry -- and
+    # leave every other field the owner wrote intact, so the owner's next launch
+    # hands the credential to an image the owner never chose.
+    #
+    # Nothing in the product writes it: the launch path's own profile, region and tag
+    # live in ``cloud.launch_state``, so this leaf has no product writer to exempt.
+    f"{prefix}/cloud.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The cloud launcher's LAUNCH RECORD (``cloud/launch_state.py``): the profile, region
+    # and tag the last launch decided. WRITE-protected on the same footing as
+    # ``cloud.json`` above, and for a reason that is specific rather than inherited: the
+    # tag in it is what ``kirocrew cloud destroy`` resolves when no ``--tag`` is given, so
+    # an agent that could write this file could choose which of the owner's CloudFormation
+    # stacks a ``destroy --yes`` deletes. Interactive ``destroy`` describes the instance
+    # and asks first, but ``--yes`` is exactly the path that does not.
+    #
+    # Readable, like ``cloud.json``: every ``cloud`` subcommand resolves the tag from it,
+    # and sealing it against reads would break them all. The gateway and the CLI write it
+    # outside the agent's file-edit gate, so the launch path is unaffected.
+    f"{prefix}/cloud_launch_state.json"
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
@@ -883,6 +997,27 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # gate, so first-run fetches, re-downloads after a failed check and the embedding
     # model install all keep working; only the agent's file-edit tool is refused.
     f"{prefix}/models"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The decision log (``decisions/decisions-YYYYMMDD.jsonl``, written by
+    # ``decisions.log``). Another instance of the input-to-an-authorization-decision
+    # class, reached through the record rather than through the grant: the day-file
+    # carries `kind="feedback"` rows, which are the OWNER's verdicts on what the skills
+    # decision chose. An agent that can append there can put a verdict nobody gave into
+    # the record, which is the one reading the feature exists to produce. The keystone next to it
+    # (``decisions_consent.json``) is already read+write sensitive, and sealing the
+    # grant while leaving the record writable would be half a control.
+    #
+    # WRITE-protected, not read+write sensitive: the rows are the machine's own
+    # measurements and reading them is the point -- an owner or an agent asked to
+    # explain a decision should be able to. There is no legitimate agent WRITE:
+    # ``platform_log_append`` opens the file directly and does not route through this
+    # gate, so the gateway keeps recording. The directory is separately mounted
+    # read-only in the sandbox (``sandbox._CREW_READONLY_LEAVES``); that layer covers a
+    # shell, and this one covers the file-edit tool, which is present on every host
+    # whether or not the OS sandbox is.
+    f"{prefix}/decisions"
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
@@ -1041,6 +1176,32 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # the crew secrets.
 _KIRO_AGENTS_DIR = ".kiro/agents"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # Operator-authored panel templates (agent_panel.py). WRITE-protected rather
+    # than read+write sensitive, and the asymmetry is the whole point: a crew's
+    # webview is a human-authored TEMPLATE filled with crew-published DATA, and
+    # that split is the containment story -- layout is reviewed, only data is
+    # untrusted, so data can be escaped at one boundary. What must be refused is
+    # an agent AUTHORING markup here: its auto-approved file tools could otherwise
+    # drop a .html in and collapse the split, handing a hostile issue body a path
+    # into a rendered document.
+    #
+    # The read must stay alive, which is why this entry is not on the floor above.
+    # The file holds no secret: it is human-authored, versioned, reviewed content,
+    # and it is the profile the write-only tier exists for -- routinely read, and
+    # an input to a security decision. Fencing the READ would take the override
+    # away from the operator who wrote it, since the same gate string reaches
+    # ``fs_read``, the dashboard file viewer and knowledge indexing. Its sandbox
+    # disposition already says the same thing from the other side: the launcher
+    # seals the leaf READ-ONLY (``sandbox._CREW_READONLY_LEAVES``) rather than
+    # masking it, so the two halves now agree.
+    #
+    # ``agent_panel.py`` loads the override directly and does not route through
+    # this gate, so template rendering is unaffected; only the agent's own
+    # file-edit tool is refused.
+    f"{prefix}/panel-templates"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 #: Longest command ``is_sensitive_bash_command`` will scan. Longer input is
 #: REFUSED, not skipped and not scanned: both detectors the gate runs are linear
@@ -1236,7 +1397,8 @@ class PathResolutionStalled(RuntimeError):
 
 
 def _stall_prefix(expanded: str) -> str:
-    """The path prefix a stall is charged to: the first two components.
+    """The path prefix a stall is charged to: the first two components, extended
+    by one when the second names a container of home directories.
 
     A wedged mount stalls everything beneath its mount point, and mount points
     sit at depth one or two (``/home/<user>`` autofs, ``/Volumes/<share>``,
@@ -1255,6 +1417,30 @@ def _stall_prefix(expanded: str) -> str:
     the profile refused path resolution for essentially the whole host -- the exact
     opposite of the per-mount isolation this function exists to provide.
 
+    **The key never ENDS on a container of homes**, a component spelled ``home``.
+    A host whose homes sit one level deeper than ``/home`` reproduces the
+    ``C:\\Users`` collapse on POSIX: two components of ``/local/home/<user>/ws/f``
+    is ``/local/home``, which holds every user, every workspace and checkout, the
+    data home and the credential stores, so one stall anywhere under it refused
+    path resolution for the whole host (kirodotdev/KiroCrew#12386).  When the
+    second component is such a container the key takes one more, so the boundary
+    is the home directory itself -- ``/local/home/<user>`` -- exactly the key a
+    ``/home/<user>`` layout already gets.  Every other key is unchanged, and the
+    container alone (``/local/home``) stays its own key.
+
+    The rule is lexical, like the rest of this function: it must not touch the
+    filesystem, because it is consulted BEFORE deciding whether to probe at all
+    and it names the prefix charged when the ``$HOME`` anchor itself stalls.  A
+    mount-derived key (``os.path.ismount`` walked upward) would both ``lstat``
+    the very mount that may be wedged and, on a single-filesystem host, reach
+    ``/`` -- a process-wide key, worse than the collapse.  The price of a lexical
+    key stands: two spellings of one tree (``/home/<user>`` and its
+    ``/local/home/<user>`` target) remain two keys, each paying its own timeout.
+    And when the container is itself ONE wedged mount (an NFS ``/export/home``),
+    each user's tree pays its own timeout and pins its own worker -- the cost a
+    ``/home/<user>`` autofs layout already carries per user, bounded the same
+    way, by the pool size -- in exchange for the isolation this key exists for.
+
     A UNC share root is returned whole: ``\\\\server\\share`` IS the mount point,
     and ``splitdrive`` already reports it as the drive, so no component of the
     remainder belongs in the key.
@@ -1265,6 +1451,17 @@ def _stall_prefix(expanded: str) -> str:
         return drive
     parts = rest.split(os.sep)
     keep = 3 if parts and parts[0] == "" else 2  # leading "" for an absolute path
+    # A component spelled ``home`` is a CONTAINER of home directories, never a home:
+    # ``/home/<user>`` is the common layout, and the layouts that put the homes one
+    # level deeper all keep the word -- ``/local/home/<user>`` on a cloud desktop
+    # (where ``/home/<user>`` is a symlink into it), ``/usr/home`` on FreeBSD,
+    # ``/var/home`` on Fedora Silverblue, ``/export/home`` on Solaris and NFS
+    # servers.  ``Users`` needs no entry: it only ever sits at depth one
+    # (``/Users/<user>``, ``C:\Users\<user>``), where the key already ends on the
+    # user.  Matched exactly: the container is spelled by the OS or the
+    # administrator, not by the agent.
+    if len(parts) > keep and parts[keep - 1] == "home":
+        keep += 1  # the container holds every user: key on the home beneath it
     return (drive + os.sep.join(parts[:keep])) or normalized
 
 
@@ -1721,7 +1918,9 @@ def _realpath_or_none(path: str) -> str | None:
         return None
 
 
-def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
+def _candidate_forms(
+    path_str: str, base_dir: str | None = None, *, pre_resolved: bool = False
+) -> set[str]:
     """Expand *path_str* into every candidate form the sensitive-path gates match.
 
     Symlink-resolved forms defeat a link bypass; the lexical forms are the
@@ -1731,6 +1930,13 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     :func:`_path_in_home_dirs` (is the path INSIDE a protected location?) and
     :func:`path_contains_sensitive` (does the path CONTAIN one?) so the
     symlink/anchoring hardening cannot drift between the two directions.
+
+    *pre_resolved* says the caller ALREADY holds the canonical spelling -- the
+    output of ``os.path.realpath`` computed on its own thread -- so no
+    resolution is submitted to the ``mc-pathres`` pool: the candidates are the
+    input and its ``normpath``, which is exactly what :func:`_resolved_spellings`
+    returns for a path that has no link left to follow. Reserved for
+    :func:`is_sensitive_resolved_path`; see there for why a caller may claim it.
     """
     # Expand ~ and $HOME
     expanded = os.path.expanduser(os.path.expandvars(path_str))
@@ -1751,10 +1957,44 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     # A resolution that does not COMPLETE raises PathResolutionStalled through
     # here, and every gate turns that into a refusal: no lexical-only matching
     # of a path whose canonical form is unknown.
-    candidates: set[str] = _resolved_forms_bounded(expanded)
+    candidates: set[str] = set() if pre_resolved else _resolved_forms_bounded(expanded)
     candidates.add(os.path.normpath(expanded))
     candidates.add(expanded)
     return candidates
+
+
+class _BuiltTargets(set[str]):
+    """The target set, plus whether building it traversed a symlink.
+
+    A plain ``set`` wherever it is consumed -- membership, iteration, equality
+    and the casefold contract are all unchanged -- carrying one extra fact that
+    only the CACHE needs and no matcher does: did any target's canonical form
+    differ from its lexical one.
+
+    That fact is what bounds the deeper-leaf staleness the target cache always
+    carried. A target whose resolution differs came through a symlink at or
+    below a resolved root, and THAT is the entry a repoint can move out from
+    under a cached set. When no target resolved differently there is no
+    resolution-derived entry to go stale, so the long adaptive expiry is safe;
+    when one did, the expiry is pinned to the floor. See
+    :func:`_home_targets_ttl`.
+
+    The roots cannot trip it. Every root reaching the builder is already
+    canonical (:func:`_resolve_root_anchors` resolved them), so re-resolving one
+    returns the same string -- which matters on a host where ``$HOME`` is itself
+    a symlink, because flagging that would pin the floor on every cloud desktop
+    and the adaptive expiry would never apply anywhere.
+
+    Carried as an ATTRIBUTE rather than a second return value because
+    ``_home_dir_targets_uncached`` has several callers and three test doubles. A
+    widened signature would break each of them, whereas a double that returns a
+    plain ``set`` simply lacks the attribute and reads as the class default
+    below -- ``True``, the fail-safe answer, which selects the floor.
+    """
+
+    #: Fail-safe: an unknown build is treated as having traversed a symlink, so a
+    #: caller that cannot prove otherwise gets the short expiry.
+    resolution_differed: bool = True
 
 
 def _home_dir_targets_uncached(
@@ -1792,6 +2032,16 @@ def _home_dir_targets_uncached(
     secrets. On POSIX a single-segment entry splits to a 1-element list, so
     this is a no-op there.
     """
+    # Both supported Crew home prefixes map to the same override leaves.
+    # Resolve each identical spelling once within this build; never carry these
+    # answers across builds or cache keys, so root and leaf freshness is unchanged.
+    resolved_paths: dict[str, str | None] = {}
+
+    def resolve_target(path: str) -> str | None:
+        if path not in resolved_paths:
+            resolved_paths[path] = _realpath_or_none(path)
+        return resolved_paths[path]
+
     resolved = roots if roots is not None else _resolved_root_key()
     home = resolved.home
     crew_home = resolved.crew_home
@@ -1840,14 +2090,14 @@ def _home_dir_targets_uncached(
     if os_home:
         for d in home_dirs:
             sensitive_targets |= _anchor_both_separators(os_home, d)
-        os_home_real = _realpath_or_none(os_home) or os_home
+        os_home_real = resolve_target(os_home) or os_home
         if os_home_real.casefold() != os_home.casefold():
             for d in home_dirs:
                 sensitive_targets |= _anchor_both_separators(os_home_real, d)
     # ``home`` arrives RESOLVED from the cache key, so this is normally a no-op;
     # it still opens the directory on Windows, which is why the whole rebuild
     # runs off the loop.  None degrades to the lexical anchors already in the set.
-    home_real = _realpath_or_none(home) or home
+    home_real = resolve_target(home) or home
     if home_real.casefold() != home.casefold():
         sensitive_targets |= {_anchor(home_real, d) for d in home_dirs}
     # ``home`` arrives RESOLVED (the cache is keyed on the resolved roots), so
@@ -1881,7 +2131,7 @@ def _home_dir_targets_uncached(
                     sensitive_targets.add(full.casefold())
                     # Also add the resolved form in case the env value itself has
                     # symlinks (matches the home/home_real duality above).
-                    full_real = _realpath_or_none(full)
+                    full_real = resolve_target(full)
                     if full_real is not None:
                         sensitive_targets.add(full_real.casefold())
                     break
@@ -1901,7 +2151,7 @@ def _home_dir_targets_uncached(
     if kiro_home_override and _KIRO_AGENTS_DIR in home_dirs:
         agents_full = os.path.join(kiro_home_override, "agents")
         sensitive_targets.add(agents_full.casefold())
-        agents_real = _realpath_or_none(agents_full)
+        agents_real = resolve_target(agents_full)
         if agents_real is not None:
             sensitive_targets.add(agents_real.casefold())
     # An ACP adapter's OAuth token follows that adapter's own home override, so
@@ -1920,10 +2170,23 @@ def _home_dir_targets_uncached(
                 continue
             _full = os.path.join(_root, *_leaf_segments(_under_root))
             sensitive_targets.add(_full.casefold())
-            _full_real = _realpath_or_none(_full)
+            _full_real = resolve_target(_full)
             if _full_real is not None:
                 sensitive_targets.add(_full_real.casefold())
-    return sensitive_targets
+    # Did any target come through a symlink? Read off the memo this build already
+    # filled, so the answer costs one pass over a ~75-entry dict and no extra
+    # filesystem work -- the resolutions themselves are the expense and they have
+    # already happened. Normalised on both sides so a separator or case
+    # difference cannot read as a symlink; a false positive here is merely the
+    # short expiry, a false negative would be the stale window this bounds.
+    differed = any(
+        value is not None
+        and os.path.normcase(os.path.normpath(value)) != os.path.normcase(os.path.normpath(key))
+        for key, value in resolved_paths.items()
+    )
+    built = _BuiltTargets(sensitive_targets)
+    built.resolution_differed = differed
+    return built
 
 
 # How long a built target set stays reusable. ``_home_dir_targets_uncached``
@@ -1936,7 +2199,7 @@ def _home_dir_targets_uncached(
 # Deliberately TTL-bounded rather than a plain ``lru_cache``: part of the set is
 # derived from FILESYSTEM state, so an unbounded cache would keep matching a
 # stale target if a symlink were repointed after the cache warmed — a gate that
-# fails OPEN. A few seconds bounds that window.
+# fails OPEN. ``_HOME_TARGETS_TTL_MAX_SECS`` bounds that window.
 #
 # The key is built from the RESOLVED roots (``Path.home().resolve()`` and the
 # resolved ``KIROCREW_HOME``), NOT from the raw env vars, because those two
@@ -1964,16 +2227,223 @@ def _home_dir_targets_uncached(
 # them.
 #
 # The TTL is therefore sized as small as it can be while still doing its job.
-# The value is 0.1s, NOT a "few seconds", because a skills walk issues thousands
+# The FLOOR is 0.1s, NOT a "few seconds", because a skills walk issues thousands
 # of calls in a burst and one build serves the whole burst either way. Measured
-# cold-walk cost against this constant:
+# cold-walk cost against a FIXED constant, on an idle interpreter:
 #     5.0s -> 0.95s    1.0s -> 0.93s    0.1s -> 0.95s    0.0s -> 4.66s
 # So 0.1s keeps the entire win while cutting the stale window 50x versus 5.0s.
 # Only 0.0 (no cache) closes the window completely, and that reverts to the 4.7s
-# scan whose GIL-held cost wedges the event loop — the defect this exists to fix.
+# scan whose GIL-held cost wedges the event loop -- the defect this exists to fix.
 _HOME_TARGETS_TTL_SECS = 0.1
+
+# ---------------------------------------------------------------------------
+# Why the expiry is not that floor alone.
+#
+# 0.1s was chosen against an IDLE interpreter, where one rebuild costs ~2ms, so
+# the cache spends ~2% of the wall clock rebuilding. But the rebuild is ~130
+# ``os.path.realpath`` calls and each syscall releases and re-acquires the GIL,
+# so its cost is set by CONTENTION, not by the disk. Measured on this repo's own
+# anchors -- 64-core Linux, local xfs, one mount, ``sys.getswitchinterval()``
+# 5ms -- with N sibling threads running pure Python:
+#     0 -> 2ms    1 -> 581ms    2 -> 399ms    4 -> 3859ms    8 -> 7456ms
+# A fixed 0.1s expiry does not move with that, so the share of the wall clock
+# spent rebuilding rises with load until the rebuild misses
+# ``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS`` and the gate refuses ordinary project
+# files. That is the reported defect, and the filesystem is healthy throughout.
+#
+# So the expiry tracks the MEASURED cost of the build it is expiring:
+#
+#     ttl = clamp(last rebuild seconds * _HOME_TARGETS_TTL_COST_RATIO,
+#                 _HOME_TARGETS_TTL_SECS, _HOME_TARGETS_TTL_MAX_SECS)
+#
+# The ratio is the reciprocal of the share of the wall clock the gate may spend
+# rebuilding, so that share is held at ``1 / ratio`` at EVERY load level rather
+# than only at the one the constant was picked on. The rebuild's own duration is
+# the load signal, so no separate load metric is read and nothing has to be
+# configured per host.
+#
+# WHAT THIS DOES NOT FIX, stated rather than implied: an expiry controls how
+# OFTEN the rebuild is paid, never what ONE costs. Past roughly four contending
+# threads a single COLD rebuild already exceeds its own budget, and there every
+# expiry refuses alike -- measured, see ``scripts/measure_path_gate_ttl.py``.
+# Only a resolver outside this interpreter's GIL closes that case. This law's
+# job is narrower: it stops re-paying the contended cost every 100ms.
+#
+# THE TRADE, stated plainly: a longer expiry lengthens the window in which a
+# symlink swapped DEEPER inside the crew home (a keystone leaf, or an
+# intermediate directory on the way to one) is still answered from the stale
+# set -- the residual named above, now bounded by ``_HOME_TARGETS_TTL_MAX_SECS``
+# rather than by 0.1s. It does NOT widen the two reproduced bypasses, because
+# both repoint an ANCHOR and every anchor is part of the cache KEY: a repointed
+# ``$HOME`` or ``KIROCREW_HOME`` re-keys and misses the cache at any expiry,
+# which ``test_repointed_home_symlink_is_not_served_from_cache_at_the_longest_expiry``
+# pins at the maximum expiry as well as at the floor.
+#
+# Both inputs are NAMED constants, each pinned by a test, and each an OPERATOR
+# KNOB read once at import and fail-soft to its reviewed default:
+# ``KIROCREW_PATH_GATE_TTL_COST_RATIO`` and ``KIROCREW_PATH_GATE_TTL_MAX_SECS``.
+# So a host can trade the two the other way, or revert to one fixed 0.1s expiry
+# with a ratio of 0, without a release and without patching this file.
+# ---------------------------------------------------------------------------
+
+#: Environment overrides for the two inputs below, and the bounds each accepts.
+#: Read ONCE at import, like the resolver pool size: these size a cache that is
+#: already live by the first gate call, so a mid-run change would leave entries
+#: written under one policy being judged by another.
+_TTL_COST_RATIO_ENV = "KIROCREW_PATH_GATE_TTL_COST_RATIO"
+_TTL_COST_RATIO_DEFAULT = 50.0
+#: 0 is the REVERT: zero times any cost clamps to the floor for every input, so
+#: ``KIROCREW_PATH_GATE_TTL_COST_RATIO=0`` pins one fixed 0.1s expiry at every
+#: load level. That is deliberately the only spelling of the revert -- a separate
+#: private boolean said the same thing while being unreachable from outside the
+#: package, which made "operator lever" untrue. Above 1000 the clamp makes every
+#: load level select the ceiling anyway, so a larger value expresses nothing this
+#: cannot.
+_TTL_COST_RATIO_MIN = 0.0
+_TTL_COST_RATIO_MAX = 1000.0
+_TTL_MAX_SECS_ENV = "KIROCREW_PATH_GATE_TTL_MAX_SECS"
+_TTL_MAX_SECS_DEFAULT = 30.0
+#: The ceiling an operator may raise the ceiling TO. The measurement justifies
+#: nothing above about a minute -- that is the longest expiry the default ratio
+#: asks for at the heaviest load the gate can still serve, and past that load no
+#: expiry helps at all -- so 300s leaves generous headroom while refusing a value
+#: that could only widen the stale window. The floor is the shipped floor: a
+#: ceiling below it would invert the clamp.
+_TTL_MAX_SECS_MIN = 0.1
+_TTL_MAX_SECS_MAX = 300.0
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    """Read a float operator knob, falling back to *default*.
+
+    Fail-soft TO THE DEFAULT in every failure mode -- absent, unparseable, out of
+    range -- which is the conservative direction for both callers: the shipped
+    ratio and the shipped ceiling are the reviewed values, so a bad override can
+    only leave the reviewed behaviour in place and never widen the stale window
+    the ceiling bounds.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using the default of %s", name, raw, default)
+        return default
+    if not minimum <= value <= maximum:
+        logger.warning(
+            "%s=%s is outside %s..%s; using the default of %s",
+            name,
+            value,
+            minimum,
+            maximum,
+            default,
+        )
+        return default
+    return value
+
+
+#: Reciprocal of the share of the wall clock the gate may spend rebuilding
+#: anchors. 50 holds that share at 2%, and it is the value at which an idle
+#: interpreter selects the same 0.1s EXPIRY it selects today (2ms * 50 = the floor).
+#: Only that duration is unchanged: an entry's total age is the expiry plus the build
+#: that measured it, which for a 2ms build is the same to within those 2ms. So the
+#: default is observationally identical on an unloaded host, by arithmetic rather
+#: than by measurement.
+#: Chosen as the SMALLEST ratio that refused nothing and paid the fewest
+#: rebuilds at every load level the gate can still serve -- the same rule that
+#: chose the floor, applied to the ratio. Larger ratios paid no fewer rebuilds
+#: and only lengthened the stale window.
+_HOME_TARGETS_TTL_COST_RATIO = _env_float(
+    _TTL_COST_RATIO_ENV, _TTL_COST_RATIO_DEFAULT, _TTL_COST_RATIO_MIN, _TTL_COST_RATIO_MAX
+)
+
+#: Hard ceiling on the expiry, and therefore THE WORST-CASE STALE WINDOW for the
+#: deeper-leaf residual described above: 30 seconds, and never longer by any
+#: path through this module. Deliberately NOT derived from the ratio: at high
+#: contention the ratio asks for minutes (a 7.5s rebuild wants 375s), and this
+#: gives up the 2% share there rather than give up the freshness bound. Sized to
+#: cover what the load levels the gate can still SERVE actually ask for -- a 0.4s
+#: rebuild under two contending threads asks for 20s -- so the clamp binds only
+#: where a single cold rebuild is already at its own budget and no expiry helps.
+_HOME_TARGETS_TTL_MAX_SECS = _env_float(
+    _TTL_MAX_SECS_ENV, _TTL_MAX_SECS_DEFAULT, _TTL_MAX_SECS_MIN, _TTL_MAX_SECS_MAX
+)
+
+
+def _home_targets_ttl(rebuild_secs: float, *, resolution_differed: bool = True) -> float:
+    """How long a target set that took *rebuild_secs* to build stays reusable.
+
+    See the block above the constants for why this is a function of the build's
+    own cost rather than a constant.  *rebuild_secs* is the WALL time the cache
+    fill took, pool queue wait included: the caller blocked for all of it, and a
+    saturated pool is exactly a state in which refreshing less often is correct,
+    so the queue is part of the cost being amortised rather than noise to
+    subtract.
+
+    *resolution_differed* is what keeps the long expiry off the one class of
+    install it could hurt.  True means some target's canonical form differed from
+    its lexical one, i.e. the build came through a symlink at or below a resolved
+    root -- and that resolution-derived entry is exactly what a repoint can move
+    out from under a cached set, the deeper-leaf residual.  There the expiry is
+    pinned to the floor, so that window stays at 0.1s and does not grow.  False
+    means no target resolved differently, so the set holds nothing a repoint can
+    stale WITHOUT first creating a symlink inside the crew home, which is a write
+    the write gate refuses; the adaptive expiry applies.  It defaults to True so
+    every caller that cannot prove otherwise gets the short expiry.
+
+    A STALLED rebuild never reaches here -- it raises and no entry is written --
+    so a dead mount cannot inflate the expiry.  A zero or negative duration (a
+    coarse clock, or a frozen one in tests) yields the floor, and so does a
+    ratio of zero, which is how an operator pins one fixed 0.1s expiry at every
+    load level.
+    """
+    if resolution_differed:
+        return _HOME_TARGETS_TTL_SECS
+    scaled = rebuild_secs * _HOME_TARGETS_TTL_COST_RATIO
+    return min(max(scaled, _HOME_TARGETS_TTL_SECS), _HOME_TARGETS_TTL_MAX_SECS)
+
+
+#: Last state :func:`_report_expiry_pin` reported, so the line is emitted once per
+#: TRANSITION rather than once per rebuild. A dict rather than a module global
+#: because it is written from inside a function.
+_home_targets_pin_state: dict[str, bool] = {}
+
+
+def _report_expiry_pin(pinned: bool) -> None:
+    """Say once, on each transition, which expiry the cache is actually selecting.
+
+    Without this the availability half self-disables in silence. On an install
+    whose sensitive dotfiles are symlinks -- a stow or chezmoi home is the ordinary
+    case, not an exotic one -- every build reports a traversal, every expiry is
+    therefore the floor, and both knobs read as no-ops to whoever tunes them. The
+    refusals then come back with nothing in the log to say why the fix did not
+    apply to this host. Deduplicated on the state, so a steady host says it once
+    rather than once per rebuild, and a host that flips says it again.
+    """
+    if _home_targets_pin_state.get("pinned") is pinned:
+        return
+    _home_targets_pin_state["pinned"] = pinned
+    if pinned:
+        logger.info(
+            "sensitive-path anchor cache: expiry pinned to the %.1fs floor because a "
+            "target resolved through a symlink, so the cost-tracking expiry and both "
+            "of its knobs do not apply while that holds",
+            _HOME_TARGETS_TTL_SECS,
+        )
+    else:
+        logger.info(
+            "sensitive-path anchor cache: cost-tracking expiry in force " "(ratio %s, cap %.1fs)",
+            _HOME_TARGETS_TTL_COST_RATIO,
+            _HOME_TARGETS_TTL_MAX_SECS,
+        )
+
+
 # key -> (expiry_monotonic, targets)
 _home_targets_cache: dict[tuple[object, ...], tuple[float, set[str]]] = {}
+# Only off-loop bulk readers acquire this lock. Event-loop gates retain their
+# bounded resolver and must never wait for an inline filesystem rebuild.
+_home_targets_inline_lock = threading.Lock()
 
 
 class _ResolvedRoots(NamedTuple):
@@ -2194,11 +2664,23 @@ def _resolved_root_key() -> _ResolvedRoots:
     return roots
 
 
-def _home_dir_targets(home_dirs: list[str]) -> set[str]:
+def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]:
     """TTL-cached :func:`_home_dir_targets_uncached`.
 
     Keyed on the *home_dirs* list plus the RESOLVED home and crew-home roots
     (see the note above the constant for why the raw env vars are not enough).
+
+    *inline* resolves the anchors and rebuilds the set on the CALLING thread
+    instead of through the bounded ``mc-pathres`` hop -- the same stance
+    :func:`sandbox_credential_targets` takes, and for the same reason: the
+    bound exists to keep the EVENT LOOP responsive, and a caller that is
+    already on a worker thread gains nothing from it while its submissions
+    queue ahead of the loop's own. Reserved for :func:`is_sensitive_resolved_path`,
+    whose contract is exactly such a caller. The freshness invariant is kept:
+    the roots are still resolved on every call and key the cache, so a repointed
+    root still invalidates; what changes is only WHERE the ``realpath`` runs. A
+    wedged mount blocks the calling thread here rather than raising a stall --
+    which is what the same thread's own ``os.walk`` on that mount does anyway.
 
     ponytail: the returned set is the cached instance, not a copy — both
     callers only iterate it. A future caller that MUTATES the result would
@@ -2209,19 +2691,52 @@ def _home_dir_targets(home_dirs: list[str]) -> set[str]:
     # reads file one root's targets under the other root's key — a fail-OPEN
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
-    roots = _resolved_root_key()
+    if inline:
+        roots = _resolve_root_anchors(str(Path.home()))
+        cached = _home_targets_cache.get((tuple(home_dirs),) + roots)
+        if cached is not None and time.monotonic() < cached[0]:
+            return cached[1]
+        with _home_targets_inline_lock:
+            # Resolve after acquiring: a queued worker must not reuse anchors
+            # captured before another worker's potentially slow rebuild.
+            roots = _resolve_root_anchors(str(Path.home()))
+            return _cached_home_dir_targets(home_dirs, roots, inline=True)
+    return _cached_home_dir_targets(home_dirs, _resolved_root_key(), inline=False)
+
+
+def _cached_home_dir_targets(
+    home_dirs: list[str], roots: _ResolvedRoots, *, inline: bool
+) -> set[str]:
+    """Share the target cache while coalescing inline builders at the caller."""
     key = (tuple(home_dirs),) + roots
     now = time.monotonic()
     cached = _home_targets_cache.get(key)
     if cached is not None and now < cached[0]:
         return cached[1]
-    targets = _rebuild_targets_bounded(home_dirs, roots)
+    if inline:
+        targets = _home_dir_targets_uncached(home_dirs, roots)
+    else:
+        targets = _rebuild_targets_bounded(home_dirs, roots)
+    # Read the clock AGAIN, and start the expiry here rather than at ``now``.
+    # Two reasons, neither of them visible while a rebuild costs 2ms. The interval
+    # between the two reads is the measured cost the expiry is a multiple of.
+    # And an expiry that started BEFORE the build would already have elapsed by
+    # the time a contended build returned -- a 2s build under a 0.1s expiry
+    # hands back an entry that is expired on arrival, so the next call rebuilds
+    # again and the cache stops being a cache exactly when it matters most.
+    built_at = time.monotonic()
+    # Read the flag off the built set, defaulting to the fail-safe answer: a test
+    # double or any future builder that returns a plain ``set`` carries no
+    # attribute and gets the floor rather than the long expiry.
+    differed = bool(getattr(targets, "resolution_differed", True))
+    _report_expiry_pin(differed)
+    ttl = _home_targets_ttl(max(0.0, built_at - now), resolution_differed=differed)
     # Bound the dict: the key space is tiny (two constant home_dirs lists ×
     # roots), but a test or embedder that churns KIROCREW_HOME must not grow it
     # without limit.
     if len(_home_targets_cache) > 32:
         _home_targets_cache.clear()
-    _home_targets_cache[key] = (now + _HOME_TARGETS_TTL_SECS, targets)
+    _home_targets_cache[key] = (built_at + ttl, targets)
     return targets
 
 
@@ -2232,7 +2747,7 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     override roots and the ~40 keystone leaves under them -- are the paths the
     sensitive-target set is built FROM, as opposed to the agent-supplied
     candidate checked AGAINST it.  They are deliberately NOT ``realpath``'d
-    inline on the event loop every time the 0.1s cache expires: on a Windows
+    inline on the event loop every time the target cache expires: on a Windows
     desktop under heavy disk load (a full test run plus several subagents, all
     being scanned by real-time antivirus) ``realpath($HOME)`` blocks past the
     25s loop-stall watchdog from inside ``on_tool_call``, and the gateway exits
@@ -2257,7 +2772,7 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     previous canonical set).  A pool fault is treated exactly like a stall, and
     a UNC home is probed here too (bounded): the candidate-side UNC shortcut is
     about tokens, not about the fence.  The stall is recorded, so the rebuild
-    does not re-probe the wedged mount every 0.1s -- it refuses without touching
+    does not re-probe the wedged mount on every expiry -- it refuses without touching
     the filesystem until the cooldown lapses.
     """
     try:
@@ -2279,6 +2794,7 @@ def _path_in_home_dirs(
     base_dir: str | None = None,
     *,
     strict: bool = False,
+    pre_resolved: bool = False,
 ) -> bool:
     """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
 
@@ -2308,15 +2824,19 @@ def _path_in_home_dirs(
     ``sub/cfg.ini`` resolves against the real directory rather than whatever CWD
     the gateway process happens to have.  Absolute inputs are unaffected;
     ``base_dir=None`` preserves the historical CWD-relative behavior.
+    ``pre_resolved`` is :func:`_candidate_forms`'s flag of the same name, and
+    such a caller is by contract on its own worker thread, so the anchors are
+    resolved inline as well (``_home_dir_targets(inline=True)``): the whole
+    check then performs no ``mc-pathres`` submission.
     """
     if not path_str:
         return False
 
     try:
-        candidates = _candidate_forms(path_str, base_dir)
+        candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
         # The anchors are bounded the same way (see _rebuild_targets_bounded):
         # a stall with no prior canonical resolution to serve refuses too.
-        sensitive_targets = _home_dir_targets(home_dirs)
+        sensitive_targets = _home_dir_targets(home_dirs, inline=pre_resolved)
     except PathResolutionStalled:
         # Canonical form unavailable (wedged mount under the path): refuse.  A
         # lexical-only match here would pass a workspace symlink into a
@@ -2344,7 +2864,11 @@ def _path_in_home_dirs(
 
 
 def _is_keystone_publish_artifact(
-    path_str: str, base_dir: str | None = None, *, strict: bool = False
+    path_str: str,
+    base_dir: str | None = None,
+    *,
+    strict: bool = False,
+    pre_resolved: bool = False,
 ) -> bool:
     """Return True if *path_str* is the atomic-write temp or lock beside a keystone leaf.
 
@@ -2369,8 +2893,8 @@ def _is_keystone_publish_artifact(
     if not path_str:
         return False
     try:
-        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS)
-        candidates = _candidate_forms(path_str, base_dir)
+        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS, inline=pre_resolved)
+        candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
         if strict:
             raise
@@ -2421,6 +2945,73 @@ def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     consumers' business.
     """
     return sensitive_path_refusal(path_str, base_dir) is not None
+
+
+def is_sensitive_resolved_path(resolved: str) -> bool:
+    """:func:`is_sensitive_path` for a path the caller has ALREADY canonicalised.
+
+    Same decision and same targets, with NO ``mc-pathres`` submission on either
+    half: the candidate is matched lexically, and the anchors (``$HOME``, the
+    override roots, the keystone leaves) are resolved inline on the calling
+    thread (:func:`_home_dir_targets` with ``inline=True``), fresh on every call
+    and keying the same TTL cache the bounded path uses. *resolved* MUST be the
+    output of ``os.path.realpath`` (or ``Path.resolve``) that the caller computed
+    on its OWN worker thread: the only thing the bounded resolution would add for
+    such an input is the same string back, since a canonical path has no link
+    left to follow. Handing this an unresolved spelling is a link bypass, and
+    calling it from the event loop forfeits the bound the pool exists to give
+    that loop -- so it is for exactly one shape of caller: a bulk WALK on a
+    worker thread that already resolves every entry to detect symlink loops and
+    prove containment, and only then asks whether the entry is fenced.
+
+    Why a separate entry point rather than "just call the pool anyway": the pool
+    is sized for the event loop (two workers by default --
+    ``executors._MAX_PATH_RESOLVE_WORKERS`` -- so a wedged mount can pin at most
+    that many threads), and it is FIFO. A walk over a thousand skill directories, each
+    submitting a resolution the walk had already performed plus an anchor
+    resolution per call, fills that queue from worker threads while the loop's
+    own latency-critical resolutions wait behind it -- not for a slow disk, for
+    the queue -- and the accumulated waits cross the loop-stall watchdog. The
+    scanner's realpath is unbounded either way (it runs off the loop, and
+    ``os.walk`` on the same mount is unbounded too), so the pool bought that
+    caller nothing and cost the loop its budget.
+
+    A wedged mount therefore does not surface here as a refusal: it blocks the
+    calling thread inside ``realpath``, exactly as that thread's own walk of the
+    same mount would. Nothing is admitted while it blocks.
+    """
+    return _path_in_home_dirs(resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True) or (
+        resolved.casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
+        and _is_keystone_publish_artifact(resolved, pre_resolved=True)
+    )
+
+
+def is_sensitive_canonical_path(resolved: str) -> bool:
+    """The sensitive-path verdict for a path the CALLER already canonicalised.
+
+    The one entry point for a reader that computed ``os.path.realpath`` or
+    ``Path.resolve`` itself and would otherwise hand the result to
+    :func:`is_sensitive_path`, which resolves it again on the ``mc-pathres``
+    pool and fails closed when the pool misses its budget. Which gate answers
+    depends on the calling thread, and that is decided here rather than by the
+    caller's say-so:
+
+    * Off the event loop, :func:`is_sensitive_resolved_path` answers inline: no
+      pool submission, so a saturated pool cannot refuse a healthy file.
+    * On the event loop, :func:`is_sensitive_path` answers, bounded: the inline
+      anchor ``realpath`` the pre-resolved gate performs is the blocking call
+      the pool exists to keep off the loop, and the anchors (the override
+      roots) need not share the caller's mount.
+
+    The decision is the same gate list either way; only the submission path
+    differs. The canonical-spelling half of the contract stays the caller's:
+    hand this the resolved spelling, never the raw one.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return is_sensitive_resolved_path(resolved)
+    return is_sensitive_path(resolved)
 
 
 #: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a

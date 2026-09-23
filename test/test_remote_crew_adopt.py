@@ -872,6 +872,194 @@ class TestInheritedMetadata:
         assert "\u200b" not in slot.title
 
 
+# ── A2. the peer's workspace ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestInheritedWorkspace:
+    """An adopted slot's ``workspace`` names the PEER's, and nothing local.
+
+    The forwarded picks already write the peer's committed workspace into this
+    field, so the adopt path is the one place a remote-bound slot could still
+    claim a workspace of this machine's choosing. These pin the two halves the
+    issue separates: the FIELD carries the peer's value (projection, persistence,
+    restore), while local ``project`` / ``memory_store`` resolution never sees it.
+    """
+
+    async def test_the_workspace_comes_from_the_peer_row(self, tmp_path, no_mint):
+        """The value the crew committed for the session it runs, not this
+        machine's create default -- the same rule that puts the peer in charge of
+        ``agent``."""
+        mgr = _manager(slots=[_peer_row(workspace="peer-ws")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        slot = state._slots[body["key"]]
+        assert slot.workspace == "peer-ws"
+        assert body["workspace"] == "peer-ws", "the create reply is the first projection"
+        assert state.serialize_slot(slot)["workspace"] == "peer-ws"
+
+    async def test_a_peer_row_naming_no_workspace_keeps_the_create_default(self, tmp_path, no_mint):
+        """A crew whose rows predate the field, or one that reports an empty
+        value, must not blank the slot: the create default is the honest record
+        for a session whose workspace this side cannot name."""
+        row = _peer_row()
+        assert "workspace" not in row
+        mgr = _manager(slots=[row, _peer_row(key="peer-chat-10", workspace="")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, absent = await _post(
+            state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"}
+        )
+        _, empty = await _post(
+            state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-10"}
+        )
+
+        assert state._slots[absent["key"]].workspace == "default"
+        assert state._slots[empty["key"]].workspace == "default"
+
+    async def test_the_peers_workspace_never_selects_a_local_project_or_store(
+        self, tmp_path, no_mint, monkeypatch
+    ):
+        """The half the issue guards: a workspace NAME means something different
+        on each machine. ``default_project_dir`` resolves a name against THIS
+        machine's workspaces, so handing it the peer's would claim a same-named
+        local directory the crew never meant. The lookup must keep receiving the
+        local default, and the store must stay unassigned, exactly as for an
+        adopt whose row names no workspace at all.
+        """
+        from kiro_crew.dashboard import chat_handlers as ch
+
+        seen: list[str | None] = []
+        real = ch.default_project_dir
+
+        def _spy(workspace=None):
+            seen.append(workspace)
+            return real(workspace)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.default_project_dir", _spy)
+        mgr = _manager(
+            slots=[_peer_row(workspace="peer-ws"), _peer_row(key="peer-chat-10")],
+            transcript=_msgs(),
+        )
+        state = _bound_state(tmp_path, mgr)
+
+        _, named = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        _, plain = await _post(
+            state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-10"}
+        )
+
+        assert "peer-ws" not in seen, "the peer's name reached the LOCAL workspace lookup"
+        named_slot, plain_slot = state._slots[named["key"]], state._slots[plain["key"]]
+        assert named_slot.project == plain_slot.project
+        assert named_slot.memory_store == "" == plain_slot.memory_store
+
+    async def test_the_peer_workspace_is_sanitized_redacted_and_bounded(self, tmp_path, no_mint):
+        """Same sink as ``agent``: it is peer-authored text that lands on a local
+        slot and in its persisted record, so a credential or a zero-width split
+        must not survive, and the length is capped like the agent's."""
+        split_secret = f"{_SECRET[:4]}\u200b{_SECRET[4:]}"
+        mgr = _manager(
+            slots=[
+                _peer_row(workspace=f"ws {_SECRET} here"),
+                _peer_row(key="peer-chat-10", workspace=f"ws {split_secret}"),
+                _peer_row(key="peer-chat-11", workspace="w" * 300),
+            ],
+            transcript=_msgs(),
+        )
+        state = _bound_state(tmp_path, mgr)
+
+        _, plain = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        _, split = await _post(
+            state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-10"}
+        )
+        _, long = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-11"})
+
+        assert _SECRET not in state._slots[plain["key"]].workspace
+        split_ws = state._slots[split["key"]].workspace
+        assert split_secret not in split_ws
+        assert "\u200b" not in split_ws
+        assert _SECRET not in split_ws
+        assert len(state._slots[long["key"]].workspace) == 128
+
+    async def test_the_adopted_workspace_survives_a_save_and_rehydrate(self, tmp_path, no_mint):
+        """The adopt persists its metadata line at birth, and the rehydrate reads
+        ``workspace`` back with the binding -- so a restart does not regress the
+        slot to the create default the peer never held."""
+        from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+
+        mgr = _manager(slots=[_peer_row(workspace="peer-ws")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        key = body["key"]
+        assert state.conversation_log.get_metadata(f"dashboard:{key}").get("workspace") == "peer-ws"
+
+        del state._slots[key]
+        restored = _rehydrate_slot_from_history(state, key)
+
+        assert restored is not None
+        assert restored.is_remote is True
+        assert restored.workspace == "peer-ws"
+
+    async def test_a_forwarded_workspace_pick_still_writes_through(
+        self, tmp_path, no_mint, monkeypatch
+    ):
+        """Seeding is a mirror, not a lock: once the box shows the peer's value, a
+        deliberate pick on the adopted slot still forwards and lands here."""
+        from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
+
+        forward = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.forward_peer_selection", forward)
+        mgr = _manager(slots=[_peer_row(workspace="peer-ws")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        slot = state._slots[body["key"]]
+        request = _PickReq(state)
+
+        resp = await _apply_remote_pick(request, state, slot, "workspace", {"workspace": "other"})
+
+        assert resp.status == 200
+        assert forward.await_args.args[2:] == ("workspace", {"workspace": "other"})
+        assert slot.workspace == "other"
+
+
+class _PickReq(dict):
+    """What the pick's owner gate reads off a request: ``app`` and ``user``.
+
+    A ``dict`` because the gate tells an ``app`` claim of ``""`` from an absent
+    one by membership. ``local-app`` is a local bootstrap subject, admitted with
+    no configured owner -- the same default :func:`_app` relies on.
+    """
+
+    def __init__(self, state) -> None:
+        super().__init__({"app": "", "user": "local-app"})
+        self.app = {"state": state}
+
+
+def test_every_forwardable_control_is_classified_for_adopt():
+    """The structural pin the issue asks for.
+
+    ``_PEER_CONTROL_SEGMENTS`` is the set of header picks that travel to the
+    peer. Each one is either SEEDED from the peer row on adopt or deliberately
+    left at the create default -- and a fifth control fails here until whoever
+    adds it says which, because an unclassified one is exactly how a box came
+    to read a local default while its pick overwrote the peer's value.
+    """
+    from kiro_crew.dashboard.remote_relay import _PEER_CONTROL_SEGMENTS
+
+    controls = set(_PEER_CONTROL_SEGMENTS)
+    assert ra.ADOPT_SEEDED_CONTROLS | ra.ADOPT_UNSEEDED_CONTROLS == controls
+    assert not (ra.ADOPT_SEEDED_CONTROLS & ra.ADOPT_UNSEEDED_CONTROLS)
+    for control in controls:
+        row = _peer_row(**{control: "value-from-peer"})
+        inherited = ra.peer_row_metadata(row)
+        if control in ra.ADOPT_SEEDED_CONTROLS:
+            assert inherited.get(control) == "value-from-peer", control
+        else:
+            assert control not in inherited, control
+
+
 # ── B. transcript backfill ────────────────────────────────────────────────────
 
 

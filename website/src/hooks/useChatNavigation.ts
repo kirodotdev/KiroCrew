@@ -15,6 +15,8 @@ export interface ChatSection {
   prompt: string
   /** The turn's final non-empty assistant reply as written, or '' when none has landed. Consumers compact it at render time. */
   response: string
+  /** ISO timestamp of the user message, for the preview card's relative time. */
+  ts?: string
   msgIdx: number
   displayIdx: number
 }
@@ -125,6 +127,7 @@ export function useChatNavigation(
         label,
         prompt,
         response,
+        ts: messages[i].ts || undefined,
         msgIdx: i,
         displayIdx,
       })

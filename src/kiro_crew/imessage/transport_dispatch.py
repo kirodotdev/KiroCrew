@@ -35,7 +35,10 @@ from kiro_crew.imessage.commands import HELP_TEXT, ConversationState, parse_comm
 from kiro_crew.imessage.renderer import IMessageRenderer
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
-from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.commands import (
+    compact_refusal_plain_text,
+    compact_unsupported_backend,
+)
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
@@ -65,6 +68,21 @@ logger = logging.getLogger(__name__)
 # explicit override nor agent.default_agent is configured. Mirrors the other
 # channels' _DEFAULT_KIROCREW_AGENT.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+
+def _compact_refusal_text(backend: str) -> str:
+    """Which of this surface's three refusals *backend* gets.
+
+    iMessage speech carries no markdown, which is the ONLY way it differs from
+    WhatsApp here -- so the three sentences are shared
+    (``messaging.commands.compact_refusal_plain_text``) and this function adds the
+    one thing that is local: the leading glyph. Writing the trio out again would
+    have been a third near-verbatim copy of the same words.
+
+    A single sentence here claimed the harness self-manages for every backend
+    outside ``ACP_BACKENDS_COMPACT``, which is true of exactly one of them.
+    """
+    return "ℹ️ " + compact_refusal_plain_text(backend)
 
 
 class IMessageDispatcher:
@@ -433,12 +451,7 @@ class IMessageDispatcher:
             # text, because iMessage speech carries no markdown.
             unsupported = compact_unsupported_backend(provider)
             if unsupported:
-                await self._notify(
-                    handle,
-                    "ℹ️ This backend manages compaction automatically — it "
-                    "summarizes the conversation on its own as context fills, "
-                    "so manual /compact isn't needed (and isn't supported) here.",
-                )
+                await self._notify(handle, _compact_refusal_text(unsupported))
                 return
             await provider.compact()
             await provider.wait_for_compaction()

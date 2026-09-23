@@ -19,6 +19,21 @@ class TestExtractOptions:
         assert choices == ["A", "B", "C"]
         assert "[OPTIONS:" not in cleaned
 
+    def test_keeps_text_before_and_after_marker(self):
+        cleaned, choices = extract_options("Pick.\n[OPTIONS: A | B]\nAnytime.")
+        assert cleaned == "Pick.\nAnytime."
+        assert choices == ["A", "B"]
+
+    def test_keeps_text_after_marker_without_prefix(self):
+        cleaned, choices = extract_options("[OPTIONS: A | B]\nAnytime.")
+        assert cleaned == "Anytime."
+        assert choices == ["A", "B"]
+
+    def test_keeps_text_before_marker_without_suffix(self):
+        cleaned, choices = extract_options("Pick.\n[OPTIONS: A | B]")
+        assert cleaned == "Pick."
+        assert choices == ["A", "B"]
+
     def test_no_options_returns_empty(self):
         cleaned, choices = extract_options("Hello world")
         assert choices == []

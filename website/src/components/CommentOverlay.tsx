@@ -151,7 +151,7 @@ function CommentPopover({ x, y, onSubmit, onCancel, containerRef, scrollRef, cop
               void copySelection()
             }
           }}
-          className="bg-bg-elevated border border-border rounded-md pl-3 pr-8 py-2 text-text text-sm font-body outline-none w-full transition-colors focus-ring resize-none leading-[21px] overflow-hidden"
+          className="bg-bg-elevated border border-border rounded-md pl-3 pr-8 py-2 text-text text-sm font-body outline-hidden w-full transition-colors focus-ring resize-none leading-[21px] overflow-hidden"
         />
         <button
           aria-label={i18nT('components.commentOverlay.add_comment')}
@@ -212,7 +212,7 @@ function CommentRow({ comment, onEdit, onRemove }: {
               if (e.key === 'Enter' && draft.trim()) { if (ime.claimEnter(e)) commitEdit() }
               if (e.key === 'Escape') { ime.reset(); cancelledRef.current = true; setDraft(comment.text); setEditing(false) }
             }}
-            className="bg-bg border border-border rounded px-1.5 py-0.5 text-text text-[13px] w-full outline-none focus-ring" />
+            className="bg-bg border border-border rounded px-1.5 py-0.5 text-text text-[13px] w-full outline-hidden focus-ring" />
         ) : (
           <div
             role="button"
@@ -281,7 +281,7 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
           value={extraPrompt}
           onChange={e => setExtraPrompt(e.target.value)}
           rows={2}
-          className="mt-2 w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-none resize-none focus-ring leading-[18px]"
+          className="mt-2 w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
         />
       )}
     </div>

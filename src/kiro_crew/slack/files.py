@@ -102,6 +102,16 @@ _safe_suffix = safe_suffix
 VOICE_MEMO_UNAVAILABLE = "[Audio attachment — transcription is unavailable]"
 VOICE_MEMO_FAILED = "[Audio attachment — transcription failed]"
 
+#: What the model is told when a voice memo was refused BEFORE transcription:
+#: over the batch duration cap, or the duration probe could not verify it.
+#: Pinned here beside the failure notes above for the same reason they are —
+#: byte-identical to the notes ``transcribe_audio_attachments`` emits for the
+#: other channels (pinned both ways by ``test_slack_backports.py``), not
+#: copies left to drift. ``slack/events.py`` consumes both; ``TOO_LONG`` is a
+#: template whose ``{minutes}`` the consumer fills from the active cap.
+VOICE_MEMO_TOO_LONG = "[Audio attachment — exceeds the {minutes}-minute transcription limit]"
+VOICE_MEMO_DURATION_UNVERIFIED = "[Audio attachment — duration could not be verified]"
+
 
 def is_voice_memo(file: dict) -> bool:
     """Whether one Slack ``files[]`` entry is a voice memo / audio clip.

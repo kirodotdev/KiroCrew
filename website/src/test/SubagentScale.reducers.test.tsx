@@ -37,14 +37,18 @@ describe('subagent scale reducers', () => {
     expect(subs['ag2'].retrying).toBe(true)
   })
 
-  it('sseSubagentBatchUpdate ignores unknown and unsafe ids', () => {
+  it('sseSubagentBatchUpdate recovers an unknown id and still refuses an unsafe one', () => {
     const store = createTestStore()
     const SLOT = spawnMany(store, 1)
     store.dispatch(sseSubagentBatchUpdate({ updates: [
       { id: '__proto__', slot: SLOT, tool: 'evil' },
       { id: 'ghost', slot: SLOT, tool: 'Read' },
     ] }))
-    expect(Object.keys(store.getState().chat.subagents)).toEqual(['ag0'])
+    // The two ids are refused for different reasons, and only one of them is a
+    // refusal now: an update frame is evidence its agent exists, so 'ghost' is
+    // recovered, while a poisoned key creates nothing at all.
+    expect(Object.keys(store.getState().chat.subagents).sort()).toEqual(['ag0', 'ghost'])
+    expect(store.getState().chat.subagents['ghost'].lastTool).toBe('Read')
     expect(({} as Record<string, unknown>).lastTool).toBeUndefined() // no prototype pollution
   })
 

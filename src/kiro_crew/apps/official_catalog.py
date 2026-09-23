@@ -21,9 +21,9 @@ instead of degrading silently:
   list non-empty is REFUSED outright and the client falls back to the seed. A
   withdrawn app must never be rendered because we skipped the mechanism that
   withdraws it.
-- **Display-only inventory.** ``list_catalog_rows`` maps the published list's
-  DISPLAY fields (identity, name, summary, version, tags, author, asset refs)
-  into storefront rows. It emits no clone coordinates and no ``origin``, because
+- **Storefront-only inventory.** ``list_catalog_rows`` maps the published list's
+  display fields and the explicit session approval disclosure into storefront
+  rows. It emits no clone coordinates and no ``origin``, because
   the catalog is trusted only as far as TLS, and a non-builtin row never mints
   the verified badge. Install coordinates come from ``inventory``, materialised
   ONLY from a fresh fetch (``fetch_inventory_entries``) and never from the cache,
@@ -355,6 +355,16 @@ def _curated_tags(value: Any) -> list[str]:
     return [t for t in value if isinstance(t, str)]
 
 
+def _session_approval_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Project the explicit session approval grant for pre-install disclosure."""
+    permissions = entry.get("permissions")
+    if not isinstance(permissions, dict):
+        return None
+    if permissions.get("sessionApproval") is not True:
+        return None
+    return {"permissions": {"sessionApproval": True}}
+
+
 #: The largest integer JavaScript can represent exactly (2**53 - 1). A star
 #: count above this is not a plausible count, and forwarding one lets a
 #: hostile document render hundreds of digits into the store's layout.
@@ -525,6 +535,8 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row["description"] = summary
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
+        if manifest := _session_approval_manifest(entry):
+            row["manifest"] = manifest
         # `author` is deliberately NOT set here even though the catalog states one.
         # `list_registry` snapshots `_index_author = entry["author"]`
         # unconditionally, and `_apply_trust_fields` derives the first-party
@@ -718,6 +730,8 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
             row["description"] = summary
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
+        if manifest := _session_approval_manifest(entry):
+            row["manifest"] = manifest
         author = entry.get("author")
         if isinstance(author, dict) and (name := _curated_str(author.get("name"))):
             row["author"] = name
@@ -746,10 +760,10 @@ def list_catalog_rows() -> list[dict[str, Any]]:
 
     This is the JSON-only storefront path: the published document IS the list,
     so its curated display fields ARE the copy the store renders, and there is
-    no per-app ``app.json`` to prefer over them. Rows carry identity and display
-    fields ONLY — no clone coordinates and no ``origin`` — because the catalog
-    is trusted only as far as TLS, so it must not supply install coordinates or
-    a first-party provenance claim. Install status and trust are stamped later by
+    no per-app ``app.json`` to prefer over them. Rows carry identity, display
+    fields, and the explicit session approval disclosure. They carry no clone
+    coordinates and no ``origin`` because the catalog is trusted only as far as
+    TLS, so it must not supply install coordinates or a first-party claim. Install status and trust are stamped later by
     ``registry.py`` from the installed app, never from this document.
 
     Returns ``[]`` when the catalog is unavailable, which is the caller's signal
@@ -772,6 +786,8 @@ def list_catalog_rows() -> list[dict[str, Any]]:
             row["version"] = version
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
+        if manifest := _session_approval_manifest(entry):
+            row["manifest"] = manifest
         author = entry.get("author")
         if isinstance(author, dict) and (author_name := _curated_str(author.get("name"))):
             row["author"] = author_name

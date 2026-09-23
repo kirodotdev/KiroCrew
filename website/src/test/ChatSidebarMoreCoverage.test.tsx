@@ -123,6 +123,7 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
 const mocks = vi.hoisted(() => ({
   chatFolders: vi.fn(),
   updateChatFolder: vi.fn(),
+  reorderChatFolders: vi.fn(),
   setSlotFolder: vi.fn(),
   sessions: vi.fn(),
   sessionsSearch: vi.fn(),
@@ -338,6 +339,7 @@ beforeEach(() => {
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
   mocks.chatFolders.mockResolvedValue(FOLDERS)
   mocks.updateChatFolder.mockResolvedValue({ ok: true })
+  mocks.reorderChatFolders.mockResolvedValue({ ok: true })
   mocks.setSlotFolder.mockResolvedValue({ ok: true })
   mocks.sessions.mockResolvedValue({ sessions: [], has_more: false })
   mocks.sessionsSearch.mockResolvedValue({ sessions: [] })
@@ -546,11 +548,15 @@ describe('ChatSidebar — drop routing (onDragEnd)', () => {
     renderSidebar()
     await waitFor(() => expect(dnd.onDragEnd).toBeTruthy())
     dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: HIDDEN_FOLDER_ID, data: { type: 'folder' } })
-    await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalled())
-    // Every persisted change is an `order` write — never a re-parent.
-    for (const call of mocks.updateChatFolder.mock.calls) {
-      expect(Object.keys(call[1] as object)).toEqual(['order'])
+    // The whole renumber is ONE atomic request, not one PATCH per row (#10406).
+    await waitFor(() => expect(mocks.reorderChatFolders).toHaveBeenCalledTimes(1))
+    const changes = mocks.reorderChatFolders.mock.calls[0][0] as { id: string; order: number }[]
+    // Every entry is an {id, order} pair -- a reorder, never a re-parent.
+    for (const c of changes) {
+      expect(Object.keys(c).sort()).toEqual(['id', 'order'])
     }
+    // The per-row PATCH path is retired: reordering never touches updateChatFolder.
+    expect(mocks.updateChatFolder).not.toHaveBeenCalled()
   })
 
   it('does nothing when a folder is dropped onto itself', async () => {

@@ -1,4 +1,8 @@
-"""Tests for ``GET /api/sessions?exclude_open=1``.
+"""Tests for the two opt-in narrowings of ``GET /api/sessions``.
+
+``exclude_open=1`` drops what a live slot holds; ``user_only=1`` drops the
+machine namespaces. Both serve the same pane and both are opt-in, so they are
+tested together.
 
 The sidebar's Older-sessions pane renders the complement of the open tabs listed
 above it. The endpoint listed every session file on disk, so every open tab was
@@ -188,3 +192,197 @@ async def test_last_filtered_page_reports_no_more() -> None:
 
     assert _keys(body) == ["dashboard_chat-3"]
     assert body["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_user_only_drops_the_machine_namespaces() -> None:
+    """The defect: a titleless subagent transcript renders its own key as a row.
+
+    ``wf-worker_`` rides along to pin a sibling the telemetry registry never registered,
+    which is why this list is spelled literally rather than derived. ``secretary_`` and
+    ``channel_`` are here so that every member of the tuple is covered by some assertion:
+    an unasserted member can be deleted without any test noticing, and the failure mode
+    that leaves is silent — its rows simply come back.
+    """
+    sessions = [
+        {"key": "dashboard_chat-1"},
+        {"key": "subagent_ba1f91c9"},
+        {"key": "wf-worker_run7_a1b2"},
+        # Every remaining member of the tuple gets an assertion too, so removing any one
+        # of them fails a test rather than silently restoring its rows to the pane.
+        {"key": "secretary_a41f"},
+        {"key": "channel_C0AP3QR_agent7"},
+        {"key": "dashboard_chat-2"},
+    ]
+    request = _make_request(sessions, query={"user_only": "1"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-1", "dashboard_chat-2"]
+    # Counted after the drop, like ``exclude_open``: the client advances its
+    # offset by the rows it received, so a total describing the unfiltered list
+    # promises a page that does not exist.
+    assert body["total"] == 2
+    assert body["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_user_only_keeps_a_cron_row() -> None:
+    """A cron job without ``hide_in_chat`` backs a real slot the user follows.
+
+    The key does not record which kind wrote it, so dropping the namespace would
+    take the followed ones with the silent ones.
+    """
+    sessions = [{"key": "cron_nightly-digest"}, {"key": "dashboard_chat-1"}]
+    request = _make_request(sessions, query={"user_only": "1"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["cron_nightly-digest", "dashboard_chat-1"]
+
+
+@pytest.mark.asyncio
+async def test_user_only_keeps_a_channel_conversation() -> None:
+    """A Slack or Discord thread is a conversation a person held, not a machine run."""
+    sessions = [
+        {"key": "slack_1712793600.123456"},
+        {"key": "discord_99"},
+        {"key": "subagent_ba1f91c9"},
+    ]
+    request = _make_request(sessions, query={"user_only": "1"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["slack_1712793600.123456", "discord_99"]
+
+
+@pytest.mark.asyncio
+async def test_user_only_classifies_both_separator_spellings_alike() -> None:
+    """``_safe_key`` folds ``:`` to ``_`` on the way to disk.
+
+    Every other subagent guard in the tree is spelled ``startswith("subagent:")``,
+    which can never match a filename stem — which is why the pane showed these
+    rows in the first place. The filter must catch the stem, and must not stop
+    catching the live spelling a caller may still hand it.
+    """
+    sessions = [
+        {"key": "subagent:abc"},
+        {"key": "subagent_abc"},
+        {"key": "wf-pool:1"},
+        {"key": "wf_run-2"},
+        {"key": "dashboard_chat-1"},
+    ]
+    request = _make_request(sessions, query={"user_only": "1"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [{}, {"user_only": "0"}])
+async def test_without_the_flag_the_full_inventory_is_unchanged(query: dict) -> None:
+    """Opt-in, byte for byte.
+
+    The memory "Consolidate all" action and the command palette's recents read
+    this endpoint for every session there is; either would silently skip the
+    machine transcripts if the default narrowed.
+    """
+    sessions = [
+        {"key": "dashboard_chat-1"},
+        {"key": "subagent_ba1f91c9"},
+        {"key": "wf-unpooled_run7_2"},
+        {"key": "cron_nightly-digest"},
+    ]
+
+    resp = await api_sessions(_make_request(sessions, query=query))
+
+    assert resp.body == json.dumps({"sessions": sessions, "total": 4, "has_more": False}).encode(
+        "utf-8"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_two_narrowings_compose() -> None:
+    """Older sessions asks for both, so one must not shadow the other."""
+    sessions = [
+        {"key": "dashboard_chat-1"},
+        {"key": "subagent_ba1f91c9"},
+        {"key": "dashboard_chat-2"},
+    ]
+    request = _make_request(
+        sessions,
+        slots={"chat-1": _FakeSlot("chat-1")},
+        query={"exclude_open": "1", "user_only": "1"},
+    )
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-2"]
+    assert body["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_user_only_keeps_a_side_panel_session() -> None:
+    """``sel.py`` classifies ``side:`` as a dashboard surface: the user typed it.
+
+    No ``side_`` transcript is expected to exist — the handler documents side
+    messages as never reaching a persistent store — which is the point: dropping
+    the namespace buys nothing and risks hiding a real conversation.
+    """
+    sessions = [{"key": "side_chat-1"}, {"key": "side_chat-1_2"}, {"key": "subagent_ba1f91c9"}]
+    request = _make_request(sessions, query={"user_only": "1"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["side_chat-1", "side_chat-1_2"]
+
+
+@pytest.mark.asyncio
+async def test_user_only_keeps_a_taskrunner_row_as_the_declared_residual() -> None:
+    """``taskrunner`` is deliberately NOT dropped, and that trade is a contract.
+
+    The namespace holds both runs (``taskrunner:run:<spec stem>``) and real
+    conversations: ``POST /api/taskrunner/{id}/to-chat`` opens a titled chat slot on
+    ``taskrunner:<task_id>:chat:<token>``. The key cannot reliably separate them once
+    ``_safe_key`` has folded every ``:``, so the whole namespace stays listed. Showing
+    a machine row costs less than hiding a conversation, and this test is what stops a
+    later edit from quietly taking the other side of that trade.
+    """
+    sessions = [
+        {"key": "taskrunner_5f2a_chat_3f9c1a24e8b7455da0c6ef1290bd7c58"},
+        {"key": "taskrunner_run_nightly"},
+        {"key": "subagent_ba1f91c9"},
+    ]
+    request = _make_request(sessions, query={"user_only": "1"})
+
+    body = await _call(request)
+
+    assert _keys(body) == [
+        "taskrunner_5f2a_chat_3f9c1a24e8b7455da0c6ef1290bd7c58",
+        "taskrunner_run_nightly",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_user_only_drops_the_workflow_siblings_the_registry_never_listed() -> None:
+    """``wf-unpooled``, ``wf-worker`` and ``wf-scope`` are minted as session keys but
+    are absent from ``_TELEMETRY_LOCAL_PREFIXES``, so a filter derived from that
+    registry silently missed them. The literal list is what closes that gap, and
+    ``_in_namespace`` requires a separator so ``wf`` cannot swallow its own siblings.
+    """
+    sessions = [
+        {"key": "wf_run7_1"},
+        {"key": "wf-pool_run7"},
+        {"key": "wf-unpooled_run7_2"},
+        {"key": "wf-worker_run7_a1b2"},
+        {"key": "wf-author_run7_a1"},
+        {"key": "wf-scope_run7"},
+        {"key": "dashboard_chat-1"},
+    ]
+    request = _make_request(sessions, query={"user_only": "1"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-1"]
+    assert body["total"] == 1

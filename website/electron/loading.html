@@ -92,11 +92,56 @@
     .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-status); animation: pulse 1s ease-in-out infinite; }
     @keyframes pulse { 0%,100% { opacity: .4; transform: scale(.8);} 50% { opacity: 1; transform: scale(1);} }
 
+    /* ---- close control (above the status line) ----
+       This page is painted into the main window on every reconnect, and the
+       window may have no usable chrome at that moment: macOS native fullscreen
+       hides the traffic lights, and the dashboard's focus mode hides them in
+       windowed mode too (nothing restores them once the dashboard document is
+       replaced). Without an exit of its own, a gateway that never comes back
+       leaves the user parked here. The control round-trips through the same
+       window-control channel the Linux caption buttons use; on Linux frameless
+       those injected buttons already cover this page, so it stays hidden there.
+       Bottom-centre, not a corner: the corners belong to the OS captions
+       (macOS top-left, Windows top-right) on the platforms that show them.
+       The button sits beside an active status line, so its label says what
+       closing does to this window, and a hint under it says where the app
+       goes (script below picks both per window and platform).
+       The block paints its own accent surface: the ink colour is chosen against
+       the accent, and the foreground ghosts drift under this spot, so text on a
+       bare ghost body would lose its contrast. */
+    #exit {
+      position: absolute; left: 50%; bottom: calc(6% + 46px); transform: translateX(-50%);
+      z-index: 50; display: flex; flex-direction: column; align-items: center; gap: 8px;
+      width: max-content; max-width: min(88vw, 420px);
+      background: color-mix(in srgb, var(--accent) 92%, transparent);
+      padding: 10px 14px; border-radius: 14px;
+      opacity: 0; transition: opacity .3s ease;
+    }
+    #exit.shown { opacity: 1; }
+    #exit[hidden] { display: none; }
+    #closeWin {
+      -webkit-app-region: no-drag;
+      min-height: 32px; padding: 6px 14px; border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--ink-status) 45%, transparent);
+      background: color-mix(in srgb, var(--ink-status) 12%, transparent);
+      color: var(--ink-status); font: 600 13px/1.3 var(--font-body); cursor: pointer;
+      /* The connection-window label is the long one; in a narrow window it
+         wraps to a second line inside the pill rather than clipping. */
+      white-space: normal; text-wrap: balance; text-align: center;
+    }
+    #closeWin:hover { background: color-mix(in srgb, var(--ink-status) 22%, transparent); }
+    #closeWin:focus-visible { outline: 2px solid var(--ink-status); outline-offset: 2px; }
+    #closeHint {
+      margin: 0; text-align: center; text-wrap: balance;
+      font: 500 12px/1.4 var(--font-body); color: var(--ink-status);
+      opacity: .85;
+    }
+
     /* Accessibility: honour reduced-motion — no bob/pop/pulse, just a calm reveal. */
     @media (prefers-reduced-motion: reduce) {
       .float, .dot { animation: none; }
       .pop.popIn, .pop.popOut { animation-duration: .01s; }
-      #stage, #title { transition-duration: .01s; }
+      #stage, #title, #exit { transition-duration: .01s; }
     }
   </style>
 </head>
@@ -105,6 +150,13 @@
     <div id="ghosts"></div>
     <div id="title">Kiro Crew</div>
     <div id="status"><span class="dot"></span><span id="statusText">Starting gateway&hellip;</span></div>
+    <div id="exit" hidden>
+      <!-- The static copy is the connection-window wording; the script below
+           rewrites the label, the hint and the aria-label once it knows which
+           window it is in (see closeLabelFor / closeHintFor). -->
+      <button id="closeWin" type="button" aria-describedby="closeHint" aria-label="Close window and stop reconnecting. This connection window closes and stops trying to connect. Kiro Crew itself keeps running; to connect again, pick New Connection Window… from the Kiro Crew icon's menu.">Close window and stop reconnecting</button>
+      <p id="closeHint">This connection window closes and stops trying to connect. Kiro Crew itself keeps running; to connect again, pick New Connection Window… from the Kiro Crew icon's menu.</p>
+    </div>
   </div>
 
   <script>
@@ -313,7 +365,13 @@
     }
 
     // ── gateway signalled ready ──
-    function markReady() { ready = true; latestStatus = "Connected \u2713"; statusText.textContent = latestStatus; maybeResolve(); }
+    // The exit control retires here: the page is about to hand off, and a
+    // "Close window" beside "Connected" reads as a choice that no longer exists.
+    function markReady() {
+      ready = true; latestStatus = "Connected \u2713"; statusText.textContent = latestStatus;
+      if (exit) exit.hidden = true;
+      maybeResolve();
+    }
 
     function maybeResolve() {
       if (resolved || !ready || shownCount < MIN_GHOSTS) return;
@@ -356,6 +414,79 @@
       var d = 2500;
       try { var r = new URLSearchParams(location.search).get("ready"); if (r != null) d = Math.max(0, parseInt(r, 10) || 0); } catch (e) {}
       setTimeout(markReady, d);
+    }
+
+    // ── close control ──
+    // Only where the bridge exists (a browser preview has no window to close)
+    // and the OS is not already drawing caption controls onto this page (the
+    // Linux frameless shell injects its own; see window-lifecycle.js). `close`
+    // runs the window's own close handler, and the hint beside the button
+    // says what that does to the window it is painted in.
+    //
+    // When it appears: a reconnect painter in gateway-supervisor.js loads this
+    // page with ?reconnect=1 and the control shows at once, because the user
+    // is looking at this page only because the gateway went away. A cold boot
+    // carries no marker, and there the control appears only after the start
+    // has stalled for COLD_BOOT_STALL_MS: a healthy boot replaces this page in
+    // about two seconds and never shows it, and a merely slow one does not
+    // offer a button that reads as "cancel". The stall timer is also the
+    // fail-safe: with no marker at all, the exit still arrives.
+    //
+    // What the label and hint say: only the main window hides to tray on
+    // close and keeps its connect loop running (window-lifecycle.js,
+    // mainWindow's close handler); a connection window is destroyed by close,
+    // and its connect loop with it. The supervisor marks the main window with
+    // ?primary=1. The outcome that decides the click sits in the button label
+    // itself, not only in the small hint: the main window reads "Close
+    // window", the connection window "Close window and stop reconnecting".
+    // With no marker the connection-window wording stands: it promises
+    // nothing that is false for either window. Both hint sentences lead with
+    // what the click does to this window and put the reassurance in the first
+    // clause, then name the way back. The main-window wording names where
+    // the tray icon lives on this platform (bridge.platform), because a
+    // reader who cannot find the icon believes the app has quit. The
+    // connection-window wording names the tray menu's "New Connection
+    // Window…" item, which every platform's tray carries (createTray in
+    // window-lifecycle.js). Both name the icon, not the tray menu's "Show …"
+    // label, which follows app.name.
+    var COLD_BOOT_STALL_MS = 15000;
+    var TRAY_LOCATION = {
+      darwin: "the Kiro Crew icon in the menu bar, at the top-right of the screen",
+      win32: "the Kiro Crew icon in the notification area next to the clock (it may sit behind the ^ chevron)"
+    };
+    function closeHintFor(primary, platform) {
+      if (!primary) return "This connection window closes and stops trying to connect. Kiro Crew itself keeps running; to connect again, pick New Connection Window… from the Kiro Crew icon's menu.";
+      var where = TRAY_LOCATION[platform] || "the Kiro Crew icon in the system tray";
+      return "This window closes; Kiro Crew keeps running and keeps trying to connect in the background. Bring the window back from " + where + ".";
+    }
+    function closeLabelFor(primary) {
+      return primary ? "Close window" : "Close window and stop reconnecting";
+    }
+    var exit = document.getElementById("exit");
+    var closeWin = document.getElementById("closeWin");
+    var closeHint = document.getElementById("closeHint");
+    var bridge = window.kirocrew;
+    var reconnect = false;
+    var primary = false;
+    try {
+      var splashQuery = new URLSearchParams(location.search);
+      reconnect = splashQuery.get("reconnect") === "1";
+      primary = splashQuery.get("primary") === "1";
+    } catch (e) {}
+    function revealExit() {
+      if (ready) return;
+      exit.hidden = false;
+      requestAnimationFrame(function () { exit.classList.add("shown"); });
+    }
+    if (exit && closeWin && bridge && typeof bridge.windowControl === "function" && !bridge.linuxFrameless) {
+      var label = closeLabelFor(primary);
+      var hint = closeHintFor(primary, bridge.platform);
+      closeWin.textContent = label;
+      closeHint.textContent = hint;
+      closeWin.setAttribute("aria-label", label + ". " + hint);
+      closeWin.addEventListener("click", function () { bridge.windowControl("close"); });
+      if (reconnect) revealExit();
+      else setTimeout(revealExit, COLD_BOOT_STALL_MS);
     }
 
     // ── kick off ──

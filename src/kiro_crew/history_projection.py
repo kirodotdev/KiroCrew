@@ -13,12 +13,15 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
+import secrets
 import time as _time
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.chat_attachments import (
     purge_staged_attachments,
@@ -1269,14 +1272,147 @@ class SessionMetadataProjection:
                         exc_info=True,
                     )
                     return False
+                # The reply threads are primary content too (replies cannot be
+                # regenerated, unlike the summary caches below), so the sidecar
+                # takes the same all-or-nothing route: moved aside in ONE rename
+                # before the transcript goes, moved back if the transcript's
+                # unlink fails, purged only once nothing references it. A
+                # best-effort unlink after the transcript could leave the
+                # replies behind while the delete reported success.
+                threads_path = self._log.threads_sidecar_path(key)
+                threads_staged: Path | None = None
+                threads_dir_fd = -1
+                if threads_path.parent.exists() and platform_compat.is_link_or_junction(
+                    threads_path.parent
+                ):
+                    # A link where the sidecar directory should be would carry
+                    # this delete outside the session store: not ours to touch,
+                    # and not a state a delete may report success over.
+                    if staged is not None:
+                        restore_staged_attachments(staged, path.parent, path.stem)
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: thread sidecar directory is a link for key=%s, "
+                        "not deleting",
+                        key,
+                    )
+                    return False
+                # ``Path.exists`` swallows EVERY OSError as "absent", so a sidecar
+                # the process cannot stat (EACCES, EIO, a stale mount) would read
+                # as no sidecar and the transcript would go while the replies
+                # stayed behind. Only a genuine absence lets the delete proceed
+                # without the sidecar step; anything else fails closed.
+                try:
+                    os.lstat(threads_path)
+                except FileNotFoundError:
+                    threads_present = False
+                except OSError:
+                    if staged is not None:
+                        restore_staged_attachments(staged, path.parent, path.stem)
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: cannot inspect the thread sidecar for key=%s, "
+                        "not deleting",
+                        key,
+                        exc_info=True,
+                    )
+                    return False
+                else:
+                    threads_present = True
+                if threads_present:
+                    # A fresh name per attempt, and a move that REFUSES an
+                    # occupied destination: a staged sidecar left behind by an
+                    # earlier delete whose rollback failed (or by a crash) is
+                    # the only copy of those replies, and a same-named move
+                    # aside would silently write over it.
+                    threads_staged = threads_path.with_name(
+                        f"{threads_path.name}.deleting-{os.getpid()}-{secrets.token_hex(4)}"
+                    )
+                    try:
+                        if platform_compat.IS_POSIX:
+                            # Pin the directory and move the leaf relative to it,
+                            # so a parent swapped under us cannot redirect the move.
+                            # link() is the exclusive step (EEXIST on a taken
+                            # name); the unlink of the old name completes the move
+                            # under the per-key lock, so no reader sees two names.
+                            threads_dir_fd = os.open(
+                                threads_path.parent,
+                                os.O_RDONLY
+                                | getattr(os, "O_DIRECTORY", 0)
+                                | getattr(os, "O_NOFOLLOW", 0),
+                            )
+                            os.link(
+                                threads_path.name,
+                                threads_staged.name,
+                                src_dir_fd=threads_dir_fd,
+                                dst_dir_fd=threads_dir_fd,
+                                follow_symlinks=False,
+                            )
+                            try:
+                                os.unlink(threads_path.name, dir_fd=threads_dir_fd)
+                            except OSError:
+                                # Half a move: drop the second name so the
+                                # sidecar is left exactly as it was.
+                                with contextlib.suppress(OSError):
+                                    os.unlink(threads_staged.name, dir_fd=threads_dir_fd)
+                                raise
+                        else:
+                            # os.rename refuses an existing destination on Windows.
+                            os.rename(threads_path, threads_staged)
+                    except OSError:
+                        if threads_dir_fd >= 0:
+                            os.close(threads_dir_fd)
+                        if staged is not None:
+                            restore_staged_attachments(staged, path.parent, path.stem)
+                        _HISTORY_LOGGER.warning(
+                            "delete_session: cannot move the thread sidecar aside for key=%s, "
+                            "not deleting",
+                            key,
+                            exc_info=True,
+                        )
+                        return False
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
                     if staged is not None:
                         restore_staged_attachments(staged, path.parent, path.stem)
+                    if threads_staged is not None:
+                        try:
+                            if threads_dir_fd >= 0:
+                                os.replace(
+                                    threads_staged.name,
+                                    threads_path.name,
+                                    src_dir_fd=threads_dir_fd,
+                                    dst_dir_fd=threads_dir_fd,
+                                )
+                            else:
+                                os.replace(threads_staged, threads_path)
+                        except OSError:
+                            _HISTORY_LOGGER.warning(
+                                "delete_session: thread sidecar left aside at %s for key=%s",
+                                threads_staged,
+                                key,
+                                exc_info=True,
+                            )
+                    if threads_dir_fd >= 0:
+                        os.close(threads_dir_fd)
                     return False
                 if staged is not None:
                     purge_staged_attachments(staged)
+                if threads_staged is not None:
+                    try:
+                        if threads_dir_fd >= 0:
+                            os.unlink(threads_staged.name, dir_fd=threads_dir_fd)
+                        else:
+                            threads_staged.unlink(missing_ok=True)
+                    except OSError:
+                        # Nothing references the staged bytes any more: an
+                        # orphan for an operator, never a served reply.
+                        _HISTORY_LOGGER.warning(
+                            "delete_session: staged thread sidecar %s not removed",
+                            threads_staged,
+                            exc_info=True,
+                        )
+                if threads_dir_fd >= 0:
+                    os.close(threads_dir_fd)
                 for sidecar in (
                     self._log._summary_cache_path(key),
                     self._log._intent_summary_cache_path(key),
@@ -1312,9 +1448,35 @@ class SessionMetadataProjection:
         key: str,
         fields: dict,
         guard: Callable[[dict], bool],
+        *,
+        require_existing: bool = False,
     ) -> bool:
-        """Merge fields only when the locked on-disk metadata passes a guard."""
+        """Merge fields only when the locked on-disk metadata passes a guard.
+
+        *require_existing* additionally refuses a session that has no file at
+        all. The guard cannot express that itself: :meth:`_read_metadata_status`
+        answers ``({}, True)`` for an ABSENT path -- no metadata, reported as
+        readable -- so through the dict the guard receives, a session DELETED
+        since the caller's own read and one whose file carries no metadata line
+        are the same value. :meth:`_update_metadata_locked` then upserts, so any
+        caller whose guard accepts an empty record recreates a deleted session as
+        a metadata-only line with no transcript behind it.
+
+        Decided INSIDE the lock the write takes, which is the whole point: a
+        deletion landing between a checked-then-written pair is precisely the
+        window this closes, so the caller cannot do it for itself beforehand.
+
+        Off by default, per caller rather than for everyone, because creating the
+        line is the documented behaviour some callers depend on:
+        ``bind_session_execution`` publishes a session's execution context and
+        memory store into its record, and a session whose record does not exist
+        yet must still end up carrying the mode it was admitted under. Refusing
+        there would leave a restricted session with no durable record of being
+        restricted, which is worse than the stub this flag prevents.
+        """
         with self._log._locked(key):
+            if require_existing and not self._log._path(key).exists():
+                return False
             metadata, readable = self._log._read_metadata_status(key)
             if not readable or not guard(metadata):
                 return False

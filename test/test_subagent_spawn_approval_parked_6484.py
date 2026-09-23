@@ -61,6 +61,7 @@ def _mock_sessions() -> MagicMock:
     sessions.reset = AsyncMock()
     sessions.record_success = MagicMock()
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     # NOT "auto": a default install has no session trust, so the spawn falls
     # through to the interactive approval callback.
     sessions.get_approval_policy = MagicMock(return_value="ask")

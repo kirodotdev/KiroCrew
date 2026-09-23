@@ -180,7 +180,9 @@ first-run `cmd::` proofs; this one does not.
 
 **Containment is a disposable worktree plus a deadline, not an OS sandbox.** The verifier refuses a
 `--worktree` that is not a git checkout, refuses the checkout it is itself running from, bounds the
-proof's wall time, and reaps the process it started. It does not attempt kernel-level isolation.
+proof's wall time, and reaps the process it started together with its process group (`killpg` on
+POSIX, `taskkill /T` on Windows), so a helper a proof stood up and never stopped does not outlive the
+verdict. It does not attempt kernel-level isolation.
 Kiro Crew's own namespace sandbox is Linux-only and package-internal, and these scripts are
 standard-library files with no package import, so reaching for it would trade a cross-platform
 verifier for a Linux one. Where those two conflict, cross-platform wins.

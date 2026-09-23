@@ -31,7 +31,7 @@ this spec states the target and that one states the present.
 |---|---|---|
 | Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`; `probes/__init__.py` still has its separate dispatch branch |
 | Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; the other adapters loop internally and no driver assembles a batch, and the `irq.Probe` path remains separate |
-| Observation | `partial` | the `Observation` type and the `Severity` vocabulary live in `irq.py`; `PrWatchProbe` in `probes/gh_pr.py` emits the keys; `monitoring/` reduces a subject to one fingerprint |
+| Observation | `partial` | the `MonitorCondition` type and the `MonitorSeverity` / `MonitorResetsOn` vocabulary live in `monitoring/models.py`, all four pull-request kinds derive their named conditions in `monitoring/pull_request.py`, and `monitoring/decision.py` masks, ages and resets per condition; `irq.py` keeps its own copy of the vocabulary while the cron driver lives, and a subject's fingerprint is still derived from the canonical facts rather than from the conditions |
 | Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the cron path |
 | Persistence | `partial` | versioned in `monitoring/`; unversioned in `irq.py`, which also holds decision logic |
 | Driver | `implemented` | in-session timer in `autonudge.py`; out-of-session script cron in `babysit/scripts/pr_watch.py` |
@@ -51,18 +51,25 @@ remains the seven-value effect selector, but `decide_monitor` returns a
 that wrapper. The entries tuple is provider-neutral and plural, so adding more
 evidence no longer requires changing the return type.
 
-The live decision places exactly one `MonitorObservation` in that tuple, reduces
-the subject to one fingerprint, and lets `format_monitor_wake` compose operator
-text from `MonitorState.last_observation` and `wake_instructions`. That text is
+The live decision places exactly one `MonitorObservation` in that tuple, and that
+observation now carries the subject's **named conditions** alongside its
+fingerprint, so a subject is no longer reduced to one comparable value. The
+fingerprint remains the subject-level comparable that `last_fingerprint` and
+`last_wake_fingerprint` hold; the conditions are what the coalescing window
+masks, ages and resets. `format_monitor_wake` composes operator text from
+`MonitorState.last_observation` and `wake_instructions`. That text is
 kind-dispatched: `format_monitor_wake` takes the subject's `kind` from
 `MonitorState.kind` -- the authoritative armed record, not the provider-supplied
 canonical -- reads that kind's registry entry for its subject noun and field
 list, and renders those fields, so a non-pull-request kind reads as what it is.
 The return-type prerequisite is complete; the engine coalesces successive changes
-to that one subject over time and re-asserts an unresolved change on a re-alert
-interval, both through a window on `MonitorState`. Per-condition entries and the
-multi-signal fold across simultaneous conditions remain target work in layers 3
-and 4, since one fingerprint per subject has no second condition to fold.
+over time, re-asserts an unresolved condition on a re-alert interval, and folds
+simultaneous conditions of one subject into one wake, all through a window on
+`MonitorState` that carries one entry per condition. What remains target work is
+promoting the conditions from a field on the single observation to the verdict's
+own `entries` tuple, which requires splitting the subject-level fields off
+`MonitorObservation`, and deriving the fingerprint from the conditions rather
+than from the canonical facts.
 
 ### A probe boundary not typed to one implementation
 
@@ -117,23 +124,36 @@ to integrate with two contracts. The remaining target is one plugin shape that
 both drivers consume; the acceptance fixture below proves the structured half
 is provider-neutral, not that the two stacks are already one.
 
-### Retiring `irq.Probe` is gated on layer 3
+### Retiring `irq.Probe` is no longer gated on layer 3
 
-Retirement is downstream of layer 3, not of the coalescing window the pure
-decision engine gained. That window folds successive changes to one subject over
-time, which is not the mechanism the cron path depends on. What that path uses,
-and the shared engine cannot yet express, is already named in layers 3 and 4
-below: the urgency claim layer 3 calls `IMMEDIATE` and the kernel implements as
-`Severity.NMI`, for a condition where waiting observes nothing further; and the
-per-entry `resets_on` distinction, which decides whether a new revision clears an
-entry or the entry outlives it. One fingerprint per subject can express neither.
-It has no per-entry identity to scope and no severity to raise, so an entry that
-must fire now cannot say so, and an entry that survives a force-push cannot be
-told from one the force-push resolved.
+Retirement was downstream of layer 3 rather than of the coalescing window the
+pure decision engine gained, because that window folds successive changes to one
+subject over time, which is not the mechanism the cron path depends on. What that
+path uses are the two claims named in layers 3 and 4 below: the urgency claim
+both sides call `IMMEDIATE`, for a condition where waiting observes nothing
+further; and the per-condition `resets_on` distinction, which decides whether a
+new revision clears a condition or the condition outlives it. One fingerprint per
+subject could express neither, having no per-condition identity to scope and no
+severity to raise.
 
-Deleting the old extension point before layer 3 lands would therefore delete
-those two behaviours rather than move them. Until then the two drivers keep two
-contracts, and an author adding a cron-path kind still subclasses `irq.Probe`.
+**The shared engine now expresses both.** `MonitorObservation` carries
+`conditions`, a tuple of `MonitorCondition`, and `decide_monitor` masks, ages and
+resets per condition: an `IMMEDIATE` condition bypasses the coalescing floor, and
+a head change drops the revision-scoped half of the dedupe memory while the
+sticky half survives. `test_monitor_conditions.py` pins both against the
+behaviour `test_irq.py` and `test_irq_port_baseline.py` pin on the cron path, each
+with the differential that the same position without the claim behaves the other
+way.
+
+Two things still stand between that and deleting the extension point, and neither
+is a missing behaviour. The cron kernel keeps its own copy of the vocabulary --
+`irq.Severity` and `irq.ResetsOn`, whose two key-space characters are a persisted
+encoding -- because moving it while the cron driver is live would rewrite the
+kernel's own storage format for no behavioural gain; the two copies cannot drift
+because `test_monitor_conditions.py` pins them member-for-member and pins the two
+key-space characters. And the cron path's plural batch assembly is a driver
+change, which is the consolidation's own step. Until that step an author adding a
+cron-path kind still subclasses `irq.Probe`.
 
 ## A monitor is a field, not a system
 
@@ -202,9 +222,10 @@ one at a time is roughly 150 process invocations against one query.
 subject yet.** `GitHubPullRequestProvider.probe` spends one GraphQL document per
 evidence kind per chunk of at most 25 subjects, so a tick of any size up to that
 bound costs three requests instead of three per subject, and each further chunk
-adds three. It carries the (host, credential) rule as a check rather than as a
-grouping pass: the credential is the call's own argument, and a chunk is refused
-if it names two hosts. The
+adds three. A read the GraphQL point budget REFUSES costs more than that, because
+the fallback below is per subject rather than per chunk. It carries the (host,
+credential) rule as a check rather than as a grouping pass: the credential is the
+call's own argument, and a chunk is refused if it names two hosts. The
 other four adapters still loop internally and declare so in their own docstrings.
 What is missing is above the probe, not inside it: the in-session driver arms one
 `asyncio` task per loop in `autonudge.py`, so a tick structurally sees one
@@ -212,6 +233,42 @@ monitor, and the out-of-session poller runs one subject per cron job through
 `irq.Probe.observe`, which is singular. A batch therefore has no assembler; that
 is a driver change, and it belongs with the consolidation rather than with the
 probe.
+
+#### Two API budgets, not one
+
+GitHub meters GraphQL in points and REST in requests, and the two budgets are
+SEPARATE. A probe bound to one bucket therefore retires on
+`max_provider_errors` whenever that bucket is spent, while the other bucket is
+untouched and answering — a healthy subject reported as a provider outage. The
+GitHub pull-request adapter answers a **rate limit, and only a rate limit**, by
+re-reading the subject on the other bucket:
+
+| Fact | GraphQL | REST fallback |
+| --- | --- | --- |
+| lifecycle, draft, head, mergeability | primary document | `repos/{o}/{r}/pulls/{n}` |
+| review decision | `reviewDecision` | none — reported `unknown` |
+| commit statuses | rollup `StatusContext` | `commits/{sha}/status` |
+| check runs | rollup `CheckRun` | none — see below |
+| review threads | `reviewThreads` | none — count reported incomplete |
+
+Two bounds make this safe rather than merely more available:
+
+- **A degraded observation cannot be a ready one.** What REST cannot express is
+  reported as INCOMPLETE evidence, never guessed at, and
+  `classify_pull_request_facts` answers incomplete checks, incomplete threads and
+  an unknown review decision with `PENDING`. So the fallback can still wake a
+  session on a red board and can never call a subject review-ready on half of
+  one.
+- **Check runs are deliberately not read on REST.** REST names no workflow for a
+  check run, while the rollup builds a check run's identity as
+  `"<workflow> / <name>"`, so a check run read there would carry a different
+  identity for the same check and the watch would report one failure twice, once
+  per transport. A commit status carries `context`, which IS its GraphQL
+  identity, so the status half is exactly the half readable without that drift.
+
+A subject the fallback cannot read either KEEPS the rate limit it was already
+charged, so the second diagnosis can never substitute a terminal kind for a
+retryable one. That is what makes the fallback never worse than no fallback.
 
 Rules:
 
@@ -229,28 +286,45 @@ Rules:
   facts to a missing Checks permission.
 - A partial failure degrades only the subjects it covers. One unreadable subject
   must not fail the batch.
+- A refusal that names a spent BUDGET rather than a fault is retried on any other
+  budget the provider meters separately, before it is charged. Every other failure
+  is charged as it was: a missing subject is missing on both buckets and a rejected
+  credential is rejected on both, so a second transport only makes those slower to
+  report.
 - Every error is classified before it leaves this layer. An unclassified failure
   is `unknown` and counts as not passing.
 
 ### 3. Observation
 
-An observation is a named entry. The type already exists in the kernel as
-`Observation(key, severity, brief, epoch_scoped)` in `irq.py`, with `Severity`
-carrying `WAKE`, `TERMINAL` and `NMI`. What this spec asks for is a **rename, not
-a new type**:
+An observation is a named entry, and the kernel type is now the one this layer
+asks for. `irq.py` carries it as:
 
 ```
-Observation(key, severity, resets_on, brief="")
+Observation(key, severity, brief="", resets_on=ResetsOn.REVISION)
 ```
 
-`epoch_scoped: bool` becomes `resets_on`, and `NMI` becomes `IMMEDIATE`. Naming
-that plainly matters, because a rename has existing callers -- `PrWatchProbe` in
-`probes/gh_pr.py` constructs these today -- so the migration is a mechanical
-rewrite of live code rather than a greenfield addition. The reason for each new
-name is that the old one describes the implementation and the new one describes
-the condition: `epoch_scoped` says which bookkeeping bucket an entry falls in,
-while `resets_on` says what clears it, and `NMI` borrows an interrupt term for
-what is really an urgency claim.
+with `Severity` carrying `WAKE`, `TERMINAL` and `IMMEDIATE`. This landed as a
+**rename of the existing type, not a new one**: `epoch_scoped: bool` became
+`resets_on: ResetsOn`, and `NMI` became `IMMEDIATE`. `PrWatchProbe` in
+`probes/gh_pr.py` constructs these, so it was a mechanical rewrite of live code
+rather than a greenfield addition.
+
+Each new name describes the condition where the old one described the
+implementation. `epoch_scoped` said which bookkeeping bucket an entry fell in;
+`resets_on` says what clears it. `NMI` borrowed an interrupt term for what is
+really an urgency claim.
+
+`resets_on` is an enum rather than a renamed boolean, because the field answers
+*what clears this* and a boolean can only answer *yes or no*: read as a flag,
+`resets_on=False` would have to mean "does not reset on -- nothing", the opposite
+of what `NEVER` says. The kernel already stored the distinction as one of two
+named key spaces, so a two-member enum is also what makes the in-memory type and
+the persisted encoding the same shape.
+
+`brief` stays ahead of `resets_on` positionally, which is not the order this
+section first sketched. Both fields have defaults, so nothing is gained by moving
+`resets_on` forward, and reordering would silently redirect every existing
+three-positional call rather than fail at it.
 
 - **`key`** is a semantic string, stable across ticks, never a hash. `conflict`,
   `red:<check>`, `ready`, `comment:<id>` -- the vocabulary `PrWatchProbe` emits. A
@@ -261,16 +335,40 @@ what is really an urgency claim.
   state: deliver and retire the watch), or `IMMEDIATE` (bypasses the coalescing
   delay but not the budget, for a condition where waiting observes nothing
   further -- a conflicted pull request dispatches no checks, so a pending count
-  never drains). The kernel already implements this behaviour under the name
-  `NMI`.
-- **`resets_on`** is `REVISION` when a new revision clears the condition, or
-  `NEVER` when it belongs to the subject rather than the revision. A comment
-  survives a force-push; a failing check does not. `epoch_scoped` is the same
-  distinction expressed as a boolean over the kernel's epoch.
+  never drains).
+- **`resets_on`** is `ResetsOn.REVISION` when a new revision clears the condition,
+  or `ResetsOn.NEVER` when it belongs to the subject rather than the revision. A
+  comment survives a force-push; a failing check does not. The kernel stores a
+  `REVISION` key in its epoch space and a `NEVER` key in its sticky one, which is
+  the distinction `epoch_scoped` expressed as a boolean over the epoch.
 - **`brief`** is operator-facing text, delivered only if the entry wakes someone.
 
-A subject's fingerprint, where one is still needed, is **derived from** the
-entries. There is one source of truth, so the two cannot disagree.
+A subject's fingerprint, where one is still needed, is **not yet** derived from
+the entries. `monitoring/pull_request.py` derives both the conditions and the
+fingerprint from one canonical fact object, so the two cannot disagree about what
+the subject looks like, but they are two reducers over that object rather than one
+chain. Deriving the fingerprint from the conditions would drop the subject
+identity axis the fingerprint also carries -- head revision, state, target -- and
+would move `last_wake_fingerprint`, which the dashboard reads and the driver uses
+as a claim token across a wake. That belongs with the retirement step, not here.
+
+The structured engine's own copy of this layer is in `monitoring/models.py`:
+
+```
+MonitorCondition(key, severity=WAKE, brief="", resets_on=REVISION)
+```
+
+with `MonitorSeverity` carrying `WAKE`, `TERMINAL` and `IMMEDIATE`, and
+`MonitorResetsOn` carrying `REVISION` and `NEVER`. `MonitorObservation` carries a
+tuple of them, and an observation with none is read as one revision-scoped
+condition keyed by its fingerprint, so a probe that names no conditions is a legal
+shape rather than a migration debt. `TERMINAL` is part of the vocabulary and no
+branch reads it: the structured engine takes terminality from
+`MonitorObservationStatus`, which is a subject-level classification.
+
+The engine stores each condition under a dedupe key carrying one of two key-space
+characters, the same two the kernel uses, so a head change drops the
+revision-scoped half without asking a probe what any stored key meant.
 
 ### 4. Decision
 
@@ -304,10 +402,10 @@ fail safe:
 
 The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
 level-triggers on the live cron path: per-key `alerted` timestamps in its loaded
-state, `_dedupe_key` distinguishing epoch-scoped from sticky entries, a re-alert
+state, `_dedupe_key` distinguishing `REVISION` from `NEVER` entries, a re-alert
 window defaulting to six hours through `DEFAULT_REALERT_SECS`, a coalescing
-window through `coalesce_secs`, and `Severity.NMI` documented as bypassing the
-delay but not the mask. `monitoring/decision.py` now level-triggers too: it
+window through `coalesce_secs`, and `Severity.IMMEDIATE` documented as bypassing
+the delay but not the mask. `monitoring/decision.py` now level-triggers too: it
 re-asserts an unresolved actionable change once its re-alert interval has elapsed
 and coalesces a burst of successive changes to one subject, through a window on
 `MonitorState`. So re-assertion-after-a-window is available on both paths rather
@@ -327,16 +425,86 @@ what makes it safe. A notification pipeline aimed at humans needs no token
 budget because a paged human self-limits; an agent does not, which is why the
 budget half of this design is not optional.
 
-**The stall streak is engine state.** A watch whose verdict has been byte-identical
-across N settled ticks with no progress is stuck, and the engine stops it. That
+**The stall streak is engine state.** A watch whose verdict has been
+byte-identical across N settled ticks is stuck, and the engine stops it. That
 counter belongs in the persisted state the engine reads, not in a file that only
 an instruction knows to maintain -- an advisory counter maintained by prose is
-lost to exactly the long-running compaction it exists to survive. No engine state
-holds a streak of **identical verdicts** today. Streak counters do exist and are
-about something else: `quiet_streak` with `floor_ticks` counts consecutive quiet
-observations and the deliveries they force, `consecutive_provider_errors` counts
-provider failures, and `irq.py` carries its own consecutive-error backstop. None
-of them notices a watch that keeps reaching the same conclusion.
+lost to exactly the long-running compaction it exists to survive. `MonitorState`
+holds it as `stall_digest`, `stall_streak` and `stall_started_at`, and
+`decide_monitor` folds them after the effect is chosen, because the verdict a
+digest summarizes does not exist before then.
+
+Four things the shape decides, each for a reason worth keeping:
+
+- The digest is **derived** from the verdict on every tick, never persisted
+  beside a second copy of it. What the record keeps is the digest of an EARLIER
+  verdict, which nothing else holds, so the one-source-of-truth rule above
+  survives one layer up. The **decision** is inside the digest, not only the
+  entries, and that is what makes "with no progress" the same question as
+  identity: a wake, a record, a retry, a new fingerprint or a moved head all
+  change the digest, so a tick that progressed cannot match. What stays
+  invisible is the woken agent's own uncommitted work, and no condition
+  available at this layer can see that.
+- A tick counts only when it **settled the subject and the engine then did
+  nothing about it** -- a `NO_CHANGE`. `PENDING` is the domain's not-concluded
+  class -- `checks_incomplete`, `checks_pending`, `review_threads_incomplete` and
+  the rest -- so a pending tick never counts and a watch is never retired for
+  being early. `PROVIDER_ERROR` never counts either, being no evidence about the
+  subject and already carrying its own budget. **Every other tick zeroes the
+  streak**, because it means the watch was working: a wake acted, a `RECORD_ONLY`
+  held a change inside the coalescing floor, a `RETRY_PROVIDER` waited on
+  incomplete evidence, a stop already ended it. Counting a deferral is the same
+  error as counting a pending tick, and at the 15s minimum cadence a held change
+  reaches twelve identical `RECORD_ONLY` verdicts 180s into a 240s window --
+  retiring the watch before the window could release the wake it was folding.
+  Zeroing on an UNSETTLED tick is what makes reading a clock in the trip safe: a
+  streak left standing through a long pending stretch would let time alone satisfy
+  the floor, and the next unsettled terminal tick -- a non-retryable provider
+  error -- would be filed as a stall. The price is that a subject whose checks
+  flap never accumulates a streak and is retired by its runtime budget instead: a
+  later stop with an honest reason, which beats an earlier one with a false
+  reason.
+- The trip needs a **measured wall-clock floor** as well as the count, because
+  the count answers the right question in the wrong unit on its own. Cadence is
+  user-set from 15s to 86400s, and the streak's clock starts on its first counted
+  tick, so twelve ticks is eleven intervals -- 3300s at the 300s default, 165s at
+  the 15s minimum -- and 165s of an unchanged subject is a watch whose agent is
+  still working. `stall_started_at` records when the streak
+  opened and the trip reads `now - stall_started_at`, so nothing is translated
+  from ticks into seconds. Storing a ceiling derived from `cadence_secs` would
+  make the trip a pure integer comparison, at the price of a cached value derived
+  from a mutable input with nothing invalidating it: a streak opened at the
+  default would carry that ceiling into a 15s cadence and trip a quarter of the
+  way into its floor. Any such translation breaks on
+  a cadence change in one direction or the other, so there is none, and no
+  invalidation rule to get wrong. Reading the clock reopens nothing: the hazard a
+  snapshot was avoiding was a predicate an operator could make true between two
+  folds. The clock is `time.time()`, a wall clock rather than a monotonic one, and
+  neither direction reopens that hazard: backwards, the elapsed comparison goes
+  negative and only delays a trip; forwards, a jump can satisfy the floor early but
+  cannot manufacture the counted ticks the other half of the condition requires.
+- Both thresholds are **bounded by numbers already in the module** rather than
+  chosen freely, which is what lets a reader check them. The count must exceed
+  the floor's tick equivalent at the default cadence, or it never binds, and stay
+  inside the ticks a default watch gets before its runtime budget, or the stall
+  can never fire: `6 < 12 < 48`. The floor must clear the coalescing window by a
+  wide margin, or a folded burst looks like a stall, and stay well under the
+  re-alert interval, because a re-alert wakes the subject and zeroes the streak,
+  so a floor at or past it could never be reached: `240 << 1800 << 21600`.
+- The stop records `verdict_stall`, distinct from `approval_stall` (a delivery
+  failure) and from every `*_budget` reason (a spent bound), because a stop that
+  reads like a convergence or like a cost is the cycle-cap anti-pattern under a
+  new name. The engine owns that reason through `monitor_stall_reason`, the way
+  it already owns `monitor_budget_reason` -- taking the tick's `now` as a value
+  for the same reason that function does, so it cannot disagree with the fold that
+  decided the stop. Both writers of `stopped_reason` otherwise copy the
+  observation's own code and would file a stall as `checks_failed`.
+
+Streak counters do exist and are about something else: `quiet_streak` with
+`floor_ticks` counts consecutive quiet observations and the deliveries they
+force, `consecutive_provider_errors` counts provider failures, and `irq.py`
+carries its own consecutive-error backstop. None of them notices a watch that
+keeps reaching the same conclusion.
 
 #### The decision is split, and only half of it is pure
 
@@ -345,6 +513,21 @@ fingerprint against `last_wake_fingerprint`), is the budget spent
 (`monitor_budget_reason`), is this error retryable (`_provider_error_decision`
 against `_RETRYABLE_PROVIDER_ERRORS`). It takes the clock as a value through its
 `now` parameter and performs no IO at all.
+
+**A skip is a third outcome, and it reaches three places.** A shared `github:api`
+cooldown makes a probe return WITHOUT calling the API, and it borrows the shape of a
+refusal to say so (`REASON_SHARED_COOLDOWN`, `is_unattempted_probe`). That is
+neither a success nor a provider error: it is no evidence about the subject at all,
+so it moves NEITHER counter — at `shadow.apply_monitor_probe` and at the production
+counting site in `autonudge`. `_provider_error_decision` is the third place, and it
+is the one a counter fix does not reach: it reads the same budget one tick into the
+FUTURE (`consecutive_provider_errors + 1 >= max_provider_errors`), so a watch two
+real errors into a budget of three would be retired by an unrelated scope's
+cooldown, having made no call of its own. The prediction therefore refuses to spend
+an unattempted probe, while `monitor_budget_reason` above it keeps stopping a watch
+whose budget is genuinely gone — a cooldown must not become a way to outlive the
+ceiling. The kind gate stays FIRST of the three, so an unattempted probe reporting a
+non-retryable kind is still blocked.
 
 The **delivery** policy is the other half, and it is impure. It lives in
 `MonitorController.tick`, which decides whether a wake is already in flight
@@ -388,7 +571,7 @@ Required contents:
 | `coalescing` | the open window: when it opened, which keys joined |
 | `errors` | per-kind counts, so a retryable class stays bounded |
 | `budgets_spent` | turns, tokens and provider errors already charged |
-| `stall` | the verdict digest and its consecutive-match count |
+| `stall` | the verdict digest, its consecutive-match count, and when that streak opened |
 
 **The state document holds delivery bookkeeping only. It never holds subject
 state.** What the subject looks like belongs in the evidence file, which is
@@ -398,6 +581,19 @@ will try to read the subject out of it and find only alert timestamps.
 
 The document is rewritten whole and atomically, so it is a snapshot rather than
 a log. Anything that needs a history needs its own append-only file.
+
+The subject's own history has one: the owner session's crew log. When the service
+publishes an observation whose fingerprint differs from the one it held, the
+delivery controller appends one `object/observed` entry -- producer `probe`, the
+kind, the subject's full URL, the fingerprint and the canonical snapshot verbatim --
+into the log of the session the monitor was armed from
+(`crew-log-core.md`, `docs/reference/crew-log/session-types.md`). Once per change
+of fingerprint, never per poll, and independent of the wake decision, because the
+record is about the subject rather than about what the engine chose to do about it.
+A failed read, an observation taken under a superseded configuration generation,
+and a slot with no live session each append nothing; the persistence-only shadow
+path has no owner session and appends nothing either. The state document is
+unchanged by this: the history lives in the log, not beside the bookkeeping.
 
 ### 6. Driver
 
@@ -446,20 +642,69 @@ already share.
 ## Rules the engine enforces, not the prose
 
 An operational rule that lives only in an instruction can be violated silently.
-These are code -- or, where marked `target`, are the reason this consolidation
-exists, because deleting the instruction before the engine enforces the rule
-leaves it enforced nowhere:
+These are code, or say in their own text where an implementation still diverges
+-- deleting the instruction before the engine enforces the rule would leave it
+enforced nowhere:
 
 - An unclassified provider state is `unknown` and counts as **not passing**.
-- Superseded attempts collapse to the newest per check identity. A host keeps
-  cancelled earlier attempts in its rollup, and counting them reports a live
-  failure that no longer exists. The two current implementations **disagree on
-  this today**: the skill's status tool collapses to the newest attempt per
-  identity in `collapse_superseded`, while the structured provider gives each
-  `CheckRun` row a per-row group key in `_normalize_checks` -- `StatusContext` rows
-  it does group, by context -- and maps `CANCELLED` to failed in `_normalize_check`.
-  Since the state fold prefers `failed`, a superseded cancelled attempt reads as a
-  live failure and can wake on a phantom.
+- Superseded attempts collapse to the newest per check identity. A host leaves a
+  replaced round's completed rows in its rollup, and counting them reports a failure
+  that is not live. The structured provider collapses in
+  `_collapse_superseded_rows`, which runs before `_normalize_checks` groups rows; the
+  skill's status tool collapses in `collapse_superseded`, and the two **diverge on both
+  halves of the rule**. On identity, that one keys CheckRuns on
+  `("run", workflowName, name)`, so it groups two workflow files sharing a single
+  `name:` and ignores the run's trigger. On ordering, it takes the newest by the check
+  row's `startedAt`, which is when the JOB got a runner, so a queue can invert it. Both
+  drop a live row rather than over-report, and its displaced row is overwritten instead
+  of joining its `undecidable` list. Tracked as issue #11832; this module's rule is what
+  the provider enforces, not what that tool does.
+  Identity is the workflow DEFINITION plus the check name
+  (`checkSuite.workflowRun.workflow.databaseId`) and the RUN's triggering
+  `checkSuite.workflowRun.event`, because one workflow file can declare several
+  triggers and a file on `push` and `pull_request` produces two runs of itself on one
+  commit; those are concurrent dispatches, so only a later run of the SAME trigger
+  replaces an earlier one. Ordering is the monotonic
+  `checkSuite.workflowRun.databaseId`, which also groups the rows. Not a timestamp: a
+  check row's `startedAt` is when its JOB got a runner, so a queue can invert it, and
+  `WorkflowRun.createdAt` resolves only to the second, which two runs of one workflow on
+  one head routinely share -- `synchronize` and `edited` are both `pull_request`, so such
+  a pair shares this identity, and a tie leaves both rows live so the fold reports the
+  replaced one. `pr-readiness.yml` reached the same conclusion for the required
+  aggregate and records the reasoning there. Two rules about `cancelled` point in opposite directions and must not be
+  conflated. A row is dropped ONLY when its own RUN concluded `CANCELLED` AND that row
+  itself is `COMPLETED`+`CANCELLED` AND a newer run of its identity exists: the rollup
+  carries no lineage edge, so recency alone does not
+  license removing a row, while a cancellation by the concurrency group does establish
+  displacement. Displacement is a property of the RUN and is read from the run, never
+  inferred from the row: a row reaches `CANCELLED` inside runs that were never
+  displaced -- `fail-fast` cancelling a matrix job's siblings, a job cancelled because
+  something in its `needs` failed, an operator cancelling one job -- and in each the
+  run concluded `FAILURE` and is live, so reading the row's own cancellation as
+  displacement drops a row out of a live run and reports it ready. The row's own
+  cancellation is required in addition, because a cancelled run can still hold a row
+  that reached a real verdict before the cancel landed. The run's conclusion is read
+  from `CheckSuite.conclusion`, the run's own status container, because `WorkflowRun`
+  exposes no `conclusion` and `CheckSuite.workflowRun` is the inverse of the edge the
+  selection follows. Separately, the NEWEST run being
+  cancelled is never a reason to drop it, because that would revive the verdict of the
+  run it superseded. Consequence, stated rather than hidden: a replaced round that
+  COMPLETED keeps its rows, so a phantom survives that case. Two rows of ONE run are **not** a retry
+  and both survive: a workflow can publish a check run through the Checks API under
+  its own job's display name, so both are live at once and collapsing them by start
+  time would let the later row erase the earlier row's failure.
+  `CANCELLED` is one instance rather than the mechanism -- any completed row of a
+  replaced round reads as live, and keying on the run instead of on the row's
+  conclusion is
+  what covers all of them. A row is never collapsed on an id the response withheld:
+  both ids are nullable `Int` on the wire even though the objects carrying them are
+  not, so either absence exempts the row, which also leaves it out of the
+  comparison that picks the newest run. An absent run conclusion exempts the row from
+  removal too, but not from that comparison: such a row can still be the newest run,
+  and so still drop an older cancelled row. `CheckSuite.conclusion` is null while a
+  run is still going, and evidence the host withheld is not evidence a row was
+  replaced. Over-reporting costs a turn; hiding a
+  live failure costs the watch.
 - A published aggregate is one signal in the worst-wins fold, never an override
   of the rows. It is read like any other row: a `PR Readiness` StatusContext with
   state FAILURE is a failing row and makes the verdict red, and one with state
@@ -481,8 +726,22 @@ leaves it enforced nowhere:
 - A stale reviewer stamp is an entry (`stale:<name>`), not a paragraph.
 - An un-dispositioned finding is an entry, so readiness cannot be declared over
   one.
-- The stall streak is engine state, so a stuck watch stops itself (`target` -- no
-  engine state holds it today).
+- The stall streak is engine state, so a stuck watch stops itself. `MonitorState`
+  carries `stall_digest`, `stall_streak` and `stall_started_at`; `decide_monitor`
+  folds them and `monitor_stall_reason` names the stop `verdict_stall`.
+- A retained stop is evidence, and an arming tool must not acknowledge an arm it
+  cannot apply. Only a SYSTEM-imposed outcome is displaceable by a re-arm; a
+  consumer-recorded one (`USER_STOP`, `SESSION_CLOSE`, a quarantined record, an
+  outcome this version does not recognise) is preserved, and clearing it is an
+  owner-only dashboard action because it destroys audit evidence.
+  `monitoring.models.retained_outcome_blocks_rearm` is the one predicate that
+  answers this, consumed both by `autonudge._stopped_row_is_replaceable` at the
+  enforcement point and by the `mcp_tools.control` preflight that refuses in band
+  before the model ends its turn. What that shared predicate buys is that the
+  RULE cannot drift between the two sites; the preflight remains advisory, since
+  it fails open on an unreadable record and the turn boundary is what enforces.
+  Two copies of the rule is what lets the ack and the applier disagree on the
+  classification itself, which is the false-acknowledgement class of bug.
 
 ## Adding a new monitored kind
 
@@ -561,7 +820,7 @@ of a subject, and a substrate whose subject is optional has no subject.
 
 | Pattern | Why it fails |
 |---|---|
-| One fingerprint per subject | cannot say which of several simultaneous conditions changed, and cannot coalesce sibling conditions into one wake; it does carry temporal coalescing and re-assertion of the single fingerprint over time |
+| One fingerprint per subject | cannot say which of several simultaneous conditions changed, and cannot fold sibling conditions into one wake. Both drivers now carry named conditions instead; the fingerprint survives only as the subject-level comparable a record holds |
 | Per-subject probe signature | cannot be batched later without changing every caller |
 | Subject knowledge in the decision layer | every new kind then needs a branch there, and the layer stops being testable in isolation |
 | Subject state in the state document | the document is a snapshot of delivery bookkeeping; a reader looking for subject state finds timestamps |
@@ -602,19 +861,20 @@ lifecycle stages, in different shapes:
 
 | Site | Lifecycle stage | Shape | Reachable from code |
 |---|---|---|---|
-| `mcp_shared._resolve_excluded_tools` | per call, cached per session | flat name set from `managedToolPolicy.exclude` | yes |
-| the same function's fail-open returns | before the exclude list is parsed | returns an empty set | nothing to migrate; withholds every exclusion equally |
+| `mcp_shared._resolve_tool_policy` | per call, cached per session | `ToolPolicy(excluded, unresolved)` from `managedToolPolicy.exclude` | yes |
+| the same function's unresolved returns | before the exclude list is parsed | empty set plus the reason it could not be read; `tools/call` refuses, `tools/list` still lists | nothing to migrate; the refusal is audited per call |
 | `acp/kas_agents.to_client_custom_agent` | startup projection, before the session exists | `excludedTools` list relayed to the agent host | yes |
 | `acp/session_mcp.session_mcp_disabled_tools` | session projection: Claude `permissions.deny`, codex `rawInput.server`/`tool` | `(server, tool)` pairs, unioned from the agent spec AND the dashboard-written global `mcp.json` | yes |
 | `agent._WORKER_MIRRORED_SHAPES` | derive-time copy | copies the persisted key | copies rather than resolves, so a rewrite here would alter a user's stored value |
 | `GET /api/session-tool-policy` | on request | the raw persisted rule | deliberately raw, so an operator can see a stale spelling and re-key it |
 | a hand-written block in an on-disk profile | the backend reads the file itself | unknown to this repo | **no** |
 
-The last row is what settles it. `acp/kas_agents.py` states the boundary: a
-hand-written block "is not ignored, just not Crew's to relay: it lives in the profile
-on disk, which the backend reads itself when Crew is not injecting an agent over the
-wire." No code here composes that file, so no migration can expand a retired name in
-it and nothing can warn the operator holding one.
+The last row is what settles it. `acp/kas_agents.py` projects an on-disk
+`permissions` block onto the wire through `kas_permissions.merge_user_permissions`,
+which relays the author's rules verbatim or not at all -- it intersects them with the
+governance ceiling and never rewrites one. No code here composes that file either, so
+no migration can expand a retired name in it and nothing can warn the operator holding
+one.
 
 So the best achievable end state for renaming a published tool is a known silent
 fail-open that cannot be closed -- not a step on the way to a complete job, but the
@@ -627,3 +887,100 @@ Weighed against that: the mispick this rename would prevent has not been observe
 What remains available, because none of it is name-keyed: the tool descriptions, this
 spec, and the prompts that choose between the two. A caller reading `monitor_start`'s
 description learns it is the timer without the name having to carry it.
+
+### Which of the two is the default is an installation's choice
+
+Both arming tools are reachable on a stock install and neither is gated. `GET
+/api/monitors` answers its `enabled` field from whether the service object exists
+(`handlers/autonudge.py`), not from a key, so there has never been a switch that
+turns the structured engine on or off. What was unsettable is which of the two an
+arming takes, and the reason follows from the section above: no code chooses, so
+the choice is made by the model reading the two descriptions.
+
+`monitoring.prefer_structured_arming` (boolean, default `false`) decides which
+side has to justify itself. Off, the structured path is admissible only once the
+caller has satisfied itself the objective is fully determined by typed provider
+facts. On, a supported pull request is enough and the prompt loop becomes the
+exception that needs its own reason, and `monitor_watch`'s own description says
+so too. That is the whole extent of the key: it refuses neither tool, moves no
+argument in either `inputSchema`, and cannot guarantee which path the agent then
+arms -- the text is what it changes, and the text is what its tests measure.
+
+The two positions are NOT two routes, and reading them as a swap of defaults is
+the error to avoid: both send evidence the typed provider cannot observe --
+comments, advisory review findings -- to the prompt loop. What moves is the
+burden of proof. Off leans to the loop whenever the caller is unsure whether the
+objective is fully typed-decidable, because that judgement is the precondition;
+on, being a supported pull request is the precondition and the loop needs a
+positive reason. An installation that wants the cheap path for a few days is
+asking for exactly that shift, which is why the key is worth a row in the schema
+even though it changes no code path.
+
+It is read in `mcp_tools/control.py::schemas()`, which is the only place it is
+read, and read afresh on every build: `mcp_tools.build_tool_list` rebuilds
+descriptors per call rather than caching them, so a Settings write needs no
+gateway restart. It does not reach a session already open, because kiro-cli
+caches a session's tool list for that session's life -- the same limitation
+`mcp_tools/browser.py` records for `dashboard.use_builtin_browser`. A config read
+that raises resolves to the off position, since off is what ships.
+
+The key deliberately does not make `monitor_start` REFUSE a target the structured
+engine supports. `monitor_start` takes a free-text message and no typed target,
+so a refusal would have to guess from prose which armings were structured-capable;
+and `goal-conductor` and `pipeline-conductor` patrol their own session with it as
+their primary use, which a prose-matching refusal would break. A preference that
+cannot misfire is worth more here than an enforcement that can.
+
+The descriptor is not the only prose that states the choice, and the key moves
+only the descriptor. `config/prompt.md` carries the same rule in its own words
+("Prefer bounded `monitor_watch` when typed provider facts decide the whole
+objective"), and that sentence is true in both positions, so it is left alone
+rather than made flag-aware. The reason is reach, not effort: a prompt file is one
+of many agent prompts, while the descriptor is assembled for every session
+whatever prompt it runs, so the descriptor is the only copy a single read can
+move for all of them. An installation that turns the key on therefore gets the
+default restated on the tool list, not rewritten in every prompt.
+
+#### Two costs of making the structured path the default
+
+Both are properties of the engine rather than of the key, and both are what an
+operator is actually buying, so the key's help text names them.
+
+**Half of a review-ready objective is invisible to the typed provider.** A
+structured observation carries lifecycle, checks, mergeability, review decision,
+review-thread counts and a digest over the PR-level comment bodies, and nothing
+else; `docs/architecture/mcp.md` states the same boundary from the tool's side
+("requests that need comments or advisory findings route directly to the finite
+legacy tool whose agent turn can inspect them"). On this repository that is not a
+corner case: a pull request reaches `readiness: passed` only once every non-PASS
+whole-design verdict carries a disposition, and those verdicts live in comment
+bodies. The digest wakes the owner when such a body changes, but a green typed
+board with an unanswered advisory finding whose text never changed is still
+indistinguishable to a probe, which is why the prompt loop keeps `gate=false` for
+that evidence in both positions of this key.
+
+The PR-level comment-body digest is carried as one condition,
+`review_comment_bodies:<digest>`, with severity `WAKE` and `resets_on` `NEVER`:
+a comment belongs to the conversation, not to the commit under review, so a
+force-push must not replay it. The digest is inside the KEY rather than only the
+brief, because the engine dedupes per condition key and a stable key with a
+changing brief would be masked and never wake again -- a bot rewrites its verdict
+in place, so `created_at` does not move and only a digest over the bodies sees the
+change. An empty digest carries no condition, and the provider emits an empty
+digest on an incomplete comment read, so a page that keeps failing cannot wake the
+owner forever. Each comment body is reduced to a fixed-width fingerprint at the
+point of retention, so what the probe keeps does not scale with how much a
+reviewer wrote and no body text survives into the condition key.
+
+**An armed structured monitor is not freely swappable, though the key is.**
+Flipping the key back restores the previous wording on the next tool-list build
+and needs nothing else. An already-armed monitor is different:
+`monitor_stop` records `MonitorOutcome.USER_STOP`
+(`autonudge._apply_monitor_user_stop`), and `_stopped_row_is_replaceable` admits
+only `BUDGET`, `SUCCESS`, `BLOCKED` and `TARGET_UNAVAILABLE` -- the
+system-imposed outcomes. A consumer-recorded stop is retained evidence, and an
+unknown outcome fails closed the same way, so the next arm on that session is
+refused with "its owner must clear it first from the dashboard's goal popover".
+The consequence for an operator who turns this key on and then wants one session
+back on the prompt loop: an agent cannot make that swap, and the remedy is the
+owner's clear or restart action, never a retry.

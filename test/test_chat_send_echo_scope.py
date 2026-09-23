@@ -43,6 +43,17 @@ def echo_state(tmp_path, monkeypatch):
     state.get_or_create_slot(_SLOT, origin=SlotOrigin.USER)
     # Periodic status is unrelated to prompt delivery or its permission check.
     monkeypatch.setattr(state, "status_snapshot", lambda **_kwargs: {})
+    # The SSE `dashboard` frame routes its lesson/cron counts through the shared
+    # status_counts cache; seed it warm so the periodic frame never touches this
+    # fixture's count sources (unrelated to what these echo tests assert).
+    import time as _time
+
+    from kiro_crew.dashboard import status_counts as _sc
+
+    monkeypatch.setattr(_sc, "_counts_cache", (0, 0))
+    monkeypatch.setattr(_sc, "_counts_cache_ts", _time.monotonic())
+    monkeypatch.setattr(_sc, "_counts_cache_failures", 0)
+    monkeypatch.setattr(_sc, "_counts_refresh_inflight", False)
 
     async def reply(st, slot, message, *, _directive_user_origin):
         slot.append("assistant", "reply")
@@ -104,6 +115,12 @@ async def test_user_echo_reaches_only_authorized_ws_clients(
         observer = await client.ws_connect(
             "/api/ws", params={"token": token_auth.generate_token("local-app", app=_APP)}
         )
+        # The upgrade precedes asynchronous warm-up and scope loading. The
+        # initial slots frames prove both connections are registered for echoes.
+        initial_ws = await asyncio.wait_for(
+            asyncio.gather(owner.receive_json(), observer.receive_json()), timeout=5
+        )
+        assert all(frame["type"] == "slots" for frame in initial_ws)
         stream = await client.get(
             "/api/stream", params={"token": token_auth.generate_token("local-app", app=_APP)}
         )

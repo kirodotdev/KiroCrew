@@ -24,8 +24,21 @@ name: PR Readiness Self-Heal Sweep
 #
 # TWO freeze modes qualify as stale, and they need different tests:
 #
-#   1. `pending` past STALE_MINUTES -- the dropped-event case above. Age alone is
-#      the signal, because a live fan-out cannot plausibly still be running.
+#   1. `pending` past STALE_MINUTES **with a check that completed after it was
+#      published** -- the dropped-event case above. Age opens the window, because
+#      a live fan-out cannot plausibly still be running; the check evidence is
+#      what says a recompute would read something the frozen verdict did not.
+#      Age ALONE is not enough, and this is the difference that matters: a
+#      readiness lane added to the monitored list after a head was pushed has
+#      zero runs on that immutable head and can never acquire one, so the
+#      aggregator counts it "(not started)" and re-derives the same pending every
+#      time. Nudging that re-published an identical verdict every 15 minutes for
+#      as long as the pull request stayed open, on 22 of them at once. Such a
+#      head clears by a push or by re-running the named lane -- the aggregator's
+#      status names it -- never by a recompute, so the nudge is skipped and
+#      logged with its reason. Self-terminating both ways, like mode 2: a rescue
+#      republishes the verdict past its evidence and stops, and a lane that does
+#      complete later re-opens the condition.
 #
 #   2. `failure` with check evidence that landed AFTER it was published -- the
 #      RE-RUN case. Re-running individual jobs inside an already-completed run
@@ -151,6 +164,23 @@ jobs:
           now_epoch="$(date -u +%s)"
           stale_seconds=$(( STALE_MINUTES * 60 ))
 
+          # How far BEFORE a readiness verdict's publication a check-run may have
+          # completed and still be evidence the verdict did not see.
+          #
+          # The aggregator snapshots lane state, then finishes its remaining
+          # reads and writes its summary before it publishes, so its lane view is
+          # older than its publish stamp. A lane completing in that gap is
+          # invisible to the verdict yet pre-dates the stamp, and the status
+          # carries no snapshot time for the sweep to compare against -- hence a
+          # bound rather than an exact reading.
+          #
+          # It MUST stay below stale_seconds. That is what keeps mode 1
+          # self-terminating: a rescue republishes, the floor moves to the new
+          # publication minus this lag, and the same check sits below it again
+          # because the sweep only looks back after stale_seconds. One extra
+          # recompute per pending, never a cycle.
+          publish_lag_seconds=300
+
           # Newest disposition-record timestamp on a PR, as an epoch; 0 when
           # there is none or the read fails. Shared by BOTH staleness arms
           # below, because the freeze it detects runs in both directions: a
@@ -181,6 +211,47 @@ jobs:
               || echo "")"
             [ -n "$newest" ] || { echo 0; return 0; }
             date -u -d "$newest" +%s 2>/dev/null || echo 0
+          }
+
+          # Whether a `pending` verdict is a READ-FAILURE pending.
+          #
+          # pr-readiness.yml publishes one whenever a read-only API call keeps
+          # failing after its bounded retries: the revision's state is unknown,
+          # so it writes a non-terminal pending rather than a red. Those
+          # publishes happen at the END of the job, so they can land after every
+          # check on the head has already completed -- which makes them the
+          # pending shape the check-after-verdict test below can never find
+          # evidence for. Age is their only signal, and a recompute genuinely
+          # resolves them, because the next run's reads succeed.
+          #
+          # The discriminator is the status DESCRIPTION, which the GraphQL scan
+          # does not carry. Read here rather than added to the scan so the cost
+          # falls only on a pending the evidence test is about to skip: a head
+          # whose pending carries later check evidence never reaches this call,
+          # and neither does any non-pending verdict.
+          #
+          # Matched on ONE TOKEN the publisher stamps on every such pending, and
+          # at the FRONT, because the API caps a description at 140 characters
+          # and truncates the tail. A token rather than a sentence: the
+          # publisher writes these pendings from more than one site and their
+          # prose differs, so matching prose recognises one site and strands the
+          # rest. test_pr_readiness_sweep.py pins this literal against the
+          # publisher's, and fails a publisher site that forgets the stamp.
+          #
+          # Fails CLOSED toward the evidence test: an unreadable description
+          # answers "not a read failure", which skips the nudge. A missed rescue
+          # costs one sweep interval; the opposite default would re-fire every
+          # ordinary lane-pending whenever the read broke.
+          READ_FAILURE_TOKEN="[read-failed]"
+          readiness_is_read_failure() {
+            local sha="$1" description
+            description="$(gh api "repos/$REPO/commits/$sha/status" \
+              --jq "[.statuses[]? | select(.context == \"$STATUS_CONTEXT\")][0].description // empty" \
+              2>/dev/null || echo "")"
+            case "$description" in
+              "$READ_FAILURE_TOKEN"*) return 0 ;;
+              *) return 1 ;;
+            esac
           }
 
           # Every open PR with its head SHA, last-activity time, readiness
@@ -310,7 +381,79 @@ jobs:
                   # Either unparseable, or still within the plausible-running window.
                   continue
                 fi
-                reason="pending for ${age}s (> ${stale_seconds}s)"
+                # Age proves the verdict is OLD. It does not prove a recompute
+                # would read anything different, and re-firing one that cannot
+                # is pure waste. A readiness lane added to the monitored list
+                # after a head was pushed has zero runs on that immutable head
+                # and can never acquire one, so the aggregator counts it
+                # "(not started)" and re-derives the identical pending every
+                # time. On age alone that ran every 15 minutes for as long as
+                # the pull request stayed open -- measured on 22 of them, one
+                # carrying over 100 identical `PR Readiness` rows on a single
+                # SHA.
+                #
+                # So the test is the one modes 2, 4 and 5 already use, read in
+                # the pending direction: dispatch only when a check-run for this
+                # SHA completed after the verdict's own evaluation, which the
+                # floor below approximates from the publication stamp, and which
+                # is the dropped-event freeze this mode exists for and the only
+                # shape a recompute can resolve. A verdict newer than every
+                # check on its head has already seen all the evidence there is.
+                #
+                # Self-terminating in both directions, which is what makes it
+                # safe on a schedule. Republishing makes readiness the newest
+                # timestamp again, so a rescue nudges at most once per new piece
+                # of check evidence; and the moment any lane does complete after
+                # the verdict this condition flips back on, so a head parked
+                # here is not parked permanently. A pending with NO completed
+                # check at all is left alone for the same reason: its lanes are
+                # still owed, and each completion event recomputes.
+                #
+                # One CLASS of pending is exempt, and it is the exception that
+                # keeps this test from stranding anything: a pending the
+                # publisher stamps as a read failure. Those are published at the
+                # end of a job whose reads broke, so they can post-date every
+                # check on the head and hold no later evidence by construction,
+                # while a recompute resolves them outright. They keep the
+                # age-based retry, which is their only signal -- see
+                # readiness_is_read_failure above. The evidence test therefore
+                # applies to a verdict derived from lane state, which is the
+                # shape a recompute cannot change.
+                #
+                # The lanes cannot be re-run by this sweep -- it dispatches the
+                # aggregator only, never a gate -- and the aggregator's own
+                # status now NAMES them, so the author reads which lane is
+                # missing from the status line and clears it with a push or a
+                # re-run of that lane. Residual, documented rather than solved:
+                # REMOVING a lane from the monitored list on the default branch
+                # changes a frozen verdict with no new check evidence behind it,
+                # and that case waits for a push or a manual dispatch of this
+                # sweep, the same way mode 5 documents a deleted record.
+                newest_epoch=0
+                if [ -n "$newest_check" ]; then
+                  newest_epoch="$(date -u -d "$newest_check" +%s 2>/dev/null || echo 0)"
+                fi
+                # The floor is the publication stamp MINUS publish_lag_seconds,
+                # not the stamp itself. A lane that completed inside the
+                # aggregator's own evaluate-to-publish gap is evidence the
+                # verdict never read, even though it pre-dates the stamp;
+                # comparing against the stamp alone calls that check old and
+                # strands the head permanently once its completion event is
+                # dropped too -- the same freeze in a narrower window. The bound
+                # is declared next to stale_seconds, which it stays below, so a
+                # rescue's own republish carries the same check below the new
+                # floor and the nudge happens at most once.
+                if [ "$newest_epoch" -le $(( updated_epoch - publish_lag_seconds )) ]; then
+                  if ! readiness_is_read_failure "$sha"; then
+                    echo "PR #$number: PR Readiness pending for ${age}s at $sha but no" \
+                      "check completed within ${publish_lag_seconds}s of it being published;" \
+                      "a recompute would re-derive the same verdict, so not re-firing."
+                    continue
+                  fi
+                  reason="pending for ${age}s (> ${stale_seconds}s) after a read failure, which a recompute resolves"
+                else
+                  reason="pending for ${age}s (> ${stale_seconds}s) with a check completed later at $newest_check"
+                fi
                 ;;
               failure)
                 # A TERMINAL verdict can go stale too, and this is the case the

@@ -224,6 +224,11 @@ def _verify_signature(manifest: dict, *, max_payload_bytes: int, flat_strings_on
                     str(signature_path),
                     str(payload_path),
                 ],
+                # The scratch directory is this spawn's working directory too: a
+                # child that inherits the gateway's CWD writes anything it drops
+                # relative to it (an ``.rnd`` seed on older openssl builds) wherever
+                # the gateway happens to run from -- under a test, the checkout.
+                cwd=root,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=_OPENSSL_TIMEOUT_SECS,

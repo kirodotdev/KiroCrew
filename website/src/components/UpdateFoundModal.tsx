@@ -402,14 +402,14 @@ export default function UpdateFoundModal() {
     // landing here a scrim keydown handler is unreachable anyway. Click-to-
     // dismiss needs no role; Escape covers keyboard dismissal.
     <div
-      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-sm flex items-center justify-center animate-rise"
+      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise"
       role="presentation"
       onClick={e => { if (e.target === e.currentTarget && !required) dismiss() }}
     >
       <div
         ref={dialogRef}
         tabIndex={-1}
-        className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden outline-none"
+        className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden outline-hidden"
         role="dialog"
         aria-modal="true"
         aria-label={required

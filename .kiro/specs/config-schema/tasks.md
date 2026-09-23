@@ -1,5 +1,7 @@
 # Implementation Plan: Config Schema
 
+Status: implemented in `src/kiro_crew/config/schema.py`, `src/kiro_crew/config/validation.py`, and `scripts/generate_config_baseline.py`.
+
 ## Overview
 
 Formalize KiroCrew's configuration by making the Python dataclass hierarchy the single source of truth. Add field metadata, introduce `SlackConfig` and `DashboardConfig`, build a schema registry, expose it via API, add a baseline generator, and wire in runtime validation with graceful degradation. All work is in Python, targeting the existing `config/loader.py`, a new `config/schema.py`, `dashboard/handlers.py`, and associated test files.

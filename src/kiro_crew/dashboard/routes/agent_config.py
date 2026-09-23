@@ -12,7 +12,10 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
-from kiro_crew.dashboard.handlers.acp_backend_status import api_acp_backend_status
+from kiro_crew.dashboard.handlers.acp_backend_status import (
+    api_acp_backend_recheck,
+    api_acp_backend_status,
+)
 from kiro_crew.dashboard.handlers.mcp_custom import (
     api_mcp_custom_add,
     api_mcp_custom_get,
@@ -38,6 +41,10 @@ def register(app: web.Application) -> None:
     # the schema says which options this build/policy allows, this says which of
     # them would actually start.
     app.router.add_get("/api/acp-backends", api_acp_backend_status)
+    # The same facts, re-taken for ONE backend with this process's cached absence
+    # dropped first. A POST because it mutates spawn-path state: the GET above may
+    # only report the divergence, which is what ``restart_required`` is for.
+    app.router.add_post("/api/acp-backends/recheck", api_acp_backend_recheck)
     app.router.add_get("/api/config/kirocrew", handlers.api_kirocrew_config)
     app.router.add_put("/api/config/kirocrew", handlers.api_kirocrew_config)
     app.router.add_patch("/api/config/kirocrew", handlers.api_kirocrew_config_patch)

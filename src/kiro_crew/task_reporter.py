@@ -106,6 +106,8 @@ async def notify(
 
 def save_progress(run: Project) -> None:
     """Write TASK_PROGRESS.md next to the spec file, when the run has one."""
+    if run.execution_context and run.execution_context.memory_mode != "persistent":
+        return
     if not run.spec_path:
         # Ad-hoc plans have no spec directory.  Treating Path("").parent as a
         # destination leaks TASK_PROGRESS.md into the gateway's current working

@@ -528,7 +528,7 @@ export default function PrBulkBar() {
               placeholder={i18nT('apps.issueRadar.components.prBulkBar.comment_placeholder')}
               aria-label={i18nT('apps.issueRadar.components.prBulkBar.comment_placeholder')}
               rows={2}
-              className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[13px] text-text placeholder:text-muted outline-none resize-y transition-colors focus-ring font-body"
+              className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[13px] text-text placeholder:text-muted outline-hidden resize-y transition-colors focus-ring font-body"
             />
           )}
           {needsConfirm && (
@@ -601,7 +601,7 @@ export default function PrBulkBar() {
                 // The confirmation is the last step before an irreversible action, so the
                 // caret belongs in it rather than several tab stops away.
                 autoFocus
-                className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-[13px] text-text placeholder:text-muted outline-none transition-colors focus-ring font-body"
+                className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-[13px] text-text placeholder:text-muted outline-hidden transition-colors focus-ring font-body"
               />
             </>
           )}

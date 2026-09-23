@@ -13,7 +13,14 @@ superseded-by: []
 ---
 # RFC: Extract a chat core shared by every chat surface
 
-- Status: **partial** — P1 (renderer registry) merged; P2 (transport) merged for ChatPane, in review for ChatEmbed, SideChat and ChatPage; P3 (composer) merged for SideChat, in review for ChatEmbed. See §4.2 for the per-PR table.
+- Status: **partial** — the shared `sendTurn` transport, renderer registry,
+  `VirtualTranscript`, and the `Composer` root with its voice slice now ship
+  across the main page and secondary chat hosts. The remaining composer atoms,
+  model-layer seam, non-destructive error hand-off, and final page migration are
+  still incomplete. Current implementations live under `website/src/chat-core/`,
+  `website/src/app-sdk/ChatMessageList.tsx`, and
+  `website/src/pages/chat/transcriptRenderers.tsx`; §4.2 preserves the dated
+  per-PR rollout record rather than current merge state.
 - Author: zezhexu (drafted with Kiro)
 - Created: 2026-08-22 · Last audited: 2026-09-05 at `8ed028b0b`
 - Related: [`rfc-everything-is-an-app.md`](rfc-everything-is-an-app.md) (apps need first-class chat embeds); the error-to-agent hand-off work ([PR #5002](https://github.com/kirodotdev/KiroCrew/pull/5002)), whose review concluded the per-page draft-risk audit only disappears once a non-destructive side-panel chat exists.
@@ -31,7 +38,7 @@ The dashboard ships at least five chat UIs. Only the message list is partially s
 | Main chat | `pages/ChatPage.tsx` | 7,347 | own (`ChatPage.send`) | WebSocket | real `ChatInput` | own `renderMessage` (9 role cases) |
 | Session grid pane | `components/ChatPane.tsx` | 626 | own (mirrors `ChatPage.send`, comment says so) | shared store | real `ChatInput` | app-sdk `ChatMessageList` |
 | Side panel chat | `pages/chat/SideChat.tsx` | 647 | own submit queue | shared store | bare `<textarea>` | app-sdk `ChatMessageList` |
-| App embed | `app-sdk/ChatEmbed.tsx` | 220 | own | **polling** (1s/5s `refetchInterval`; bounded to a page since P5-e) | bare `<input>` | app-sdk `ChatMessageList` |
+| App embed | `app-sdk/ChatEmbed.tsx` | 220 | own | **polling** (1s/5s `refetchInterval`; bounded to a page since P5-e) | bounded `<textarea>` via `useComposerDraft` | app-sdk `ChatMessageList` |
 | Full-page app mount | `app-sdk/ChatPanel.tsx` | 37 | delegates | (mounts entire ChatPage) | (entire ChatPage) | (entire ChatPage) |
 
 The real composer, `components/ChatInput.tsx`, was **2,981 lines** (queue stack, IME guard, attachments, slash menu, skill picker, browser-use toggle) and reached only two of the five surfaces. `app-sdk/` is an earlier partial extraction (`ChatMessageList`, `useChatSession`, `useComposerDraft`) that stopped at the message list.

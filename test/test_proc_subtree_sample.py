@@ -21,7 +21,10 @@ So this module asserts three things:
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import os
+import signal
 import time
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
@@ -384,3 +387,143 @@ class TestPoolReadsTheSharedWalk:
         with _FakeTree(), patch.object(platform_compat, "_proc_status_rss_kb", return_value=-1):
             snap = await pool.metrics_snapshot_async()
         assert snap["backends"][0]["rss_kb"] == -1
+
+
+class TestHostParentMap:
+    """``proc_child_map``: the same edges, asked once for the whole host.
+
+    The walker above asks the kernel per root, which costs one read per THREAD of
+    every process it visits -- fine for one root, a multiplier for a caller that
+    needs forty. This map is one read per process on the host and answers all of
+    them, so what it must prove is that it describes the same edges, and that it
+    refuses in a way a caller can tell from an empty host.
+    """
+
+    def test_it_reports_this_process_under_its_real_parent(self) -> None:
+        """The edge is checked against one the OS itself will confirm."""
+        if not platform_compat.IS_LINUX:
+            pytest.skip("/proc parent map is Linux-only")
+        table = platform_compat.proc_child_map()
+        assert table is not None
+        assert os.getpid() in table.get(os.getppid(), [])
+
+    def test_it_agrees_with_the_kernel_child_list_for_a_live_process(self) -> None:
+        """Both routes, same process, same children.
+
+        The map is the more complete of the two by construction (the kernel's
+        child list is documented as reliable only for a frozen task), so this
+        asserts containment in that direction and equality where both answer.
+        """
+        if not platform_compat.IS_LINUX:
+            pytest.skip("/proc parent map is Linux-only")
+        table = platform_compat.proc_child_map()
+        assert table is not None
+        me = os.getpid()
+        assert set(platform_compat._proc_children(me)) <= set(table.get(me, []))
+
+    def test_it_reads_a_process_whose_name_is_not_utf8(self) -> None:
+        """A process may set its own name to arbitrary bytes, and the map must
+        still carry it.
+
+        This pins the reason the map parses BYTES instead of calling
+        :func:`parent_pid`, which reaches the same field through ``read_text``:
+        a name that is not valid UTF-8 raises there and is reported as unknown,
+        which in a map drops that process and every descendant behind it from a
+        caller's tree with nothing to see. The assumption is about a function
+        this one does not own, so it is asserted rather than described.
+        """
+        if not platform_compat.IS_LINUX:
+            pytest.skip("/proc parent map is Linux-only")
+        libc_name = ctypes.util.find_library("c")
+        if libc_name is None:
+            pytest.skip("libc not locatable, so the name cannot be set")
+        read_fd, write_fd = os.pipe()
+        child = os.fork()
+        if child == 0:  # pragma: no cover -- runs in the forked child
+            try:
+                libc = ctypes.CDLL(libc_name, use_errno=True)
+                libc.prctl(15, ctypes.c_char_p(b"weird\xff\xfename"), 0, 0, 0)
+                os.close(read_fd)
+                os.write(write_fd, b"x")
+                time.sleep(30)
+            except BaseException:
+                pass
+            os._exit(0)
+        os.close(write_fd)
+        try:
+            os.read(read_fd, 1)
+            with open(f"/proc/{child}/stat", "rb") as fh:
+                raw = fh.read()
+            # The premise: the name really is the invalid-UTF-8 one.
+            assert b"\xff\xfe" in raw[raw.index(b"(") : raw.rindex(b")") + 1]
+            assert platform_compat._parse_ppid(raw) == os.getpid()
+            # The function this one deliberately does not call cannot answer.
+            assert platform_compat.parent_pid(child) is None
+            # ... while a normally-named process is fine through either route,
+            # so the None above is the name, not the call.
+            assert platform_compat.parent_pid(os.getpid()) is not None
+            table = platform_compat.proc_child_map()
+            assert table is not None
+            assert child in table.get(os.getpid(), [])
+        finally:
+            os.close(read_fd)
+            os.kill(child, signal.SIGKILL)
+            os.waitpid(child, 0)
+
+    def test_off_linux_it_refuses_rather_than_reporting_an_empty_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """None means "walk the roots yourself"; ``{}`` would mean "every tree is
+        its root alone", which is a wrong answer rather than a missing one."""
+        monkeypatch.setattr(platform_compat, "IS_LINUX", False)
+        assert platform_compat.proc_child_map() is None
+
+    def test_an_unlistable_proc_refuses_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        if not platform_compat.IS_LINUX:
+            pytest.skip("/proc parent map is Linux-only")
+        monkeypatch.setattr(platform_compat.os, "listdir", _raise_oserror)
+        assert platform_compat.proc_child_map() is None
+
+    def test_a_process_that_exits_mid_scan_is_skipped_not_fatal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pid listed and then gone is in no live tree, and one such pid must
+        not cost the whole map."""
+        if not platform_compat.IS_LINUX:
+            pytest.skip("/proc parent map is Linux-only")
+        import builtins
+
+        real_open = builtins.open
+        gone = str(os.getpid())
+
+        def flaky_open(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if path == f"/proc/{gone}/stat":
+                raise OSError("vanished")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", flaky_open)
+        table = platform_compat.proc_child_map()
+        assert table is not None
+        assert os.getpid() not in table.get(os.getppid(), [])
+        # The rest of the host still landed.
+        assert len(table) > 0
+
+
+class TestJiffiesOverAWalkedSet:
+    """``proc_cpu_jiffies_for_pids``: the walker's CPU figure, over a set the
+    caller already holds, without enumerating the tree again."""
+
+    def test_it_sums_the_same_per_pid_read_the_walker_uses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same reader, so the total is the walker's total over that set and not a
+        second definition of it."""
+        monkeypatch.setattr(platform_compat, "_proc_cpu_jiffies", lambda pid: JIFFIES[pid])
+        assert platform_compat.proc_cpu_jiffies_for_pids(list(JIFFIES)) == sum(JIFFIES.values())
+
+    def test_an_empty_set_is_zero_not_an_error(self) -> None:
+        assert platform_compat.proc_cpu_jiffies_for_pids([]) == 0
+
+
+def _raise_oserror(*_args: object, **_kwargs: object) -> object:
+    raise OSError("refused")

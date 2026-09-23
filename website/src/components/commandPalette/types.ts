@@ -77,6 +77,19 @@ export interface Result {
    * otherwise.
    */
   enter?: EnterAction
+  /**
+   * An explicit address to put on the clipboard, for a row whose best address is
+   * not the one its {@link EnterAction} names.
+   *
+   * Copy is normally DERIVED from `enter` — see `copyTarget.ts`: a row that can be
+   * opened can be addressed, so populating `enter` is what gives a provider copy
+   * for free. This field is the exception, and a deployed webapp artifact is what
+   * it exists for: Enter opens that artifact's page on THIS dashboard, while the
+   * address worth handing to someone else is the public URL it is served from, and
+   * only the provider holding that record knows it. Validated through `safeHttpUrl`
+   * before it reaches the clipboard.
+   */
+  copyUrl?: string
   /** Primary activation (Enter). Context-aware per the §2 Enter matrix. */
   onActivate: () => void
   /** ⌘Enter / Ctrl+Enter activation (always-new-session semantics). */

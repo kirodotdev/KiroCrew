@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -89,11 +90,17 @@ def _unformatted(targets: tuple[str, ...]) -> set[str]:
     existing = [name for name in targets if (ROOT / name).exists()]
     if not existing:
         raise SystemExit(f"none of the targets {targets} exist under {ROOT}")
+    # Hosted CI retains its native command and worker selection. Fleet and local
+    # checks use recycling for the measured compiled-Black retention failure.
+    launcher = (
+        ["-m", "black"]
+        if os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+        else [str(Path(__file__).with_name("bounded_black.py"))]
+    )
     proc = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "black",
+            *launcher,
             "--check",
             "--target-version",
             TARGET_VERSION,
@@ -109,7 +116,8 @@ def _unformatted(targets: tuple[str, ...]) -> set[str]:
     # former is a verdict; the latter must not read as "everything is clean".
     if proc.returncode not in (0, 1):
         sys.stderr.write(proc.stderr)
-        raise SystemExit(f"black failed with exit code {proc.returncode}")
+        sys.stderr.write(f"black failed with exit code {proc.returncode}\n")
+        raise SystemExit(123)
     found: set[str] = set()
     for line in proc.stderr.splitlines():
         match = WOULD_REFORMAT.match(line.strip())

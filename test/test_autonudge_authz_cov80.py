@@ -50,6 +50,10 @@ class RecordingSvc:
     def get_by_slot(self, slot_key: str) -> Any:
         return self._loop
 
+    def get_by_id(self, loop_id: str) -> Any:
+        """Present because the update chokepoint calls it DIRECTLY, not behind a probe."""
+        return self._loop
+
     async def add(self, **kw: Any) -> Any:
         if self._add_error is not None:
             raise self._add_error

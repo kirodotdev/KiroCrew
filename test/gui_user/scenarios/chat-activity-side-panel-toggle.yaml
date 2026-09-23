@@ -1,0 +1,44 @@
+# Smoke: open and close the Activity side panel from the session header. While
+# the panel is closed the header's right end carries an "Open activity panel"
+# button; the panel then mounts beside the transcript (docked right by default)
+# with its tab strip along the top -- the three PINNED views Changes, Artifacts
+# and Files, always present and never closable even when empty (only the active
+# one shows its label, the other two are icon chips), a "+" menu and, at the far
+# right, the panel's own "Close panel" button. That button is the only close:
+# the header button is not rendered while the panel is open. On the seeded
+# target the session has no pull requests, so the Changes view is its empty
+# state.
+#
+# The open flag is persisted per session (`mc-activity-open:<slot>`) in the
+# browser profile the whole run shares, so the flow is open -> read -> close and
+# leaves the panel as it found it (closed on a fresh profile). The open step is
+# worded as the state to reach, not as a click, so a retry that starts with the
+# panel already open converges instead of closing it. Only the newest three
+# screenshots survive (harness.KEEP_IMAGES): with the flow at four actions they
+# are the open panel, the closed panel and the settled page, so the "open"
+# evidence is read from the first of them; when a retry finds the panel already
+# open, the frame after the session click shows it instead.
+name: chat-activity-side-panel-toggle
+tier: smoke
+feature: side-panel
+user_story: >-
+  As a user, I want to open the Activity panel beside the transcript, so that I
+  can watch tool calls and subagents while chatting.
+docs_url: docs/feature-map/README.md
+summary: Open the Activity side panel from the session header, read its pinned tabs, then close it from the panel
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. In the left sidebar's session list click the pinned row titled "Welcome to KiroCrew" (below the "Demos" folder, outside it) so that its conversation opens, with a header bar above the transcript showing that title.  # brand-ok: verbatim seeded session title from the rich fixture
+  - Make sure the Activity panel is open. If nothing is showing to the right of the transcript, click the "Open activity panel" button -- a small panel icon at the right end of that header bar, near the pop-out icon -- once. A panel appears beside the transcript. Do not click anything inside it.
+  - Read the panel's top strip; it has a highlighted tab labelled "Changes", two icon-only tabs beside it, a "+" button and, at its right end, a "Close panel" button (a panel icon). Click "Close panel".
+  - Wait a second.
+expectations:
+  - No panel is showing beside the transcript; the conversation fills the width of the main area again.
+  - The "Open activity panel" icon button is back at the right end of the header bar above the transcript.
+  - In the screenshot where the panel was open, it stood to the right of the transcript with a highlighted "Changes" tab in its top strip and, in its body, the text "No pull requests in this session yet".
+  - No red error banner is visible.
+max_steps: 8
+max_seconds: 240

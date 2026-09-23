@@ -11,6 +11,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Check, ExternalLink, Loader2, RefreshCw, FileText, AlertTriangle, ArrowLeft } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
+import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
 import { safeHttpUrl } from '../lib/safeUrl'
@@ -256,8 +257,12 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
                             <span className="truncate">{skill.description}</span>
                           )}
                         </div>
+                        {/* No hand-off here: the row is a listbox option, and a
+                            button nested in it is off the list's keyboard path.
+                            Selecting the row shows the same failure in the
+                            detail pane, where the notice carries the hand-off. */}
                         {phase?.step === 'error' && (
-                          <p className="mt-1 text-xs text-red-400">{phase.message}</p>
+                          <ErrorNotice variant="inline" message={phase.message} className="mt-1" />
                         )}
                       </div>
                       <div className="shrink-0 mt-0.5">
@@ -289,6 +294,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
                       installed={isInstalled(selectedSkill)}
                       phase={installPhases[skillKey(selectedSkill)]}
                       onInstall={handleInstall}
+                      onHandoff={onClose}
                     />
                   </div>
                 </>
@@ -331,7 +337,7 @@ function InstallStatus({
   }
   if (phase?.step === 'done') {
     return (
-      <span className="flex items-center gap-1 text-xs text-green-400" role="status">
+      <span className="flex items-center gap-1 text-xs text-ok" role="status">
         <Check size={iconSize} aria-hidden="true" />
         {phase.fileCount > 1 ? `Installed ${phase.fileCount} files` : i18nT('components.skillBrowserModal.installed')}
       </span>
@@ -340,7 +346,7 @@ function InstallStatus({
   if (phase?.step === 'conflict') {
     return (
       <span className="flex items-center gap-1.5 text-xs">
-        <span className="flex items-center gap-1 text-amber-400">
+        <span className="flex items-center gap-1 text-warn">
           <AlertTriangle size={iconSize} aria-hidden="true" /> {i18nT('components.skillBrowserModal.exists')}
         </span>
         <Btn onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(skill, true) }}>
@@ -351,7 +357,7 @@ function InstallStatus({
   }
   if (installed) {
     return (
-      <span className="flex items-center gap-1 text-xs text-green-400">
+      <span className="flex items-center gap-1 text-xs text-ok">
         <Check size={iconSize} aria-hidden="true" /> {i18nT('components.skillBrowserModal.installed')}
       </span>
     )
@@ -373,11 +379,14 @@ function SkillDetailPanel({
   installed,
   phase,
   onInstall,
+  onHandoff,
 }: {
   skill: DiscoveredSkill
   installed: boolean
   phase: InstallPhase | undefined
   onInstall: (skill: DiscoveredSkill, overwrite?: boolean) => void
+  /** Closes the modal once an agent hand-off proceeds, so the chat it navigates to is visible. */
+  onHandoff: () => void
 }) {
   const { data: preview, isLoading: previewLoading } = useQuery({
     queryKey: ['skill-preview', skill.provider, skill.id],
@@ -435,10 +444,10 @@ function SkillDetailPanel({
         )}
       </div>
 
+      {/* An install failure loses nothing: the modal holds no draft, so the
+          hand-off is on, and the modal closes so the chat is visible. */}
       {phase?.step === 'error' && (
-        <div className="mb-3 p-2 rounded bg-danger-subtle border border-danger/30 text-xs text-danger">
-          {phase.message}
-        </div>
+        <ErrorNotice message={phase.message} askAgent onHandoff={onHandoff} className="mb-3" />
       )}
 
       {previewLoading ? (

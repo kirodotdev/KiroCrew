@@ -51,6 +51,8 @@ def _state() -> MagicMock:
     state.push_slots_update = MagicMock()
     state.subagents = MagicMock()
     state.subagents.running_agents_for = MagicMock(return_value=[])
+    state.subagents.has_pending_work_for_async = AsyncMock(return_value=False)
+    state.subagents.wait_for_parent_reports = AsyncMock(return_value=False)
     return state
 
 
@@ -327,7 +329,14 @@ async def test_plan_cancel_during_the_config_load_does_not_start_the_plan(
     turns: list[str] = []
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
+        callback = _kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         turns.append(context)
+        # The assistant row a real turn leaves behind: a stage that captures
+        # nothing is a FAILED stage now, so a fixture without it models the
+        # empty-stage pause rather than a stage that ran.
+        _slot.append("assistant", "stage output", "msg msg-a")
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -395,7 +404,14 @@ async def test_a_plan_started_after_a_cancel_still_runs(monkeypatch: Any) -> Non
     turns: list[str] = []
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
+        callback = _kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         turns.append(context)
+        # The assistant row a real turn leaves behind: a stage that captures
+        # nothing is a FAILED stage now, so a fixture without it models the
+        # empty-stage pause rather than a stage that ran.
+        _slot.append("assistant", "stage output", "msg msg-a")
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -442,7 +458,14 @@ async def test_stop_during_the_config_load_does_not_start_the_plan(monkeypatch: 
     turns: list[str] = []
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
+        callback = _kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         turns.append(context)
+        # The assistant row a real turn leaves behind: a stage that captures
+        # nothing is a FAILED stage now, so a fixture without it models the
+        # empty-stage pause rather than a stage that ran.
+        _slot.append("assistant", "stage output", "msg msg-a")
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -514,7 +537,14 @@ async def test_a_message_queued_during_the_config_load_is_still_handed_off(
     turns: list[str] = []
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
+        callback = _kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         turns.append(context)
+        # The assistant row a real turn leaves behind: a stage that captures
+        # nothing is a FAILED stage now, so a fixture without it models the
+        # empty-stage pause rather than a stage that ran.
+        _slot.append("assistant", "stage output", "msg msg-a")
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -607,7 +637,14 @@ async def test_a_round_recorded_during_the_config_load_cannot_skip_a_stage(
     turns: list[str] = []
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
+        callback = _kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         turns.append(context)
+        # The assistant row a real turn leaves behind: a stage that captures
+        # nothing is a FAILED stage now, so a fixture without it models the
+        # empty-stage pause rather than a stage that ran.
+        _slot.append("assistant", "stage output", "msg msg-a")
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -659,7 +696,14 @@ async def test_a_round_recorded_before_loop_entry_does_skip_a_stage(
     turns: list[str] = []
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
+        callback = _kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         turns.append(context)
+        # The assistant row a real turn leaves behind: a stage that captures
+        # nothing is a FAILED stage now, so a fixture without it models the
+        # empty-stage pause rather than a stage that ran.
+        _slot.append("assistant", "stage output", "msg msg-a")
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 

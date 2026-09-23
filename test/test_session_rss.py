@@ -357,7 +357,9 @@ class TestRssThresholdCheck:
         manager.get_pid = MagicMock(return_value=4242)
         reset_calls: list[str] = []
 
-        async def _reset(key, *, expect_session=None, skip_if_busy=False):
+        async def _reset(
+            key, *, expect_session=None, skip_if_busy=False, skip_if_injecting=False
+        ):
             reset_calls.append(key)
             if key == "dashboard:a":
                 raise RuntimeError("boom")
@@ -402,7 +404,9 @@ class TestRssThresholdCheck:
         manager.set_recycle_callback(cb)
         reset_calls: list[str] = []
 
-        async def _reset(key, *, expect_session=None, skip_if_busy=False):
+        async def _reset(
+            key, *, expect_session=None, skip_if_busy=False, skip_if_injecting=False
+        ):
             reset_calls.append(key)
             return key == "dashboard:b"  # 'a' is a no-op, 'b' recycled
 

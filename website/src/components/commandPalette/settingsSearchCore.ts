@@ -57,6 +57,81 @@ export interface SettingEntryScore {
  * Token"), which would render per-channel entries as indistinguishable rows —
  * re-append it.
  */
+/**
+ * Registry id of the Decisions (Jev) main toggle — the card's own switch.
+ *
+ * The card carries more rows than this one; :data:`DECISIONS_SETTING_IDS` below is
+ * the whole governed set, and the predicate reads that.
+ *
+ * The registry is CODEGEN'd from the static settings tree, so it lists every entry
+ * the build ships regardless of whether the running gateway offers it. This one is
+ * governed: `capabilities.decisions` can withdraw the feature, and
+ * `FeaturePreviewsSection` then renders no card at all. A search result is a promise
+ * that the page has the row, so an unfiltered corpus would land the user on a section
+ * where nothing is there — which reads as a broken page rather than an absent feature.
+ */
+export const DECISIONS_SETTING_ID = 'developer.decisions-jev'
+
+/**
+ * Every registry id the Decisions (Jev) card owns, the main toggle included.
+ *
+ * The card is one governed unit: `capabilities.decisions` withdraws the WHOLE card,
+ * so a search that knows the feature is denied must withhold the address field and
+ * the credential row too. Withholding only the toggle left the rest reachable, and a
+ * result row is a promise that the page has the control — landing a user on a
+ * section where the card was never rendered reads as a broken page.
+ *
+ * Spelled out rather than derived, because the registry carries no source-file
+ * field: `settingsSearchGovernance.test.ts` extracts `DecisionsCard.tsx` with the
+ * real extractor and asserts every label it finds has its id in here, so a control
+ * added to the card without a line here is a red test rather than a live leak.
+ */
+export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
+  DECISIONS_SETTING_ID,
+  'developer.jev-api-key',
+  'developer.earlier-conversation-one-decision-may-carry-in-characters',
+  // The per-point consent switches. Declared in `settingsManual` because the card draws
+  // them from one component labelled by scope, so the extractor cannot see them -- but
+  // they are the card's rows and the fleet ceiling withdraws them with it.
+  'developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls',
+  'developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction',
+  'developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help',
+])
+
+/** The governance answers the search needs, as the two surfaces resolve them. */
+export interface SettingsSearchGovernance {
+  /**
+   * Whether the Decisions entry may be offered: true unless the ceiling is KNOWN to
+   * withdraw it. Both surfaces resolve it as "the read has not succeeded, or it
+   * succeeded and said `decisions_enabled === true`", so only a definite answer
+   * withholds the row.
+   */
+  decisionsEnabled: boolean
+}
+
+/**
+ * Whether *entry* may be OFFERED by a search right now.
+ *
+ * Withheld on a KNOWN denial only. A read that failed is not a withdrawal: nothing has
+ * been denied, and reporting the setting as absent would be a stronger claim than the
+ * dashboard can make. The entry stays, and the card it leads to says the read failed —
+ * that card is the surface with somewhere to put the message, which a search result row
+ * is not.
+ *
+ * Deliberately NOT the card's own posture. The card withholds itself on an unresolved
+ * answer because it carries the egress switch and must not offer a write it cannot
+ * ground; a search row grants nothing and only navigates. Making them identical is what
+ * produced the state where a broken config read left the card visible-and-faded while
+ * the search insisted the setting did not exist.
+ */
+export function settingEntryOffered(
+  entry: SettingEntry,
+  governance: SettingsSearchGovernance,
+): boolean {
+  if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
+  return governance.decisionsEnabled
+}
+
 export function localizedSettingLabel(entry: SettingEntry): string {
   const base = entry.labelKey ? i18nT(entry.labelKey) : entry.label
   return entry.labelKey && entry.labelSuffix ? `${base} (${entry.labelSuffix})` : base

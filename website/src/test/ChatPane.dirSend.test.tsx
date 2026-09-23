@@ -8,9 +8,10 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { setQuestionCard, sseChatMessage, selectComposerBusy } from '../store/chatSlice'
+import chatReducer, { setQuestionCard, sseChatMessage, selectComposerBusy, selectSlotMessages } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { store as appStore } from '../store'
 
 /* ChatPane sends must follow ChatPage's wire/bubble split for folder tokens
  * (issue #743 review finding): the API payload carries `[attached_dir N] path`
@@ -308,6 +309,8 @@ describe('ChatPane pane boundary — data-chat-pane contract', () => {
 describe('ChatPane send — a failed send is reported on the pane', () => {
   const errorsIn = (store: ReturnType<typeof makeStore>, slot: string) =>
     (store.getState().chat.slotMessages[slot] || []).filter(m => m.role === 'error')
+  const noticesIn = (store: ReturnType<typeof makeStore>, slot: string) =>
+    (store.getState().chat.slotMessages[slot] || []).filter(m => m.role === 'notice')
 
   it('reports a rejected send and hands the text back to the composer', async () => {
     ;(api.sendChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('offline'))
@@ -401,10 +404,14 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     await waitFor(() => expect(box.value).toBe('Public only'))
   })
 
-  it('recovers a cleared question-card answer when its receipt is late', async () => {
-    // The transport normalizes AbortError to response-late. Unlike the normal
-    // composer path, the card has already removed the only visible copy of the
-    // answer, so this caller deliberately restores it for the user to inspect.
+  it('restores a cleared question-card answer and warns delivery-unconfirmed when its receipt is late', async () => {
+    // The transport normalizes AbortError to response-late. The idle card
+    // answer mints an optimistic user row, but that row is client-only and NOT
+    // persisted -- a response-late may mean the POST never reached the gateway,
+    // so leaving the row pending would silently drop the answer on reload
+    // (#10634 F1, second head). Instead the answer is handed back to the
+    // composer and a delivery-unconfirmed notice warns the user; the phantom
+    // optimistic row is dropped so nothing lingers looking sent.
     ;(api.sendChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new DOMException('The operation was aborted.', 'AbortError'),
     )
@@ -419,9 +426,13 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     fireEvent.click(await screen.findByText('Public only'))
     fireEvent.click(screen.getByText('Submit'))
 
-    await waitFor(() => expect(errorsIn(store, 'pane-ask-late')).toHaveLength(1))
+    // The answer is restored to the composer for the user to inspect/resend...
     const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
     await waitFor(() => expect(box.value).toBe('Public only'))
+    // ...and a delivery-unconfirmed NOTICE (not an error) warns it is unconfirmed,
+    // so the answer survives a reload via the composer and the user is told.
+    await waitFor(() => expect(noticesIn(store, 'pane-ask-late')).toHaveLength(1))
+    expect(errorsIn(store, 'pane-ask-late')).toHaveLength(0)
   })
 
   it('passes an abort signal so a hung send cannot sit silent', async () => {
@@ -554,6 +565,194 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     reject(new Error('offline'))
 
     await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('same text'))
+  })
+})
+
+/* #10634: a NATIVE AskUserQuestion card is raised WHILE its own turn is still
+ * running and waiting on the answer, and it carries neither `ask_id` (the
+ * blocking backend card) nor `card_id` (the non-blocking `ask_question` MCP
+ * card). Answering it must STEER into the live turn, not queue behind it — the
+ * queue path is what left the question unanswered until timeout. When the turn
+ * has ended, the same card answer starts an ordinary next turn, exactly as the
+ * non-blocking card always does. */
+describe('ChatPane native question card (#10634) — steer while the turn is live', () => {
+  function nativeStore(slotKey: string, busy: boolean) {
+    const store = configureStore({
+      reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+      preloadedState: {
+        dashboard: {
+          status: null, connected: true,
+          // subagents_running is the slots-stream flag selectComposerBusy reads
+          // for a busy-without-active-turn slot; it makes the pane busy here.
+          slots: [{ key: slotKey, messages: 0, running: false, subagents_running: busy, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+          unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
+          subagentRunning: {}, subagentDetails: {}, subagentText: {},
+        } as unknown as RootState['dashboard'],
+      } as Partial<RootState>,
+    })
+    // doSend's receipt adapter reads the module store; keep it in sync so the
+    // optimistic-bubble reconciliation resolves against the same state.
+    vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
+    return store
+  }
+
+  function renderNative(slotKey: string, busy: boolean) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = nativeStore(slotKey, busy)
+    return Object.assign(render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatPane slotKey={slotKey} />
+            </MemoryRouter>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </Provider>,
+    ), { store })
+  }
+
+  function seedNativeCard(store: ReturnType<typeof nativeStore>, slot: string) {
+    // No ask_id AND no card_id — the native card shape (chat_runner.py broadcasts
+    // { slot, questions } only). setQuestionCard with neither id reproduces it.
+    act(() => {
+      store.dispatch(setQuestionCard({
+        slot,
+        questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }],
+      }))
+    })
+  }
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('steers the answer (steer flag set) when the slot turn is live', async () => {
+    const { store } = renderNative('pane-native-live', true)
+    await waitFor(() => expect(selectComposerBusy(store.getState(), 'pane-native-live')).toBe(true))
+    seedNativeCard(store, 'pane-native-live')
+    fireEvent.click(await screen.findByText('us-east-1'))
+    fireEvent.click(screen.getByText('Submit'))
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [wireText, slot, , , , steer] = vi.mocked(api.sendChat).mock.calls[0]
+    expect(wireText).toBe('us-east-1')
+    expect(slot).toBe('pane-native-live')
+    // The 6th arg is the steer flag: true == inject into the running turn.
+    expect(steer).toBe(true)
+    // A busy steer skips the optimistic bubble; the server echo supplies it. No
+    // error/notice means the receipt-aware path did not report a loss.
+    const rows = selectSlotMessages(store.getState(), 'pane-native-live')
+    expect(rows.some(m => m.role === 'error' || m.role === 'notice')).toBe(false)
+  })
+
+  it('starts an ordinary next turn (no steer flag) when the turn has ended', async () => {
+    const { store } = renderNative('pane-native-idle', false)
+    await waitFor(() => expect(selectComposerBusy(store.getState(), 'pane-native-idle')).toBe(false))
+    seedNativeCard(store, 'pane-native-idle')
+    fireEvent.click(await screen.findByText('us-east-1'))
+    fireEvent.click(screen.getByText('Submit'))
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [wireText, slot, , , , steer] = vi.mocked(api.sendChat).mock.calls[0]
+    expect(wireText).toBe('us-east-1')
+    expect(slot).toBe('pane-native-idle')
+    // No steer: an idle slot has no live turn to inject into, so the answer
+    // starts a plain next turn — the non-blocking card's behaviour.
+    expect(steer).toBeFalsy()
+    // #10634 F1: the idle answer mints an optimistic user row so it is never
+    // lost from the transcript when the backend does not echo the user frame.
+    // It carries a sendId and, on the dispatched (turn) receipt, is DEMOTED to a
+    // plain user row by resolveOptimisticSteer (the steer flag, if any, cleared).
+    await waitFor(() => {
+      const answer = selectSlotMessages(store.getState(), 'pane-native-idle')
+        .find(m => m.role === 'user' && m.content === 'us-east-1')
+      expect(answer).toBeTruthy()
+      expect(answer?.meta?.sendId).toBeTruthy()
+      expect(answer?.meta?.steer).toBeFalsy()
+    })
+  })
+
+  it('does NOT steer a busy non-blocking ask_question card (card_id), and drops its optimistic bubble when queued', async () => {
+    // The non-blocking ask_question card carries a card_id and is posted after
+    // the turn ends, but sub-agents can keep the slot busy. It must still take
+    // the plain next-turn path, never steer into a still-finishing turn. When
+    // the server QUEUES it (queue_push), the optimistic bubble must be dropped
+    // so it does not duplicate the QueueStack card (#10634 F1, busy branch).
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, json: () => Promise.resolve({ ok: true, queued: true }),
+    })
+    const { store } = renderNative('pane-nonblocking-busy', true)
+    await waitFor(() => expect(selectComposerBusy(store.getState(), 'pane-nonblocking-busy')).toBe(true))
+    act(() => {
+      store.dispatch(setQuestionCard({
+        slot: 'pane-nonblocking-busy',
+        card_id: 'delivery-nb',
+        questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }],
+      }))
+    })
+    fireEvent.click(await screen.findByText('us-east-1'))
+    fireEvent.click(screen.getByText('Submit'))
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [wireText, slot, , , , steer] = vi.mocked(api.sendChat).mock.calls[0]
+    expect(wireText).toBe('us-east-1')
+    expect(slot).toBe('pane-nonblocking-busy')
+    // No steer even though the slot is busy: a card_id card is not native.
+    expect(steer).toBeFalsy()
+    // #10634 F1 (busy branch): the queued receipt drops the optimistic bubble,
+    // so no user row lingers to duplicate the QueueStack card.
+    await waitFor(() => {
+      const rows = selectSlotMessages(store.getState(), 'pane-nonblocking-busy')
+      expect(rows.some(m => m.role === 'user' && m.content === 'us-east-1')).toBe(false)
+    })
+  })
+
+  it('does NOT restore a CONFIRMED steer whose HTTP receipt is late (echo already reconciled)', async () => {
+    // The exact fenced finding: a live steer whose steer_push/user echo already
+    // confirmed delivery must NOT be handed back as failed when the HTTP receipt
+    // times out -- that would invite a duplicate answer. The echo short-circuit
+    // in applySteerReceipt suppresses the restore.
+    let deliverReceipt!: (value: unknown) => void
+    let rejectReceipt!: (err: unknown) => void
+    vi.mocked(api.sendChat).mockImplementationOnce(() => new Promise((resolve, reject) => { deliverReceipt = resolve; rejectReceipt = reject }))
+    const { store } = renderNative('pane-native-confirmed', true)
+    await waitFor(() => expect(selectComposerBusy(store.getState(), 'pane-native-confirmed')).toBe(true))
+    seedNativeCard(store, 'pane-native-confirmed')
+    fireEvent.click(await screen.findByText('us-east-1'))
+    fireEvent.click(screen.getByText('Submit'))
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [content, , , , meta] = vi.mocked(api.sendChat).mock.calls[0]
+    void deliverReceipt
+    // The server echo carrying this send's sendId reconciles the bubble --
+    // proof the steer landed.
+    act(() => store.dispatch(sseChatMessage({ slot: 'pane-native-confirmed', role: 'user', content, meta: { ...(meta as object), mid: 'm-confirmed', steer: true } })))
+    // Now the HTTP call rejects late (deadline fired): indeterminate, but the
+    // echo already proved delivery.
+    await act(async () => { rejectReceipt(new DOMException('The operation was aborted.', 'AbortError')); await Promise.resolve() })
+
+    const rows = selectSlotMessages(store.getState(), 'pane-native-confirmed')
+    // No failure, no unconfirmed notice, and the answer is NOT re-restored.
+    expect(rows.some(m => m.role === 'error')).toBe(false)
+    expect(rows.some(m => m.role === 'notice')).toBe(false)
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    expect(box.value).toBe('')
+  })
+
+  it('recovers the answer when a live steer times out (response-late), never silently dropping it', async () => {
+    // The card clears on Submit, so the answer exists nowhere else. A busy steer
+    // mints no optimistic bubble, so a response-late must hand the answer back
+    // AND warn — the doSend receipt-aware path, not send()'s bare return.
+    vi.mocked(api.sendChat).mockRejectedValueOnce(new DOMException('The operation was aborted.', 'AbortError'))
+    const { store } = renderNative('pane-native-late', true)
+    await waitFor(() => expect(selectComposerBusy(store.getState(), 'pane-native-late')).toBe(true))
+    seedNativeCard(store, 'pane-native-late')
+    fireEvent.click(await screen.findByText('us-east-1'))
+    fireEvent.click(screen.getByText('Submit'))
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    // The answer is handed back to the composer for the user to inspect/resend.
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe('us-east-1'))
   })
 })
 

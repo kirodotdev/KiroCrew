@@ -17,8 +17,7 @@ import { api } from '../api/client'
 
 vi.mock('../api/client', () => ({
   api: {
-    kirocrewAgents: vi.fn(),
-    syncKirocrewAgents: vi.fn().mockResolvedValue({}),
+    agentCatalog: vi.fn(),
   },
 }))
 
@@ -27,11 +26,10 @@ const roster = [
   { name: 'oncall', kiro_agent: 'oncall-agent', workspace: 'oncall', memory_store: 'oncall-kb', description: 'paging', source: 'package' },
 ]
 
-const agentsApi = vi.mocked(api.kirocrewAgents)
+const agentsApi = vi.mocked(api.agentCatalog)
 
 describe('useAgents roster failure is reportable and retryable (#5990)', () => {
   beforeEach(() => {
-    vi.mocked(api.syncKirocrewAgents).mockResolvedValue({} as never)
     agentsApi.mockReset()
   })
 

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, render } from '@testing-library/react'
+import { act, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 
@@ -13,6 +13,9 @@ class FakeWorker {
   listeners = new Map<string, Set<(event: unknown) => void>>()
   sent: unknown[] = []
   terminated = false
+  postError: Error | undefined
+
+  constructor(readonly url: URL, readonly options: WorkerOptions) {}
 
   addEventListener(type: string, listener: (event: unknown) => void) {
     const listeners = this.listeners.get(type) ?? new Set()
@@ -21,6 +24,7 @@ class FakeWorker {
   }
 
   postMessage(message: unknown) {
+    if (this.postError) throw this.postError
     this.sent.push(message)
   }
 
@@ -61,6 +65,7 @@ vi.mock('@pierre/diffs', () => ({
 /** Props the diff surface handed the library, so the plain-mode assertions can
  *  read the two things that make the saving real. */
 const diffProps = vi.hoisted(() => ({ last: undefined as Record<string, unknown> | undefined }))
+let consoleError = vi.fn()
 
 vi.mock('@pierre/diffs/react', async () => {
   const { createContext } = await import('react')
@@ -83,6 +88,8 @@ vi.mock('@pierre/diffs/react', async () => {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+  consoleError = vi.fn()
+  vi.spyOn(console, 'error').mockImplementation(consoleError)
   vi.resetModules()
   vi.stubGlobal('Worker', FakeWorker)
   state.poolCalls.length = 0
@@ -117,7 +124,77 @@ async function startPool() {
   return { module, view }
 }
 
+async function failPoolToUnavailable() {
+  state.managers[0].workers[0].emit('error', { message: 'one' })
+  await vi.advanceTimersByTimeAsync(250)
+  state.managers[1].workers[0].emit('error', { message: 'two' })
+  await vi.advanceTimersByTimeAsync(1_000)
+  state.managers[2].workers[0].emit('error', { message: 'three' })
+  await vi.advanceTimersByTimeAsync(30_000)
+  state.managers[3].workers[0].emit('error', { message: 'half-open failed' })
+  await Promise.resolve()
+}
+
 describe('Pierre highlight worker pool recovery', () => {
+  it('classifies worker error events', async () => {
+    const { createMonitoredWorker } = await loadPierre()
+    const reportFailure = vi.fn()
+    const worker = createMonitoredWorker(reportFailure) as unknown as FakeWorker
+
+    worker.emit('error', { message: 'worker failed' })
+
+    expect(reportFailure).toHaveBeenCalledWith({ classification: 'error', message: 'worker failed' })
+  })
+
+  it('classifies worker messageerror events', async () => {
+    const { createMonitoredWorker } = await loadPierre()
+    const reportFailure = vi.fn()
+    const worker = createMonitoredWorker(reportFailure) as unknown as FakeWorker
+
+    worker.emit('messageerror', {})
+
+    expect(reportFailure).toHaveBeenCalledWith({
+      classification: 'messageerror',
+      message: 'worker message could not be deserialized',
+    })
+  })
+
+  it('classifies a throwing postMessage', async () => {
+    const { createMonitoredWorker } = await loadPierre()
+    const reportFailure = vi.fn()
+    const worker = createMonitoredWorker(reportFailure) as unknown as FakeWorker
+    worker.postError = new Error('DataCloneError')
+
+    expect(() => worker.postMessage({ type: 'file', id: 'clone-failed' })).toThrow('DataCloneError')
+    expect(reportFailure).toHaveBeenCalledWith({
+      classification: 'postMessage throw',
+      message: 'DataCloneError',
+    })
+  })
+
+  it('classifies an initialization watchdog timeout', async () => {
+    const { createMonitoredWorker } = await loadPierre()
+    const reportFailure = vi.fn()
+    const worker = createMonitoredWorker(reportFailure) as unknown as FakeWorker
+
+    worker.postMessage({ type: 'initialize', id: 'slow-initialize' })
+    await vi.advanceTimersByTimeAsync(120_000)
+
+    expect(reportFailure).toHaveBeenCalledWith({
+      classification: 'init timeout',
+      message: 'worker request slow-initialize (initialize) timed out',
+    })
+  })
+
+  it('versions the worker URL so pre-WASM response headers cannot survive an upgrade', async () => {
+    await startPool()
+    expect(state.managers[0].workers.length).toBeGreaterThan(0)
+    for (const worker of state.managers[0].workers) {
+      expect(worker.url.searchParams.get('csp')).toBe('wasm-v1')
+      expect(worker.options).toEqual({ type: 'module' })
+    }
+  })
+
   it('keeps the bounded WASM engine in highlighterOptions', async () => {
     await startPool()
     expect(state.poolCalls).toHaveLength(1)
@@ -137,9 +214,83 @@ describe('Pierre highlight worker pool recovery', () => {
     expect(view.queryByText(FILE.contents.trim(), { selector: 'pre' })).toBeNull()
   })
 
+  it('coalesces one inline reload notice across passive surfaces and reassigns it when the owner unmounts', async () => {
+    const { module, view } = await startPool()
+    view.rerender(<>
+      <module.PierreCodeImpl file={FILE} />
+      <module.PierrePatchImpl patch={'--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new'} />
+      <module.PierreFilePairImpl
+        oldFile={{ name: 'old.ts', contents: 'OLD' }}
+        newFile={{ name: 'new.ts', contents: 'NEW' }}
+      />
+    </>)
+
+    await act(async () => {
+      await failPoolToUnavailable()
+    })
+
+    const alert = view.getByRole('alert')
+    expect(view.getAllByRole('alert')).toHaveLength(1)
+    expect(view.container).toContainElement(alert)
+    expect(alert).not.toHaveClass('fixed')
+    expect(alert).toHaveTextContent(
+      'Syntax highlighting is unavailable until you reload. Content remains readable. '
+      + 'Last failure: error (generation 4, attempt 4): half-open failed',
+    )
+    expect(consoleError).toHaveBeenCalledOnce()
+    expect(consoleError).toHaveBeenCalledWith(
+      '[pierre-worker-pool] unavailable classification=error generation=4 attempt=4 reason="half-open failed"',
+    )
+    const reload = view.getByRole('button', { name: 'Reload' })
+    expect(reload).toBeInTheDocument()
+    expect(view.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+    expect(view.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+    expect(alert.querySelectorAll('button')).toHaveLength(2)
+    expect(reload.parentElement).not.toBe(alert.parentElement)
+    expect(reload.parentElement?.querySelectorAll('button')).toHaveLength(1)
+    expect(view.container).toHaveTextContent(FILE.contents.trim())
+    expect(view.container).toHaveTextContent('old')
+    expect(view.container).toHaveTextContent('new')
+    expect(view.container).toHaveTextContent('OLD')
+    expect(view.container).toHaveTextContent('NEW')
+
+    view.rerender(<>
+      <module.PierrePatchImpl patch={'--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new'} />
+      <module.PierreFilePairImpl
+        oldFile={{ name: 'old.ts', contents: 'OLD' }}
+        newFile={{ name: 'new.ts', contents: 'NEW' }}
+      />
+    </>)
+    expect(view.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  it('keeps the passive notice dismissed across later passive surfaces', async () => {
+    const { module, view } = await startPool()
+    view.rerender(<>
+      <module.PierreCodeImpl file={FILE} />
+      <module.PierreCodeImpl file={{ ...FILE, name: 'second.ts' }} />
+    </>)
+
+    await act(async () => {
+      await failPoolToUnavailable()
+    })
+
+    fireEvent.click(view.getByRole('button', { name: 'Dismiss' }))
+    expect(view.queryByRole('alert')).toBeNull()
+
+    view.rerender(<>
+      <module.PierreCodeImpl file={FILE} />
+      <module.PierrePatchImpl patch={'--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new'} />
+      <module.PierreFilePairImpl
+        oldFile={{ name: 'old.ts', contents: 'OLD' }}
+        newFile={{ name: 'new.ts', contents: 'NEW' }}
+      />
+    </>)
+    expect(view.queryByRole('alert')).toBeNull()
+  })
+
   it('stays silent while an editor surface is mounted and returns once it unmounts', async () => {
     const { module, view } = await startPool()
-    // What `PierreEditorImpl` does on mount, without its Pierre edit imports.
     function EditorSurface() {
       module.useRegisterEditorSurface()
       return <textarea aria-label="draft" />
@@ -148,63 +299,37 @@ describe('Pierre highlight worker pool recovery', () => {
       <module.PierreCodeImpl file={FILE} />
       <EditorSurface />
     </>)
+
     await act(async () => {
-      state.managers[0].workers[0].emit('error', { message: 'one' })
-      await vi.advanceTimersByTimeAsync(250)
-      state.managers[1].workers[0].emit('error', { message: 'two' })
-      await vi.advanceTimersByTimeAsync(1_000)
-      state.managers[2].workers[0].emit('error', { message: 'three' })
-      await vi.advanceTimersByTimeAsync(30_000)
-      state.managers[3].workers[0].emit('error', { message: 'half-open failed' })
-      await Promise.resolve()
+      await failPoolToUnavailable()
     })
-    // The editor shows its own save-first notice where the draft lives; a
-    // tab-wide "reload" instruction would risk a draft the reader cannot see.
+
     expect(view.queryByRole('alert')).toBeNull()
     expect(view.queryByRole('button', { name: 'Ask the agent' })).toBeNull()
+    expect(view.queryByRole('button', { name: 'Reload' })).toBeNull()
 
     view.rerender(<module.PierreCodeImpl file={FILE} />)
-    expect(view.getByRole('alert')).toHaveClass('fixed')
+    expect(view.getAllByRole('alert')).toHaveLength(1)
+    expect(view.getByRole('button', { name: 'Reload' })).toBeInTheDocument()
     expect(view.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
   })
 
-  it('shows one terminal hand-off across passive surfaces', async () => {
-    const { module, view } = await startPool()
-    view.rerender(<>
-      <module.PierreCodeImpl file={FILE} />
-      <module.PierreCodeImpl file={{ ...FILE, name: 'second.ts' }} />
-    </>)
+  it('reloads the tab from the passive notice recovery action', async () => {
+    const originalReload = window.location.reload
+    const reloadSpy = vi.fn()
+    Object.defineProperty(window.location, 'reload', { configurable: true, value: reloadSpy })
 
-    await act(async () => {
-      state.managers[0].workers[0].emit('error', { message: 'one' })
-      await vi.advanceTimersByTimeAsync(250)
-      state.managers[1].workers[0].emit('error', { message: 'two' })
-      await vi.advanceTimersByTimeAsync(1_000)
-      state.managers[2].workers[0].emit('error', { message: 'three' })
-      await vi.advanceTimersByTimeAsync(30_000)
-      state.managers[3].workers[0].emit('error', { message: 'half-open failed' })
-      await Promise.resolve()
-    })
+    try {
+      const { view } = await startPool()
+      await act(async () => {
+        await failPoolToUnavailable()
+      })
 
-    expect(view.getAllByRole('alert')).toHaveLength(1)
-    expect(view.getByRole('alert')).toHaveClass('fixed')
-    expect(view.getByRole('alert')).toHaveTextContent(
-      'Syntax highlighting is unavailable until you reload. Content remains readable.',
-    )
-    expect(view.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
-
-    // Terminal is forever, so the notice is dismissible — once, for every
-    // surface in the tab, including ones mounted afterwards.
-    await act(async () => {
-      view.getByRole('button', { name: 'Dismiss' }).click()
-    })
-    expect(view.queryByRole('alert')).toBeNull()
-    view.rerender(<>
-      <module.PierreCodeImpl file={FILE} />
-      <module.PierreCodeImpl file={{ ...FILE, name: 'second.ts' }} />
-      <module.PierreCodeImpl file={{ ...FILE, name: 'third.ts' }} />
-    </>)
-    expect(view.queryByRole('alert')).toBeNull()
+      fireEvent.click(view.getByRole('button', { name: 'Reload' }))
+      expect(reloadSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(window.location, 'reload', { configurable: true, value: originalReload })
+    }
   })
 
   it('switches mounted surfaces to complete plain text, terminates every worker, and remounts a replacement', async () => {

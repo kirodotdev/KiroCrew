@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from tmpdir_helpers import short_tmp_base
 
 from kiro_crew.dashboard.handlers import api_outbox_notify
 
@@ -182,18 +181,27 @@ def mock_sel():
 
 @pytest.fixture
 def outbox(tmp_path):
-    # Use /tmp as a stable base — macOS tmp_path contains high-entropy directory
-    # IDs that trigger the bare-secret heuristic in redact_credentials(), causing
-    # api_outbox_notify to reject the path with 400 before any test logic runs.
+    # Not ``tmp_path``: on macOS pytest's basetemp carries the per-user
+    # ``/var/folders/<..30 random chars..>/T`` segment, which trips the bare-secret
+    # heuristic in redact_credentials() and has api_outbox_notify reject the path
+    # with 400 before any test logic runs.
     #
-    # Removed on teardown: `mkdtemp` does not register a finalizer, so without this
-    # every test left a directory in /tmp forever (one per test, thousands over a
-    # dev's history). tmp_path is still requested so pytest's own numbered-dir
-    # retention policy keeps this fixture tied to the test that used it.
+    # Not a literal ``/tmp`` either: the rootdir conftest already gives the run
+    # its own ``tempfile`` base -- ``/tmp/kc-pytest-<user>-<pid>-<rand>`` on macOS,
+    # ``$TMPDIR/kc-pytest-...`` elsewhere -- short, low-entropy, removed at session
+    # end and RESIDUE-REPORTED, whereas a directory dropped straight into the
+    # shared ``/tmp`` is owned by nobody and, on hosts that reap ``/tmp``
+    # mid-session, can vanish under a running test. A bare ``mkdtemp()`` lands
+    # in that base; the assertion pins it so a ``dir=`` creeping back in is a
+    # red test rather than residue on someone's disk. tmp_path is still
+    # requested so pytest's own numbered-dir retention policy keeps this
+    # fixture tied to the test that used it. Same fixture as
+    # test_outbox_binary.py.
     import shutil
     import tempfile
 
-    base = Path(tempfile.mkdtemp(dir=short_tmp_base()))
+    base = Path(tempfile.mkdtemp())
+    assert base.is_relative_to(tempfile.gettempdir()), base
     odir = base / "outbox"
     odir.mkdir()
     try:

@@ -1,6 +1,6 @@
 ---
 name: writing-tests
-description: "How to write a Kiro Crew backend test that has NO side effects and does not flake. Use when adding, editing, reviewing, or debugging a pytest test in the Kiro Crew source repo: which conftest is under your file, what leaks (temp dirs, the real data home, ~/.kiro, cron, threads, child processes), how to tell which of the six flake classes you have and where each one's fix is written, and the cross-platform traps on macOS/Linux/Windows and arm64. Also covers diagnosing a residue failure and keeping the parallel suite fast."
+description: "How to write a Kiro Crew backend pytest test with NO side effects that does not flake. Use when adding, editing, reviewing or debugging a test in the Kiro Crew repo: which conftest applies, what leaks (temp dirs, data home, ~/.kiro, cron, threads), the six flake classes, cross-platform traps."
 triggers: write a test, add a test, fix a flaky test, test is flaky, test side effect, temp dir residue, tmp residue, kirocrew test, pytest kirocrew, test isolation, conftest, xdist, test leaked
 repo_scope: src/kiro_crew
 ---
@@ -572,3 +572,44 @@ The consequence for how you write a test:
       between scanners; a growth/linearity ratchet measures the algorithm's own work
       (bytes produced, items visited), not wall-clock and not interpreter call counts
       (`str.join` is one C call at any length)
+- [ ] Nothing assumes `tmp_path` is OUTSIDE a git repository: a fixture whose verdict comes
+      from an upward walk (nearest `.git`, `install.sh` + `setup.cfg`, project markers from
+      the cwd, git discovery) plants the boundary it reads — a developer's `TMPDIR` may sit
+      inside the checkout, and in a linked worktree the `.git` such a walk finds is a FILE
+- [ ] A nested `python -m pytest` on files under `tmp_path` passes its own `-c <ini>`,
+      `--rootdir` and `--color=no`: otherwise it adopts the repository's ini, and the
+      repo `addopts` reshape the very output the outer test greps
+- [ ] A stub for an `os.*` function reached through a module alias
+      (`monkeypatch.setattr("<mod>.os.unlink", ...)`) forwards every non-owned call to the
+      saved real function with `*args, **kwargs` INTACT — dropping `dir_fd` re-aims pytest's
+      own `rmtree` at the cwd — and asserts a bare relative name never reaches the stub
+- [ ] A test that compiles or imports a throwaway source under `tmp_path` keeps its bytecode
+      there (`sys.pycache_prefix` under `tmp_path`, or the suite's `no_bytecode()` helper),
+      because the suite-wide mirror is keyed on the absolute source path and a per-run path
+      never gets read again
+- [ ] A fixture needing a SHORT path (`AF_UNIX` `sun_path`, a redaction-sensitive path) calls
+      `tmpdir_helpers.short_tmp_base()` — never a literal `/tmp`, and never
+      `tempfile.gettempdir()`, which is too long under a pinned `TMPDIR`
+- [ ] No raw `os.kill(pid, 0)` in test code — it TERMINATES the target on Windows; route
+      liveness through `platform_compat.pid_exists`/`pid_liveness`, and any teardown signal
+      to a pid published by a child captures the target's identity at spawn and revalidates
+      before signalling
+- [ ] Every fetch seam a code path can take is routed, not just the one the happy path uses
+      (a JSON + text stub still lets a BLOB fetch reach the network)
+- [ ] A skip condition is decidable the same way on every run of one host: no ctime tick, no
+      "did a real tool answer in time", no "did an earlier test in this worker arm a hook" —
+      build the condition, resolve it from disk, or measure in a fresh interpreter
+- [ ] A handle the object under test opens for the process lifetime (a store's SQLite
+      connection + writer thread, a lazily-opened index) is closed by the fixture that built
+      it; when production has no close path, that gap is the finding
+- [ ] No exception INSTANCE in a `parametrize` list (`pytest.param(OSError(...))`): the
+      instance lives for the module, `raise err` hangs a `__traceback__` on it, and the
+      frames on that traceback keep every local alive — a handle, a lease, a socket — for
+      the rest of the worker. Parametrize the errno and build the exception inside the test
+- [ ] A test that asserts process-global "nothing retained" state (`lease._held`, a
+      registry, a pool) is only as good as the files that share the worker: the file that
+      exercises the failure path pins the same table empty in its own teardown, so the
+      retention is reported where it was created rather than forty files later
+- [ ] "Let it finish" is never a fixed `sleep`: wait on the state you are about to assert
+      (poll it off-loop under a bounded deadline, or await its event) — two 200 ms sleeps
+      that were enough at `-n0` read `starting` for every row on a loaded Windows worker

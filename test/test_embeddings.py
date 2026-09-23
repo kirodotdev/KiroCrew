@@ -10,14 +10,18 @@ is replaced with fakes and ``urllib.request.urlopen`` is monkeypatched (on
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import io
+import mmap
 import os
+import struct
 import sys
 import threading
 import time
 import urllib.error
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -81,6 +85,70 @@ def _write_model_file(path: Path, payload: bytes | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_model_bytes() if payload is None else payload)
     return path
+
+
+def _gguf_string(value: str) -> bytes:
+    """Pack one GGUF string: a little-endian uint64 byte length, then UTF-8."""
+    encoded = value.encode("utf-8")
+    return struct.pack("<Q", len(encoded)) + encoded
+
+
+def _gguf_header(
+    architecture: str,
+    *,
+    pooling_type: int | None = None,
+    causal: bool | None = None,
+    context_length: int | None = None,
+) -> bytes:
+    """Pack a minimal GGUF v3 KV header: magic, version, no tensors, the KV list."""
+    metadata = [("general.architecture", 8, _gguf_string(architecture))]
+    if pooling_type is not None:
+        metadata.append((f"{architecture}.pooling_type", 4, struct.pack("<I", pooling_type)))
+    if causal is not None:
+        # GGUF_TYPE_BOOL, the type gguf-py's add_causal_attention() writes.
+        metadata.append((f"{architecture}.attention.causal", 7, struct.pack("<?", causal)))
+    if context_length is not None:
+        # GGUF_TYPE_UINT32, the type gguf-py's add_context_length() writes.
+        metadata.append((f"{architecture}.context_length", 4, struct.pack("<I", context_length)))
+    payload = bytearray(struct.pack("<4sIQQ", b"GGUF", 3, 0, len(metadata)))
+    for key, value_type, value in metadata:
+        payload.extend(_gguf_string(key))
+        payload.extend(struct.pack("<I", value_type))
+        payload.extend(value)
+    return bytes(payload)
+
+
+def _write_gguf_model(
+    path: Path,
+    *,
+    architecture: str,
+    pooling_type: int | None = None,
+    causal: bool | None = None,
+    context_length: int | None = None,
+    size: int = _MODEL_SIZE,
+) -> Path:
+    """Write a minimal GGUF v3 KV header padded past the production size gate."""
+    header = _gguf_header(
+        architecture, pooling_type=pooling_type, causal=causal, context_length=context_length
+    )
+    return _write_model_file(path, header.ljust(size, b"\0"))
+
+
+# (n_ctx, n_batch, n_ubatch) the policy hands llama.cpp. Every file's window is
+# clamped to the trained position count its GGUF declares (at most _N_CTX);
+# decoder files keep the shipped micro-batch, bounded by the batch, and a
+# non-causal file gets one micro-batch the size of its whole batch.
+_DECODER_SIZES = (embeddings_mod._N_CTX, embeddings_mod._N_CTX, embeddings_mod._N_UBATCH)
+_ENCODER_SIZES = (embeddings_mod._N_CTX,) * 3
+
+
+def _live_embed_threads() -> set[threading.Thread]:
+    """The embedder's own threads (``kc-embed-*``) still alive in this process.
+
+    ``wait_ready()`` joins the load thread and ``close()`` joins the inference
+    worker, so a test that closes its embedder adds nothing to this set.
+    """
+    return {t for t in threading.enumerate() if t.name.startswith("kc-embed-") and t.is_alive()}
 
 
 def _make_fake_llama_class(dim: int = _DIM):
@@ -346,6 +414,453 @@ class TestModelPaths:
         assert model_file_present(target) is False
         _write_model_file(target)
         assert model_file_present(target) is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GGUF context policy
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestModelContextPolicy:
+    @pytest.mark.parametrize(
+        "architecture",
+        [
+            "bert",
+            "dream",
+            "eurobert",
+            "gemma-embedding",
+            "jina-bert-v2",
+            "jina-bert-v3",
+            "llada",
+            "llada-moe",
+            "modern-bert",
+            "neo-bert",
+            "nomic-bert",
+            "nomic-bert-moe",
+            "rnd1",
+            "t5encoder",
+            "wavtokenizer-dec",
+        ],
+    )
+    def test_known_encoder_architecture_uses_full_micro_batch(
+        self, tmp_path: Path, architecture: str
+    ) -> None:
+        # Membership in the cache-less set decides the context sizes only.
+        model = _write_gguf_model(tmp_path / f"{architecture}.gguf", architecture=architecture)
+        assert embeddings_mod._model_context_policy(model) == _ENCODER_SIZES
+
+    def test_unknown_architecture_keeps_decoder_sizes(self, tmp_path: Path) -> None:
+        model = _write_gguf_model(tmp_path / "unknown.gguf", architecture="qwen3")
+        assert embeddings_mod._model_context_policy(model) == _DECODER_SIZES
+
+    def test_declared_non_causal_llama_embed_uses_full_micro_batch(self, tmp_path: Path) -> None:
+        # llama.cpp's LLaMA-shaped bidirectional embedder keeps a KV cache, so
+        # its decode() path asserts `n_ubatch >= n_tokens` exactly when the GGUF
+        # declares `<architecture>.attention.causal = false`.
+        model = _write_gguf_model(
+            tmp_path / "llama-embed.gguf", architecture="llama-embed", causal=False
+        )
+        assert embeddings_mod._model_context_policy(model) == _ENCODER_SIZES
+
+    def test_declared_non_causal_unlisted_architecture_uses_full_micro_batch(
+        self, tmp_path: Path
+    ) -> None:
+        # The runtime reads the causal key for every architecture, so a decoder
+        # family re-tagged as bidirectional trips the same assertion.
+        model = _write_gguf_model(
+            tmp_path / "llama-bidirectional.gguf", architecture="llama", causal=False
+        )
+        assert embeddings_mod._model_context_policy(model) == _ENCODER_SIZES
+
+    def test_llama_embed_without_causal_key_keeps_decoder_path(self, tmp_path: Path) -> None:
+        # Without the key the vendored runtime defaults causal_attn to true and
+        # runs llama-embed causally, so the assertion cannot fire and the
+        # lower-RSS micro-batch stays.
+        model = _write_gguf_model(tmp_path / "llama-embed-causal.gguf", architecture="llama-embed")
+        assert embeddings_mod._model_context_policy(model) == _DECODER_SIZES
+
+    def test_declared_causal_encoder_architecture_still_uses_full_micro_batch(
+        self, tmp_path: Path
+    ) -> None:
+        # Cache-less encoder families run through encode(), which asserts on
+        # the token count whatever the causal key says.
+        model = _write_gguf_model(tmp_path / "bert-causal.gguf", architecture="bert", causal=True)
+        assert embeddings_mod._model_context_policy(model) == _ENCODER_SIZES
+
+    def test_unreadable_metadata_keeps_decoder_sizes(self, tmp_path: Path, caplog) -> None:
+        # A file that is not GGUF at all (or is truncated) loads exactly as
+        # before: the shipped sizes, with the failed read named once.
+        model = _write_model_file(tmp_path / "not-gguf.gguf")
+        with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
+            assert embeddings_mod._model_context_policy(model) == _DECODER_SIZES
+        assert "Could not read GGUF metadata" in caplog.text
+        assert model.name in caplog.text
+
+    @pytest.mark.parametrize(
+        ("kv_count", "kv_section", "message"),
+        [
+            pytest.param(
+                100_001,
+                # 100,001 complete entries: an empty key and a one-byte uint8.
+                lambda: struct.pack("<QIB", 0, 0, 0) * 100_001,
+                "oversized GGUF metadata table",
+                id="100001-metadata-items",
+            ),
+            pytest.param(
+                1,
+                # One uint8 array of 2,000,001 elements, every element present.
+                lambda: (
+                    _gguf_string("tokenizer.ggml.token_type")
+                    + struct.pack("<IIQ", 9, 0, 2_000_001)
+                    + bytes(2_000_001)
+                ),
+                "oversized GGUF metadata array",
+                id="2000001-array-items",
+            ),
+            pytest.param(
+                1,
+                # A captured string value of 1,000,001 bytes, every byte present.
+                lambda: (
+                    _gguf_string("general.architecture")
+                    + struct.pack("<IQ", 8, 1_000_001)
+                    + b"a" * 1_000_001
+                ),
+                "oversized GGUF metadata string",
+                id="1000001-string-bytes",
+            ),
+        ],
+    )
+    def test_header_one_past_each_cap_is_rejected_by_that_cap(
+        self,
+        tmp_path: Path,
+        kv_count: int,
+        kv_section: Callable[[], bytes],
+        message: str,
+    ) -> None:
+        # The limits are the contract, so they are spelled out here instead of
+        # read from the module. Each header sits one past a cap and is otherwise
+        # complete -- every byte it declares is in the file -- so a loosened or
+        # removed cap lets the reader walk it to a successful return and this
+        # fails with DID NOT RAISE rather than matching some other error.
+        model = tmp_path / "oversized.gguf"
+        model.write_bytes(struct.pack("<4sIQQ", b"GGUF", 3, 0, kv_count) + kv_section())
+        with pytest.raises(ValueError, match=message):
+            embeddings_mod._read_gguf_embedding_metadata(model)
+
+    # A complete header whose cut points the truncation cases below share:
+    # 24 preamble bytes, then general.architecture, bert.attention.causal and
+    # bert.context_length (a uint32, so the last four bytes are its value).
+    _CUTTABLE_HEADER = _gguf_header("bert", causal=False, context_length=512)
+
+    @pytest.mark.parametrize(
+        "cut",
+        [
+            pytest.param(0, id="empty-file"),
+            pytest.param(3, id="inside-magic"),
+            pytest.param(20, id="inside-preamble-kv-count"),
+            pytest.param(24 + 8 + 7, id="inside-first-key"),
+            pytest.param(len(_CUTTABLE_HEADER) - 2, id="inside-last-value"),
+        ],
+    )
+    def test_header_cut_mid_metadata_is_reported_as_truncated(
+        self, tmp_path: Path, cut: int
+    ) -> None:
+        # A file shorter than its header declares is refused with the one
+        # truncation error, wherever the cut falls -- the empty file included,
+        # which a mapping cannot even be built over. _model_context_policy
+        # turns the ValueError into the decoder sizes plus one WARNING.
+        model = tmp_path / "cut.gguf"
+        model.write_bytes(self._CUTTABLE_HEADER[:cut])
+        with pytest.raises(ValueError, match="^truncated GGUF header$"):
+            embeddings_mod._read_gguf_embedding_metadata(model)
+
+    @pytest.mark.parametrize(
+        "cut",
+        [
+            pytest.param(20, id="inside-preamble-kv-count"),
+            pytest.param(24 + 8 + 7, id="inside-first-key"),
+            pytest.param(len(_CUTTABLE_HEADER) - 2, id="inside-last-value"),
+        ],
+    )
+    def test_header_that_shrinks_under_the_parse_is_reported_as_truncated(self, cut: int) -> None:
+        # The file size sampled when the file was opened says the header is
+        # complete, but the bytes are gone by the time they are read -- the
+        # shape of an in-place truncation during the parse. A read that comes
+        # up short is the same ValueError, where a mapping built over the
+        # original length would take SIGBUS on the vanished page.
+        source = io.BytesIO(self._CUTTABLE_HEADER[:cut])
+        with pytest.raises(ValueError, match="^truncated GGUF header$"):
+            embeddings_mod._parse_gguf_embedding_metadata(source, len(self._CUTTABLE_HEADER))
+
+    def test_header_reader_never_maps_the_file(self, tmp_path: Path, monkeypatch) -> None:
+        # Plain bounded reads only: a mapping's length is fixed when it is
+        # built, and a file truncated in place afterwards turns an access past
+        # the new end into an uncatchable SIGBUS in the gateway process.
+        def _refuse_mapping(*args, **kwargs):
+            raise AssertionError("the GGUF header reader must not map the file")
+
+        monkeypatch.setattr(mmap, "mmap", _refuse_mapping)
+        model = _write_gguf_model(tmp_path / "bert.gguf", architecture="bert", context_length=512)
+        assert embeddings_mod._read_gguf_embedding_metadata(model) == ("bert", None, 512)
+
+    @pytest.mark.parametrize(
+        ("architecture", "causal", "context_length", "expected_sizes"),
+        [
+            # bge-small-en-v1.5 / multilingual-e5: 512 learned positions.
+            ("bert", None, 512, (512, 512, 512)),
+            # A declared-non-causal cached model is clamped the same way.
+            ("llama-embed", False, 1024, (1024, 1024, 1024)),
+            # nomic-embed-text: exactly the ceiling.
+            ("nomic-bert", None, 2048, _ENCODER_SIZES),
+            # A longer trained window never raises the ceiling.
+            ("bert", None, 8192, _ENCODER_SIZES),
+            # No key: the ceiling, as before.
+            ("bert", None, None, _ENCODER_SIZES),
+        ],
+        ids=["bert-512", "llama-embed-1024", "nomic-2048", "bert-8192", "bert-absent"],
+    )
+    def test_non_causal_context_is_clamped_to_the_trained_position_count(
+        self,
+        tmp_path: Path,
+        architecture: str,
+        causal: bool | None,
+        context_length: int | None,
+        expected_sizes: tuple[int, int, int],
+    ) -> None:
+        # An encoder with learned absolute positions indexes a table of
+        # n_ctx_train rows; a token past it aborts the process in ggml's
+        # get_rows. Sizing the logical batch to that count makes the vendored
+        # binding truncate a longer input instead.
+        model = _write_gguf_model(
+            tmp_path / f"{architecture}-{context_length}.gguf",
+            architecture=architecture,
+            causal=causal,
+            context_length=context_length,
+        )
+        assert embeddings_mod._model_context_policy(model) == expected_sizes
+
+    @pytest.mark.parametrize(
+        ("architecture", "context_length", "expected_sizes"),
+        [
+            # gpt2: 1,024 learned absolute positions; the micro-batch stays 512.
+            ("gpt2", 1024, (1024, 1024, 512)),
+            # A decoder trained for exactly the micro-batch count.
+            ("starcoder", 512, (512, 512, 512)),
+            # Below the micro-batch: n_ubatch may never exceed n_batch.
+            ("gpt2", 256, (256, 256, 256)),
+            # Qwen3-Embedding declares 32,768: the ceiling, the shipped sizes.
+            ("qwen3", 32768, _DECODER_SIZES),
+            ("qwen3", 8192, _DECODER_SIZES),
+            ("qwen3", None, _DECODER_SIZES),
+        ],
+        ids=["gpt2-1024", "starcoder-512", "gpt2-256", "qwen3-32768", "qwen3-8192", "qwen3-absent"],
+    )
+    def test_decoder_context_is_clamped_to_the_trained_position_count(
+        self,
+        tmp_path: Path,
+        architecture: str,
+        context_length: int | None,
+        expected_sizes: tuple[int, int, int],
+    ) -> None:
+        # Causal architectures with learned absolute positions (gpt2, starcoder)
+        # index the same position table an encoder does, so the clamp applies
+        # to every file; only the micro-batch shape differs by causality.
+        model = _write_gguf_model(
+            tmp_path / f"{architecture}-{context_length}.gguf",
+            architecture=architecture,
+            context_length=context_length,
+        )
+        assert embeddings_mod._model_context_policy(model) == expected_sizes
+
+    def test_encoder_sizes_reach_llama_constructor_with_last_token_pooling(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The file declares mean pooling (1); the constructor still receives the
+        # explicit last-token value, so the runtime never reads the GGUF's key
+        # and every model keeps the pooling earlier releases requested.
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        model = _write_gguf_model(tmp_path / "bert.gguf", architecture="bert", pooling_type=1)
+        embedder = LlamaCppEmbedder(model_path=model)
+        try:
+            assert embedder.wait_ready(timeout=5)
+        finally:
+            embedder.close()
+        kwargs = fake_cls.instances[0].kwargs
+        assert kwargs["pooling_type"] == embeddings_mod._POOLING_TYPE_LAST
+        assert (kwargs["n_ctx"], kwargs["n_batch"], kwargs["n_ubatch"]) == _ENCODER_SIZES
+
+    @pytest.mark.parametrize(
+        ("architecture", "expected_sizes"),
+        [("bert", (512, 512, 512)), ("gpt2", (512, 512, 512))],
+        ids=["encoder", "decoder"],
+    )
+    def test_trained_position_count_reaches_llama_constructor_with_one_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        caplog,
+        architecture: str,
+        expected_sizes: tuple[int, int, int],
+    ) -> None:
+        # The WARNING follows the clamp, whatever the model's causality.
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        model = _write_gguf_model(
+            tmp_path / f"{architecture}-512.gguf", architecture=architecture, context_length=512
+        )
+        threads_before = _live_embed_threads()
+        embedder = LlamaCppEmbedder(model_path=model)
+        try:
+            with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
+                assert embedder.wait_ready(timeout=5)
+                # Two embed calls, each over the model's window: the rule is
+                # stated by the load, never per call.
+                assert embedder.embed_batch(["x" * 6_000]) is not None
+                assert embedder.embed_batch(["y" * 6_000]) is not None
+        finally:
+            embedder.close()
+        # The embed calls started the inference worker; close() joined it, so
+        # this test leaves no kc-embed-* thread behind.
+        assert not (_live_embed_threads() - threads_before)
+        kwargs = fake_cls.instances[0].kwargs
+        assert (kwargs["n_ctx"], kwargs["n_batch"], kwargs["n_ubatch"]) == expected_sizes
+        truncation_warnings = [
+            record
+            for record in caplog.records
+            if record.levelname == "WARNING"
+            and "truncated to its first 512 tokens" in record.message
+        ]
+        assert len(truncation_warnings) == 1
+        assert model.name in truncation_warnings[0].message
+        assert "trained for 512 positions" in truncation_warnings[0].message
+
+    @pytest.mark.parametrize(
+        ("architecture", "context_length"),
+        [("qwen3", 32768), ("qwen3", None), ("bert", 2048), ("bert", None)],
+        ids=["decoder-32768", "decoder-absent", "encoder-at-ceiling", "encoder-absent"],
+    )
+    def test_no_truncation_warning_when_the_context_is_not_reduced(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        caplog,
+        architecture: str,
+        context_length: int | None,
+    ) -> None:
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        model = _write_gguf_model(
+            tmp_path / "model.gguf", architecture=architecture, context_length=context_length
+        )
+        embedder = LlamaCppEmbedder(model_path=model)
+        try:
+            with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
+                assert embedder.wait_ready(timeout=5)
+        finally:
+            embedder.close()
+        assert "truncated" not in caplog.text
+        assert fake_cls.instances[0].kwargs["n_ctx"] == embeddings_mod._N_CTX
+
+    def test_model_replaced_between_header_read_and_open_is_not_published(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """The context is sized from the header of the file the runtime maps.
+
+        The loader reads the GGUF header once (the sizing policy) and the native
+        constructor opens the path again. An operator who replaces a custom model
+        at the same path between the two would otherwise get a context sized from
+        the OLD header on the NEW weights -- decoder sizes on an encoder here,
+        which is the >512-token abort this PR removes. The load must discard that
+        context; the retry after the failure cooldown sizes from the new header.
+        """
+        fake_cls = _make_fake_llama_class()
+        model = _write_gguf_model(tmp_path / "model.gguf", architecture="qwen3")
+
+        class _SwappingLlama(fake_cls):  # type: ignore[valid-type,misc]
+            """The first construction stands in for a native open that maps a
+            file atomically replaced after the header read; later ones do not."""
+
+            def __init__(self, **kwargs) -> None:
+                if not type(self).instances:
+                    replacement = _write_gguf_model(
+                        tmp_path / "replacement.gguf",
+                        architecture="bert",
+                        context_length=512,
+                        size=_MODEL_SIZE + 4096,
+                    )
+                    os.replace(replacement, model)
+                super().__init__(**kwargs)
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: _SwappingLlama)
+        monkeypatch.setattr("kiro_crew.embeddings._LLM_LOAD_RETRY_SECS", 0.0)
+        embedder = LlamaCppEmbedder(model_path=model)
+        try:
+            with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
+                embedder.wait_ready(timeout=5)
+            stale = _SwappingLlama.instances[0]
+            stale_sizes = (stale.kwargs["n_ctx"], stale.kwargs["n_batch"], stale.kwargs["n_ubatch"])
+            assert stale_sizes == _DECODER_SIZES  # sized from the replaced header
+            assert not embedder.is_ready(), (
+                f"stale context published: sizes {stale_sizes} came from the replaced "
+                "file's header while the mapped file declares a 512-position encoder"
+            )
+            assert stale.closed
+            assert "changed on disk while it was being loaded" in caplog.text
+            assert model.name in caplog.text
+            # The cooldown (zeroed above) has elapsed: the retry re-reads the
+            # header of the file that is now on disk and publishes that context.
+            assert embedder.wait_ready(timeout=5)
+            fresh = _SwappingLlama.instances[1]
+            assert (fresh.kwargs["n_ctx"], fresh.kwargs["n_batch"], fresh.kwargs["n_ubatch"]) == (
+                512,
+                512,
+                512,
+            )
+            assert embedder._llm is fresh
+        finally:
+            embedder.close()
+        assert len(_SwappingLlama.instances) == 2
+
+    def test_vendored_embed_truncates_to_the_logical_batch_by_default(self) -> None:
+        """Pin the binding behaviour the trained-window clamp relies on.
+
+        ``_model_context_policy`` sizes ``n_batch`` to the trained position count
+        so that ``create_embedding()`` cuts a longer input to its first
+        ``n_batch`` tokens instead of indexing past the position table. That
+        only holds while the vendored ``Llama.embed`` defaults ``truncate`` to
+        True and ``create_embedding`` does not override it. Read as source, not
+        imported: importing the binding loads the native library.
+        """
+        source = (embeddings_mod._VENDOR_DIR / "llama_cpp" / "llama.py").read_text(encoding="utf-8")
+        llama_class = next(
+            node
+            for node in ast.parse(source).body
+            if isinstance(node, ast.ClassDef) and node.name == "Llama"
+        )
+        methods = {
+            node.name: node for node in llama_class.body if isinstance(node, ast.FunctionDef)
+        }
+        embed = methods["embed"]
+        positional = embed.args.args
+        defaults = [None] * (len(positional) - len(embed.args.defaults)) + list(embed.args.defaults)
+        truncate_default = dict(zip((arg.arg for arg in positional), defaults))["truncate"]
+        assert isinstance(truncate_default, ast.Constant) and truncate_default.value is True
+        embed_calls = [
+            node
+            for node in ast.walk(methods["create_embedding"])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "embed"
+        ]
+        assert embed_calls, "create_embedding no longer delegates to Llama.embed"
+        for call in embed_calls:
+            assert all(keyword.arg != "truncate" for keyword in call.keywords)
+        assert "tokens = tokens[:n_batch]" in source
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1272,6 +1787,64 @@ class TestEmbedThreads:
         )
         monkeypatch.setattr("os.cpu_count", lambda: cores)
         assert embeddings_mod._embed_threads() == expected
+
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
+    def test_unset_leaves_one_core_free(self, monkeypatch, cores, expected) -> None:
+        """Unset means llama.cpp never gets the whole box.
+
+        Handing every core to the batch pool starves the event loop the gateway
+        answers on, which a 2-vCPU host feels hardest. The 16-core expectation
+        is the one that matters twice: the cap is a CEILING on the four-thread
+        default, so a big host answers 4, not 15.
+        """
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        assert embeddings_mod._embed_threads() == expected
+        if cores > 1:
+            assert embeddings_mod._embed_threads() < cores
+
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
+    def test_the_declared_default_in_config_is_not_operator_intent(
+        self, monkeypatch, cores, expected
+    ) -> None:
+        """A whole-document config save materializes the declared default.
+
+        ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4
+        and ``KiroCrewConfig.save()`` publishes every field, so a fresh
+        install's ``config.json`` carries a 4 nobody typed. Reading that as a
+        choice hands the whole box to the very hosts the cap protects, so a raw
+        value equal to the default takes the same ceiling as an absent one.
+        """
+        assert embeddings_mod._DEFAULT_EMBED_THREADS == 4, (
+            "Raising this past 4 reinterprets every config.json already carrying 4: "
+            "it stops matching the declared default, becomes an explicit choice, and "
+            "hands back the full core count on the small hosts this cap protects. "
+            "Migrate those files before changing it."
+        )
+        monkeypatch.setattr(
+            embeddings_mod,
+            "_read_memory_config",
+            lambda: {"embedding_threads": embeddings_mod._DEFAULT_EMBED_THREADS},
+        )
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        assert embeddings_mod._embed_threads() == expected
+
+    @pytest.mark.parametrize("cores,configured", [(1, 1), (2, 2), (4, 3), (16, 8)])
+    def test_a_value_other_than_the_default_is_honoured_unclamped(
+        self, monkeypatch, cores, configured
+    ) -> None:
+        """An operator asking for every core on a small host still gets it."""
+        monkeypatch.setattr(
+            embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": configured}
+        )
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        assert embeddings_mod._embed_threads() == configured
+
+    def test_unknown_core_count_keeps_the_flat_default(self, monkeypatch) -> None:
+        """No count means no core to subtract, so the default is not reduced."""
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: None)
+        assert embeddings_mod._embed_threads() == embeddings_mod._DEFAULT_EMBED_THREADS
 
     def test_threads_reach_the_llama_constructor(self, tmp_path: Path, monkeypatch) -> None:
         """BOTH pools are pinned, not only the batch pool that runs inference."""

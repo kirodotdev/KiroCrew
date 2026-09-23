@@ -180,6 +180,8 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
             {labelsInListOnly && value !== '' && selectable(value) ? value : undefined}
           </SelectValue>
         </SelectTrigger>
+        {/* eslint-disable-next-line shadcn/require-static-classes -- forwards the caller's
+            `contentClassName` prop unchanged; the lint reads the classes at each call site. */}
         <SelectContent className={contentClassName}>
           {action && (
             <SelectItem value={ACTION_SENTINEL} className="text-accent data-[state=checked]:bg-transparent">

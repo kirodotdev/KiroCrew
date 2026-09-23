@@ -15,23 +15,23 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Periodic reaper loop | `subagent.py` | Subagent tasks | 60s sweep (`_REAPER_INTERVAL`), kills at the same deadline | Yes, runs independently of the spawning session | `_force_reap`: reset, SIGKILL fallback, mark done, SEL audit, announce |
 | Startup watchdog | `subagent.py` | Pre-first-turn subagents | 120s with no runtime (`_STARTUP_TIMEOUT_SECS`) | Yes | Reaps a subagent that never got a runtime |
 | Reset timeout in `_run` finally | `subagent.py` | Subagent cleanup | 30s (`_RESET_TIMEOUT`) | No | SIGKILL fallback plus SEL audit if `reset()` hangs |
-| Turn limit | `subagent.py` | Subagent tool calls | 100 turns (`_TURN_LIMIT`, configurable) | No | Stops execution, returns partial output |
+| Turn limit | `subagent.py` | Subagent tool calls | 1000 turns (`_TURN_LIMIT`, configurable) | No | Stops execution, returns partial output |
 | Stall surfacing | `subagent.py` | Running subagents | 120s with no stream activity (`_STALL_IDLE_SECS`) | Yes | Surfaces the subagent as "stalled" in the UI |
-| `asyncio.wait_for` on `_execute` | `cron.py` | Cron jobs | 30 min (`_JOB_TIMEOUT_SECS`) | No | Raises `TimeoutError`, logs error, marks job failed |
-| Periodic reaper loop | `cron.py` | Cron jobs | 60s sweep (`_REAPER_INTERVAL`), kills at 30 min; reset bounded by `_REAPER_RESET_TIMEOUT` (30s) | Yes, runs independently of job execution | `_force_reap`: reset, SIGKILL fallback, mark failed, SEL audit |
+| `asyncio.wait_for` on `_execute` | `cron.py` | Cron jobs | Per-job `timeout_secs` (default 30 min from `_JOB_TIMEOUT_SECS`, valid range 1..86400s) | No | Raises `TimeoutError`, logs error, marks job failed |
+| Periodic reaper loop | `cron.py` | Cron jobs | 60s sweep (`_REAPER_INTERVAL`), kills at the same per-job deadline; reset bounded by `_REAPER_RESET_TIMEOUT` (30s) | Yes, runs independently of job execution | `_force_reap`: reset, SIGKILL fallback, mark failed, SEL audit |
 | Task runner watchdog | `taskrunner.py` | Task runner steps | 60 min warn / 2 hr kill (`STALL_TIMEOUT` / `STALL_CANCEL_TIMEOUT` in `task_models.py`) | Yes, 30s heartbeat loop (`_HEARTBEAT_INTERVAL`) | Notifies on stall, resets the stuck session after 2 hr |
 | Global task timeout | `taskrunner.py` | Entire task run | User-configurable (`--timeout`) | Checked in the watchdog loop | Stops the task run, marks failed |
 | ACP process death detection | `acp/client.py` | All sessions | 5 consecutive empty reads (`_MAX_CONSECUTIVE_EMPTY`) | No | Raises `AcpProcessDied`, triggers session recovery |
 | ACP init timeout | `acp/client.py` | Session creation | 4 min (`_INIT_TIMEOUT`; MCP servers can be slow to initialize) | No | Raises `AcpTimeoutError`, retries once |
-| ACP prompt timeout | `acp/client.py` | Per prompt | 2 hr (`_DEFAULT_PROMPT_TIMEOUT`) | No | Raises `AcpTimeoutError` |
+| ACP prompt timeout | `acp/client.py` | Per prompt | 4 hr (`_DEFAULT_PROMPT_TIMEOUT`) | No | Raises `AcpTimeoutError` |
 | ACP read timeout | `acp/client.py` | Per readline | 20s (`_READ_TIMEOUT`) | No | Allows `CancelledError` delivery at each yield point |
 | Cooperative-cancel grace | `acp/client.py` | Per cancel | `max(_CANCEL_GRACE_SECS, caller budget)`, floor 10s | No | Read loop abandons the turn as unresponsive once the grace elapses |
 | Process group kill | `acp/client.py` | Process cleanup | Immediate | No | `killpg(SIGTERM)`, `killpg(SIGKILL)`, then `_kill_escaped_children` for descendants that changed PGID |
 | Per-process resource limits | `security.py` (`apply_resource_limits`), delivered **after `exec`** by `_spawn_exec_shim.py` via `sandbox.py` (`create_subprocess_limited` / `spawn_shim_argv`) | Every agent-influenced spawn (see the profile list below) | Kernel-enforced `RLIMIT_NOFILE=1024` default-on; `RLIMIT_NPROC` / `RLIMIT_CPU` / `RLIMIT_AS` opt-in (default off) | Yes, the kernel enforces at fork/alloc/open time, no sweep needed | Kernel refuses `open()` past the FD cap (EMFILE); on opt-in NPROC/CPU/AS: EAGAIN, SIGXCPU, ENOMEM |
 | Windows Job object (fork bomb + memory) | `platform_compat.py` (`apply_job_limits`) via `sandbox.py` (`apply_windows_resource_ceiling`) | The ACP agent spawn tree on Windows (`AcpClient._spawn` and `AcpRuntime._spawn`), where `cgroup_scope_argv` is a no-op | `ActiveProcessLimit` plus `JobMemoryLimit`, read from the SAME `resource_limits` config as the cgroup path so one setting governs both platforms. The memory limit is the true `MemoryMax` equivalent, and its default is derived from `GlobalMemoryStatusEx` because the POSIX `os.sysconf` probe does not exist on Windows and the flat fallback it fell back to could equal or exceed physical RAM on a small host, leaving the ceiling unable to engage. The process limit is NOT a one-for-one `TasksMax` mapping: `TasksMax` counts tasks (threads) while `ActiveProcessLimit` counts processes, so the same budget binds more loosely here, though it still bounds a fork bomb | Yes, the kernel refuses the spawn or allocation | Fork bomb bounded: past the process limit the member's `CreateProcess` fails with `ERROR_NOT_ENOUGH_QUOTA` (1816); past the memory limit allocations fail. `KILL_ON_JOB_CLOSE` is deliberately NOT set (it would make a gateway exit kill running agents, a lifecycle change rather than a ceiling); omitting it also means the handle need not be held, since a job stays alive while processes are assigned, so limits persist after `CloseHandle` with no handle registry. Applied while the child is still suspended (`CREATE_SUSPENDED`), then resumed via `resume_process_main_thread`, because job membership covers a member's FUTURE descendants only. Fails soft: any Win32 error logs a SECURITY warning and returns `False`, never failing the spawn |
-| cgroup v2 scope (fork bomb + memory) | `sandbox.py` (`cgroup_scope_argv`) | Every agent-influenced spawn tree (root agent plus all its MCP servers and subagents as one scope; each cron, app-backend, hook, git or tool spawn gets its own) | `pids.max=8192` (`TasksMax`) plus `memory.max=65% of host RAM` (`MemoryMax`, `MemorySwapMax=0`) per transient `systemd-run --user --scope` under `kirocrew-agents.slice`, default-on where cgroup v2 delegation exists | Yes, the kernel enforces at `fork()`/alloc time; OOM-kills the scope on a memory breach, `fork()` fails EAGAIN past `pids.max` — **per scope**: the aggregate across concurrent scopes is bounded by the slice row below | Fork bomb bounded to `pids.max`; memory balloon OOM-killed at `memory.max`. Unavailable (no delegation, macOS): no-op plus one loud SECURITY warning, `RLIMIT_NOFILE` still applies |
+| cgroup v2 scope (fork bomb + memory) | `sandbox.py` (`cgroup_scope_argv`) | Every agent-influenced spawn tree (each ACP harness process tree gets a scope; subagent sessions sharing that runtime stay in its tree, while a dedicated subagent process gets its own; each cron, app-backend, hook, git or tool spawn also gets its own) | `pids.max=8192` (`TasksMax`) plus `memory.max=65% of host RAM` (`MemoryMax`, `MemorySwapMax=0`) per transient `systemd-run --user --scope` under `kirocrew-agents.slice`, default-on where cgroup v2 delegation exists | Yes, the kernel enforces at `fork()`/alloc time; OOM-kills the scope on a memory breach, `fork()` fails EAGAIN past `pids.max` — **per scope**: the aggregate across concurrent scopes is bounded by the slice row below | Fork bomb bounded to `pids.max`; memory balloon OOM-killed at `memory.max`. Unavailable (no delegation, macOS): no-op plus one loud SECURITY warning, `RLIMIT_NOFILE` still applies |
 | cgroup v2 slice (aggregate across concurrent spawns) | `sandbox.py` (`ensure_agents_slice_limits`), applied at gateway startup | ALL concurrent agent scopes together (they are siblings under `kirocrew-agents.slice`) | `memory.max=80% of host RAM` (`MemoryMax`, `MemorySwapMax=0`) plus `pids.max=32768` (`TasksMax`) on the slice, via `systemctl --user set-property --runtime`; overridable via `resource_limits.max_total_memory_mb` / `max_total_processes` | Yes — cgroup v2 bounds a descendant by the **minimum** effective limit of itself and all ancestors, so N scopes at 65% each can no longer jointly exceed the slice ceiling | Kernel OOM-kills some scope inside the slice on an aggregate breach; the resource-pressure sampler logs new kills with victim scopes, slice `memory.current`, and whether the slice ceiling (vs a scope's own) engaged. Same availability gate and single SECURITY warning as the scope row |
-| Aggregate agent-slice soft ceiling (throttle) | `sandbox.py` (`_ensure_agent_slice_memory_high`) | The SUM of all concurrent agent scopes (`kirocrew-agents.slice` as one subtree); never the gateway, which runs outside the slice | `memory.high=75% of host RAM` on the slice (`systemctl --user set-property --runtime`); deliberately NOT config-driven — the slice is UID-global and shared by every gateway instance (live, dev, pods), so no single instance may lift the others' ceiling; default-on where cgroup v2 delegation exists | Yes, the kernel throttles-and-reclaims the whole subtree past `memory.high` | Concurrent agent trees that together cross 75% get throttled BEFORE the slice's hard 80% `MemoryMax` (row above) OOM-kills a scope; the reconcile worker also watches the slice's `memory.events` `high` counter and logs once per climbing episode so "agents mysteriously slow" is diagnosable as ceiling throttling. Unavailable or `systemctl` fails: no-op plus one loud SECURITY warning, the slice and per-scope `MemoryMax` still apply |
+| Aggregate agent-slice soft ceiling (throttle) | `sandbox.py` (`_ensure_agent_slice_memory_high`) | The SUM of all concurrent agent scopes (`kirocrew-agents.slice` as one subtree); never the gateway, which runs outside the slice | `memory.high=75% of host RAM` on the slice (`systemctl --user set-property --runtime`); deliberately NOT config-driven — the slice is UID-global and shared by every gateway instance (live, dev, pods), so no single instance may lift the others' ceiling; default-on where cgroup v2 delegation exists | Yes, the kernel throttles-and-reclaims the whole subtree past `memory.high` | Concurrent agent trees that together cross 75% get throttled BEFORE the slice's hard 80% `MemoryMax` (row above) OOM-kills a scope; the reconcile worker also watches the slice's `memory.events` `high` counter and logs once per climbing episode so "agents mysteriously slow" is diagnosable as ceiling throttling. Two consumers read the slice as well: the cgroup-clamped memory probe behind `resource_status` / `admission_check` / `compute_max_subagents` takes the slice's headroom (`min(memory.high, memory.max) - memory.current`) as one of its ceilings, so posture reaches `critical` and new spawns are refused while the subtree is throttled even though host `MemAvailable` is still large; and `AcpRuntime` sizes its `initialize` budget by `sandbox.agents_slice_throttling()` (`memory.current >= memory.high`, or the `high` counter climbing between probes) — a throttled cold start gets `_INIT_TIMEOUT_UNDER_THROTTLE` instead of the plain budget, and a deadline that lands with the process still alive under throttle raises `AcpRuntimeOverloaded` rather than reporting a killed process; that error carries `transient = False`, so the retry layers that read the verdict structurally do not respawn a fresh cold start into the same throttle, and the message names the remedy (free agent memory). Unavailable or `systemctl` fails: no-op plus one loud SECURITY warning, the slice and per-scope `MemoryMax` still apply |
 | Bounded restart shutdown | `dashboard/handlers/sessions.py` | Dashboard Apply & Restart | 10s (`_SHUTDOWN_TIMEOUT_SECS`) | No | `asyncio.wait_for` on `provider.shutdown()`; `_sync_kill_provider` fallback on timeout |
 | Subagent injection outer cap | `subagent.py` `_run()` | Per-subagent completion | 1200s (`_ON_DONE_TIMEOUT`) | No | Covers semaphore wait plus injection; on timeout kills the stuck kiro-cli via `sessions.reset()` and queues a failure event for the parent to drain |
 | Subagent injection inner cap | `slack/gateway.py` | Per `stream_and_collect` | 900s (`INJECTION_TIMEOUT`, from `_DEFAULT_INJECTION_TIMEOUT`; override with `KIROCREW_INJECTION_TIMEOUT`, clamped down to `_ON_DONE_TIMEOUT`) | No | `_inject_with_retry` up to 3 attempts with backoff, bounded by the outer 1200s cap |
@@ -53,13 +53,14 @@ anything that survived a gateway crash. No single mechanism is a single point of
 |  | Primary timeout | Watchdog / reaper | Process cleanup | Context management |
 |--|----------------|-------------------|-----------------|-------------------|
 | **Chat subagents** | `wait_for` 3 h | Reaper (60s sweep) | `reset()` plus SIGKILL fallback | `_BG_RECYCLE_PCT` 70% recycle |
-| **Cron jobs** | `wait_for` 30 min | Reaper (60s sweep) | `reset()` plus SIGKILL fallback | `_BG_RECYCLE_PCT` 70% recycle |
+| **Cron jobs** | Per-job `timeout_secs` (30 min default, 1..86400s) | Reaper (60s sweep, same deadline) | `reset()` plus SIGKILL fallback | `_BG_RECYCLE_PCT` 70% recycle |
 | **Task runner** | Global timeout plus stall detection | Watchdog (30s heartbeat) | `_cleanup_run_sessions` plus `asyncio.shield` | Compaction at `autocompact_pct` |
-| **Background sessions** (shared: cron, heartbeat, lessons) | Idle expiry only | Periodic sweep (~5 min) | `cleanup_orphaned_sessions` at startup | `_BG_RECYCLE_PCT` 70% recycle |
+| **Other background sessions** (shared: heartbeat, lessons) | Workflow-specific cap where present (heartbeat: 30 min); otherwise idle expiry | Periodic sweep (~5 min) | `cleanup_orphaned_sessions` at startup | `_BG_RECYCLE_PCT` 70% recycle |
 
-Background sessions are the thin row: they have no per-turn primary timeout, only
-idle expiry, so a wedged background session survives until the idle sweep or a
-context recycle catches it.
+The shared background-session row has no universal per-turn timeout: heartbeat
+adds its own 30-minute task cap, while a workflow without one relies on idle
+expiry, its own watchdog, or context recycle. Cron is listed separately because
+its persisted `timeout_secs` supplies a per-wake deadline.
 
 ## Per-process resource limits
 
@@ -69,14 +70,15 @@ context recycle catches it.
 `sandbox.create_subprocess_limited()` is the accessor every agent-influenced ASYNC spawn
 uses: it prepends the shim via `spawn_shim_argv()` and passes `preexec_fn=None`.
 
-Four profiles:
+Five profiles:
 
 | Profile | Used by | Effect |
 |---------|---------|--------|
 | `tool` (default) | Every ordinary agent-influenced spawn | The full rlimit ceiling plus `oom_score_adj=1000` |
+| `extractor` | The PDF text-extraction child (`pdf_extract.py` -> `python -m kiro_crew.pdf_extract_child`), fed untrusted document bytes on stdin by file-grep and knowledge ingest | A FIXED ceiling independent of `resource_limits`: `RLIMIT_AS` 1 GiB, `RLIMIT_CPU` 60 s, `RLIMIT_NOFILE` 1024, plus the OOM bias. `pdfplumber` allocates a page's whole character list before any caller can measure it, so the memory bound has to be on by default and one process down; a pure-CPython child measures ~270 MB virtual on a one-page document, which is why a virtual cap is safe here where `tool` leaves it opt-in. On Windows (no rlimits) `pdf_extract.py` spawns the child `CREATE_SUSPENDED`, attaches a Job object with `JobMemoryLimit` at the same byte count via `platform_compat.apply_job_limits`, and FAILS CLOSED -- kills the unrun child and reports `unbounded` -- when the job cannot be attached. macOS accepts `RLIMIT_AS` without enforcing it, so the child additionally polices its own peak RSS (`getrusage` `ru_maxrss`, sampled every 20 ms) against the same 1 GiB and ends itself with the `memory` report: the ceiling there, a second layer on Linux |
 | `session_host` | The trusted ACP session-host spawns (`acp/client.py`, `acp/runtime.py`) | RAISES NOFILE to the inherited hard limit and does nothing else. A session host multiplexes many MCP pipe pairs, and the 1024 cap caused EMFILE crashes. No OOM bias: a trusted session host must not be the preferred kill target |
 | `build` | The dev-fleet build spawns (`apps/builtins/dev_fleet/runtime.py`) | Vite and npm need thousands of descriptors; keeps the OOM bias |
-| `none` | The user's own interactive terminal | No rlimits, no OOM bias, so the shim has nothing to deliver |
+| `none` | The user's own interactive terminal | No rlimits and no OOM bias, so the shim is skipped entirely unless the spawn also asks for a controlling terminal (`ctty_fd=`), which the terminal does |
 
 Async, shim-routed spawns cover MCP server probes (`mcp_discovery.py`), the app
 registry's clone and build spawns (`apps/registry.py`, `apps/routes.py`), the task
@@ -128,16 +130,21 @@ all its descendants, so coverage is unchanged; only the delivery point moved.
 `test/test_spawn_preexec_guard.py` is the AST tripwire that keeps a new async call site
 from reintroducing the fork.
 
-**Two documented exceptions**, both allowlisted in the tripwire:
+**One documented exception**, allowlisted in the tripwire:
 
 - `sandbox.create_subprocess_limited`'s own fallback, for a host with no usable shim
   (non-POSIX, or a truncated install). Dropping the caps silently would be worse.
-- `dashboard/handlers/terminal.py`'s interactive shell. It carries the `none` profile, so
-  the shim would have nothing to deliver while costing an interpreter startup on every
-  terminal open (measurably doubling the terminal test file's wall time). Its `preexec_fn`
-  is a single pre-resolved `ioctl` with no allocation and no lock acquisition, which is the
-  only shape where a fork-child callable is defensible. The fork remains; the risk is
-  accepted and stated at the call site.
+
+`dashboard/handlers/terminal.py`'s interactive shell is NOT an exception, and the reason is
+worth stating because the callable a fork would run there looks harmless. It carries the
+`none` profile, so the shim has no *limits* to deliver for it, and the callable is a single
+pre-resolved `ioctl` claiming the PTY as the controlling terminal -- no allocation, no lock
+acquisition. The fork it forces is not harmless: at 3GB resident and 121 threads the
+page-table copy holds the event loop for **107ms per terminal open** (13ms at 0.52GB, so it
+tracks resident size), and a clone that cannot reach `exec` holds it without bound. The shim
+carries the claim instead, through `--ctty-fd=`, which brings the loop-side cost to
+**0.5ms**: the interpreter startup it adds is paid by the CHILD after `exec`, not by the
+loop waiting for it.
 
 ### Defaults: one safe blanket limit, three opt-in knobs
 
@@ -182,7 +189,9 @@ Because RLIMIT is the wrong tool for the fork-bomb and memory-DoS threats (`RLIM
 is per-UID, `RLIMIT_AS` caps virtual rather than resident memory), the actual default-on
 defense for both is a **cgroup v2 scope** applied by `sandbox.cgroup_scope_argv()`. Every
 agent-influenced spawn is wrapped in a transient `systemd-run --user --scope` nested under
-`kirocrew-agents.slice`, with:
+an instance-specific child of `kirocrew-agents.slice`. The child separates live,
+dev, and pod gateway populations; the shared parent remains the aggregate hard
+and soft enforcement boundary. Each scope has:
 
 - **`TasksMax`** = `pids.max`, default **8192** from `_CGROUP_DEFAULT_MAX_PROCESSES`
   (override via `resource_limits.max_processes`), the **fork-bomb** ceiling. `pids.max`
@@ -214,8 +223,8 @@ agent-influenced spawn is wrapped in a transient `systemd-run --user --scope` ne
 The spawn shim additionally writes `oom_score_adj=1000` on the child it execs (inherited by
 its descendants), biasing the kernel OOM killer toward tool subprocesses so a
 memory-ballooning command is killed *before* `memory.max` takes out the entire agent scope.
-It is requested explicitly (`--oom-bias`) by the `tool` and `build` profiles only
-(`_PROFILE_OOM_BIAS`).
+It is requested explicitly (`--oom-bias`) by the `tool`, `build` and `extractor` profiles
+only (`_PROFILE_OOM_BIAS`).
 
 ### The aggregate slice ceiling (`memory.high` on `kirocrew-agents.slice`)
 
@@ -309,6 +318,51 @@ Linux without delegation, no user session, macOS), `cgroup_scope_argv` returns t
 unchanged and logs a **one-time loud SECURITY warning**. `RLIMIT_NOFILE` still applies, but
 the fork-bomb and memory ceilings are NOT enforced there. Operators on such hosts should run
 the gateway under an externally-configured cgroup or container limit.
+
+### macOS: a reaper, not a ceiling
+
+macOS has containment of a different kind and strictly weaker guarantees, so the two must
+not be confused for each other. What it has is the **orphan MCP reaper**
+(`session_pid.kill_orphan_mcps`), which reclaims a launcher tree *after* it leaks. What it
+does not have is any ceiling that stops one growing in the first place.
+
+The reaper's fingerprint-less arm — the cmdlines a user's own shell could reproduce
+(`npx @playwright/mcp`, `<launcher> mcp start-server <name>`) — demands positive identity
+before it signals, and that identity is the process's exec-time `KIROCREW_SPAWNED` environ
+entry. macOS reads it from `sysctl(CTL_KERN, KERN_PROCARGS2, pid)`
+(`platform_compat.darwin_process_environ`), the record `ps -E` prints: same-uid only, no
+entitlement, no elevated privilege, and a kernel copy fixed at exec, so it is evidence one
+process cannot forge for another. The read is bounded at the kernel's `ARG_MAX` ceiling on
+argv-plus-environment rather than the smaller bound the argv probe uses, because the
+environment sits *after* argv in that one record — a launcher that appends to its own argv
+on every generation would otherwise push its own environment out of the read and be refused
+for want of identity. Windows has no comparable same-uid read and keeps failing closed.
+
+Two residuals on macOS, both deliberate:
+
+- The **descendant** walk under a reaped root stays a no-op there: it needs a per-pid parent
+  edge and start identity from one atomic read (`_pid_parent_and_token`, `/proc`-only) and a
+  NUL-separated argv (`_pid_cmdline`), and the `ps` fallback supplies neither. The root's
+  `killpg` still reclaims everything sharing its process group; a member that `setsid`-ed
+  away survives to a later sweep.
+- The sweep's own floors (`_ORPHAN_MIN_AGE_SECONDS` 120s, `_ORPHAN_SWEEP_MAX_KILLS` 30) are
+  sized for a leak, not a storm, and they are shared with every other sweep class.
+
+**No bounded per-subtree process ceiling exists on macOS.** Checked, and why each candidate
+is not one:
+
+| Candidate | Why it is not a subtree ceiling |
+|---|---|
+| cgroup v2 `pids.max` | Linux-only; macOS has no cgroup equivalent at any version |
+| `RLIMIT_NPROC` (`setrlimit`, `ulimit -u`) | Counted **per real UID**, not per spawn subtree, so a value low enough to bound one agent tree caps the operator's entire login session — and the Darwin kernel additionally clamps a non-root value to `kern.maxprocperuid` |
+| `launchd` job `SoftResourceLimits`/`HardResourceLimits` → `NumberOfProcesses` | The same `RLIMIT_NPROC`, so the same per-UID problem; it also only reaches processes launchd itself started, and the gateway spawns its MCP servers directly |
+| Seatbelt (`sandbox-exec`, `process-fork`) | The operation is deny-or-allow, not a counted budget: denying `fork` breaks every legitimate MCP server that spawns a child. Also a deprecated interface |
+| Jetsam / `memorystatus_control` | Memory pressure, not process count, and per-process rather than per-subtree; the private interface needs an entitlement |
+| `kqueue` `EVFILT_PROC` + `NOTE_TRACK` | Delivers fork events for a tracked subtree, so a supervisor could *count* — but enforcement would then be a userspace reaper racing a fork storm, which is the race this section exists to describe, not a ceiling. `NOTE_TRACK` can also fail to attach (`NOTE_TRACKERR`) |
+
+So on macOS the honest position is: a fork storm is reclaimed after the fact, on the sweep's
+cadence, and is not prevented. Operators who need prevention should run the gateway inside a
+Linux VM or container where the cgroup scope applies.
 
 ### Bus locators are part of the wrapper contract, and only the wrapper's
 

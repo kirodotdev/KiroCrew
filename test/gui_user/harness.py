@@ -686,7 +686,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--shot-width", type=int, default=1280)
     p.add_argument("--tool-mode", choices=("auto", "native", "custom"), default="auto")
     p.add_argument(
-        "--budget-usd", type=float, default=3.0, help="stop the run once spend reaches this"
+        "--budget-usd", type=float, default=20.0, help="stop the run once spend reaches this"
     )
     p.add_argument(
         "--price-in", type=float, default=3.0, help="USD per 1M input tokens (cost model only)"

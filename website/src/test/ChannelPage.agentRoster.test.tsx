@@ -50,9 +50,9 @@ beforeEach(() => {
   vi.mocked(api).channelGet = vi.fn().mockResolvedValue(channels[0])
   vi.mocked(api).channelPresets = vi.fn().mockResolvedValue({})
   vi.mocked(api).channelAddAgent = vi.fn().mockResolvedValue({ ok: true })
-  vi.mocked(api).syncKirocrewAgents = vi.fn().mockResolvedValue({ ok: true })
   // The failure under test: the roster endpoint is down.
   vi.mocked(api).kirocrewAgents = vi.fn().mockRejectedValue(new Error('gateway restarting'))
+  vi.mocked(api).agentCatalog = vi.fn().mockRejectedValue(new Error('gateway restarting'))
 })
 
 /** Render, wait past the loading gate, then open the agents sidebar's add form. */
@@ -82,6 +82,8 @@ describe('ChannelPage Add Agent roster failure (#5990)', () => {
     await waitFor(() => expect(screen.getByText('Retry')).toBeInTheDocument())
 
     vi.mocked(api).kirocrewAgents = vi.fn().mockResolvedValue({ agents: ROSTER, default_agent: 'kirocrew' })
+
+    vi.mocked(api).agentCatalog = vi.fn().mockResolvedValue({ agents: ROSTER, default_agent: 'kirocrew' })
     fireEvent.click(screen.getByText('Retry'))
 
     // Constant trigger, so before this change there was no path back at all.

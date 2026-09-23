@@ -922,14 +922,16 @@ committed-status rows record that, so an audit of "what did the bot land?" resol
 Under `app_data_dir("auto-improvement")` (i.e. `$KIROCREW_HOME/apps/auto-improvement/data`):
 
 ```
-config.json          run configuration
-ledger.jsonl         append-only findings ledger (dedup by content fingerprint)
-ruler/ruler.json     calibrated ruler (atomic write)
-results/             run metadata, results.tsv, per-candidate diffs
-pr_queue/            <fp>.diff + <fp>.pr.md — durable draft-PR queue
-profiles/            normalized profiler frame trees
-sessions/<key>.json  chat-session records (resume)
-logs/
+config.json                    active run configuration
+crew.json                      app role-to-Crew-Member mapping
+sessions/<key>.json            chat-session records (resume)
+repos/<repo-branch-key>/
+├── ledger.jsonl               append-only findings ledger
+├── ruler/ruler.json           calibrated ruler (atomic write)
+├── results/                   run metadata, results.tsv, per-candidate diffs
+├── pr_queue/                  <fp>.diff + <fp>.pr.md — durable draft-PR queue
+├── profiles/                  normalized profiler frame trees
+└── logs/
 ```
 
 All archive text is UTF-8, including raw candidate diffs and TSV descriptions. When an
@@ -950,7 +952,7 @@ large, regenerable, and must not be mistaken for the durable record.
 stylistic: the upstream app used a plain write for the ruler and readers caught it
 mid-truncate ~31% of the time, reporting a calibrated ruler as uncalibrated.
 
-Session record keys are validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` and
+Session record keys are validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,249}$` and
 rejected — not sanitized — when unsafe, because silently rewriting a key would
 make two subjects share one record. The frontend sanitizer strips dot-runs and
 path separators before the key is ever sent, so the two gates agree.
@@ -965,8 +967,68 @@ Three tiers, each where it fits:
    resumes. Sessions are filed into an `Auto-Improve - <repo>` folder. A 404 from
    `switchSlot` (and only a 404) means the slot is gone and a fresh one opens;
    treating a transient error that way would orphan a live session.
-2. **Silent background sessions** for the autonomous loop's own agent runs, so a
-   run produces no agent cards, approval prompts, or reaper slots.
+2. **Member assignments** for the autonomous loop. Enabling the app provisions
+   `auto-improvement-scout` and `auto-improvement-engineer` as ordinary Crew Members,
+   each with its own immutable member ID and empty V2 memory store. The app keeps
+   the role-to-ID mapping at `<home>/apps/auto-improvement/data/crew.json`;
+   re-enabling preserves owner edits, rules and memory, and follows member renames.
+   A missing recorded member or store, an occupied foreign name or an incompatible
+   template refuses initialization.
+   Disable and uninstall retain the members and their history.
+   [Owner recovery](../../../src/kiro_crew/apps/builtins/auto_improvement/docs/MANUAL.md#recover-a-missing-or-changed-member)
+   restores an intact member's template through the existing editor, retaining its
+   identity. Fresh replacement requires a stopped gateway and backups of `config.json`
+   and `crew.json`: the owner frees any canonical-name collision by renaming the
+   `agents` key and its store's descriptive `owner_member` label, preserving the
+   existing IDs and store binding, then removes only the broken role mapping.
+   Re-enabling provisions that role afresh while preserving the healthy role's ID
+   and renamed label. Retained memory, manual documents and transcripts remain
+   associated with the old identity and are never transferred to the replacement.
+   `backend/crew.py` owns provisioning and binds the gateway session runtime.
+   `spine/crew_runner.py` assigns discovery to the Scout and bug/performance
+   authoring to the Engineer. Handoffs carry the candidate evidence explicitly;
+   the members do not share memory. Before provider allocation, the assignment
+   explicitly scans its working directory's `.kiro/agents` and refuses any spec
+   declaring either role template. The shared bounded JSON/Markdown reader handles
+   declared names, filename fallbacks and symlinks; JSON twins take precedence.
+   The scan includes native skill-view filenames and refuses unreadable directories
+   or unverifiable specs instead of treating them as absent. It does not walk
+   parents or change global discovery. When cwd is omitted, the provider factory's
+   session-workspace resolver supplies the path, which is checked and then passed
+   explicitly to allocation. This prevents project preapprovals from bypassing
+   governance and stage permission gates; credential-risk consent does not waive it.
+   Every assignment uses a fresh managed session
+   with a captured `ExecutionContext`, current member context, transcript and
+   member activity pointer. The app feed payload includes the member and session
+   key; the current feed UI shows the member, and member activity opens the session.
+   Generated assignment prompts, assistant text and assignment error metadata pass
+   through the platform context's credential and exfiltration redactor before
+   storage. Completion activity uses the same sanitized error copy; the actual
+   assignment prompt and returned `AgentResult` remain intact for the deterministic
+   driver. Failed redaction withholds the affected field while session release
+   and removal still run.
+   Stop and timeout cancel the active assignment and release its session.
+   Deadline errors use the existing `timeout after Ns` contract so bug and
+   performance authoring retain completed edits for the deterministic gate.
+   Per-role provider-reported USD totals feed the existing combined run budget.
+   Kiro credit usage is not converted to dollars; the USD cap does not bound
+   credit spend. Cycle, time and tool-call limits still apply. The deterministic
+   gate, ruler, keeper and publication policy retain their authority.
+   Only the two named memory tools (`memory_recall`, `learn_add`) supplement a
+   stage's existing tool allowlist, and only with trusted MCP identity; an empty
+   allowlist still grants no tools. Governance, audited approvals and the app's
+   shell refusal gate apply to every permission request. PR watchers retain their
+   separate opt-in runner and egress controls.
+   The Scout offers `execute_bash` for opt-in pre-push git review; discovery's
+   per-stage allowlist still denies Bash.
+   Native permission frames that omit a kind use the preceding tool-call
+   classification with the same call ID; a title is never used as its identity.
+   The recovered kind is shared by hook/governance evaluation and the app allowlist,
+   so both authorize the same tool classification.
+   The credential-confinement preflight reads `config.agent.sandbox` and applies
+   `effective_sandbox_mode`, including the governance `sandbox.min_level` floor.
+   Only an effective `strict` mode satisfies it; other modes require the
+   existing explicit `acceptUnsandboxedAgentRisk` decision.
 3. **Fire-and-forget launcher** for one-shot discussions.
 
 Subject kinds are `pr | finding | ruler | run`, and the record key is
@@ -1028,7 +1090,7 @@ best-effort, as before. `TestCheckoutPrecedesProfileBuild` pins the ordering.
 
 ## Spine / profile seam
 
-The engine (`spine/`, ~7.8k lines) consumes a target only through a six-field
+The engine (`spine/`) consumes a target only through a six-field
 `TargetProfile` protocol: `ruler`, `build_gate`, `edit_allowlist`, `isolation`,
 `pr_recipe`, `calibration`. The protocols are `runtime_checkable`, so the loader
 validates a profile object before the driver trusts it. Adding a new target means
@@ -1041,7 +1103,7 @@ adding a profile, never editing the engine.
 `website/src/apps/auto-improvement/AutoImprovementPage.tsx`, routed at
 `/auto-improvement` via `builtinRegistry.ts`, code-split into its own chunk.
 React Query for all server state; `i18nT` for every user-facing string (keys under
-`autoImprovement.*`, present in all 10 shipped catalogs); lucide icons only.
+`autoImprovement.*`, present in all 12 production catalogs); lucide icons only.
 
 ## Parity with the upstream app
 
@@ -1113,18 +1175,17 @@ the frontend cases and the full keep-or-revert loop against a real GitHub reposi
 are covered by the **manual acceptance plan** further down, not by an automated
 integration test — nothing in the tree runs the full loop against a live repository.
 
-- `src/kiro_crew/apps/builtins/auto_improvement/tests/` — 439 tests covering verdict
+- `src/kiro_crew/apps/builtins/auto_improvement/tests/` — tests covering verdict
   derivation, check summarization, provider-error degradation, PR-recipe protocol
   conformance, branch naming, draft-only policy, queue degradation, the audit-or-deny
-  approval, MCP dispatch auditing, and evidence redaction. Not in default `testpaths`;
-  run with an explicit path.
-- `test/test_bug_*.py` — reproducing tests for four defects the app found in its own
-  code while dogfooding. They live under `test/` so the default `testpaths` runs them:
-  a regression guard nobody executes is not a guard.
-- `website/src/test/autoImprovementSession.test.ts` — 13 tests covering session-key
-  namespacing/sanitization and prompt constraints.
-- `website/src/test/autoImprovementActivity.test.ts` — 6 tests over the activity-feed
-  line builder, including app-locale (not host-locale) time formatting.
+  approval, MCP dispatch auditing, and evidence redaction. `setup.cfg` includes
+  `src/kiro_crew/apps/builtins` in the default `testpaths`.
+- `test/test_bug_*.py` — reproducing tests for defects the app found while
+  dogfooding. They live under `test/`, which is also in the default `testpaths`.
+- `website/src/test/autoImprovementSession.test.ts` — session-key
+  namespacing/sanitization and prompt-constraint coverage.
+- `website/src/test/autoImprovementActivity.test.ts` — activity-feed line-builder
+  coverage, including app-locale (not host-locale) time formatting.
 
 ### Regression cases
 
@@ -1139,7 +1200,7 @@ Each row is a defect this app shipped once; the assert is what keeps it shipped-
 | D-5 | ANSI in lint output | `_lint_findings` strips SGR **before** parsing (ruff colorizes even when piped), so tokens carry real rule codes. Without that strip every code parses EMPTY and T1's set-difference is unreliable. |
 | D-6 | Push race | A `non-fast-forward` push retries once after fetch+rebase; a conflict aborts; **never `--force`**. Without the retry a concurrent push silently drops gate survivors. |
 | D-7 | Cycle-cap starvation | With the default budget, a multi-surface discovery does not leave most findings at `seen`. A cap that starves discovery leaves most findings at `seen` with budget unspent. |
-| D-8 | Subagent orphaning | The discovery agent runs under a **tool-scoped** agent (no `@kirocrew-core`, hence no `spawn_sub_agents`) yet still has `fs_read`/`grep`/`execute_bash`. Assert a terminal state with no `Reaper: force-killing` lines. |
+| D-8 | Subagent orphaning | The discovery agent runs under a **tool-scoped** agent (no `@kirocrew-core`, hence no `spawn_sub_agents`) and its stage allowlist is read-only (`Read`/`Grep`/`Glob`, no `Bash`). Assert a terminal state with no `Reaper: force-killing` lines. |
 | D-9 | `--dry-run` | The driver's `--dry-run` completes; `spine/stub_profile.py` is importable. |
 | D-10 | Do-not-pollute | Host state hash unchanged across a run; a nonzero diff blocks. |
 | D-11 | Reward-hack guards | A candidate deleting tests to go faster is rejected (`test_count_unchanged`); the edit fence forbids touching `tests/**` on the perf track. |
@@ -1196,7 +1257,7 @@ Each row is a defect this app shipped once; the assert is what keeps it shipped-
 | D-140 | The double-click latch on `openSession` is synchronous | `openSession` guarded re-entry with `setBusy(true)` — React state, applied ASYNCHRONOUSLY — so a rapid double-click on "discuss" ran the callback twice before either render landed: both invocations saw "no record", both created a seeded slot, and the second `saveRecord` overwrote the first slot mapping, orphaning a live conversation the user could no longer reach. Fixed with a synchronous `useRef` latch checked and set BEFORE the first `await` and released in `finally` (every exit — resume, fresh, throw — or the subject could never be reopened). Keyed by session rather than a single boolean so opening two DIFFERENT subjects stays parallel. Three RED-verified structural tests: the latch is a ref not React state, it is taken before the first suspension point, and it is released in `finally`. Structural rather than a rendered race because the hook needs Redux + router providers while the property that matters is the ORDERING of the guard against the first `await`. |
 | D-139 | The new `ja` locale carries this app's catalog | A rebase pulled in `main`'s new Japanese locale, and `catalogParity.test.ts` (every English key must exist in every non-English catalog IN THE SAME COMMIT) failed with "ja: missing 95 key(s)". Same contract as D-135, a locale that did not exist when that work was done. All 95 were translated into Japanese — the 79 top-level UI keys sourced from `en.manual.json` plus the 16 under `apps.autoImprovement` (`findingDetail`, `manifest`, `setupPanel`) — keeping the product names `Auto-Improvement`/`Auto-Improve`, the protocol tokens `RED`/`GREEN`/`STAYGREEN`/`lint`, and the `{{var}}` placeholders verbatim. Verified with the whole i18n suite (36 files / 521 tests) rather than the parity test alone, because the per-locale STYLE gates are what caught the first pass on `pt`/`zh-CN`/`hi` in D-135; Japanese raised none. |
 | D-138 | The stored push destination is pinned by repo IDENTITY, not just host | D-57 host-allowlisted `origin_url` (exact host match, so `evilgithub.com` fails) and the docstring called the rule "about the NETWORK HOST". That is not sufficient: `github.com` IS an allowed host, so an injected `config.json` can keep the host and swap the PATH — `https://github.com/attacker/exfil.git` passed the check and became the push destination for all three exits (draft-PR push, F10 direct push, one-click commit). Fixed by pinning the IDENTITY: a network `origin_url` must name the same `owner/repo` as the validated `target_url`, compared through a new transport-agnostic `_remote_slug` (lower-cased, `.git`-stripped) so `git@github.com:o/r.git` and `https://github.com/o/r.git` compare EQUAL — the ssh form is what `setup_safe_clone` persists whenever `gh` prefers it, and refusing it would degrade every ssh install to queue-only (the regression D-57 was written to avoid). Fail-closed: a mismatch, or a missing/invalid `target_url` leaving nothing to pin against, yields `""` (no push target). A LOCAL path has no slug and stays allowed — it cannot exfiltrate. Two existing tests encoded the weaker contract and were updated rather than deleted: `test_origin_url_wins_when_present` had used MISMATCHED repos (`o/r` vs `a/b`), which is precisely the attack, so it now asserts the matching case wins and a new sibling asserts the repo-swap is refused; the transport-matrix test now passes the real config shape (both keys, same repo). |
-| D-137 | The loop's agent refuses to run without credential confinement | The subprocess agent path spawns through `sandboxed_spawn_argv(mode="strict")` + `strip_credential_env`, which hides `~/.aws`/`~/.gnupg`/`gh`/`gcloud`/`kube` stores and scrubs the token env. The PROVIDER path (`SessionAgentRunner`, what `_build_runner` prefers) drives a Kiro Crew session instead, so isolation is whatever the gateway's `sandbox` field gives — and that DEFAULTS TO `"off"`, deferring to kiro-cli's internal agent sandbox, which this app cannot inspect. On a gateway with no effective sandbox, a repository instruction reaching the agent's auto-approved Bash (`python helper.py`) could read those credential stores and exfiltrate over an unrestricted network, with none of the masking the subprocess path enforces. `_build_runner` now consults `_credentials_are_unconfined()` BEFORE constructing the runner and returns `None` (OFFLINE — the same fail-closed answer it already gives when the tool-restricted agent cannot be registered) unless the sandbox is `'auto'` or the operator has acknowledged the residual risk via `acceptUnsandboxedAgentRisk`. The acknowledgement exists deliberately rather than a hard refusal: because `sandbox` defaults to `"off"` on every install, refusing outright would silently take the loop offline for everyone instead of naming the decision — the same one-time-consent shape as the watcher's `watcherAcceptEgressRisk` (D-118), compared with `is True` so a stray `1`/`"yes"` cannot opt in, and the key is added to `_CONFIG_WRITABLE` so it is actually settable. An unreadable config counts as unconfined (a state we cannot verify must not be trusted). Six tests incl. a structural guard that the check PRECEDES the runner construction; two pre-existing tests about runner SELECTION and REGISTRATION now satisfy the new precondition so they keep exercising the paths they name. |
+| D-137 | The loop refuses unattended execution without credential confinement or explicit consent | Member assignments inherit `agent.sandbox`, clamped by the governance `sandbox.min_level` floor. `_credentials_are_unconfined()` requires an effective `strict` mode before the runner is constructed: `cc` still exposes SSH and GitHub CLI credentials. The operator may explicitly acknowledge that risk with the writable `acceptUnsandboxedAgentRisk` boolean; only `is True` opts in. An unreadable configuration fails closed. A refusal leaves the loop OFFLINE with a reason rather than falling back to an ungoverned subprocess. |
 | D-136 | Every exit from a watcher pass checks durability, not just the success path | `_run_agent_pass` had THREE exits but only the success one reached `_export_is_durable`: the runner-exception path (`return True`) and the failed/timed-out-result path (`return True`) both returned BEFORE it. So a pass that edited and COMMITTED inside the isolated clone and then timed out — which `SessionAgentRunner._finish` itself calls an EXPECTED common outcome (`timeout after …`) — left `st.unexported_work` False; on Stop, `_run_watcher`'s `finally` took the `_cleanup_clone` branch and `shutil.rmtree`d the only copy of those commits, because the clone's origin is deliberately dead and no `<fp>.nudge-<n>.diff` had been written. The two doors D-100 (failed diff) and D-101 (uncommitted tree) both live INSIDE `_export_is_durable`, so an early return bypassed the entire protection they exist to provide. Fixed by extracting `_retain_if_work_is_undurable` and calling it on ALL three exits, so success, fault and timeout ask the same question. Three RED-verified tests: a timed-out pass sets `unexported_work`, a faulted pass sets it, and a structural guard asserts ≥3 call sites in `_run_agent_pass` so a fourth exit added later cannot silently reintroduce the data-loss path. **Advisory fixed in the same pass**: two genuinely non-optional, non-circular function-local imports violating `top-level-imports` — `import stat as _stat` in `git_safety._reject_link` and `from kiro_crew.platform_compat import SIGKILL, kill_process_tree` in `agent_runner` — hoisted to their module import blocks (neither carried an `except ImportError` fallback or a circular-import note, which is what the rule exempts). |
 | D-135 | The app manifest's display copy is localized, not raw English | A rebase onto `main` pulled in a new gate, `check-app-manifest-sync.mjs`, and it failed with 9 problems: `apps.autoImprovement.manifest.{display_name,description,page_label,highlight_1..6}` "is not in locales/en.json". The gate exists because `displayName`/`description`/`highlights[]`/`ui.pages[].label` are owned by `app.json` on the Python side and the App Store interpolates them RAW, so a non-English user saw this app's card in English while every sibling app was translated. The contract is additive (`app.json` keeps its English verbatim for the CLI and for catalog-less consumers) and has three parts, all of which this branch was missing: (1) the 9 keys must exist in `en.json` with values BYTE-IDENTICAL to the manifest prose; (2) the app needs an entry in `src/components/appstore/appManifest.ts`'s `APP_MANIFEST_KEY` table — without it the resolvers never localize the card AND the 9 keys read as dead to `deadKeys.test.ts`, which pushed that ratchet 24 → 33; (3) `catalogParity.test.ts` demands every English key in all 9 non-English catalogs IN THE SAME COMMIT, so the keys had to be translated, not stubbed. Fixed all three, then cleared the per-locale STYLE gates the new translations tripped: `pt`/`es`/`it` guillemets `«»` → curly quotes, `zh-CN` corner brackets `「」` → curly quotes plus a de-stacked genitive (the rule allows ≤2 `的` per clause; the first draft had 3 in one clause), and `hi` formal `आप` → informal. `en-XA.json` was regenerated (`npm run i18n:pseudo`, 8360 keys) because the pseudolocale must mirror every English key. Verified: manifest-sync `OK: 19 built-in manifests, 168 strings match locales/en.json exactly`, `i18n:check` 13/13 PASS, `src/i18n/` 491/491, and the full frontend suite 9149 passed. Inherited-from-main class, like D-110/D-130: a gate that did not exist when the branch was written. |
 | D-134 | Chat-session keys are injective across repos/ids that sanitize alike | `sessionKey(kind, id, repo)` built the key from `safeSegment(repo)`/`safeSegment(id)`, and `safeSegment` is deliberately LOSSY (it collapses path separators and dot-runs). So two distinct repos whose safe form coincides — `team/service-api` and `team-service/api` both → `team-service-api` — produced the SAME session key, and opening the second repo's PR resumed the first repo's conversation (session records live at the shared data root, not under the per-repo workspace). Fixed by appending a fingerprint of the RAW value to each free-form segment (`keySegment` = `safeSegment(raw) + '.' + fnv1a(raw)`), making the mapping injective while keeping the readable prefix and staying inside the backend key validator's charset (`store._SAFE_KEY_RE = ^[A-Za-z0-9][A-Za-z0-9._-]{0,249}$` — `.` and the added length are both allowed). FNV-1a with the 32-bit prime (`Math.imul` truncates to 32-bit, so the 64-bit prime would silently collapse — same caveat documented in `lib/widgetSlug.ts`). RED-verified test: two repos that sanitize to the same safe segment must not share a key (fails against the pre-fix `safeSegment` form); existing exact-literal assertions relaxed to prefix + behavioral guards so they do not pin the hash. |

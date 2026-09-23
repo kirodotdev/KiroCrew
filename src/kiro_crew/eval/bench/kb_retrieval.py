@@ -116,6 +116,54 @@ def mrr_at_k(ranked: Sequence[str], gold: Sequence[str], k: int) -> float:
     return 0.0
 
 
+def average_precision_at_k(ranked: Sequence[str], gold: Sequence[str], k: int) -> float:
+    """Average precision at ``k`` for a single query (binary relevance).
+
+    Precision is taken at every rank inside the window that holds a gold
+    document, and the sum divided by ``min(|gold|, k)``.
+
+    What this adds over the metrics already here: ``mrr`` stops at the FIRST
+    hit, so a query whose second gold doc lands at rank 9 rather than rank 2
+    scores identically under it. ``recall_all`` sees both placements as 1.0 as
+    long as the window contains them. Average precision separates them, which
+    is the signal the multi-gold classes (``multi_hop``, ``reinforcement``)
+    need once ``recall_any`` is saturated and only ranking quality is left to
+    measure.
+
+    The denominator is truncated rather than the textbook ``|gold|`` for the
+    reason :func:`ndcg_at_k` truncates its ideal ranking: a query with more gold
+    docs than fit in the window would otherwise be capped below 1.0 by
+    arithmetic rather than by ranking quality, and the two metrics would
+    disagree about what a perfect run is. The cost is that this is not directly
+    comparable to a published MAP computed over full gold, so the cut-off must
+    travel with the number wherever it is reported.
+
+    Each gold doc counts once even if the ranked list repeats it. The sibling
+    scorers are immune to duplicates by construction (they compare sets) or
+    unaffected in practice; here a repeat would inflate the running hit count
+    and can push the result above 1.0, which is a wrong number rather than a
+    debatable one.
+
+    Lives here rather than in ``retrieval.py`` for the reason :func:`mrr_at_k`
+    does: that module's scorers are frozen against a differential harness, and
+    registering a new metric there would add a key the committed memory
+    baselines do not carry.
+    """
+    if not gold:
+        return 0.0
+    goldset = set(gold)
+    denom = min(len(goldset), k)
+    if denom <= 0:
+        return 0.0
+    seen: set[str] = set()
+    running = 0.0
+    for i, item in enumerate(ranked[:k]):
+        if item in goldset and item not in seen:
+            seen.add(item)
+            running += len(seen) / (i + 1)
+    return running / denom
+
+
 @dataclass(frozen=True)
 class KBDoc:
     """One document in the golden corpus. ``id`` is the retrieval gold label."""
@@ -306,6 +354,10 @@ class KBQueryResult:
     recall_micro: dict[int, float]
     ndcg: dict[int, float]
     mrr: dict[int, float]
+    #: Per-query average precision. The MEAN of this across answerable queries
+    #: is what the report calls ``map@k`` -- the "M" is the aggregation, so the
+    #: per-query value deliberately is not named ``map``.
+    avg_precision: dict[int, float]
     #: For abstention queries only: 1.0 if the retriever returned nothing (or
     #: nothing above the floor), else 0.0. ``None`` for answerable queries.
     abstained: float | None = None
@@ -345,6 +397,7 @@ class KBRetrievalReport:
                 "recall_micro": _mean([r.recall_micro[k] for r in members]),
                 "ndcg": _mean([r.ndcg[k] for r in members]),
                 "mrr": _mean([r.mrr[k] for r in members]),
+                "map": _mean([r.avg_precision[k] for r in members]),
             }
         return out
 
@@ -373,6 +426,7 @@ class KBRetrievalReport:
             "recall_micro@%d" % k: _mean([r.recall_micro[k] for r in ans]),
             "ndcg@%d" % k: _mean([r.ndcg[k] for r in ans]),
             "mrr@%d" % k: _mean([r.mrr[k] for r in ans]),
+            "map@%d" % k: _mean([r.avg_precision[k] for r in ans]),
             "abstention_rate": _mean(abst),
             "n_answerable": float(len(ans)),
             "n_abstention": float(len(abst)),
@@ -397,12 +451,14 @@ def default_golden_set_path() -> Path:
     than its size -- each of its gold documents is the only one in that corpus
     using its topic's vocabulary, so matching a single term wins. v2 carries
     competing distractors, and the legs separate on it: keyword-only
-    (deterministic: FTS5 + graph, no model) scores nDCG@3 0.825 / MRR@3 0.804,
-    against 0.903 / 0.887 for the semantic leg measured with
+    (deterministic: FTS5 + graph, no model) scores nDCG@3 0.825 / MRR@3 0.804 /
+    MAP@3 0.772, against 0.903 / 0.887 / 0.869 for the semantic leg measured with
     ``qwen3-embedding:0.6b``, and ``multi_hop`` recall_all@3 reads 0.400 keyword
-    versus 1.000 semantic. Re-measure the semantic pair after a model or
-    quantization change; only the keyword pair is reproducible from the corpus
-    alone.
+    versus 1.000 semantic. MAP separates the two legs more widely than either
+    companion (0.097, against 0.078 nDCG and 0.083 MRR), which is the multi-gold
+    ranking signal it exists to expose. Re-measure the semantic triple after a
+    model or quantization change; only the keyword triple is reproducible from
+    the corpus alone.
 
     Consequence for anyone comparing runs: a v1 report and a v2 report measure
     DIFFERENT corpora and their metrics are not comparable. Nothing mechanical
@@ -598,6 +654,7 @@ def run_kb_retrieval(
                     recall_micro={k: recall_micro_at_k(ranked, gold, k) for k in k_values},
                     ndcg={k: ndcg_at_k(ranked, gold, k) for k in k_values},
                     mrr={k: mrr_at_k(ranked, gold, k) for k in k_values},
+                    avg_precision={k: average_precision_at_k(ranked, gold, k) for k in k_values},
                     abstained=abstained,
                 )
             )
@@ -622,7 +679,14 @@ def format_kb_report(report: KBRetrievalReport, *, k: int = 3) -> str:
     head = report.headline(k)
     lines.append("")
     lines.append(f"HEADLINE @{k} (answerable queries):")
-    for key in (f"recall_any@{k}", f"recall_all@{k}", f"recall_micro@{k}", f"ndcg@{k}", f"mrr@{k}"):
+    for key in (
+        f"recall_any@{k}",
+        f"recall_all@{k}",
+        f"recall_micro@{k}",
+        f"ndcg@{k}",
+        f"mrr@{k}",
+        f"map@{k}",
+    ):
         lines.append(f"  {key:<16} {head[key]:.3f}")
     lines.append(
         f"  abstention_rate  {head['abstention_rate']:.3f} " f"(n={int(head['n_abstention'])})"
@@ -641,6 +705,7 @@ def format_kb_report(report: KBRetrievalReport, *, k: int = 3) -> str:
                 f"  {qcls:<24} recall_any={m['recall_any']:.3f} "
                 f"recall_all={m['recall_all']:.3f} "
                 f"recall_micro={m['recall_micro']:.3f} "
-                f"ndcg={m['ndcg']:.3f} mrr={m['mrr']:.3f}"
+                f"ndcg={m['ndcg']:.3f} mrr={m['mrr']:.3f} "
+                f"map={m['map']:.3f}"
             )
     return "\n".join(lines)

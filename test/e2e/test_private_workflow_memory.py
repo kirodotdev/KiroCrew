@@ -1,8 +1,7 @@
-"""Real namespace gateway, scheduled workflows, projected MCP and SQLite stores.
+"""Real gateway, scheduled workflows, ordinary MCP authentication and SQLite routing.
 
-Only the model's decisions are deterministic. No identity, proof, ownership,
-namespace, store resolver, SessionManager or workflow service is replaced.
-Run explicitly in the namespace-enabled CI job with KIROCREW_E2E_REQUIRE=1.
+Only the model decisions are deterministic. Canonical owner records, transport,
+SessionManager, store APIs and workflow execution use their production paths.
 """
 
 import asyncio
@@ -27,6 +26,34 @@ pytestmark = pytest.mark.skipif(
     not os.environ.get("KIROCREW_E2E"), reason="Set KIROCREW_E2E=1 for real private workflow E2E"
 )
 
+# One wait in this module may take _PER_WAIT_SECONDS, and a test makes nine of
+# them, so per-wait budgets alone allow far more time than CI grants the whole
+# test (`--timeout=600` on the e2e-private-namespace job). _TEST_BUDGET_SECONDS
+# is the ceiling on all of a test's waiting together, anchored at test start and
+# set below that cap, so the last wait a stalled run can reach still fails HERE
+# -- naming the run and its progress -- instead of dying at the outer cap, which
+# reports only `Timeout >600.0s` and never says which workflow hung.
+_PER_WAIT_SECONDS = 120
+_TEST_BUDGET_SECONDS = 570
+_test_deadline = None
+
+
+@pytest.fixture(autouse=True)
+def _wait_budget():
+    """Anchor this test's whole waiting budget at its start."""
+    global _test_deadline
+    _test_deadline = time.monotonic() + _TEST_BUDGET_SECONDS
+    try:
+        yield
+    finally:
+        _test_deadline = None
+
+
+def _wait_deadline():
+    """The earlier of this wait's own cap and what is left of the test's budget."""
+    own = time.monotonic() + _PER_WAIT_SECONDS
+    return own if _test_deadline is None else min(own, _test_deadline)
+
 
 def _post_as(client, path, body, session):
     request = urllib.request.Request(
@@ -39,7 +66,8 @@ def _post_as(client, path, body, session):
 
 
 def _finished(client, run_id):
-    deadline = time.monotonic() + 120
+    deadline = _wait_deadline()
+    run = None
     while time.monotonic() < deadline:
         run = client.get(f"/api/workflows/runs/{run_id}")
         if run["status"] != "running":
@@ -47,7 +75,8 @@ def _finished(client, run_id):
             assert not run.get("agent_errors"), run
             return run
         time.sleep(0.1)
-    pytest.fail(f"Workflow did not terminate: {run_id}; {json.dumps(progress_summary(run))}")
+    progress = json.dumps(progress_summary(run)) if run is not None else "never polled"
+    pytest.fail(f"Workflow did not terminate: {run_id}; {progress}")
 
 
 def _assert_result(run, marker):
@@ -120,8 +149,6 @@ async def _nested_with_owner_approval(client, session, nested_source):
 
 def test_private_workflows_execute_over_real_projected_mcp():
     with _booted("rich") as (handle, client):
-        cfg = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))
-        assert cfg.get("agent", {}).get("sandbox", "auto") == "auto"
         members = {}
         for marker in ("A", "B"):
             member = f"workflow-e2e-{marker.lower()}"
@@ -167,13 +194,18 @@ def test_private_workflows_execute_over_real_projected_mcp():
         assert "WF_E2E_A_PRIVATE_LESSON" in json.dumps(result)
         assert "WF_E2E_A_PRIVATE_LESSON" in json.dumps(result["recall"])
         assert '"isError": true' not in json.dumps(result)
-        protected = json.loads(
-            (handle.home / "member-memory-bindings" / spawn_id / "memory.json").read_text(
-                encoding="utf-8"
-            )
+        record = json.loads(
+            (handle.home / "subagents" / spawn_id / "state.json").read_text(encoding="utf-8")
         )
         config = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))
-        assert protected["memory_store"] == config["agents"]["workflow-e2e-a"]["memory_store"]
+        assert (
+            record["execution_context"]["store"]["store_id"]
+            == config["agents"]["workflow-e2e-a"]["memory_store"]
+        )
+        assert (
+            record["execution_context"]["member_id"]
+            == config["agents"]["workflow-e2e-a"]["member_id"]
+        )
         for marker in ("B", "V"):
             control_source = f'META = {{"name": "foreign control"}}\nasync def workflow(ctx):\n    return await ctx.agent("[[WF_E2E:CONTROL:{marker}:{starts["A"]}]]")\n'
             control = _post_as(
@@ -186,9 +218,15 @@ def test_private_workflows_execute_over_real_projected_mcp():
             for tool, result in results.items():
                 text = json.dumps(result)
                 if tool == "workflow_list":
-                    assert starts["A"] not in text
+                    assert starts["A"] in text
+                elif tool == "workflow_result":
+                    assert "WF_E2E_A_PRIVATE_LESSON" in text
+                elif tool == "workflow_rerun_subtree":
+                    assert not result.get("isError"), (tool, result)
+                    replay_id = re.search(r"wf_\d+", text).group()
+                    _assert_result(_finished(client, replay_id), "A")
                 else:
-                    assert "refused" in text.lower(), (tool, result)
+                    assert "refused" not in text.lower(), (tool, result)
         config = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))
         for marker in ("A", "B", "V"):
             if marker == "V":

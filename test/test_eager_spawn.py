@@ -10,15 +10,21 @@ and the handler wiring on project set.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, MemoryStoreConfig
+from kiro_crew.config.loader import (
+    KiroCrewAgentConfig,
+    KiroCrewConfig,
+    MemoryStoreConfig,
+    ResolvedBindings,
+)
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.session import FirstTurnState
 
 
@@ -67,14 +73,24 @@ def _bindings(
     agent: str = "kirocrew",
     alias: str = "default",
     memory_store: str = "default",
-) -> SimpleNamespace:
-    """Concrete resolver result for fields consumed by the eager path."""
-    return SimpleNamespace(
+) -> ResolvedBindings:
+    """Member bindings with provenance; session resolution captures the revision."""
+    return ResolvedBindings(
+        workspace_dir=Path("workspace"),
+        effective_memory_config={},
         kiro_agent=agent,
         model="",
         resolved_alias=alias,
         requested_resolved=True,
         memory_store_name=memory_store,
+        selection_kind="member",
+        execution_context=(
+            ExecutionContext(
+                None, MemoryStoreRef(memory_store), "member", agent, selection_name=alias
+            )
+            if memory_store in ("default", "legacy-v1")
+            else None
+        ),
     )
 
 
@@ -101,11 +117,11 @@ def _private_default_member_cfg() -> KiroCrewConfig:
     return cfg
 
 
-def _alice_bindings() -> SimpleNamespace:
+def _alice_bindings() -> ResolvedBindings:
     return _bindings(agent="alice-agent", alias="alice", memory_store="member-alice")
 
 
-def _unresolved_bindings() -> SimpleNamespace:
+def _unresolved_bindings() -> ResolvedBindings:
     bindings = _bindings()
     bindings.requested_resolved = False
     return bindings
@@ -208,12 +224,17 @@ class TestEagerSpawn:
         state.sessions.get_or_create.assert_awaited_once()
         kwargs = state.sessions.get_or_create.await_args.kwargs
         assert kwargs["agent"] == "wfe-oncall"
+        assert kwargs["crew_agent"] == "wfe-oncall"
         assert kwargs["cwd"] == str(tmp_path)
         # The per-session semaphore acquired by get_or_create MUST be released
         # here: no turn follows, and a held semaphore would deadlock the first
         # real message.
         key = state.sessions.get_or_create.await_args.args[0]
         state.sessions.release.assert_called_once_with(key)
+        assert (
+            await asyncio.to_thread(chat_runner.session_agent_selection_kind, key, slot.agent)
+            == "member"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("allow_resume", [False, True])
@@ -243,7 +264,9 @@ class TestEagerSpawn:
             ) as resolve,
         ):
             await _eager_spawn(state, slot, allow_resume=allow_resume)
-        resolve.assert_called_once_with(cfg, agent or None)
+        resolve.assert_called_once_with(
+            cfg, agent or cfg.default_agent, validate_memory_files=False
+        )
         state.sessions.get_or_create.assert_not_awaited()
         state.sessions.release.assert_not_called()
         state.sessions.remove.assert_not_awaited()
@@ -331,11 +354,11 @@ class TestEagerSpawn:
         original = chat_runner.resolve_agent_bindings
         calls = []
 
-        def resolve(cfg, agent):
+        def resolve(cfg, agent, **kwargs):
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
             calls.append(agent)
-            result = original(cfg, agent)
+            result = original(cfg, agent, **kwargs)
             if change == "store":
                 loop.call_soon_threadsafe(setattr, slot, "memory_store", "member-new")
             elif change == "replacement":
@@ -351,7 +374,7 @@ class TestEagerSpawn:
             patch.object(chat_runner, "resolve_agent_bindings", side_effect=resolve),
         ):
             await _eager_spawn(state, slot)
-        assert calls == [None]
+        assert calls == [""]
         if change == "none":
             state.sessions.get_or_create.assert_awaited_once()
             state.sessions.release.assert_called_once()
@@ -1655,10 +1678,11 @@ class TestPrewarmAdmission:
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
         started = asyncio.Event()
+        finish = asyncio.Event()
 
         async def _hang(key, **_kwargs):
             started.set()
-            await asyncio.sleep(60)
+            await asyncio.wait_for(finish.wait(), timeout=10)
 
         state.sessions.get_or_create = AsyncMock(side_effect=_hang)
         with (
@@ -1666,11 +1690,18 @@ class TestPrewarmAdmission:
             patch.object(chat_runner, "resolve_agent_bindings", return_value=self._bindings()),
         ):
             task = asyncio.create_task(_eager_spawn(state, slot))
-            await started.wait()
-            assert len(chat_runner._armed_prefetches) == 1, "no reservation held during spawn"
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+            try:
+                try:
+                    await asyncio.wait_for(started.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pytest.fail("eager spawn did not reach get_or_create")
+                assert len(chat_runner._armed_prefetches) == 1, "no reservation held during spawn"
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=5)
+            finally:
+                task.cancel()
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
         assert chat_runner._armed_prefetches == {}
 
     @pytest.mark.asyncio

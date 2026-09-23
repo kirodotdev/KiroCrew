@@ -4,10 +4,11 @@ export interface StatusData {
   sessions: number
   messages: number
   /**
-   * `null` means UNKNOWN — the WS pusher's count refresh has not succeeded
-   * yet (e.g. the lesson store is failing). StatCard renders null as a
-   * loading skeleton; publishing 0 instead would assert an authoritative
-   * false zero (issue #7204). HTTP/SSE paths always send numbers.
+   * `null` means UNKNOWN — the shared count cache has not refreshed
+   * successfully yet (e.g. the lesson store is failing). StatCard renders null
+   * as a loading skeleton; publishing 0 instead would assert an authoritative
+   * false zero (issue #7204). All three transports (WS push, /api/status, SSE)
+   * read the same cache and may send null.
    */
   cron_jobs: number | null
   subagents: number
@@ -166,7 +167,7 @@ export interface StatusData {
    * AMBIGUOUS by construction: it is what an unconfigured channel and a
    * configured one that never started both look like. Nothing in this payload
    * separates them — each channel's own config endpoint reports `configured`,
-   * which is what Settings > Channels reads.
+   * which is what Settings > Messaging Channels reads.
    */
   channels?: Record<string, { connected: boolean; error: string }>
   /** Governance enforcement health. */
@@ -426,6 +427,13 @@ export interface CronJob {
   skip_dates?: string[] | null
   script?: string | null; command?: string | null; last_result?: string | null; last_error?: string | null
   is_running?: boolean; running_since?: number | null
+  /** The installed app that owns this job, or null/absent for a person-owned
+   * one. Host-derived from the job's `created_by` stamp, which an app never
+   * supplies, so it cannot be used to claim another app's jobs. Absent on an
+   * older gateway. */
+  app?: string | null
+  /** True only when the USER paused the job; execution never sets it. */
+  user_paused?: boolean
   /** Operator-granted vault secrets injected into a script/command job's env at
    * fire time: env-var name -> vault secret NAME (values never leave the vault).
    * Absent/null when the job holds no grant. */
@@ -436,6 +444,15 @@ export interface CronJob {
   secret_env_pending?: Record<string, string> | null
   secret_env_pending_ts?: number | null
   folder_id?: string
+  /** Sidebar chat folder this job's `cron-{id}` tab is filed into, or ""/absent
+   *  for a job that is not filed. Persistent jobs only: a stateless job has no
+   *  job-wide tab, and the backend refuses the pair at save time. A different
+   *  tree from `folder_id` directly above, which groups this job's ROW on the
+   *  Schedule page — the two are never read off each other. */
+  chat_folder_id?: string
+  /** False for a job that runs on a fresh session every fire. The form does not
+   *  edit it; it only reads it to disable the chat-folder picker. */
+  persistent_session?: boolean
   /** Chat session that owns this job — ownership decides chat-side reachability
    * (cron_list only lists a session its own jobs). Null for an ownerless job,
    * which is invisible to every chat session and manageable only from the
@@ -456,6 +473,19 @@ export interface CronJob {
 
 export interface Lesson {
   rule: string; category: string; ts: string
+  /** The `DELETE /api/lessons` selector that names exactly this row. A lesson's
+   *  identity is `(rule, repo_scope)`, so two same-rule rows in two scopes are
+   *  two lessons: `""` is the global row, a fragment is that scope's row, and
+   *  `null` is a row whose stored scope is unusable -- send NO selector for it,
+   *  the unselective delete is the only path that reaches such a row. */
+  repo_scope?: string | null
+  /** Which JSONL file the row was read from, when the list is the JSONL union of
+   *  the global file and the active workspace's. `DELETE /api/lessons` defaults to
+   *  the global file, so a workspace row's delete must carry these back or it
+   *  removes a same-text global row and leaves this one. Absent on vector rows,
+   *  where the delete reaches the store whatever `scope` says. */
+  scope?: 'global' | 'workspace'
+  workspace?: string
 }
 
 /** One row of `GET /api/memory/stores` — a declared memory store.
@@ -728,10 +758,18 @@ export interface DiscoveredMcpServer {
   deprecated: boolean
 }
 
+/** Outcome of one provider leg in an MCP discovery search. */
+export interface McpProviderOutcome {
+  name: string
+  status: 'ok' | 'timeout' | 'error'
+}
+
 /** Response from GET /api/mcp/discover */
 export interface McpDiscoverResponse {
   results: DiscoveredMcpServer[]
   providers: string[]
+  /** Additive for compatibility with gateways that predate outcome reporting. */
+  provider_outcomes?: McpProviderOutcome[]
 }
 
 /** Install-plan preview inside the discover detail response. */
@@ -984,6 +1022,11 @@ export interface RemoteCrewCapabilities {
 }
 
 export interface ChatSlot {
+  /** Which namespace `agent` was chosen in: a configured member, a shared
+   *  provider template, or "" when the choice was made by name alone or came
+   *  back from history. Display provenance for the picker's selected row; the
+   *  backend never reads it as authority. */
+  agent_kind?: 'member' | 'template' | ''
   /** The agent that will actually answer, when it is NOT the requested `agent`;
    *  "" / absent means nothing to report. The backend stores `agent` verbatim
    *  (the user's intent) and reports the divergence here instead of rewriting it,
@@ -999,6 +1042,15 @@ export interface ChatSlot {
    *  the absence of an answer, never a denial. DISPLAY only — the pin is
    *  deliberately kept when withheld, so this must not drive a write. */
   model_withheld?: boolean | null
+  /** Whether this session's turns ask Jev which model tier to run on -- the chat
+   *  picker's `Auto (Jev)` entry (`lib/jevRoute.ts`, `decisions/points/model_route.py`).
+   *
+   *  Shipped on every slot, so "the owner picked a model by hand" is a positive
+   *  value rather than an absent key. Unlike `model_withheld` and `served_model`
+   *  this IS the owner's own choice, so it drives the picker's highlight: a routed
+   *  slot stores `model: 'auto'`, and highlighting the Auto row would name a
+   *  behaviour the session does not have. */
+  jev_route?: boolean
   /** The model id the live session actually resolved to; `''`/absent when not
    *  known. A slot with no pin — or one whose pin was withheld — runs on the
    *  backend's own choice, which the pin cannot name, so this is what lets a
@@ -1235,7 +1287,7 @@ export interface PullRequestSource {
 }
 
 export interface ChatFolder {
-  id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
   /** Tag ids (from the tag vocabulary) copied onto every NEW chat filed into
    *  this folder. Absent = no tags, mirroring the optional `color`. */
   tags?: string[]
@@ -1285,6 +1337,22 @@ export interface ChatMessage {
   seq?: number
   /** Gateway process generation that numbered `seq` (folded snapshot rows). */
   gen?: string
+  /** One skill-selection decision the gateway stamped on the row that ends the
+   *  turn, when the Decisions (Jev) seam answered for it. Typed `unknown`
+   *  because the shape is validated at the read, by
+   *  `pages/chat/decisionRecord.ts` — the strip draws nothing for a record it
+   *  cannot check. The gateway stamps it under `meta` on both doors, and this
+   *  top-level spelling is accepted as well, the split `kind` above has too. */
+  decisions_strip?: unknown
+  /** One risk annotation the gateway stamped on a TOOL row when the Decisions
+   *  (Jev) seam answered `tool.risk` for that call. Typed `unknown` because the
+   *  shape is validated at the read, by `pages/chat/toolRiskRecord.ts` — the
+   *  badge draws nothing for a record it cannot check, and nothing for the `safe`
+   *  tier. An ANNOTATION: the permission decision was taken without it, so a
+   *  record never means the call was stopped or altered. Stamped under `meta` on
+   *  both doors; this top-level spelling is accepted too, as `decisions_strip`
+   *  and the split `kind` above are. */
+  decisions_tool_risk?: unknown
 }
 
 export interface SubagentActivity {
@@ -1308,6 +1376,15 @@ export interface SubagentActivity {
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
   startedAt: number; elapsed: number; error?: string
+  /** True when `startedAt` was ASSUMED rather than observed, which is the case
+   *  for an entry minted by `upsertSlotSub` from an incremental frame: that frame
+   *  carries no start time, so the entry records its arrival instant. The agent
+   *  may already have been running for minutes, so a row MUST NOT render an
+   *  elapsed figure derived from it -- a card reading "3s" for a five-minute run
+   *  is the two-numbers-disagree confusion the idle row exists to remove. Cleared
+   *  by any frame that supplies real timing: a `subagent_snapshot` replay carries
+   *  `started`, and `subagent_done` carries `elapsed`. */
+  startedAtAssumed?: boolean
   toolCount?: number      // observed tool calls (incl. auto-approved) — running-card progress
   stalled?: boolean       // reaper flagged this subagent as idle/stalled
   /** Seconds of no stream activity measured when the reaper raised `stalled`
@@ -1330,12 +1407,25 @@ export interface SubagentActivity {
   result?: string
 }
 
+/** Where `clampToolOutput` (store/chatSlice.ts) removed the middle of a tool
+ *  payload: the stored string is `head + '\n' + tail`, `at` is the offset of
+ *  the tail (right after that newline) and `count` is how many characters were
+ *  dropped between the two. Renderers put the localized marker there at view
+ *  time, so the store never holds a rendered string and the marker follows a
+ *  later language switch. */
+export interface ToolPayloadCut {
+  at: number
+  count: number
+}
+
 export interface ToolActivity {
   type: string
   text: string          // tool name (or approval / activity label)
   purpose?: string      // tool purpose
   input?: string        // tool input (commands, file content, etc.)
   output?: string       // tool output (stdout, results, etc.)
+  input_cut?: ToolPayloadCut   // set only when `input` was clamped
+  output_cut?: ToolPayloadCut  // set only when `output` was clamped
   ts: number
   execution_started_at?: number // when execution began (after approval); survives remount
   auto?: boolean        // auto-approved tool call
@@ -1409,8 +1499,11 @@ export interface TaskDetail {
 export type RunStatus = 'planning' | 'planned' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused' | 'pausing';
 export interface ProjectRun {
   task_id: string; name?: string; running: boolean; status: RunStatus
-  steps: number; completed: number; failed: number; skipped: number
-  current_step: number; spec: string; spec_name: string; error: string
+  /** Total step count. Named for the wire: `build_status` emits `tasks`, and
+   *  `steps`/`current_step` — the names this interface used to declare — are
+   *  sent by no producer, so both read `undefined` on every row. */
+  tasks: number; completed: number; failed: number; skipped: number
+  current_task: number; spec: string; spec_name: string; error: string
   tokens_used: number; replan_count: number; task_details: TaskDetail[]
   started_at: number; finished_at: number
   work_dir: string; branch_name: string
@@ -1478,6 +1571,11 @@ export interface PublishProviderDescriptor {
    *  available. Optional: older gateways omit it, and a row with no hint simply shows
    *  none rather than inventing one. */
   install_hint?: string
+  /** False => the published link requires authentication (content is stored privately),
+   *  so the publish flow shows neither the public-exposure warning nor the "publish
+   *  publicly" acknowledgment. Optional: older gateways omit it, and absence means
+   *  reachable -- a missing warning on a public link is the worse mistake. */
+  public_reachable?: boolean
   sharing_model: {
     supports_private: boolean
     supports_shared: boolean

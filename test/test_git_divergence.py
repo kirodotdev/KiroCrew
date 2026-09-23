@@ -47,6 +47,11 @@ class TestArgs:
         assert divergence_count_args("origin/main")[-1] == "HEAD...origin/main"
         assert divergence_count_args("@{upstream}")[-1] == "HEAD...@{upstream}"
 
+    def test_explicit_head_preserves_left_is_ahead_semantics(self) -> None:
+        assert divergence_count_args("upstream-sha", head="scope-head-sha")[-1] == (
+            "scope-head-sha...upstream-sha"
+        )
+
 
 class TestParse:
     def test_left_is_ahead_right_is_behind(self) -> None:

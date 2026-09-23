@@ -26,7 +26,7 @@ from kiro_crew.session_summary import (
 )
 
 
-def _make_slot(messages=None, memory_mode="default"):
+def _make_slot(messages=None, memory_mode="persistent"):
     """A real _ChatSlot: the generator resolves its transcript key, which a
     stand-in object cannot answer for."""
     slot = _ChatSlot("s1")
@@ -193,9 +193,7 @@ class TestGating:
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is False
         assert called == []
 
-    async def test_summarizes_the_full_disk_transcript_not_the_memory_tail(
-        self, env, monkeypatch
-    ):
+    async def test_summarizes_the_full_disk_transcript_not_the_memory_tail(self, env, monkeypatch):
         """A restored slot keeps only the most recent messages in memory;
         generation must read the full transcript from disk or earlier intents
         vanish from the regenerated summary."""
@@ -293,9 +291,7 @@ class TestGating:
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is True
         assert log.get_cached_intent_summary(state.hkey) is not None
 
-    async def test_an_append_during_the_transcript_read_refuses_the_write(
-        self, env, monkeypatch
-    ):
+    async def test_an_append_during_the_transcript_read_refuses_the_write(self, env, monkeypatch):
         """The signature is captured BEFORE the transcript read, so a message
         landing during the read advances the mtime past the captured sig and
         the write guard refuses the payload -- an incomplete summary must never
@@ -596,7 +592,7 @@ class TestReplyParsing:
         reply = (
             "Using the {title, ranges} shape as asked:\n"
             f"{_GOOD_REPLY}\n"
-            'Emit {} if the transcript is empty.'
+            "Emit {} if the transcript is empty."
         )
         parsed = chat_summary._parse_reply(reply)
         assert isinstance(parsed, dict)
@@ -680,7 +676,7 @@ class _GateSlot:
         *,
         stop="end_turn",
         in_flight=False,
-        memory_mode="default",
+        memory_mode="persistent",
         mark=0,
         running=False,
     ):

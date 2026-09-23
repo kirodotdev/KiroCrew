@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -25,6 +26,10 @@ const fakeArtifact: Artifact = {
   updated_at: '',
   tags: [],
 }
+
+// The public-web deploy destination sits behind the Artifact Deploy Feature
+// Preview, so tests that publish through it opt in.
+beforeEach(() => { localStorage.setItem(PREVIEW_ARTIFACT_DEPLOY, '1') })
 
 describe('PublishHub stale_preview digest flow (F4 R15)', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>

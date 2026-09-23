@@ -169,7 +169,7 @@ export default function WindowsTitlebarMenu() {
       {!expanded && (
         <Clickable
           ref={hamburgerRef}
-          className="win-titlebar-menu-item inline-flex size-7 items-center justify-center rounded-md text-muted hover:bg-bg-hover hover:text-text focus-visible:bg-bg-hover focus-visible:text-text focus-visible:outline-none"
+          className="win-titlebar-menu-item inline-flex size-7 items-center justify-center rounded-md text-muted hover:bg-bg-hover hover:text-text focus-visible:bg-bg-hover focus-visible:text-text focus-visible:outline-hidden"
           aria-haspopup="menu"
           aria-expanded="false"
           aria-label={i18nT('app.open_menu')}
@@ -213,7 +213,7 @@ export default function WindowsTitlebarMenu() {
             if (node) menuItemRefs.current.set(menu.id, node)
             else menuItemRefs.current.delete(menu.id)
           }}
-          className={`win-titlebar-menu-item inline-flex h-7 items-center justify-center rounded-md px-2 text-[12px] font-medium leading-none transition-colors focus-visible:outline-none ${activeMenuId === menu.id ? 'bg-bg-hover text-text' : 'text-muted hover:bg-bg-hover hover:text-text focus-visible:bg-bg-hover focus-visible:text-text'}`}
+          className={`win-titlebar-menu-item inline-flex h-7 items-center justify-center rounded-md px-2 text-[12px] font-medium leading-none transition-colors focus-visible:outline-hidden ${activeMenuId === menu.id ? 'bg-bg-hover text-text' : 'text-muted hover:bg-bg-hover hover:text-text focus-visible:bg-bg-hover focus-visible:text-text'}`}
           aria-haspopup="menu"
           aria-expanded={activeMenuId === menu.id}
           onMouseEnter={event => {
@@ -260,7 +260,7 @@ export default function WindowsTitlebarMenu() {
               role={item.type === 'normal' ? 'menuitem' : 'menuitemcheckbox'}
               aria-checked={item.type === 'normal' ? undefined : item.checked}
               disabled={!item.enabled}
-              className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md border-none bg-transparent px-3 py-1.5 text-left text-[13px] text-text outline-none transition-colors hover:bg-bg-hover focus:bg-bg-hover disabled:pointer-events-none disabled:opacity-50"
+              className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md border-none bg-transparent px-3 py-1.5 text-left text-[13px] text-text outline-hidden transition-colors hover:bg-bg-hover focus:bg-bg-hover disabled:pointer-events-none disabled:opacity-50"
               onClick={() => executeItem(item)}
             >
               <span className="flex size-3 shrink-0 items-center justify-center">

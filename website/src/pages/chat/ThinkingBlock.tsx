@@ -143,7 +143,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
         // full row to scroll in, but a row WITHOUT one keeps its content-sized
         // hit area: widening it unconditionally would make empty space beside
         // the label toggle every settled block.
-        className={`${tail ? 'flex w-full min-w-0' : 'inline-flex'} ${ROW_PILL_BUTTON_CLASS} text-muted hover:text-text cursor-pointer bg-transparent border-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none`}
+        className={`${tail ? 'flex w-full min-w-0' : 'inline-flex'} ${ROW_PILL_BUTTON_CLASS} text-muted hover:text-text cursor-pointer bg-transparent border-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden`}
         aria-expanded={expanded}
         aria-label={expanded ? i18nT('pages.chat.thinkingBlock.collapse_model_reasoning') : i18nT('pages.chat.thinkingBlock.expand_model_reasoning')}
         title={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.thinkingBlock.show_reasoning')}

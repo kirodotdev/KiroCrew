@@ -51,6 +51,78 @@ describe('groupByPhase', () => {
   })
 })
 
+describe('groupByPhase per-agent timing', () => {
+  /** Same shape as `ev`, but with a real `ts` so a span can be measured. */
+  function at(type: string, ts: string, data: Record<string, unknown> = {}, seq = 0) {
+    return { run_id: 'wf_t', seq, ts, type, data }
+  }
+
+  it('derives the span from the ts the two events already carry', () => {
+    const phases = groupByPhase([
+      at('agent_started', '2026-09-18T10:00:00.000Z', { agent_id: 'a0', phase: '' }),
+      at('agent_finished', '2026-09-18T10:00:04.250Z', { agent_id: 'a0', ok: true }),
+    ])
+    expect(phases[0].agents[0].elapsed_ms).toBe(4250)
+  })
+
+  it('leaves a still-running agent with no span', () => {
+    const phases = groupByPhase([
+      at('agent_started', '2026-09-18T10:00:00.000Z', { agent_id: 'a0', phase: '' }),
+    ])
+    expect(phases[0].agents[0].elapsed_ms).toBeUndefined()
+  })
+
+  it('drops a backwards span rather than reporting a negative time', () => {
+    // The wire carries whatever clock the producer had, so finish-before-start is
+    // reachable. A backwards duration is worse than none.
+    const phases = groupByPhase([
+      at('agent_started', '2026-09-18T10:00:05.000Z', { agent_id: 'a0', phase: '' }),
+      at('agent_finished', '2026-09-18T10:00:01.000Z', { agent_id: 'a0', ok: true }),
+    ])
+    expect(phases[0].agents[0].elapsed_ms).toBeUndefined()
+  })
+
+  it('reports a zero span rather than dropping it', () => {
+    // Distinct from the unmeasurable cases: both events landed in the same
+    // millisecond, which is a real measurement of a very fast agent.
+    const phases = groupByPhase([
+      at('agent_started', '2026-09-18T10:00:00.000Z', { agent_id: 'a0', phase: '' }),
+      at('agent_finished', '2026-09-18T10:00:00.000Z', { agent_id: 'a0', ok: true }),
+    ])
+    expect(phases[0].agents[0].elapsed_ms).toBe(0)
+  })
+
+  it('leaves no span when a ts does not parse', () => {
+    // Every other test in this file uses ts: 't', so this is the case the
+    // pre-existing suite exercises throughout.
+    const phases = groupByPhase([
+      at('agent_started', 't', { agent_id: 'a0', phase: '' }),
+      at('agent_finished', 't', { agent_id: 'a0', ok: true }),
+    ])
+    expect(phases[0].agents[0].elapsed_ms).toBeUndefined()
+  })
+
+  it('leaves no span when the stream is truncated before the start', () => {
+    const phases = groupByPhase([
+      at('phase_started', '2026-09-18T10:00:00.000Z', { title: 'P' }),
+      at('agent_finished', '2026-09-18T10:00:09.000Z', { agent_id: 'gone', ok: true }),
+    ])
+    expect(phases[0].agents).toHaveLength(0)
+  })
+
+  it('measures each agent independently when several overlap', () => {
+    const phases = groupByPhase([
+      at('agent_started', '2026-09-18T10:00:00.000Z', { agent_id: 'a0', phase: '' }),
+      at('agent_started', '2026-09-18T10:00:01.000Z', { agent_id: 'a1', phase: '' }),
+      at('agent_finished', '2026-09-18T10:00:09.000Z', { agent_id: 'a1', ok: true }),
+      at('agent_finished', '2026-09-18T10:00:12.000Z', { agent_id: 'a0', ok: true }),
+    ])
+    const byId = new Map(phases[0].agents.map(a => [a.agent_id, a.elapsed_ms]))
+    expect(byId.get('a0')).toBe(12_000)
+    expect(byId.get('a1')).toBe(8_000)
+  })
+})
+
 describe('latestBudget', () => {
   it('seeds from run_started and updates on budget_update', () => {
     const b = latestBudget([

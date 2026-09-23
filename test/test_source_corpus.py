@@ -33,7 +33,9 @@ here is a ratchet: no test may enumerate the checkout from the filesystem.
 from __future__ import annotations
 
 import ast
+import shutil
 import subprocess
+import tempfile
 import types
 from collections.abc import Sequence
 from pathlib import Path
@@ -609,6 +611,68 @@ class TestTheCheckoutEnumeration:
                 repo_files()
         finally:
             repo_files.cache_clear()
+
+    def test_the_runs_own_temp_files_are_not_the_checkout(self, tmp_path, monkeypatch):
+        """A temp root under the checkout is the HOST's layout, not the tree.
+
+        A harness that pins ``TMPDIR`` inside the repository makes git's
+        ``--others`` list every fixture the suite writes -- a copy of a shipped
+        script under a fake home, a nested repository, a file another worker deletes
+        a moment later -- and the gates then police the run's own scratch. On a host
+        whose temp dir is elsewhere none of it is ever listed, so it is what the
+        enumeration must answer identically on both. Real git, so the rule is pinned
+        on the path a checkout takes and not on the walk.
+        """
+        _git = shutil.which("git")
+        if _git is None:
+            pytest.skip("git is required to build the checkout")
+
+        def git(*args: str) -> None:
+            # ``cwd`` as well as ``-C``: the child must not inherit pytest's own working
+            # directory (the checkout), so a relative operand can only ever resolve inside
+            # this test's tmp_path.
+            subprocess.run(
+                [_git, "-C", str(tmp_path), *args],
+                check=True,
+                capture_output=True,
+                timeout=60,
+                cwd=tmp_path,
+            )
+
+        git("init", "-q")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "shipped.py").write_text("", encoding="utf-8")
+        git("add", "src/shipped.py")
+        # An untracked source file stays in scope: that is what ``--others`` is for.
+        (tmp_path / "src" / "unstaged.py").write_text("", encoding="utf-8")
+
+        def plant(rel: str) -> None:
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("", encoding="utf-8")
+
+        # The platform temp dir the process started with, pinned under the checkout
+        # by a harness -- another run's ``--basetemp`` lands under it too...
+        plant("var/tmp/other-run/bt/test_x0/wt-feature/.git")
+        plant("var/tmp/other-run/bt/test_x0/copy.py")
+        monkeypatch.setattr(source_corpus, "_TEMP_ROOT_AT_IMPORT", str(tmp_path / "var" / "tmp"))
+        # ...the per-run root the root conftest redirects ``tempfile`` to, which need
+        # not be under the first when a test redirected it again...
+        plant("run/kc-pytest-u-1-abcd/fake-home/scripts/_common.sh")
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "run" / "kc-pytest-u-1-abcd"))
+        # ...and pytest's own basetemp, found by pytest's marker where neither root
+        # covers it (a lazy first import after the redirect).
+        plant("elsewhere/pytest-of-u/pytest-3/popen-gw0/test_x0/copy.py")
+        # A directory that merely LOOKS like scratch to a human is not excluded:
+        # only the process's temp dirs and pytest's marker are.
+        plant("tmp/kept.py")
+
+        monkeypatch.setattr(source_corpus, "repo_root", lambda: tmp_path)
+        repo_files.cache_clear()
+        try:
+            found = [p.relative_to(tmp_path).as_posix() for p in repo_files()]
+        finally:
+            repo_files.cache_clear()
+        assert found == ["src/shipped.py", "src/unstaged.py", "tmp/kept.py"]
 
 
 class TestNoGateEnumeratesTheCheckoutByWalking:

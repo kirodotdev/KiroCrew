@@ -1,15 +1,15 @@
 # Installing & Testing Kiro Crew on Windows
 
-Kiro Crew runs **natively on Windows** as a Python **source install**.
-The cross-platform process / signal / file-lock / metrics behavior is routed
-through `kiro_crew.platform_compat`, so macOS + Linux behavior is unchanged and
-the same code path also runs on Windows.
+Kiro Crew runs **natively on Windows** through the desktop installer or a
+supported Python **source install**. The cross-platform process / signal /
+file-lock / metrics behavior is routed through `kiro_crew.platform_compat`, so
+macOS + Linux behavior is unchanged and the same code path also runs on Windows.
 
-Existing Memory V1 members remain usable on native Windows. New members require
-private Memory V2, so creation and explicit V1-to-V2 setup refuse before writing
-private files on a native Windows gateway. Use a WSL/Linux gateway with Crew's
-namespace sandbox and a supported member backend for those operations. Viewing
-and managing an already-owned V2 store remains available from the owner dashboard.
+Existing Memory V1 members remain usable on native Windows. New Crew Members
+automatically receive private Memory V2 stores there as on the other supported
+platforms; provisioning uses owner-only NTFS permissions, and SQLite's native
+file handles provide the Windows protection where POSIX uses a shared store-use
+lock.
 
 ## Desktop installer
 
@@ -188,7 +188,7 @@ The source install below remains the fully supported path.
 | **Git for Windows** | clone the repo | https://git-scm.com/download/win |
 | **kiro-cli** | the default agent backend (ACP); install and sign in separately | https://kiro.dev/cli/ |
 | **Python 3.12-3.13** | the venv runtime. `python_requires` is `>=3.12` and 3.13 is in the supported range, but **3.12 is the tested Windows runtime** (it is what the Windows CI shard runs, and numpy 1.x ships no 3.13 Windows wheel) | https://python.org (install user-scoped), or `winget install Python.Python.3.12` |
-| **Node.js** (optional) | builds the full React dashboard; without it the gateway serves the prebuilt bundle | `winget install OpenJS.NodeJS.LTS` |
+| **Node.js 22.12+** | required by `make.ps1 build` to build and stage the React dashboard; installed desktop/wheel artifacts already contain the bundle | `winget install OpenJS.NodeJS.LTS` |
 
 No admin is required — everything installs user-scoped under `%USERPROFILE%`.
 
@@ -460,13 +460,44 @@ on the non-blocking code (`LK_NBLCK`), with two behaviors by context. On the
 asyncio **event-loop thread** the acquire is single-shot — a spin-sleep there
 would freeze chat/heartbeat, so it takes the lock if free and otherwise fails
 immediately. **Off the loop** (cron, home migration, app backends) it polls up
-to a generous `_WIN_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
+to a generous `_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
 legitimately long holder such as a data-home migration, rather than racing it,
 yet bounded so a truly stuck/permission-denied fd still fails. Either way, if
 the lock cannot be taken the acquire **fails closed**: it raises rather than
 entering the critical section unserialized, since proceeding lock-less is the
 exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
+
+### The ceiling is not Windows-only
+
+`fcntl.flock` takes no timeout, so a bare POSIX acquire waits on a holder without
+limit. That is not a wait but a **hang**, and on the boot path it cannot be told
+apart from a slow start: `agents_spec_lock` → `file_lock(wait=True)` → `flock`
+leaves the gateway alive with no port bound, no `KIROCREW_READY` line and nothing
+logged at WARNING or ERROR, so an operator and a health check both keep waiting.
+
+POSIX therefore polls `LOCK_NB` up to the same `_LOCK_TIMEOUT_SECS` and raises
+the same named refusal, naming the ceiling and the reason. The bound costs the
+common case nothing, because the ceiling is far longer than any in-tree critical
+section (a sub-second read plus an atomic rename), so only a wait that has
+stopped being a wait is refused. Retries cover contention only: `EAGAIN`,
+`EACCES` and `EWOULDBLOCK` mean another holder has it, while any other errno is
+about the fd itself and surfaces at once rather than being reported as a stuck
+holder five minutes later. The sleep backs off to `_LOCK_POLL_MAX_SECS`, since a
+kernel-blocking acquire wakes not at all and a flat 10ms poll would wake ~30k
+times across the full ceiling.
+
+Unlike the Windows branch, POSIX keeps polling on the event-loop thread instead
+of degrading to a single shot. A spin-sleep on the loop is bad, but refusing a
+contended on-loop acquire outright would deny callers that legitimately take the
+lock on the loop (`bridges._mcp_lock` during app enable). Bounding the wait does
+not change which caller wins it.
+
+Failing closed is what makes the failure *reportable*: the gateway boot path logs
+an install failure at ERROR, prints the repair command and verifies what landed
+on disk, then binds its port regardless. A hang reaches none of that.
+`_WIN_LOCK_TIMEOUT_SECS` and `_WIN_LOCK_POLL_SECS` are aliases of the
+platform-neutral names.
 
 ## `os.kill(pid, 0)` is a process killer here, not a liveness probe
 
@@ -645,6 +676,106 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
 
 ## Troubleshooting
 
+- **The desktop app starts and exits within seconds, no window** — on a host
+  where Chromium cannot run a GPU process (VDI, a remote session, a driver it
+  cannot use), `chromium.log` (next to `gateway-launch.log`) shows `GPU process
+  exited unexpectedly` and ends with `GPU process isn't usable. Goodbye.`, and
+  `gateway-launch.log` shows `renderer died` up to its reload limit. The app now
+  relaunches itself once with software rendering
+  (`--in-process-gpu --use-angle=swiftshader`) when the GPU process dies
+  before the dashboard has loaded, and keeps that choice for the installed
+  version under `gpuSoftwareFallback` in `%APPDATA%\kirocrew-desktop\config.json`; a
+  new version tries hardware rendering again once. The launch log then reads
+  `gpu: software rendering ACTIVE`. `--no-sandbox` is never applied: if the
+  relaunched app still cannot start, every Chromium child is being blocked
+  (typically an endpoint-security DLL injected into every process), which is a
+  different failure and needs a process exclusion for the app, not a rendering
+  switch.
+- **A gray/blank window that exits, while `kirocrew gateway` plus a browser
+  work fine** — that "different failure" above, seen from the other side:
+  Chromium cannot start a sandboxed child process on this device at all, so the
+  software-rendering relaunch does not help, because rendering is not what is
+  failing.
+
+  `gateway-launch.log` (in `%APPDATA%\kirocrew-desktop\logs\`; a nightly install
+  uses `kirocrew-desktop-nightly`) shows `renderer died` lines up to the reload
+  limit. The exit code they carry is commonly `-2147483645`, which
+  `chromium.log` beside it echoes as `exit_code=-2147483645`; that value is
+  `0x80000003` (`STATUS_BREAKPOINT`) in hex, and Event Viewer may show it as
+  unsigned `2147483651`. A different code does not rule this failure out — the
+  launch check below settles it, not the number. It is not a graphics fault and
+  not a shortcut or gateway problem: it is usually software that injects a DLL
+  into every process (endpoint security, or a display driver such as
+  DisplayLink), which the sandbox then refuses to admit.
+
+  The same exit code also appears when a renderer loads and *later* crashes,
+  which is an ordinary V8 abort and unrelated. What separates them is that this
+  failure never renders anything, not even the brief boot splash: a window that
+  showed the splash or the dashboard before dying is the V8 case, not this one,
+  and the launch check below does not rescue it either.
+
+  **First, confirm the sandbox is the failing component:** launch once with
+  `--no-sandbox`. If the dashboard loads, continue below. If it still fails the
+  sandbox is *not* the cause — try `KIROCREW_DISABLE_GPU=1` for a failing
+  GPU/rendering path, then a reinstall for a damaged install; an
+  endpoint-security exclusion cannot fix either. Do not keep `--no-sandbox`
+  either way: it removes renderer, GPU and utility isolation for every child
+  process, and it is a diagnostic rather than a setting.
+
+  <details>
+  <summary>How to pass a flag or set the variable on Windows</summary>
+
+  **Fully exit Kiro Crew first.** This step is not optional: the app is
+  single-instance, and a second launch hands its arguments to the instance
+  already running and then exits, so the flag is silently ignored while the
+  broken window still appears. Close it from the tray icon, then confirm no
+  `KiroCrew.exe` remains in Task Manager > Details.
+
+  **A one-off launch with a flag** — open Command Prompt and run the executable
+  with the flag, so nothing about the installed shortcut changes. To get the
+  exact path for *your* install, right-click the Start-menu entry and choose
+  **Open file location**, then copy the target; a nightly or side-by-side build
+  has a different product name, so do not assume the one below. On a normal
+  stable per-user install (`perMachine: false`, no choice of directory) it is:
+
+  ```
+  "%LOCALAPPDATA%\Programs\KiroCrew\KiroCrew.exe" --no-sandbox
+  ```
+
+  **A one-off launch with the variable**, in the same Command Prompt window, so
+  it applies to that launch only:
+
+  ```
+  set KIROCREW_DISABLE_GPU=1
+  "%LOCALAPPDATA%\Programs\KiroCrew\KiroCrew.exe"
+  ```
+
+  To keep `KIROCREW_DISABLE_GPU` for a host that genuinely has no usable GPU,
+  make it durable with `setx KIROCREW_DISABLE_GPU 1` (no elevation needed; it
+  applies to new processes, so restart the app) or through **System Properties >
+  Environment Variables**. Do **not** make `--no-sandbox` durable this way —
+  editing the shortcut's Target keeps an isolation downgrade in place
+  permanently: the installer preserves an existing shortcut on every update,
+  arguments included, so the edit outlives each new version until you undo it
+  by hand.
+
+  </details>
+
+  **The fix is a process exclusion for the Kiro Crew executable** in the
+  endpoint security product managing the device. That addresses the cause and
+  leaves the sandbox intact. To identify what to exclude, open Event Viewer >
+  Windows Logs > Application and read the faulting module name in the
+  `AppCrash` entry for the child process that died. Microsoft Edge uses the same
+  Chromium sandbox, so if Edge renders normally the sandbox itself works on that
+  device and the difference is that Edge is already excluded.
+
+  **There is deliberately no supported way to make the sandbox opt-out
+  durable.** A persistent switch would let anything running as the user disable
+  process isolation invisibly, and the narrower Chromium hardening switches are
+  not a usable substitute: their names are version-specific and silently ignored
+  when wrong, and the most-cited one
+  (`--disable-features=RendererCodeIntegrity`) has been a no-op since Chromium
+  118 even though the Chrome enterprise *policy* of the same name still works.
 - **Desktop gateway recovery refuses to force-stop the port** - the Electron
   launcher uses `netstat -ano` to identify the listener, PowerShell
   (`Get-CimInstance`) with a WMIC fallback to read its command line, and
@@ -652,6 +783,19 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
   `python -m kiro_crew` process. Localized listener-state text is ignored.
   SSH forwards and unrelated processes are never terminated, and a failed or
   timed-out `netstat` probe is treated as unknown rather than as a free port.
+- **`port-owner: :5476 held by NON-KiroCrew pid=...` naming our own
+  `python.exe`** - the launcher binds Windows gateway identity to the executable
+  path it resolved. An install reached through a directory junction (a Toolbox
+  `current` link) spells that path one way while Windows reports the running
+  process by the directory the junction resolved to, and a version directory
+  swapped under a running shell leaves a backend at a path the shell never
+  resolved. Both are recognised: every trusted path is compared after
+  `realpath` (junctions followed) on both sides, and the executables the
+  CURRENT child was spawned from stay trusted after the resolver moves on. A
+  `python.exe` the resolver never selected, at any other location, stays
+  foreign: the shell still adopts a same-family gateway there, but never claims
+  or kills it. Update to a build that includes this fix; until then, end every
+  `kirocrew` process in Task Manager and relaunch the app.
 - **`ModuleNotFoundError: No module named 'fcntl'`** — you installed a
   branch/commit that predates the Windows port. `fcntl` is a Unix-only Python
   stdlib module; it cannot be pip-installed on Windows. Update to a build that

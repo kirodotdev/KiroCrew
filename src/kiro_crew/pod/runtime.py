@@ -24,15 +24,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
-from kiro_crew import pinned_fs
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew import seed as seed_mod
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.instances import run_marker
 from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
+from kiro_crew.mcp_gateway.socketsec import get_peer_pid
 from kiro_crew.platform_compat import (
     IS_LINUX,
     IS_MACOS,
@@ -72,10 +74,10 @@ class PodError(RuntimeError):
 class PodBackendAbsent(PodError):
     """The pod service manager is provably not running on this host.
 
-    Raised only from branches where the backend is demonstrably absent (e.g.
-    Linux with no session bus socket and no DBUS_SESSION_BUS_ADDRESS). Callers
-    that need to distinguish 'backend absent, no pods possible' from 'backend
-    present but erroring' can catch this subclass specifically.
+    Raised only when no user-bus address exists or a completed systemctl probe
+    reports no user session. An executable, timeout, or other operational
+    failure remains :class:`PodError`, so callers never infer that no live pod
+    can exist from a probe they could not run.
     """
 
 
@@ -834,21 +836,84 @@ def _session_runtime_dir() -> str:
     return f"/run/user/{uid}"
 
 
+def _address_socket_paths(address: str) -> list[str] | None:
+    """Filesystem socket paths named by a D-Bus address, or ``None``.
+
+    A D-Bus address is a semicolon-separated list of ``transport:key=value``
+    entries whose values are percent-escaped. ``unix:path=`` is the only form
+    that names something on the filesystem to check: ``unix:abstract=`` lives in
+    the abstract namespace, and ``tcp:``/``unixexec:``/``autolaunch:`` are not
+    filesystem objects at all. ``None`` means at least one entry cannot be
+    checked, so the address as a whole carries no filesystem verdict.
+    """
+    entries = [entry for entry in address.split(";") if entry.strip()]
+    if not entries:
+        return None
+    paths: list[str] = []
+    for entry in entries:
+        transport, _, arguments = entry.partition(":")
+        if transport.strip() != "unix":
+            return None
+        path = None
+        for pair in arguments.split(","):
+            key, separator, value = pair.partition("=")
+            if separator and key.strip() == "path":
+                path = urllib.parse.unquote(value.strip())
+                break
+        if not path:
+            return None
+        paths.append(path)
+    return paths
+
+
 def session_bus_socket() -> str:
-    """Path of the D-Bus socket that fronts this user's systemd instance."""
+    """Path of the D-Bus socket that fronts this user's systemd instance.
+
+    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` that names a filesystem
+    socket wins, so a refusal names the path it actually judged rather than a
+    conventional one the caller never pointed at.
+    """
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if address:
+        paths = _address_socket_paths(address)
+        if paths:
+            return paths[0]
     return os.path.join(_session_runtime_dir(), "bus")
 
 
 def has_session_bus() -> bool:
-    """Whether ``systemctl --user`` can reach a per-user systemd instance.
+    """Whether a systemd user-bus address is available to probe.
 
-    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` is taken at face value (the
-    caller has deliberately pointed somewhere, possibly not a filesystem path);
-    otherwise the conventional socket must actually exist.
+    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` is taken at face value because
+    it may name a non-filesystem transport. Otherwise the conventional socket
+    must exist. This is only the cheap availability hint; :func:`probe_user_bus`
+    makes the authoritative connection attempt.
+
+    Face value is deliberate and load-bearing beyond diagnosis: a stale explicit
+    address must never be reported as a provably absent backend, because that is
+    what authorizes destructive Dev Fleet worktree removal. Naming the stale case
+    is :func:`user_bus_failure_message`'s job, and it keeps the operational
+    classification untouched.
     """
     if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
         return True
     return os.path.exists(session_bus_socket())
+
+
+USER_BUS_REACHABLE = "reachable"
+USER_BUS_NO_SESSION = "no_session"
+USER_BUS_SANDBOXED_AWAY = "sandboxed_away"
+USER_BUS_ERROR = "error"
+_USER_BUS_PROBE_TIMEOUT_SECONDS = 5
+
+
+@dataclass(frozen=True)
+class UserBusProbe:
+    """One ``systemctl --user is-system-running`` reachability verdict."""
+
+    status: str
+    socket: str
+    detail: str
 
 
 def _systemctl_env() -> dict[str, str]:
@@ -874,31 +939,144 @@ def _systemctl_env() -> dict[str, str]:
         if os.path.exists(sock):
             env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={sock}"
     env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+    # Kiro Crew's CLI and error classifier use English diagnostics. Pin the
+    # service-manager tools to their stable C messages so a host locale cannot
+    # turn Permission denied or No medium found into the generic failure class.
+    env["LC_ALL"] = "C"
     return env
 
 
 def _run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
     return subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, env=_systemctl_env()
+        cmd,
+        capture_output=True,
+        timeout=timeout,
+        env=_systemctl_env(),
+        **UTF8_TEXT,
     )
 
 
+def probe_user_bus() -> UserBusProbe:
+    """Classify whether this process can connect to the systemd user bus.
+
+    A socket's existence proves only that a user manager created it. An outer
+    sandbox can still deny ``connect(2)``, which is the failure this probe must
+    keep distinct from a machine with no user manager at all. A nonzero
+    ``is-system-running`` result with a state on stdout is reachable: systemd
+    returns nonzero for valid states such as ``degraded``.
+
+    A provably absent address needs no subprocess and is the only source of
+    ``USER_BUS_NO_SESSION``. Once a probe is spawned, permission denial is the
+    only separately classified failure; every other failure is operationally
+    unknown, never proof that no backend exists.
+    """
+    sock = session_bus_socket()
+    if not has_session_bus():
+        return UserBusProbe(USER_BUS_NO_SESSION, sock, "")
+
+    systemctl_bin = platform_compat.trusted_system_bin("systemctl")
+    if systemctl_bin is None:
+        return UserBusProbe(
+            USER_BUS_ERROR,
+            sock,
+            "systemctl was not found in trusted system directories",
+        )
+
+    try:
+        cp = _run(
+            [systemctl_bin, "--user", "is-system-running"],
+            timeout=_USER_BUS_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return UserBusProbe(
+            USER_BUS_ERROR,
+            sock,
+            f"systemctl --user is-system-running timed out after {exc.timeout}s",
+        )
+    except OSError as exc:
+        return UserBusProbe(USER_BUS_ERROR, sock, str(exc))
+
+    stdout = (cp.stdout or "").strip()
+    detail = (cp.stderr or cp.stdout or "").strip()
+    lowered = detail.casefold()
+    if "permission denied" in lowered or "eacces" in lowered:
+        return UserBusProbe(USER_BUS_SANDBOXED_AWAY, sock, detail)
+    if cp.returncode == 0 or stdout:
+        return UserBusProbe(USER_BUS_REACHABLE, sock, detail)
+    if not detail:
+        detail = f"systemctl --user is-system-running exited {cp.returncode} without output"
+    return UserBusProbe(USER_BUS_ERROR, sock, detail)
+
+
+def _no_user_manager_remedy() -> str:
+    """The remedy for a host with no per-user systemd instance running.
+
+    ``loginctl`` talks to the SYSTEM bus, so it is not self-service on a host
+    that cannot reach a bus at all, and ``sudo loginctl enable-linger <name>``
+    still fails where root's name lookup does not resolve the account. Naming the
+    privileged uid form and a preview path that needs no systemd leaves an actor
+    who can act in every case.
+    """
+    uid = getattr(os, "getuid", lambda: -1)()
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
+    return (
+        f"Fix: loginctl enable-linger {user}\n"
+        "If that command itself cannot connect to a bus, this shell cannot reach the "
+        "system bus either, so it can never be the remedy from here: run it from a "
+        "host shell, or have an administrator run "
+        f"`sudo loginctl enable-linger {uid}` — the numeric uid resolves where a "
+        "name lookup does not.\n"
+        "To preview a worktree with no systemd at all, use `./dev-backend.sh`."
+    )
+
+
+def user_bus_failure_message(result: UserBusProbe) -> str:
+    """Render one actionable pod error and retain any systemctl diagnostic."""
+    raw = result.detail.strip()
+    reason = raw.rsplit(":", 1)[-1].strip() if raw else "probe failed without a diagnostic"
+    if result.status == USER_BUS_SANDBOXED_AWAY:
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "An outer layer, such as a container or launcher shim, blocks this "
+            "process from reaching the user bus. Run pod commands from a host shell."
+        )
+    elif result.status == USER_BUS_NO_SESSION:
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} (no user session bus). "
+            "Pods are systemd --user units, so one is required.\n" + _no_user_manager_remedy()
+        )
+    elif not os.path.exists(result.socket):
+        # A probe ran and failed against a path that holds no socket. The class
+        # stays operationally unknown — an explicit address is never proof that
+        # no backend exists — but the remedy is the one a stopped per-user
+        # manager needs, not an instruction to rerun the command that just
+        # failed. A login session exports the address and a `Linger=no` manager
+        # then stops at logout and deletes the socket, which is the usual state
+        # on a Cloud Dev Desktop.
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "Nothing is listening at that path, so the address is stale: a per-user "
+            "systemd instance is not running, and pods are systemd --user units.\n"
+            + _no_user_manager_remedy()
+        )
+    else:
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "Run `systemctl --user is-system-running` from a host shell and fix that "
+            "error before using pod commands."
+        )
+    if raw:
+        return f"{message}\nRaw systemctl error: {raw}"
+    return message
+
+
 def require_systemd() -> None:
-    """Raise :class:`PodError` unless this host can run ``systemctl --user``.
+    """Raise :class:`PodError` unless cheap systemd prerequisites exist.
 
     Pods are Linux ``systemd --user`` only (see ``pod/README.md`` → Platform).
-    Without this gate the first ``subprocess.run(["systemctl", ...])`` raises a
-    bare ``FileNotFoundError`` and every verb dumps a traceback on macOS /
-    Windows instead of the documented "report the failure" one-liner. Checked
-    here — the single chokepoint every systemd call funnels through — so no verb
-    can forget it.
-
-    The third gate is the session bus. :func:`_systemctl_env` backfills the bus
-    pointers when the socket exists, but when ``systemd --user`` is genuinely
-    not running (no login session and ``Linger=no``) there is nothing to point
-    at and systemctl emits a raw "Failed to connect to bus: No medium found"
-    that names neither the cause nor the fix. Translate it here, keyed on the
-    socket's absence rather than on matching systemctl's stderr.
+    This gate stays in-process because every systemd and journalctl helper calls
+    it. The authoritative connection attempt belongs at :func:`require_backend`
+    verb entry and in doctor, not before every unit query.
     """
     if not IS_LINUX:
         raise PodError(
@@ -908,24 +1086,17 @@ def require_systemd() -> None:
     if shutil.which("systemctl") is None:
         raise PodError("pods require `systemctl --user`, but no `systemctl` was found on PATH.")
     if not has_session_bus():
-        uid = getattr(os, "getuid", lambda: -1)()
-        user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
         raise PodBackendAbsent(
-            f"no `systemd --user` session bus for uid {uid} "
-            f"(looked for {session_bus_socket()}).\n"
-            "Pods are systemd --user units, so one is required.\n"
-            f"Fix: loginctl enable-linger {user}   "
-            "# keeps the per-user instance alive independently of login sessions"
+            user_bus_failure_message(UserBusProbe(USER_BUS_NO_SESSION, session_bus_socket(), ""))
         )
 
 
 def require_backend() -> None:
     """Gate on whatever service manager THIS host uses for pods.
 
-    Dispatches instead of replacing :func:`require_systemd`: that function is
-    still the systemd gate with its own contract and messages, so Linux
-    behaviour is provably unchanged by the macOS and Windows work — on any host
-    that is neither darwin nor win32 this is exactly ``require_systemd()``.
+    Linux verb entries pay for one authoritative connection probe. Low-level
+    systemctl helpers retain only :func:`require_systemd`'s cheap checks, so one
+    verb cannot spawn a fresh five-second probe before every unit query.
     """
     if IS_MACOS:
         try:
@@ -939,12 +1110,24 @@ def require_backend() -> None:
         except win_backend.WindowsTaskError as exc:  # translate to the pod error type
             raise PodError(str(exc)) from exc
         return
+
     require_systemd()
+    result = probe_user_bus()
+    if result.status == USER_BUS_REACHABLE:
+        return
+    error_type = PodBackendAbsent if result.status == USER_BUS_NO_SESSION else PodError
+    raise error_type(user_bus_failure_message(result))
 
 
 def systemctl(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     require_systemd()
-    return _run(["systemctl", "--user", *args], timeout=timeout)
+    systemctl_bin = platform_compat.trusted_system_bin("systemctl")
+    if systemctl_bin is None:
+        raise PodError(
+            "pods require `systemctl --user`, but no systemctl executable was found "
+            "in trusted system directories; refusing to resolve it from PATH."
+        )
+    return _run([systemctl_bin, "--user", *args], timeout=timeout)
 
 
 def is_active(cfg: PodConfig, name: str) -> bool:
@@ -2029,9 +2212,60 @@ def health(cfg: PodConfig, name: str, port: int, timeout: int = 3) -> int:
 
 # --------------------------------------------------------------------------- #
 # Token mint — reads the pod's OWN .local_secret (in its isolated HOME), then
-# calls /api/token/local with X-Local-Secret. Keeps the secret read inside this
-# process (never an agent-issued `cat`).
+# calls /api/token/local with X-Local-Secret over the pod's private unix
+# socket. Keeps the secret read inside this process (never an agent-issued
+# `cat`), and keeps the secret's delivery inside the pod's owner-only home
+# (never a rebindable loopback port). The connected socket's peer is
+# kernel-verified against the attested gateway pid before any bytes are sent,
+# so even a same-UID rebind of the socket path receives nothing.
 # --------------------------------------------------------------------------- #
+def _attested_gateway_verifier(cfg: PodConfig, name: str, port: int, socket_path: Path):
+    """Build a connect-time peer check pinned to pod *name*'s attested gateway.
+
+    ``port_owner`` proves the pid RECORD is fresh, but a record cannot prove
+    who answers the socket FILE: the path sits in a directory its owner can
+    always rewrite, so a same-UID process can unlink it and bind its own
+    listener there — and the mint request would hand that listener the pod's
+    ``.local_secret``. The kernel can prove it: peer credentials on the
+    connected socket (``SO_PEERCRED`` on Linux, ``LOCAL_PEERPID`` on macOS)
+    name the listener's pid as of ``listen()``, so requiring that pid to equal
+    the attested gateway pid refuses a rebound socket BEFORE any HTTP bytes.
+    The concrete adversary is a CONFINED same-UID process — a sandboxed
+    agent subprocess whose filesystem policy still reaches this owner-writable
+    directory — which can rebind the path but cannot fake its kernel-reported
+    pid. Deny-by-default, same shape as the server-side admission this feature
+    added: a mismatched peer and an unreadable peer both refuse.
+    """
+    attested = _pod_recorded_pid(cfg, name, port)
+    if attested is None:
+        raise PodOwnershipUnproven(
+            f"withholding pod {name!r}'s credential: its gateway pid record "
+            f"could not be re-proven at send time, so the process answering "
+            f"{socket_path} cannot be verified. {_unproven_remedy(cfg, name, port)}"
+        )
+
+    def _verify(sock: socket.socket) -> None:
+        peer = get_peer_pid(sock)
+        # Re-prove the record on the connected socket so a pid recycled between
+        # the record read and connect cannot attest.
+        current_attested = _pod_recorded_pid(cfg, name, port)
+        if current_attested is None or peer != current_attested:
+            who = "an unidentifiable process" if peer is None else f"pid {peer}"
+            expected = (
+                "no gateway pid is currently attested"
+                if current_attested is None
+                else f"the currently attested gateway is pid {current_attested}"
+            )
+            raise PodError(
+                f"refusing to send pod {name!r}'s credential: {socket_path} is "
+                f"answered by {who}, which is not the currently attested gateway; "
+                f"{expected}. The socket path may have been rebound since the pod "
+                f"started; `kirocrew pod status {name}` shows the gateway's state."
+            )
+
+    return _verify
+
+
 def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
     secret_file = cfg.home_dir(name) / ".local_secret"
     try:
@@ -2043,14 +2277,11 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
     port = derive_port(cfg, name)
     owner = port_owner(cfg, name, port)
     if owner != OWNER_POD:
-        # Positive proof REQUIRED here, unlike `health`. This call sends the pod's
-        # own ``.local_secret`` and returns a dashboard credential for whatever
-        # answered, so the two ways of being wrong are not symmetrical: refusing a
-        # live pod costs an error message, while proceeding on an unproven port
-        # hands a different local user -- who can bind 127.0.0.1 but cannot read
-        # this 0600 secret -- a credential for this pod. That is the same reason
-        # ``port_resolution._gateway_owns_port`` fails closed on the path that
-        # sends the secret, including when the listener lookup is simply missing.
+        # Positive proof kept even though the send below rides the pod's own
+        # unix socket: the pre-check costs one process lookup and buys the
+        # refusal messages below, which name WHY the pod cannot answer instead
+        # of surfacing a bare connection error from the socket. The transport
+        # is what makes the secret safe; this is what makes the failure legible.
         if owner == OWNER_FOREIGN:
             raise PodError(
                 f"refusing to mint a credential for pod {name!r}: :{port} is held "
@@ -2065,15 +2296,73 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
             f"process would receive the pod's secret. "
             f"{_unproven_remedy(cfg, name, port)}"
         )
+    if IS_WINDOWS:
+        # Windows has no AF_UNIX, so the pod binds no dashboard socket there.
+        # The mint rides the OWNER_POD-attested loopback port, the strongest
+        # transport the platform offers.
+        url = f"http://127.0.0.1:{port}/api/token/local?ttl={urllib.parse.quote(str(ttl))}"
+        req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
+        try:
+            with loopback_urlopen(req, timeout=5) as resp:  # nosemgrep
+                token = json.loads(resp.read()).get("token", "")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise PodError(f"token mint failed on :{port} ({name}): {exc}") from exc
+        if not token:
+            raise PodError(f"gateway returned empty token on :{port} ({name})")
+        return token
+    socket_path = pod_socket_path(cfg, name, port)
+    verify_peer = _attested_gateway_verifier(cfg, name, port, socket_path)
     url = f"http://127.0.0.1:{port}/api/token/local?ttl={urllib.parse.quote(str(ttl))}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        # Loopback-only call to the pod's own gateway on 127.0.0.1; the URL is
-        # internally derived, so the dynamic-URL SSRF audit rule is a false positive.
-        with loopback_urlopen(req, timeout=5) as resp:  # nosemgrep
+        # Over the pod's own unix socket, never TCP: this request CARRIES
+        # the pod's `.local_secret`, and the pod's TCP port is ordinary loopback
+        # that any local user can bind the moment the pod releases it — with no
+        # peer-credential API on the wire to tell the squatter from the gateway.
+        # `unix_socket_urlopen` has no TCP handler, so "no fallback" is structural:
+        # a missing, stale, or refusing socket raises instead of handing the
+        # header to whatever answered. The URL keeps the loopback host so the
+        # gateway's Host validation sees exactly what it saw on TCP; the socket
+        # path is derived, never caller-supplied. verify_peer closes the residual
+        # window on the socket itself: a same-UID process that rebinds the path
+        # fails the kernel peer-pid check and never sees the header.
+        with unix_socket_urlopen(  # nosemgrep
+            req, timeout=5, socket_path=socket_path, verify_peer=verify_peer
+        ) as resp:
             token = json.loads(resp.read()).get("token", "")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            # A 403 on this transport has two distinct causes, and only one is
+            # about the caller. Name both, because the operator's next move
+            # differs: a gateway too old to admit AF_UNIX on /api/token/local
+            # refuses EVERY request on this socket regardless of the secret,
+            # and no retry with the right secret can succeed until the pod's
+            # code is updated.
+            raise PodError(
+                f"pod {name!r} refused the token mint over its API socket "
+                f"(HTTP 403).\n"
+                f"  If this pod's worktree predates unix-socket admission on "
+                f"/api/token/local, its gateway 403s this transport no matter "
+                f"the secret — update the pod's worktree, then restart it: "
+                f"kirocrew pod down {name} && kirocrew pod up {name}\n"
+                f"  Otherwise the gateway rejected the pod's .local_secret "
+                f"(a stale secret from an earlier run); restarting the pod "
+                f"regenerates both ends.\n"
+                f"  Not retried on 127.0.0.1:{port} — the pod's secret must not "
+                f"be sent to a process that is not this pod's gateway."
+            ) from exc
+        raise PodError(
+            f"token mint for pod {name!r} did not complete over its API socket "
+            f"({socket_path}): HTTP {exc.code}. Not retried on 127.0.0.1:{port} — "
+            f"the pod's secret must not be sent to a process that is not this "
+            f"pod's gateway."
+        ) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise PodError(f"token mint failed on :{port} ({name}): {exc}") from exc
+        raise PodError(
+            f"token mint for pod {name!r} did not complete over its API socket "
+            f"({socket_path}): {exc}. Not retried on 127.0.0.1:{port} — the pod's "
+            f"secret must not be sent to a process that is not this pod's gateway."
+        ) from exc
     if not token:
         raise PodError(f"gateway returned empty token on :{port} ({name})")
     return token
@@ -2280,6 +2569,7 @@ def pod_api(
             f"  Restart it:    kirocrew pod down {name} && kirocrew pod up {name}"
         )
     token = mint_token(cfg, name)
+    verify_peer = _attested_gateway_verifier(cfg, name, port, socket_path)
     url = _authenticated_url(port, normalized, token)
     body = data.encode("utf-8") if data else None
     headers = {"Content-Type": "application/json"} if data else {}
@@ -2288,8 +2578,14 @@ def pod_api(
         # Over the pod's own unix socket, never TCP: `unix_socket_urlopen` has no
         # TCP handler, so a dead or replaced listener cannot receive this token.
         # Caller input contributes only the path, never the host or the socket.
+        # This is a NEW connection after the mint's, so it re-verifies the peer:
+        # a socket rebound between the two sends would otherwise capture a live
+        # (if short-TTL) credential.
         with unix_socket_urlopen(  # nosemgrep
-            request, timeout=API_TIMEOUT_SECS, socket_path=socket_path
+            request,
+            timeout=API_TIMEOUT_SECS,
+            socket_path=socket_path,
+            verify_peer=verify_peer,
         ) as response:
             raw = _read_capped(response, method, normalized, name)
             return response.status, _scrub_token(raw, token)

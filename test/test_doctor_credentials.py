@@ -23,7 +23,7 @@ def fake_home(tmp_path, monkeypatch):
     # Default to "no AWS CLI to ask": a case that is not ABOUT the probes must
     # not spawn one, and `None` is the shape that means "could not ask".
     monkeypatch.setattr(cli_doctor, "_aws_profile_names", lambda: None)
-    monkeypatch.setattr(cli_doctor, "_aws_auto_refreshes", lambda: False)
+    monkeypatch.setattr(cli_doctor, "_aws_auto_refreshes", lambda: None)
     return tmp_path
 
 
@@ -48,7 +48,7 @@ class TestCredentialsSection:
         assert "build" in out
         assert issues == []
 
-    def test_profile_set_is_unknown_without_the_cli(self, fake_home, capsys):
+    def test_profile_set_is_unknown_without_the_cli(self, fake_home, monkeypatch, capsys):
         """``None`` means "could not ask", which is not "there are none".
 
         The files exist and the config is not ours to parse, so the honest report
@@ -57,6 +57,14 @@ class TestCredentialsSection:
         aws = fake_home / ".aws"
         aws.mkdir()
         (aws / "config").write_text("[default]\n")
+        # "without the cli" has to be STUBBED, not inherited from the host: this
+        # machine has a resolvable aws, so without these the run exercises the
+        # resolved-but-unrunnable branch and the assertion below asserts the very
+        # confident-wrong line this section removed.
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: None)
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "aws_bin_declined_on_ownership", lambda: None
+        )
         cli_doctor._doctor_credentials([])
         assert "install the AWS CLI to list profiles" in capsys.readouterr().out
 
@@ -71,14 +79,100 @@ class TestCredentialsSection:
         assert "credential_process configured" in out
         assert issues == []
 
-    def test_absent_credential_process_is_reported(self, fake_home, capsys):
+    def test_absent_credential_process_is_reported(self, fake_home, monkeypatch, capsys):
         aws = fake_home / ".aws"
         aws.mkdir()
         (aws / "config").write_text("[profile p]\n")
+        # `False` is the ASKED answer; the fixture's `None` is "could not ask".
+        monkeypatch.setattr(cli_doctor, "_aws_auto_refreshes", lambda: False)
         issues: list[str] = []
         cli_doctor._doctor_credentials(issues)
         assert "no credential_process" in capsys.readouterr().out
         assert issues == []
+
+    def test_credential_process_is_unknown_without_the_cli(self, fake_home, monkeypatch, capsys):
+        """``None`` must not print the "no credential_process" finding.
+
+        Nothing asked, so nothing established that credentials expire mid-task.
+        Saying so anyway is how an operator with a working ``credential_process``
+        was told theirs was absent.
+        """
+        aws = fake_home / ".aws"
+        aws.mkdir()
+        (aws / "config").write_text("[profile p]\n")
+        # "without the cli" has to be STUBBED, not inherited from the host: this
+        # machine has a resolvable aws, so without these the run exercises the
+        # resolved-but-unrunnable branch and the assertion below asserts the very
+        # confident-wrong line this section removed.
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: None)
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "aws_bin_declined_on_ownership", lambda: None
+        )
+        cli_doctor._doctor_credentials([])
+        out = capsys.readouterr().out
+        assert "install the AWS CLI to check for credential_process" in out
+        assert "no credential_process" not in out
+
+    def test_a_declined_cli_is_not_reported_as_an_absent_one(self, fake_home, monkeypatch, capsys):
+        """Both "could not ask" lines must name the decline, not tell the operator to install.
+
+        Debian policy has ``/usr/local`` subdirectories ``root:staff`` mode
+        ``2775``, so the ownership gate declines there by default -- the host most
+        likely to hit this is an ordinary one, and "install the AWS CLI" is a
+        confident wrong statement to an operator who has it.
+        """
+        aws = fake_home / ".aws"
+        aws.mkdir()
+        (aws / "config").write_text("[profile p]\n")
+        monkeypatch.setattr(
+            cli_doctor.platform_compat,
+            "aws_bin_declined_on_ownership",
+            lambda: "/usr/local/bin/aws",
+        )
+        cli_doctor._doctor_credentials([])
+        out = capsys.readouterr().out
+        # The path goes through `_safe_display`, so it is quoted in the output.
+        # "fails the root-only path checks" rather than "is not root-owned": the
+        # binary itself may well be root's, and the decline can come from a
+        # group-writable ancestor. Naming the wrong reason is the same defect class
+        # as naming no reason.
+        assert "'/usr/local/bin/aws' is not a trusted local copy, so it is not asked" in out
+        assert (
+            "'/usr/local/bin/aws' is not a trusted local copy — not asked about"
+            " credential_process" in out
+        )
+        assert "install the AWS CLI" not in out
+        assert "no credential_process" not in out
+        assert "is not root-owned" not in out
+
+    def test_a_resolved_cli_that_will_not_run_is_not_reported_as_absent(
+        self, fake_home, monkeypatch, capsys
+    ):
+        """The THIRD cause of "could not ask" needs its own sentence too.
+
+        A CLI that resolved and then failed to run (timeout, OS error) is neither
+        absent nor declined. Falling through to "install the AWS CLI" tells an
+        operator with a working installation to install one -- the same confident
+        wrong answer, one cause further along.
+        """
+        aws = fake_home / ".aws"
+        aws.mkdir()
+        (aws / "config").write_text("[profile p]\n")
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "aws_bin_declined_on_ownership", lambda: None
+        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: "/usr/bin/aws")
+
+        def _explode(argv, **kw):
+            raise OSError("cannot spawn")
+
+        monkeypatch.setattr(cli_doctor.subprocess, "run", _explode)
+        cli_doctor._doctor_credentials([])
+        out = capsys.readouterr().out
+        assert "'/usr/bin/aws' did not answer, so the profile set is unknown" in out
+        assert "'/usr/bin/aws' did not answer — credential_process not established" in out
+        assert "install the AWS CLI" not in out
+        assert "no credential_process" not in out
 
     def test_credentials_file_alone_still_reports_a_profile(self, fake_home, monkeypatch, capsys):
         aws = fake_home / ".aws"
@@ -198,15 +292,18 @@ class _Proc:
 def spawns(monkeypatch):
     """Record every argv the probes would run, without running one.
 
-    The two resolvers are stubbed to DIFFERENT paths on purpose. The probes must
-    resolve through ``trusted_system_bin``, so every argv assertion below doubles
-    as a guard: a regression to ``PATH`` resolution shows up as the
-    agent-writable path in ``recorded`` instead of passing silently.
+    The three resolvers are stubbed to DIFFERENT paths on purpose. The probes must
+    prefer ``trusted_system_bin``, so every argv assertion below doubles as a
+    guard: a regression to ``PATH`` resolution shows up as the agent-writable
+    path in ``recorded``, and a precedence flip that let the ``/usr/local/bin``
+    fallback win over a trusted hit shows up as that path — both instead of
+    passing silently.
     """
     recorded: list[list[str]] = []
     monkeypatch.setattr(
         cli_doctor.platform_compat, "trusted_system_bin", lambda name: f"/usr/bin/{name}"
     )
+    monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: "/usr/bin/aws")
     monkeypatch.setattr(cli_doctor.shutil, "which", lambda name: f"/agent/writable/{name}")
 
     def _install(result):
@@ -247,6 +344,7 @@ class TestProfileProbeUsesTheSanctionedPath:
         """
         spawned: list[list[str]] = []
         monkeypatch.setattr(cli_doctor.platform_compat, "trusted_system_bin", lambda name: None)
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: None)
         monkeypatch.setattr(cli_doctor.shutil, "which", lambda name: f"/agent/writable/{name}")
         monkeypatch.setattr(
             cli_doctor.subprocess,
@@ -274,27 +372,39 @@ class TestAutoRefreshProbe:
 
     @pytest.mark.parametrize(
         "result",
-        [_Proc(stdout="  \n"), _Proc(returncode=1, stdout="/usr/bin/vend"), OSError("no exec")],
+        [_Proc(stdout="  \n"), _Proc(returncode=1, stdout="/usr/bin/vend")],
     )
-    def test_anything_short_of_a_value_is_false(self, spawns, result):
+    def test_an_answered_probe_with_no_value_is_false(self, spawns, result):
+        """The CLI answered and there is no ``credential_process``: a finding."""
         spawns(result)
         assert cli_doctor._aws_auto_refreshes() is False
 
-    def test_no_cli_is_false(self, monkeypatch):
+    def test_a_failed_probe_is_could_not_ask_not_false(self, spawns):
+        """A CLI that resolved but could not run establishes nothing.
+
+        ``False`` here printed "no credential_process — credentials may expire
+        mid-task" off a question that never completed, which is the same
+        asserting-an-unasked-answer bug the profile probe returns ``None`` for.
+        """
+        spawns(OSError("no exec"))
+        assert cli_doctor._aws_auto_refreshes() is None
+
+    def test_no_cli_is_could_not_ask(self, monkeypatch):
         """A trusted-resolver miss must not fall back to ``PATH`` here either.
 
-        Same reasoning as the profile probe: ``is False`` is reachable through a
+        Same reasoning as the profile probe: ``is None`` is reachable through a
         swallowed failure, so the spawn list is the assertion that bites.
         """
         spawned: list[list[str]] = []
         monkeypatch.setattr(cli_doctor.platform_compat, "trusted_system_bin", lambda name: None)
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: None)
         monkeypatch.setattr(cli_doctor.shutil, "which", lambda name: f"/agent/writable/{name}")
         monkeypatch.setattr(
             cli_doctor.subprocess,
             "run",
             lambda argv, **kw: spawned.append(list(argv)) or _Proc(stdout="/usr/bin/mint\n"),
         )
-        assert cli_doctor._aws_auto_refreshes() is False
+        assert cli_doctor._aws_auto_refreshes() is None
         assert spawned == [], f"probe fell back to PATH and spawned {spawned}"
 
 
@@ -486,3 +596,39 @@ class TestVendorLineIsFailSoft:
 
         monkeypatch.setattr(ctx_mod, "safe_context_call", _boom, raising=True)
         assert cli_doctor._credential_vendor_line() == ""
+
+
+class TestAwsCliResolution:
+    """Which ``aws`` the probes are allowed to ask.
+
+    Resolution ORDER and the ownership gate belong to
+    ``platform_compat.trusted_aws_bin`` and are pinned in its own tests. What
+    matters here is that both probes go through it, and that its refusal reaches
+    the operator as "could not ask" rather than as an answered no.
+    """
+
+    def test_both_probes_ask_the_resolver_and_nothing_else(self, monkeypatch):
+        """The case the fallback exists for: AWS's own installer default ``--bin-dir``.
+
+        Pinned by recording the argv: a probe that resolved its launcher any other
+        way (``PATH``, a bare ``"aws"``) would not carry this path.
+        """
+        recorded: list[list[str]] = []
+
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_aws_bin", lambda: "/usr/local/bin/aws"
+        )
+
+        def _run(argv, **kw):
+            recorded.append(list(argv))
+            return _Proc(returncode=0, stdout="p\n")
+
+        monkeypatch.setattr(cli_doctor.subprocess, "run", _run)
+        cli_doctor._aws_profile_names()
+        cli_doctor._aws_auto_refreshes()
+        assert [argv[0] for argv in recorded] == ["/usr/local/bin/aws", "/usr/local/bin/aws"]
+
+    def test_no_trusted_copy_anywhere_is_could_not_ask(self, monkeypatch):
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: None)
+        assert cli_doctor._aws_auto_refreshes() is None
+        assert cli_doctor._aws_profile_names() is None

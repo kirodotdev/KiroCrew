@@ -13,11 +13,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.messaging.commands import compact_refusal_plain_text
 from kiro_crew.messaging.driver import APPROVAL_AUTO
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.whatsapp.commands import (
-    COMPACT_AUTO_MANAGED_TEXT,
     COMPACT_AUTO_TEXT,
     COMPACT_BUSY_TEXT,
     COMPACT_FAILED_TEXT,
@@ -372,7 +372,10 @@ def test_compact_command_declined_on_auto_managed_backend():
     d, _client, sessions, transport = _make(provider=provider)
     asyncio.run(d.handle_message(_msg("/compact")))
     assert (provider.compacts, provider.waits) == (0, 0)
-    assert [t for _, t in transport.sent] == [COMPACT_AUTO_MANAGED_TEXT]
+    # The shared plain-text refusal, so this assertion follows the wording
+    # wherever it lives rather than pinning a constant this surface no
+    # longer owns.
+    assert [t for _, t in transport.sent] == [compact_refusal_plain_text("kas")]
     assert sessions.released == 1, "the turn semaphore must always be handed back"
 
 

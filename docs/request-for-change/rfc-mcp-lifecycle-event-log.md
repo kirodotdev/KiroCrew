@@ -14,9 +14,19 @@ superseded-by: []
 
 # RFC: MCP Session Trace as the Lifecycle Event Log's First Emitter
 
+**Status note: this RFC has no base.** The lifecycle-event package every section below
+builds on is deleted -- it had no emitter, no reader and no on-disk directory, and each of
+its kinds names a fact the per-unit append-only crew log
+(`docs/system-specs/modules/crew-log-core.md`) owns as a `type`. The three precedents this
+RFC settles therefore have no package to settle them for, and the ordering one is already
+answered there: `seq` is per unit, assigned by that unit's single writer. Taking this RFC
+forward means either restating it against that ledger -- where a per-session MCP trace has a
+session to belong to -- or reviving a global stream on its own merits first. The proposal is
+left as written below.
+
 ## Summary
 
-The lifecycle event log (`src/kiro_crew/events/`, landed by
+The lifecycle event log (landed by
 [#3808](https://github.com/kirodotdev/KiroCrew/pull/3808), simplified by
 [#7386](https://github.com/kirodotdev/KiroCrew/pull/7386)) is a validated schema with no live
 writer. Its own contract defers three decisions to whoever emits first: the ordering model, the

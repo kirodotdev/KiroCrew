@@ -42,7 +42,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from tmpdir_helpers import short_tmp_base
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import pinned_fs, platform_compat
@@ -658,7 +658,7 @@ def outbox(tmp_path):
     reject the fixture rather than the code under test. Same reasoning as
     ``test_outbox_binary.py``.
     """
-    base = Path(tempfile.mkdtemp(dir=short_tmp_base()))
+    base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "files-", dir=short_tmp_base()))
     odir = base / "outbox"
     odir.mkdir()
     with patch("kiro_crew.config.loader.outbox_dir", return_value=odir):

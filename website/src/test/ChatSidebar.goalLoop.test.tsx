@@ -164,7 +164,7 @@ describe('chat sidebar — goal-loop progress subtitle', () => {
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, last_message: 'stale' }]
     const { getByText, queryByText } = renderSidebar(
       slots,
-      { activeSlot: 'k', goalLoops: { k: { cycle_count: 3, max_cycles: 24 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
+      { activeSlot: 'k', goalLoops: { k: { cycle_count: 3, max_cycles: 24 } }, slotStatusDetail: { k: { kind: 'tool', purpose: 'Reading gateway.log' } } },
       { activeSlotProp: 'k' },
     )
     expect(getByText('Loop 3/24')).toBeTruthy()
@@ -233,7 +233,7 @@ describe('chat sidebar — structured monitor status', () => {
     const slots = [{ key: 'k', title: 'monitor', running: true, messages: 5 }]
     const { getByText, queryByText, container } = renderSidebar(slots, {
       automations: { k: structuredMonitor() },
-      slotStatusDetail: { k: { text: 'Reading gateway.log' } },
+      slotStatusDetail: { k: { kind: 'tool', purpose: 'Reading gateway.log' } },
     }, { activeSlotProp: 'k' })
 
     expect(getByText('Monitor · action running')).toBeTruthy()
@@ -266,7 +266,7 @@ describe('chat sidebar — structured monitor status', () => {
         action: { wakeInFlight: false, wakeDelivery: '' },
         latest: { classification: 'stable', reasonCode: 'no_change', observedAt: 1_800_000_000, decision: 'continue' },
       }) },
-      slotStatusDetail: { k: { text: 'Reading gateway.log' } },
+      slotStatusDetail: { k: { kind: 'tool', purpose: 'Reading gateway.log' } },
     }, { activeSlotProp: 'k' })
 
     expect(getByText(/Reading gateway\.log/)).toBeTruthy()
@@ -358,7 +358,7 @@ describe('chat sidebar — interrupted goal loop', () => {
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, interrupted: false }]
     const { getByText, getByTitle, container } = renderSidebar(
       slots,
-      { activeSlot: 'k', goalLoops: { k: { cycle_count: 47, max_cycles: 72 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
+      { activeSlot: 'k', goalLoops: { k: { cycle_count: 47, max_cycles: 72 } }, slotStatusDetail: { k: { kind: 'tool', purpose: 'Reading gateway.log' } } },
       { activeSlotProp: 'k' },
     )
     expect(getByText('Loop 47/72')).toBeTruthy()

@@ -71,6 +71,10 @@ import { i18nT } from '../i18n/t'
  *  response is the follow-up that closes this. */
 export interface AgentSwitchValue {
   agent: string
+  /** The namespace the backend committed the pick in; absent when the
+   *  response omitted it (an older gateway), in which case the write leaves
+   *  the slot's stored value alone. */
+  agentKind?: 'member' | 'template' | ''
   /** Absent when the response omitted it; the write must then leave the
    *  slot's workspace untouched rather than clobber it. */
   workspace?: string

@@ -19,6 +19,7 @@ name ``python -c <payload>``), and pinning that is one of the tests below.
 
 import inspect
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,8 @@ from skill_script_helpers import load_skill_script
 
 from kiro_crew import agent
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
+from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 
 SKILL_DIR = (
@@ -34,12 +37,33 @@ SKILL_DIR = (
 )
 SCRIPT = SKILL_DIR / "scripts" / "accept_eval.py"
 
-#: An allowlisted command that always exits 0 — the "pass" fixture.
+#: A release that accepts a spec ``permissions`` block, and one that refuses it.
+#: Expressed against the floor rather than as literals so raising the floor
+#: cannot leave a test asserting the old boundary.
+_ACCEPTS = SPEC_PERMISSIONS_MIN_VERSION
+_REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1, 0)
+_INHERITED_PERMISSIONS = {"rules": [{"capability": "web_fetch", "effect": "deny"}]}
+
+
+def _pin_spec_permissions_cli(monkeypatch, which):
+    """Pin what the writer's version gate believes the installed kiro-cli is.
+
+    The generated spec writers share one gate (``_write_derived_permissions``), which
+    reads ``installed_kiro_cli_version`` function-locally from
+    ``kiro_crew.kiro_cli``, so the patch lands in the owning module. Without it
+    the answer is whatever the test HOST has, which on CI is nothing and reads
+    as "unknown" -- the refusing case -- so a writer test asserting a
+    ``permissions`` block would fail for a host reason rather than a code one.
+    ``which`` is one of ``"accepts"``, ``"refuses"`` or ``"unknown"``.
+    """
+    version = {"accepts": _ACCEPTS, "refuses": _REFUSES, "unknown": None}[which]
+    monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
 
 
 class TestConductorInstaller:
-    def _install(self, tmp_path, monkeypatch, *, may_auto_approve=None):
+    def _install(self, tmp_path, monkeypatch, *, may_auto_approve=None, cli_version="accepts"):
         monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+        _pin_spec_permissions_cli(monkeypatch, cli_version)
         monkeypatch.setattr(
             agent,
             "build_agent_config",
@@ -52,6 +76,7 @@ class TestConductorInstaller:
                 },
                 "tools": ["fs_write", "@kirocrew-core"],
                 "allowedTools": ["@kirocrew-core"],
+                "permissions": _INHERITED_PERMISSIONS,
             },
         )
         monkeypatch.setattr(
@@ -591,6 +616,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
+            "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
         ]
 
@@ -632,6 +658,7 @@ class TestConductorInstaller:
         work_resources = [
             "kirocrew-work/work_brief",
             "kirocrew-work/work_ledger_read",
+            "kirocrew-work/work_ledger_rebuild",
             "kirocrew-work/work_ledger_record",
         ]
         data = self._install(tmp_path, monkeypatch)
@@ -682,6 +709,29 @@ class TestConductorInstaller:
         data = self._install(tmp_path, monkeypatch, may_auto_approve=lambda ref: False)
         assert data["permissions"] == {"rules": []}
         assert data["allowedTools"] == []
+
+    def test_the_permissions_field_is_gated_on_the_installed_kiro_cli(self, tmp_path, monkeypatch):
+        """Written on an accepting release, withheld on a refusing or unknown one.
+
+        The generated conductor spec gates its ``permissions`` write on the
+        installed kiro-cli, sharing the default spec's gate: a kiro-cli whose
+        schema predates the field would otherwise refuse the WHOLE spec and fall
+        back to broader default grants. ``allowedTools`` is untouched either way
+        -- it is the KAS-only projection that is withheld, not the grant list
+        kiro-cli reads.
+        """
+        accepting = self._install(tmp_path, monkeypatch, cli_version="accepts")
+        assert accepting.get("permissions"), "an accepting CLI must get the block"
+        assert accepting["permissions"] != _INHERITED_PERMISSIONS
+        assert accepting["permissions"] == derived_agent_permissions(
+            accepting["allowedTools"], CONDUCTOR_AGENT_FILENAME
+        )
+        assert accepting["allowedTools"], "the grant list is never withheld"
+
+        for refusing in ("refuses", "unknown"):
+            data = self._install(tmp_path, monkeypatch, cli_version=refusing)
+            assert "permissions" not in data, f"{refusing} CLI must get no block"
+            assert data["allowedTools"], "the grant list is never withheld"
 
     def test_withholding_a_grant_is_audit_logged(self, tmp_path, monkeypatch):
         """A withheld grant is a permission DECISION and must leave a record.
@@ -758,6 +808,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
+            "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
         ]
 
@@ -883,6 +934,24 @@ class TestConductorInstaller:
         # Still the atomic create: the subfolder rides the create's own
         # ``folder`` argument, never a second move step.
         assert "2. `session_create`" in dispatch
+
+    def test_pr_checks_seed_may_name_the_prepare_pr_skill_by_path(self):
+        """A ``pr_checks`` seed can point the worker at prepare-pr's SKILL.md.
+
+        ``kirocrew-worker`` is a custom agent: ``_skills_injection_plan`` gives it
+        no catalog and no trigger matching, so however a seed is worded nothing
+        auto-loads ``prepare-pr`` in the worker session. The conductor naming the
+        file is the only route. Pinned as an OPTIONAL hint, not a mandate: a user
+        who does not want prepare-pr must not have it forced on every worker.
+        """
+        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        dispatch = text.split("### Dispatch a round")[1].split("### Patrol")[0]
+        flat = " ".join(dispatch.split())
+        assert "`<crew-home>/skills/kirocrew-dev/prepare-pr/SKILL.md`" in flat
+        assert "may name the PR procedure" in flat
+        # Optional, by design.
+        assert "Optional" in flat
+        assert "must read" not in flat and "MUST read" not in flat
 
 
 class _proc:
@@ -1264,6 +1333,46 @@ class TestDraftPullRequest:
         assert verdict == "error"
         assert "integer pr" in evidence
         assert seen == []
+
+    def test_the_skill_prose_names_the_verdict_this_evaluator_returns(self, monkeypatch):
+        """Doc ratchet: ``SKILL.md`` and this script must agree on a pending draft.
+
+        The conductor acts on the prose, not on the code, so a doc naming the
+        wrong verdict is the same defect as a wrong return - and every
+        behavioural test in this class is blind to it, because none of them read
+        the doc.
+
+        So derive the word by RUNNING the evaluator, then hold the shipped file's
+        draft sentences to it. A rewording that keeps the fact passes; one that
+        promises a pending wait, or claims a draft cannot pass, fails.
+        """
+        mod = _load_evaluator()
+        self._wire(mod, monkeypatch, [(8, "still running", ""), (0, "true", "")])
+        verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
+        assert verdict == "refused", "the ratchet below pins the doc to THIS word"
+
+        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        draft_sentences = [
+            " ".join(s.split()) for s in re.split(r"(?<=[.!?])\s+", body) if "draft" in s.lower()
+        ]
+        assert draft_sentences, "SKILL.md says nothing about a draft PR"
+        assert any(
+            f"`{verdict}`" in s for s in draft_sentences
+        ), f"no draft sentence in SKILL.md names the `{verdict}` verdict the script returns"
+        for sentence in draft_sentences:
+            assert not re.search(
+                r"(?:stays|remains|answers?|comes back|returns|waits for)\s+`pending`",
+                sentence,
+            ), f"SKILL.md still promises a pending wait on a draft: {sentence}"
+            assert "never pass" not in sentence, (
+                "a draft whose checks RESOLVE is judged on them, so it can pass: " + sentence
+            )
+        # The other half of the fact, which drifted with the first: a draft whose
+        # checks RESOLVE is judged on them, so it can pass. Matched loosely - the
+        # ratchet is on the fact surviving a rewrite, not on one phrasing of it.
+        assert any(
+            "resolved" in s.lower() and "pass" in s.lower() for s in draft_sentences
+        ), "SKILL.md must keep the exception: a draft whose checks resolve green passes"
 
 
 class TestUsageInsteadOfBlockingOnStdin:

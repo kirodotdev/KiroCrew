@@ -134,7 +134,7 @@ def _child_argv() -> "list[str]":
     exe = _resolve_kirocrew_bin()
     if exe != "kirocrew":  # a resolved, validated absolute path
         return [exe, *sys.argv[1:]]
-    return [sys.executable, "-m", "kiro_crew", *sys.argv[1:]]
+    return platform_compat.isolated_python_argv("-m", "kiro_crew", *sys.argv[1:])
 
 
 def _refuse_unjailed(command: str, reason: str) -> NoReturn:
@@ -1029,17 +1029,8 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     else:
         level = logging.WARNING
 
-    from kiro_crew.config.paths import private_runtime_log_dir
-
     log_home = config_dir()
-    private_logs = private_runtime_log_dir()
-    if private_logs is not None:
-        # A private namespace deliberately seals loose data-home files. Keep
-        # durable rotating logs in the live directory prepared by its launcher;
-        # never reopen the root or silently drop MCP diagnostics.
-        log_file = private_logs / f"member-{os.getpid()}.log"
-    else:
-        log_file = log_home / "gateway.log"
+    log_file = log_home / "gateway.log"
     # Detect BEFORE the boot rotation below: rotation renames the file, and
     # the inode comparison must see the file stderr actually inherited.
     detached = _fd_targets_file(2, log_file)
@@ -1606,7 +1597,7 @@ Examples:
         help="Run a script cron locally with real MCP tools; notifications are captured and printed instead of delivered",
     )
     cron_preview.add_argument(
-        "script", help="Script path in module:function format (e.g. ~/.kiro/crew/crons/my.py:run)"
+        "script", help="Script file in file.py:function format (e.g. ~/.kiro/crew/crons/my.py:run)"
     )
     cron_preview.add_argument("--message", "-m", default="", help="ctx.message value")
     cron_preview.add_argument(
@@ -2119,6 +2110,17 @@ Examples:
         ),
     )
 
+    # file-delivery
+    file_delivery_parser = cli_help.add_command(sub, "file-delivery")
+    file_delivery_parser.add_argument(
+        "action",
+        choices=["approve"],
+        help=(
+            "approve: finish a flagged-file delivery consent armed from the "
+            "dashboard's Security panel (proves you are at the host)"
+        ),
+    )
+
     # stop
     stop_parser = cli_help.add_command(sub, "stop")
     stop_parser.add_argument(
@@ -2236,6 +2238,28 @@ Examples:
         _cloud_creds_opts(p)
         p.add_argument("--tag", default="", help="Instance tag (default: last launched)")
 
+    def _cloud_identity_opts(p: "argparse.ArgumentParser") -> None:
+        # ONE definition for every command that signs kiro-cli in on the crew.
+        # `cloud login`, `cloud launch` and `kirocrew setup` (which delegates to
+        # launch) all accept the same identity flags, so a managed launch can
+        # name an Identity Center identity instead of defaulting to Builder ID.
+        p.add_argument(
+            "--identity-provider",
+            default="",
+            help="IAM Identity Center start URL (your organization's access portal) for enterprise SSO",
+        )
+        p.add_argument(
+            "--license",
+            default="",
+            choices=["", "free", "pro"],
+            help="Kiro license tier (pro for Identity Center, free for Builder ID/social)",
+        )
+        p.add_argument(
+            "--idp-region",
+            default="",
+            help="IAM Identity Center region (e.g. us-east-1), NOT the EC2 instance region",
+        )
+
     cloud_sub = cloud_parser.add_subparsers(dest="cloud_action")
     _c_launch = cloud_sub.add_parser("launch", help="Provision + configure an instance")
     _cloud_creds_opts(_c_launch)
@@ -2264,6 +2288,13 @@ Examples:
         "--keep-on-failure",
         action="store_true",
         help="On bootstrap failure, keep the instance (disable rollback) for inspection",
+    )
+    _cloud_identity_opts(_c_launch)
+    _c_launch.add_argument(
+        "--no-inherit-identity",
+        action="store_true",
+        help="Do not inherit this machine's Kiro sign-in (kiro-cli whoami) as the "
+        "crew's identity; sign the crew in with Builder ID unless --identity-provider is given",
     )
 
     _c_list = cloud_sub.add_parser("list", help="List your Kiro Crew cloud instances")
@@ -2301,22 +2332,7 @@ Examples:
     _c_login.add_argument(
         "--no-browser", action="store_true", help="Print the device URL but don't open a browser"
     )
-    _c_login.add_argument(
-        "--identity-provider",
-        default="",
-        help="IAM Identity Center start URL (for enterprise SSO login)",
-    )
-    _c_login.add_argument(
-        "--license",
-        default="",
-        choices=["", "free", "pro"],
-        help="Kiro license tier (pro for Identity Center, free for Builder ID/social)",
-    )
-    _c_login.add_argument(
-        "--idp-region",
-        default="",
-        help="IAM Identity Center region (e.g. us-east-1), NOT the EC2 instance region",
-    )
+    _cloud_identity_opts(_c_login)
     _c_logout = cloud_sub.add_parser(
         "logout", help="Sign kiro-cli out on the instance (to switch Kiro account)"
     )
@@ -2431,6 +2447,17 @@ Examples:
     # like mcp-dashboard: mounted only for an agent whose spec grants it, so a
     # session that is neither a conductor nor a worker spends nothing on it.
     sub.add_parser("mcp-work")
+    # mcp-crew-log (MCP server — the three read-only crew-log tools). Opt-in like
+    # the two above: the crew log is an optional subsystem behind a flag, so a
+    # session that never verifies or audits it spends nothing on the set.
+    sub.add_parser("mcp-crew-log")
+    # mcp-debug (MCP server — the five read-only debug tools). Opt-in for the same
+    # reason: debugging a gateway is something a person asks for on purpose, so a
+    # session that never does it should not carry the schemas.
+    sub.add_parser("mcp-debug")
+    # mcp-panel (MCP server -- an agent publishes its own dashboard panel).
+    # Mounted only for an agent whose spec grants the opt-in set.
+    sub.add_parser("mcp-panel")
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
@@ -2620,8 +2647,14 @@ Examples:
     )
     mem_sub.add_parser("stats", help="Show memory statistics")
     mem_sub.add_parser("audit", help="Scan memory for suspicious content")
-    mem_export = mem_sub.add_parser("export", help="Export all memory to JSON")
+    mem_export = mem_sub.add_parser("export", help="Export one memory store's rows to JSON")
     mem_export.add_argument("--output", "-o", help="Output file (default: stdout)")
+    # Named for the same reason `backups`, `restore` and `carve` are: a store is a
+    # separate on-disk silo, so "all memory" was never a thing one file held. Without
+    # this flag no surface could read a named store's rows in either direction.
+    mem_export.add_argument(
+        "--store", default=None, help="Store to export (default: the default store)"
+    )
     mem_export.add_argument(
         "--include-markdown",
         action="store_true",
@@ -2695,6 +2728,9 @@ Examples:
     mem_retired.add_argument("--limit", type=int, default=20, help="How many to list")
     mem_import = mem_sub.add_parser("import", help="Import memory from JSON file")
     mem_import.add_argument("file", help="Path to JSON file (export format)")
+    mem_import.add_argument(
+        "--store", default=None, help="Store to import into (default: the default store)"
+    )
 
     # agent
     agent_parser = cli_help.add_command(sub, "agent")
@@ -2707,19 +2743,18 @@ Examples:
     agent_create.add_argument(
         "--memory-store",
         default="default",
-        help="Compatibility flag; private memory is allocated automatically",
+        help="Create a fresh member store (already enabled for explicit member creation)",
     )
     agent_update = agent_sub.add_parser("update", help="Update a Kiro Crew agent")
     agent_update.add_argument("name", help="Agent name to update")
     agent_update.add_argument("--kiro-agent", help="New kiro agent name")
     agent_update.add_argument("--workspace", help="New workspace name")
     agent_update.add_argument(
-        "--memory-store", help="Existing memory store identity (cannot be changed)"
-    )
-    agent_update.add_argument(
-        "--provision-memory",
-        action="store_true",
-        help="Initialize empty private V2 memory for a legacy member; never copies V1",
+        "--memory-store",
+        help=(
+            "Existing memory store identity (cannot be changed, except to 'default' "
+            "from a store name the config refuses)"
+        ),
     )
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")
     agent_delete.add_argument("name", help="Agent name to delete")
@@ -2783,6 +2818,24 @@ Examples:
     app_sub = app_parser.add_subparsers(dest="app_action")
     app_install = app_sub.add_parser("install", help="Install an app from a local directory")
     app_install.add_argument("source", help="Path to app directory containing app.json")
+    app_import = app_sub.add_parser(
+        "import",
+        help="Convert a manifest-declared plugin package into an app directory",
+    )
+    app_import.add_argument("source", help="Path to the plugin package directory")
+    app_import.add_argument(
+        "--out",
+        help="Output app directory (default: ./<app-name>-app)",
+    )
+    app_import.add_argument(
+        "--name",
+        help="Override the derived app name (kebab-case)",
+    )
+    app_import.add_argument(
+        "--install",
+        action="store_true",
+        help="Install the converted app after writing it",
+    )
     app_sub.add_parser("list", help="List installed apps")
     app_enable = app_sub.add_parser("enable", help="Enable an installed app")
     app_enable.add_argument("name", help="App name to enable")
@@ -2996,6 +3049,22 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     else:
         _platform_boot_error = None
 
+    # ── Member memory upgrade (CLI commands only) ──
+    # A member store written before member identities existed cannot be resolved
+    # until its identity is published, and no command can do it later: the
+    # resolvers refuse the store outright. So every CLI command runs it here, in
+    # the sync prologue, BEFORE it resolves a member. Three commands are exempt:
+    # `gateway`, whose boot path admits no new work (the dashboard socket must
+    # accept requests first) and which runs the same repair in its post-readiness
+    # memory worker instead; `doctor`, the read-only triage command, which
+    # reports the same stores; and the mcp-* stdio servers, children of a gateway
+    # that already ran it. A no-op scan of the loaded config when there is
+    # nothing to repair; never raises.
+    if args.command not in ("gateway", "doctor") and not args.command.startswith("mcp-"):
+        from kiro_crew.memory_stores import repair_legacy_member_stores
+
+        repair_legacy_member_stores()
+
     # ── Process-isolation jail gate (CPP JailProvider seam) ──
     # For agent-bearing commands, give the active edition a chance to re-exec this
     # process into an isolation jail BEFORE any agent/credential work starts.  The
@@ -3134,6 +3203,21 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # Same importlib form and the same reason as mcp-dashboard above: a
         # default-off optional subsystem must not be imported to start the gateway.
         importlib.import_module("kiro_crew.mcp_work").run_mcp_server()
+    elif args.command == "mcp-crew-log":
+        # Same importlib form and the same reason again, and here the subsystem
+        # the module reads is itself flag-gated: `kirocrew gateway` boots through
+        # this module and must not import the crew log to start.
+        importlib.import_module("kiro_crew.mcp_crew_log").run_mcp_server()
+    elif args.command == "mcp-debug":
+        # Same importlib form and the same reason again. It matters more here than
+        # anywhere else on this list: this module's routes import kiro_crew.diag
+        # lazily and that package may not exist in the build at all, so importing
+        # this server eagerly would make a diagnostics gap break `kirocrew gateway`.
+        importlib.import_module("kiro_crew.mcp_debug").run_mcp_server()
+    elif args.command == "mcp-panel":
+        # Lazily imported like mcp-dashboard above: a default-off optional
+        # subsystem must not be imported just to start the gateway.
+        importlib.import_module("kiro_crew.mcp_panel").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # Registration gates this verb on _builtin_mcp_server_available, and
         # _run_app_mcp_server is the ONE dispatch-time spelling of "import the
@@ -3195,6 +3279,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             from kiro_crew.cli_server import _update
 
             _update(force=args.force)
+    elif args.command == "file-delivery":
+        from kiro_crew.cli_server import _file_delivery_approve
+
+        _file_delivery_approve()
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 

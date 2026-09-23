@@ -1,27 +1,317 @@
 # Crew ledger + agent write path
 
-Storage root follows the app's existing convention — `app_data_dir("issue-radar")`,
-per-repo namespace, `atomic_write` under an exclusive `platform_compat.file_lock`
-for every read-modify-write.
+Two kinds of state live here, and they are stored differently.
+
+**Operator configuration** -- the crew record and the per-repo settings -- follows
+the app's existing convention: `app_data_dir("issue-radar")`, per-repo namespace,
+`atomic_write` under an exclusive `platform_compat.file_lock` for every
+read-modify-write.
 
 ```
 <data>/repos/<owner>/<repo>/crews/<crew_id>.json          # crew record
-<data>/repos/<owner>/<repo>/crews/<crew_id>/<number>.json  # one work item
-<data>/repos/<owner>/<repo>/crews/events.jsonl             # append-only event log
+<data>/repos/<owner>/<repo>/crews/<crew_id>.unit-order    # the crew log units this crew
+                                                          # recorded into, in that order
 <data>/repos/<owner>/<repo>/crews/settings.json            # per-repo protocol constants
 ```
 
-Every file carries `schema: 1`. Issue Radar's existing versioning strategy —
-"schema mismatch ⇒ treat as a cache miss and refetch from GitHub" — does **not**
+The record and the settings carry `schema: 1`. Issue Radar's existing versioning strategy --
+"schema mismatch => treat as a cache miss and refetch from GitHub" -- does **not**
 transfer here: a crew record has no upstream to refetch from, so a forward
 migration is required from the first release.
+
+**The ledger** -- work items, progress lines and the repository-shared skip index
+-- is not a file of its own. It is a **projection of the crew log**: every
+`issue_radar_crew_record` call appends exactly ONE `radar/recorded` entry to the
+crew log of the session the crew runs on (`crew_log/entry_types.py` declares the
+shape; `docs/reference/crew-log/session-types.md` documents it), and every read is
+the `radar` fold of those entries (`crew_log/projection.py`, registered in the fold
+registry as a SLOT-keyed fold). The store module (`crew_store.py`) keeps the same
+function names its callers had; what they do is fold.
+
+```
+<data home>/crew-log/session/<unit>/                     # one unit per ACP session the
+                                                          # crew's slot ran under
+```
+
+Why a projection and not a store:
+
+- *One entry per update.* The item's delta, the event that explains it and -- when
+  the phase is `skipped` -- the skip row ride on one appended line, so the two rules
+  this spec has always had ("a phase never moves without a logged reason", "an issue
+  is never skipped without being indexed") are properties of one append, not of
+  three files under three locks and a rollback.
+- *One record.* The crew log is already the session's record; a ledger beside it was
+  a second document about the same work, kept in sync by hand.
+- *No lock order.* The crew log writer serializes appends per unit; there is nothing
+  left for two crews to race on.
+
+**Units and the join.** A crew's slot (`slot_key = crew-<id>`) owns one ACP session
+id at a time, and every unit it ran under is headed with that slot. A read folds
+every unit of the slot in the order the crew RECORDED into them, with the LIVE unit
+last when the caller is inside one. The order is the crew's own: each write appends
+the unit it records into to `crews/<crew_id>.unit-order` (fsynced, once the entry is
+IN the file and not before -- the order file's claim is "among the units that
+recorded, this one holds the newest entry", which only a landed append earns; a unit
+recording again after another is moved to the end, never listed
+twice; the newest 64 kept, older ids and units nothing recorded into keep header
+order and apply first). The file is never appended in place or staged under a
+predictable name: it is rewritten whole through a uniquely named temp file
+renamed over the name, under a PINNED parent directory where the platform
+supports it, and read refusing a link at its name -- the data home is where a
+sandboxed agent may be able to plant a link, and neither the write nor the read
+follows one. The file's authority is bounded as well: only units whose HEADER the
+store proves belong to this crew's slot are taken from it, so a rewritten file can
+at most permute the crew's own retired units, and the live unit applies last
+whatever it says. Header clocks alone would not do: a clock stepped backward
+before a replacement unit was created sorts the replacement before its
+predecessor and applies a retired session's phases over the current ones, and a
+read has no caller inside a unit to pin the live one last. A crew whose order file
+cannot be written falls back to header order -- what every read did before the file
+existed. `crew_log_units()` lists the units; a crew whose slot has no crew log
+reads as the empty record, and every failure to LIST units also reads as empty,
+because this runs on the read path of a crew's every cycle. A failure to FOLD them
+reads as empty too, for the same reason and to keep the contract the pre-projection
+reader kept when its index would not parse: the repository's skip memory and its
+pre-investigate briefing read ACROSS crews, so one crew's damaged log would
+otherwise raise into the crew page of every crew in the repository. The write path
+is the other half -- it lists and folds STRICTLY, because a write validated against
+an empty record could admit a second editor.
+
+**Prerequisite: the crew log is ON.** The crew log is switched on by
+`KIROCREW_CREW_LOG=1` and is OFF by default (the append-only ledger RFC pins it off
+until it graduates). A gateway with it off has NO crew ledger: every record call is
+refused **409 `crew_log_unavailable`** with a message that names the variable, every
+read folds the empty record, and the one-time carry (below) does not run -- the
+pre-projection files are left untouched until the first successful write, so a
+gateway that switches the log on later loses nothing. A crew running on such a
+gateway learns this on its first record, not at creation: the refusal's message
+names the variable to set.
+
+**Writes need a live unit.** The write route resolves the crew's live unit from its
+slot key -- never from the caller's session, so the dashboard writing on a crew's
+behalf lands in the same unit the crew's own agent does. A crew whose slot has no
+live session, or whose session has not run its first turn yet, or a gateway with
+the crew log switched off, is refused with **409 `crew_log_unavailable`**: the
+ledger DEPENDS on the log and keeps no document of its own. An update that cannot
+fit one crew log entry is **413 `ledger_entry_too_large`**; it can never land,
+however often it is retried. Every other refusal (unknown phase or kind, a second
+item entering an editing phase, a crew-level kind with a number) is checked against
+the FOLDED record before anything is appended -- an append-only log cannot take a
+line back -- and stays a 409 `crew_conflict`.
+
+**One write per crew at a time.** The refusals above are decided against the fold,
+so two requests for one crew that folded the same record could both pass the
+one-editor rule and both append. The store holds one lock per crew across a write's
+fold, refusals, append and answer (the route runs writes on worker threads, so it is
+a thread lock, held through the drain). A write whose append the writer had not
+drained inside the flush budget answers `durable: false` and marks the crew; the
+crew's next write drains again BEFORE it folds, so it does not validate against a
+record missing that entry. A writer STILL not draining refuses that next write --
+**503 `ledger_not_recorded`**, nothing changed, send it again -- because a fold
+taken then would be missing the queued entry and the one-editor rule checked
+against it could admit a second editor; the mark stays until a drain succeeds.
+Reads take no lock.
+
+**An explicit null is a clear.** An omitted field means "unchanged"; a field named
+in the request's `clear` list means "empty it" (`clear: ["pr_number"]` after a pull
+request is closed). The record tool has the same `clear` argument, an enum of the
+clearable fields (`decision`, `why`, `next`, `worktree`, `branch`, `base_sha`,
+`pr_number`, `claim_comment_id`, `ci_state`, `labels_applied`, `outcome`); a name
+outside it is refused **400 `invalid_clear`** rather than ignored, so a typo cannot
+pass for a clear. The route turns each name into an explicit null in the patch; a
+typed entry field cannot hold a null, so the writer carries the cleared names in the
+entry's own `clear` list and the fold empties each one before applying the fields
+the same update sets -- a call that clears and sets one field keeps the set value.
+
+**A refusal is not a commit.** The write drains the writer and reads its entry back
+from the log. A writer that drained WITHOUT the entry showing in the log did not
+record it -- the session's log deleted under the write, the writer gave up on it,
+or the log unreadable on two tries (the read-back is retried once, so one transient
+read failure does not turn a landed entry into a refusal) -- and the write answers
+**503 `ledger_not_recorded`**: nothing changed and the same update may be sent
+again. An append of THIS session's that the writer's buffer rejected at its memory
+ceiling while this write was in flight, and that is not in the log, is answered
+the same way whatever the drain says: that rejection is counted per session and
+apart from a storage refusal, and is checked apart, so another session's rejection
+cannot turn an accepted append into a false refusal. A write also lists the crew's
+units STRICTLY: a listing that failed, and one that is INCOMPLETE because a unit
+already holding entries cannot prove its header, are both a refusal (503), never a
+shorter record -- a read that cannot list them, or can list only some, answers what
+it could read, but a write validated against a record missing a unit could admit a
+second editor. A unit directory whose header is not published yet is not that case:
+it holds no entries, so leaving it out loses nothing. The synthetic answer -- the fold advanced over the entry as sent, with
+`durable: false` -- is made ONLY while the writer still holds the entry past the
+flush budget; a drained writer either shows the entry or is answered as a refusal.
+
+**The answer is the line the log holds.** The write drains the writer (up to five
+seconds, off the event loop) and reads the landed entry back, so the `event` a crew
+is handed carries the id and `ts` every later reader sees. Only when the writer did
+not drain in time is the answer the fold advanced over the pending entry with this
+side's clock, and the response says so with `durable: false`.
+
+**The skip index is the one read made ACROSS crews.** It is the union of every
+crew's folded passes for the repository, retired crews included, and the FIRST
+decision on a number stands -- the same first-decision-wins rule the index has
+always had. Which decision is first is the writer's own observation, not a clock: a
+pass recorded while another crew's decision on the number already stood carries
+`deferred: true` in its entry (the writer reads the index before it appends) and
+never stands over the decision it saw, so a clock stepped backward on the later
+crew cannot put its pass in front of an established one. Only two passes neither of
+which saw the other -- recorded inside the staleness bound below -- fall back to
+`decided_at` then crew id, and between two concurrent decisions neither was
+established. A crew that re-skips a number is told what stands (the first crew's
+reason and id), not what it sent. *Staleness bound:* a pass another crew recorded is
+visible once that crew's append has drained to its log. The write waits the writer's
+flush budget (five seconds) for that drain; an append still queued past the budget
+is answered as not durable and drains when the writer catches up, so there is no
+upper bound on how late it becomes visible, only the writer's own progress. Each
+crew's fold is re-checked against its log
+on every read, so nothing is cached past a write. A pass whose unit crew-log
+retention has collected is gone from the index; that is the bound every fold of the
+crew log lives under. Retention collects a CLOSED session's log
+`session.archive_retention_days` after it closes (30 by default; `null` disables the
+sweep), so a pass outlives the session that recorded it by that window, not for
+the life of the repository as the old file did. The carried pre-projection index
+concentrates this: every historic pass is re-stated into the ONE unit of the crew
+that wrote first after the upgrade, and all of them leave together when that unit
+is collected. This is accepted: the index bounds re-investigation within the window
+crews actually work in; it is not the repository's permanent record, which the
+crews' public claim comments and the issues themselves remain. The coupling is
+stated where an operator touches the knob: the setting's own help text
+(`Archive Retention (days)`) says the window collects crew logs and, with the crew
+log on, Issue Radar's shared skip memory and open work items -- so shortening it
+for disk reasons is a choice made knowing what else it shortens.
+
+**Reads are checkpointed, not cached.** Folding is O(the log), and a crew's log
+carries its message bodies, so the fold per crew is kept in memory as a checkpoint
+and ADVANCED over the entries that arrived since, through the same seq-anchored
+machinery a cold fold uses. The checkpoint is held against every unit's MARK -- its
+log file's creation identity together with its newest seq -- and four things force a
+cold rebuild, each of which would otherwise be a wrong answer rather than a slow one:
+a changed unit list, a unit whose identity changed (its log was removed and created
+again under the same id, whether or not the new log's seq has climbed back past the
+cached one) or cannot be read, a unit whose seq went backwards, and growth in any
+unit but the newest.
+
+**Every field the fold retains is bounded, and eviction is counted.** Per crew: 500
+work items (past it a FINISHED item goes first, oldest finish first, then the open
+item longest without progress, never the one just written; an evicted item takes
+its phase history with it), 5000 passes (the earliest decided goes first), a
+500-line event tail, 200 phase entries per item, 100 rejected approaches per item,
+at most 20 labels per item, and a CI reading keeps its declared members only
+(`state`, `passed`, `total`, `round`, `inherited_reds`), each re-bounded to the
+record tool's own type and ceiling (a 32-character verdict; counters as ints within
+the tool's ranges; a member of any other shape dropped) so a reading cannot grow an
+item key by key or carry an oversized member into every retained item. Every
+numeric field is bounded in MAGNITUDE the same way -- `number` and `pr_number` to
+the tool's `1..1_000_000_000`, `claim_comment_id` to its `1..10^18` -- so a
+thousand-digit number read off a file is dropped, as a number of the wrong type
+already was, rather than kept as an item or skip key and re-served in every later
+checkpoint and response. `counts`
+reports `evicted_items` and `evicted_skips` beside `open`, so a bounded record is
+told from a complete one. The bounds are far above any crew's working set; a crew
+that has touched more distinct issues than this has a history, not a working set,
+and the working set is what a resume needs. An evicted pass is one the repository
+may investigate again, the same acceptance the retention bound below makes.
+
+**Lifetime.** The entries follow the SESSION's life, not the repository's: crew log
+retention and a session's deletion remove them with the unit, and disconnecting or
+purging a repository removes only the operator files above. A retired crew's units
+keep folding (its passes still count in the skip index) until retention collects
+them, which is the bound stated for the index. The same bound holds for OPEN work
+items, and is accepted by name: an update carries only the fields it set, so a field
+recorded in an earlier unit lives only there, and an item still open when retention
+collects that unit (30 days after the session it belonged to closed) loses the
+fields nothing re-stated since -- its claim stamp, a `decision` or `why` written
+early, older rejected approaches. An item open across a session boundary for longer
+than the retention window is the exception this trades away; the crew's public claim
+comment holds the claim's own record, and the item's `phase`, `next` and `pr_number`
+are re-set by the ordinary writes such an item keeps receiving.
+
+**Carrying the pre-projection files forward.** The files the ledger used to be
+(`crews/<crew_id>/<n>.json`, `crews/events.jsonl`, `crews/skipped.json`) are read
+ONCE more, on a crew's first write after the upgrade -- the one before any radar
+entry has folded into its record --
+whichever kind of write that is: an idle sweep is a routine first write, and a
+sweep that appended without carrying would leave the crew read as owing nothing
+while its open items sat unread. A crew whose every write was an idle sweep holds no
+items and no passes for good, so the trigger is what the record has FOLDED and not
+what it holds: keying on emptiness would carry the files again on every such write
+whenever they are present without their marker, re-stating retired work as live over
+a record that has moved on. The files are
+re-stated into its log as `carried` entries: each work item with its own stamps
+(so a carried claim does not look freshly made) and its newest rejected approach
+(the entry holds one, and the carry's event line says how many it left behind); and
+-- by whichever crew of the repository writes first -- every row of the shared skip
+index, with the crew and time that decided it, recorded as a pass and NOT as a work
+item of the carrying crew. Two markers beside the files record the carry: one when
+it BEGINS (`crews/<crew_id>/.carrying`, `crews/skipped.json.carrying`) and one when
+every carried entry has been read back from the log (`crews/<crew_id>/.carried`,
+`crews/skipped.json.carried`). The begun marker is written BEFORE any row is emitted, and
+a begun marker that cannot be written refuses the write outright: without it a
+partial carry would leave a non-empty fold that never carries the rest. A drained
+writer is not proof of landing -- it can
+refuse an entry and drain quietly -- so the finished marker waits for the read-back,
+and a carry that began without finishing is run again on the crew's next write. The
+write that triggered such a carry is itself REFUSED (503 `ledger_not_recorded`,
+nothing changed, send it again): the record it would fold is short of the rows still
+in the writer or refused by it -- a carried editing item among them -- and the
+one-editor rule checked against that record could admit a second editor. A carry
+still in the writer also marks the crew undrained, so its next write drains before
+it folds. A
+carried item re-stated with the same fields folds into the same record, and its
+rejected approach is not listed twice. A work item is one entry PER rejected approach
+it carries, each re-stating the whole record and differing only in that approach, so
+the file's whole `tried` history arrives in the file's own order and a refusal of one
+entry still leaves the others folding with the item's real phase. A row that does not
+fit one entry is SHRUNK
+until it does -- its free text clamped in steps (5000, 2000, 1000, 500, 256
+characters; the fold clamps to 5000 on every read, so the first step costs nothing
+the fold would have kept, and a later step is taken only because the row is long
+non-ASCII text that serializes past the entry ceiling) and its `ci_state` and
+labels trimmed to what the fold keeps -- and a row that could not be carried is NOT
+carried, does NOT let the carry finish, and REFUSES the write that triggered it
+(503, retryable): unreadable, not a record, without a number the file name can
+recover inside the tool's range, or too large for one entry at every clamp. The
+finished marker would discard that row's stored state for good, since the files are
+never read again once marked; and folding without the row is worse than refusing,
+because an omitted row holding an editing phase leaves its item out of the record the
+one-editor rule reads, so another item can enter that phase while the row still holds
+it. The files stay unmarked, the rows are named in the log and in the refusal, and the
+next write tries again once they are repaired or moved aside. A re-run emits only the
+rows the record LACKS: a carried entry
+re-states the file's fields as an update, so re-emitting a row that already landed
+would set an item the crew has since worked back to its pre-projection state. A file
+that appears later beside a crew whose record has folded a radar entry is left alone.
+The files are never
+written again and, once marked finished, never read again. The old progress log
+(`events.jsonl`) is
+not carried: its lines are history the crew page can live without, and the crew's
+public claim comments already hold them.
+
+**The read half.** A carry can only run from a write -- it appends, it needs the
+crew's write lock, and it refuses its caller when a row does not land -- but the reads
+that happen FIRST are the ones a crew acts on: the pre-investigate nudge snapshot
+(`list_work_items`, `open_slot_count`) and the repository's shared skip index
+(`read_skips`). Answering the empty record there would tell an upgraded crew, on its
+first turn, that it has no open items and that no issue has been passed on, and it acts
+on that with forge comments that cannot be taken back. So a read PREVIEWS the pending
+carry: it folds the very payloads the carry would append, over the same base, through
+the same projection, and appends nothing and marks nothing. The answer is the
+post-carry record by construction rather than by two implementations agreeing, and the
+preview stops the moment the log holds the rows. It is reached on the write path's own
+carry trigger, so the two agree on WHEN a carry is owed as well as on what it carries;
+a fold that could not be READ is never previewed, because a reader older than the
+writer cannot conclude that the upgrade has not happened. Recording being switched off
+therefore costs writes, not reads: a crew whose crew log is off still reads its
+pre-projection state.
 
 ## Crew record
 
 | Field | Type | Notes |
 |---|---|---|
 | `schema` | int | 1 |
-| `id` | str | `c_<8 hex>`. Stable forever. Everything machine-readable keys on this, never on `name` |
+| `id` | str | `c_<8 hex>`, minted at creation under one data-home-wide lock and checked against every repository's crews (under the legacy root and every provider subtree) and the crew log's slot listing before it is taken, because the id names the crew's slot and a slot is a data-home-wide name. Stable forever. Everything machine-readable keys on this, never on `name` |
 | `name` | str | galaxy name, unique per repo including retired crews |
 | `avatar_seed` | str | separate from `name` so a rename keeps the face |
 | `avatar_variant` | int \| null | 0–7 pins one ghost outfit; null = derive from `avatar_seed` |
@@ -40,9 +330,10 @@ migration is required from the first release.
 
 ## Work item
 
-One file per (crew, issue). Merged per field on write — a patch carrying only
-`phase` preserves everything else, same semantics as the existing
-`write_investigation`.
+One record per (crew, issue), folded from the `radar/recorded` entries that named
+it. Merged per field on write -- an entry carrying only `phase` leaves everything
+else as the fold had it (an omitted field means "unchanged"), same semantics as the
+existing `write_investigation`.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -52,7 +343,7 @@ One file per (crew, issue). Merged per field on write — a patch carrying only
 | `outcome` | enum \| null | set only in a terminal phase |
 | `decision` / `why` | str | what this crew decided to do and on what grounds |
 | `next` | str | **the resumable intent.** "add the Windows branch to `_safe_chmod`, the test already fails" — not "implementing" |
-| `tried` | [{`approach`, `rejected_because`}] | append-only, so a resumed turn does not re-walk a dead end |
+| `tried` | [{`approach`, `rejected_because`}] | append-only, so a resumed turn does not re-walk a dead end; the newest 100 rows are kept per item (a repeated pair folds to one row), so a crew that keeps rejecting cannot grow the fold without bound |
 | `worktree` / `branch` / `base_sha` | str | local only, never echoed into a comment |
 | `pr_number` | int \| null | |
 | `ci_state` | {`state`, `passed`, `total`, `round`, `inherited_reds`} | `inherited_reds` is what keeps a crew from rebasing at main's breakage |
@@ -267,14 +558,28 @@ crew, so a returning crew has nothing to dispute it with.
 
 ## Event log
 
-Append-only JSONL, content-addressed id so duplicate lines merge on read rather
-than conflict (the ledger pattern from ops-mission-control, which shipped without
-a lock and was caught in review — take its `_LedgerLock` too).
+The progress lines are the `event` / `event_kind` carried on each `radar/recorded`
+entry, folded into a bounded newest-first tail per crew (500 lines; the per-item
+history of phase ENTRIES is kept separately and is what the pipeline view draws
+lanes from, so a busy tail never buries when a lane entered its phase). Each line
+keeps the content-addressed id the file-backed log gave it, byte-identical in
+formula, so a reader keyed on ids sees the same id for the same line. A duplicated
+entry folds to one line and applies its update once: the repeat check keys on the
+WHOLE update (crew, number, kind, text and every field) and not on the line id,
+because the id carries the timestamp and a retry -- an append re-sent after a crash
+or after a 503 -- is stamped when it is retried. Only the item's LAST applied
+update is compared, never a window of history: a retry is by construction the
+next update for its item (the crew's writes are serialized and the crew waits on
+the answer), while an item that returns to an earlier state with identical fields
+after other updates is recording a new transition, and it applies.
 
 ```json
 {"id":"<sha256(ts|crew|number|kind|text)[:16]>","ts":"2026-08-08T20:44:12Z",
  "crew_id":"c_7f3a","number":2251,"kind":"ci","text":"CI round 3 — 41/47 green, 6 inherited from main"}
 ```
+
+`ts` is the entry's own time as the crew log stamped it, so a line can never claim a
+time the log disagrees with.
 
 `number` is OMITTED on a **crew-level** line — a step that belongs to no issue,
 which today is only `kind: "sweep"` (the crew checked the queue and took
@@ -297,9 +602,10 @@ sweep whose crew already has one as its newest line is answered with that existi
 line, and the response says `coalesced`. The surviving timestamp therefore marks
 when the idle stretch BEGAN, which is the more useful reading. This is the same
 record-the-transition discipline `phase` already follows — stamped only when an
-item is created or actually moves. The tail check and the append happen under ONE
-hold of the events lock, or two crew turns waking together would both see no
-trailing sweep and both append.
+item is created or actually moves. The tail check happens against the crew's
+folded record BEFORE the append, and the fold applies the same rule to the bytes,
+so two crew turns waking together cannot leave two trailing sweeps: the second one
+folds away even if both appended.
 
 **What the surviving timestamp does not mean.** It records when the crew last
 REPORTED an empty queue, and nothing about the present. Consecutive reports fold,
@@ -425,9 +731,11 @@ it was doing.
 
 ### `issue_radar_crew_record`
 
-One write tool that upserts work-item state **and** appends one event, rather than
-two tools. Merging them means a phase can never change without a logged reason,
-and a progress step costs one call instead of two.
+One write tool that patches work-item state **and** records the event explaining
+it -- as ONE `radar/recorded` entry appended to the crew's crew log -- rather than
+two tools. Merging them means a phase can never change without a logged reason, a
+pass can never be recorded without its index row, and a progress step costs one
+call instead of two.
 
 Flat args, following `issue_radar_record_investigation`'s shape (it flattens its
 five findings fields the same way). Empty fields are dropped, so a partial patch
@@ -448,6 +756,9 @@ ci_total, ci_round,
 ci_inherited_reds         optional
 claim_comment_id          optional int
 labels_applied            optional [str]
+clear                     optional [enum] — work-item fields to EMPTY by name (the
+                          clearable list above); the only way to erase a field, since
+                          empty and omitted fields are dropped
 skip_scope                optional enum — why a pass was recorded, including
                           `needs-decision` / `needs-investigation` when the next
                           step belongs to a human
@@ -467,3 +778,14 @@ number stays a 400 and is never reinterpreted as "no issue".
 Validation lives in `validation.py` alongside the existing schemas. The handler
 sends `owner`/`repo` explicitly so a same-numbered issue in another repo cannot
 overwrite this record, and refuses a second item entering an editing phase.
+
+Two refusals belong to the storage rather than to the update. **409
+`crew_log_unavailable`**: the crew's slot has no live session, the session has not
+run its first turn (its crew log is created then), or the gateway runs with the
+crew log off -- there is nowhere to record, and the tool says so instead of keeping
+a document of its own. **413 `ledger_entry_too_large`**: the update does not fit
+one crew log entry (64 KiB), so it can never land; record fewer or shorter fields.
+Both are named so an agent can tell them from a refusal of the update itself and
+stop retrying the same body. The response also carries `durable`: whether the
+append had reached the log when the tool answered (see *The answer is the line the
+log holds* above).

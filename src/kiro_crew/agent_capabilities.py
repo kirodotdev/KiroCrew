@@ -19,6 +19,11 @@ from typing import Any, Callable
 
 from kiro_crew import agent_state
 from kiro_crew.agent import agents_spec_lock, kiro_agents_dir_path
+from kiro_crew.agent_spec_format import (
+    agent_spec_candidates,
+    iter_agent_spec_files,
+    parse_agent_spec_bytes,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -56,7 +61,7 @@ def _read_spec(path: Path) -> dict:
 
     try:
         raw = safe_read_file_bytes_nolink(str(path), str(path.parent), max_bytes=MAX_DOCUMENT_BYTES)
-        result = json.loads(raw) if raw is not None else None
+        result = parse_agent_spec_bytes(raw, path) if raw is not None else None
     except (ValueError, FileTooLargeError):
         raise CapabilityError("source_unreadable") from None
     if not isinstance(result, dict):
@@ -82,7 +87,7 @@ def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Pa
             # A broken file claiming this exact filename cannot authorize a
             # fallback to the broader global scope. Unrelated junk is skipped
             # by the shared resolver, just as it is on the normal agent path.
-            if (root / (name + ".json")).exists():
+            if any(p.exists() for p in agent_spec_candidates(root, name)):
                 raise CapabilityError("source_unreadable")
             continue
         if _conflicting_spec_for(name, path, root) is not None:
@@ -380,6 +385,20 @@ def _alternate_shortcuts(value: Any) -> bool:
 
 
 def _align_permissions(base: dict, spec: dict) -> None:
+    """Review the source block, then emit the target one the installed CLI accepts.
+
+    Two questions share this call site and only the second one is the binary's.
+    Whether the SOURCE block was hand-edited away from its derivation is a
+    governance question about the template, so that comparison is unconditional.
+    What the TARGET spec may carry is a compatibility question: kiro-cli
+    validates specs with serde ``deny_unknown_fields``, so a release below
+    ``SPEC_PERMISSIONS_MIN_VERSION`` -- or one whose version cannot be
+    established -- refuses the WHOLE file this funnel publishes and drops every
+    Crew MCP server with it. Routed through ``_write_derived_permissions`` so
+    fork and publish answer that question with the same gate the five generated
+    writers use, including its removal of an inherited value.
+    """
+    from kiro_crew.agent import _write_derived_permissions
     from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
 
     if _alternate_shortcuts(base.get("toolsSettings", {})) or base.get("autoAllowReadonly"):
@@ -388,9 +407,7 @@ def _align_permissions(base: dict, spec: dict) -> None:
         prior = derived_agent_permissions(base.get("allowedTools"), str(base.get("name", "")))
         if base["permissions"] != prior:
             raise CapabilityError("alternate_permissions_require_review")
-        spec["permissions"] = derived_agent_permissions(
-            spec.get("allowedTools"), str(spec.get("name", ""))
-        )
+        _write_derived_permissions(spec, spec.get("allowedTools"), str(spec.get("name", "")))
 
 
 def _sanitize_projection(spec: dict, intent: dict, catalog: dict[str, str]) -> None:
@@ -939,11 +956,15 @@ class CapabilityService:
             raise CapabilityError("parent_change_missing")
         intent["accepted"] = baseline
         intent["catalog"] = snap["catalog"]
-        if any(
-            op["section"] in ("allowedTools", "autoApprove", "tools")
-            for op in request["operations"]
-        ) or spec.get("allowedTools") != snap["spec"].get("allowedTools"):
-            _align_permissions(snap["spec"], spec)
+        if (
+            reset_parent
+            or any(
+                op["section"] in ("allowedTools", "autoApprove", "tools")
+                for op in request["operations"]
+            )
+            or spec.get("allowedTools") != snap["spec"].get("allowedTools")
+        ):
+            _align_permissions(base, spec)
         _sanitize_projection(spec, intent, snap["catalog"])
         if spec.get("includeMcpJson", True) is not False:
             before = _rows(snap["spec"], snap["catalog"])
@@ -1308,11 +1329,13 @@ class CapabilityService:
                 roots = [root]
                 if snap["project"]:
                     roots.append(project_agents_dir(snap["project"]))
-                occupied = {p.stem.lower() for directory in roots for p in directory.glob("*.json")}
+                occupied = {
+                    p.stem.lower() for directory in roots for p in iter_agent_spec_files(directory)
+                }
                 from kiro_crew.agent_discovery import _read_agent_spec
 
                 for directory in roots:
-                    for path in directory.glob("*.json"):
+                    for path in iter_agent_spec_files(directory):
                         declared = _read_agent_spec(
                             path, operation="capability_publish", source="dashboard"
                         )

@@ -22,7 +22,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.messaging.renderer import Renderer, render_options_as_text
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    count_redaction_tags,
+    redaction_notice,
+    render_options_as_text,
+)
 from kiro_crew.messaging.transport import TransportCapabilities
 
 if TYPE_CHECKING:
@@ -110,6 +115,26 @@ class FeishuRenderer(Renderer):
             # sees nothing while history and the session claim success. Raising
             # routes it through the driver's failure path instead.
             raise RuntimeError(f"Feishu reply was not delivered (message_id={self._message_id})")
+        cred_count, url_count = count_redaction_tags(content)
+        if cred_count or url_count:
+            # The reply above carries a redaction placeholder, so a follow-up
+            # notice tells the reader the text was rewritten. Counted over the
+            # DELIVERED body, and best-effort by the shared contract: the
+            # answer is already out, so a failed notice send is logged, never
+            # raised. ``send_reply`` reports failure as ``False`` rather than
+            # raising, so both shapes are covered.
+            try:
+                if not await self._client.send_reply(
+                    self._message_id, redaction_notice(cred_count, url_count)
+                ):
+                    logger.warning(
+                        "feishu: could not deliver the redaction notice (answer already sent)"
+                    )
+            except Exception:
+                logger.warning(
+                    "feishu: could not deliver the redaction notice (answer already sent)",
+                    exc_info=True,
+                )
 
     async def close(self) -> None:
         """Idempotent teardown -- finalise if ``on_done`` was never reached.
@@ -137,5 +162,15 @@ class FeishuRenderer(Renderer):
         ``messaging.dispatch`` from the driver's own accumulated text, so the two
         are not guaranteed to agree — a difference that only shows up in what the
         transcript records, never in what the user is shown.
+
+        The body is scrubbed render-aware here, at the send boundary, the same as
+        every channel that renders markdown itself does at its own send. Feishu
+        renders the body as markdown, and the channel-neutral stream pass upstream
+        is a literal byte scan, so a credential split by emphasis
+        (``AKIA**REST**``) or a link survives it and is reassembled on screen. The
+        numbered ``[OPTIONS:]`` choices are already display-safe (``apply_options_cap``
+        redacts them); ``redact_for_target`` is idempotent, so covering them again
+        with the body costs nothing.
         """
-        return render_options_as_text("".join(self._buf).strip(), self.capabilities)
+        rendered = render_options_as_text("".join(self._buf).strip(), self.capabilities)
+        return self.redact_for_target(rendered)

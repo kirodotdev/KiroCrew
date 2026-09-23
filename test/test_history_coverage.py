@@ -971,6 +971,11 @@ class TestWriteStructuredMemory:
             importance=0.9,
             source="consolidation:sess",
             facets=None,
+            # Both False while the pass is inside its embed budget; the latch
+            # flips them together once a slow embedder has overrun it, because a
+            # write with no vector must neither embed nor evict.
+            defer_embedding=False,
+            preserve_existing=False,
         )
         assert "Wrote 1 episodic" in caplog.text
 
@@ -1355,6 +1360,98 @@ class TestUpdateMetadataLocked:
         log.append("k", "user", "hi")
         with patch.object(log, "_read_metadata_status", return_value=({}, False)):
             assert log.update_metadata_if("k", {"title": "T"}, lambda m: True) is False
+
+    def test_update_metadata_if_upserts_a_missing_record_by_default(
+        self, tmp_path: Path
+    ) -> None:
+        """The default contract, pinned so the new flag cannot quietly change it.
+
+        Callers that publish identity into a record which may not exist yet rely
+        on this -- ``bind_session_execution`` writes the execution context and
+        memory mode a session was admitted under, and a session with no record
+        must still end up carrying them.
+        """
+        log = _log(tmp_path)
+        assert log.update_metadata_if("k", {"title": "T"}, lambda m: True) is True
+        assert _log(tmp_path).get_metadata("k")["title"] == "T"
+
+    def test_require_existing_refuses_to_mint_a_record(self, tmp_path: Path) -> None:
+        """A guard cannot express this: a deleted session reads as ``({}, True)``.
+
+        No metadata, reported as readable, so a guard that accepts an empty
+        record cannot tell a session deleted since the caller's own read from one
+        that never had a metadata line -- and the merge upserts. Without the
+        flag the write below creates a metadata-only file with no transcript.
+        """
+        log = _log(tmp_path)
+        assert (
+            log.update_metadata_if("k", {"title": "T"}, lambda m: True, require_existing=True)
+            is False
+        )
+        # Not merely refused: nothing was written at all.
+        assert _log(tmp_path).get_metadata("k") == {}
+        assert list(tmp_path.glob("*.jsonl")) == []
+
+    def test_require_existing_still_merges_into_a_record_that_exists(
+        self, tmp_path: Path
+    ) -> None:
+        """The flag must refuse only absence, never an ordinary merge."""
+        log = _log(tmp_path)
+        log.append("k", "user", "hi")
+        assert (
+            log.update_metadata_if("k", {"title": "T"}, lambda m: True, require_existing=True)
+            is True
+        )
+        assert _log(tmp_path).get_metadata("k")["title"] == "T"
+
+    def test_require_existing_refuses_a_session_deleted_after_its_own_read(
+        self, tmp_path: Path
+    ) -> None:
+        """The race itself: the session is there when read, gone when written."""
+        log = _log(tmp_path)
+        log.append("k", "user", "hi")
+        assert log.get_metadata("k") != {}
+        log.delete_session("k")
+
+        assert (
+            log.update_metadata_if(
+                "k", {"folder_id": "f1"}, lambda m: True, require_existing=True
+            )
+            is False
+        )
+        assert list(tmp_path.glob("*.jsonl")) == []
+
+    def test_the_existence_check_is_inside_the_write_lock(self) -> None:
+        """Hoisting it out of the lock reopens the exact window it closes.
+
+        A checked-then-written pair lets the deletion land between the two, so
+        this asserts placement rather than behaviour: the ``require_existing``
+        test must sit inside the ``with`` that takes the session lock, and
+        nothing resembling it may run before that ``with``.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from kiro_crew.history_projection import SessionMetadataProjection
+
+        source = textwrap.dedent(inspect.getsource(SessionMetadataProjection.update_metadata_if))
+        function = ast.parse(source).body[0]
+        assert isinstance(function, ast.FunctionDef)
+
+        def _mentions_flag(node: ast.AST) -> bool:
+            return any(
+                isinstance(inner, ast.Name) and inner.id == "require_existing"
+                for inner in ast.walk(node)
+            )
+
+        locks = [node for node in function.body if isinstance(node, ast.With)]
+        assert len(locks) == 1, ast.dump(function)
+        # Before the lock: nothing reads the flag, so no check can have been
+        # hoisted. Checking the body alone would pass while a hoisted copy sat
+        # above it -- the earlier one decides, and it is the unsafe one.
+        assert not any(_mentions_flag(node) for node in function.body if node is not locks[0])
+        assert any(_mentions_flag(node) for node in locks[0].body if isinstance(node, ast.If))
 
 
 # ── delete_session ─────────────────────────────────────────────────────────

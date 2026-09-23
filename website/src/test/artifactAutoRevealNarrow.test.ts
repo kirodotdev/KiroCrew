@@ -10,9 +10,12 @@ describe('artifact comment auto-reveal at phone widths', () => {
     // The page opens comments whenever an artifact has any -- written for the
     // side-by-side layout. With the body now stepping aside while narrow, that
     // became a full-pane takeover on first render of any commented artifact.
-    expect(s).toMatch(/return commentCount > 0 && !isMobile \? 'comments' : 'none'/)
+    // Auto-reveal reads `displayCommentCount` -- the every-comment count -- not
+    // the filtered agent-facing `commentCount`: a resolved thread is still there
+    // to be revealed and read.
+    expect(s).toMatch(/return displayCommentCount > 0 && !isMobile \? 'comments' : 'none'/)
     expect(s, 'the effect must react to the viewport it now reads')
-      .toMatch(/\}, \[slug, commentCount, isMobile\]\)/)
+      .toMatch(/\}, \[slug, displayCommentCount, isMobile\]\)/)
   })
 
   it('leaves an explicit open alone', async () => {

@@ -100,6 +100,27 @@ function handleOverlayNavigation(win, httpResponseCode) {
   }
 }
 
+// Chromium's own code for a navigation that was superseded by a newer one. It
+// fires on EVERY overlay whose loadURL is replaced by a re-arm, and the page it
+// leaves behind is the previous document, not an error page.
+const ERR_ABORTED = -3;
+
+/**
+ * React to a main-frame load that FAILED at the transport (`did-fail-load`):
+ * the gateway is unreachable, DNS is down, the tunnel is gone. Chromium then
+ * commits its own error document, which the next `did-finish-load` would reveal
+ * exactly like a pet page — an opaque full-display window with no close target,
+ * the same trap the >=400 latch exists for. Hide and latch it; the reconcile
+ * tick re-arms it when a target answers again. Sub-frame failures and aborted
+ * (superseded) loads leave the pet page in place, so they must not hide it.
+ */
+function handleOverlayLoadFailure(win, errorCode, isMainFrame) {
+  if (win.isDestroyed()) return;
+  if (isMainFrame === false || errorCode === ERR_ABORTED) return;
+  overlayBlanked.add(win);
+  win.hide();
+}
+
 /** True when any live overlay is currently hidden on an error page, so the host
  * only re-mints a token when there is actually one to heal. */
 function hasBlankedOverlay() {
@@ -704,13 +725,15 @@ function createOverlayForDisplay(display) {
   win.setAlwaysOnTop(true, "screen-saver");
   win.loadURL(mochiPageUrl(currentBaseUrl, "pet.html", currentToken));
 
-  // Diagnostics: a transparent overlay that failed to load looks identical to
-  // one that loaded and drew nothing.
-  win.webContents.on("did-fail-load", (_e, code, desc, url) => {
+  // A transport failure (gateway unreachable, tunnel gone) commits Chromium's
+  // own error document, and `did-finish-load` would reveal it like a pet page.
+  // Hide + latch, same as the >=400 path below; the reconcile tick re-arms it.
+  win.webContents.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
     // Strip the query string: the pet window URL carries the session token
     // (?token=…), which must not be written to the console/log on a load error.
     const safeUrl = String(url || "").split("?")[0];
     console.warn(`Mochi pet: load failed (${code} ${desc}) for ${safeUrl}`);
+    handleOverlayLoadFailure(win, code, isMainFrame);
   });
 
   // A gateway error page (any status >= 400) is a COMPLETED navigation, not a
@@ -1077,6 +1100,7 @@ module.exports = {
   // Exported for tests: the error-page recovery policy + navigation handler.
   _isOverlayErrorPage: isOverlayErrorPage,
   _handleOverlayNavigation: handleOverlayNavigation,
+  _handleOverlayLoadFailure: handleOverlayLoadFailure,
   // Exported for tests: overlay-map lifecycle (identity-checked cleanup).
   _registerOverlay: registerOverlay,
   _getOverlays: getOverlays,

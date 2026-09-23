@@ -11,7 +11,7 @@ import pytest
 
 from kiro_crew import embeddings as emb
 from kiro_crew import executors as pools
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
 def test_same_name_size_weights_have_distinct_identity(tmp_path):
@@ -215,15 +215,19 @@ async def test_expired_owner_still_publishes_vector_to_waiters(monkeypatch, tmp_
             WaiterSpy.polls += 1
             return super().wait(timeout)
 
+    flights: list[emb._EmbedFlight] = []
+
     @dataclass
     class SpyFlight(emb._EmbedFlight):
         done: threading.Event = field(default_factory=WaiterSpy)
+
+        def __post_init__(self):
+            flights.append(self)
 
     backend = emb.LlamaCppEmbedder(model_path=tmp_path / "model.gguf", dim=2)
     backend._llm = Native()
     monkeypatch.setattr(emb, "get_shared_embedder", lambda: backend)
     monkeypatch.setattr(emb, "_EmbedFlight", SpyFlight)
-    monkeypatch.setattr(emb, "_EMBED_WAIT_SECS", 0.1)
 
     async def wait_until(predicate):
         while not predicate():
@@ -238,7 +242,15 @@ async def test_expired_owner_still_publishes_vector_to_waiters(monkeypatch, tmp_
         )
         tasks.append(waiter)
         await asyncio.wait_for(wait_until(lambda: WaiterSpy.polls > 0), 2)
-        await asyncio.sleep(0.15)
+        # The owner's budget must run out WHILE its native call is in flight. A
+        # 100 ms `_EMBED_WAIT_SECS` starts ticking at `_shared_sync_embed` entry
+        # and has to outlast the `to_thread` hop, the infer thread's start and the
+        # queue's own expiry checks before `create_embedding` is even reached --
+        # on a loaded runner it did not, and the owner returned `None` without
+        # ever entering. `expired()` also honours `cancelled`, so expire the
+        # owner's captured work by hand now that entry is proven, with no clock.
+        (owner_flight,) = flights
+        owner_flight.work.cancelled.set()
         release.set()
         assert await asyncio.wait_for(owner, 2) is None
         assert await asyncio.wait_for(waiter, 2) == [1.0, 0.0]
@@ -250,8 +262,43 @@ async def test_expired_owner_still_publishes_vector_to_waiters(monkeypatch, tmp_
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+@pytest.fixture
+def entered_recall_pool(monkeypatch):
+    """A recall pool whose ``submit`` returns only once the worker is RUNNING the job.
+
+    `run_with_recall_deadline` arms its timer the moment it is awaited, and
+    `run_in_embed_pool` hands the job to a thread the OS still has to schedule.
+    With `RECALL_TIMEOUT_SECS` at 100 ms the two raced on a loaded runner: the
+    deadline cancelled a future no worker had claimed yet, so `future.cancel()`
+    SUCCEEDED, the job never ran, and a test whose subject is the RUNNING
+    worker's admission failed on `entered.wait`. Blocking the submitting loop
+    thread until the worker has called `set_running_or_notify_cancel` puts the
+    entry before the first point the timer can fire, on every host -- the
+    worker-entered handshake the testing spec asks for, at the pool seam.
+    """
+    started: list[threading.Event] = []
+
+    class EnteredPool(ThreadPoolExecutor):
+        def submit(self, fn, /, *args, **kwargs):
+            running = threading.Event()
+
+            def entered(*a, **k):
+                running.set()
+                return fn(*a, **k)
+
+            future = super().submit(entered, *args, **kwargs)
+            assert running.wait(5), "recall worker never picked the job up"
+            started.append(running)
+            return future
+
+    pool = EnteredPool(max_workers=pools._MAX_EMBED_WORKERS, thread_name_prefix="mc-recall")
+    monkeypatch.setattr(pools, "recall_executor", lambda: pool)
+    yield started
+    pool.shutdown(wait=True)
+
+
 @pytest.mark.asyncio
-async def test_server_deadline_retains_running_worker_admission(monkeypatch):
+async def test_server_deadline_retains_running_worker_admission(monkeypatch, entered_recall_pool):
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     monkeypatch.setattr(pools, "RECALL_TIMEOUT_SECS", 0.1)
 
@@ -267,6 +314,7 @@ async def test_server_deadline_retains_running_worker_admission(monkeypatch):
         assert await asyncio.to_thread(entered.wait, 2)
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(task, 2)
+        assert len(entered_recall_pool) == 1
         admission = asyncio.get_running_loop()._kirocrew_recall_admission
         assert admission._value == pools._MAX_EMBED_WORKERS - 1
         assert await pools.run_in_embed_pool(lambda: "prompt") == "prompt"
@@ -294,7 +342,7 @@ def test_model_digest_cached_until_file_changes(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cold_open", [False, True])
-async def test_http_deadline_wraps_real_recall_handler(monkeypatch, cold_open):
+async def test_http_deadline_wraps_real_recall_handler(monkeypatch, cold_open, entered_recall_pool):
     from kiro_crew.dashboard.handlers import memory, memory_member
 
     release, entered, finished = threading.Event(), threading.Event(), threading.Event()
@@ -321,7 +369,7 @@ async def test_http_deadline_wraps_real_recall_handler(monkeypatch, cold_open):
                 await asyncio.Event().wait()
             finally:
                 finished.set()
-        return SimpleNamespace(recall=recall)
+        return SimpleNamespace(recall=recall, algorithm_version="v2")
 
     monkeypatch.setattr(memory_member, "resolve_requested_memory_store", resolve)
     monkeypatch.setattr(memory_member, "vector_memory_for_store", tier)
@@ -412,8 +460,9 @@ async def test_store_opened_after_apply_snapshot_before_config_gets_new_width(
 
     def initialize():
         global_store.init()
-        late = VectorMemoryStore(db_path=late_path, embedding_dim=2)
-        late.init()
+        late = open_member_database(
+            late_path, member_id="late", store_id="member-late", embedding_dim=2
+        )
         late.close()
 
     await asyncio.to_thread(initialize)

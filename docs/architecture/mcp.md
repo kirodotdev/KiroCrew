@@ -4,6 +4,13 @@ How MCP (Model Context Protocol) servers are configured, merged, probed and
 loaded, plus the two invariants every new Kiro Crew MCP tool must satisfy: it
 ships as an MCP tool (not only a CLI command), and it holds no per-caller state.
 
+The spawn tools share their reason vocabulary with `solo_spawn.py` and validate
+optional `solo_details` through `validation.py`. New reasons require details;
+legacy calls remain compatible. Async receipts declare supported parent-work
+delivery, while the inline tool rejects `parent_parallel`. See the
+[subagent contract](../system-specs/modules/subagent.md) for the enforced limits
+and model-only value judgments.
+
 Related: the CPP extension-point seam this doc reads from is
 [platform-context](../system-specs/modules/platform-context.md); the governance
 ceiling that filters auto-approve is
@@ -17,7 +24,7 @@ own gate model is [computer-use](../system-specs/modules/computer-use.md).
 > interactive kiro-cli and Kiro IDE session the user runs outside Kiro Crew. If
 > `kirocrew-core` / `kirocrew-cron` ever appear in a provider global, that is
 > leftover state from an older install: clean it from the dashboard MCP panel,
-> or run `kirocrew cli-setup`, which calls the narrowly-scoped
+> or run `kirocrew setup`, whose setup path calls the narrowly scoped
 > `mcp_cleanup.clean_stale_managed_mcp()` helper.
 
 ## Config file hierarchy
@@ -29,8 +36,9 @@ own gate model is [computer-use](../system-specs/modules/computer-use.md).
 | `~/.kiro/crew/mcp.json` | User, via the dashboard MCP panel | specific to Kiro Crew additions and per-server tool disables | Kiro Crew gateway only |
 
 `rebuild_agent_config()` writes exactly **one** file, `~/.kiro/agents/kirocrew.json`.
-There is no second rendered agent file and no agent-file renderer for any other
-provider: Kiro Crew is KiroACP-only.
+There is no second rendered agent file: Kiro Crew's provider is ACP-only, and
+non-kiro ACP harnesses consume projected configuration rather than another Kiro
+agent file.
 
 ### Provider-global scopes come from the platform seam, not the core
 
@@ -67,9 +75,18 @@ kirocrew`). Onto that base:
    manifests are authoritative and are re-derived on every rebuild, so keeping
    the previous rebuild's entry would preserve an `autoApprove` grant this pass
    had just stripped.
-2. **`~/.kiro/settings/mcp.json`** (Kiro global) via `setdefault`.
-3. **Seam-contributed provider globals** via `setdefault`, so they can only fill
-   gaps the Kiro global did not. Empty in this build.
+2. **`~/.kiro/settings/mcp.json`** (Kiro global). An absent name is added. A name
+   a PREVIOUS rebuild left behind is *reconciled*: the transport-independent keys
+   the source owns (`timeout`, `disabled`) are overwritten, and one the source has
+   since dropped is removed, so an edit to the source reaches the generated spec
+   instead of losing to the value the first rebuild froze. Every other key on the
+   entry is the user's and survives by omission, `autoApprove` included.
+   Reconciling retires the name, so a lower-priority scope cannot reconcile it
+   again. `command`/`url` and the fields dependent on them (`args`, `env`,
+   `headers`) are NOT reconciled — see the fallback's as-a-unit rule below.
+3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
+   global did not: a name step 1 or step 2 already claimed in this pass has been
+   retired, so it is left alone. Empty in this build.
 4. **`~/.kiro/crew/mcp.json`** via `update()` on an existing entry, so
    Kiro Crew's `command`/`args`/`env` win while user-set fields such as
    `autoApprove` survive.
@@ -96,7 +113,10 @@ declared `PATH` **replaces** the child's inherited one rather than extending it.
 A spec that names one directory to add would therefore hand the server a PATH
 holding only that directory. `spec_env_path()` expands a declared `env.PATH`
 into the full effective PATH — the spec's own entries first, then the augmented
-inherited PATH, deduped — before it is written out. Consequence to know about:
+inherited PATH, deduped — before it is written out. A forwarded declared `PATH`
+reaches a pooled backend the same way: `gatewayd` composes it through
+`env.mcp_search_path`, so the spec's entries LEAD that backend's PATH rather
+than being the whole of it. Consequence to know about:
 the emitted value is a snapshot of the rebuild-time environment, so it encodes
 this host's directories (mise data dir, installed Node version bins, the
 running interpreter's bin) and is not portable to another machine.
@@ -123,13 +143,26 @@ app agent). Plain kiro-cli agents outside Kiro Crew keep kiro-cli's own default.
 
 ### Managed servers
 
-`agent._MANAGED_MCP_SERVERS` holds the three servers the gateway owns end to
-end: `kirocrew-cron`, `kirocrew-core`, `kirocrew-computer`. Each is refreshed on
-every rebuild by `_refresh_dynamic_fields()`, which rewrites `command`/`args`
-from the live `kirocrew` binary, strips stale remote-transport fields (`url`,
-`headers`) left by older builds, and re-pins `env.KIROCREW_HOME` to the home the
-gateway is actually running under while preserving the user's own env keys.
-User customizations such as `autoApprove` are preserved.
+`agent._MANAGED_MCP_SERVERS` holds the eight servers the gateway owns end to
+end: the always-on `kirocrew-cron` and `kirocrew-core`, the gated
+`kirocrew-computer`, and the opt-in `kirocrew-dashboard`, `kirocrew-work`,
+`kirocrew-crew-log`, `kirocrew-debug` and `kirocrew-panel`. Every emitted or
+explicitly granted entry is refreshed on every rebuild by
+`_refresh_dynamic_fields()`, which rewrites `command`/`args` from the live
+`kirocrew` binary, strips stale remote-transport fields (`url`, `headers`) left by
+older builds, and re-pins `env.KIROCREW_HOME` to the home the gateway is actually
+running under while preserving the user's own env keys.
+User customizations are preserved, with one exception: an `autoApprove` list no
+server spec declares is dropped, because kiro-cli approves those tools locally and
+Crew never sees a permission request for them. Set `mcp.honour_auto_approve` to
+keep a hand-added one. A verb a managed or edition spec declares is unaffected,
+and a governance ceiling strips the key whatever the setting says.
+
+For KAS native managed servers, session projection supplies the actual gateway
+listener port and the allocation-time caller session key. These values come
+from the gateway rather than the editable agent environment. Native tools keep
+their own session identity and reach the serving instance on a non-default port;
+third-party servers receive neither value.
 
 An entry may also carry a **`spec_gate`** — a predicate consulted at spec
 EMISSION time. `kirocrew-computer` is the one row that has one, and the
@@ -190,7 +223,7 @@ loops, so a keystone flip landing mid-rebuild cannot produce a spec that emits o
 server's entry under the old decision and another's under the new one.
 
 Under an enterprise MCP registry, `_refresh_dynamic_fields()` also maintains a
-`"type": "registry"` marker on these three entries — added when
+`"type": "registry"` marker on these managed entries — added when
 `agent.mcp_registry_mode` is declared, and REMOVED when it is not. The marker is
 maintained rather than preserved because it tracks the account the gateway is
 signed in to, not a user preference, and because the client's filter is
@@ -210,6 +243,74 @@ gate bypass. Its stdio shim answers an empty `tools/list` while the keystone
 enable is off — retained as defence in depth for a mid-session disable, on top of
 the `spec_gate` above that keeps the process from existing in the first place.
 
+### The final ref reconcile
+
+`tools` and `allowedTools` hold `@server` and `@server/tool` refs, and kiro-cli
+mounts only what `mcpServers` declares, so a ref naming a name absent from the
+final map mounts nothing. Several passes narrow that map without touching either
+list: the resolution pass replaces `mcpServers` wholesale and drops unresolvable
+servers by OMISSION, and the locked app re-merge deletes entries whose app is not
+confirmed enabled. Because the merge base is the previous rendered config, a ref
+outlives the server it named — across a rename, an uninstall or a disable.
+
+One `prune_dangling_tool_refs()` pass over the FINAL map therefore runs at the
+single funnel every write path goes through, after the passes that mutate
+`allowedTools` and before the auto-approve filter below. Reconciling the final
+map rather than each narrowing pass is what keeps a pass added later safe by
+default.
+
+**The two lists take separate exemption sets, because they fail in opposite
+directions.** `declared` names servers whose absence this rebuild EXPECTS a later
+pass to reverse and governs `tools`; `declared_grants` governs `allowedTools`.
+Keeping a mount ref too long costs one mount attempt against a name that holds
+nothing, while dropping one can unmount a server for good, since an existing
+config deliberately never re-adds a template ref. Keeping a GRANT too long hands
+the next server on that name an auto-approval nobody granted, on the one list
+that never reaches the PreToolUse gate, while dropping one costs an approval a
+human can give again. So a name this rebuild is UNSURE about is exempted as a
+mount and not as a grant: the mount survives the doubt and the grant does not. A
+caller with no such doubt passes one set and both lists read it.
+
+Three classes populate the mount set: a server whose `command` did not resolve on
+this pass, a gated-off shipped server whose entry is withheld while its ref is
+retained by design, and a name some readable source still declares. A `@` name in
+`RESERVED_TOOL_NAMESPACES` addresses a kiro namespace rather than a server —
+`@builtin` carries the whole built-in tool surface plus the `tool_search` loader
+— so it is never in the map and is never a leftover.
+
+An unresolved disabled source deliberately denies grants across its complete alias
+family: the canonical alias and every numeric-suffixed sibling whose final dash
+segment contains only digits. It removes those refs from `allowedTools` and blocks
+the rebuild from adding them again, while leaving `tools` and `mcpServers` intact.
+The collision allocator can hand any family alias to a distinct live server, so a
+stale grant on that name must not auto-approve the replacement. Prefix-sharing
+aliases outside the numeric-suffix family keep their grants.
+
+**App-contributed names are read twice, before and after the rebuild's work.** A
+`{app}:{server}` key is minted by an app manifest, so a disabled app's grant must
+not outlive it; but an ownership read that FAILED cannot be told from one that
+found no owner, and only the second is safe to treat as unowned. An app's
+enablement is read as a tri-state so that a metadata read fault is not recorded
+as a deliberate disable. Ownership only ever decides the GRANT: the reconcile
+never unmounts on an ownership answer, because `mcp_server_alias()` is
+many-to-one and a collision is resolved by suffixing, so which claimant a
+`base-2` sibling came from is a guess that is unrecoverable by the next rebuild
+— dropping its `tools` ref on that guess deletes a server nothing re-adds, while
+keeping a ref costs one mount attempt against an empty name. The grant requires
+positive evidence a guess cannot supply: a name an app claims EXACTLY keeps its
+grant only while its own claimant is readably switched on, and family membership
+never lends a sibling an enabled owner's answer. A name a readable source still
+declares outranks a switched-off app's claim on it, since the rebuild's own ref
+sync would otherwise re-add the pruned per-tool grant as a WHOLE-server one.
+
+**Both outcomes are recorded where an operator can see them.** Revoking a grant
+emits `mcp_auto_approve_revoked` to SEL, the same feed as the withhold above,
+because it is a permission decision and no config delta records it. Dropping a
+mount ref is logged at WARNING, which the shipped `agent.log_level` default
+shows: the ref named nothing, so the tool was already unreachable, but a
+misclassified absence is unrecoverable and an operator debugging a tool that
+stopped being offered should not have to raise the log level first.
+
 ### The final auto-approve pass
 
 `allowedTools` is kiro-cli's blanket auto-approve list, and it is the one path
@@ -220,7 +321,8 @@ before writing is filter the whole assembled `allowedTools` list through one
 predicate: a ref the governance ceiling has an opinion about loses its blanket
 grant and its calls go through the gate, where the per-argument rule actually
 applies; a ref the ceiling is silent about is kept. `mcpServers[*].autoApprove`
-gets the same treatment on the final map. `tools` is deliberately left intact,
+gets the same treatment on the final map, plus a local floor: a verb no server spec
+declares is dropped unless `mcp.honour_auto_approve` is set. `tools` is deliberately left intact,
 because mounting a tool is not auto-approving it. Withheld grants are recorded
 in SEL as `mcp_auto_approve_withheld` so an operator can see why a template tool
 now prompts.
@@ -344,7 +446,7 @@ Probes run from `POST /api/mcp/probe`:
   stylistic: from Python 3.14 that method swallows every `OSError` and answers
   `False`, so a permission error or a stalled mount would be indistinguishable
   from "nothing was ever written". This package declares `requires-python >=
-  3.10` with no ceiling, so a build on 3.14 would silently collapse the middle
+  3.12` with no ceiling, so a build on 3.14 would silently collapse the middle
   answer and tell the owner of an authorized server to sign in again — the exact
   harm the three-valued design exists to prevent. Two spellings over the same
   artifacts is how one of them loses that answer, which is why the probe and the
@@ -409,10 +511,11 @@ Probes run from `POST /api/mcp/probe`:
   remedy paragraph warns once per server name
   (`_warn_probe_sandbox_unavailable_once`) and demotes repeats to DEBUG.
   - **A managed server FALLS BACK to its declared tool list when — and only when —
-    the sandbox refuses.** `kirocrew-core` / `-cron` / `-computer` declare their
-    tools statically in this package (`mcp_core._list_tools()` and friends, the very
-    functions the stdio shim answers `tools/list` from), so
-    `_managed_tools_in_process` can serve the listing with no subprocess at all.
+    the sandbox refuses.** Every server in
+    `mcp_discovery._MANAGED_SERVER_TOOL_MODULES` declares its tools statically in
+    this package (the same `_list_tools()` functions the stdio shims answer
+    `tools/list` from), so `_managed_tools_in_process` can serve the listing with
+    no subprocess at all.
     That is what removes the `agent.sandbox_allow_unsandboxed_exec` opt-in for a
     read-only listing on a backendless host.
     - **Fallback, never primary.** When a backend exists the real spawn still runs,
@@ -479,6 +582,17 @@ pre-flight can and cannot decide, and the seed-once rule — live in
 The Integrations page aggregates the scope files into one view with per-scope
 badges. Clicking a badge **stages** an intent; the page accumulates staged
 changes and exposes Apply / Discard. Only Apply performs writes.
+
+**Add Server search reports every attempted provider.**
+`GET /api/mcp/discover` keeps its existing `results` and `providers` fields and
+adds `provider_outcomes: [{name, status}]`, where `status` is `ok`, `timeout`, or
+`error`. The additive field keeps older clients compatible. A short availability
+probe attempts no provider and returns an empty outcome list. The Add Server
+modal keeps results from responsive providers and shows one inline incomplete
+notice when any sibling provider fails. When every attempted provider fails, it
+shows the shared `ErrorNotice` instead of the zero-match empty state. Retry runs
+the whole search again; per-provider retry and provider-cache refresh are not
+part of this contract.
 
 `POST /api/mcp/apply` takes a batched payload and applies it in a fixed order:
 
@@ -590,10 +704,146 @@ env pin `KIROCREW_MCP_SPILL_THRESHOLD` → config key → built-in 256 KiB), mar
 for a second reason as well: it is handed to asyncio readers as `limit=` when they
 are CONSTRUCTED and cannot be changed afterwards. `socket_path`, `overlay_dir`,
 `idle_timeout_secs`, `max_backends`, `prewarm_count`, `stub_servers`,
-`poolable_servers`, `stub_overrides`, `pool_identity_env` and
-`forward_declared_env` ride the daemon's command line or size structures built
-once at spawn, so they too are marked `restart=True` in the config schema and
-apply to a broker started after the change.
+`poolable_servers`, `stub_overrides`, `pool_identity_env`,
+`forward_declared_env`, `spawn_concurrency_initial`, `spawn_concurrency_min`,
+`spawn_concurrency_max`, `spawn_queue_wait_secs`, `initialize_timeout_secs`,
+`host_budget_max_procs`, `host_budget_max_rss_mb` and `host_budget_max_fds` ride
+the daemon's command line or size structures built once at spawn, so they too
+are marked `restart=True` in the config schema and apply to a broker started
+after the change.
+
+### Admission before allocation
+
+The daemon bounds how many backend processes it FORKS AND INITIALISES at once,
+and how many it is answerable for in total, before anything is allocated. Two
+objects, built once in `run_gatewayd` beside the pool (`mcp_gateway/admission.py`,
+`mcp_gateway/host_budget.py`) and threaded into every spawn path -- pooled,
+connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
+
+- **`HostBudget`** charges a fixed per-backend estimate (`procs`, `rss_mb`,
+  `fds`) BEFORE the fork and releases it only when `process.wait()` returns, so a
+  backend that survives SIGKILL stays charged until it is really gone. Pooled,
+  private and fallback backends are charged identically: exclusivity is a
+  topology property, not a budget exemption, and a stub's per-session exec after
+  a `compat`/`isolation` rejection is one more process on the host, charged by
+  the daemon when it sends the rejection and released when that connection
+  reaches EOF (a new stub keeps the socket inheritable across its exec so EOF is
+  the backend exiting). Ceilings come from `mcp_gateway.host_budget_max_*`; `0`
+  derives processes from the available-memory sample the supervising gateway
+  passes on argv (never below `max_backends`) and descriptors from the daemon's
+  own `RLIMIT_NOFILE`, and leaves memory unbounded.
+- **`SpawnGate`** is one daemon-wide count of spawn+initialize windows in
+  flight, FIFO past that. Fixed capacity from `spawn_concurrency_initial`
+  (default 4), clamped to `[spawn_concurrency_min, spawn_concurrency_max]`
+  (1/8); `set_capacity(n)` is the seam the adaptive controller plugs into. A
+  `Permit` covers the fork and the backend's first `initialize`: `ready` is sent
+  to the stub before the handshake arrives (the stub forwards kiro-cli's first
+  frame), so the spawn path never awaits it inline -- a detached watcher on
+  `_init_done_event`, bounded by `Backend.initialize_timeout_secs` (a
+  constructor field fed from `mcp_gateway.initialize_timeout_secs`, not a module
+  setter), settles the permit `success` (ready), `failure` (handshake failed;
+  the permit is then held until the process is reaped) or `neutral` (no
+  handshake ever arrived -- an unused prewarm or a client that never
+  initialised is not congestion). `settle` is exactly-once and separate from
+  `release`, which is idempotent and settles `neutral` on its own; cancellation
+  at any boundary is neutral. Prewarm settles neutral the moment the fork
+  returns; it also re-reads the queue depth BEFORE EACH KEY and stands that key
+  down while any stub is queued (`_PrewarmStoodDown`, logged and skipped like any
+  other prewarm failure), and takes its wait with a `_PREWARM_SPAWN_WAIT_SECS`
+  deadline. Both because a pass lasts as long as its spawns: a once-per-pass
+  check leaves a stub that arrives during one queued behind the rest of it, and
+  the gate has no priority lane, so what bounds a stub sitting behind a prewarm
+  that already enqueued is that deadline. An unbounded prewarm wait would also
+  park under `_prewarm_lock`, which the credential-rotation re-warm has to take.
+- **`BackendPool.reserve_resident_slot`** moves the `max_backends` check in
+  front of the fork: a slot is claimed (or `PoolAtCapacity` raised with nothing
+  to reap) before `spawn_backend`, and `add` consumes it. Private backends take
+  none, as before.
+
+Acquisition order inside `_acquire_backend`'s spawn closure -- after the per-key
+`_spawn_locks` dedup and after `CircuitBreaker.allow`, so a permit is never held
+during a breaker cooldown and no pool lock is held while queued -- is
+**SpawnGate → HostBudget → resident slot → fork**, released in reverse on any
+failure before the fork. Deadlock argument: the budget and the slot never wait
+(they succeed or raise), so the only wait is the gate's FIFO, and a gate waiter
+holds nothing another waiter needs; a holder of resource k only ever waits for
+resource k+1, so the wait-for graph is acyclic. **That is why the gate is first
+and not last.** A charge taken before the wait prices a process that does not
+exist for as long as the wait lasts -- up to `spawn_queue_wait_secs`, 600 s by
+default -- so a queue of ten reaches the ceiling with nothing running and the
+eleventh stub is refused `capacity` on an idle host, a refusal that deliberately
+authorises no fallback. Taken after the permit, the budget and the slot are read
+against the host as it is at the moment of the fork. The daemon's drain closes
+admission FIRST -- queued waiters fail with `SpawnGateClosed`, watchers are
+cancelled (releasing their permits neutral), charges are dropped -- then
+proceeds with the existing teardown.
+
+**Wire.** `REGISTERED_CAPABILITIES` carries `spawn_queue`. A stub that saw it
+sends `{"type": "ensure_backend", "wait_budget_secs": N}` and the daemon queues
+the spawn for `min(N, spawn_queue_wait_secs)` LESS
+`_QUEUE_REFUSAL_MARGIN_SECS` (capped at half, so the subtraction is strict for
+any N), writing
+`{"type": "queued", "position": p, "capacity": c, "in_flight": i, "waited_secs": w}`
+every 5 s; a stub that did not negotiate it sends the bare frame, never sees
+`queued`, and its gate wait is bounded at 20 s so its own 25 s pre-flight timer
+still governs. The margin is the same property as that 20 s: **the daemon has to
+give up first.** The stub starts its timer before it writes the frame and the
+daemon starts its own only after reading it, so equal budgets -- which is what
+the shipped defaults are, 600 s on each side -- expire on the stub first, and a
+stub whose budget expires runs the per-session `fallback_exec` that a `capacity`
+refusal exists to withhold, charged to nothing. Raising `spawn_queue_wait_secs`
+above the stub's constant is harmless for the same reason: what the stub asked
+for caps the answer before the margin is taken off it. While any acquire or respawn waits, the connection handler keeps
+reading (`_await_answering_pings`): bridge pings get their `pong` at once and
+any other frame is parked and processed in order afterwards, so the stub's
+liveness monitor never declares a queued daemon dead -- bounded in both
+dimensions by `_MAX_PENDING_FRAMES` / `_MAX_PENDING_BYTES`, the same guard class
+as `backend._STUB_INBOX_MAXSIZE` in the reverse direction, because only the main
+loop drains the park and it cannot run until the wait returns; past either bound
+the pending acquire is cancelled and that ONE connection is dropped so
+co-pooled sessions survive. `rejected` frames carry
+`class`: `capacity` (resident pool full, host budget exhausted, wait budget
+spent, breaker OPEN, a fork refused for memory/descriptors) with
+`retry_after_secs`; `compat` (a pooled target this daemon cannot run or map);
+`isolation` (a private target it cannot launch). `fallback: true` rides
+`compat`/`isolation` and NOTHING else, on every wire shape: it authorises the
+stub's own per-session exec, and a stub that never negotiated `spawn_queue`
+closes its socket before exec'ing, so the charge `_reply_rejected` takes is
+released at that EOF -- before the process it pays for exists -- and N
+simultaneous `capacity` refusals would leave N backends the host budget never
+sees, which is the unbounded fan-out admission exists to end.
+**The compatibility cost is deliberate and falls on the pre-`spawn_queue` stub
+alone.** It cannot read `class`, so it reads the untagged refusal as terminal and
+exits 1 with `initialize` unanswered: kiro-cli reports that server as failed and
+that ONE session loses its tools until the retry, where before it would have run
+an unaccounted copy. **The bound is on the refusal ARRIVING inside that stub's own
+pre-flight window**, which is 25 s in the pre-upgrade binary: a refusal later than
+that reaches a stub which has already given up waiting and exec'd on a path that
+reads no frame, so the exec is unaccounted however the frame is tagged. What keeps
+the daemon inside the window is `_LEGACY_SPAWN_WAIT_SECS`, pinned strictly under
+25 s. It bounds the GATE wait only, so a refusal raised after the permit — a full
+pool or an open breaker, past up to `_MAX_SPAWN_DRAIN_RETRIES` spawn-and-initialize
+rounds — can still exceed it; that residual is the reason the pin exists rather
+than a claim it removes. The refusal is recorded on both sides -- `_audit_pool_rejected`
+on the daemon, a `terminal:` line in `stub_fallback.jsonl` that
+`fallback_counts()` keeps separate from real fallbacks in the `stats` reply -- so
+the degradation is observable rather than silent. A stub that DID negotiate
+`spawn_queue` pays nothing: it keeps its transport and answers `-32001` below.
+`compat` is not refused with it, because there the host is fine and the exec is
+the topology the connection asked for; refusing it would strand every session
+behind a daemon whose target map drifted. The stub (`stub.py`) negotiates
+`spawn_queue` on all three of its paths -- cold-start `ensure_backend`, the
+`_reconnect` replay (which now pre-flights before replaying `initialize`, and
+retries a `capacity` answer within its remaining budget) and the bridge (where
+a `queued` frame during a respawn counts as proof of life like a `pong`) -- and
+renews a 25 s SILENCE timer on `queued`/`keepalive`/`pong` rather than running a
+fixed deadline, bounded by its 600 s reconnect budget -- inside which the
+daemon's own wait always ends, per the margin above. The `capacity` rejection
+that ends the wait is answered to kiro-cli as JSON-RPC error `-32001` with
+`data.class` and `data.retry_after_secs` on every request, the stdio transport
+left open (`_serve_capacity_refusal`): the session is told the gateway is full,
+not that the server crashed, and no exec is run. The `stats` frame carries an
+`admission` snapshot (gate capacity/in-flight/queued/outcomes, budget counters).
 
 ### Windows target command spelling
 
@@ -659,6 +909,120 @@ Fingerprint schema 5 regenerates cached plain-flag overlays on upgrade. The
 interpreter path in the entry's `command` is the one value the codec cannot
 cover: the CLI runs it, not the stub.
 
+### Overlay scope: user-level agents only
+
+The rewriter reads `~/.kiro/agents/` and writes one overlay per agent NAME, so the
+overlay directory describes user-level agents and nothing else. kiro-cli also
+resolves `--agent` against `<project>/.kiro/agents/`, which means a session can be
+running an agent of that same name from a different file. `session_servers`
+therefore takes the session's checkout: an agent the checkout declares has no
+overlay, the lookup answers nothing, and the session launches the servers its
+project spec declares.
+
+Injecting the user-level stub instead handed that session servers the project
+never declared, and left the project's own declaration of a same-named server
+unlaunched, because a session-injected entry outranks the spec entry it shadows.
+The scope reaches `pooled_session_servers` and `injection_server_names` through
+one guard, because the second is what a mirror withholds from its own projection:
+a name withheld but not injected costs the session that server entirely. Which
+names a checkout declares is read from `agent_discovery.project_agent_files` and
+`project_agent_name`, the same pair `acp/session_mcp.py` resolves the session's
+agent spec through, so the two cannot disagree about which file the session runs.
+
+Those servers run unpooled -- outside the pool, outside caller-identity
+attribution, outside broker governance -- the same direction every other
+unvouchable stub takes here, and the lookup says so at WARNING rather than debug:
+this is an ordinary configuration rather than an error path, so at debug the
+governance downgrade would be exactly as silent as the defect it replaces. Brokering them instead is not an overlay change:
+`gatewayd` resolves a backend command from `KIROCREW_MCP_TARGET_<SERVER>` in its
+OWN process env, written at daemon launch from the rewriter's `target_env`, and a
+stub never tells the daemon its target. An overlay written for a project agent
+after launch therefore has no target the daemon can resolve, so closing that half
+needs a channel for a target the daemon was not started with.
+
+One host is the exception, and for it the scope must NOT be applied. KAS projects
+the agent spec itself from `paths.kiro_agents_dir()` alone
+(`acp/kas_agents.load_agent_spec`), refusing a project-only agent at session start
+rather than projecting it, so the user-level agent IS the one a KAS session runs
+even when the checkout declares that name. Scoping its lookup would collapse the
+stub set to empty, the projection would declare the user-level servers
+un-subtracted, and they would run outside the broker while the operator has the
+gateway switched on -- the governance loss inverted. Membership lives in
+`ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY` and is read through
+`agent_sdk.backends.overlay_project_scope` rather than as "is KAS", so a host added
+later that reads the user level alone joins the set instead of needing a branch.
+The KAS harness's own call passes `work_dir=None` for the same reason, which keeps
+both halves of that session -- what is injected and what is withheld -- on one
+answer.
+
+The checkout is only half of that scope. `project_agent_files` scans the `*.json`
+and `*.md` spec forms alike, because whether a checkout's spec may be projected is
+a governance question for its consumers rather than a question of form; this
+lookup is narrower, since it is deciding whether the agent the session RUNS came
+from the checkout. kiro-cli discovers `*.json` in a checkout, so a project
+`foo.md` with no JSON twin must not suppress a user-level `foo.json`'s stubs: that
+would leave the servers kiro-cli does activate running with no pool, no
+caller-identity attribution and no governance, which is the same loss this scope
+exists to prevent, reached from the other side. `overlay_project_scope` therefore answers
+in keywords -- the checkout together with `markdown_specs` -- and every call site
+splats that one mapping, so no site can take the checkout without its format rule.
+
+`markdown_specs` is `has_mirror`, the same registry read both call paths already
+use to decide whether a projection happens at all, because the hosts genuinely
+disagree and each answer is right for the host holding it. A MIRRORED host's array
+is composed by Crew from a spec `acp/session_mcp.py` resolves through
+`project_agent_files`, which honours the markdown form: a project `foo.md`
+declaring `gitlab` comes back from `_agent_spec_for` with that server. For those
+hosts the markdown file IS the agent running, so its shadow must suppress the
+overlay -- otherwise the user-level `foo.json`'s stub survives, outranks the
+project's own declaration, and mounts that stub's command and credentials under the
+checkout's agent. A host with no mirror resolves no project spec through Crew at
+all, so it takes the JSON-only answer for the same reason kiro-cli does.
+
+`ACP_BACKENDS_MARKDOWN_AGENT_SPECS` -- a host reading the markdown form from a
+checkout itself -- is deliberately not OR-ed in, because its only member also reads
+the user level alone and leaves with no checkout, so the term would have no caller
+able to reach it. `test_agent_sdk_capabilities` pins that containment, so a host
+which breaks it fails there naming the decider.
+
+That kiro-cli discovers project `*.json` and not project `*.md` is MEASURED on the
+shipped binary rather than read off a document, because the documents disagree: the
+vendored upstream reference describes the IDE 1.0 / CLI 3.0 schema and says the
+filename without `.json` or `.md` becomes the agent name, while
+`agent_spec_format`'s own header records markdown as the v3 engine's form. On
+kiro-cli 2.22.0, `kiro-cli agent list` run inside a checkout holding both
+`probe-json.json` and `probe-md.md` lists exactly one workspace agent, `probe-json`;
+`probe-md` does not appear. A newer CLI that does discover project markdown would
+make this backend a member of the markdown set, which is the condition the
+containment pin names. That measurement is not a one-off: the
+`KIROCREW_E2E_REAL_KIRO_CLI`-gated suite pins it beside the session/new precedence
+guard, and its failure message names the set to join, so an upgrade that adds
+project markdown discovery reports the remedy rather than silently reopening the
+defect.
+
+The parse requirement travels with the form set, because both answer one question:
+WHICH RESOLVER decides this session's spec. A mirrored host's spec comes from
+`session_mcp._project_spec_path_for`, which scans both forms and matches on
+`project_agent_name` -- filename fallback included -- and which, once it matches a
+project file, returns that file's read without falling back to the user level. So a
+malformed project spec leaves a mirrored session with NO spec: no `tools` allowlist,
+no project servers. The overlay must not fill that gap with the user-level agent's
+stubs, so a mirrored host takes `dispatchable_only=False` and suppresses on the
+malformed file. kiro-cli resolves the checkout itself, reports a malformed spec as an
+error and runs the user-level agent instead, so it takes `dispatchable_only=True` and
+keeps the stubs that belong to the agent it is actually running. The two hosts take
+OPPOSITE answers on the same file, and `overlay_project_scope` computes both facets
+from one `has_mirror` read so neither can be set without the other.
+
+A project spec that does not PARSE is not a shadow for a kiro session either.
+`project_agent_name` falls back to the filename stem for a malformed file, so a
+broken `foo.json` matched `foo` and withheld a good user-level agent's stubs, while
+kiro-cli reports that file as an error and offers no such mode -- measured the same
+way: a malformed project spec yields `Error: Json supplied at ... is invalid` and
+zero workspace agents. `_project_shadow_of` takes `dispatchable_only` for that, and
+its default is unchanged so the governance refusal in `agent.py`, for which a file
+in any state is a claim on the name, keeps refusing.
+
 ## How app agents reach MCP servers
 
 An app declares MCP servers in its manifest, and
@@ -694,7 +1058,21 @@ Containment for app agents has three layers:
 |-------|-----------|----------------|
 | Agent config | `managedToolPolicy` renders as `disabledTools`; a `neutralize` entry re-declares a server with every tool disabled and does not add it to `tools` | Written at registration, no network |
 | kiro-cli | Reads `disabledTools` and filters before the model sees the list | In-process, no network |
-| MCP server | `GET /api/session-tool-policy` returns the calling session's `managedToolPolicy.exclude`, and the server filters `tools/list` and `tools/call` | Gateway round-trip |
+| MCP server | `GET /api/session-tool-policy` returns the calling session's `managedToolPolicy.exclude`, and the server filters `tools/list` and `tools/call`. When that read fails the policy is `unresolved`: `tools/call` refuses with an audited error, `tools/list` still lists everything | Gateway round-trip |
+
+Which session that third layer asks for is resolved by `mcp_shared._policy_session_key`
+in the same order the strict resolver uses — the gateway's per-call caller, then the
+protected member binding, then the signed per-session token, then
+`KIROCREW_SESSION_KEY` and the pid sources. The RESOLVED session is what rides the
+request's `X-Session-Key` and what keys the per-session policy cache, so the answer
+returned and the answer stored are the same session's. Keyed on the gateway identity
+instead, every caller the gateway could not name shared one entry, and the cache has no
+TTL: two sessions on one process took each other's policy and a rekeyed session kept its
+predecessor's for the life of the process. The 5s startup-race window is keyed the same
+way: it remembers the identity it was opened for (`""` for "no key yet", or the key the
+gateway answered 404 for) and answers only for that identity, so a `tools/call` that
+resolves a real key mid-window is asked for, not told `no_session_key` — a reason
+`tools/call` does not refuse on.
 
 `managedToolPolicy` and `includeMcpJson` are in
 `bridges._FRAMEWORK_OWNED_AGENT_KEYS`, so they are refreshed from the template on
@@ -707,15 +1085,91 @@ exclude list, which the framework would then faithfully preserve forever.
 discovers the real tool names, so a server that grows a tool cannot quietly slip
 past a stale pattern.
 
-The third layer is defense in depth for hosts that ignore `disabledTools`, and it
-fails **open** by design: kiro-cli calls `tools/list` once at session start, so
-returning an empty list on a transient gateway failure would leave that session
-permanently believing the server has no tools, unrecoverable without a restart.
-A missing session key is not cached (a startup race must be retryable); a
-resolved key whose policy call fails gets a 30s negative cache so a persistently
-unreachable gateway does not add a 5s timeout to every tool call. The gateway
-side is deny-by-default in the opposite sense: a caller that cannot prove its
-identity gets a 400/404, never an empty policy.
+The third layer is defense in depth for hosts that ignore `disabledTools`. When the
+policy cannot be read, what it does depends on WHY, because the reasons differ in
+kind and its two consumers carry different risk.
+
+`tools/call` fails **closed** on two reasons, and both mean "an operator exclusion may
+exist and this process could not read it". `policy_unreadable` is the gateway's `409`
+whose body carries `"code": "policy_unreadable"`: a spec for this session exists and its
+policy could not be determined. `identity_unattested` is the gateway's `409` whose body
+carries `"code": "member_identity_unavailable"`: the gateway could not establish the
+execution identity behind the declared `X-Session-Key`. Usually the request carries no
+`X-Session-Token`, or one that vouches for another key; an attested key whose execution
+record cannot be read, or a `cron:` key the scheduler has no record for, answers the
+same way. In every case the spec was never consulted, so whatever it excludes is unknown
+here. The two
+share a status, so the MCP side tells them apart by the body's `code`; a `409` whose body
+cannot be read or carries no `code` takes the `policy_unreadable` arm, the status's
+meaning for the unreadable-spec condition, so an unknown `409` is never read as anything
+narrower. The call is refused with an error naming the reason -- the `identity_unattested`
+text names the missing token, its usual cause, the `policy_unreadable` text the agents
+directory -- and
+audited as `rejected_policy_unresolved`; the read that produced `identity_unattested` is
+itself audited as `tool_policy.unattested`. A control-plane backend
+(`CONTROL_PLANE_BACKENDS` in `mcp_gateway/gatewayd.py`) is handed the token per frame in
+the caller block and the policy read sends it, so its calls do not land there. The test
+for admitting a reason here is that it means ONE thing, because a refusal derived from an
+ambiguous reason is wrong for half the callers it hits.
+
+`resolution_failed` -- no usable answer, meaning nothing came back, a `5xx` said the
+gateway is broken, or the resolve itself raised -- passes that test and refuses. Every
+`4xx` returns before that arm, decided by status class, so the reason means the policy
+could not be READ and never that the gateway made a decision about this caller. An
+operator exclusion may exist while the process holding it cannot answer for it, so the
+empty set that arrives with this reason is unknown rather than permissive, and serving it
+as a permission is exactly how an excluded tool runs. The refusal is bounded at both
+ends: a session that resolves its policy once is served from the per-session cache and
+never reaches a failure path again, and for one that has not, the refusal lasts at most
+the 60s negative-cache window.
+
+The other reasons stay permissive, each because no operator exclusion is known to exist
+for that caller or because refusal would be permanent rather than a window that closes. `agent_not_resolved` is the `404`, returned both for a session still
+registering (a policy may exist) and for a caller the gateway can never map to an agent
+(no policy can exist); refusing denies the second class forever. `no_session_key` is
+the same gap inside the MCP process, where no agent is named at all. `policy_forbidden`
+is ANY `4xx`: the gateway answered and made a decision about this caller, which for
+`403 member_session_unverified` is the steady state of a session claiming a private
+memory store without a verifiable proof. A boundary the gateway is enforcing is not a
+boundary it failed to read. The test is deliberately the status class and not a list of
+codes -- a list is only as complete as its author's knowledge of the endpoint, and a
+status it never learned would be refused as though it were an outage. Each call through one of these windows is audited as
+`tool_policy.unenforced_call`, so they are visible instead of silent. Closing the `404`
+needs the endpoint to distinguish registering from unmappable.
+
+`tools/list` never filters on an unresolved policy at all, whatever the reason:
+kiro-cli calls it once at session start and caches the answer, so hiding tools on a
+transient failure would leave that session permanently believing the server has no
+tools, unrecoverable without a restart. A listed tool that refuses when called is
+not a hole; an unlisted tool that runs is. Each unfiltered listing is audited as
+`tool_policy.unfiltered_listing`.
+
+A session that has ever resolved its policy is served from the per-session cache and
+never reaches these paths again, so a refusal only affects a session whose policy has
+never been read once.
+
+A missing session key is not cached as a policy (a startup race must be
+retryable, and it clears in milliseconds); a resolved key whose policy call fails
+gets a 60s negative cache so a persistently unreachable gateway does not add a 5s
+timeout to every tool call. That negative cache reports the reason of the clock it
+hit -- the short window an identity race, the long window `resolution_failed` -- so
+a cached read lands in the same class its live form would. Serving one shared reason
+would repeat the conflation the resolver exists to undo, one level down. The gateway
+side is deny-by-default in the same sense: a caller that cannot prove its identity
+gets a 400/404, never an empty policy.
+
+An empty body from that endpoint means one thing only: this agent genuinely
+declares no exclusions. A spec that EXISTS and cannot be read -- unparseable,
+valid JSON that is not an object, a `managedToolPolicy` of the wrong shape, or two
+specs declaring one agent name -- answers `409` with `"code": "policy_unreadable"` in the
+body and a SEL `denied` record. Sharing the empty body with those
+cases would make an unreadable deny indistinguishable from no deny on the wire, so
+no caller could tell them apart however carefully it fails closed. The MCP side
+maps a `409` carrying that code to `unresolved="policy_unreadable"` and does NOT
+negative-cache it, nor its `identity_unattested` sibling: the answer is immediate so
+there is no timeout to debounce, and both negative
+clocks are process-global, so caching one session's malformed spec there would
+refuse calls for every sibling session in a pooled backend.
 
 ## The MCP-first rule
 
@@ -734,10 +1188,14 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 
 | Server | Process | Tools |
 |--------|---------|-------|
-| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger` |
+| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
+| `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record` |
+| `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
+| `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
+| `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates` |
 
 `kirocrew-dashboard` is one transport carrying **two** authorization models, which is
 what makes its assignment decision larger than its name suggests. The
@@ -750,7 +1208,7 @@ is their spec and carries that reasoning.
 The consequence to know before granting: an agent handed the whole server for folder
 organization has the session verbs too. Whether they prompt depends on how the grant
 is spelled — `_mcp_pattern` maps a bare `@kirocrew-dashboard` entry to a one-level
-glob, so it auto-approves all ten, while naming tools individually leaves the rest
+glob, so it auto-approves all fourteen, while naming tools individually leaves the rest
 to `hooks.on_tool_call`. `_CONDUCTOR_DASHBOARD_GRANTS` and
 `_MEMBER_DASHBOARD_GRANTS` (`agent.py`) are the shipped examples of the individual
 form, and they differ from each other on exactly this axis: the member's list
@@ -833,7 +1291,7 @@ answers `tools/list` from):
 - **Session-bound directives** (`session_directive.DIRECTIVE_TOOLS`):
   `ask_question`, `suggest_followup`, `monitor_start`, `monitor_watch`,
   `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`,
-  `reset_conversation`
+  `reset_conversation`, `chat_tag`
 - **Memory recall (V1 and V2):** `memory_recall` resolves authenticated session identity
   once through `require_strict_session_key` and passes that same identity to the gateway.
   Missing identity returns the shared gate's refusal and installation diagnosis.
@@ -854,7 +1312,8 @@ answers `tools/list` from):
 - **Monitor read:** `monitor_inspect` (strict authenticated session
   identity only; no ancestor fallback; reports a structured monitor or a legacy
   timer loop's presence reading, whichever the session holds)
-- **Crew routing:** `select_crew`
+- **Crew routing:** `route_crew`, `select_crew`
+- **Session work ledger:** `session_ledger_read`, `session_ledger_record`
 - **Sessions and history:** `list_sessions`, `get_chat_session`,
   `search_chat_history`
 - **Artifacts:** `artifact_list`, `artifact_get`, `artifact_save`,
@@ -864,13 +1323,16 @@ answers `tools/list` from):
   `artifact_get_comments`, `artifact_post_comment`, `artifact_reply_comment`,
   `artifact_delete_comment`, `artifact_mark_review`, `deploy_artifact`
 - **Knowledge and skills:** `local_knowledge_search`, `knowledge_add_document`,
-  `skill_discover`, `skill_search`, `skill_fetch`,
-  `browse_outline`, `browse_search`. (`knowledge_dedup` and
+  `skill_discover`, `skill_search`, `skill_fetch`. (`knowledge_dedup` and
   `knowledge_list_sources` have CLI twins — see the table above.)
-- **Workflows and hooks:** `workflow_author`, `workflow_list`,
+- **Workflows and hooks:** `workflow_author`, `workflow_run`,
+  `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
-- **Diagnostics:** `resource_status`, `issue_radar_record_investigation`,
-  `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
+- **App bridges:** `issue_radar_record_investigation`,
+  `ops_mission_control_api`, `pod_up`, `pod_down`, `pod_status`, `pod_ls`,
+  `issue_radar_crew_read`, `issue_radar_crew_record`
+- **Browser:** `browser`
+- **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
   fenced identity/token stores, and never the conversation-bearing sources
   (`kiro-chat.log`, session transcripts), each of which is one shared host file
@@ -887,13 +1349,13 @@ answers `tools/list` from):
   is REFUSED whole and visibly, so a kiro-cli that starts logging payloads
   surfaces as a refusal instead of a silent widening
 
-  Once private memory boundaries exist, `kiro_cli_logs` requires a strict caller
-  identity whose canonical memory scope is Global V1 before opening these shared
-  host logs. Private, missing, invalid, or unreadable identities receive a stable
-  refusal and a `denied_memory_scope` audit attempt; audit failure cannot permit
-  a read. Redaction does not establish which member owns ordinary log prose.
-  Pure V1 installations retain the existing diagnostics contract, and this MCP
-  admission guard does not change user-requested diagnostic bundles.
+  Member scope does not prohibit these ordinary diagnostic reads. Credential
+  redaction, source allowlisting and refusal of conversation-bearing logs remain
+  independent data-retention and credential protections.
+  Protocol-log and chat-history tools resolve ordinary strict session identity
+  once before reading, independently of memory version or database availability;
+  workspace filtering, audit attribution and summary requests reuse that key.
+
 - **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
   process holds the gateway's internal secret and forwards only a frozen
   (method, path) allowlist of Ops Mission Control routes; the agent never
@@ -942,21 +1404,26 @@ normalization pass rewrites slash-containing keys to kiro-safe aliases: kiro-cli
 splits an agent `@server` reference on `/`, so a slash-containing key is
 mis-parsed as `@server/tool` and exposes none of the server's tools.
 
-**Browsing is deliberately not an MCP server.** The agent drives a browser by
-running `playwright-cli` commands on its ordinary shell path, so no tool schemas
-are re-sent per request and the accessibility tree stays on disk instead of
-entering the model context. See [browser](../system-specs/modules/browser.md).
+**Browsing has one core MCP entry point.** The `browser` tool forwards one
+operation to the dashboard's native Browser panel. It accepts public HTTP(S)
+navigation only; localhost, private, and link-local targets stay on the
+approval-gated `playwright-cli` path. When no native panel is attached, or the
+operator disables it, the tool returns fallback guidance rather than starting a
+second browser. Full CLI snapshots and accessibility trees still stay on disk.
+See [browser](../system-specs/modules/browser.md).
 
 ## What belongs in `kirocrew-core`, and what does not
 
 `kirocrew-core` is the surface EVERY session carries. kiro-cli reads `tools/list`
 once per session, so a tool listed there spends context in every request of every
 session for as long as the session lives — whether or not that session will ever
-use it. With `agent.tool_search` on (the default) Kiro Crew forces kiro's deferral
-always-on, so the per-request cost is a name plus a description rather than a full
-JSON schema; it is smaller, not zero, and it scales with the tool count.
+use it. `agent.tool_search` is on by default, but **Crew's own servers are exempt
+from its deferral** (see below), so a tool in core costs its FULL JSON schema in
+every request, not a name plus a description.
 
-That makes the placement question a real one rather than a matter of taste:
+That makes the placement question a real one rather than a matter of taste —
+and the exemption is why it is sharper than it looks, since core is the one
+server deferral will never shrink:
 
 - **Core** is for capabilities a session may need *without being asked* —
   subagents, messaging, memory, artifacts, session-bound directives.
@@ -978,6 +1445,78 @@ gates nothing an unreferenced server was not already denying.
 **Granularity: the set, not the tool.** A spec that references a server gets
 every tool in it. So a capability that must be grantable *separately* belongs in
 a server of its own, not alongside a set someone might want for other reasons.
+
+### Crew's own servers are exempt from Tool Search deferral
+
+`harness._common.apply_mandatory_mcps_env` sets `ASBX_KIRO_MANDATORY_MCPS` on the
+child from `agent.crew_owned_mcp_servers()`, and **both** kiro-family harnesses call
+it from their `apply_spawn_env`. kiro-cli keeps a named server's specs in the model's
+tool list even while deferral is active, so a Crew tool is never loaded mid-turn.
+Third-party servers keep deferring: they hold most of the spec weight and are
+reached rarely.
+
+**The harness hook is the only place both kiro spawn paths meet**, which is why it
+is not done at a call site. A session-serving child is spawned by `AcpRuntime` —
+kiro is in `ACP_BACKENDS_ACP_RUNTIME`, and `_start_kiro_runtime_impl` keeps its
+`AcpClient` for config storage and never spawns it — so an `AcpClient._spawn` hook
+would set the variable on none of the processes a user talks to. The auxiliary
+`AcpClient` kiro children (the knowledge pool, connection minting) run tool-less
+agents, so deferral has nothing to defer for them either way.
+
+**The reason is correctness, not cost.** Loading a deferred spec REWRITES the
+request's `tools` array, and an extended-thinking model's thinking blocks carry a
+signature bound to the array they were minted under. Replaying one across a load
+makes the provider reject the entire request —
+
+> Invalid `signature` in `thinking` block. … The `tools` list differs from the one
+> this block was created with.
+
+— and because the rejection is of the conversation's history, **every later turn
+on that session fails the same way**: the session is bricked, not slowed. Crew's
+own servers are the ones that trigger it, because they are the infrastructure an
+agent reaches for in nearly every session (measured on one heavy install: Crew's
+servers were 82% of all deferred loads and every observed failure, third-party
+servers 2.6%). So deferring them bought little and churned the array constantly.
+
+Three consequences worth knowing:
+
+- **The env var is a THIRD channel**, next to the `cli.json` overlay and the
+  `initialize` handshake (`agent_sdk.tool_search`). kiro-cli reads it from the
+  process environment when it builds the ACP session manager, so it is fixed at
+  spawn and cannot be changed on a live child.
+- **The list is every Crew-owned name, not the emitted ones.**
+  `crew_owned_mcp_servers()` deliberately includes `opt_in` servers, which
+  `emission_eligible_mcp_servers()` drops — a granted `kirocrew-work` serves tools
+  and would otherwise still churn. Naming an absent server matches no tool, so
+  erring wide is free and erring narrow is the defect. It also carries the edition
+  seam's extras, which are contributed by an edition ADAPTER rather than user
+  config, so they are Crew's own servers in the same sense the managed map is; the
+  seam does not constrain its keys, so nothing may assume a `kirocrew-` prefix.
+- **The operator's AMBIENT value wins; a per-session OVERLAY never does.** That is
+  why the hop reads `os.environ` rather than the `env` mapping it is handed, which is
+  already `{**os.environ, **extra_env}`. An ambient value is the operator's own
+  choice and is honoured verbatim, **including an explicit empty one** — the engine
+  reads an empty variable as an absent one, so `ASBX_KIRO_MANDATORY_MCPS=""` is the
+  only way to say "exempt nothing" and take the resident schema cost back off, and
+  truthiness would leave that unexpressible. `extra_env`, by contrast, carries
+  per-session overlays: a cron job's own `env` block reaches it through
+  `cron_job_env_without_reserved`, which passes every key outside
+  `_CRON_RESERVED_ENV_KEYS`, and an app manifest's `crons[].env` can author that.
+  An overlay value is therefore **overwritten**, and **removed** when Crew has no
+  servers to name — an overlay may neither disable the exemption nor invent it.
+  Letting one through would brick that cron's sessions with no code-level recovery,
+  since the variable is fixed at spawn and the next run inherits the same manifest.
+
+**KAS is covered too, because the relay IS kiro-cli.** Crew launches it as
+`kiro-cli acp --agent-engine v3` (`kas_transport.build_kas_argv`) — the same `acp`
+subcommand the kiro path uses — and that subcommand reads the variable
+unconditionally, not gated on `--agent-engine`. KAS is the more exposed of the two:
+it takes Tool Search over the `initialize` wire and defers every MCP spec whenever
+the setting is on, with no token threshold to stay under.
+
+This does not fix the underlying client bug — kiro-cli forwards a signed block
+without checking the tool set it was signed against — it stops Crew from being
+what walks into it.
 
 **A grant is not authority over everything the tools can name.** Assignment says
 which agent may call a set; it does not say what that agent may reach. The
@@ -1182,6 +1721,34 @@ stays per-route rather than in the middleware on purpose: a popped slot no longe
 says whose tab it was, so refusing centrally would also refuse the person's own
 in-flight calls on every internal route at once.
 
+**Tags ride the same server, with the same shape.** `chat_tag_list` reads the
+vocabulary (`GET /api/chat/tags`), `chat_tag_create` adds to it
+(`POST /api/chat/tags`, which dedups on the lowered name so a repeat call is a
+no-op), `chat_tag_update` renames, recolors or flips the status flag of one
+(`PATCH /api/chat/tags/<id>`, metadata only — every session keeps the tag), and
+`chat_tag_assign` labels a live session (`PUT /api/chat/slots/<slot>/tags`). No
+delete: removing a tag from the vocabulary strips it from every session and
+column at once, which is the one operation in the set with real blast radius.
+Two differences from the folder verbs follow from tags having no owner. First,
+`POST` and `PATCH /api/chat/tags` refuse an app-scoped caller outright (403
+`app_forbidden`, which the tools surface): a folder an app makes is the app's
+own, but a tag lands in the person's one shared list with nothing to tell it
+apart, so
+there is no boundary to bound that write to. The rule sits in the endpoint, on
+the middleware's validated claim, for the same reason the folder policy does —
+a tool-layer copy could only drift. `POST /api/chat/tags` also draws on the same
+per-caller create budget as `api_chat_folder_create` (`create_rate_limit`,
+`TAG_CREATE`), keyed by the validated `X-Internal-Caller` component, so a
+granted agent loop cannot grow `tags.json` without bound; the browser is exempt.
+Second, `chat_tag_assign` takes `add` / `remove` DELTAS rather than a list to
+replace, and sends the slot's `tags_revision` as `base_tags_revision` so the
+endpoint applies the write compare-and-set: a tag the person toggles between the
+tool's read and its PUT is not silently dropped by a wholesale replace — the call
+fails 409 `stale_base` and re-reads. The session is resolved through the same
+scoped `_visible_chat_slots` as `chat_folder_move_session`, and the PUT route
+applies the same App Kit ownership check `api_chat_slot_folder` does, so an app
+agent cannot reach a foreign session's tags from either side.
+
 **Assignment is still not authorization.** Being unreferenced by default keeps a
 capability cheap and deliberate; it does not prove the user consented to reach the
 agent does not otherwise have. For that, `config.json` is the WRONG home —
@@ -1224,23 +1791,26 @@ model launder one per-call gate decision into many, so do NOT add
 
 ## MCP tools MUST be stateless
 
-Private member runtimes keep the data home read-only even when MCP backend
-sharing is disabled. The direct `kirocrew-cron` server uses the private runtime
-marker only to select `POST /api/crons/tools`; it never falls back to opening
-`crons.json` or `.crons.lock` in the sandbox. The endpoint requires authenticated
-internal transport, verified process or delegated-proof identity matching the
-session header, and agreement between the protected process store and the
-session's validated private member binding. A marker, shared secret or session
-header alone grants no member authority.
-
-The host runs the same argument validation, cron ownership, governance and
-deterministic-job checks as the regular MCP tool dispatcher, in a worker with a
-request-scoped `CallerContext` that is restored even on failure. Private agent
-jobs remain usable through add/list/update/pause/resume/remove; private command
-and script jobs retain their explicit refusal. Transport failures never trigger
-a file-write fallback or an automatic mutation retry; an uncertain response asks
-the caller to inspect `cron_list` before retrying. Global V1 direct runtimes retain
-their existing local cron dispatch.
+The direct `kirocrew-cron` server sends member jobs through
+`POST /api/crons/tools` using ordinary internal transport and strict session
+identity. The gateway captures the canonical execution record and applies the
+same argument validation, cron ownership, governance and deterministic-job
+checks as its regular dispatcher. A request-local `CallerContext` is restored
+even on failure. Transport failure never triggers a local file-write fallback
+or blind mutation retry; callers inspect `cron_list` after an uncertain response.
+The ONE exception is not a transport failure: a dial that was **refused**
+(`_post` returns `refused=True` — no gateway is listening, so nothing was
+executed and nothing can be replayed) from a process with NO gateway-injected
+caller whose resolved session key is POSITIVELY the attended CLI's own
+(`validation.infer_use_case(key) == "cli"`, the `cli_chat` key `kirocrew chat`
+presents everywhere it is identified) dispatches to the direct host store, which
+is the behaviour that runtime always had before the transport was required. The
+absence of an injected caller alone is not enough: the non-pooled stdio gateway
+topology also has none, and a gateway-minted key (`dashboard:`, a channel, a
+cron, a subagent) with a refused dial is the validating gateway being down — an
+outage to report, never a licence to write around it. A gateway-injected caller
+likewise proves a gateway exists, so its refused dial is reported as an outage.
+Global V1 direct runtimes retain their existing local cron dispatch.
 
 **A new `kirocrew-core` or `kirocrew-cron` tool MUST NOT keep per-caller or
 per-session state in the MCP-server process. Resolve the caller's identity on
@@ -1267,7 +1837,9 @@ parent's tree. `mcp_core.py` offers two resolvers:
   enumerates them; a ratchet test rejects direct calls outside `mcp_core`). It
   accepts only the gateway-injected caller context (`mcp_caller.current_caller()`,
   which gatewayd stamps on every forwarded frame after stripping any
-  client-forged `kirocrew.caller` block), the injected `KIROCREW_SESSION_KEY`, or
+  client-forged `kirocrew.caller` block), the signed per-session token
+  (`session_token_sig.session_key_from_env_token`), the injected
+  `KIROCREW_SESSION_KEY`, or
   a `KIROCREW_HOST_PID` lookup whose HMAC sidecar verifies against the
   keystone-protected `sel_hmac.key`. It deliberately **drops** the `/proc`
   ancestor walk and the bare `session_pid_<pid>.txt` fallback: the `.txt` file is
@@ -1275,7 +1847,10 @@ parent's tree. `mcp_core.py` offers two resolvers:
   its own MCP child resolves to its **parent** slot, which would let it mutate
   the wrong conversation.
 - `_resolve_session_key()` (lenient, still walks ancestors) is only for read-only
-  and telemetry callers where misattribution is harmless.
+  and telemetry callers where misattribution is harmless. `skill_search` is
+  read-only but NOT harmless to misattribute: its gateway route returns the
+  session project's confined skill bodies, so it resolves through the strict
+  gate and degrades to the global-only search when no signed identity exists.
 
 **What names a session on the stub path: the stub session token.** The injected
 caller context above is the only identity channel a pooled backend has, and every
@@ -1345,50 +1920,156 @@ The token is a bearer name for a session's identity, so it is never logged, neve
 in `stats()`, and stripped from the register payload before the prewarm recorder
 can persist it.
 
-`register_hook` also resolves through `require_strict_session_key`. Legacy
-Global hooks can still be registered without a conversation; private hooks
-require the gateway-authenticated caller and its protected member binding before
-any private identity is written to the hook session.
+**The one place the token is forwarded: Kiro Crew's own pooled control planes.**
+gatewayd spawns a pooled backend from its OWN environment, so the per-session
+token the stub carries never reaches the backend's `os.environ`. That is right
+for a third-party server, which has no business proving a session to anyone.
+`kirocrew-core`, `kirocrew-cron` and the opt-in Crew servers (`kirocrew-dashboard`,
+`kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`, `kirocrew-panel`) are
+different: they
+post back to the gateway over loopback (`/api/crons/tools`, the memory routes,
+the session and folder routes) on behalf of the session they act for, and every
+one of them reads the session's tool policy through `mcp_shared`, a read the
+gateway answers only behind the attestation; since
+#11780 the gateway requires `X-Session-Token` on that
+transport when no kernel peer attestation is present — which a gatewayd child
+never has. So for exactly `gatewayd.CONTROL_PLANE_BACKENDS` -- every managed
+Crew server, read from `mcp_cleanup.KIROCREW_BIN_MCP_SERVERS` -- the connection
+handler copies `conn.stub_session_token` onto the injected `CallerContext`
+(`session_token`), `build_caller_meta` emits it as `sessionToken` only when set,
+and `mcp_core._session_token_header` reads the gateway-injected caller's token
+before falling back to `KIROCREW_STUB_SESSION_TOKEN`. The name alone does not
+earn the token: the server name arrives in the stub's register frame while the
+spawn target resolves separately from the spec-derived
+`KIROCREW_MCP_TARGET_<NAME>` mapping, so a spec could declare a third-party
+command under a reserved name. At spawn, `gatewayd._spawns_own_control_plane`
+compares the command actually exec'd (by real path) and its args against the
+invocation `agent.managed_mcp_spec_entry` emits for that name and records the
+verdict as `Backend.control_plane`; the handler forwards the token on that flag
+only. The invocation being ours is still not proof of what runs: the managed
+spec falls back to `<python> -m kiro_crew <sub>` when no launcher resolves, and
+the child's CWD could carry foreign code under our name. Python's `PYTHON*`
+environment namespace is an extensible interpreter control surface: entries can add roots, execute hooks, select an executable, or move
+user-site without changing the command, and the dynamic-loader `LD_*` / `DYLD_*`
+namespaces replace code in every binary of the spawn chain. For a control-plane
+backend, the
+gateway's pooled-backend resolver removes all three namespaces
+(`env._SPEC_ENV_DENIED_PREFIXES`) from the operator
+environment. Any non-empty entry in them present at the verdict therefore came
+from a hand-declared overlay or another resolver and denies the token without
+value inspection. The prefix rule fails closed when Python adds a variable; it
+cannot drift into a false grant through an incomplete list. Third-party pooled
+backends never receive the token and keep operator Python settings outside the
+four keys in `sandbox._PYTHON_ENV_PREFIXES`; `PYTHONUNBUFFERED` is one such
+setting. With those environment controls excluded from a control plane, two roots
+remain. The first is the fixed local root: the CWD for module form or the
+launcher's directory for script form. The second is per-user site-packages,
+which needs no variable to take effect — the interpreter adds it from a default
+location ahead of the install's own site-packages, so removing `PYTHONUSERBASE`
+relocates it rather than disabling it, and `PYTHONSAFEPATH` does not cover it.
+It is read from the gateway's own process, which is sound because the spawn is
+already pinned by realpath to the managed spec's launcher, so the child runs this
+install's interpreter. Inspecting that directory cannot cover everything it does:
+its `.pth` entries execute code at interpreter startup under any filename. So when
+nothing there is load-bearing -- user-site does not hold the package this process
+is running -- an accepted control plane is launched with `PYTHONNOUSERSITE=1`,
+removing the surface rather than inspecting it. A `--user` install is the case that
+keeps user-site enabled, because its own package lives there; an unresolvable
+user-site is treated the same way, leaving the child's import behaviour unchanged
+rather than guessing. The verdict is false when either root holds an importable
+`kiro_crew` other than this process's package. A `--user` install therefore keeps
+its token: its user-site holds the very package this process is running, which
+matches. Disabling user-site instead would break that install shape outright. A namespace directory
+without `__init__.py` does not count, and a dev gateway whose project CWD is its
+own `src/` remains valid. Interpreter flags such as `-P`, `-E`, and `-I` never
+relax this bearer-token fence: an inert root may cause a safe false-deny, but a
+Python version change cannot create a false-grant.
 
-Private Memory V2 requires **member authority**, independent of the shared
-internal secret or a claimed session header. Private ACP clients use direct MCP
-servers inside the member sandbox. They discard the shared broker overlay and
-socket before creating or resuming sessions, so reload and tool mirroring cannot
-restore pooled stubs. The sandbox withholds shared broker endpoints and their
-aliases. An older broker must not act as a host proxy for a private member.
-Global V1 retains its existing pooled MCP path.
+The verdict is taken BEFORE `spawn_backend` forks, under `asyncio.to_thread`
+(it imports `kiro_crew.agent`, reads config and stats those roots), so foreign
+code cannot erase its shadow before a post-spawn check. An accepted backend is
+still launched with `PYTHONSAFEPATH=1` as defense in depth. After the verdict,
+and for every pooled backend, the spawn site re-applies Kiro Crew's own UTF-8
+pinning (`platform_compat._UTF8_PROCESS_ENV`: `PYTHONUTF8` and
+`PYTHONIOENCODING`) to the child environment, so a pooled interpreter builds
+its stdio from UTF-8 rather than a Windows ANSI codepage. The order is the
+guarantee: the classifier sees an environment free of every denied namespace, and the pinning
+lands on a child whose verdict is already fixed -- the same pair present before
+the verdict would deny every control plane its own token.
+`Backend.control_plane` is set from that pre-spawn verdict and never recomputed.
+The token joins a caller in one place, `gatewayd._caller_for_backend`, which
+reads the flag off the backend that receives THAT frame and returns a
+token-bearing copy; the connection's base `CallerContext` stays tokenless for
+its whole life. A transparent respawn is therefore judged on its own: the
+handler hands the tokenless base to `_respawn_backend_for_stub`, whose
+tool-surface probe and subscription replay decide against the replacement, and
+the frames the session forwards afterwards decide against whatever backend now
+serves it — so a control plane that died is not a warrant for the fresh process
+spawned under its name. A denial for a reserved name is logged at spawn
+(`_deny_control_plane`) naming the backend and the condition that failed — no
+spec entry, a different binary, different args, a non-empty `PYTHON*` / `LD_*` /
+`DYLD_*` variable,
+or a root that shadows `kiro_crew` (named in the message, so per-user site-packages
+is distinguishable from the local one) — so an
+install that trips the check has more to read than every cron tool answering
+403.
 
-For calls that reach the current broker, gatewayd captures the accepted
-stub socket's kernel peer PID after a positive owner check, then offloads
-`issue_member_session_proof` immediately before each `tools/call` and `tools/list`. The issuer
-checks the protected published runtime binding and actual process ancestry;
-the Register payload's `ancestor_pids` never grants this authority. Gatewayd
-strips the client's caller block and injects a fresh optional `memberMemoryProof`
-inside its own caller metadata. `CallerContext.member_memory_proof` is omitted
-from diagnostic representations and never populated from environment fallback.
-The shared MCP server forwards only the current invocation's proof in
-`X-Member-Session-Proof`, including the managed-tool policy lookup. A listing
-received while another tool runs uses the listing's own caller and proof.
-Signed proof protocol version 2 remains valid for the originating process
-incarnation, so long `wait` and `spawn` calls retain their own callback authority.
-Every use revalidates the signature, live PID/start identity, protected session
-and store, durable session binding, and current Linux user/mount namespaces or
-macOS inherited sandbox state. An unavailable check refuses authorization.
-Legacy proof protocol version 1 keeps its original 60-second expiry. These are
-transport protocol versions, independent of Memory V1 and Memory V2.
-No proof is cached on a connection or replayed with backend recovery.
-Before forwarding either tool method, gatewayd also
-resolves the protected peer when the caller block is absent: a missing or forged
-session, corrupt binding, or failed proof for a protected runtime refuses that
-invocation outright. Omitting the proof must never downgrade the member into a
-global V1 caller inside the shared backend. Only a genuinely absent protected
-binding retains the legacy unowned V1 behavior.
-For an unpooled MCP process, `CallerContext.from_env()` likewise resolves the
-readonly protected ancestry before any cached legacy identity or environment
-value. It does not cache private results, so rekeys remain visible. A corrupt
-protected record returns an unresolved identity without trying legacy sidecars.
-The caller, recaller and backend-forwarding suites pin forgery removal,
-offloaded per-call issuance and concurrent caller isolation.
+`CONTROL_PLANE_BACKENDS` is named in gatewayd itself (importing
+`acp.session_mcp` would put `kiro_crew.agent` on the daemon's boot path; the
+set is read from the `mcp_cleanup` leaf instead). It is
+a superset of `acp.session_mcp.CONTROL_PLANE_SERVERS`, not a mirror, because the
+two answer different questions: `CONTROL_PLANE_SERVERS` decides which servers
+every session mounts and which survive a `disabledTools` entry;
+`CONTROL_PLANE_BACKENDS` decides who is handed the token. Containment holds in
+one direction: a server mounted in every session posts back for that session,
+so it needs the token. The opt-in Crew servers are the reverse case --
+`kirocrew-dashboard` posts back for the CALLING session (`session_create`,
+`session_send`, the folder and tag tools), so it needs the token, but it is
+`opt_in`, so naming it in
+`CONTROL_PLANE_SERVERS` would mount it in every session and make an operator's
+decision to switch its tools off unenforceable. A ratchet test pins that
+relationship rather than equality with `CONTROL_PLANE_SERVERS`: it asserts
+`CONTROL_PLANE_SERVERS` is
+contained in `CONTROL_PLANE_BACKENDS`, pins the token-only extras to exactly
+`mcp_cleanup.OPT_IN_BIN_MCP_SERVERS` plus the spec-gated `kirocrew-computer`,
+requires every extra to be a managed server that is not unconditionally mounted
+(`opt_in`, or behind a `spec_gate`), and pins the whole set equal to
+`acp.session_mcp.IDENTITY_BOUND_SERVERS` -- the kiro-backend element list that
+carries the same token per element -- so the two identity paths grant the same
+servers and a new recipient has to update both in the same commit. Because the
+opt-in servers are `opt_in`, `_spawns_own_control_plane` asks
+`agent.managed_mcp_spec_entry` for the invocation with `include_opt_in=True`,
+which skips only the `opt_in` emission disqualifier; a closed `spec_gate` still
+yields no invocation, and therefore no token. The stub-strip in
+`backend._strip_caller_meta` removes the whole caller block, so a stub cannot
+forge a `sessionToken` either. A gateway-injected caller also marks the backend
+as gateway-hosted: when its dial to the gateway is refused it reports the
+outage, whereas the attended CLI's own identity (`kirocrew chat` with no gateway
+— no injected caller AND a session key `infer_use_case` classes as `cli` — whose
+`_post` returns `refused=True` meaning nothing was executed) falls back to the
+direct host store the cron tools always had before the transport was required;
+a gateway-minted key with no injected caller is the non-pooled topology and
+reports the outage instead.
+
+`register_hook` resolves through `require_strict_session_key`. Member hooks
+capture their originating execution record before provider allocation; Global
+hooks retain their existing no-conversation behavior. Hook context and display
+labels do not retarget that record. Direct and pooled member MCP use the same
+ordinary transport contract.
+
+Gatewayd validates the accepted stub's ordinary peer ownership and session
+claim, strips client-supplied caller metadata, and injects the admitted caller for
+each invocation. Shared backends use a request-local `CallerContext`, including
+concurrent tool calls and listings; they never keep a mutable current member on
+the process or connection. The gateway resolves that session's canonical
+execution record once for each memory request and forwards the frozen binding to
+background work.
+
+Member memory requires no additional PID-ancestry proof, HMAC capability or
+`X-Member-Session-Proof` header. Direct and pooled MCP follow the same routing
+contract. Ordinary transport authentication, broker claim validation and signed
+PID-sidecar identity remain intact. An execution record that declares a member
+but cannot be resolved fails explicitly instead of becoming a Global V1 call.
 
 An unresolved key is not automatically a refusal. `mcp_computer.py` forwards a
 namespace-only key (`unresolved:<shim pid>`, plus the gateway's per-connection
@@ -1424,7 +2105,7 @@ and let a sub-agent's card land in its parent's slot.
 **Return a session directive and let the session-aware consumer apply it.** This
 is what the `ask_question` MCP tool itself now does, along with `monitor_start`,
 `monitor_watch`, `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`
-and `suggest_followup`, and `reset_conversation`
+and `suggest_followup`, `reset_conversation` and `chat_tag`
 (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
 payload and **no session key**. `dashboard/chat_runner`'s tool-result handler
@@ -1470,6 +2151,69 @@ measured 7,999 chars in and 8,755 out), so `preserve_tail_marker` re-attaches a
 marker the cut removed — the same re-injection the MCP App render marker already
 gets at that seam, for the same reason: a control token that decides how a frame is
 interpreted must not be a casualty of a length cut applied to the frame's prose.
+
+A marker is honoured at that gate ONLY if the emitter vouched for it on the same
+dispatch: `_emit_directive` is the one producer of a real marker, so it records a
+digest of what it built, `_call_tool` clears that record before every dispatch, and
+`refuse_if_markerless` defangs any marker nobody vouched for. "Does this look like a
+directive?" is not a safe question — a rejection echoing a model-chosen argument
+name can imitate one, which is how a rejected call came to apply the very arguments
+validation had refused. Every place `mcp_shared` builds an `"Error: …"` result also
+passes the interpolated text through `session_directive.neutralize_markers`, kept as
+defense in depth because those strings reach the audit row and the four other
+servers' outputs, where no vouch gate runs. That defanging is applied only where the
+caller KNOWS the string is not a directive: doing it centrally over every tool
+result would defang the real marker too.
+
+`_emit_directive` classifies its OWN output the same way — by the marker's presence,
+not by content. Testing `is_refusal(out)` there matched any payload that merely
+CONTAINED the refusal token, so a stop whose reason quoted that token was filed as a
+refusal, skipped both the publish and the vouch, and had its genuine marker defanged
+downstream: the stop was lost. A gate against imitable content cannot itself be
+built on imitable content.
+
+### An `Error:` prose result can also be framed as an MCP error
+
+`build_tool_response` is the single exit point for every tool result, and for a
+long time it emitted only `{"content": [...]}`. That left the `"Error: …"` prefix
+carrying the entire failure signal: `mcp_shared` derives the SEL audit `outcome`
+from it (`failed` when the text starts with the prefix, `completed` otherwise),
+but nothing in the wire frame said so, and a client had to pattern-match prose to
+tell a refusal from an answer. `cron_script.McpToolClient.call_tool` raised
+`RuntimeError` on `result["isError"]` for exactly that reason — against a flag
+nobody set, so a refused cron write read back as a completed one.
+
+`build_tool_response` now takes a keyword-only `is_error`, which adds MCP's
+`"isError": True` to the frame. The prose is untouched: the flag is computed from
+the RAW result text before sanitization, so a refusal is byte-identical whether it
+is flagged or not, and the audit `outcome` derivation does not move.
+
+**The flag is per-server opt-in, not a global.** `run_mcp_stdio_loop` takes
+`error_prefix_is_error`, default off, and every `tools/call` result on that loop —
+the POSIX worker path, the Windows synchronous path, and the two tool-policy
+refusals (unresolved policy, excluded tool) — goes through one nested
+`_tool_response` helper so a server cannot be half-converted. `kirocrew-cron` is
+the only server that sets it. The other servers keep their frames unflagged
+deliberately: each has in-tree callers and model-facing prompts that read
+`"Error: …"` prose on purpose, so flipping them together would change what those
+callers see.
+
+A server that opts in owes its failure answers the prefix, and the audit half
+already held it to that: an answer without the prefix is filed `completed`. The
+sharp edge is a REFUSED durable write, because its answer sits one line below the
+committed one: a cron mutation whose store call comes back falsey — the row the
+ownership gate just saw is gone, a concurrent delete between check and write —
+frames beside `"Removed job: <id>"`, so an unprefixed answer there reads as a
+completed delete. All four such returns (`cron_update`, `cron_remove`,
+`cron_pause`, `cron_resume`) are `"Error: job not found: <id>"`, which is what
+`AUTOSDE.yaml`'s `a-refusal-is-not-a-commit` requires. Naming the row there leaks nothing: the gate
+has already proved this caller owns it, which is why `_not_found`'s
+anti-enumeration wording is deliberately NOT reused post-gate.
+
+Cron's `"Unknown tool: …"` fall-through is the apparent second exception and is not
+one — `_call_tool` rejects an unknown name at its argument validation, ahead of
+that return, with prose that does carry the prefix, so the unreachable string needs
+no marker.
 
 **A directive tool's result either carries the marker, or it is a tagged
 refusal — nothing in between.** The consumer cannot otherwise tell a decline from
@@ -1533,9 +2277,13 @@ the surfaces with typed wake dispatch and completion correlation. Webex retains
 finite legacy prompt loops but refuses `monitor_watch` at both the stateless tool
 and authoritative consumer boundaries.
 The legacy `monitor_start` descriptor routes supported pull-request readiness
-through `monitor_watch` only when typed provider facts fully determine the
-objective. Objectives that require interpreting comments or advisory review
-evidence keep a finite legacy loop instead of claiming the structured probe
+through `monitor_watch`, and which of the two it names as the DEFAULT is the
+installation's choice: with `monitoring.prefer_structured_arming` off (the
+shipped position) the structured path is offered only when typed provider facts
+fully determine the objective, and with it on the structured path is the default
+and the legacy loop is the exception. Neither position refuses either tool.
+Objectives that require interpreting comments or advisory review evidence keep a
+finite legacy loop in both positions instead of claiming the structured probe
 observes those facts.
 
 `monitor_watch.kind` is the closed set `github_pull_request`,
@@ -1588,18 +2336,42 @@ or the watcher failed at runtime, which the skip cannot see: `POST
 harness, the warm pool holds pre-spawned processes carrying the old config. Use
 Apply & Restart, or `kirocrew config set`, which triggers a restart.
 
-## Private workflow callers
+## Workflow execution identity
 
 Workflow writes resolve the current strict MCP session and pass that same key
 to HTTP. This includes authoring, saved-definition runs, ad-hoc `source` and
 `intent` runs, cancellation and subtree reruns. Missing strict identity refuses
 the write before HTTP; a lenient ancestor-session fallback cannot authorize it.
-Kernel identity or a validated member proof still decides authority;
-headers, workflow ids and template names never select a private store. Workflow
-run/detail/list/cancel/rerun enforce the recorded execution scope. Private worker
-processes use direct projected MCP servers inside their existing OS sandbox,
-not shared V1 broker sessions. The deterministic workflow E2E model executes
+Ordinary transport authentication identifies the caller; the captured execution
+record selects its member and retention mode. Workflow IDs and template names
+do not retarget memory. Run/detail/list/cancel/rerun preserve the original run's
+member while applying ordinary execution permissions. Direct and pooled MCP use
+the same rule. The deterministic workflow E2E model executes
 these real MCP transports through `sandboxed_spawn_argv` and `popen_limited`,
 which applies resource limits after exec rather than running Python in a fork
 child. Temporary launcher profiles are cleaned up even when spawning fails;
 synthetic tool events are not memory-access evidence.
+
+### Compact skill discovery descriptions
+
+Crew-owned `skill_search`, `skill_discover` and `skill_fetch` descriptions keep
+local versus public-registry scope, read-only semantics, result limits, explicit
+load instructions and the untrusted-content/sibling-file caveat. Full procedures
+stay in the skill files rather than in repeated discovery prose. This affects
+only the descriptors Crew owns; external MCP descriptions, Tool Search thresholds
+and native serialization are unchanged and outside the measured assembly boundary.
+
+Session-bound `skill_search` uses the already-admitted read route
+`/api/skills/-/discover?scope=installed&q=...`, delegating to `/api/skills`' local
+search branch. No authentication paths or policy controls are expanded. The
+server resolves only that session's project, applies the catalog's repo-scope
+filter and identical-content deduplication, and loads confined project bodies
+through `SkillsLoader.load_skill` with a shared 24,750-byte read allowance.
+Those results contain safe names and content, not live project paths. Sessionless
+CLI search remains global-only. Mixed CJK/English keywords use memory's existing
+CJK-pair tokenizer. Native tool schemas and Tool Search thresholds are unchanged.
+
+`skill_search` supports scoped `search`, paginated `list` and exact-key `read`. The
+gateway resolves scope from the signed session, never a model-supplied agent name.
+Without signed identity it uses the global installed catalog. Incremental indexing
+reports incomplete recall explicitly; list/read remain available during refresh.

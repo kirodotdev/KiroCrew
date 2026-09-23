@@ -243,6 +243,12 @@ describe('CrewWakeSection — inline schedule creation', () => {
     const chip = screen.getByTestId('jobform-locked-agent')
     expect(chip.textContent).toBe('kirocrew-autofix')
     expect(screen.queryByRole('combobox', { name: 'Agent' })).toBeNull()
+    // The pinned-value hint keeps THIS surface's noun. The crew editor binds
+    // every crew through `memberId`, so a hint derived from that binding once
+    // called plain agents "members" here — the noun is a host choice, and this
+    // host's is "crew".
+    expect(screen.getByText("Created from this crew's editor, so the job runs as this crew.")).toBeTruthy()
+    expect(screen.queryByText(/runs as that member/i)).toBeNull()
     // A long crew name must wrap inside the pane instead of running past its
     // clipped edge at 320px: the chip is width-bounded and breaks anywhere,
     // because identifier-like names have no natural break points.

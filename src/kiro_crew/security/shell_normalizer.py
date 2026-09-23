@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 _SHELL_ACTIVE_CHARS = frozenset("$`(){}<>|;&\n\r")
 
 
-# Used to *split* a command into independently-evaluatable segments.
+# Splits a command into independently-evaluatable segments.
 # Splits on every shell separator that can chain commands or carve out a
 # subshell:
 #   ;  - sequential
@@ -219,38 +219,185 @@ _PYTHON_OPERAND_FLAGS = frozenset({"-x", "-w", "-q", "--check-hash-based-pycs"})
 _PYTHON_INLINE_PROGRAM_FLAGS = ("-c",)
 
 
-def _glob_to_regex(pattern: str) -> str:
-    """Translate a shell glob into a regex that matches what it could expand to."""
+#: How deep a nested brace group is read before it is treated as "anything".  Bash
+#: itself nests without limit, but a glob-shaped word is never legitimately more than
+#: a few groups deep, and the translation below recurses once per level -- so a word
+#: built to be hundreds of levels deep would otherwise exhaust the interpreter stack
+#: and crash the gate instead of answering.  Past the cap the group reads as ``.*``,
+#: the fail-closed direction (it can only over-match a protected name, never miss one).
+_BRACE_NESTING_CAP = 8
+
+#: How many brace ALTERNATION groups one word may translate before the rest read as
+#: "anything".  Each ``{a,b}`` becomes a regex alternation whose branches are themselves
+#: globs, and a run of them (``{*,*}{*,*}...``) is a regex with 2^N ways to match a short
+#: name -- ``re`` explores every one before it can say no, so fifteen groups cost seconds
+#: per name and stall the synchronous gate.  A legitimate program word has one or two.
+#: Past the budget a group reads as ``.*``, the fail-closed direction, exactly as the
+#: nesting cap does.
+_BRACE_GROUP_BUDGET = 6
+
+#: A brace SEQUENCE body: ``1..5``, ``a..z``, ``c..c``, optionally ``..<step>``.
+_BRACE_SEQUENCE_RE = re.compile(
+    r"\A(?:(-?[0-9]+)\.\.(-?[0-9]+)|([a-z])\.\.([a-z]))(?:\.\.-?[0-9]+)?\Z"
+)
+
+
+def _brace_pairs(pattern: str) -> "dict[int, int]":
+    """Every ``{`` index in *pattern* mapped to the index of its closing ``}``.
+
+    One linear pass with a stack; an unmatched ``{`` is simply absent and reads as a
+    literal character.  This replaces a scan-to-the-end lookup per ``{``: with that
+    lookup a word of N unbalanced braces cost O(N^2), and a 12,000-brace program word
+    stalled the synchronous permission gate for tens of seconds -- long enough for the
+    loop watchdog to hard-exit the gateway.  A pair table is the same answer in O(N).
+    """
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for j, ch in enumerate(pattern):
+        if ch == "{":
+            stack.append(j)
+        elif ch == "}" and stack:
+            pairs[stack.pop()] = j
+    return pairs
+
+
+def _split_brace_alternatives(body: str) -> "list[str]":
+    """Split a brace body on its TOP-LEVEL commas (``a,{b,c},d`` -> 3 parts)."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for j, ch in enumerate(body):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(body[start:j])
+            start = j + 1
+    parts.append(body[start:])
+    return parts
+
+
+def _brace_group_regex(body: str, depth: int = 0, budget: "list[int] | None" = None) -> str:
+    """The regex for what bash's brace expansion makes of ``{<body>}``.
+
+    Bash expands exactly three shapes, and this mirrors them rather than reading
+    every brace group as "anything" -- that reading turned every quoted jq filter
+    (``--jq '{state}'``), awk program (``'{print $1}'``) and format literal
+    (``{directory}``) into a word that could be a kill-by-name program or the
+    product CLI, and a later product-named argument in the same argv then denied
+    the whole command:
+
+    * ``{a,b,c}`` -- one word per alternative, each itself a glob.
+    * ``{x..y}`` -- a sequence: ``{c..c}`` is ``c``, ``{a..f}`` is one letter of
+      the range, ``{1..9}`` is a run of digits (no protected name carries digits,
+      so ``-?[0-9]+`` cannot over-match one; it is written out rather than left
+      as ``.*`` so a future digit-bearing name is matched honestly).
+    * anything else (no top-level comma, not a sequence) is NOT expanded at all:
+      ``{state}`` reaches the program as the literal characters ``{state}``,
+      braces included, and only an inner glob character still globs.
+
+    *depth* counts enclosing groups; at ``_BRACE_NESTING_CAP`` the group is ``.*``
+    rather than recursed into (see the cap's note).  *budget* is the word's remaining
+    ``_BRACE_GROUP_BUDGET`` of alternation groups, shared across the whole translation;
+    an alternation past it is ``.*`` too.
+    """
+    if depth >= _BRACE_NESTING_CAP:
+        return ".*"
+    parts = _split_brace_alternatives(body)
+    if len(parts) > 1:
+        if budget is None:
+            budget = [_BRACE_GROUP_BUDGET]
+        # Identical alternatives (``{*,*}``) are one alternative: bash produces the same
+        # word twice, and a regex branch pair with identical branches is only a doubling
+        # of the ways to fail.  Deduplicated BEFORE the budget is charged, so the pathological
+        # spelling neither costs a group nor reaches the engine as a pair.
+        branches = list(dict.fromkeys(_glob_to_regex(part, depth + 1, budget) for part in parts))
+        if len(branches) == 1:
+            return branches[0]
+        if budget[0] <= 0:
+            return ".*"
+        budget[0] -= 1
+        return "(?:" + "|".join(branches) + ")"
+    seq = _BRACE_SEQUENCE_RE.match(body)
+    if seq is not None:
+        if seq.group(1) is not None:
+            return "-?[0-9]+"
+        lo, hi = sorted((seq.group(3), seq.group(4)))
+        return f"[{lo}-{hi}]"
+    return r"\{" + _glob_to_regex(body, depth + 1, budget) + r"\}"
+
+
+def _glob_to_regex(pattern: str, depth: int = 0, budget: "list[int] | None" = None) -> str:
+    """Translate a shell glob into a regex that matches what it could expand to.
+
+    *depth* is the brace-nesting level this pattern sits at (see ``_BRACE_NESTING_CAP``),
+    *budget* the word's remaining alternation groups (see ``_BRACE_GROUP_BUDGET``; a
+    fresh translation starts a full budget).  Brace pairs are resolved once per pattern
+    (``_brace_pairs``), so the translation is linear in the pattern whatever the braces
+    do, and the regex it produces is bounded in how much backtracking it can demand.
+
+    Only GLOB and BRACE syntax is read; everything else is literal.  A COMMAND
+    substitution (``$(...)``, a backtick) is what the command it runs prints, which no
+    static reading knows -- and this reader does not guess.  The substitution's BODY is
+    judged on its own by the payload walk, which descends into every substitution
+    wherever it sits (``tar czf x_$(pkill -f kirocrew).tgz`` is denied for the body);
+    what it PRINTS is outside this floor, exactly as it is at program position, where
+    ``_program_basename`` peels a leading substitution and ``$(printf pk)ill -f <name>``
+    is the documented residual.  Reading the substitution as ``.*`` instead made every
+    host-stamped filename (``logs_$(hostname)_*.tar.gz``) and every brace group with a
+    substituted alternative (``{$(date +%F),current}.log``) under an ordinary program a
+    word that "could be ``pkill``", and a product-named path later in the argv a
+    self-kill -- three rounds of scope-review regressions, no kill among them.
+    PARAMETER expansion (``${X}``, ``$X``) is literal for the same reason: reading it as
+    anything turned every awk field list (``{print $6,$7}``) and every prose heredoc
+    naming ``${name}`` into a possible verb.
+    """
     out: list[str] = []
+    pairs: "dict[int, int] | None" = None
+    if budget is None:
+        budget = [_BRACE_GROUP_BUDGET]
+
+    def emit(piece: str) -> None:
+        # ``.*.*`` is ``.*``: a run of "anything" pieces (``**``, a budgeted group after a
+        # ``*``) is one piece, so the engine has one segment to place rather than a
+        # polynomial number of ways to split a name across several.
+        if piece == ".*" and out and out[-1] == ".*":
+            return
+        out.append(piece)
+
     i = 0
     while i < len(pattern):
         ch = pattern[i]
         if ch == "[":
             close = pattern.find("]", i + 1)
             if close == -1:
-                out.append(re.escape(ch))
+                emit(re.escape(ch))
                 i += 1
                 continue
-            out.append(".")
+            emit(".")
             i = close + 1
             continue
         if ch == "{":
-            # ``kiro{c..c}rew`` expands to the real name, so a brace group stands for
-            # whatever it can produce -- same treatment as a bracket class.
-            close = pattern.find("}", i + 1)
+            # ``kiro{c..c}rew`` and ``p{k,k}ill`` expand to the real name, so a brace
+            # group stands for what bash's brace expansion can produce from it --
+            # and only that (see ``_brace_group_regex``).
+            if pairs is None:
+                pairs = _brace_pairs(pattern)
+            close = pairs.get(i, -1)
             if close == -1:
-                out.append(re.escape(ch))
+                emit(re.escape(ch))
                 i += 1
                 continue
-            out.append(".*")
+            emit(_brace_group_regex(pattern[i + 1 : close], depth, budget))
             i = close + 1
             continue
         if ch == "?":
-            out.append(".")
+            emit(".")
         elif ch == "*":
-            out.append(".*")
+            emit(".*")
         else:
-            out.append(re.escape(ch))
+            emit(re.escape(ch))
         i += 1
     return "".join(out)
 
@@ -279,6 +426,28 @@ _ENV_SPLIT_PROGRAMS = frozenset({"env"})
 # unrecognised program is "this could execute the name".
 _DATA_CONSUMER_PROGRAMS = frozenset(
     {
+        # filesystem inspectors: every argument is a path to DESCRIBE, so a glob
+        # or brace word among them (``ls -d dir/*``) is a filename, not a program.
+        "ls",
+        "stat",
+        "file",
+        "du",
+        "readlink",
+        "realpath",
+        "dirname",
+        "basename",
+        # filesystem movers: every argument is a path to COPY, MOVE, LINK, REMOVE or
+        # re-mode, never a program to run (``cp $dir/*; ...``).  ``tar`` is absent on
+        # purpose: ``-I <prog>`` / ``--use-compress-program`` executes its argument.
+        "cp",
+        "mv",
+        "ln",
+        "rm",
+        "mkdir",
+        "rmdir",
+        "touch",
+        "chmod",
+        "chown",
         "echo",
         "printf",
         "print",
@@ -321,6 +490,15 @@ _DATA_CONSUMER_PROGRAMS = frozenset(
 
 # program in a run that ``shlex`` handed over as a single word.
 _CONTROL_OPERATOR_RE = re.compile(r"[;&|\n]+")
+# A word that OPENS with a command substitution, past any quote or paren the shell
+# strips first: its basename reading is the substitution body's program
+# (``$(kirocrew`` reads as ``kirocrew``), which is what runs.  A BRACE before it is
+# not in the class: ``{$(date +%F),current}.log`` is a brace group whose first
+# alternative is the body's OUTPUT -- a filename -- and the body itself
+# (``date +%F``) is judged on its own by the payload walk, which descends into
+# every substitution wherever it sits (``ls {$(pkill -f kirocrew),y}`` is denied
+# for the body).
+_LEADING_SUBSTITUTION_RE = re.compile(r"^[\"'(\s]*(?:\$\((?!\()|`)")
 
 
 # same glue-evasion as the empty-quote form (``ca""t`` -> ``cat``) that
@@ -521,6 +699,301 @@ def _pipes_into_evaluator(tokens: "list[str]") -> bool:
 _SCRIPT_EXECUTES_RE = re.compile(r"system\s*\(|\|\s*[\"']|\|&|print\s*\||\bclose\s*\(|/e\b|\be\s*$")
 
 
+def _stdin_redirect_carriers(tokens: list[str], start: int, stop: int) -> "Iterator[str]":
+    """Program text from the stdin REDIRECTIONS in ``tokens[start:stop]``.
+
+    One walk over a token run, yielding whatever each stdin redirection puts on this
+    interpreter's stdin.  The redirection families, from the shell grammar:
+
+    * ``<<TAG`` / ``<<-TAG`` -- a heredoc; the BODY up to the matching tag is the program.
+      An unterminated one runs to the end of the run, which over-yields, not under.
+    * ``<<<WORD`` -- a here-string; the WORD itself is the program.
+    * ``<WORD`` -- a file whose CONTENT is the program.
+    * ``< <(cmd)`` -- process substitution; the command text is visible and spans tokens
+      up to its closing paren, so it is yielded as a run.
+    * ``<&N`` -- an fd dup, which carries no text at all; a documented residual.
+
+    Walked as a RUN rather than "everything after the interpreter" because a
+    redirection may appear ANYWHERE in a simple command -- BEFORE the program name
+    (``<<'PY' python -``), after it, and GLUED TO IT with no space
+    (``python3<<<'…'``, ``python3<prog.py``), all of which are ordinary bash reaching
+    the same mint.  A token that carries a redirect
+    after some other text is therefore classified from its first ``<`` onward: the
+    text before it is the program name or an earlier operand, and the shell reads the
+    rest as the redirection.
+
+    The left-hand run is not split on a newline, so an earlier command's own stdin
+    redirect is yielded too -- the same deliberate over-block the pipe producer has,
+    and for the same reason.
+
+    A heredoc's body ends at the LAST token equal to its tag, not the first.  Bash
+    closes a heredoc only on a line that holds the delimiter ALONE, and line structure
+    does not survive tokenizing -- so a body line that merely CONTAINS the word
+    (``# EOF``, an ordinary Python comment) produced a token equal to the tag and closed
+    the body early, leaving the real payload after it unscanned.
+    The last occurrence is the delimiter that actually ends it; taking it
+    over-yields only when the tag word recurs in a LATER command, which is the safe
+    direction.
+    """
+    run = tokens[start:stop]
+    idx = 0
+    while idx < len(run):
+        raw = run[idx].strip(_SHELL_WRAPPER_CHARS)
+        if "<" in raw and not raw.startswith("<"):
+            # A redirect GLUED to a preceding word: the shell reads everything from the
+            # first `<` as the redirection, so classify that suffix. Without this the
+            # interpreter's own token was excluded from the walk and
+            # `python3<<<'import kiro_crew'` -- one word, no space -- was never scanned.
+            raw = raw[raw.index("<") :]
+        here = _here_string_payload(raw)
+        if here is not None:
+            # Checked before the heredoc branch, which would otherwise read `<<<payload`
+            # as a tag and drop the payload.
+            idx += 1
+            if not here:  # a bare `<<<` puts its word next
+                if idx >= len(run):
+                    return
+                here = run[idx].strip(_SHELL_WRAPPER_CHARS)
+                yield run[idx]
+                idx += 1
+            else:
+                yield here
+            end = _operand_span_end(run, idx, here)
+            yield from run[idx:end]
+            idx = end
+            continue
+        marker = _heredoc_marker(raw)
+        if marker is not None:
+            # Checked before the plain-redirect branch below, which would otherwise read
+            # the first `<` of `<<` as a stdin redirect.
+            idx += 1
+            if not marker:  # a bare `<<` splits its tag into the next token
+                if idx >= len(run):
+                    return
+                marker = run[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            end = len(run)
+            for j in range(len(run) - 1, idx - 1, -1):
+                if run[j].strip(_SHELL_WRAPPER_CHARS) == marker:
+                    end = j
+                    break
+            yield from run[idx:end]
+            idx = end + 1
+            continue
+        if "<" in raw:
+            target = raw.rsplit("<", 1)[1]
+            if target.startswith("&"):
+                idx += 1  # `<&N` fd dup: nothing on the command line to match
+                continue
+            idx += 1
+            if not target:
+                if idx >= len(run):
+                    return
+                target = run[idx].strip(_SHELL_WRAPPER_CHARS)
+                yield run[idx]
+                idx += 1
+            else:
+                yield target
+            end = _operand_span_end(run, idx, target)
+            yield from run[idx:end]
+            idx = end
+            continue
+        idx += 1
+
+
+def _stdin_program_text(tokens: list[str], i: int) -> "Iterator[str]":
+    """The tokens that can carry the PROGRAM a stdin-reading ``python`` will run.
+
+    ``tokens[i]`` is an interpreter that reads its program from stdin.  The shell can
+    fill that stdin from exactly two families, and this yields those and nothing else:
+
+    * a stdin REDIRECTION -- heredoc body, here-string word, redirected file or process
+      substitution -- anywhere in the command: before the program name, after it, or
+      glued to it (:func:`_stdin_redirect_carriers`).  Walked over the WHOLE frame in ONE
+      pass, not per side of the interpreter: a marker and its body can straddle the
+      program name (``<<EOF python - … EOF``), and splitting the walk lost that
+      association entirely.  Only REDIRECT OPERANDS are
+      yielded, so a neighbouring command's ordinary argument is still never program text;
+    * a PIPE PRODUCER -- the tokens left of this interpreter, when a pipe feeds it.
+      The pipe is NOT reliably its own token: the tokenizer splits on whitespace only,
+      so ``echo '…'|python -`` glues the operator into a neighbouring word and
+      ``_program_basename`` resolves the program from the LAST control-operator
+      segment.  So the pipe is detected as a CHARACTER anywhere left of, or glued
+      into, the interpreter token, and that token's own leading segment is producer
+      text.  Requiring a standalone ``|`` token would miss all four no-space spellings
+      and let the producer's payload through.
+
+    Both families over-yield on the left: any pipe, or any earlier command's own stdin
+    redirect, qualifies.  That is the safe direction -- a missed carrier is a bypass,
+    an extra token is only a visible refusal (pinned by a test).
+
+    Everything else in the frame is another command's argv.  Scanning THAT is the
+    defect: a frame is not split on a newline, so an unrelated neighbour that
+    merely names this package in a FILE PATH (``isort src/kiro_crew/mcp_core.py``
+    followed by any ``python - <<'PY' … PY``) makes a harmless heredoc read as a
+    credential mint -- with no ``token`` word anywhere in the command.
+
+    Yields lazily so the caller's ``any()`` short-circuits: the cost stays O(frame)
+    per interpreter token, the same bound the frame-wide scan had.
+    """
+    # A PIPE PRODUCER writes this interpreter's stdin, so its argv IS program text.
+    glued_head, pipe_glued, _ = tokens[i].strip(_SHELL_WRAPPER_CHARS).rpartition("|")
+    if pipe_glued or any("|" in t for t in tokens[:i]):
+        yield from tokens[:i]
+        if pipe_glued:
+            yield glued_head
+    yield from _stdin_redirect_carriers(tokens, 0, len(tokens))
+
+
+def _python_reads_stdin(later_tokens: list[str]) -> bool:
+    """True if this ``python`` invocation runs its PROGRAM from stdin (a script/module does not).
+
+    CPython reads its program from stdin for a bare interpreter (no positional) or an explicit
+    ``-`` argument; ``-c CODE``, ``-m MOD``, and ``FILE`` all supply the program elsewhere.
+    Walks the argument stream the way ``_is_self_module_invocation`` does so the corner cases
+    line up: an operand-taking flag consumes its value (``-X dev`` — ``dev`` is not a script),
+    a heredoc (the ``<<TAG`` marker, its BODY and the closing tag) is not an argument, and a
+    pipe/redirect token ends this command's own arguments.
+
+    The heredoc structure is read off the RAW token via :func:`_heredoc_marker`, because
+    ``_normalize_operand`` strips a redirection to the empty string — which would leave the
+    heredoc branch here unreachable and have ``python << 'PY' … PY`` (no ``-``) report FALSE,
+    reading the first word of the BODY as a script path.  A redirect OPERAND is consumed
+    through :func:`_operand_span_end` for the same reason the carrier scan uses it: a
+    substitution operand is one shell WORD over several tokens, and skipping only the first
+    leaves ``python <<< $(printf …)`` reading ``%s`` as a script path.  The two
+    functions share that helper so the detector and the carrier scope agree on where
+    an operand ends.
+    """
+    skip_next = False
+    heredoc_tag: str | None = None
+    expect_tag = False
+    idx = 0
+    while idx < len(later_tokens):
+        tok = later_tokens[idx]
+        idx += 1
+        raw = tok.strip(_SHELL_WRAPPER_CHARS)
+        if heredoc_tag is not None:
+            # The body is program text on stdin, not an argument, and its CLOSING TAG
+            # ends this command: the tokenizer drops the newline that follows, so
+            # whatever comes after the tag belongs to the NEXT command. Reading it as
+            # this interpreter's positional made `python <<PY … PY; echo ok` report
+            # "runs a script named echo" and skipped the whole branch, so the heredoc's
+            # payload went unscanned. The heredoc has
+            # already supplied the program, so the answer here is simply True.
+            if raw == heredoc_tag:
+                return True
+            continue
+        if expect_tag:
+            expect_tag = False
+            heredoc_tag = raw
+            continue
+        here = _here_string_payload(raw)
+        if here is not None:
+            # A here-string supplies the program on stdin exactly as a heredoc does; its
+            # operand is a redirect word, never this interpreter's positional -- and the
+            # WHOLE operand, which a substitution spreads over several tokens.
+            if not here:  # a bare `<<<` puts its word in the next token
+                if idx >= len(later_tokens):
+                    break
+                here = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            idx = _operand_span_end(later_tokens, idx, here)
+            continue
+        marker = _heredoc_marker(raw)
+        if marker is not None:
+            if marker:
+                heredoc_tag = marker
+            else:
+                expect_tag = True  # a bare `<<` splits its tag into the next token
+            continue
+        # Scanned on a form that keeps the SUBSTITUTION delimiters. `raw` has had
+        # `_SHELL_WRAPPER_CHARS` stripped, and those include `(` and `)` -- so the word
+        # `2>$(` (the tokenizer splits on the space inside `$( (true); printf x)`) arrived
+        # here as `2>$`, with the opener gone. The scan then saw an ordinary one-character
+        # target, never entered a substitution, and the tail of the substitution was read
+        # as a script path, putting the stdin program back out of view. Quotes still come
+        # off, since a quoted redirect is still a redirect.
+        redirect_word = tok.strip("\"'")
+        glue = _redirect_glue_point(redirect_word)
+        if glue is not None:
+            # The redirect rides on the back of another word (`-u>`). Split it and let the
+            # loop read both halves, so the part BEFORE the redirect is classified by the
+            # same flag/positional branches as any other word -- `-u` continues the scan,
+            # `script.py` ends it. Once per word, since neither half can split again.
+            later_tokens = [
+                *later_tokens[:idx],
+                redirect_word[:glue],
+                redirect_word[glue:],
+                *later_tokens[idx:],
+            ]
+            continue
+        redirect = _output_redirect_scan(redirect_word)
+        if redirect is not None:
+            # An OUTPUT redirect and its target are not this command's arguments and say
+            # nothing about where the program comes from, so the walk steps over both and
+            # keeps looking, as for a stdin redirect. Falling through read the leftover
+            # digits of `2>&1` as a script path, so `python 2>&1 <<< '<program>'` went unscanned.
+            redirect_target, position = redirect
+            # A chain of output redirects glued into ONE word (`>a>a>a...`) is walked
+            # here, in place, to stay linear in the word length on a floor that runs
+            # for every command.
+            while position < len(redirect_word):
+                further = _output_redirect_scan(redirect_word, position)
+                if further is None:
+                    break
+                redirect_target, position = further
+            remainder = redirect_word[position:]
+            if remainder:
+                # What is left starts with a STDIN operator (`2>/dev/null<<EOF`), which
+                # the branches above know how to read. Hand it back as its own token --
+                # once per word, not once per operator -- because swallowing it loses the
+                # heredoc and with it the program on stdin.
+                later_tokens = [*later_tokens[:idx], remainder, *later_tokens[idx:]]
+            elif not redirect_target:
+                if idx >= len(later_tokens):
+                    break
+                redirect_target = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            if redirect_target:
+                idx = _operand_span_end(later_tokens, idx, redirect_target)
+            continue
+        if "<" in raw:
+            # A stdin REDIRECT and its operand are not this command's arguments either,
+            # and the redirect is what supplies the program: `python < prog.py` reads its
+            # program from that file. The earlier walk stopped at the redirect and then
+            # read the operand as a script path, so `python3 < $(printf …)` answered False.
+            target = raw[raw.index("<") :].rsplit("<", 1)[1]
+            if not target:
+                if idx >= len(later_tokens):
+                    break
+                target = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            idx = _operand_span_end(later_tokens, idx, target)
+            continue
+        norm = _normalize_operand(tok).strip("\"'")
+        if skip_next:
+            skip_next = False
+            continue  # value consumed by an operand-taking flag (`-X dev`)
+        if not norm:
+            continue
+        if norm.startswith("<") or norm.startswith("|"):
+            break  # a redirect/pipe boundary ends this command's argument list
+        if norm == "-":
+            return True
+        if norm in _PYTHON_INLINE_PROGRAM_FLAGS or norm.startswith("-m") or norm.startswith("-c"):
+            return False  # `-c`/`-m` supply the program, not stdin
+        if norm in _PYTHON_OPERAND_FLAGS:
+            skip_next = True
+            continue
+        if len(norm) > 2 and norm[:2] in _PYTHON_OPERAND_FLAGS:
+            continue  # attached operand, e.g. `-Xdev`
+        if norm.startswith("-"):
+            continue  # an ordinary interpreter flag
+        return False  # a positional that is not `-` is a script path
+    return True  # nothing but flags → bare interpreter reads stdin
+
+
 def _data_consumer_command_disqualified(tokens: "list[str]") -> bool:
     """True where NO token in *tokens* can claim the data-consumer exemption.
 
@@ -563,7 +1036,7 @@ def _data_consumer_exempt(
     programs: "list[str]",
     tokens: "list[str]",
     *,
-    command_disqualified: "bool | None" = None,
+    command_disqualified: bool,
 ) -> bool:
     """True if *token* is an ARGUMENT of a command that treats arguments as data.
 
@@ -571,26 +1044,45 @@ def _data_consumer_exempt(
 
     The exemption is refused in two cases:
 
-    * the token itself carries a control operator (``echo foo;kirocrew>/tmp/x``).
-      ``shlex`` splits on whitespace only, so such a token is attributed to the
-      PRECEDING command while the part after the operator is a new command that
-      really runs.
+    * the token carries a control operator with a NEW PROGRAM after it
+      (``echo foo;kirocrew>/tmp/x``).  ``shlex`` splits on whitespace only, so such
+      a token is attributed to the PRECEDING command while the part after the
+      operator is a new command that really runs.  An operator at the very END of
+      the token (``cp $dir/*;``) starts no program inside the token: the word before
+      it is still this data consumer's argument, and the next command's words are
+      the next command's -- so that token IS exempt.  (This is the one place a
+      trailing operator may excuse a token: gated on the program being a data
+      consumer, a quoted ``'pkill;'`` or ``'kirocrew;'`` at PROGRAM position -- a
+      symlink literally named with the operator -- never reaches it.)
     * the command pipes into a shell or evaluator (``echo … | sh``), where the
       printed text is executed rather than displayed.
+    * the token OPENS with a command substitution (``ls $(kirocrew update)``,
+      ``cat `kirocrew token```, quotes before it notwithstanding): the token's own
+      basename reading IS the body's program, so excusing the token as data would
+      excuse the program that runs.  A substitution LATER in the word
+      (``cp report_$(hostname)_*.log <dir>``) or inside a BRACE GROUP
+      (``mv {$(date +%F),current}.log <dir>``) is a filename around a body: the
+      body is judged on its own by the payload walk, which descends into every
+      substitution wherever it sits, and the word itself is a filename bash never
+      runs.  Refusing those made two ops routines -- archiving host-stamped or
+      date-stamped logs into a product-named scratch directory -- read as a
+      self-kill (each confirmed newly-refused by the scope review).
 
-    Inheriting the exemption in either case would turn a precision fix into a
+    Inheriting the exemption in any of these cases would turn a precision fix into a
     bypass.
     """
     if index <= 0:
         return False
-    if _CONTROL_OPERATOR_RE.search(token):
+    if any(segment for segment in _CONTROL_OPERATOR_RE.split(token)[1:]):
         return False
-    # Command-level guards, hoisted into ``_data_consumer_command_disqualified``.
-    # *command_disqualified* lets a caller iterating one fixed argv charge them
-    # once; ``None`` means "compute them here", which is what every caller that
-    # asks about a single token does, so their behaviour is unchanged.
-    if command_disqualified is None:
-        command_disqualified = _data_consumer_command_disqualified(tokens)
+    if _LEADING_SUBSTITUTION_RE.match(token):
+        return False
+    # The command-level guards live in ``_data_consumer_command_disqualified`` and
+    # their verdict arrives here already computed. Every caller iterates one fixed
+    # argv, so every caller can charge them once per argv rather than once per
+    # token, and the parameter is REQUIRED so that a caller cannot fall back to
+    # computing them per token -- the whole-argv sweep inside them is what makes
+    # that shape quadratic in the token count.
     if command_disqualified:
         return False
     return programs[index] in _DATA_CONSUMER_PROGRAMS
@@ -601,7 +1093,7 @@ def _argv_programs(tokens: "list[str]") -> "list[str]":
 
     Walks the argv tracking command boundaries (``_ends_argv``) and skipping
     leading ``VAR=value`` assignments, which precede the program rather than being
-    it.  Used to ask "what command is this name an argument OF?" -- the difference
+    it.  Asks "what command is this name an argument OF?" -- the difference
     between ``echo <name> <verb>`` (data) and ``ssh host <name> <verb>`` (executed).
     """
     programs: list[str] = []
@@ -1638,7 +2130,7 @@ def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterato
 # comment marker the span walk has to recognise. Bash reads ``case`` / ``esac`` as
 # reserved only when they stand alone, so ``lowercase)`` must not arm the pattern
 # rule, and ``a#b`` must not open a comment.
-_SHELL_WORD_BREAK = frozenset(" \t\n;&|()<>")
+_SHELL_WORD_BREAK = frozenset(" \t\n;&|()<>`")
 
 
 def _skip_continuations(text: str, index: int) -> int:
@@ -1711,6 +2203,18 @@ def _in_command_position(text: str, index: int) -> bool:
     argument and must not disarm the pattern rule. Parity matters -- ``\\\\`` then a
     newline is a literal backslash followed by a real newline, which does separate.
     """
+    k = _prev_significant(text, index)
+    return k < 0 or text[k] in ";&|(\n"
+
+
+def _prev_significant(text: str, index: int) -> int:
+    """Offset of the previous REAL character before *index*, or -1.
+
+    Blanks are stepped over, and a backslash-newline pair is a line
+    CONTINUATION the shell removes while reading, so it is stepped over too --
+    but only an ODD run of backslashes folds; an even run leaves a literal
+    backslash before a real newline, which separates.
+    """
     k = index - 1
     while k >= 0:
         if text[k] in " \t":
@@ -1724,7 +2228,150 @@ def _in_command_position(text: str, index: int) -> bool:
                 k -= slashes + 1
                 continue
         break
-    return k < 0 or text[k] in ";&|(\n"
+    return k
+
+
+#: Reserved words after which bash still reads the NEXT word in command
+#: position.  ``case`` is a reserved word ONLY in command position, so
+#: ``if true; then case x in ...`` must arm the pattern rule while
+#: ``echo case`` must not -- and the hand-through is INHERITED: ``then`` only
+#: passes command position when it stands in command position itself
+#: (``echo then case ...`` is three arguments).  Block ENDERS (``fi``,
+#: ``done``, ``}``, ``esac``) are deliberately absent: bash refuses a keyword
+#: directly after them (``fi case ...`` is a syntax error, measured), so not
+#: arming there is exact.  Cross-pinned against
+#: ``argv_floor._SHELL_RESERVED_WORDS`` by test, so the two keyword tables
+#: cannot drift apart silently.
+_KEEPS_COMMAND_POSITION = frozenset(
+    {"if", "then", "else", "elif", "while", "until", "do", "!", "{", "time", "coproc"}
+)
+
+
+def _prev_word(text: str, index: int) -> "tuple[str, int] | None":
+    """The FOLDED word ending just before *index* and its start offset, else None.
+
+    None means the previous real character is a separator or absent -- the
+    caller has already classified those through :func:`_prev_significant`.
+    Word boundaries are :data:`_SHELL_WORD_BREAK`, the same set the forward
+    walk reads, so the two directions cannot disagree about where a word ends.
+
+    A backslash-newline pair INSIDE the word is a line continuation bash
+    removes while reading, so ``th\\`` + newline + ``en`` is the one word
+    ``then`` and is returned folded -- stopping at the raw newline would read
+    the fragment ``en``, misclassify the keeper, and reopen the early-close
+    under-scan on ``th\\<newline>en case x in x) ...``.  Only the innermost
+    pair of an ODD backslash run folds; an even run is escaped literal
+    backslashes before a REAL newline, which separates.  The start offset is
+    the first fragment's, so chained walks resume before the whole word.
+    """
+    k = _prev_significant(text, index)
+    if k < 0 or text[k] in _SHELL_WORD_BREAK:
+        return None
+    parts: "list[str]" = []
+    seg_end = k + 1
+    while k >= 0:
+        ch = text[k]
+        if ch == "\n":
+            slashes = 0
+            while k - 1 - slashes >= 0 and text[k - 1 - slashes] == "\\":
+                slashes += 1
+            if slashes % 2 == 1:
+                # Fold the innermost ``\\<newline>`` pair away; any even
+                # remainder stays as literal word characters.
+                parts.append(text[k + 1 : seg_end])
+                k -= 2
+                seg_end = k + 1
+                continue
+            break
+        if ch in _SHELL_WORD_BREAK:
+            break
+        k -= 1
+    parts.append(text[k + 1 : seg_end])
+    return ("".join(reversed(parts)), k + 1)
+
+
+def _arms_case_context(text: str, index: int, in_case_body: bool = False) -> bool:
+    """True if the standalone ``case`` at *index* can be bash's reserved word.
+
+    bash recognises ``case`` only in command position, and every measured
+    non-command position -- ``echo case``, ``v=1 case``, ``command case``,
+    ``eval case``, a redirect-target prefix -- either treats it as data or
+    refuses the line outright, so the pattern-paren rule must not arm there:
+    arming spans the body past the ``)`` bash actually closes on, which is the
+    over-scan (false-positive) direction on ordinary commands that merely say
+    the word.  Command position is CHAINED, not spelling-matched: a reserved
+    word hands it through only when it holds it itself, a ``function NAME`` /
+    ``coproc NAME`` prefix passes it to the definition body, and a POSIX
+    ``f()`` definition (empty parens, blanks allowed) restores it -- all forms
+    bash was measured spanning.  Every ambiguity ARMS: an over-armed span only
+    feeds the extractors more text, while a missed arm reopens the early-close
+    truncation this rule exists to prevent.
+
+    *in_case_body* is the caller's live case counter: inside an armed case, a
+    ``)`` before this word is a PATTERN TERMINATOR and the word opens the
+    clause body -- command position (``case a in a) case b in ...`` spans in
+    bash, and missing that arm desynchronises the flat counter into a span
+    SHORTER than the ungated walk: the inner ``esac`` eats the outer arm and
+    the outer's next pattern paren closes the body).
+    Outside a case, the same ``)`` is a substitution closer mid-arguments
+    (``echo $(foo) case x in y`` -- data) or a subshell join bash refuses, so
+    not arming there is exact and keeps the over-arm fix.
+    """
+    at = index
+    for _ in range(8):
+        if _in_command_position(text, at):
+            return True
+        k = _prev_significant(text, at)
+        # _in_command_position returned False, so text[k] is a real char
+        # outside ";&|(\n".
+        ch = text[k]
+        if ch == "`":
+            return True  # a backtick opens a command substitution body
+        if ch in "<>":
+            # A redirect prefix before a compound command is a bash syntax
+            # error (measured): the line never runs, so not arming is exact.
+            return False
+        if ch == ")":
+            if in_case_body:
+                return True  # the ``)`` is a pattern terminator -- clause body
+            # ``f() case`` / ``f ( ) case``: an EMPTY paren pair after a word
+            # is a function definition whose body is command position (both
+            # spellings measured spanning).  A subshell needs a separator
+            # before another command, so content between the parens means no.
+            j = _prev_significant(text, k)
+            if j >= 0 and text[j] == "(":
+                return True
+            return False
+        prev = _prev_word(text, at)
+        if prev is None:
+            return False
+        w, start = prev
+        if "\\" in w:
+            return True  # folded spelling -- undecidable cheaply, arm (long is safe)
+        if w.startswith("-"):
+            # An OPTION word is transparent: the decision rests on what
+            # precedes it.  ``time -p case`` / ``time -- case`` then chain to
+            # ``time`` (a keeper -- bash's grammar reads the reserved word
+            # there, so the arm fails long on the substitution spelling its
+            # own parser refuses), while ``echo -n case`` chains to ``echo``
+            # and correctly stays data.
+            at = start
+            continue
+        two_back = _prev_word(text, start)
+        if two_back is not None and two_back[0] in ("function", "coproc"):
+            # *w* is the definition/coproc NAME.  This check runs BEFORE
+            # keeper semantics because bash accepts any reserved word as a
+            # ``function`` name (``function do`` / ``function time`` parse,
+            # measured) -- reading such a name as the keeper would chain to
+            # ``function``, which keeps nothing, refuse the arm, and truncate
+            # the substitution body at the pattern ``)`` bash spans past.
+            at = two_back[1]
+            continue
+        if w in _KEEPS_COMMAND_POSITION:
+            at = start  # inherited: the keeper must hold position itself
+            continue
+        return False
+    return True  # chain too deep to decide -- arm, the long direction
 
 
 def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
@@ -1755,9 +2402,12 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     keeps a ``(x|y)`` pattern balanced-neutral as well. ARMING is generous and
     DISARMING is strict on purpose: missing a real ``case`` closes the body EARLY,
     which is the bypass, while missing a real ``esac`` only runs it long, which is
-    imprecision. So ``case`` arms on any standalone word and ``esac`` disarms only
-    in command position -- an ``esac`` passed to a command as an ARGUMENT would
-    otherwise end the rule early and let the next paren close.
+    imprecision. So ``case`` arms on any standalone word IN COMMAND POSITION
+    (:func:`_arms_case_context` -- bash only reads the reserved word there, so
+    ``echo case x in y`` does not arm on ordinary commands, and every
+    undecidable position still arms) and ``esac`` disarms only in command
+    position -- an ``esac`` passed to a command as an ARGUMENT would otherwise
+    end the rule early and let the next paren close.
 
     ``proven`` is False when the parens never balance before the text ends. The
     caller must fail CLOSED on that: for an extractor the safe reading is the
@@ -1789,7 +2439,7 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
                 state, ansi = 0, False
                 jumped = True
                 break
-            if _word_at(text, off, "case"):
+            if _word_at(text, off, "case") and _arms_case_context(text, off, cases > 0):
                 cases += 1
                 continue
             if _word_at(text, off, "esac") and _in_command_position(text, off):
@@ -2308,10 +2958,17 @@ def _self_tokens(text_lower: str) -> "list[str]":
     the lone case and leaves the escaped run intact, matching bash.
     """
     try:
-        return _resolve_function_aliases(
-            _resolve_local_assignments(
-                normalize_shell_command(_fold_line_continuations(text_lower))
+        # shlex treats bare newlines as whitespace, which joins separate
+        # commands into one argv. Preserve those boundaries after folding
+        # continuations; quoted newlines remain part of their operand.
+        command = _fold_line_continuations(text_lower)
+        if "\n" in command:
+            command = "".join(
+                " ; " if step.active and step.char == "\n" else step.text
+                for step in _iter_shell_chars(command)
             )
+        return _resolve_function_aliases(
+            _resolve_local_assignments(normalize_shell_command(command))
         )
     except Exception:
         return []

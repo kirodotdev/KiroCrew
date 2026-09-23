@@ -1,0 +1,5 @@
+{
+  "_comment": "Unexcepted build-chain (npm dev-dependency) advisories per lockfile. Generated - regenerate with `python3 scripts/check_npm_audit.py --update-baseline`. This is a REPORT-ONLY ratchet and the worklist that goes with it: the build-chain pass never fails a build, it fails to stay quiet once a count rises above the number here. Drive each number to zero; never raise one to silence the note. An empty `lockfiles` map means no lockfile has a recorded count yet, which reads as unmeasured rather than as zero, so the first run cannot report a regression for debt that predates it. See scripts/check_npm_audit.py for the scope and why dev dependencies are audited at all.",
+  "version": 1,
+  "lockfiles": {}
+}

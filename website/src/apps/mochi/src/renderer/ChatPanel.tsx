@@ -37,7 +37,7 @@ import Markdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
-import { rehypeSanitize, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
+import { rehypeSanitize, rehypeStableRootKeys, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
 import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../../../../utils/markdownDepthBound'
 import { mdImageDestToPath } from '../../../../utils/fileTokens'
 import { copyToClipboard } from '../../../../utils/clipboard'
@@ -1737,7 +1737,13 @@ const MD_REMARK = [remarkBoundDepth, remarkGfm, remarkVerbatimUnknownTags]
  * The sanitizer is the core's, imported rather than copied: admitting raw HTML
  * is exactly the point where a second, drifting allowlist would become a hole.
  */
-const MD_REHYPE = [rehypeBoundRawDepth, rehypeRaw, rehypeSanitize]
+// ``rehypeStableRootKeys`` goes LAST, after ``rehypeSanitize``, and the order is
+// load-bearing rather than cosmetic: the sanitizer keeps only allowlisted
+// attributes, and ``style`` is on neither the global list nor any list for
+// ``div``. Ahead of it the wrapper would lose ``display: contents`` and become a
+// real layout box around every block, which is a visible regression that the
+// keys it stabilises would not reveal.
+const MD_REHYPE = [rehypeBoundRawDepth, rehypeRaw, rehypeSanitize, rehypeStableRootKeys]
 
 /**
  * Typed against react-markdown's own `Components`, so each override receives the
@@ -2095,8 +2101,14 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                       ellipsis would re-collide the very labels the 64-char budget
                       distinguishes. minWidth:0 lets the flex item shrink;
                       overflowWrap:'anywhere' lets an unbreakable run (a sha, a
-                      base64 arg) wrap instead of clipping past the panel edge. */}
-                  <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                      base64 arg) wrap instead of clipping past the panel edge.
+                      whiteSpace:'pre-wrap' because the default COLLAPSES runs of
+                      whitespace, which for an exact-string grant is an elision
+                      one character wide: `grep "a  b" f` would render as
+                      `grep "a b" f` while granting the two-space string. The
+                      budget clamp above is a layout decision for this narrow
+                      column; collapsing whitespace earns nothing anywhere. */}
+                  <span style={{ minWidth: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
                     {i18nT('apps.mochi.approval.trust_this_command', { cmd: truncateCommandLabel(req.fullCommand) })}
                   </span></button>
               )}

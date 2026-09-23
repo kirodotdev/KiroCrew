@@ -1,5 +1,7 @@
 # Requirements Document
 
+Status: implemented in `src/kiro_crew/apps/manager.py` and the dashboard app navigation/store surfaces.
+
 ## Introduction
 
 Extend KiroCrew's builtin app system to support "default disabled" apps. The existing 5 builtin apps remain unchanged (enabled by default, locked lifecycle). New builtin apps can be configured to default to disabled, appear in the App Store Browse tab for discovery, and when enabled by the user, show in the Installed tab and sidebar. Additionally, provide a standard developer configuration interface for builtin app authors to declare app metadata and behavior until the package-separated App Store receives security approval.

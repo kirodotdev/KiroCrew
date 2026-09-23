@@ -1,22 +1,23 @@
 ---
 title: App SDK durable jobs and view state
-status: draft
+status: partial
 revision: v1
 author: Kiro Crew
 created: 2026-09-06
-last-audited: 2026-09-06
-audited-at: 424efa423
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
-implementation-prs: []
+implementation-prs: [8403]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: App SDK durable jobs and view state
 
-Neither surface exists: `useAppJob` and `useAppViewState` appear nowhere in
-`src/kiro_crew` or `website/src`. The run-lifecycle question this shares a boundary
-with is argued in
+Status: partial. Gateway-side `JobSDK` is wired into `AppContext`, and
+`useAppViewState` plus its AWS Control consumer are on main. A frontend
+`useAppJob` contract is still absent, so the durable-job surface is incomplete.
+The run-lifecycle boundary is also discussed in
 [`rfc-durable-run-coordinator.md`](rfc-durable-run-coordinator.md).
 
 ## Current SDK boundary

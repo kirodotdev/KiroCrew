@@ -267,7 +267,9 @@ async def test_lessons_delete_threads_repo_scope_to_the_store() -> None:
                 headers={"X-Session-Key": "dashboard:ui"},
             )
             assert with_scope.status == 200
-            app["state"].lessons.remove.assert_called_once_with("run the gate", "src/pkg")
+            app["state"].lessons.remove.assert_called_once_with(
+                "run the gate", "src/pkg", exact=False
+            )
 
             app["state"].lessons.remove.reset_mock()
             no_scope = await client.delete(
@@ -276,7 +278,7 @@ async def test_lessons_delete_threads_repo_scope_to_the_store() -> None:
                 headers={"X-Session-Key": "dashboard:ui"},
             )
             assert no_scope.status == 200
-            app["state"].lessons.remove.assert_called_once_with("run the gate", None)
+            app["state"].lessons.remove.assert_called_once_with("run the gate", None, exact=False)
 
 
 async def test_lessons_delete_refuses_selector_shapes_that_collide_with_global() -> None:
@@ -353,4 +355,4 @@ async def test_lessons_delete_refuses_selector_shapes_that_collide_with_global()
                 headers={"X-Session-Key": "dashboard:ui"},
             )
             assert whitespace_selector.status == 200
-            app["state"].lessons.remove.assert_called_once_with("run the gate", "   ")
+            app["state"].lessons.remove.assert_called_once_with("run the gate", "   ", exact=False)

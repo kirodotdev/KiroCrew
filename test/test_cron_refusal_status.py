@@ -1,11 +1,14 @@
-"""A cron run whose every tool call was security-blocked must record failure.
+"""A cron run's security-gate refusals must reach its status, not just the audit log.
 
-The model still returns plausible prose when the security gate blocks every tool
-it tries, so the reply text cannot carry the verdict. A success resets
-``consecutive_failures`` and clears ``auto_paused``, so recording one here would
-keep the auto-pause guard permanently out of reach for a job that is
-structurally incapable of succeeding. These tests pin the verdict AND the guard
-it depends on.
+The model still returns plausible prose when the security gate blocks a tool it
+tries, so the reply text cannot carry the verdict. Two arms follow from that. A
+run whose EVERY call was blocked records a failure: a success resets
+``consecutive_failures`` and clears ``auto_paused``, so recording one would keep
+the auto-pause guard permanently out of reach for a job that is structurally
+incapable of succeeding. A run whose SOME call was blocked is reported -- its
+status is not ``ok`` and its delivery names the lost call -- but spends no
+failure budget, because the calls that ran prove the job can work. These tests
+pin both verdicts and the guard they depend on.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ def _run_cron_runs(
     per_agent: dict[str, GateScript] | None = None,
     job: CronJob | None = None,
     deliver_raises: bool = False,
+    dashboard: MagicMock | None = None,
 ) -> CronJob:
     """Drive the real ``_cron_callback`` *runs* times, replaying *gate* each turn.
 
@@ -44,6 +48,10 @@ def _run_cron_runs(
 
     *job* reuses an existing job across calls, which is what makes a recovery
     assertion meaningful: a fresh job's counter reads 0 either way.
+
+    *dashboard* stands in for ``dashboard_state`` so a test can read what the
+    bell was told; ``_slotless_dashboard`` builds the shape the delivery path
+    expects.
     """
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
@@ -52,8 +60,11 @@ def _run_cron_runs(
     gw.sessions.get_pid = MagicMock(return_value=None)
     gw.ctx_builder = MagicMock()
     gw.slack = MagicMock()
+    # No DM resolves, so the Slack leg logs "no channel" instead of raising
+    # into a second bell notification the assertions would have to skip.
+    gw.slack.open_dm = AsyncMock(return_value=None)
     gw.conv_log = None
-    gw.dashboard_state = None
+    gw.dashboard_state = dashboard
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
@@ -104,9 +115,10 @@ def _run_cron_runs(
 
     captured_cb = None
 
-    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_crew.slack.gateway.CronService"
-    ) as mock_cron_cls:
+    with (
+        patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -143,12 +155,19 @@ def test_a_fully_blocked_run_names_the_refused_count() -> None:
     assert "all 3 tool call(s) blocked" in job.last_error
 
 
-def test_a_run_that_got_one_tool_through_is_a_success() -> None:
-    """Blocked-then-adapted is the normal, healthy path — it must not be a failure."""
-    job = _run_cron_runs([BLOCKED, APPROVED])
+def test_a_run_that_got_one_tool_through_spends_no_failure_budget() -> None:
+    """Blocked-then-adapted must not march the job toward auto-pause.
 
-    assert job.last_status != "error"
+    The run is still reported (see the partial-block tests below): the refused
+    call's work did not happen, so the status is not ``ok``. What this pins is
+    that the failure COUNTER stays put -- the approved call proves the job can
+    work, and counting it would auto-pause a healthy job.
+    """
+    job = _run_cron_runs([BLOCKED, APPROVED], runs=_AUTO_PAUSE_THRESHOLD)
+
     assert job.consecutive_failures == 0
+    assert job.auto_paused is False
+    assert job.enabled is True
 
 
 def test_a_tool_free_run_is_still_a_success() -> None:
@@ -179,14 +198,16 @@ def test_a_mixed_refusal_run_is_not_a_failure() -> None:
 
     The unresolved tool might have run under a looser policy or with an approver
     present, so the run does not evidence a job that cannot work — and counting
-    it would auto-pause a healthy one.
+    it would auto-pause a healthy one. The block itself is still named (the
+    status is the partial-block one, not ``ok``); only the counter is pinned
+    here.
     """
     job = _run_cron_runs([BLOCKED, UNAPPROVED], runs=_AUTO_PAUSE_THRESHOLD)
 
-    assert job.last_status != "error"
     assert job.consecutive_failures == 0
     assert job.auto_paused is False
     assert job.enabled is True
+    assert "1 of 2 tool call(s) blocked" in (job.last_error or "")
 
 
 def test_a_blocked_run_counts_once_even_when_delivery_fails() -> None:
@@ -315,6 +336,155 @@ def test_auto_mode_applies_the_verdict_too() -> None:
     assert job.consecutive_failures == 1
 
 
+def _slotless_dashboard() -> MagicMock:
+    """A ``dashboard_state`` double with no cron slot and no conversation log,
+    so the delivery path takes the plain bell branch and ``notify`` records
+    exactly what the user is shown."""
+    ds = MagicMock()
+    ds.has_slot = MagicMock(return_value=False)
+    ds.conversation_log = None
+    return ds
+
+
+# The reporter's shape: many calls approved, the final document write refused
+# by the input-tier scan. The model's prose still says the note was written.
+REFUSED_WRITE = ("Write /vault/daily/2026-08-28.md", False, True)
+
+
+class TestPartialBlock:
+    """A run that lost ONE call among many must say so.
+
+    The prose a run returns is the model's account, and a model whose final
+    write was refused reports the write as done. Recording ``ok`` for that run
+    left the refusal only in the SEL audit row and the document silently
+    unwritten. The verdict now has a middle arm: the status is not ``ok`` and
+    the delivery names the refused call, but the failure budget does not move.
+    """
+
+    def test_a_partially_blocked_run_is_not_ok(self) -> None:
+        job = _run_cron_runs([APPROVED, APPROVED, REFUSED_WRITE])
+
+        assert job.last_status == "error", "a run that lost a write recorded success"
+
+    def test_the_reason_names_the_refused_tool_and_the_proportion(self) -> None:
+        """The cron row must tell the operator WHICH call was lost, and that
+        the rest ran -- the wording an all-blocked run uses would say the job
+        did nothing."""
+        job = _run_cron_runs([APPROVED, APPROVED, REFUSED_WRITE])
+
+        assert job.last_error is not None
+        assert "1 of 3 tool call(s) blocked by the security gate" in job.last_error
+        assert "Write /vault/daily/2026-08-28.md" in job.last_error
+        assert "all " not in job.last_error
+
+    def test_a_partial_block_spends_no_failure_budget(self) -> None:
+        """The approved calls prove the job can work. Counting the run would
+        auto-pause, after five, a job that does most of its work every time."""
+        job = _run_cron_runs([APPROVED, REFUSED_WRITE], runs=_AUTO_PAUSE_THRESHOLD)
+
+        assert job.consecutive_failures == 0
+        assert job.auto_paused is False
+        assert job.enabled is True
+
+    def test_a_partial_block_does_not_reset_a_failure_streak(self) -> None:
+        """Not a success either: a streak of fully blocked runs must not be
+        wiped by a run that still lost a call, or a job alternating between the
+        two shapes could never reach auto-pause."""
+        job = _run_cron_runs([BLOCKED], runs=2)
+        assert job.consecutive_failures == 2
+
+        _run_cron_runs([APPROVED, REFUSED_WRITE], job=job)
+
+        assert job.consecutive_failures == 2
+
+    def test_the_notification_names_the_refused_tool(self) -> None:
+        """The bell body is the result text, so the banner has to be IN the
+        result: the user reads the refusal beside the prose that claims the
+        work was done, on every surface the result reaches."""
+        ds = _slotless_dashboard()
+        job = _run_cron_runs([APPROVED, REFUSED_WRITE], dashboard=ds)
+
+        assert ds.notify.call_count == 1
+        _kind, _title, body = ds.notify.call_args.args[:3]
+        assert body.startswith("⛔ 1 of 2 tool call(s) blocked by the security gate")
+        assert "Write /vault/daily/2026-08-28.md" in body
+        assert "I was unable to complete" in body, "the model's own prose was dropped"
+        assert job.last_result is not None
+        assert job.last_result.startswith("⛔"), "the stored result lost the banner"
+
+    def test_an_all_approved_run_is_unchanged(self) -> None:
+        """The control: a clean run stays ``ok``, records a success, and its
+        delivery carries no banner."""
+        ds = _slotless_dashboard()
+        job = _run_cron_runs([APPROVED, APPROVED], dashboard=ds)
+
+        assert job.last_status != "error"
+        assert job.last_error is None
+        assert job.consecutive_failures == 0
+        body = ds.notify.call_args.args[2]
+        assert not body.startswith("⛔")
+        assert "blocked by the security gate" not in body
+
+    def test_an_all_blocked_run_keeps_the_failure_path(self) -> None:
+        """The control on the other side: total blocks still count, still use
+        the ``all N`` wording, and are not additionally bannered -- their
+        verdict is the failure alert."""
+        ds = _slotless_dashboard()
+        job = _run_cron_runs([BLOCKED, ("cat ~/.ssh/id_rsa", False, True)], dashboard=ds)
+
+        assert job.last_status == "error"
+        assert job.consecutive_failures == 1
+        assert job.last_error is not None
+        assert job.last_error.startswith("all 2 tool call(s) blocked")
+        body = ds.notify.call_args.args[2]
+        assert not body.startswith("⛔")
+
+    def test_a_partial_block_reaches_the_sequential_path(self) -> None:
+        """Both agent paths share the verdict AND the banner."""
+        job = _run_cron_runs(
+            [],
+            agent_sequence=["researcher", "writer"],
+            per_agent={"researcher": [APPROVED], "writer": [REFUSED_WRITE]},
+        )
+
+        assert job.last_status == "error"
+        assert job.last_error is not None
+        assert "1 of 2 tool call(s) blocked" in job.last_error
+        assert job.last_result is not None
+        assert job.last_result.startswith("⛔ 1 of 2 tool call(s) blocked")
+        assert job.consecutive_failures == 0
+
+    def test_the_reason_is_capped_and_names_at_most_three(self) -> None:
+        """Titles are LLM-authored; a run that tripped the gate many times
+        still reads as one bounded line."""
+        many = [(f"Write /vault/note-{i}.md", False, True) for i in range(6)]
+        job = _run_cron_runs([APPROVED, *many])
+
+        assert job.last_error is not None
+        assert "6 of 7 tool call(s) blocked" in job.last_error
+        assert "note-2.md" in job.last_error
+        assert "note-3.md" not in job.last_error
+        assert len(job.last_error) <= 500
+
+    def test_a_refused_title_cannot_page_the_channel(self) -> None:
+        """Titles are LLM-authored and the banner lands in the result body,
+        which the Slack leg posts as parsed mrkdwn. A refused call titled
+        ``<!channel>`` must reach every surface with the mention broken, in
+        the reason and in the delivered body alike."""
+        ds = _slotless_dashboard()
+        paged = ("Write /vault/x.md # <!channel> <!here> @everyone", False, True)
+        job = _run_cron_runs([APPROVED, paged], dashboard=ds)
+
+        body = ds.notify.call_args.args[2]
+        assert job.last_error is not None
+        for surface in (job.last_error, body):
+            assert "<!channel>" not in surface
+            assert "<!here>" not in surface
+            assert "@everyone" not in surface
+            assert "<\u200b!channel>" in surface, "the title was dropped, not defanged"
+        assert "Write /vault/x.md" in job.last_error
+
+
 class TestMultiAgentSequence:
     """The sequential (agent_sequence) path carries the same verdict as the
     single-agent one, so a multi-agent job's failure counter moves in both
@@ -331,16 +501,17 @@ class TestMultiAgentSequence:
 
     def test_the_tally_spans_the_whole_sequence(self) -> None:
         """Scripted asymmetrically on purpose: agent 1 gets a tool through and
-        agent 2 is blocked outright. A per-agent tally would fail agent 2 and
-        record an error; a run-scoped one sees the run did work."""
+        agent 2 is blocked outright. A per-agent tally would fail agent 2, count
+        a failure and report ``all 1 tool call(s) blocked``; a run-scoped one
+        sees the run did work and reports the block as one of two calls."""
         job = _run_cron_runs(
             [],
             agent_sequence=self._AGENTS,
             per_agent={"researcher": [APPROVED], "coder": [BLOCKED]},
         )
 
-        assert job.last_status != "error", "the tally is per-agent, not per-run"
-        assert job.consecutive_failures == 0
+        assert job.consecutive_failures == 0, "the tally is per-agent, not per-run"
+        assert "1 of 2 tool call(s) blocked" in (job.last_error or "")
 
     def test_repeated_blocked_sequences_auto_pause(self) -> None:
         job = _run_cron_runs(

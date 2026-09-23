@@ -28,6 +28,8 @@ import os
 import platform
 import posixpath
 import re
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -38,6 +40,7 @@ import pytest
 import kiro_crew.executors as ex
 from kiro_crew import security
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Captured BEFORE the autouse fixture below can stub it.  The fixture replaces this
 # helper for every test in the file, so a test that wants to exercise the real state
@@ -448,6 +451,84 @@ def test_the_stall_prefix_is_unchanged_on_posix(monkeypatch) -> None:
     assert security._stall_prefix("rel/path/file") == "rel/path"
 
 
+def test_the_stall_prefix_never_ends_on_a_container_of_homes(monkeypatch) -> None:
+    """A host whose homes sit one level deeper than ``/home`` reproduced the ``C:\\Users``
+    collapse on POSIX: two components of ``/local/home/<user>/...`` is ``/local/home``,
+    one key for every user, workspace, checkout, data home and credential store on
+    the machine, so one stall anywhere under it refused the whole host for the
+    cooldown (kirodotdev/KiroCrew#12386).  The key must not stop on a container of
+    homes; it takes the user too, which is exactly the key ``/home/<user>`` gets.
+    Driven through ``posixpath`` so the layout is asserted on every platform.
+    """
+    monkeypatch.setattr(security.paths.os, "path", posixpath)
+    monkeypatch.setattr(security.paths.os, "sep", posixpath.sep)
+
+    # The issue's reproduction, inverted: two users, two keys.
+    alice = security._stall_prefix("/local/home/alice/.aws/credentials")
+    bob = security._stall_prefix("/local/home/bob/project/file.py")
+    assert alice == "/local/home/alice"
+    assert bob == "/local/home/bob"
+    assert alice != bob
+    # Every layout that puts the homes one level deeper keeps the word.
+    assert security._stall_prefix("/usr/home/x/f") == "/usr/home/x"
+    assert security._stall_prefix("/var/home/x/f") == "/var/home/x"
+    assert security._stall_prefix("/export/home/x/f") == "/export/home/x"
+    # The container alone is still its own key: there is no user to take.
+    assert security._stall_prefix("/local/home") == "/local/home"
+    assert security._stall_prefix("/home") == "/home"
+    # A home at the usual depth, a mount and a plain directory are untouched: the
+    # rule only fires when the key WOULD have ended on the container.
+    assert security._stall_prefix("/home/x/ws/f") == "/home/x"
+    assert security._stall_prefix("/Volumes/share/x/y") == "/Volumes/share"
+    assert security._stall_prefix("/tmp/x/y") == "/tmp/x"
+
+
+class _StallsOneHome:
+    """Wedged for one user's tree, healthy for every other path."""
+
+    def __init__(self, wedged_under: str) -> None:
+        self.wedged_under = wedged_under
+        self.release = threading.Event()
+        self.calls: list[str] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, expanded: str) -> set[str]:
+        with self._lock:
+            self.calls.append(expanded)
+        if expanded.startswith(self.wedged_under):
+            self.release.wait()
+        return {expanded}
+
+
+def test_a_stall_under_one_home_leaves_a_sibling_home_resolving(monkeypatch) -> None:
+    """kirodotdev/KiroCrew#12386, consequence 1: the blast radius is one home, not the host.
+
+    Through the real cooldown machinery, not the key alone.  A key that stops on the
+    container charges Alice's stall to ``/local/home`` and refuses Bob's path for
+    free, without probing, because every home on the host shares that container.
+    Bob's tree is its own key, so its resolution is submitted and answered while
+    Alice's cooldown is open.
+    """
+    resolver = _StallsOneHome("/local/home/alice/")
+    monkeypatch.setattr(security, "_resolved_spellings", resolver)
+    try:
+        with pytest.raises(security.PathResolutionStalled) as info:
+            security._candidate_forms("/local/home/alice/.aws/credentials")
+        # Alice's tree is refused for free for the rest of the cooldown ...
+        with pytest.raises(security.PathResolutionStalled):
+            security._candidate_forms("/local/home/alice/project/file.py")
+        assert len(resolver.calls) == 1, "the cooldown must not re-probe the stalled home"
+        # ... while Bob's is untouched: the resolution runs and its answer is used.
+        forms = security._candidate_forms("/local/home/bob/project/file.py")
+    finally:
+        resolver.release.set()
+    assert "/local/home/bob/project/file.py" in forms
+    assert resolver.calls[-1] == "/local/home/bob/project/file.py"
+    assert os.path.normpath("/local/home/bob") not in security._path_resolve_degraded
+    # The stall was charged to Alice's home, not to the container both homes share.
+    assert info.value.prefix == os.path.normpath("/local/home/alice")
+
+
 def test_unc_paths_are_recognised_in_both_spellings() -> None:
     assert security._is_unc_path("\\\\server\\share\\project\\readme.md")
     assert security._is_unc_path("//server//share//project//readme.md")
@@ -515,31 +596,43 @@ def test_repeated_stalls_back_off_exponentially_and_recovery_resets(monkeypatch)
 def test_a_known_stalled_prefix_is_not_reprobed_onto_the_last_free_worker(
     monkeypatch, tmp_path
 ) -> None:
-    # A timed-out worker is never reclaimed.  With two workers, re-probing a
-    # dead mount every cooldown would pin the second within two cycles and
-    # leave every healthy path queueing behind wedged futures -- the per-prefix
-    # isolation would hold only while free workers remained.  So a prefix with
-    # a stall history is re-probed only while that leaves one worker free, and
-    # once every worker is pinned nothing is submitted at all.
-    assert security._MAX_PATH_RESOLVE_WORKERS == 2
+    # A timed-out worker is never reclaimed.  Re-probing a dead mount every
+    # cooldown would pin the pool within a few cycles and leave every healthy
+    # path queueing behind wedged futures -- the per-prefix isolation would hold
+    # only while free workers remained.  So a prefix with a stall history is
+    # re-probed only while that leaves one worker free, and once every worker is
+    # pinned nothing is submitted at all.
+    #
+    # The scenario is DERIVED from the pool size rather than written for a
+    # particular one: the property is "one worker free", not "one worker used",
+    # so a test that pins a literal count silently stops exercising the
+    # leave-one-free arm the moment the pool is resized (it was written when the
+    # pool was 2, where W-1 and 1 coincide).
+    workers = security._MAX_PATH_RESOLVE_WORKERS
+    assert workers >= 2, "the leave-one-free arm needs a pool of at least two"
     clock = [1000.0]
     monkeypatch.setattr(security, "_path_resolve_clock", lambda: clock[0])
     real_resolver = security._resolved_spellings
-    first = _StalledResolver()
-    second = _StalledResolver()
+    # One stalled mount per worker: W-1 to reach the leave-one-free boundary,
+    # plus one more to saturate the pool in the last phase.  Each needs its OWN
+    # prefix, because a second call under a prefix already in cooldown is
+    # refused by the cooldown arm before the worker guard is ever consulted.
+    stalls = [_StalledResolver() for _ in range(workers)]
     try:
-        monkeypatch.setattr(security, "_resolved_spellings", first)
-        with pytest.raises(security.PathResolutionStalled):
-            security._candidate_forms("/home/user/x")  # worker 1 pinned
-        assert security._wedged_workers() == 1
+        for i in range(workers - 1):
+            monkeypatch.setattr(security, "_resolved_spellings", stalls[i])
+            with pytest.raises(security.PathResolutionStalled):
+                security._candidate_forms(f"/net/mount{i}/x")
+        assert security._wedged_workers() == workers - 1
+        first = stalls[0]
         clock[0] += security._PATH_RESOLVE_COOLDOWN_SECS + 1
         # Re-probe would pin the last free worker: refused without a submit,
         # and NOT charged as a stall -- nothing was observed, so the backoff
         # stays where the real stall left it.
         with pytest.raises(security.PathResolutionStalled):
-            security._candidate_forms("/home/user/y")
+            security._candidate_forms("/net/mount0/y")
         assert len(first.calls) == 1
-        assert security._path_resolve_degraded[os.path.normpath("/home/user")][1] == 1
+        assert security._path_resolve_degraded[os.path.normpath("/net/mount0")][1] == 1
         # The free worker still serves a healthy prefix.
         monkeypatch.setattr(security, "_resolved_spellings", real_resolver)
         target = tmp_path / "creds"
@@ -547,17 +640,18 @@ def test_a_known_stalled_prefix_is_not_reprobed_onto_the_last_free_worker(
         link = tmp_path / "link"
         link.symlink_to(target)
         assert str(target) in security._candidate_forms(str(link))
-        # A SECOND dead mount may take the last worker (no history yet) ...
-        monkeypatch.setattr(security, "_resolved_spellings", second)
+        # A further dead mount may take the last worker (no history yet) ...
+        last = stalls[-1]
+        monkeypatch.setattr(security, "_resolved_spellings", last)
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/net/other/z")
-        assert security._wedged_workers() == 2
+        assert security._wedged_workers() == workers
         # ... after which a fresh prefix is refused immediately rather than
-        # queued behind two wedged futures: nothing reaches the resolver.  The
+        # queued behind the wedged futures: nothing reaches the resolver.  The
         # pool is the only witness available here, and it has to be COUNTED, not
-        # timed.  Both workers are pinned, so a lost guard would submit a future
+        # timed.  Every worker is pinned, so a lost guard would submit a future
         # that never starts: the resolver stub is never entered, so
-        # ``second.calls`` stays at 1, and a never-run future charges no stall,
+        # ``last.calls`` stays at 1, and a never-run future charges no stall,
         # so the assertion below it holds too.  A wall-clock ceiling would see
         # it, but only by reading a scheduler stall as the same regression.
         submissions: list[str] = []
@@ -572,13 +666,92 @@ def test_a_known_stalled_prefix_is_not_reprobed_onto_the_last_free_worker(
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/srv/fresh/w")
         assert submissions == [], "a saturated pool must be refused without a submit"
-        assert len(second.calls) == 1
+        assert len(last.calls) == 1
         # ... and that healthy prefix is not charged a stall it never had, so
         # it is served again the moment a worker frees up.
         assert os.path.normpath("/srv/fresh") not in security._path_resolve_degraded
     finally:
-        first.release.set()
-        second.release.set()
+        for stall in stalls:
+            stall.release.set()
+
+
+def test_the_resolver_pool_ships_with_two_workers(monkeypatch) -> None:
+    # The knob widens the pool for an operator who asks; it does not move the
+    # shipped number.  Pinned as a literal because the PR that added the knob
+    # promises the default is unchanged, and a later "just raise it" edit would
+    # otherwise ride in silently.
+    monkeypatch.delenv(ex._PATH_RESOLVE_WORKERS_ENV, raising=False)
+    assert ex._PATH_RESOLVE_WORKERS_DEFAULT == 2
+    assert ex._path_resolve_worker_count() == 2
+
+
+@pytest.mark.parametrize("raw, expected", [("2", 2), ("3", 3), ("8", 8), (" 8 ", 8), ("64", 64)])
+def test_an_in_range_resolver_pool_knob_is_honoured(monkeypatch, raw, expected) -> None:
+    monkeypatch.setenv(ex._PATH_RESOLVE_WORKERS_ENV, raw)
+    assert ex._path_resolve_worker_count() == expected
+
+
+def test_the_resolver_pool_knob_reaches_the_pool_in_a_fresh_interpreter() -> None:
+    # The knob tests around this one call the parser directly, so an edit that
+    # disconnected the parser from the module constant (``_MAX_PATH_RESOLVE_WORKERS
+    # = 2`` again) would leave them all green while the knob did nothing.  Import in
+    # a fresh interpreter, where the once-at-import read really happens, and follow
+    # the value to the pool the gate submits to.
+    probe = (
+        "import kiro_crew.executors as ex\n"
+        "print(ex._MAX_PATH_RESOLVE_WORKERS, ex.path_resolve_executor()._max_workers)\n"
+    )
+    env = dict(os.environ)
+    env[ex._PATH_RESOLVE_WORKERS_ENV] = "8"
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, env=env, timeout=120, **UTF8_TEXT
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.split() == ["8", "8"]
+
+
+@pytest.mark.parametrize(
+    "raw, reason",
+    [
+        ("0", "outside"),
+        # 1 is refused on purpose: the leave-one-free guard refuses a known-stalled
+        # prefix once W - 1 workers are pinned, which with W = 1 is ``wedged >= 0``
+        # -- every re-probe of that prefix refused before it can run, so nothing
+        # could ever clear the prefix's record (see the guard test above).
+        ("1", "outside"),
+        ("-3", "outside"),
+        ("65", "outside"),
+        ("abc", "not an integer"),
+        ("2.5", "not an integer"),
+    ],
+)
+def test_a_bad_resolver_pool_knob_fails_soft_to_the_default_and_says_so(
+    monkeypatch, caplog, raw, reason
+) -> None:
+    # Fail-soft TO THE DEFAULT is the conservative direction: the default is the
+    # lower ceiling, so a typo can only ever leave the shipped behaviour in
+    # place, never widen the pool.  The warning is what tells the operator the
+    # knob they set was ignored -- a silent fallback would read as "8 workers
+    # did not help" when the pool never left 2.
+    monkeypatch.setenv(ex._PATH_RESOLVE_WORKERS_ENV, raw)
+    with caplog.at_level(logging.WARNING, logger=ex.__name__):
+        assert ex._path_resolve_worker_count() == ex._PATH_RESOLVE_WORKERS_DEFAULT
+    messages = [r.getMessage() for r in caplog.records if r.name == ex.__name__]
+    assert len(messages) == 1
+    assert reason in messages[0]
+    assert ex._PATH_RESOLVE_WORKERS_ENV in messages[0]
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_an_empty_resolver_pool_knob_is_the_default_without_a_warning(
+    monkeypatch, caplog, raw
+) -> None:
+    # Empty is how a shell script clears a variable it may have set; it is not
+    # a typo, so it gets the default silently.
+    monkeypatch.setenv(ex._PATH_RESOLVE_WORKERS_ENV, raw)
+    with caplog.at_level(logging.WARNING, logger=ex.__name__):
+        assert ex._path_resolve_worker_count() == ex._PATH_RESOLVE_WORKERS_DEFAULT
+    assert [r for r in caplog.records if r.name == ex.__name__] == []
 
 
 def test_a_failed_resolution_still_falls_back_to_lexical_forms(monkeypatch) -> None:
@@ -1033,7 +1206,10 @@ def test_a_stalled_rebuild_refuses_even_with_a_warm_cache(monkeypatch, tmp_path)
     security._home_targets_cache.clear()
     warm = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)  # canonical
     assert str(crew_home / "token_signing.key").casefold() in warm
-    clock[0] += security._HOME_TARGETS_TTL_SECS + 0.01  # the slot expires
+    # The EFFECTIVE expiry, read through the adaptive law rather than off the
+    # floor constant: under a frozen clock the warm build above measures as
+    # costing nothing, so the law returns its floor.
+    clock[0] += security._home_targets_ttl(0.0) + 0.01  # the slot expires
     logical_home = str(security.Path.home())
     stalled = _StalledRealpath()
     monkeypatch.setattr(security, "_realpath_or_none", stalled)
@@ -1097,7 +1273,7 @@ def test_a_repointed_override_root_is_never_served_stale_through_a_stall(
     monkeypatch.setattr(security.time, "monotonic", lambda: clock[0])
     security._home_targets_cache.clear()
     assert security.is_sensitive_path(str(real_a / "security_policy.json")) is True  # warm on A
-    clock[0] += security._HOME_TARGETS_TTL_SECS + 0.01
+    clock[0] += security._home_targets_ttl(0.0) + 0.01
     link.unlink()
     link.symlink_to(real_b, target_is_directory=True)  # repointed...
     real_resolver = security._realpath_or_none

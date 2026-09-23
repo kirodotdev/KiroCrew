@@ -21,8 +21,10 @@ import time
 from pathlib import Path
 
 import pytest
+from real_adapter_gate import MEASURED_OPENCODE_VERSION, require_real_adapter
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import platform_compat
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
@@ -908,20 +910,33 @@ def _run_driver_reaping_group(
 def _opencode_bin() -> str | None:
     """The installed harness, through the SPAWN's own resolver.
 
-    Asking ``_resolve_opencode_bin`` rather than ``shutil.which`` is deliberate:
+    Asking ``_resolve_self_served_bin`` rather than ``shutil.which`` is deliberate:
     what this test must exercise is the binary a real session would spawn, on the
     same ladder (``OPENCODE_BIN``, mise, PATH).
     """
-    from kiro_crew.acp.client import _resolve_opencode_bin
+    from kiro_crew.acp.client import _resolve_self_served_bin
 
-    resolved, _search = _resolve_opencode_bin()
+    resolved, _search = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
     return resolved or None
 
 
 _BIN = _opencode_bin()
 
 
-@pytest.mark.skipif(_BIN is None, reason="opencode not installed")
+def _require_opencode() -> None:
+    """Gate a live measurement on the harness, without a skip a lane can hide behind.
+
+    The codex file's ``_require_codex_acp`` with this backend's resolver and pin:
+    absent locally it skips, absent under ``KIROCREW_E2E_REQUIRE=1`` it fails, so
+    the lane that installs the pinned harness cannot report success having measured
+    nothing.
+    """
+    require_real_adapter(
+        _BIN, what="opencode", install=f"npm i -g opencode-ai@{MEASURED_OPENCODE_VERSION}"
+    )
+
+
+@pytest.mark.real_adapter
 def test_real_opencode_acp_accepts_the_crew_stdio_element():
     """ANTI-DRIFT GUARD, and the measurement this whole projection rests on.
 
@@ -958,10 +973,12 @@ def test_real_opencode_acp_accepts_the_crew_stdio_element():
     ``HOME`` and ``XDG_*`` tree, so the operator's own opencode configuration is
     neither read nor written.
 
-    Skips cleanly where the harness is absent, which is CI. Its companion
+    Skips where the harness is absent, and FAILS instead where a lane declares it
+    must be there. Its companion
     :func:`test_the_real_adapter_guard_is_reachable_at_all` is what keeps the skip
     from becoming permanent silence.
     """
+    _require_opencode()
     assert _BIN is not None
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         root = Path(w)
@@ -1053,16 +1070,25 @@ def test_real_opencode_acp_accepts_the_crew_stdio_element():
     )
 
 
-def test_the_real_adapter_guard_is_reachable_at_all():
+def test_the_real_adapter_guard_is_reachable_at_all(monkeypatch):
     """A skip-only guard is a guard nobody notices has stopped running.
 
-    This does not assert the harness is installed -- CI has no opencode. It asserts
-    the RESOLVER the guard skips on is the spawn's own, so a rename there turns the
-    guard permanently green without anyone seeing it.
-    """
-    from kiro_crew.acp.client import _resolve_opencode_bin
+    This does not assert the harness is installed -- most runners have none, and
+    the lane that installs it enforces presence with ``KIROCREW_E2E_REQUIRE``
+    instead. It asserts the RESOLVER the guard
+    reads is the spawn's own, so a rename there cannot turn the guard permanently
+    green without anyone seeing it.
 
-    resolved, search = _resolve_opencode_bin()
+    The resolver's mise rung is pinned to "not registered": what is under test is
+    the ladder's shape and reachability, and the real rung runs the host's ``mise``
+    binary from this test's process -- a host program this test has no business
+    starting (test-hygiene class 7).
+    """
+    from kiro_crew.acp import client as client_mod
+    from kiro_crew.acp.client import _resolve_self_served_bin
+
+    monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
+    resolved, search = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
     assert resolved is None or isinstance(resolved, str)
     assert isinstance(search, str)
     assert os.environ.get("OPENCODE_BIN") is None or _BIN is not None
@@ -1096,11 +1122,14 @@ time.sleep(300)
         assert time.monotonic() - started < 90
         grandchild = int((result.stdout or "").strip().splitlines()[0])
 
+    # Liveness through the repo's own probe (AGENTS.md "Cross-platform"): a raw
+    # ``os.kill(pid, 0)`` is a POSIX idiom that TERMINATES the target on Windows,
+    # and the sweep's caller filter recognises only the sanctioned helper.
+    # ``PID_UNSIGNALABLE`` counts as gone, like a bare ``OSError``: the grandchild
+    # was ours, so a number this process cannot signal is not it.
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            os.kill(grandchild, 0)
-        except OSError:
+        if platform_compat.pid_liveness(grandchild) != platform_compat.PID_ALIVE:
             break
         time.sleep(0.2)
     else:  # pragma: no cover - the failure this test exists to catch

@@ -125,6 +125,23 @@ class McpProvider(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class McpProviderOutcome:
+    """Outcome of one provider leg in an MCP catalog search."""
+
+    name: str
+    status: str
+    """One of ``ok``, ``timeout``, or ``error``."""
+
+
+@dataclass(frozen=True)
+class McpSearchResponse:
+    """Merged search results plus one outcome for every attempted provider."""
+
+    results: list[McpSearchResult]
+    provider_outcomes: list[McpProviderOutcome]
+
+
 class ProviderRegistry:
     """Registry of MCP providers for fan-out search.
 
@@ -159,47 +176,59 @@ class ProviderRegistry:
         provider: str | None = None,
         limit: int = 20,
     ) -> list[McpSearchResult]:
-        """Fan-out search across all available providers (or a specific one).
+        """Search while preserving the legacy results-only return contract."""
+        return (await self.search_with_outcomes(query, provider=provider, limit=limit)).results
 
-        Results are merged and returned in provider order. Each provider's
-        failures are caught and logged — a single provider timeout does not
-        break the entire search.
+    async def search_with_outcomes(
+        self,
+        query: str,
+        *,
+        provider: str | None = None,
+        limit: int = 20,
+    ) -> McpSearchResponse:
+        """Search providers and report whether every attempted leg answered.
+
+        Results stay merged in provider order. A timeout or error contributes no
+        rows but remains visible in ``provider_outcomes`` so callers can distinguish
+        an incomplete search from a complete search with zero matches.
         """
+
+        async def _search_one(name: str, p: McpProvider) -> McpSearchResponse:
+            try:
+                results = await asyncio.wait_for(
+                    p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
+                )
+                return McpSearchResponse(
+                    results=results,
+                    provider_outcomes=[McpProviderOutcome(name=name, status="ok")],
+                )
+            except asyncio.TimeoutError:
+                logger.warning("MCP provider %s timed out for query %r", name, query)
+                return McpSearchResponse(
+                    results=[],
+                    provider_outcomes=[McpProviderOutcome(name=name, status="timeout")],
+                )
+            except Exception:
+                logger.warning("MCP provider %s failed for query %r", name, query, exc_info=True)
+                return McpSearchResponse(
+                    results=[],
+                    provider_outcomes=[McpProviderOutcome(name=name, status="error")],
+                )
+
         if provider:
             p = self._providers.get(provider)
             if p is None or not p.is_available():
-                return []
-            try:
-                return await asyncio.wait_for(
-                    p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
-                )
-            except asyncio.TimeoutError:
-                logger.warning("MCP provider %s timed out for query %r", provider, query)
-                return []
-            except Exception:
-                logger.warning(
-                    "MCP provider %s failed for query %r", provider, query, exc_info=True
-                )
-                return []
+                return McpSearchResponse(results=[], provider_outcomes=[])
+            return await _search_one(provider, p)
 
         providers = self.available_providers
         if not providers:
-            return []
+            return McpSearchResponse(results=[], provider_outcomes=[])
 
-        async def _search_one(p: McpProvider) -> list[McpSearchResult]:
-            try:
-                return await asyncio.wait_for(
-                    p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
-                )
-            except asyncio.TimeoutError:
-                logger.warning("MCP provider %s timed out for query %r", p.name, query)
-                return []
-            except Exception:
-                logger.warning("MCP provider %s failed for query %r", p.name, query, exc_info=True)
-                return []
-
-        results_per_provider = await asyncio.gather(*[_search_one(p) for p in providers])
+        responses = await asyncio.gather(*[_search_one(p.name, p) for p in providers])
         merged: list[McpSearchResult] = []
-        for results in results_per_provider:
-            merged.extend(results)
-        return merged[:limit]  # total cap matches what the caller asked for
+        outcomes: list[McpProviderOutcome] = []
+        for response in responses:
+            merged.extend(response.results)
+            outcomes.extend(response.provider_outcomes)
+        return McpSearchResponse(results=merged[:limit], provider_outcomes=outcomes)

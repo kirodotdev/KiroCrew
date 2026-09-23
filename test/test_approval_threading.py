@@ -6,7 +6,6 @@ session's Slack thread instead of posting as top-level DMs.
 
 from __future__ import annotations
 
-import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -196,6 +195,7 @@ class TestSubagentPassesParentKey:
 
         sessions = MagicMock()
         sessions.get_pid = MagicMock(return_value=None)
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
         sessions.release = MagicMock()
         sessions.reset = AsyncMock()
@@ -257,6 +257,8 @@ class TestSubagentPassesParentKey:
         sessions.get_pid = MagicMock(return_value=None)
         sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
         sessions.get_approval_policy = MagicMock(return_value=None)
+        sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.release = MagicMock()
         sessions.reset = AsyncMock()
         ctx_builder = MagicMock()
@@ -274,8 +276,8 @@ class TestSubagentPassesParentKey:
         info = manager.spawn("ls /tmp", parent_session_key="1775113012.860459")
         assert info is not None
 
-        with contextlib.suppress(Exception):
-            await manager._tasks[info.id]
+        await manager._tasks[info.id]
+        assert not info.error, info.error
 
         assert len(captured) == 1
         assert captured[0] == "1775113012.860459"

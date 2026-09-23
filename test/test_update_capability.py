@@ -30,6 +30,63 @@ def _init_repo(path) -> None:
     )
 
 
+def _pin_probe_git(monkeypatch, tmp_path):
+    """Resolve the worktree probe's git to a fake under ``tmp_path``.
+
+    ``_git_toplevel`` finds git through ``trusted_system_bin`` (fixed system
+    directories, never PATH) and asks ``rev-parse --show-toplevel`` about the
+    install root. Left alone, that is the HOST's git running from the test
+    process -- and on a host that keeps git outside those directories the probe
+    silently degrades to the on-disk fallback, so which branch a test exercised
+    depended on the machine. The fake answers the one question the probe asks
+    the way git does: the ``-C`` root itself when it carries ``.git``, exit 128
+    otherwise. Every argv it sees is appended to ``git-calls.log`` beside it.
+
+    For the derivation tests only. ``TestIsGitWorktree`` is ABOUT the probe's
+    reading of real repositories (linked worktrees, ancestor capture) and keeps
+    the real binary.
+    """
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    log = bin_dir / "git-calls.log"
+    if os.name == "nt":
+        fake = bin_dir / "git.cmd"
+        fake.write_text(
+            "@echo off\r\n"
+            f'echo %* >> "{log}"\r\n'
+            ":loop\r\n"
+            'if "%~1"=="" goto miss\r\n'
+            'if "%~1"=="-C" (\r\n'
+            '  if exist "%~2\\.git" (echo %~2& exit /b 0)\r\n'
+            "  goto miss\r\n"
+            ")\r\n"
+            "shift\r\n"
+            "goto loop\r\n"
+            ":miss\r\n"
+            "echo fatal: not a git repository 1>&2\r\n"
+            "exit /b 128\r\n",
+            encoding="utf-8",
+        )
+    else:
+        fake = bin_dir / "git"
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'printf \'%s\\n\' "$*" >> "{log}"\n'
+            "root=\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            '  if [ "$1" = "-C" ]; then root=$2; shift; fi\n'
+            "  shift\n"
+            "done\n"
+            'if [ -n "$root" ] && [ -e "$root/.git" ]; then printf \'%s\\n\' "$root"; exit 0; fi\n'
+            "echo 'fatal: not a git repository' >&2\n"
+            "exit 128\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+    monkeypatch.setattr(update_capability, "trusted_system_bin", lambda _name: str(fake))
+    return fake
+
+
 def _commit(path) -> None:
     """A commit, so ``git worktree add`` has something to check out."""
     (path / "seed.txt").write_text("seed\n", encoding="utf-8")
@@ -309,7 +366,13 @@ class TestRunningFromCheckout:
 
 
 class TestDeriveCapability:
-    @pytest.mark.parametrize("dist", ["dmg", "appimage"])
+    @pytest.fixture(autouse=True)
+    def _probe_git_is_a_fake(self, monkeypatch, tmp_path):
+        # The derivation is the subject; the path probe underneath it is not. See
+        # ``_pin_probe_git`` for why the host's git must not answer here.
+        _pin_probe_git(monkeypatch, tmp_path)
+
+    @pytest.mark.parametrize("dist", ["dmg", "appimage", "deb", "rpm", "nsis"])
     def test_desktop_defers_to_its_own_updater(self, dist):
         capability = derive_capability(install_root="", dist=dist)
         assert capability.managed_by == "electron"
@@ -318,6 +381,19 @@ class TestDeriveCapability:
         # The gateway's own apply endpoint is git-only, so it must not claim the
         # capability just because the surrounding app has it.
         assert capability.can_apply is False
+
+    def test_the_windows_desktop_is_not_offered_a_posix_installer(self):
+        """The Windows desktop stamp must stay out of the feed lane below.
+
+        That lane's remediation is a ``curl … | sh`` pipeline: no Windows shell
+        runs it, and the installer it fetches does not replace the app's bytes
+        either.
+        """
+        capability = derive_capability(install_root="", dist="nsis")
+        assert capability.remediation is None
+        # for_channel is where the wheel command is re-pinned; a deferring
+        # capability must not acquire one by passing through it.
+        assert capability.for_channel("nightly").remediation is None
 
     def test_container_is_supported_but_cannot_apply(self):
         capability = derive_capability(install_root="", dist="docker")
@@ -351,11 +427,12 @@ class TestDeriveCapability:
         assert "--proto '=https'" in command
         assert "--channel " in command
 
-    def test_a_desktop_stamp_wins_over_a_checkout(self, tmp_path):
+    @pytest.mark.parametrize("dist", ["dmg", "nsis"])
+    def test_a_desktop_stamp_wins_over_a_checkout(self, tmp_path, dist):
         # A bundle ships this backend inside itself; being pointed at a checkout
         # does not move ownership of its bytes to that checkout.
         _init_repo(tmp_path)
-        capability = derive_capability(install_root=str(tmp_path), dist="dmg")
+        capability = derive_capability(install_root=str(tmp_path), dist=dist)
         assert capability.managed_by == "electron"
 
     def test_install_root_defaults_to_the_project_env(self, tmp_path, monkeypatch):
@@ -536,3 +613,29 @@ class TestTheProbeDoesNotTrustPath:
         nested = checkout / "src" / "deep"
         nested.mkdir(parents=True)
         assert is_git_worktree(str(nested)) is False
+
+
+class TestExternallyManagedTablesAgree:
+    """The two tables keyed on the same stamps must not drift apart.
+
+    ``update_layout.detect_install_layout`` decides ``is_externally_managed`` by
+    membership in its own ``EXTERNALLY_MANAGED`` copy, so a stamp added to the
+    capability's classes and missed there is reported as a feed-checkable
+    install: the channel endpoint would accept a switch for an app that reads no
+    channel file, and the CLI would run the wheel updater against bytes it does
+    not own.
+    """
+
+    def test_every_managed_stamp_has_guidance(self):
+        from kiro_crew.platform.update_capability import EXTERNALLY_MANAGED_STAMPS
+        from kiro_crew.platform.update_layout import EXTERNALLY_MANAGED
+
+        assert set(EXTERNALLY_MANAGED) == set(EXTERNALLY_MANAGED_STAMPS)
+
+    def test_the_windows_guidance_names_the_app_updater(self):
+        from kiro_crew.platform.update_layout import EXTERNALLY_MANAGED
+
+        guidance = EXTERNALLY_MANAGED["nsis"]
+        assert "desktop app's built-in updater" in guidance
+        # It must not send a Windows user to a shell installer.
+        assert "curl" not in guidance and " sh" not in guidance

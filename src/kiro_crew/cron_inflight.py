@@ -10,12 +10,18 @@ nothing could break the loop.
 
 This module is that record. ``write_marker`` drops one small JSON file per
 running job under ``<cron dir>/cron-running/`` when the run starts executing,
-and ``clear_marker`` removes it when the run ends by any path that runs
-``finally``. A marker that is still there for a PID that is no longer alive is
-therefore exactly "this job was in flight when that gateway died", with no
-inference from timestamps or schedules. The stall attribution
-(:mod:`kiro_crew.stall_attribution`) joins it to the crash dump by PID; the
-cron service's boot-time breaker pauses the job it names; ``doctor`` prints it.
+named by the job id AND a per-run token, and ``clear_marker`` removes that
+run's file when the run ends by any path that runs ``finally``. The token is
+what keeps a run's teardown from touching a newer run's evidence: a cancelled
+run's finalizer can arrive after a replacement run of the same job has been
+accepted and has written its own marker, and a clear by job id alone would
+take the replacement's marker with it. A marker that is still there for a PID
+that is not alive is therefore exactly "this job was in flight when that
+gateway died", with no inference from timestamps or schedules. The stall
+attribution (:mod:`kiro_crew.stall_attribution`) joins it to the crash dump by
+PID and keeps one marker per job -- the newest start, the run actually in
+flight when a stale finalizer's file is still beside it; the cron service's
+boot-time breaker pauses the job it names; ``doctor`` prints it.
 
 Every function here is synchronous filesystem I/O and is called off the event
 loop (``asyncio.to_thread`` from the run task, a worker from ``start()``, the
@@ -58,8 +64,11 @@ logger = logging.getLogger(__name__)
 RUNNING_DIR_NAME = "cron-running"
 _MARKER_SUFFIX = ".json"
 #: A marker is never read past this size: it is written by this module and
-#: holds five short fields, so anything larger is not a marker.
+#: holds a handful of short fields, so anything larger is not a marker.
 _MARKER_MAX_BYTES = 4096
+#: A run token is a hex nonce (``uuid4().hex``, 32 chars); the bound keeps a
+#: forged name from growing the marker directory's file names without limit.
+_RUN_TOKEN_MAX_CHARS = 64
 #: Name of the file recording the newest dump the loop-stall breaker has already
 #: reached a verdict on, so one crash pauses its job once: a dump stays on disk
 #: for a week and a job the operator resumed must not be re-paused on the next
@@ -143,6 +152,10 @@ class RunningMarker:
     #: identity is readable.
     pid_domain: str
     pid_start: str | None = None
+    #: There is no run-token field: the token that keys a marker to its run is
+    #: carried by the file NAME alone (see :func:`marker_path`), which is where
+    #: :func:`clear_marker` needs it. The payload is what the breaker and the
+    #: doctor read, and neither asks which run of the job wrote it.
 
     def owner_alive(self) -> bool | None:
         """``True`` when the writing process is confirmed live here, ``False``
@@ -186,23 +199,43 @@ def _readable_running_dir(base_dir: Path) -> Path | None:
     return d
 
 
-def marker_path(base_dir: Path, job_id: str) -> Path:
+def marker_path(base_dir: Path, job_id: str, run: str) -> Path:
     # Job ids are hex tokens minted by the service; a stray separator is
     # rejected rather than resolved into a path outside the marker directory.
     if not job_id or "/" in job_id or "\\" in job_id or job_id in (".", ".."):
         raise ValueError(f"not a cron job id: {job_id!r}")
-    return running_dir(base_dir) / f"{job_id}{_MARKER_SUFFIX}"
+    # The run token is part of the NAME, so a marker belongs to one run and a
+    # ``clear_marker`` can only ever remove its own: a replacement run accepted
+    # while the prior run's finalizer is still pending writes a different file,
+    # and there is no read-then-unlink window in which the two could be
+    # confused. Minted by the run task (a hex nonce); anything else is refused
+    # the same way a stray job id is. There is no token-less name: a
+    # ``<job id>.json`` on disk predates the token and is only ever read.
+    if not run or not run.isalnum() or len(run) > _RUN_TOKEN_MAX_CHARS:
+        raise ValueError(f"not a cron run token: {run!r}")
+    return running_dir(base_dir) / f"{job_id}.{run}{_MARKER_SUFFIX}"
 
 
-def write_marker(base_dir: Path, job_id: str, name: str, started_at: float | None = None) -> None:
+def write_marker(
+    base_dir: Path,
+    job_id: str,
+    name: str,
+    started_at: float | None = None,
+    *,
+    run: str,
+) -> None:
     """Record that *job_id* is executing in this process. Best-effort.
 
-    A refusal (a redirecting parent link, a filesystem that cannot lock the file
-    to its owner) leaves no marker, which is the safe direction: the breaker
-    then names no job and pauses nothing.
+    ``run`` is the run's own token (see :func:`marker_path`): the run task
+    mints one per run, so its ``clear_marker`` removes this file and no other
+    run's. It lives in the file name only -- the payload below is what the
+    breaker reads, and it never asks which run wrote the marker. A refusal (a
+    redirecting parent link, a filesystem that cannot lock the file to its
+    owner) leaves no marker, which is the safe direction: the breaker then
+    names no job and pauses nothing.
     """
     try:
-        path = marker_path(base_dir, job_id)
+        path = marker_path(base_dir, job_id, run)
         path.parent.mkdir(parents=True, exist_ok=True)
         pid_domain, pid_start = current_process_identity()
         payload = {
@@ -218,16 +251,22 @@ def write_marker(base_dir: Path, job_id: str, name: str, started_at: float | Non
         logger.debug("cron in-flight marker not written for %s", job_id, exc_info=True)
 
 
-def clear_marker(base_dir: Path, job_id: str) -> None:
-    """Remove *job_id*'s marker. Best-effort; a missing marker is not an error.
+def clear_marker(base_dir: Path, job_id: str, run: str) -> None:
+    """Remove the marker *run* of *job_id* wrote. Best-effort; a missing marker is not an error.
 
-    Refused when ``cron-running`` is a link: ``unlink`` follows every component
-    but the last, so the file removed would be the one INSIDE the link's target.
+    Keyed by the run token, not the job id alone: the finalizer of a cancelled
+    run reaches this after an unwind that can take a whole session teardown,
+    and a replacement run accepted in the meantime has written ITS marker. A
+    clear by job id would take that marker with it, and a hard exit during the
+    replacement would then leave the breaker no evidence of the job that
+    crashed the loop. Refused when ``cron-running`` is a link: ``unlink``
+    follows every component but the last, so the file removed would be the one
+    INSIDE the link's target.
     """
     try:
         if _readable_running_dir(base_dir) is None:
             return
-        marker_path(base_dir, job_id).unlink(missing_ok=True)
+        marker_path(base_dir, job_id, run).unlink(missing_ok=True)
     except Exception:
         logger.debug("cron in-flight marker not cleared for %s", job_id, exc_info=True)
 
@@ -246,7 +285,9 @@ def _read_marker(path: Path) -> RunningMarker | None:
 def _marker_from(data: dict[str, Any], path: Path) -> RunningMarker:
     """A marker from its JSON. Raises for a shape this module never writes --
     including one without ``pid_domain``, so a file planted before the
-    identity fields existed cannot name a job on the upgraded breaker."""
+    identity fields existed cannot name a job on the upgraded breaker. Keys
+    this module does not write (an older build's ``run`` token) are ignored,
+    so a marker left on disk across an upgrade still names its job."""
     start = data.get("pid_start")
     return RunningMarker(
         job_id=str(data["job_id"]),

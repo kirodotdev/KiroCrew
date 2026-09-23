@@ -27,10 +27,15 @@ def _deploy_handler_source() -> str:
 class TestFU1ReaperRemediation:
     def test_renders_exact_operator_command(self):
         cmd = h._reaper_remediation("personal", "us-west-2")
-        assert cmd == "install-reaper.sh --profile personal --region us-west-2"
+        # The script is named by ABSOLUTE path (resolved from the live skills
+        # dir) because the bare name is on nobody's PATH, so a bare name is not
+        # a command the user can run.
+        assert cmd.endswith("install-reaper.sh --profile personal --region us-west-2")
+        assert "artifact-deploy" in cmd
 
     def test_omits_empty_parts(self):
-        assert h._reaper_remediation("", "") == "install-reaper.sh"
+        assert h._reaper_remediation("", "").endswith("install-reaper.sh")
+        assert "--profile" not in h._reaper_remediation("", "")
 
     def test_both_409_sites_attach_remediation(self):
         src = Path(h.__file__).read_text(encoding="utf-8")

@@ -52,17 +52,18 @@ class _RecordingProvider:
         self.rejected.append(request_id)
 
 
-def _event(tool_input: str, title: str = _BENIGN_TITLE) -> LLMEvent:
+def _event(tool_input: str, title: str = _BENIGN_TITLE, *, is_shell: bool = False) -> LLMEvent:
     return LLMEvent(
         kind=EVENT_PERMISSION_REQUEST,
         title=title,
         request_id="r1",
         tool_input=tool_input,
+        is_shell=is_shell,
     )
 
 
 async def _resolve(
-    tool_input: str, title: str = _BENIGN_TITLE
+    tool_input: str, title: str = _BENIGN_TITLE, *, is_shell: bool = False
 ) -> tuple[bool, _RecordingProvider, list[dict]]:
     """Drive ``_resolve_permission`` and capture every SEL row it logged."""
     provider = _RecordingProvider()
@@ -72,7 +73,7 @@ async def _resolve(
     with patch.object(sel_mod, "sel", lambda: sel_stub):
         approved = await _resolve_permission(
             provider,  # type: ignore[arg-type]
-            _event(tool_input, title),
+            _event(tool_input, title, is_shell=is_shell),
             ToolApprovalPolicy.AUTO_APPROVE,
             None,
         )
@@ -458,3 +459,148 @@ class TestPathTierWording:
             "Blocked: sensitive path in tool_input: ~/.ssh/id_rsa",
             "~/.ssh/id_rsa",
         )
+
+
+class TestShellCommandTextLeavesThePathTier:
+    """The title and tool_input path tiers read PATHS; a shell tool's recovered
+    COMMAND is command text. The funnel spares exactly that string the resolver
+    (``hooks.on_tool_call`` makes the same exemption): no round-trip, and no stall
+    refusal naming a command as a sensitive path. Every other string of a shell
+    frame -- a structured ``use_aws`` argument naming a credential path -- stays
+    path-gated, because in ``standard`` sandbox mode the sandbox is not the
+    control for it; the path tier is.
+    """
+
+    CMD = "cd /x && grep -r TODO ."
+
+    def test_the_recovered_command_never_reaches_the_path_tier(self) -> None:
+        def never(*_a, **_k):
+            raise AssertionError("the path tier ran on the recovered command text")
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", never):
+            assert llm_helpers._title_denial(self.CMD, None, exempt_command=self.CMD) is None
+            assert (
+                llm_helpers._title_denial(f"Running: {self.CMD}", None, exempt_command=self.CMD)
+                is None
+            )
+            assert (
+                llm_helpers._first_tool_input_denial([self.CMD], None, exempt_command=self.CMD)
+                is None
+            )
+
+    def test_a_title_that_is_not_the_command_still_pays_the_path_tier(self) -> None:
+        seen: list[str] = []
+
+        def record(path, *_a, **_k):
+            seen.append(path)
+            return None
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", record):
+            assert llm_helpers._title_denial("notes/todo.md", None) is None
+            assert llm_helpers._title_denial("list the repo", None, exempt_command=self.CMD) is None
+        assert seen == ["notes/todo.md", "list the repo"]
+
+    def test_a_matched_non_command_title_is_still_refused(self) -> None:
+        with patch.object(
+            llm_helpers, "sensitive_path_refusal", lambda *_a, **_k: "Blocked: sensitive path"
+        ):
+            hit = llm_helpers._title_denial("~/.ssh/id_rsa", None, exempt_command=self.CMD)
+        assert hit == ("path", "Blocked: sensitive path: ~/.ssh/id_rsa")
+
+    def test_other_payload_strings_of_a_shell_frame_still_pay_the_path_tier(self) -> None:
+        """A shell-kind tool with structured parameters (kiro-cli ``use_aws``) can
+        name a credential file as an ARGUMENT; that string is a path, not command
+        text, and is refused exactly as before."""
+        seen: list[str] = []
+
+        def record(path, *_a, **_k):
+            seen.append(path)
+            return "Blocked: sensitive path" if path == "~/.aws/credentials" else None
+
+        command = "aws s3api head-object --bucket b --key ~/.aws/credentials"
+        with patch.object(llm_helpers, "sensitive_path_refusal", record):
+            hit = llm_helpers._first_tool_input_denial(
+                [command, "s3api", "head-object", "~/.aws/credentials"],
+                None,
+                exempt_command=command,
+            )
+        assert command not in seen, "the recovered command text must not be resolved"
+        assert hit == (
+            "path",
+            "Blocked: sensitive path in tool_input: ~/.aws/credentials",
+            "~/.aws/credentials",
+        )
+
+    def test_path_tier_exempt_is_the_recovered_command_of_a_sandboxed_shell_frame(self) -> None:
+        shell = _event(
+            json.dumps({"command": self.CMD}), title=f"Running: {self.CMD}", is_shell=True
+        )
+        assert llm_helpers._path_tier_exempt(shell) == self.CMD
+        plain = _event(json.dumps({"path": "notes.md"}), title="Reading notes.md")
+        assert llm_helpers._path_tier_exempt(plain) is None
+        served = _event(json.dumps({"command": self.CMD}), title=self.CMD, is_shell=True)
+        served.mcp_server_name = "local-files"
+        assert llm_helpers._path_tier_exempt(served) is None
+        unrecoverable = _event(json.dumps({"cwd": "/x"}), title="Bash", is_shell=True)
+        assert llm_helpers._path_tier_exempt(unrecoverable) is None
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_path_tier_cannot_refuse_a_shell_command_end_to_end(self) -> None:
+        """Through ``_resolve_permission``: a path tier answering True for everything
+        (a stall's fail-closed answer) does not refuse a shell command, because
+        neither the command nor its ``Running:`` title is resolved."""
+        with patch.object(
+            llm_helpers, "sensitive_path_refusal", lambda *_a, **_k: "Blocked: sensitive path"
+        ):
+            approved, _provider, _rows = await _resolve(
+                json.dumps({"command": self.CMD}), title=f"Running: {self.CMD}", is_shell=True
+            )
+        assert approved is True
+
+    @pytest.mark.asyncio
+    async def test_a_credential_argument_on_a_shell_frame_is_refused_end_to_end(self) -> None:
+        params = {
+            "service_name": "s3",
+            "operation_name": "cp",
+            "parameters": {"source": "~/.aws/credentials", "dest": "s3://bucket/x"},
+        }
+        approved, provider, rows = await _resolve(
+            json.dumps(params), title="use_aws", is_shell=True
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        assert "~/.aws/credentials" in _decision(rows)[1]
+
+    @pytest.mark.asyncio
+    async def test_an_mcp_served_shell_event_is_still_path_gated_end_to_end(self) -> None:
+        """A shell-classified frame that also names an MCP server runs outside the
+        sandbox; its title still pays the path tier and is refused."""
+        with patch.object(
+            llm_helpers, "sensitive_path_refusal", lambda *_a, **_k: "Blocked: sensitive path"
+        ):
+            provider = _RecordingProvider()
+            rows: list[dict] = []
+            sel_stub = MagicMock()
+            sel_stub.log_tool_invocation.side_effect = lambda **kw: rows.append(kw)
+            ev = _event(json.dumps({"command": "cat x"}), title="cat x", is_shell=True)
+            ev.mcp_server_name = "local-files"
+            with patch.object(sel_mod, "sel", lambda: sel_stub):
+                approved = await _resolve_permission(
+                    provider,  # type: ignore[arg-type]
+                    ev,
+                    ToolApprovalPolicy.AUTO_APPROVE,
+                    None,
+                )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+
+    def test_both_funnel_sites_carry_the_exemption_in_source(self) -> None:
+        """Pinned in source, like ``test_deny_diff`` pins the hooks gate: a comment
+        claiming the exemption is not the exemption. Each tier's body must gate its
+        single path check on the exempt command text itself."""
+        import inspect
+
+        for tier in (llm_helpers._title_denial, llm_helpers._first_tool_input_denial):
+            source = inspect.getsource(tier)
+            assert "_is_exempt_command_text(" in source, tier.__name__
+            assert source.count("sensitive_path_refusal(") == 1, tier.__name__

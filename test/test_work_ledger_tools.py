@@ -65,6 +65,13 @@ def _open_route(monkeypatch):
     monkeypatch.setattr(routes, "_recognize_session", _recognized)
     monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
     monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: False)
+    # The routes record every write into the caller's crew log and refuse when
+    # they cannot: a ``MagicMock`` state resolves no unit, so the gate is opened
+    # here and the append is swallowed. ``test_work_ledger_projection.py`` drives
+    # the gate and the recorded entries themselves.
+    monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: f"unit:{key}")
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: True)
 
 
 class _Slot:
@@ -388,6 +395,8 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "item_closed": 409,
         "item_cap_exceeded": 409,
         "depth_exceeded": 409,
+        "crew_log_incomplete": 409,
+        "cache_dirty": 409,
         "field_too_long": 400,
         "invalid_action": 400,
         "invalid_status": 400,

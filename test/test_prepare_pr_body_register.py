@@ -76,3 +76,64 @@ def test_prepare_pr_body_leads_with_the_punch_line() -> None:
     flat = _flat(PREPARE_PR)
     assert "Punch line first, in every section" in flat
     assert "Do not recite the diff" in flat
+
+
+def test_a_tightened_contract_forces_a_breaking_line_with_a_fresh_sweep() -> None:
+    """The section is only worth having if a tightening diff cannot claim Compatible.
+
+    Three joints, because any one of them alone rots: the template must OFFER the
+    section (an author fills in nothing else), the contract must say which of the
+    two lines a tightening diff forces, and Phase 1.5 -- where the body is
+    actually written -- must point at that rule. The sweep's freshness is the
+    fourth: the writers a sweep misses are the ones another open PR is adding
+    while this one waits.
+    """
+    template = (
+        Path(__file__).resolve().parents[1] / ".github" / "PULL_REQUEST_TEMPLATE.md"
+    ).read_text(encoding="utf-8")
+    assert "## Backwards compatibility" in template
+    assert "Compatible:" in template, "the compatible branch vanished from the template"
+    assert "Breaking:" in template, "the breaking branch vanished from the template"
+    assert "re-run the sweep on fresh main before the last push" in " ".join(template.split())
+
+    flat = _flat(PREPARE_PR)
+    # Which diffs cannot claim Compatible, named so the rule is checkable.
+    assert "new required field, a validator that raises on input the base accepts" in flat
+    assert "cannot be `Compatible:`" in flat
+    # A sweep is a statement about a commit, so a fresh commit and its sha are owed.
+    assert "writer sweep re-run on FRESH `origin/<base>` before the final push" in flat
+    # Phase 1.5 is where the body is written, so the rule has to be reachable there.
+    assert "A tightening diff makes `## Backwards compatibility` a `Breaking:` line" in flat
+
+
+def test_the_new_section_is_not_added_to_the_fork_description_gate() -> None:
+    """Requiring it would red every open PR's existing body.
+
+    The gate's own list is asserted elsewhere to be a subset of the template; this
+    is the other direction -- the template may grow a section the gate does not
+    require, and that is deliberate rather than an oversight, so the reason is
+    recorded where a later author will look for it.
+    """
+    root = Path(__file__).resolve().parents[1]
+    workflow = " ".join(
+        (root / ".github" / "workflows" / "fork-pr-description.yml")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    assert "## Backwards compatibility" not in workflow
+    rationale = " ".join(
+        (
+            root
+            / "src"
+            / "kiro_crew"
+            / "builtin_skills"
+            / "kirocrew-dev"
+            / "prepare-pr"
+            / "references"
+            / "rationale.md"
+        )
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    assert "## Why the Backwards compatibility section is not a required one" in rationale
+    assert "would fail every body written before this change" in rationale

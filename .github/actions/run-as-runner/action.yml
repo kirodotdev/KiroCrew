@@ -1,0 +1,109 @@
+name: Run steps as an unprivileged user
+description: >-
+  Keep setup actions under the runner identity and run tests through ci-shell.
+  Root runners hand over only the workspace, never the runner's file commands
+  or credentials in RUNNER_TEMP. Non-root hosted runners use a bash passthrough.
+runs:
+  using: composite
+  steps:
+    # Reuses the measured Linux boundary: jq 1.7.1, lsof and toolcache libpython
+    # are the image gaps, not reasons to replace the image or weaken tests.
+    - name: Provision the unprivileged user and ci-shell
+      shell: bash
+      env:
+        JQ_VERSION: "1.7.1"
+        JQ_SHA256: "5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5"
+      run: |
+        set -euo pipefail
+        if [ "$(id -u)" != "0" ]; then
+          sudo install -m 755 /dev/stdin /usr/local/bin/ci-shell <<'EOF'
+        #!/bin/bash
+        exec bash --noprofile --norc -eo pipefail "$1"
+        EOF
+          echo "ci-shell: non-root runner ($(id -un), uid $(id -u)) -- passthrough installed."
+          exit 0
+        fi
+
+        echo "ci-shell: root runner -- provisioning the 'runner' account."
+        # Prefer the hosted uid/gid, but standard:7.0 may already use 1001.
+        if ! getent group runner >/dev/null 2>&1; then
+          if getent group 1001 >/dev/null 2>&1; then
+            groupadd runner
+          else
+            groupadd -g 1001 runner
+          fi
+        fi
+        if ! id runner >/dev/null 2>&1; then
+          if getent passwd 1001 >/dev/null 2>&1; then
+            useradd -m -d /home/runner -s /bin/bash -g runner runner
+          else
+            useradd -m -u 1001 -d /home/runner -s /bin/bash -g runner runner
+          fi
+        fi
+        install -d -o runner -g runner -m 755 /home/runner
+        chown -R runner:runner "$GITHUB_WORKSPACE"
+
+        # Root-owned + sticky is essential: a runner-owned parent can rename
+        # the file-command directory even if that child remains root-owned.
+        # The tests only need to CREATE their own entries, like /tmp.
+        chmod 1777 "$RUNNER_TEMP"
+
+        # Sanitized children deliberately drop LD_LIBRARY_PATH. Register the
+        # setup-python libraries so those children can still start Python.
+        if compgen -G "$RUNNER_TOOL_CACHE/Python/*/x64/lib" >/dev/null; then
+          ls -d "$RUNNER_TOOL_CACHE"/Python/*/x64/lib > /etc/ld.so.conf.d/zz-actions-python-toolcache.conf
+          ldconfig
+        fi
+        if ! command -v lsof >/dev/null 2>&1; then
+          export DEBIAN_FRONTEND=noninteractive
+          if ! (apt-get update -qq && apt-get install -y -qq --no-install-recommends lsof); then
+            echo "::error::run-as-runner: could not install lsof from apt; the backend suite needs it on this runner."
+            exit 1
+          fi
+        fi
+        if ! jq --version 2>/dev/null | grep -q "jq-1\.7"; then
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/jq" \
+            "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64"
+          echo "${JQ_SHA256}  $RUNNER_TEMP/jq" | sha256sum -c -
+          install -m 755 "$RUNNER_TEMP/jq" /usr/local/bin/jq
+          rm -f "$RUNNER_TEMP/jq"
+        fi
+
+        # Only the kernel-owner lock tests use this existing tmpfs. Overlay can
+        # expose stat inode numbers that differ from /proc/locks. No mount or
+        # permission changes: each fixture owns and removes its temporary home.
+        test "$(stat -f -c %T /dev/shm)" = tmpfs
+
+        # Preserve setup-*'s PATH, but give tests a real unprivileged HOME.
+        # No sudo rule is created. This boundary does not hide the build role:
+        # fleet eligibility and the independent webhook actor filter do that.
+        install -m 755 /dev/stdin /usr/local/bin/ci-shell <<'EOF'
+        #!/bin/bash
+        # CodeBuild can pass SIG_IGN for INT through runuser. Reset only INT
+        # before Bash starts; Bash cannot undo an inherited ignore for children.
+        exec runuser -m -u runner -- env --default-signal=INT \
+          HOME=/home/runner USER=runner LOGNAME=runner KIROCREW_LOCK_TEST_ROOT=/dev/shm \
+          bash --noprofile --norc -eo pipefail "$1"
+        EOF
+        echo "ci-shell: installed. jq $(jq --version), lsof $(command -v lsof)."
+        runuser -m -u runner -- env HOME=/home/runner id
+
+    - name: Assert the non-root boundary (CodeBuild only)
+      if: runner.environment == 'self-hosted'
+      shell: /usr/local/bin/ci-shell {0}
+      run: |
+        test "$(id -u)" -ne 0
+        test "$HOME" = /home/runner
+        test -w "$GITHUB_WORKSPACE"
+        test -w "$RUNNER_TEMP"
+        test "$(stat -c %U "$RUNNER_TEMP")" = root
+        test -k "$RUNNER_TEMP"
+        test ! -w "$(dirname "$GITHUB_ENV")"
+        for file in "$GITHUB_ENV" "$GITHUB_OUTPUT" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"; do
+          test ! -w "$file"
+        done
+        command -v lsof >/dev/null
+        env -u LD_LIBRARY_PATH python -c 'import os, sys; assert os.geteuid() != 0; print("euid", os.geteuid(), "python", sys.version.split()[0])'
+        echo "identity: $(id)"
+        echo "owners: workspace=$(stat -c %U:%G "$GITHUB_WORKSPACE") temp=$(stat -c %U:%G "$RUNNER_TEMP")"
+        echo "tools: $(jq --version) $(git --version)"

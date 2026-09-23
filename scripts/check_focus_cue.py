@@ -4,8 +4,9 @@
 A control a keyboard user can reach with Tab must show *something* when it holds
 focus (WCAG 2.4.7 Focus Visible, Level AA). ``index.css`` is where that comes from
 for free, via a global ``:focus-visible`` outline, so the way this breaks in
-practice is an element opting out of the outline — ``outline-none``,
-``focus:outline-none`` — and putting nothing in its place. Nothing else fails when
+practice is an element opting out of the outline — ``outline-hidden`` (Tailwind
+v4's spelling of v3's ``outline-none``; both are recognised), ``focus:outline-hidden``
+— and putting nothing in its place. Nothing else fails when
 that happens: the element still works, and a pointer user never sees the
 difference.
 
@@ -99,7 +100,10 @@ MARKER = "focus-cue-ok"
 
 # A Tailwind utility, arbitrary-value brackets included.
 UTIL = re.compile(r"\b(focus-visible|focus):([a-z0-9-]+(?:\[[^\]]*\])?)")
-BARE_OUTLINE_NONE = re.compile(r"(?<![-:\w])outline-none\b")
+# Both spellings: `outline-hidden` is what the tree writes under Tailwind v4 (the
+# v3 `outline-none` semantics -- a transparent outline forced-colors still paints),
+# and v4 also ships a real `outline-none`, which suppresses just as completely.
+BARE_OUTLINE_NONE = re.compile(r"(?<![-:\w])outline-(?:none|hidden)\b")
 TAG = re.compile(r"<([A-Za-z][A-Za-z0-9.]*)")
 NEG_TABINDEX = re.compile(r"tabIndex\s*=\s*\{\s*-1\s*\}")
 POS_TABINDEX = re.compile(r"tabIndex\s*=\s*\{?\s*[\"']?0")
@@ -107,7 +111,7 @@ POS_TABINDEX = re.compile(r"tabIndex\s*=\s*\{?\s*[\"']?0")
 # Utilities that REMOVE a focus cue rather than add one. Everything else with a
 # focus variant is treated as a cue.
 SUPPRESSORS = frozenset({
-    "outline-none", "outline-0", "outline-transparent",
+    "outline-none", "outline-hidden", "outline-0", "outline-transparent",
     "ring-0", "ring-transparent", "shadow-none", "border-transparent",
 })
 NATIVE_FOCUSABLE = frozenset({"input", "textarea", "select", "button", "a"})
@@ -372,8 +376,9 @@ def scan_source(path: str, raw: str) -> list[tuple[Violation, set[int]]]:
         utils = UTIL.findall(value)
         suppressors = [f"{v}:{u}" for v, u in utils if u in SUPPRESSORS]
         cues = [f"{v}:{u}" for v, u in utils if is_cue(u)]
-        if BARE_OUTLINE_NONE.search(value):
-            suppressors.append("outline-none")
+        bare = BARE_OUTLINE_NONE.search(value)
+        if bare:
+            suppressors.append(bare.group(0))
         if not suppressors or cues or "focus-ring" in value:
             continue
         tag, tag_text, tag_at = owning_tag(src, m.start())
@@ -621,8 +626,14 @@ def report_tree() -> int:
 PROBES: list[tuple[str, str, bool]] = [
     ("input suppresses, no cue",
      '<input className="border outline-none" />', True),
+    ("v4 outline-hidden suppresses too",
+     '<input className="border outline-hidden" />', True),
     ("focus:outline-none is a suppressor, not a cue",
      '<button className="px-2 focus:outline-none">x</button>', True),
+    ("focus:outline-hidden is a suppressor, not a cue",
+     '<button className="px-2 focus:outline-hidden">x</button>', True),
+    ("outline-hidden with a focus-visible cue passes",
+     '<input className="outline-hidden focus-visible:border-accent" />', False),
     ("template literal className, no cue",
      '<input className={`border outline-none ${wide ? "w-4" : "w-2"}`} />', True),
     ("cn() className, no cue",

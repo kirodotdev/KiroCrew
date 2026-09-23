@@ -1,0 +1,41 @@
+# Smoke: the Agents tab of Agent Capabilities -- the roster of crews (the tab
+# is labelled "Agents"; the rows are still "crew members" in the add button and
+# the editor's accessible name) read in both of its layouts, then one crew's
+# editor opened. The `rich` seed ships no crews; the one card is the member
+# `boot.sh` adds (`GUI_MEMBERS`, default `nova-sky`), so the roster is exactly
+# one card named `nova-sky` bound to the `kirocrew` template and the `default`
+# workspace, with the description seed_home.py writes.
+#
+# The tab rail remembers its last tab per browser session, so the first step
+# selects "Agents" explicitly rather than assuming it is showing. The
+# Cards / List switcher persists too: attempt 2 of a failed run finds "List"
+# already selected and is told to leave it. Opening the editor writes nothing,
+# so both attempts read the same target. The editor's rail lands on Overview,
+# whose diagram names the template and workspace the card showed, which is
+# what the final expectations read; the create / delete paths are nightly work.
+name: capabilities-agents-list-and-open-editor
+tier: smoke
+feature: capabilities
+user_story: >-
+  As a crew operator, I want to define named crews binding an agent, model and
+  workspace with a custom avatar, so that I can pick the right worker per
+  task.
+docs_url: docs/feature-map/README.md
+summary: Read the one seeded agent as a card and as a table row, then open its editor from the row
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /capabilities
+steps:
+  - You are on the Agent Capabilities page. It has a rail of tabs on the left, grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Agents" (people icon, first under "Agent") is not already highlighted, click it.
+  - The pane shows one card named "nova-sky" whose description reads "Nova Sky -- seeded crew member for the GUI user test." and whose binding grid has small-capital labels with values, among them AGENT TEMPLATE "kirocrew" and WORKSPACE "default". Above the cards is a filter box ("Filter agents…"), a "Cards | List" switcher and an "Add crew member" button. Do not click the card yet.
+  - Click "List" in the "Cards | List" switcher (if "List" is already highlighted, leave it). The cards are replaced by a table with the columns Agent, Agent Template, Workspace, Memory Store and Model, and one row for nova-sky.
+  - Click the "nova-sky" row to open its editor. A dialog opens whose title is the name "nova-sky" in a monospace font.
+  - Wait a second for the dialog to finish loading.
+expectations:
+  - A dialog is open whose title reads "nova-sky", with two buttons beside the title labelled "Edit avatar" and "Chat with this member".
+  - The dialog has a rail on its left with grouped entries ("Who it is", "What it can do", "Where it works", "How work arrives"); the entry "Overview" under "Who it is" is highlighted.
+  - The Overview pane shows a diagram whose "What it works with" side lists "Agent Template" with the value "kirocrew" and "Workspace" with the value "default".
+  - No red error notice is visible in the dialog or behind it.
+max_steps: 12
+max_seconds: 300

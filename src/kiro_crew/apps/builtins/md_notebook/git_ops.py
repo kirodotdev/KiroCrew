@@ -31,6 +31,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 
 logger = logging.getLogger(__name__)
 
@@ -403,10 +404,16 @@ async def run_git(
     pat: Optional[str] = None,
     check: bool = True,
     timeout: int = GIT_TIMEOUT_SEC,
+    errors: str = "replace",
 ) -> tuple[int, str, str]:
     """Run a git command. Returns (returncode, stdout, stderr).
 
     Never runs through a shell, so no argument can be interpreted as one.
+
+    ``errors`` is ``"replace"`` for display-bound output. A caller whose
+    stdout names a filesystem path fed to an ``os`` call passes
+    ``"surrogateescape"`` so non-UTF-8 path bytes round-trip through
+    ``os.fsencode`` (see :func:`kiro_crew.subprocess_utf8.utf8_path_stdout`).
     """
     env = {
         **os.environ,
@@ -441,7 +448,7 @@ async def run_git(
         # into an unbounded wait for a surviving helper's EOF.
         await platform_compat.kill_and_reap(proc)
         raise GitError(f"git {args[0]} timed out after {timeout}s") from None
-    stdout = out.decode("utf-8", "replace")
+    stdout = out.decode("utf-8", errors)
     stderr = err.decode("utf-8", "replace")
     if check and proc.returncode != 0:
         tail = " ".join(stderr.strip().splitlines()[-3:])
@@ -482,7 +489,13 @@ async def _git_dir(dir_: str) -> Optional[str]:
     at the real git dir; an agent could rewrite it to redirect sync into an
     unrelated same-origin checkout. Persisting this at attach/clone time and
     re-checking before sync detects that redirection."""
-    code, out, _ = await run_git(["rev-parse", "--absolute-git-dir"], dir_, check=False)
+    # surrogateescape: this answer is handed to ``os.path.realpath`` and later
+    # compared against the persisted trusted git dir, so a non-UTF-8 byte in the
+    # real path must survive as a PEP 383 surrogate ``os.fsencode`` restores
+    # byte-exactly -- a U+FFFD from the display decode names no real path.
+    code, out, _ = await run_git(
+        ["rev-parse", "--absolute-git-dir"], dir_, check=False, errors="surrogateescape"
+    )
     if code != 0 or not out.strip():
         return None
     try:
@@ -550,7 +563,13 @@ async def clone_vault(
         validate_remote_url(url),
         dir_,
     ]
-    await run_git(args, pat=pat, timeout=GIT_NETWORK_TIMEOUT_SEC)
+    # The one git call in this module with no repository to run inside yet, so it
+    # is pinned to the clone's parent instead of inheriting the gateway's cwd:
+    # ``dir_`` is absolute and git creates the leaf itself, so the parent is the
+    # only directory the command needs to exist.
+    parent = os.path.dirname(os.path.abspath(dir_))
+    await asyncio.to_thread(os.makedirs, parent, exist_ok=True)
+    await run_git(args, cwd=parent, pat=pat, timeout=GIT_NETWORK_TIMEOUT_SEC)
     vault: dict[str, Any] = {
         "id": vault_id,
         "name": name or repo_name(url),
@@ -893,12 +912,16 @@ async def repo_supplied_driver(dir_: str) -> str:
     driver-free, so the caller must not proceed.
     """
     scopes = ["--local"]
+    # --bool folds every git-true spelling (yes/on/1/valueless) to "true"; a
+    # raw string compare misses those spellings and skips the scope git still
+    # honors. A garbled value exits non-zero here AND kills the guarded git
+    # command itself with the same parse error, so skipping the scope is safe.
     code, out, _ = await run_git(
-        ["config", "--local", "--includes", "--get", "extensions.worktreeConfig"],
+        ["config", "--local", "--includes", "--bool", "--get", "extensions.worktreeConfig"],
         dir_,
         check=False,
     )
-    if code == 0 and out.strip().lower() == "true":
+    if code == 0 and out.strip() == "true":
         scopes.append("--worktree")
 
     for scope in scopes:
@@ -910,6 +933,27 @@ async def repo_supplied_driver(dir_: str) -> str:
             # the probe itself failed and we cannot clear the repo.
             if out.strip() == "" and err.strip() == "":
                 continue
+            if scope == "--worktree":
+                # Probe-first, classify after: git creates config.worktree
+                # lazily, so a probe that failed on a genuinely ABSENT file is
+                # the empty scope, not an unreadable one (the shared decision
+                # in kiro_crew.git_worktree_scope). The classification stats
+                # the filesystem, so it runs off the event loop.
+                # surrogateescape: this answer is handed to the classifier's
+                # ``os.lstat``, so a non-UTF-8 byte in the real path must
+                # survive as a PEP 383 surrogate ``os.fsencode`` restores
+                # byte-exactly -- a U+FFFD from the display decode would miss
+                # an existing ``config.worktree`` and clear a scope git reads.
+                gd_code, gd_out, _ = await run_git(
+                    ["rev-parse", "--absolute-git-dir"], dir_, check=False,
+                    errors="surrogateescape",
+                )
+                if await asyncio.to_thread(
+                    worktree_probe_failure_is_empty_scope,
+                    gd_out if gd_code == 0 else "",
+                    dir_,
+                ):
+                    continue
             return "unprobeable config"
         for key in out.splitlines():
             k = key.strip().lower()

@@ -46,7 +46,6 @@ vi.mock('../pages/chat/SidePanel', () => ({
   SIDE_PANEL_MIN_W: 320,
   SIDE_PANEL_RESERVED_W: 560,
   CHAT_PANE_MIN_W: 320,
-  measureSidePanelReservedW: () => 560,
   // Real arithmetic (the gate under test lives here); only the component is stubbed.
   sidePanelFillWidth: ({ winW, railW, sidebarW, isMobile }: { winW: number; railW: number; sidebarW: number; isMobile: boolean }) => {
     if (isMobile) return Math.max(320, winW)

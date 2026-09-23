@@ -19,6 +19,7 @@ the existing setup suites:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -556,8 +557,29 @@ class TestRemoveRetiredConductorSkill:
         skill.write_bytes((self._FIXTURES / "select-crew-v2.md").read_bytes())
         real_realpath = skills_module.os.path.realpath
 
+        def _asking_module() -> str:
+            # The nearest caller outside the path-handling stdlib: production
+            # reaching realpath through `Path.resolve()` still answers as
+            # production, while an observer's own normalisation answers as itself.
+            frame = sys._getframe(2)
+            while frame is not None and frame.f_globals.get("__name__", "").split(".")[0] in (
+                "posixpath",
+                "ntpath",
+                "genericpath",
+                "os",
+                "pathlib",
+            ):
+                frame = frame.f_back
+            return frame.f_globals.get("__name__", "") if frame is not None else ""
+
         def _no_conductor_realpath(path, *args, **kwargs):
-            if str(path).endswith("conductor"):
+            # `skills_module.os.path` IS the process-wide `os.path`, so this trap
+            # sees every caller -- including observers that resolve the same
+            # operand for their own bookkeeping (an audit hook on `os.rename`, a
+            # coverage or hygiene plugin). Only PRODUCTION re-resolving the name
+            # is the defect; a bystander normalising a path it was handed is not,
+            # so the verdict is keyed on who asked.
+            if str(path).endswith("conductor") and _asking_module().startswith("kiro_crew"):
                 pytest.fail("the conductor path was re-resolved by name")
             return real_realpath(path, *args, **kwargs)
 

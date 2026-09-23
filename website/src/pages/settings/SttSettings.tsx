@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Sparkles } from 'lucide-react'
-import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsStepper } from '../../components/settings'
+import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsSection, SettingsStepper } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
+import InfoTip from '../../components/InfoTip'
 import { api, ApiError } from '../../api/client'
 import { RestartGatewayButton } from './AboutPanel'
 import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied } from '../../hooks/mic'
-import { fmtBytes, fmtUnit } from '../../i18n/format'
+import { fmtBytes, fmtNumber, fmtUnit } from '../../i18n/format'
 import {
   CATALOG_MODEL_PROVIDERS,
   decoderDownloadLabel,
@@ -57,6 +58,8 @@ interface SttConfig {
   transcribe_region?: string
   transcribe_profile?: string
   language_code?: string
+  /** Whether a fast model tidies the finished transcript. Off unless turned on. */
+  polish?: boolean
   providers?: string[]
   streaming_providers?: string[]
   language_codes?: string[]
@@ -121,6 +124,47 @@ interface SttFfmpeg {
   download: FfmpegDownload
 }
 
+/**
+ * What the installed speech build actually links, as read out of whisper.cpp's own
+ * `whisper_print_system_info()` by `stt/capabilities.py`.
+ *
+ * This is the one surface that can contradict a hopeful setting. The native default
+ * for a whisper context is `use_gpu = true` on every build including CPU-only ones,
+ * so "GPU requested" says nothing about whether one is linked — only this does.
+ */
+interface SttBackend {
+  /** The strongest linked backend, or `unknown` when the build could not be read. */
+  name: string
+  /** Whether anything faster than scalar CPU is linked. False when `unknown`. */
+  accelerated: boolean
+  /** True when only the encoder is accelerated, so the decoder still runs on CPU. */
+  encoder_only: boolean
+  /**
+   * The ggml backend registries the build linked, in order -- the section labels of
+   * `whisper_print_system_info()`. This is where `name` comes from: every backend
+   * except CoreML/OpenVINO/VITISAI is named ONLY by its label, which is why an
+   * reading the flags alone reports every Mac as CPU-only.
+   */
+  sections?: string[]
+  /** Decode threads in effect. */
+  threads: number
+}
+
+/** One stage-timed decode. Durations only; see `stt/telemetry.py`. */
+interface SttDecodeSample {
+  kind: string
+  audio_ms: number
+  wall_ms: number
+  /** Wall time over audio duration. Above 1.0 the recogniser is slower than speech. */
+  rtf: number
+}
+
+/** Stage timings for the most recent load and decodes. */
+interface SttTimings {
+  last_load?: { model: string; hash_ms: number; load_ms: number; first_decode_ms: number } | null
+  last_final?: SttDecodeSample | null
+}
+
 interface SttStatus {
   available: boolean
   /** Machine-readable refusal reason; '' when available. See `unavailableMessage`. */
@@ -130,6 +174,8 @@ interface SttStatus {
   models: SttModel[]
   download: SttDownload
   ffmpeg?: SttFfmpeg
+  backend?: SttBackend
+  timings?: SttTimings
 }
 
 const DOWNLOAD_STEP_RUNNING = 'downloading'
@@ -156,39 +202,19 @@ const FFMPEG_AUTO_FETCH_AVAILABLE = 'available'
 const DOWNLOAD_POLL_MS = 1000
 
 /**
- * Bounds and step for the endpointing pause, in milliseconds.
+ * The models whose decode is slow enough that a CPU-only build is worth warning
+ * about before the download, not after the first dictation.
  *
- * Floor: below roughly a quarter second an ordinary between-word gap ends the
- * phrase, so dictation cuts sentences in half. Ceiling: past two seconds the
- * pause is longer than the silence most speakers leave at the end of a thought,
- * and the transcript feels stuck. 50 ms steps because the perceptible difference
- * is coarse and a finer step turns a small adjustment into a dozen clicks.
+ * `large-v3-turbo` measured RTF 1.238 on a 32-core aarch64 CPU build — 11 s of
+ * speech costs 13.6 s, so live partials cannot keep up and the wait after the user
+ * stops is longer than what they said. It is still the right choice for multilingual
+ * and code-switched speech (best of the catalog on both), which is why this warns
+ * rather than hides it.
  */
-const SILENCE_MS_MIN = 250
-const SILENCE_MS_MAX = 2000
-const SILENCE_MS_STEP = 50
+const SLOW_WITHOUT_ACCELERATION = ['large-v3-turbo']
 
-/**
- * What the gateway uses when configuration carries no pause of its own. Mirrors
- * the backend default so a config written before the field existed renders the
- * value that is actually in effect, rather than the picker's floor.
- */
-const SILENCE_MS_DEFAULT = 700
-
-/**
- * Bounds and step for the partial-transcript refresh interval, in milliseconds.
- *
- * Bounds the pause between completed partial decodes. Faster refresh can make
- * text churn; the model's inference time still determines the actual cadence.
- */
-const PARTIAL_INTERVAL_MS_MIN = 150
-const PARTIAL_INTERVAL_MS_MAX = 1000
-const PARTIAL_INTERVAL_MS_STEP = 50
-
-/** The gateway's own refresh interval, for the same reason as `SILENCE_MS_DEFAULT`. */
-const PARTIAL_INTERVAL_MS_DEFAULT = 400
-
-const clampMs = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+/** `Capabilities.backend` when the build could not be interrogated at all. */
+const BACKEND_UNKNOWN = 'unknown'
 
 /** A read-only info row that lines up with SettingsToggle / SettingsField rows. */
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -326,18 +352,17 @@ function PushToTalkConfig() {
   const modeLabel = i18nT(PTT_MODE_LABEL_KEY[cfg.mode])
 
   return (
-    <>
-      {/* Names the feature. Without this the rows below are three settings for
-          something the page never identifies — the single biggest finding of the
-          first-run review. */}
-      <div className="flex flex-col gap-1 pt-2 pb-1">
-        <span className="text-[13px] font-semibold text-text-strong">
-          {i18nT('pages.settings.sttSettings.ptt_heading')}
-        </span>
-        <span className="text-[12px] text-muted">
-          {i18nT(headingDescKey)}
-        </span>
-      </div>
+    /* Its own disclosure, nested inside Fine-tuning. The heading still names the
+       feature -- without a name the rows below are settings for something the page
+       never identifies, which was the first-run review's biggest finding -- but a
+       whole sub-feature nobody has to configure should not spend five rows of the
+       surface saying so. Its own copy admits as much: the default combination works
+       out of the box and the text tells you to leave it alone.
+
+       The heading's explanation moves inside, where a reader who opened this has
+       already said they want it. */
+    <SettingsSection title={i18nT('pages.settings.sttSettings.ptt_heading')} collapsible>
+      <p className="text-[12px] text-muted mb-1">{i18nT(headingDescKey)}</p>
 
       <SettingsSelect
         label={i18nT('pages.settings.sttSettings.ptt_key')}
@@ -393,7 +418,7 @@ function PushToTalkConfig() {
           fieldLabel={keyFieldLabel}
         />
       </div>
-    </>
+    </SettingsSection>
   )
 }
 
@@ -475,12 +500,17 @@ export default function SttSettings({ cardIndex }: {
 
   const mut = useMutation({
     mutationFn: (patch: Partial<SttConfig>) => api.saveSttConfig(patch),
-    onSuccess: data => {
+    onSuccess: (data, patch) => {
       qc.setQueryData(['sttConfig'], data)
       // Provider, model and enablement all change what the availability probe
       // answers, so the status card would otherwise keep describing the previous
       // selection until something else happened to refetch it.
       qc.invalidateQueries({ queryKey: ['sttStatus'] })
+      // A new profile/region resolves a different account; without this the gate
+      // keeps the old one and Confirm 409s as a stale confirmation.
+      if ('transcribe_profile' in patch || 'transcribe_region' in patch) {
+        qc.invalidateQueries({ queryKey: ['awsConsent', PROVIDER_TRANSCRIBE] })
+      }
     },
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.failed_to_save_stt_config')),
   })
@@ -570,8 +600,58 @@ export default function SttSettings({ cardIndex }: {
   const available = status ? status.available : stt.available
   const unavailableText = status ? unavailableMessage(status.code, status.detail) : ''
   const usesCatalogModel = CATALOG_MODEL_PROVIDERS.includes(provider)
-  const silenceMs = stt.silence_ms ?? SILENCE_MS_DEFAULT
-  const partialIntervalMs = stt.partial_interval_ms ?? PARTIAL_INTERVAL_MS_DEFAULT
+
+  // What the native build actually links, and whether the configured request for it
+  // took effect. Read from the status endpoint rather than inferred from the config:
+  // a whisper context defaults to `use_gpu = true` on CPU-only builds, so the
+  // setting cannot answer this and only the build's own system info can.
+  const backend = status?.backend
+  const isLocal = provider === PROVIDER_LOCAL
+  // A named backend the build does not link. Surfaced because the setting's own help
+  // text promises this panel will say so, and because the alternative — quietly
+  // recognising on CPU while the config reads `cuda` — is the specific wrong answer
+  // this whole change exists to stop.
+  // The finished-transcript cost of the last dictation, which is what tells someone
+  // whether a model is viable on THEIR machine rather than on a benchmark host.
+  const lastFinal = status?.timings?.last_final
+  const slowModel =
+    isLocal
+    && !!backend
+    && !backend.accelerated
+    && backend.name !== BACKEND_UNKNOWN
+    && SLOW_WITHOUT_ACCELERATION.includes(stt.model)
+
+  // The acceleration, as a badge beside Status. One glanceable fact, and the only
+  // one of the engine readings that changes what a user would DO -- the threads and
+  // the last decode's cost answer "why is it slow", which is a question you go
+  // looking for, so they belong in the tip rather than on the surface.
+  const engineBadge = !isLocal || !backend ? null
+    : backend.name === BACKEND_UNKNOWN
+      // Never reported as CPU. An unreadable build is a build we know nothing
+      // about, and calling it CPU is the answer that is wrong for exactly the user
+      // who has a GPU build and would then stop expecting it to be used.
+      ? <Badge variant="warn">{i18nT('pages.settings.sttSettings.backend_unknown')}</Badge>
+      : backend.encoder_only
+        ? <Badge variant="ok">{i18nT('pages.settings.sttSettings.backend_encoder_only', { name: backend.name })}</Badge>
+        : backend.accelerated
+          ? <Badge variant="ok">{backend.name}</Badge>
+          // `muted`: a CPU-only build is the normal published state, not a fault.
+          : <Badge variant="muted">{i18nT('pages.settings.sttSettings.backend_cpu_only')}</Badge>
+
+  // Everything else the engine knows, as one tip. Joined rather than stacked so it
+  // stays a sentence a user can skim, and each part is omitted when it has nothing
+  // to say instead of rendering an empty label.
+  const engineDetail = !isLocal || !backend ? '' : [
+    i18nT('pages.settings.sttSettings.decode_threads_value', { n: backend.threads }),
+    // Absent until someone has dictated once: an invented number is worse than
+    // none. Above 1.0 the recogniser is slower than the speech it transcribes.
+    lastFinal && lastFinal.rtf > 0
+      ? i18nT('pages.settings.sttSettings.last_recognition_value', {
+        duration: fmtUnit(lastFinal.wall_ms / 1000, 'second', { maximumFractionDigits: 1 }),
+        rtf: fmtNumber(lastFinal.rtf, { maximumFractionDigits: 2 }),
+      })
+      : '',
+  ].filter(Boolean).join(' · ')
 
   // The decoder block. Treated as absent until the status query answers, for the
   // same reason the model catalog is: claiming a decoder is missing before the
@@ -627,12 +707,22 @@ export default function SttSettings({ cardIndex }: {
         }
       />
       <SettingsCard index={cardIndex}>
-        <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} description={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
+        <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} hint={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
 
         <InfoRow label={i18nT('pages.settings.sttSettings.status')}>
-          {available
-            ? <Badge variant="ok">{i18nT('pages.settings.sttSettings.ready')}</Badge>
-            : <Badge variant="warn">{i18nT('pages.settings.sttSettings.not_installed')}</Badge>}
+          <div className="flex items-center gap-1.5">
+            {available
+              ? <Badge variant="ok">{i18nT('pages.settings.sttSettings.ready')}</Badge>
+              : <Badge variant="warn">{i18nT('pages.settings.sttSettings.not_installed')}</Badge>}
+            {/* The engine truth rides on the row a user already reads to answer
+                "is this working", rather than in a section of its own. Three
+                read-only numbers each given a labelled row of their own was the
+                panel's problem, not its fix: the acceleration is the only one that
+                changes a decision, so it is the only one shown, and the rest live
+                in the tip beside it. */}
+            {engineBadge}
+            {engineDetail && <InfoTip text={engineDetail} />}
+          </div>
         </InfoRow>
         {/* The REASON, not just the badge. Every refusal has a different remedy
             (install an extra, install a compiler, upgrade macOS, fetch a model),
@@ -656,7 +746,7 @@ export default function SttSettings({ cardIndex }: {
 
         <SettingsSelect
           label={i18nT('pages.settings.sttSettings.microphone')}
-          description={i18nT('pages.settings.sttSettings.input_device_used_to_capture_your_voice')}
+          hint={i18nT('pages.settings.sttSettings.input_device_used_to_capture_your_voice')}
           value={micId}
           options={['', ...selectableMics.map(d => d.deviceId)]}
           optionLabels={[i18nT('pages.settings.sttSettings.system_default'), ...selectableMics.map((d, i) => d.label || i18nT('pages.settings.sttSettings.microphone_2', { n: i + 1 }))]}
@@ -673,7 +763,7 @@ export default function SttSettings({ cardIndex }: {
           </button>
         )}
 
-        <SettingsSelect label={i18nT('pages.settings.sttSettings.provider')} description={i18nT('pages.settings.sttSettings.provider_desc')} value={provider} options={providerOptions} optionLabels={providerOptions.map(providerLabel)} onChange={handleProvider} disabled={saving} configKey="stt.provider" />
+        <SettingsSelect label={i18nT('pages.settings.sttSettings.provider')} hint={i18nT('pages.settings.sttSettings.provider_desc')} value={provider} options={providerOptions} optionLabels={providerOptions.map(providerLabel)} onChange={handleProvider} disabled={saving} configKey="stt.provider" />
 
         {/* Gated on a NON-EMPTY catalog, not just on the provider: the catalog is
             the status endpoint's to serve, and a picker with no options is worse
@@ -688,7 +778,7 @@ export default function SttSettings({ cardIndex }: {
                 BEFORE the click that commits to it. */}
             <SettingsSelect
               label={i18nT('pages.settings.sttSettings.model')}
-              description={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')}
+              hint={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')}
               value={stt.model}
               options={models.map(m => m.name)}
               optionLabels={models.map(m => i18nT('pages.settings.sttSettings.model_option', { name: m.name, size: fmtBytes(m.size_bytes) }))}
@@ -696,12 +786,27 @@ export default function SttSettings({ cardIndex }: {
               disabled={saving}
               configKey="stt.model"
             />
+            {/* The cost of THIS choice on THIS machine, before the download rather
+                than after the first dictation. Shown only when the build links no
+                acceleration and the build was readable, so it is a measured warning
+                and never a guess: on a CPU-only build `large-v3-turbo` decodes slower
+                than real time, which no amount of waiting improves. Deliberately not
+                a block — it is the most accurate model in the catalog for
+                multilingual and code-switched speech, so someone who needs that
+                accuracy should be able to accept the wait knowingly. */}
+            {slowModel && (
+              <p className="text-[12px] text-warn -mt-1 mb-1">
+                {i18nT('pages.settings.sttSettings.model_slow_on_cpu')}
+              </p>
+            )}
             {downloading && download ? (
               <ModelDownloadProgress download={download} />
             ) : selectedModel?.present ? (
-              <p className="text-[12px] text-muted -mt-1 mb-1">
-                {i18nT('pages.settings.sttSettings.model_downloaded')}
-              </p>
+              // Nothing. A model already on disk needs no line of its own: the
+              // absence of a download prompt IS the message, and a row that says
+              // "this is fine" for the ordinary case is the kind of reassurance
+              // that crowds out the warnings worth reading.
+              null
             ) : selectedModel ? (
               // Offered BEFORE the first dictation on purpose. The alternative is
               // that the download starts when the user is already talking, where a
@@ -728,49 +833,72 @@ export default function SttSettings({ cardIndex }: {
           </>
         )}
 
-        {canStream && (
-          <SettingsToggle label={i18nT('pages.settings.sttSettings.streaming')} description={i18nT('pages.settings.sttSettings.streaming_desc')} checked={!!stt.streaming} onChange={v => set({ streaming: v })} disabled={saving} configKey="stt.streaming" />
-        )}
-
-        {canStream && stt.streaming && (
-          <>
-            <SettingsToggle label={i18nT('pages.settings.sttSettings.endpointing')} description={i18nT('pages.settings.sttSettings.endpointing_desc')} checked={!!stt.endpointing} onChange={v => set({ endpointing: v })} disabled={saving} configKey="stt.endpointing" />
-
-            {/* Both values are milliseconds, and both are named as such in the
-                label rather than only in the rendered value: the number in the
-                stepper is what the user adjusts, and a unit that appears only
-                there is easy to misread as seconds. */}
-            <SettingsStepper
-              label={i18nT('pages.settings.sttSettings.silence_ms')}
-              description={i18nT('pages.settings.sttSettings.silence_ms_desc')}
-              value={fmtUnit(silenceMs, 'millisecond')}
-              onIncrement={() => set({ silence_ms: clampMs(silenceMs + SILENCE_MS_STEP, SILENCE_MS_MIN, SILENCE_MS_MAX) })}
-              onDecrement={() => set({ silence_ms: clampMs(silenceMs - SILENCE_MS_STEP, SILENCE_MS_MIN, SILENCE_MS_MAX) })}
-              disabled={saving}
-              configKey="stt.silence_ms"
-            />
-
-            <SettingsStepper
-              label={i18nT('pages.settings.sttSettings.partial_interval_ms')}
-              description={i18nT('pages.settings.sttSettings.partial_interval_ms_desc')}
-              value={fmtUnit(partialIntervalMs, 'millisecond')}
-              onIncrement={() => set({ partial_interval_ms: clampMs(partialIntervalMs + PARTIAL_INTERVAL_MS_STEP, PARTIAL_INTERVAL_MS_MIN, PARTIAL_INTERVAL_MS_MAX) })}
-              onDecrement={() => set({ partial_interval_ms: clampMs(partialIntervalMs - PARTIAL_INTERVAL_MS_STEP, PARTIAL_INTERVAL_MS_MIN, PARTIAL_INTERVAL_MS_MAX) })}
-              disabled={saving}
-              configKey="stt.partial_interval_ms"
-            />
-          </>
-        )}
-
-        <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} description={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
-
-        {stt.enabled && <PushToTalkConfig />}
-
         <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : code)} onChange={v => set({ language_code: v })} disabled={saving} />
+
+        {/* Kept on the surface, not in Advanced, because it is the one setting here
+            that changes where the words GO: the transcript (never the audio) leaves
+            this machine. The description stays inline for the same reason -- consent
+            a user has to hover to read is not consent. */}
+        <SettingsToggle
+          label={i18nT('pages.settings.sttSettings.polish')}
+          description={i18nT('pages.settings.sttSettings.polish_desc')}
+          checked={!!stt.polish}
+          onChange={v => set({ polish: v })}
+          disabled={saving}
+          configKey="stt.polish"
+        />
+
+        {/* A DISCLOSURE, not a heading. Every row below is real and adjustable and
+            every one has a default that works, so on the surface they only compete
+            for attention with the six decisions above them. A heading was the first
+            attempt and it did not help: the rows still rendered, still carried their
+            own explanations, and the panel was as tall as before.
+
+            Their explanations moved into `hint` tips at the same time. A sentence
+            that tells you what a control IS belongs behind a "?"; only a sentence you
+            need in order to CHOOSE earns permanent space. */}
+        <SettingsSection title={i18nT('pages.settings.sttSettings.section_fine_tuning')} collapsible>
+          {canStream && (
+            <SettingsToggle label={i18nT('pages.settings.sttSettings.streaming')} hint={i18nT('pages.settings.sttSettings.streaming_desc')} checked={!!stt.streaming} onChange={v => set({ streaming: v })} disabled={saving} configKey="stt.streaming" />
+          )}
+
+          {canStream && stt.streaming && (
+            <>
+              <SettingsToggle label={i18nT('pages.settings.sttSettings.endpointing')} hint={i18nT('pages.settings.sttSettings.endpointing_desc')} checked={!!stt.endpointing} onChange={v => set({ endpointing: v })} disabled={saving} configKey="stt.endpointing" />
+
+              {/* No duration steppers here at all, and that is the point of this
+                  block rather than an omission.
+
+                  The phrase-commit pause (`stt.silence_ms`) went the same way as the
+                  live-refresh cadence below it: both asked a user to reason about a
+                  raw millisecond number against speech they cannot time, and nobody
+                  can tell 700 ms from 750 ms by feel. What a user actually wants when
+                  dictation cuts them off is the Auto-submit toggle above, which is
+                  the behaviour those milliseconds were tuning.
+
+                  Both keys are still honoured from config.json, so an operator who
+                  has measured their own pauses loses nothing; only the pickers are
+                  gone, because a dial nobody can aim is worse than no dial. */}
+              {/* No refresh-interval stepper. Measurement is why: whisper.cpp pads
+                  every decode into a fixed analysis window, so a decode costs a large
+                  constant plus a small term in the audio length -- about 0.78 s fixed
+                  plus 0.08 s per audio-second for `base` on a 32-core aarch64 CPU
+                  build. The cadence a user could dial in was unreachable on any CPU
+                  build, so the control changed nothing they could perceive.
+                  `stt.partial_interval_ms` is still honoured from config.json; only
+                  the picker is gone, because a dial that does nothing is worse than
+                  no dial. */}
+            </>
+          )}
+
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} hint={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
+
+          {stt.enabled && <PushToTalkConfig />}
+        </SettingsSection>
 
         {isTranscribe && (
           <>
-            <AwsConsentGate service="transcribe" />
+            <AwsConsentGate service={PROVIDER_TRANSCRIBE} />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_profile_transcribe')} description={i18nT('pages.settings.sttSettings.aws_credentials_profile_for_transcribe_blank_def')} value={localProfile} onChange={setLocalProfile} onBlur={() => set({ transcribe_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.sttSettings.default')} disabled={saving} />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_region_transcribe')} description={i18nT('pages.settings.sttSettings.aws_region_for_transcribe')} value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder={i18nT('pages.settings.sttSettings.us_east_1')} disabled={saving} />
           </>

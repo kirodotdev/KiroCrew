@@ -56,8 +56,10 @@ from kiro_crew.sandbox import (
 from kiro_crew.security import (
     PathResolutionStalled,
     is_sensitive_path,
+    redact,
     redact_credentials,
     redact_exfiltration_urls,
+    redact_with_findings,
 )
 
 if TYPE_CHECKING:
@@ -984,8 +986,7 @@ async def synthesize_speech(
     suspicious URLs from being spoken and persisted in Slack.
     """
     # ── Redact LLM output before it crosses an external surface (audio) ──
-    text, cred_warns = redact_credentials(text)
-    text, url_warns = redact_exfiltration_urls(text)
+    text, cred_warns, url_warns = redact_with_findings(text)
     if cred_warns:
         logger.warning("voice_reply: redacted %d credential pattern(s) before TTS", len(cred_warns))
     if url_warns:
@@ -1364,8 +1365,7 @@ async def _stream_piper_attempts(
     request_id: str,
 ):
     """Try the resident API, then its existing CLI compatibility path if safe."""
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    text = redact(text)
     phrases = _piper_phrases(text)
     if not phrases:
         return
@@ -1626,8 +1626,7 @@ async def streaming_voice_reply(
     to the dashboard bypasses the usual text-path redaction.
     """
     # ── Redact LLM output before it crosses an external surface (audio) ──
-    response_text, cred_warns = redact_credentials(response_text)
-    response_text, url_warns = redact_exfiltration_urls(response_text)
+    response_text, cred_warns, url_warns = redact_with_findings(response_text)
     if cred_warns:
         logger.warning(
             "stream_voice_chunks: redacted %d credential pattern(s) before TTS", len(cred_warns)

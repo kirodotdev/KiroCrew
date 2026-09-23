@@ -8,6 +8,7 @@ import { containedSelectionRange } from '../utils/selectionContainment'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
+import { isEditableTarget } from '../utils/editableTarget'
 
 /**
  * Opt-in annotation input for the toolbar. When a host passes one, selecting
@@ -687,8 +688,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       const input = composerInputRef.current
       if (!input || !composerRef.current) return
       if (toolbarRef.current && toolbarRef.current.contains(e.target as Node)) return
+      if (isEditableTarget(e)) return
       const target = e.target as HTMLElement | null
-      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return
       // A control the user Tabbed to (Submit All, a tree row, a link in the
       // preview) keeps its own Enter: only a bare document target is ours.
       if (target && target.closest('button, a, summary, [role="button"], [role="link"], [role="treeitem"], [role="menuitem"], [role="tab"], [tabindex]')) return
@@ -1181,7 +1182,7 @@ function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAct
             void onCopyShortcut()
           }
         }}
-        className={`bg-bg border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-none focus-ring resize-none leading-[20px] overflow-hidden placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:text-ellipsis ${stacked ? 'w-full' : 'flex-1 min-w-[140px]'}`}
+        className={`bg-bg border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-hidden focus-ring resize-none leading-[20px] overflow-hidden placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:text-ellipsis ${stacked ? 'w-full' : 'flex-1 min-w-[140px]'}`}
       />
       {controls}
       {/* No hand-off: the comment draft in this box's textarea is unsaved, and

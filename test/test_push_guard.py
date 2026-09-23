@@ -275,9 +275,21 @@ class TestPushGuardRefused:
 class TestPushGuardEdgeCases:
     """Edge cases and error handling."""
 
-    def test_not_a_git_repo(self, tmp_path):
-        """Running outside a git repo → exit 2."""
-        rc, stdout, stderr = _run_push_guard(str(tmp_path))
+    def test_not_a_git_repo(self, tmp_path, monkeypatch):
+        """Running outside a git repo → exit 2.
+
+        "Outside a git repo" is constructed, not assumed of ``tmp_path``: a harness
+        that pins ``TMPDIR`` under the checkout gives it a real ``.git`` among its
+        ancestors, and git's upward discovery would find it (exit 40, a refusal of
+        THIS checkout's branch state, rather than 2). ``GIT_CEILING_DIRECTORIES``
+        is git's own seam for that walk and the script inherits the environment;
+        the directory is a CHILD of the ceiling because git checks its starting
+        directory before consulting the ceiling.
+        """
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+        nowhere = tmp_path / "nowhere"
+        nowhere.mkdir()
+        rc, stdout, stderr = _run_push_guard(str(nowhere))
         assert rc == 2
 
     def test_custom_max_ahead(self, repo_pair):

@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import functools
 import getpass
 import json
 import logging
@@ -52,6 +53,7 @@ from kiro_crew.artifacts import (
     ArtifactNotFoundError,
     ArtifactStillPublishedError,
     ArtifactValidationError,
+    filter_comments_for_forward,
     get_default_folder_store,
     get_default_store,
     has_unthemed_hardcoded_colors,
@@ -1126,18 +1128,27 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
     )
     try:
         store = get_default_store()
-        items = store.list(
-            tag=tag,
-            kind=kind,
-            # When content-matching, don't let the store's name-only filter
-            # exclude content/tag matches — filter in this layer instead.
-            name_contains=None if do_content else q,
-            source=source,
-            source_path=source_path,
-            folder=folder,
-            session_key=session,
-            touched_by_session=touched_by,
-            pinned=pinned,
+        # The listing reads one meta.json per artifact through the store's
+        # sensitive-path fence. Off the loop that fence asks about the path the
+        # store already canonicalised with no resolver-pool hop (see
+        # ``ArtifactStore._read_text`` / ``_fence_refuses``), and a slow mount
+        # stalls this worker rather than every other request.
+        items = await asyncio.get_running_loop().run_in_executor(
+            None,
+            functools.partial(
+                store.list,
+                tag=tag,
+                kind=kind,
+                # When content-matching, don't let the store's name-only filter
+                # exclude content/tag matches: filter in this layer instead.
+                name_contains=None if do_content else q,
+                source=source,
+                source_path=source_path,
+                folder=folder,
+                session_key=session,
+                touched_by_session=touched_by,
+                pinned=pinned,
+            ),
         )
     except (ArtifactError, OSError) as exc:
         logger.warning("artifact list failed: %s", exc)
@@ -3767,6 +3778,14 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
             remote_sync_error = _redact_text(str(exc))
 
     comments = await _run_off_loop(lambda: store.list_comments(slug))
+
+    # ── Forwarding filter (comment→chat replay fix) ──
+    # Opt-in: `?exclude_resolved=1` drops resolved threads, which is what the
+    # forwarding paths want. Without the param the full list comes back, so
+    # existing callers are unaffected.
+    if request.query.get("exclude_resolved", "").lower() in ("1", "true"):
+        comments = filter_comments_for_forward(comments)
+
     result = []
     for c in comments:
         entry: dict[str, Any] = {
@@ -4541,6 +4560,13 @@ async def api_artifact_publish_providers(request: web.Request) -> web.Response:
                 # send the user somewhere generic, and a provider's own hint is the only
                 # thing that knows WHICH action makes it available.
                 "install_hint": str(getattr(p, "install_hint", "") or ""),
+                # Whether the published link is served with no authentication. The
+                # FE gates the public-exposure warning and the acknowledgment modal
+                # on it; a destination that stores content privately declares False
+                # so the flow stops telling the user their content is on the open
+                # internet. Coerced to a real bool so a stub attribute cannot leak a
+                # non-JSON value into the response.
+                "public_reachable": bool(p.public_reachable),
                 "sharing_model": _sharing_model_dict(sm),
                 "sync_model": {
                     "authority": sy.authority,

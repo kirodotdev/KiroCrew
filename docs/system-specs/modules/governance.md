@@ -1,7 +1,7 @@
 # Governance Model (two-level Policy ∩ Profile)
 
 The `kiro_crew.platform.governance` + `kiro_crew.platform.governance_profiles`
-modules implement KiroCrew's **two-level security governance model**. Governance
+modules implement Kiro Crew's **two-level security governance model**. Governance
 is resolved by a single rule — *the tightest boundary wins*:
 
 - **Level 1 — POLICY** (`GovernanceCeiling`): the enterprise security ceiling,
@@ -13,11 +13,16 @@ is resolved by a single rule — *the tightest boundary wins*:
 The effective permission for any item is `policy ∩ profile`. This spec is the
 implementation companion to the design doc (Pippin `kirocrew/MVTDhLpm2SSW`).
 
-> Scope: this governs **KiroCrew's own** security boundaries — what the host
+> Scope: this governs **Kiro Crew's own** security boundaries — what the host
 > performs on behalf of the agent across every surface (CLI, dashboard, Slack,
 > cron, heartbeat, sub-agents, apps). The underlying kiro-cli agent config
-> (`~/.kiro/agents/*.json`) is **out of scope**: KiroCrew enforces its own
+> (`~/.kiro/agents/*.json`) is **out of scope**: Kiro Crew enforces its own
 > ceiling at its own gate even when the kiro side grants more.
+
+Subagent admission checks explicit target names. When execution resolves an
+omitted name from the original conversation or parent session, the runner also
+checks that effective name against the parent's `capabilities.spawn` agent scope
+before provider allocation, using the same evaluator and app identity.
 
 ## The four archetypes (one composition algebra each)
 
@@ -902,11 +907,19 @@ unconditional rebuild would rewrite a file kiro-cli watches every refresh interv
 Two details make that bound safe rather than merely cheap. The baseline is seeded by
 `prime_ceiling_projection` **before the poller starts**, because the first poll can itself
 install a new ceiling and a first-call baseline would record that generation and skip the very
-rebuild it needed. And the memo advances **only after a successful rebuild**: a failure raises
-through the hook runner, which logs and moves on, so marking the generation synchronised would
-lose the retry the next poll gives and leave forbidden auto-approvals on disk for the process
-lifetime. An unseeded baseline rebuilds once rather than skipping — a redundant rewrite costs a
-file write, a skipped one costs the tighten.
+rebuild it needed. And the memo advances **only after a confirmed write**: the hook calls
+`rebuild_agent_config_reporting()`, which returns `(path, wrote)` from the same single
+evaluation that gates the write. A failure still raises through the hook runner, which logs
+and moves on — and a **refused** rebuild (an instance the shared-home write guard declines:
+non-default `KIROCREW_HOME`, pod, or foreign-pinned specs) returns `wrote=False` and holds the
+memo the same way, logging the pending projection at WARNING once per generation. Either way,
+marking the generation synchronised would lose the retry the next poll gives and leave
+forbidden auto-approvals on disk for the process lifetime; holding the memo means every later
+poll retries and the projection lands the moment the failure or refusal clears. The verdict
+comes from inside the rebuild itself, never a separate guard probe, which would race a
+concurrent default-home rewrite and record a projection that never landed. An unseeded
+baseline rebuilds once rather than skipping — a redundant rewrite costs a file write, a
+skipped one costs the tighten.
 
 What no hook can do is narrow a session **already negotiated**: kiro-cli holds the grants it
 was given, and nothing reaches into a running one. That limit has the same shape as an
@@ -1382,7 +1395,7 @@ without re-implementing it.
 **`host` surface (in-process host actions).** A governance check that is not
 driven by a user-facing surface — app activation
 (`apps.manager._app_activation_denied`), Slack workspace admission
-(`slack.enterprise`), non-Slack transport startup
+(`slack.enterprise`), transport startup
 (`slack.gateway._channel_transport_permitted`), and the selectable-ACP-harness
 narrowing (`agent_backend_governance.narrow_selectable_backends`) — runs under
 the `_host` sentinel session key, which classifies to surface `host`. Operators can bind a
@@ -1750,11 +1763,11 @@ read-your-writes should add it deliberately, with its own tests.
   STILL denied when the enterprise ceiling pins the equivalent pattern —
   tightest-wins. The call sites thread `session_key`/`agent` (they default to
   `""`, so non-governed callers are unaffected).
-- **Plane B — kiro agent JSON**: out of scope (v1). KiroCrew no longer writes
+- **Plane B — kiro agent JSON**: out of scope (v1). Kiro Crew no longer writes
   `deniedCommands` into `~/.kiro/agents/*.json` at all — the
   `agent._enforce_denied_commands` injection path is retired — so the hooks gate
   is the SOLE denied-command enforcement point, not a secondary layer. The gate
-  is authoritative; KiroCrew does not regenerate `~/.kiro/agents/*.json`.
+  is authoritative; Kiro Crew does not regenerate `~/.kiro/agents/*.json`.
 - **Plane C — out-of-band executors**: the cron `command` (runs via `sh -c`
   outside the ACP flow) is gated in `mcp_cron._vet_command_governance`; the
   cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`.
@@ -1834,7 +1847,7 @@ either level permits. In particular:
   settings, credentials, hooks, native personas/agents, raw instructions, and
   runtime state are never imported.
 - The strict settings allowlist excludes governance and security controls.
-  Preserving an existing KiroCrew value on collision cannot be overridden by
+  Preserving an existing Kiro Crew value on collision cannot be overridden by
   foreign precedence.
 - Imported workspace references grant no filesystem permission. Any later tool
   use is evaluated by the ordinary filesystem scopes and sensitive-path
@@ -1981,12 +1994,12 @@ a form that silently does nothing, and cannot save config that would never take
 effect. **Slack is governed like every other channel** (it is NOT exempt): its
 inbound message + tool-approval + review-action + OPTIONS-choice chokepoints call
 `channel_inbound_permitted("slack")`, so a `channels` policy denying `slack`
-blocks it and the row is marked "Off by admin" to match. (The connection-time gate
-+ the direct cron/heartbeat outbound posts are a separate follow-up; outbound
-sends via the messaging tool already pass `_vet_channel_governance`. The non-Slack
-transports are additionally gated at connect time by
-`slack.gateway._channel_transport_permitted`.) Default OSS build (no policy) →
-every channel permitted → nothing greyed.
+blocks it and the row is marked "Off by admin" to match. (The direct
+cron/heartbeat outbound posts remain a separate follow-up; outbound sends via the
+messaging tool already pass `_vet_channel_governance`. Every transport is also gated
+at connect time by `slack.gateway._channel_transport_permitted`; Slack calls it from
+`_connect_slack` because it owns its socket-client lifecycle.) Default OSS build (no
+policy) → every channel permitted → nothing greyed.
 
 **Gate placement — BEFORE side effects, not just before the turn.** The inbound
 gate for the native Slack path lives in `slack.events._route_message`, placed
@@ -2236,7 +2249,7 @@ denials leave the same forensic trail.
 
 > **Capability `profile-absence` semantics (deliberate deviation from spec A.4
 > rule 8).** The spec says a profile that OMITS a capability defaults it to
-> `false`. KiroCrew instead treats an omitted scope as *not governed by the
+> `false`. Kiro Crew instead treats an omitted scope as *not governed by the
 > profile* (truth-table "not-governed" → bounded by policy alone), because the
 > stricter reading would turn every minimal profile (e.g. one that governs only
 > `tools`) into a near-deny-all of all capabilities. To disable a capability a
@@ -2247,11 +2260,12 @@ The **enforced** scopes in v1 are: `tools`, `mcp`, `commands` (host gate + cron
 command body + the enterprise force-pin for built-in denied-command rules, see
 below), `filesystem.read` / `filesystem.write` / `folders.*` and
 `network.egress` (host gate via tool kind + args), `channels` (per-transport at
-the messaging chokepoint AND at non-Slack transport startup), `apps` (app
+the messaging chokepoint AND at transport startup), `apps` (app
 activation), `agent_backend` (which ACP harness a deployment may select —
-materialised by narrowing the `acp_backends` registry at boot and on every
-runtime ceiling install, see below), `sandbox.min_level` (ordinal
-floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
+materialised by narrowing the `acp_backends` registry at gateway start),
+`approval_modes` (currently the `yolo` dashboard mode), `yolo_duration`
+(the `permanent` and `until_shutdown` no-expiry choices), `sandbox.min_level`
+(ordinal floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
 gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
 `capabilities.memory_writes`, `capabilities.script_hooks`,
 `capabilities.browse` (the native `browser` MCP tool's dispatch chokepoint —
@@ -2282,12 +2296,16 @@ descriptor. Every decision, list and mint alike, is SEL-audited through
 entry; the method rows themselves come from the `mobile_connect` CPP seam —
 see `platform-context.md`), and
 `capabilities.telemetry` (the anonymous beacon: send gate + both write
-chokepoints — **policy layer only**, see below), and
+chokepoints — **policy layer only**, see below), `capabilities.tailnet_origin`
+(the tailnet CLI/origin derivation, publish action, and enabling config writes —
+**policy layer only**, see below), and
 `capabilities.social_share` (the dashboard's "Share as image" entry — read
 through `GET /api/dashboard/config`, every layer honoured, every decision
 audited; see below), and `capabilities.feature_videos_download` (fetching the
 signed feature-video manifest and its media from the vendor CDN — three
-chokepoints, every layer honoured; see below). Only the live `approval_mode`
+chokepoints, every layer honoured; see below), and `capabilities.decisions` (the
+Jev decision seam's paid external egress — the consent PUT plus the gate's own
+keystone read, every layer honoured; see below). Only the live `approval_mode`
 clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
@@ -2468,7 +2486,7 @@ ungoverned):
 **Recorded maintainer decision (2026-07-24, PR #107):** "consent =
 surprise-prevention UX, not authorization" is **accepted as the v1
 contract** for installed-pack personas, and `capabilities.theme_persona`
-ships `capability_default=True`. Rationale: KiroCrew is a single-user,
+ships `capability_default=True`. Rationale: Kiro Crew is a single-user,
 self-hosted tool where the pack installer is the machine owner; the persona is
 tone-only, content-bound (sha256), and enterprise-disableable via the row
 above — while a default-off would make every installed persona silently dead
@@ -2698,14 +2716,84 @@ route is fetched on every dashboard load by every install, and an audited
 readout nobody consumes.
 
 **Fails CLOSED** (`fail_closed=True`), joining `capabilities.publish` /
-`theme_install` / `telemetry` / `tailnet_origin` / `social_share`: a wrong-DENY
-withholds an intro clip, a wrong-PERMIT makes a vendor-CDN request on a fleet that
-forbade vendor egress. An unevaluable ceiling is audited as the denial it produces.
+`theme_install` / `telemetry` / `tailnet_origin` / `social_share` / `decisions`: a
+wrong-DENY withholds an intro clip, a wrong-PERMIT makes a vendor-CDN request on a
+fleet that forbade vendor egress. An unevaluable ceiling is audited as the denial it produces.
 
 **No CSP change.** `media-src` stays `'self' blob:`. Every clip the dashboard plays
 is served from this origin — a bundled asset or a downloaded, verified one — so the
 policy needs no off-origin media host, and a header that admitted one would be
 admitting a fetch the server never offers.
+
+### The Jev decision seam — `capabilities.decisions`
+
+An enabled, sampled session sends message excerpts and skill descriptions to an
+external, PAID provider endpoint and spends the operator's account to do it
+(`docs/system-specs/modules/decisions.md`). The owner's own switch is the keystone
+`decisions_consent.json`; this row is the FLEET's, and the two answer different
+questions — may my messages be sent, versus may this machine run the seam at all.
+An owner on a managed laptop can consent in good faith to an endpoint their fleet
+never approved, so the ceiling stands ABOVE the keystone rather than beside it.
+Governed by the `capabilities.decisions` `SCOPE_CATALOG` capability row
+(`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or evaluator
+change, mirroring the rows above).
+
+**Two chokepoints, because either alone is a half-control.**
+`PUT /api/decisions/consent` refuses an ENABLING write with
+`403 decisions_capability_denied` and writes nothing, so a denial is visible where
+an owner would flip the switch; a DISABLING write still succeeds, because the gate
+already reads the seam as off and refusing it would trap an owner with a stale
+`"enabled": true` keystone they cannot clear. And `decisions.gate._consented_for` —
+the one keystone read every `decide` and `is_enabled` path funnels through — reports
+NOT consented under a denial, so a keystone written before the pin is inert rather
+than carried over. Without that half a fleet could pin the row and still send from
+every machine consented earlier. The ceiling is consulted AFTER the keystone and
+inside the same off-loop hop, so an install without consent pays no governance
+evaluation, no SEL row and no second `await`; past that line consent IS on, which is
+exactly when a denial is a fact an auditor needs recorded.
+
+**The reads are presentation, not the control.**
+`GET /api/decisions/consent` folds a denial into `permits` (there is no separate
+reason field — nothing read one, and the surface a caller acts on is the 403);
+`GET /api/dashboard/config` reports a read-only `decisions_enabled`
+(`decisions/capability.py`) and the frontend draws the Decisions card in
+Settings › Developer › Feature Previews only when it is `true`. A denial withholds
+the CARD rather than disabling it — the section's other unavailable states (an old
+gateway, an unreadable config) fade the card and name the fix because the user can
+act on those, and a ceiling is not something they can act on. The field is dropped
+from the `PUT` body (both settings surfaces round-trip the whole `GET`), so it can
+never be written. The ceiling viewer needs no i18n key: the humanising fallback
+renders the `decisions` leaf as "Decisions".
+
+**Shape: `social_share`, with one deliberate divergence.** The evaluation runs
+through `vet_and_audit` and **every denied decision is honoured**, whichever layer
+produced it, because this is a per-request question rather than a process-wide startup
+one. Unlike `social_share`, the surface key is a PARAMETER rather than a constant,
+because this probe has two kinds of caller. The dashboard ones (the config route, the
+consent `PUT`) keep the pinned `dashboard:ui` default, for `social_share`'s own reason:
+on an HTTP request the equivalent `X-Session-Key` header is caller-controlled, so
+honouring it would let a request carrying `slack:x` dodge a profile bound to the
+dashboard surface. The gate passes the turn's own session key, which is runtime state
+and not caller input — the same value `in_bucket` hashes and the decision log records.
+Pinning it there would leave a profile bound to a non-dashboard surface unconsulted on
+the one path that actually sends, which is a ceiling bypass rather than a defence. A
+caller with no session names no surface, so the default applies and every layer above
+the surface still binds.
+
+**Fails CLOSED** (`fail_closed=True`), joining `capabilities.publish` /
+`theme_install` / `telemetry` / `tailnet_origin` / `social_share` /
+`feature_videos_download`: a wrong-DENY falls back to the shipped word-overlap skill
+rule that every unconsented install already runs, a wrong-PERMIT sends message
+excerpts to a paid third party on a fleet that forbade it. An unevaluable ceiling is
+recorded as `denied` with a `fail-closed` reason.
+
+**Every decision is audited.** Each evaluation leaves a `governance_decision` SEL
+row (tool `dashboard_config_decisions`), grant and denial alike, through the shared
+seam. A policy pins the seam off MACHINE-WIDE with one object -- every surface, every path. A profile bound to a surface withdraws only turns on that surface, so stopping the seam everywhere means the policy, or a profile per sending surface:
+
+```json
+{"version": 1, "capabilities": {"decisions": {"enabled": false}}}
+```
 
 ### "Share as image" — `capabilities.social_share`
 
@@ -2956,6 +3044,25 @@ binding app activation and the messaging host gates use — see
 The Security panel picks the row up automatically — `api_governance_policy`
 iterates `SCOPE_CATALOG`.
 
+### Auto-approve grant lifetime — `yolo_duration`
+
+`agent.yolo_duration` accepts timed ad-hoc choices (`30m`, `1h`, `6h`, `12h`,
+`24h`) plus `until_shutdown`; the timed default is `6h`. The `yolo_duration`
+`SCOPE_CATALOG` row is a `ScopedRuleset` on the `identifier` matcher and governs
+only the two no-expiry members: `permanent` (the standing
+`agent.dangerously_skip_permissions` declaration) and `until_shutdown` (an ad-hoc
+grant with no timed expiry). Timed choices remain bounded by the ordinary config
+and `SafetyOverride` ceilings rather than this scope.
+
+Both decisions resolve against `HOST_SESSION_KEY` with `fail_closed=True`. Denying
+`permanent` makes `grant_declared_yolo()` fall back to the configured ad-hoc
+lifetime; denying `until_shutdown` makes `resolve_configured_duration()` fall back
+to the default 6-hour TTL. The resolver reads live config on each ad-hoc activation,
+so a saved duration change applies to the next grant without a gateway restart.
+`/api/status` reports the configured label and whether `until_shutdown` is
+permitted; the Settings UI can therefore withhold a no-expiry choice that the
+server would refuse.
+
 ### Which tool-approval modes a deployment may select — `approval_modes`
 
 The dashboard approval-mode picker offers four modes: `normal` (interactive —
@@ -3096,7 +3203,7 @@ either one now aborts governance boot (see the `_MATCHERS` note above).
 **What replaced it.** One operator opt-in on the keystone `computer_use.json`,
 which `security._SENSITIVE_HOME_DIRS` fences the agent away from. The agent cannot
 read or write that file, so it cannot enable its own desktop automation — and it
-cannot drive KiroCrew's own window either (`computer_use/policy.py`), so it cannot
+cannot drive Kiro Crew's own window either (`computer_use/policy.py`), so it cannot
 click the toggle in the UI. Those two facts are the entire boundary.
 
 **What this costs, stated plainly.** There is no way to express "computer use is
@@ -3182,7 +3289,8 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `agent_backend_governance.py` — the `agent_backend` scope: `SCOPE`,
   `narrow_selectable_backends` (the registry recompute, plus its host-bound,
   both-directions audit), driven from `platform/bootstrap.py::bootstrap_context`
-  and `platform/policy_distribution.py::apply_ceiling`.
+  at gateway start. Runtime ceiling installs deliberately leave the registry
+  unchanged until the next start.
 - `acp_backends.py` — the selectable registry the scope narrows:
   `GOVERNANCE_FLOOR_BACKEND`, `POLICY_ID_BY_BACKEND`, the baseline/effective
   split (`registered_backends` / `selectable_backends`) and
@@ -3193,7 +3301,6 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   (`_cu_read_only_auto_approve`, which reads the action-class table rather than a
   governance row).
 - `sel.py` — `log_governance_decision`.
-- chokepoints: `sandbox.py`, `mcp_cron.py`, `subagent.py`, `mcp_core.py`.
 - `messaging/identity.py` — `channel_inbound_permitted` (the per-message inbound
   `channels` gate) + its SEL audit disposition.
 - `executors.py` — `governance_executor` (`mc-gov`), the bounded pool the

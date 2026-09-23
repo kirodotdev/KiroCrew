@@ -49,6 +49,7 @@ def _handle_with_transcript(tmp_path, sid: str = "sid-provider"):
     handle = AcpSessionHandle.__new__(AcpSessionHandle)
     handle._session_id = sid
     handle.keep_transcript = False
+    handle.memory_mode = "persistent"
     runtime = MagicMock()
     runtime.is_alive.return_value = True
     runtime.terminate_session = AsyncMock()
@@ -120,7 +121,31 @@ async def test_a_cancel_that_merely_times_out_still_destroys(tmp_path, monkeypat
     await provider.shutdown()
 
     assert [f for f in files if f.exists()] == []
+
     runtime.terminate_session.assert_awaited_once_with("sid-timeout")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+@pytest.mark.parametrize("owns_runtime", [False, True])
+async def test_restricted_shutdown_cannot_keep_native_transcript(
+    tmp_path, monkeypatch, mode, owns_runtime
+):
+    handle, runtime, sessions, files = _handle_with_transcript(tmp_path)
+    handle._turn_done.set()
+    runtime.kill = AsyncMock()
+    provider = AcpSessionProvider(handle, runtime, owns_runtime=owns_runtime)
+    monkeypatch.setattr("kiro_crew.acp.session_handle.kiro_sessions_dir", lambda: sessions)
+    provider.memory_mode = mode
+    provider.set_keep_transcript(True)
+
+    assert handle.keep_transcript is False
+    assert runtime.recording_allowed is False
+    await provider.shutdown()
+
+    assert all(not file.exists() for file in files)
+    runtime.terminate_session.assert_awaited_once_with(handle.session_id)
+    assert runtime.kill.await_count == int(owns_runtime)
 
 
 @pytest.mark.asyncio

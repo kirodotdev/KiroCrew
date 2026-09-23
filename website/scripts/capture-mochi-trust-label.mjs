@@ -26,8 +26,12 @@ const EXPECT_DISTINCT = !process.argv.includes('--no-expect-distinct')
 mkdirSync(OUT, { recursive: true })
 
 const SCENES = [
-  { name: 'mochi-approval-api-config', cmd: 'api_config' },
-  { name: 'mochi-approval-api-secrets', cmd: 'api_secrets' },
+  { name: 'mochi-approval-api-config', cmd: 'api_config', pair: true },
+  { name: 'mochi-approval-api-secrets', cmd: 'api_secrets', pair: true },
+  // #4700: a run of whitespace inside the granted string. `runOf` asserts the
+  // RENDERED text still carries it -- the DOM text is exact either way, so a
+  // collapse is visible only through a real browser's innerText.
+  { name: 'mochi-approval-spaced', cmd: 'spaced', runOf: '  ' },
 ]
 
 const browser = await chromium.launch()
@@ -55,10 +59,17 @@ for (const s of SCENES) {
     failed = true
     continue
   }
-  const ok = !EXPECT_DISTINCT || Boolean(title && title.includes('gh api'))
-  console.log(`${s.name}: label=${JSON.stringify(label)} title=${JSON.stringify(title)} ${ok ? 'OK' : 'MISMATCH'}`)
+  // Whitespace is part of an exact-string grant, so a collapsed run is a
+  // misleading frame: gate on it in after-mode, the same way the tooltip is.
+  const keptRun = !s.runOf || label.includes(s.runOf)
+  const ok = (!EXPECT_DISTINCT || Boolean(title && title.includes(s.runOf ? 'grep' : 'gh api')))
+    && (!EXPECT_DISTINCT || keptRun)
+  console.log(
+    `${s.name}: label=${JSON.stringify(label)} title=${JSON.stringify(title)} ` +
+    `keptRun=${s.runOf ? keptRun : '-'} ${ok ? 'OK' : 'MISMATCH'}`,
+  )
   if (!ok) { failed = true; continue }
-  labels.push(label)
+  if (s.pair) labels.push(label)
   await page.screenshot({ path: `${OUT}/${PREFIX}${s.name}.png` })
 }
 

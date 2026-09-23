@@ -96,7 +96,7 @@ def relevance_evidence(query_terms: Iterable[str], text: str, cosine: float | No
 
 
 def rank_score(evidence: dict, *, importance: float) -> float:
-    """Rank private memory by relevance and importance, independently of age."""
+    """Rank member memory by relevance and importance, independently of age."""
     cosine = max(0.0, evidence["cosine"] or 0.0)
     lexical = evidence["query_coverage"]
     # A row awaiting embedding still competes through the lexical channel, but

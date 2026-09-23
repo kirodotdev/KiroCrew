@@ -11,7 +11,8 @@
  *     of its agents are still running, ✓ if all finished ok, ✗ if any failed),
  *     title, and agent count.
  *   - under each phase, the AGENTS with per-agent status (spinner / ✓ / ✗),
- *     their `label` (mono), and `last_tool` if present.
+ *     their `label` (mono), `last_tool` if present, and the time the agent took
+ *     once it has finished.
  *   - a narrator log strip (most recent `log` lines) and a budget readout.
  *
  * All LLM-derived strings are sanitized via sanitizeLlmOutput. Pure event-fold
@@ -23,9 +24,10 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { redactSecrets, type ErrorReport } from '../../utils/errorReport'
 import { groupByPhase, latestBudget, type WfEvent } from './runModel'
-
+import { fmtElapsed } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+
 export interface WorkflowRunTreeProps {
   events: WfEvent[]
   /** Terminal status of the run; drives the per-phase fallback when no agents
@@ -145,9 +147,9 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
               {ps === 'running' ? (
                 <Loader2 size={12} className="text-accent animate-spin shrink-0" />
               ) : ps === 'ok' ? (
-                <CheckCircle2 size={12} className="text-green-500 shrink-0" />
+                <CheckCircle2 size={12} className="text-ok shrink-0" />
               ) : (
-                <XCircle size={12} className="text-red-500 shrink-0" />
+                <XCircle size={12} className="text-danger shrink-0" />
               )}
               <span className="truncate text-left flex-1">{title}</span>
               <span className="ml-auto text-[10px] text-muted tabular-nums shrink-0">
@@ -167,13 +169,18 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
                       {a.ok === undefined ? (
                         <Loader2 size={12} className="text-accent animate-spin shrink-0" />
                       ) : a.ok ? (
-                        <CheckCircle2 size={12} className="text-green-500 shrink-0" />
+                        <CheckCircle2 size={12} className="text-ok shrink-0" />
                       ) : (
-                        <XCircle size={12} className="text-red-500 shrink-0" />
+                        <XCircle size={12} className="text-danger shrink-0" />
                       )}
                       <span className="font-mono truncate">{label}</span>
                       {lastTool && (
                         <span className="text-muted truncate">· {lastTool}</span>
+                      )}
+                      {a.elapsed_ms !== undefined && (
+                        <span className="ml-auto text-[10px] text-muted tabular-nums shrink-0">
+                          {fmtElapsed(a.elapsed_ms)}
+                        </span>
                       )}
                     </li>
                   )
@@ -229,12 +236,12 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
       {status && status !== 'running' && status !== 'paused' && status !== 'failed' && (
         <div
           className={`text-[12px] rounded p-2 border ${
-            status === 'finished' ? 'border-green-500/30' : 'border-border'
+            status === 'finished' ? 'border-ok/30' : 'border-border'
           }`}
         >
           <div className="font-medium mb-1 flex items-center gap-1.5">
             {status === 'finished' ? (
-              <CheckCircle2 size={12} className="text-green-500" />
+              <CheckCircle2 size={12} className="text-ok" />
             ) : (
               <XCircle size={12} />
             )}

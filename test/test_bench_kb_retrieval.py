@@ -21,6 +21,7 @@ from kiro_crew.eval.bench.kb_retrieval import (
     KB_QUERY_CLASSES,
     KBGoldenSet,
     KBGoldenSetError,
+    average_precision_at_k,
     default_golden_set_path,
     format_kb_report,
     mrr_at_k,
@@ -58,6 +59,68 @@ class TestMrrAtK:
     def test_first_of_multiple_gold_counts(self) -> None:
         # Reciprocal of the FIRST gold hit, regardless of how many gold exist.
         assert mrr_at_k(["x", "g2", "g1"], ["g1", "g2"], 5) == 0.5
+
+
+# -- average_precision_at_k ---------------------------------------------------
+
+
+class TestAveragePrecisionAtK:
+    def test_perfect_ranking_is_one(self) -> None:
+        assert average_precision_at_k(["g1", "g2", "z"], ["g1", "g2"], 3) == 1.0
+
+    def test_single_gold_at_first_rank_is_one(self) -> None:
+        assert average_precision_at_k(["g1", "z", "y"], ["g1"], 3) == 1.0
+
+    def test_single_gold_matches_mrr(self) -> None:
+        """With exactly one gold doc, average precision degenerates to 1/rank."""
+        for ranked in (["g", "x", "y"], ["x", "g", "y"], ["x", "y", "g"]):
+            assert average_precision_at_k(ranked, ["g"], 3) == pytest.approx(
+                mrr_at_k(ranked, ["g"], 3)
+            )
+
+    def test_no_hits_is_zero(self) -> None:
+        assert average_precision_at_k(["x", "y", "z"], ["g1"], 3) == 0.0
+
+    def test_no_gold_is_zero(self) -> None:
+        assert average_precision_at_k(["a", "b"], [], 3) == 0.0
+
+    def test_second_gold_placement_changes_the_score(self) -> None:
+        """The property that motivates the metric: MRR cannot see this, AP can.
+
+        Both rankings put the first gold doc at rank 1, so MRR scores them
+        identically. Average precision separates them because the second gold
+        doc sits at rank 2 in one and rank 3 in the other.
+        """
+        early = average_precision_at_k(["g1", "g2", "z"], ["g1", "g2"], 3)
+        late = average_precision_at_k(["g1", "z", "g2"], ["g1", "g2"], 3)
+        assert mrr_at_k(["g1", "g2", "z"], ["g1", "g2"], 3) == mrr_at_k(
+            ["g1", "z", "g2"], ["g1", "g2"], 3
+        )
+        assert early > late
+        # (1/1 + 2/2) / 2 = 1.0 vs (1/1 + 2/3) / 2 = 0.8333
+        assert early == 1.0
+        assert late == pytest.approx((1.0 + 2 / 3) / 2)
+
+    def test_gold_outside_window_is_not_counted(self) -> None:
+        assert average_precision_at_k(["g1", "z", "y", "g2"], ["g1", "g2"], 3) == pytest.approx(
+            1.0 / 2
+        )
+
+    def test_denominator_is_truncated_at_k(self) -> None:
+        """More gold than fits in the window must still be able to reach 1.0.
+
+        Mirrors :func:`ndcg_at_k`'s truncated ideal ranking: with three gold docs
+        scored at k=2, a textbook ``len(gold)`` denominator would cap this run at
+        0.667 for a reason that is arithmetic rather than a ranking fault.
+        """
+        assert average_precision_at_k(["g1", "g2", "g3"], ["g1", "g2", "g3"], 2) == 1.0
+
+    def test_repeated_gold_doc_counts_once(self) -> None:
+        """A duplicated result must not inflate the score above 1.0."""
+        assert average_precision_at_k(["g1", "g1", "g1"], ["g1", "g2"], 3) == pytest.approx(0.5)
+
+    def test_never_exceeds_one(self) -> None:
+        assert average_precision_at_k(["g1", "g1", "g2"], ["g1", "g2"], 3) <= 1.0
 
 
 # -- golden set model ---------------------------------------------------------
@@ -728,6 +791,7 @@ class TestRound7Fixes:
             recall_micro={3: micro},
             ndcg={3: 0.5},
             mrr={3: 1.0},
+            avg_precision={3: 0.5},
         )
         report = KBRetrievalReport(golden_set="t", embedder_id="toy", k_values=(3,))
         report.results.append(r)

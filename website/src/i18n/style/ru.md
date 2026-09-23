@@ -14,7 +14,7 @@ it is named alongside the test that enforces it; the rest are for translation re
 
 | rule | example |
 |---|---|
-| Quotation marks: `«…»` outer, `„…"` inner | `«Нажмите „Сохранить"»` |
+| Quotation marks: `«…»` outer, `„…“` inner | `«Нажмите „Сохранить“»` |
 | Em dash `—` with spaces for parenthetical | `Файл — не найден` |
 | Ellipsis: three dots `...` | Not the Unicode `…` character (per Russian typographic tradition) |
 | No trailing period on buttons/labels | `Сохранить`, not `Сохранить.` |
@@ -66,7 +66,8 @@ Checked by `glossary.test.ts`.
 | other | fractional numbers | `{{count}} файла` (1.5, 2.7…) |
 
 Every `{{count}}` key **must** have `_one`, `_few`, `_many`, `_other` suffixes. Missing
-any category means i18next falls back to English for those numbers.
+any category can make i18next select another available form with the wrong grammar;
+`catalogParity.test.ts` blocks that state from shipping.
 
 Checked by `catalogParity.test.ts` which enforces exactly 4 categories for `ru`.
 
@@ -90,6 +91,10 @@ For strings addressing the user (unknown gender):
 |---|---|
 | placeholder parity with English | `catalogParity.test.ts` |
 | correct CLDR plural categories (**4**) | `catalogParity.test.ts` |
+| straight-quote debt around Cyrillic does not exceed 20 | `ruStyle.test.ts` |
+| no formal `Вы` address | `ruStyle.test.ts` |
+| changed values address the reader as ты, never вы | `ruStyle.test.ts` (`I18N_BASE_REF`) |
+| guarded product names are not transliterated | `ruStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |

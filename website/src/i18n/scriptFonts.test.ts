@@ -236,7 +236,13 @@ async function declarationSites(): Promise<Array<{ file: string; line: number; t
           // --font-body at runtime. The role tokens count because a pack's stack
           // is built from them, so one declared without the aliases loses script
           // coverage for every user of that pack.
-          const declares = /--(?:font-body|mono|theme-font-sans|theme-font-mono)\s*:/.test(text)
+          // tailwind-theme.css re-exports the runtime token under Tailwind's
+          // `--font-*` theme namespace (`--font-body: var(--font-body)`) so the
+          // `font-body` utility compiles. That line reads the stack; it declares
+          // no families of its own, so it is not a site.
+          const themeAlias = /--font-body\s*:\s*var\(--font-body\)\s*;/.test(text)
+          const declares = !themeAlias
+            && /--(?:font-body|mono|theme-font-sans|theme-font-mono)\s*:/.test(text)
           const familyMap = /^\s*(?:sans|mono|system):\s*"/.test(text)
           if (declares || familyMap) out.push({ file: relative(SRC, full), line: i + 1, text })
         })

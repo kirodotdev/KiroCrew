@@ -40,6 +40,15 @@ the probe has to fetch. That install is cheap next to the emptied
 :func:`_install_already_proven` skips it when the incoming ref touches nothing
 under ``website/`` and a populated tree is already there to answer for it.
 
+That disposable directory is created inside the REPO rather than in ``TMPDIR``
+whenever the checkout can host it -- it exists, it is writable, and git hides the
+scratch name; :func:`_scratch_parent` and :func:`_scratch_name_is_ignored` carry
+those conditions and :func:`_make_scratch` falls back to ``TMPDIR`` when any of
+them fails. The reason to prefer the repo: a rehearsal is only meaningful on the
+filesystem the real install writes to, and the usual ``TMPDIR`` is a
+memory-backed filesystem with a fixed file limit that a dependency tree reaches
+long before it runs short of bytes.
+
 The flags otherwise MIRROR the real step exactly. A probe that resolves
 differently from the install is worse than no probe: it either passes what will
 fail, or fails what would have worked. ``--no-audit``/``--no-fund`` are the only
@@ -64,6 +73,7 @@ import shutil
 import subprocess  # nosec B404 - probing npm/git is this module's purpose
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 #: Line prefix the probe uses for a human-readable detail line in the run log.
@@ -88,11 +98,20 @@ EXIT_TRANSIENT = 43
 #: curated mirror this is what a blocked version looks like, so it is NOT an
 #: auth problem, and refreshing a credential would not make the version appear.
 EXIT_UNAVAILABLE = 44
-#: The scratch filesystem ran out of room. Because the probe performs a REAL
-#: install it needs about as much space as a ``node_modules`` tree, and it takes
-#: that from ``TMPDIR`` (which the build environment's allowlist passes
-#: through). Its own class so a full temp filesystem reads as a host condition
-#: rather than a lockfile that cannot be installed.
+#: Something ran out of room. Because the probe performs a REAL install it needs
+#: about as much space -- and as many FILES -- as a ``node_modules`` tree. Its own
+#: class so running out of room reads as a host condition rather than a lockfile
+#: that cannot be installed.
+#:
+#: Two axes, and pinning either one in the explanation is what makes this code
+#: hard to act on. A filesystem can run out of BYTES or of FILE SLOTS (inodes),
+#: and both return ``ENOSPC``: a memory-backed filesystem is mounted with a fixed
+#: inode count that a dependency tree's tens of thousands of files reach long
+#: before its bytes run short, while a disk-backed one usually runs out of bytes.
+#: And the install writes to TWO filesystems, which need not be the same one --
+#: the scratch directory, and the package cache the retrieval populates. So the
+#: explanation names no single filesystem and no single budget; it sends the
+#: operator to check all of them.
 EXIT_NO_SPACE = 45
 #: The sync runner found a dependency tree AND a leftover backup of one, and
 #: cannot tell which is complete. Owned by the runner rather than the probe, but
@@ -136,7 +155,18 @@ _SIGNALS: tuple[tuple[int, re.Pattern[str]], ...] = (
         ),
     ),
     (EXIT_UNAVAILABLE, re.compile(r"\bE404\b|404 not found", re.I)),
-    (EXIT_NO_SPACE, re.compile(r"\bENOSPC\b|no space left on device", re.I)),
+    # Both spellings of out of room, so npm's OWN output is classified the same
+    # way `_OUT_OF_ROOM_ERRNOS` classifies a direct filesystem error. Without the
+    # quota spellings the two paths disagree: a probe whose `mkdtemp` hit EDQUOT
+    # got the actionable out-of-room sentence, while one whose `npm ci` reported
+    # the same condition fell through to the generic failure message.
+    (
+        EXIT_NO_SPACE,
+        re.compile(
+            r"\bENOSPC\b|no space left on device|\bEDQUOT\b|disk quota exceeded",
+            re.I,
+        ),
+    ),
     (
         EXIT_TRANSIENT,
         re.compile(
@@ -165,9 +195,11 @@ _EXPLAIN = {
         "could not be verified — try again in a moment"
     ),
     EXIT_NO_SPACE: (
-        "not enough room in the scratch directory to verify the incoming "
-        "lockfile — free space in the temporary directory and press Pull + "
-        "Build again"
+        "verifying the incoming lockfile ran out of room — check the free bytes "
+        "(df -h) AND the free file count (df -i), on the checkout's filesystem "
+        "and on the package cache's, because any one of those four can be "
+        "exhausted while the other three look healthy — then free room and press "
+        "Pull + Build again"
     ),
     EXIT_TREE_AMBIGUOUS: (
         "a previous sync left a dependency-tree backup beside the tree, and "
@@ -225,19 +257,251 @@ def explain_exit(rc: int) -> str:
     return _EXPLAIN[rc] if rc in _EXPLAIN else ""
 
 
+#: Errnos that mean a filesystem has no room for another byte or another file.
+#: ``ENOSPC`` is the general one; ``EDQUOT`` is the SAME condition enforced per
+#: user by a quota, which is an ordinary managed-host configuration rather than
+#: an exotic one. Both have to classify identically in both places that read an
+#: errno here, or a quota-limited checkout falls through the "is this the target
+#: filesystem's own answer?" test in :func:`_make_scratch`, retries in
+#: ``TMPDIR``, and the probe certifies a filesystem the install will never use.
+#: Built by lookup because ``EDQUOT`` is absent on some platforms.
+_OUT_OF_ROOM_ERRNOS = tuple(
+    code
+    for code in (getattr(errno, name, None) for name in ("ENOSPC", "EDQUOT"))
+    if code is not None
+)
+
+
 def _os_error_code(exc: OSError) -> int:
     """Classify an OSError from the probe's own filesystem work.
 
-    Every write the probe makes lands in ``TMPDIR``, and because the probe
-    performs a REAL install that directory can fill. An uncaught OSError would
-    kill the step with a traceback and no classified cause -- which puts the
-    dashboard back to showing whatever the last output line happened to be, the
-    exact defect this module exists to remove. So the probe's own IO is mapped
-    to a code here, in ONE place, rather than guarded a site at a time.
+    Every write the probe makes lands in its scratch directory, and because the
+    probe performs a REAL install that directory's filesystem can run out of
+    room -- in bytes or in files. An uncaught OSError would kill the step with a
+    traceback and no classified cause -- which puts the dashboard back to showing
+    whatever the last output line happened to be, the exact defect this module
+    exists to remove. So the probe's own IO is mapped to a code here, in ONE
+    place, rather than guarded a site at a time.
     """
-    if getattr(exc, "errno", None) == errno.ENOSPC:
+    if getattr(exc, "errno", None) in _OUT_OF_ROOM_ERRNOS:
         return EXIT_NO_SPACE
     return EXIT_FAILED
+
+
+#: Prefix for the probe's disposable install directory.
+_SCRATCH_PREFIX = ".kirocrew-npm-preflight-"
+
+#: How old a scratch directory must be before the sweep may remove it.
+#:
+#: :func:`probe` deletes its own scratch in a ``finally``, so the only ones left
+#: behind are from a run that never reached it -- SIGKILL, an OOM kill, a reboot.
+#: Those need a sweeper, and needing one is what moving the scratch into the repo
+#: introduced: ``/tmp`` is age-cleaned by the host, the repo root is cleaned by
+#: nobody, and the directory is git-ignored, so an abandoned ``node_modules``
+#: tree accumulates there invisibly and permanently.
+#:
+#: The threshold is what makes the sweep safe without a lock. A LIVE probe's
+#: scratch is bounded by ``probe(timeout=...)`` plus its fixed-timeout helpers --
+#: under twenty minutes at the default -- so a directory hours old cannot belong
+#: to a probe still running, and a concurrent Pull + Build is never touched. The
+#: margin is deliberately far wider than that bound rather than close to it: the
+#: cost of sweeping too late is delay, and the cost of sweeping too early is
+#: breaking another operator's in-flight verification.
+_SCRATCH_STALE_SECS = 6 * 3600
+
+#: File written inside a scratch directory to prove the probe created it.
+#:
+#: The sweep performs a RECURSIVE DELETE in the operator's checkout root, where an
+#: unrecoverable mistake is the worst outcome this module could have. A name prefix
+#: is a convention, not proof of authorship: anything able to create a directory
+#: there can wear the prefix, and the ignore rule added with this change keeps such
+#: a directory out of ``git status`` as well. So deletion requires a marker this
+#: code wrote, and the sweep's two conditions then divide the question cleanly --
+#: the marker answers "is this MINE", the age answers "is it still IN USE".
+_SCRATCH_MARKER = ".kirocrew-probe-owned"
+
+
+def _mark_scratch_owned(path: Path) -> None:
+    """Stamp *path* as this module's, so the sweep may delete it later.
+
+    Best-effort: a failure here means the directory is never swept, which leaks one
+    tree. That is the deliberate direction to fail in -- an unswept directory costs
+    room, and room is reclaimable, while deleting an unmarked directory costs data
+    nobody can get back. The window is narrow too: the only run that leaks is one
+    killed between ``mkdtemp`` and this write, since a probe that gets any further
+    removes its own scratch in a ``finally``.
+    """
+    try:
+        (path / _SCRATCH_MARKER).touch()
+    except OSError:
+        pass
+
+
+def _sweep_stale_scratch(parent: str) -> None:
+    """Remove scratch directories in *parent* left by runs that were killed.
+
+    Best-effort by construction: every failure is swallowed, because a sweep is
+    housekeeping and must never be the reason a verification does not happen.
+    An unreadable parent, a racing sweep in another process and a tree the
+    current user cannot delete all end the same way -- the probe proceeds.
+
+    Called BEFORE the scratch is created, which is what makes it a remedy rather
+    than only hygiene: the litter it removes is charged to the same byte and file
+    budgets the incoming install needs, so on a filesystem that abandoned trees
+    have filled, the sweep is what lets the probe run at all. If room is still
+    short afterwards, that scarcity is the target filesystem's real answer.
+
+    Both conditions are load-bearing and neither implies the other. The marker is
+    the only evidence that this module created the directory, so a look-alike in
+    the checkout root is never touched. The age is what makes a lock unnecessary:
+    a CONCURRENT probe's scratch carries a marker too, and only its youth keeps it.
+    """
+    cutoff = time.time() - _SCRATCH_STALE_SECS
+    try:
+        entries = list(os.scandir(parent))
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.name.startswith(_SCRATCH_PREFIX):
+            continue
+        try:
+            # follow_symlinks=False: read the ENTRY's own age. Through a link the
+            # answer is the target's, so a fresh link to an old tree and an old
+            # link to a fresh one both decide wrong.
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            if entry.stat(follow_symlinks=False).st_mtime >= cutoff:
+                continue
+            marker = Path(entry.path) / _SCRATCH_MARKER
+            # A REGULAR file, not merely something at that name: a symlinked
+            # marker would let whatever planted it authorize the delete.
+            if marker.is_symlink() or not marker.is_file():
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(entry.path, ignore_errors=True)
+
+
+def _scratch_name_is_ignored(git: str, repo: str) -> bool:
+    """Would *repo*'s working tree hide a scratch directory of ours?
+
+    Asked because the two halves ship SEPARATELY. ``npm_preflight`` arrives with
+    the installed gateway, while the ignore rule that covers its scratch name is
+    a commit in the checkout's own history -- so right after an upgrade, a fleet
+    checkout still parked on an older ref runs this code with no rule for it. A
+    probe killed in that window leaves an UNTRACKED directory in the checkout
+    root, which reads as dirty and fail-closes "Prune merged": the same
+    operator-unactionable refusal this module exists to remove, reintroduced from
+    the other side.
+
+    ``git check-ignore`` is the only correct oracle -- ignore resolution spans
+    several files with precedence and negation, so reading ``.gitignore`` here
+    would be a second, wrong implementation of it. Anything that leaves the
+    question unanswered (a failing or missing git, a timeout) is read as NOT
+    ignored: the conservative direction, because the cost of being wrong that way
+    is a probe on ``TMPDIR`` -- this module's previous behaviour -- while the
+    other way is a checkout that silently reads dirty.
+    """
+    try:
+        proc = subprocess.run(  # nosec B603 - argv list, no shell
+            [git, "-C", repo, "check-ignore", "-q", "--no-index", f"{_SCRATCH_PREFIX}probe"],
+            # ``-C`` scopes git to the checkout; ``cwd`` makes that the child's
+            # working directory as well, so the question is asked from inside the
+            # checkout rather than from wherever the gateway happens to run. A
+            # *repo* that does not exist fails the spawn, which the except below
+            # already reads as "not ignored".
+            cwd=repo,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    # 0 = ignored, 1 = not ignored, anything else = git could not answer.
+    return proc.returncode == 0
+
+
+def _scratch_parent(repo: str) -> str | None:
+    """Where to create the probe's install, or ``None`` to use ``TMPDIR``.
+
+    ``tempfile.mkdtemp()`` with no ``dir`` takes ``TMPDIR``, which on a default
+    Linux host is ``/tmp`` -- and ``/tmp`` is commonly a memory-backed
+    filesystem whose INODE count is capped at mount time and shared with every
+    other process on the box. Two consequences follow that a bytes-only reading
+    of "scratch space" misses. A ``node_modules`` tree is tens of thousands of
+    files, so unrelated litter left in ``/tmp`` by anything else on the host can
+    starve Pull+Build while tens of gigabytes are still free -- the failure then
+    names space, and the operator's free-space check says there is plenty. And
+    the probe's entire install is charged to RAM.
+
+    So the scratch is taken from the REPO, which sits on the filesystem the real
+    ``npm ci`` writes into. That is a correctness property and not only a
+    capacity one: this module exists to REHEARSE the real install, and a
+    rehearsal held on a filesystem with a different free-room budget than the
+    real target answers a different question -- it can pass where the real step
+    will fail for room, or fail where the real step would have succeeded.
+
+    The repo ROOT rather than ``website/``, though ``website/node_modules`` is
+    what the real step fills. Both are the same filesystem in any ordinary
+    checkout, so the capacity answer is identical, and the root keeps the
+    directory outside two things scoped to ``website/``: the frontend project
+    ``npm`` would resolve config against, and the subtree
+    :func:`_frontend_worktree_clean` reads -- so a directory left behind by a
+    killed process cannot make the next sync's skip decision wrong.
+
+    ``None`` when the repo cannot host it (missing, or not writable -- a
+    read-only checkout), so the caller falls back to ``TMPDIR``: a checkout that
+    cannot hold a scratch directory still gets a probe.
+    """
+    try:
+        parent = Path(repo)
+        if not parent.is_dir() or not os.access(parent, os.W_OK):
+            return None
+    except OSError:
+        return None
+    return str(parent)
+
+
+def _make_scratch(git: str, repo: str) -> tuple[Path | None, tuple[int, str] | None]:
+    """Create the probe's scratch directory. Returns ``(path, failure)``.
+
+    Falls back from the repo to ``TMPDIR`` only for a host condition that makes
+    the repo unusable as a scratch host at all -- it cannot hold the directory,
+    or it would not hide it (see :func:`_scratch_name_is_ignored`). Being OUT OF
+    ROOM is not one: that says the filesystem the real install targets has none,
+    which is the probe's answer, and rehearsing somewhere roomier instead would
+    certify a filesystem the install will never touch. ``_OUT_OF_ROOM_ERRNOS`` is
+    what makes that hold under a per-user quota as well as a genuinely full disk.
+
+    Sweeps abandoned scratch directories first, so the room a killed run is still
+    holding is returned to the budget the incoming install is measured against.
+    The sweep runs whenever the repo COULD host one, including when the ignore
+    gate then sends this probe to ``TMPDIR`` -- litter a previous gateway build
+    left behind is exactly what an un-ignored checkout needs cleared. Only the
+    repo parent is swept: ``TMPDIR`` is age-cleaned by the host, and a fallback
+    path is not one this module chose or can reason about.
+    """
+    parent = _scratch_parent(repo)
+    if parent is not None:
+        _sweep_stale_scratch(parent)
+        if not _scratch_name_is_ignored(git, repo):
+            parent = None
+    try:
+        made = Path(tempfile.mkdtemp(prefix=_SCRATCH_PREFIX, dir=parent))
+        _mark_scratch_owned(made)
+        return made, None
+    except OSError as exc:
+        if parent is None or getattr(exc, "errno", None) in _OUT_OF_ROOM_ERRNOS:
+            return None, (
+                _os_error_code(exc),
+                f"could not create a scratch directory: {exc}",
+            )
+    try:
+        made = Path(tempfile.mkdtemp(prefix=_SCRATCH_PREFIX))
+        _mark_scratch_owned(made)
+        return made, None
+    except OSError as exc:
+        return None, (_os_error_code(exc), f"could not create a scratch directory: {exc}")
 
 
 def _extract(git: str, repo: str, ref: str, subdir: str, dest: Path) -> tuple[int, str] | None:
@@ -526,15 +790,16 @@ def probe(
     against it, passing a lockfile that a delete-first ``npm ci`` cannot
     install.
     """
-    try:
-        tmp = Path(tempfile.mkdtemp(prefix="kirocrew-npm-preflight-"))
-    except OSError as exc:
-        # Creating the scratch directory is the FIRST thing that can fail on a
-        # full or unwritable TMPDIR, and an uncaught OSError here would kill the
-        # step with a traceback and no classified cause -- so the dashboard would
-        # be back to showing whatever the last output line happened to be, which
-        # is the defect this module exists to remove.
-        return _os_error_code(exc), f"could not create a scratch directory: {exc}"
+    # Creating the scratch directory is the FIRST thing that can fail on a full
+    # or unwritable filesystem, and an uncaught OSError here would kill the step
+    # with a traceback and no classified cause -- so the dashboard would be back
+    # to showing whatever the last output line happened to be, which is the
+    # defect this module exists to remove.
+    tmp, failure = _make_scratch(git, repo)
+    if tmp is None:
+        # _make_scratch always pairs a missing path with a classified failure;
+        # the fallback keeps the type honest without asserting.
+        return failure or (EXIT_FAILED, "could not create a scratch directory")
     try:
         failure = _extract(git, repo, ref, _FRONTEND_SUBDIR, tmp)
         if failure:

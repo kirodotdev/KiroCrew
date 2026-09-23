@@ -307,13 +307,16 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
   )
 })
 
-export const PierrePatch = memo(function PierrePatch({ patch, options, className, renderHeaderMetadata }: {
+export const PierrePatch = memo(function PierrePatch({ patch, options, className, renderHeaderMetadata, onVisible }: {
   patch: string
   options?: PierreDiffOptions
   className?: string
   /** Injected into the FIRST file header's metadata slot (patch-level
    *  controls). Only rendered when the file header is enabled. */
   renderHeaderMetadata?: () => React.ReactNode
+  /** Called after WarmSwap reveals the real implementation. Never called in
+   *  plain-diff mode, which has no swap. */
+  onVisible?: () => void
 }) {
   // Plain-diff preference (Settings → Display): render the raw patch text and
   // never request the Pierre chunk at all. This is the seam for EVERY unified-
@@ -337,7 +340,7 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   if (plain) return <PlainCodeFallback text={patch} className={className} />
   const fallback = <PlainCodeFallback text={patch} />
   return (
-    <WarmSwap warmKey={warmKeyOf(patch)} fallback={fallback}>
+    <WarmSwap warmKey={warmKeyOf(patch)} fallback={fallback} onVisible={onVisible}>
       <StagedSuspense fallback={fallback}>
         <PatchImpl patch={patch} options={options} className={className} renderHeaderMetadata={renderHeaderMetadata} />
       </StagedSuspense>

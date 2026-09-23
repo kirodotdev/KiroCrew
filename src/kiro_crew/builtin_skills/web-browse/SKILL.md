@@ -1,6 +1,6 @@
 ---
 name: web-browse
-description: Open a REAL external web page so the user can see it in Kiro Crew's Browser panel. PRIMARY path is the `browser` MCP tool (drives the built-in native panel); playwright-cli is the fallback for remote/plain-browser sessions and for attached logged-in browsers. Use when the user wants to VIEW / verify / "show me" an actual website or public URL (not a local dev server, that is the web-preview skill).
+description: Open a REAL external web page in Kiro Crew's Browser panel. Primary path is the `browser` MCP tool (native panel); playwright-cli is the fallback for remote/plain-browser sessions and attached logged-in browsers. Use when the user wants to VIEW or verify a public URL (dev server = web-preview).
 triggers: open this page, show me this site, show me the page, view this url, render this page, look at this website, open in the browser, see what this page looks like, pull up this site, visit this url
 ---
 
@@ -125,6 +125,12 @@ The browser 'chrome' is not open, please run open first
 ```
 
 That is a wrong session name, not a failed attach; do not re-attach to fix it.
+
+`attach --extension` also gives you ONE tab: the one the extension was activated
+on. `tab-list` is not a view of the browser, so a page the user already has open is
+unreachable until they click the extension icon while on it — ask for that click
+rather than opening your own second copy of the page they are looking at. Tabs you
+create with `tab-new` are drivable, but a later re-attach drops them from the list.
 
 `playwright-cli list` shows every browser on the machine, including other
 sessions'. Only close one you opened. A session named `panel-<owner6>-<slot8>` is the

@@ -57,11 +57,48 @@ DEFAULT_MONITOR_COALESCE_SECS = 240.0
 #: is re-reported on this interval rather than once, and a future timestamp
 #: (clock rollback) reads as stale so it can never suppress a wake forever.
 DEFAULT_MONITOR_REALERT_SECS = 6 * 3600
+#: How many consecutive COUNTED ticks may carry a byte-identical verdict before
+#: the watch is retired as stuck. Counted in ticks because the thing being
+#: counted is repeated conclusions, and a tick is when a conclusion is reached.
+#:
+#: The value is bounded on both sides by numbers already in this module rather
+#: than chosen freely. It must EXCEED the floor's tick equivalent at the default
+#: cadence (``DEFAULT_MONITOR_STALL_MIN_SECS // DEFAULT_MONITOR_CADENCE_SECS``,
+#: which is 6), or the count never binds at the default and the constant is
+#: decoration. And it must fall INSIDE the ticks a default watch gets before its
+#: runtime budget retires it (``DEFAULT_MONITOR_RUNTIME_SECS //
+#: DEFAULT_MONITOR_CADENCE_SECS``, which is 48), or the stall can never fire for
+#: the reason it exists. So 6 < 12 < 48.
+DEFAULT_MONITOR_STALL_TICKS = 12
+#: Least wall-clock a stall streak must cover before it may retire a watch.
+#:
+#: The tick count above answers "how many times did it reach the same
+#: conclusion", which is the right question in the wrong unit on its own: cadence
+#: is user-set from 15s to 86400s. The streak's clock starts on its FIRST counted
+#: tick, so twelve ticks is ELEVEN intervals -- 3300s at the 300s default, 165s at
+#: the 15s minimum -- and 165s of an unchanged subject is a watch whose agent is
+#: still working. The trip therefore needs BOTH.
+#:
+#: This value is bounded on both sides too. It must exceed
+#: ``DEFAULT_MONITOR_COALESCE_SECS`` by a wide margin, or a burst being folded
+#: could look like a stall (1800 is 7.5 windows). And it must stay well under
+#: ``DEFAULT_MONITOR_REALERT_SECS``, because a re-alert wakes the subject and
+#: zeroes the streak: a floor at or past that interval could never be reached,
+#: which is the unreachable-mechanism failure in its other direction. So
+#: 240 << 1800 << 21600, and at the default cadence twelve ticks already span
+#: 3300s, inside the 14400s runtime budget.
+DEFAULT_MONITOR_STALL_MIN_SECS = 1800
 MONITOR_STOP_RUNTIME_BUDGET = "runtime_budget"
 MONITOR_STOP_AGENT_TURN_BUDGET = "agent_turn_budget"
 MONITOR_STOP_TOKEN_BUDGET = "token_budget"
 MONITOR_STOP_PROVIDER_ERROR_BUDGET = "provider_error_budget"
 MONITOR_STOP_APPROVAL_STALL = "approval_stall"
+#: A watch retired because its own verdict stopped moving. DISTINCT from
+#: ``approval_stall``, which is a delivery failure -- the session could not get
+#: tool approval -- and distinct from every ``*_budget`` reason, which mean a
+#: bound was spent. Those three answers to "why did this stop" have different
+#: remedies, so a reader must be able to tell them apart from the record alone.
+MONITOR_STOP_VERDICT_STALL = "verdict_stall"
 MONITOR_STOP_COMPLETION_UNAVAILABLE = "completion_evidence_unavailable"
 MONITOR_STOP_UNSUPPORTED_VERSION = "unsupported_monitor_version"
 MONITOR_STOP_USER = "user_stop"
@@ -198,6 +235,52 @@ class MonitorOutcome(str, Enum):
     TARGET_UNAVAILABLE = "target_unavailable"
 
 
+#: Terminal outcomes a directive re-arm may displace, because the SYSTEM imposed
+#: them: a spent bound, a finished subject, a lapsed approval, a vanished target.
+#: Everything else -- ``USER_STOP``, ``SESSION_CLOSE``, and any outcome a later
+#: version adds -- was recorded FOR a consumer and is retained evidence.
+#:
+#: The one source of truth for that split. ``autonudge._stopped_row_is_replaceable``
+#: applies it to a live ``NudgeLoop``, and the ``mcp_tools.control`` preflight
+#: applies it to the JSON reading of the same record, so the answer the agent is
+#: given before its turn ends cannot disagree with the answer the turn boundary
+#: enforces. Duplicating the set at either site is what lets them drift.
+REARMABLE_MONITOR_OUTCOMES = frozenset(
+    {
+        MonitorOutcome.SUCCESS,
+        MonitorOutcome.BLOCKED,
+        MonitorOutcome.BUDGET,
+        MonitorOutcome.TARGET_UNAVAILABLE,
+    }
+)
+
+
+def retained_outcome_blocks_rearm(outcome: object, stopped_reason: object = "") -> bool:
+    """Whether a recorded *outcome* is evidence a re-arm must not displace.
+
+    Accepts the enum or its serialized value, so one predicate serves both the
+    in-process record and the endpoint reading of it. Fails CLOSED: an outcome
+    this version does not recognise is treated as evidence, matching the ruling
+    that only a system-imposed stop is automatically re-armable.
+
+    ``None`` means no terminal outcome was recorded, which blocks nothing.
+    """
+    if outcome is None or outcome == "":
+        return False
+    try:
+        resolved = MonitorOutcome(outcome)
+    except ValueError:
+        # An unknown outcome is evidence, not a system stop.
+        return True
+    if resolved is MonitorOutcome.BLOCKED and str(stopped_reason or "") == (
+        MONITOR_STOP_INVALID_RECORD
+    ):
+        # A quarantined malformed record is an inspection artifact retained for a
+        # human, not a stop the system chose; the arm path refuses it too.
+        return True
+    return resolved not in REARMABLE_MONITOR_OUTCOMES
+
+
 class MonitorActionDisposition(str, Enum):
     """Terminal disposition reported by a started monitor action turn."""
 
@@ -321,9 +404,184 @@ class MonitorBudgets:
             raise ValueError(f"max_agent_turns must be at most {DEFAULT_MONITOR_AGENT_TURNS}")
 
 
+class MonitorSeverity(str, Enum):
+    """How the decision engine treats one named condition.
+
+    The same three-value vocabulary the cron kernel carries as ``irq.Severity``.
+    Two vocabularies exist only while two drivers do, and
+    ``test_monitor_conditions.py`` pins them member-for-member so neither can
+    drift while both are live. This one is the shared engine's, so it is the
+    copy the retirement keeps.
+    """
+
+    #: An anomaly. Masked per condition, and folded into a coalesced wake.
+    WAKE = "wake"
+    #: The subject reached an end state. Reserved: the structured engine takes
+    #: terminality from ``MonitorObservationStatus`` today, which is a
+    #: subject-level classification rather than a per-condition one, so no branch
+    #: here reads this member. It is part of the vocabulary because the parity
+    #: pin is over the whole vocabulary, and a member missing from one copy is
+    #: exactly the drift that pin exists to catch.
+    TERMINAL = "terminal"
+    #: An anomaly that BYPASSES the coalescing floor and fires now, for a
+    #: condition under which waiting observes nothing further -- a conflicted
+    #: pull request dispatches no checks, so a pending count never drains and the
+    #: floor would strand the operator on a signal that is already actionable.
+    #:
+    #: It bypasses the DELAY, not the MASK. A persisting condition still wakes at
+    #: most once per re-alert interval, because an unmasked one would wake the
+    #: operator every tick for as long as the condition lasts, which is a worse
+    #: failure than a bounded delay.
+    IMMEDIATE = "immediate"
+
+
+class MonitorResetsOn(str, Enum):
+    """What clears a condition, and so how long its dedupe memory is worth.
+
+    Two values rather than a boolean, because the field answers *what clears
+    this*: read as a flag, ``resets_on=False`` would have to mean "does not reset
+    on -- nothing", the opposite of what :attr:`NEVER` says.
+    """
+
+    #: A new revision of the subject clears it. The check-rollup shape: the
+    #: condition is a property of the revision, so a new head leaves it
+    #: describing something that is gone and its dedupe memory is correctly
+    #: wiped.
+    REVISION = "revision"
+    #: No revision clears it, because it belongs to the subject rather than the
+    #: revision. A review comment belongs to the conversation, not to the commit
+    #: under review, so a force-push must not replay every comment ever seen.
+    NEVER = "never"
+
+
+#: Every dedupe key the engine stores carries exactly one of these, so a head
+#: change can drop the revision-scoped half without asking a probe what any
+#: stored key meant. Prefixing is unconditional: a scheme that prefixed only the
+#: sticky half could be spoofed by a condition key that happened to start with
+#: the sentinel, and condition keys are attacker-influenceable (a CI workflow
+#: names its own jobs).
+#:
+#: The reset needs this rather than the conditions in hand, because a
+#: revision-scoped condition can go unreported for a tick and come back: scoped
+#: to only the keys reported ON the head-change tick, its memory would survive
+#: the reset and mask a real wake for the rest of the re-alert interval.
+#:
+#: These two characters are the PERSISTED encoding of the distinction, which is
+#: why they are named for the two key spaces rather than for the field a probe
+#: sets.
+MONITOR_REVISION_KEY_SPACE = "="
+MONITOR_STICKY_KEY_SPACE = "~"
+_MONITOR_KEY_SPACES = (MONITOR_REVISION_KEY_SPACE, MONITOR_STICKY_KEY_SPACE)
+
+#: State keys this version retired. Dropped on load rather than carried in
+#: ``extra_fields``, which is reserved for fields a NEWER version owns: kept
+#: there they would be re-serialized on every write forever, and a reader would
+#: have two spellings of the coalescing window to choose between.
+_RETIRED_MONITOR_STATE_FIELDS = frozenset({"coalesce_fingerprint", "coalesce_opened_at"})
+
+MAX_MONITOR_CONDITION_KEY_CHARS = 200
+
+#: How many conditions a subject may carry, and why it is this number.
+#:
+#: The cap is enforced by a slice, so a cap SMALLER than the population a bounded
+#: probe can legitimately name does not bound anything -- it deletes real
+#: blockers, silently, exactly when a subject has the most wrong with it. The
+#: check expansion is the only unbounded input and the canonical projection
+#: already bounds each check bucket, so the honest cap is that bound plus the
+#: fixed keys an adapter adds beside it: a review verdict, the unresolved-thread
+#: count, one mergeability condition, and the PR-level-comment-body digest --
+#: which wakes on an in-place comment edit a count cannot see. Four fixed keys
+#: can co-occur (conflict and behind are mutually exclusive), and the cap keeps
+#: the same one-key margin over that population the original carried. Derived
+#: rather than written out, so widening either half cannot leave the other
+#: behind.
+MAX_MONITOR_FIXED_CONDITIONS = 5
+MAX_MONITOR_CONDITIONS = MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET + MAX_MONITOR_FIXED_CONDITIONS
+
+
+@dataclass(frozen=True)
+class MonitorCondition:
+    """One named thing a probe saw about one subject during one tick.
+
+    This is layer 3's named entry in engine terms. A probe reports only what it
+    wants the engine to act on: there is deliberately no "seen and fine"
+    severity, because a condition the engine would neither wake nor fold is
+    simply not returned.
+
+    ``key`` is a semantic string, stable across ticks, never a hash --
+    ``conflict``, ``red:<check>``, ``unresolved_threads``. A hash cannot be
+    deduplicated per condition, cannot be folded with a sibling and cannot be
+    re-asserted, because nothing can tell whether two hashes describe the same
+    condition.
+
+    ``brief`` stays ahead of ``resets_on`` positionally to match the cron
+    kernel's ``Observation``, so the two types read the same way round.
+    """
+
+    key: str
+    severity: MonitorSeverity = MonitorSeverity.WAKE
+    brief: str = ""
+    resets_on: MonitorResetsOn = MonitorResetsOn.REVISION
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise ValueError("condition key must be a non-empty string")
+        if len(self.key) > MAX_MONITOR_CONDITION_KEY_CHARS:
+            raise ValueError("condition key is too long")
+        if self.key.startswith(_MONITOR_KEY_SPACES):
+            # A probe never writes a key space itself. Refusing here is what
+            # keeps the two spaces impossible to confuse from outside.
+            raise ValueError("condition key must not begin with a reserved key space")
+        if not isinstance(self.severity, MonitorSeverity):
+            raise ValueError("condition severity must be a MonitorSeverity")
+        if not isinstance(self.resets_on, MonitorResetsOn):
+            raise ValueError("condition resets_on must be a MonitorResetsOn")
+        if not isinstance(self.brief, str):
+            raise ValueError("condition brief must be a string")
+
+
+def monitor_condition_dedupe_key(condition: MonitorCondition) -> str:
+    """The key *condition* is remembered under, key space included.
+
+    THE only place ``resets_on`` is read. Everything downstream asks the KEY
+    which space it is in, so the two spellings never have to agree twice.
+    """
+    space = (
+        MONITOR_REVISION_KEY_SPACE
+        if condition.resets_on is MonitorResetsOn.REVISION
+        else MONITOR_STICKY_KEY_SPACE
+    )
+    return space + condition.key
+
+
+def monitor_dedupe_key_resets_on_revision(key: str) -> bool:
+    """Whether a stored dedupe key lives in the revision space."""
+    return not key.startswith(MONITOR_STICKY_KEY_SPACE)
+
+
+def adopt_monitor_dedupe_key(key: str) -> str:
+    """Adopt a dedupe key persisted before the key spaces existed.
+
+    Records written by an earlier version key the re-alert map by whole-subject
+    fingerprint, with no space. Read as-is those keys could never match one this
+    version computes, so every armed watch would wake once more for a condition
+    it had already reported. A bare key is adopted into the revision space, which
+    is what every pre-space key was: the sticky space did not exist.
+    """
+    return key if key.startswith(_MONITOR_KEY_SPACES) else MONITOR_REVISION_KEY_SPACE + key
+
+
 @dataclass(frozen=True)
 class MonitorObservation:
-    """Small canonical result produced by a typed provider probe."""
+    """Small canonical result produced by a typed provider probe.
+
+    Subject level. ``conditions`` is the per-condition level beneath it: the
+    named entries this tick found, each with its own dedupe identity, urgency
+    claim and reset scope. A probe that reports none is a legal shape -- the
+    engine reads the subject as one revision-scoped condition keyed by its
+    fingerprint, which is exactly what a single-fingerprint subject was before
+    conditions existed.
+    """
 
     fingerprint: str
     status: MonitorObservationStatus
@@ -332,12 +590,25 @@ class MonitorObservation:
     reason_code: str = ""
     summary: str = ""
     head_changed: bool = False
+    conditions: tuple[MonitorCondition, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, MonitorObservationStatus):
             raise ValueError("status must be a MonitorObservationStatus")
         if not isinstance(self.fingerprint, str):
             raise ValueError("fingerprint must be a string")
+        if not isinstance(self.conditions, tuple) or any(
+            not isinstance(item, MonitorCondition) for item in self.conditions
+        ):
+            raise ValueError("conditions must be a tuple of MonitorCondition")
+        if len(self.conditions) > MAX_MONITOR_CONDITIONS:
+            raise ValueError("too many conditions for one observation")
+        keys = [item.key for item in self.conditions]
+        if len(set(keys)) != len(keys):
+            # Two conditions under one key are one condition the engine would
+            # mask and age twice, so the duplicate is refused at the boundary
+            # rather than silently collapsed inside a tick.
+            raise ValueError("condition keys must be unique within an observation")
         if not isinstance(self.reason_code, str):
             raise ValueError("reason_code must be a string")
         if not isinstance(self.summary, str):
@@ -351,6 +622,11 @@ class MonitorObservation:
                 raise ValueError("supplemental_provider_error is not valid for a provider error")
             if self.head_changed:
                 raise ValueError("head_changed is not valid for a provider error observation")
+            if self.conditions:
+                # A failed read is no evidence ABOUT the subject, so it has no
+                # condition to name. Refusing here keeps the error paths from
+                # ever seeding the re-alert map with a key nothing observed.
+                raise ValueError("conditions are not valid for a provider error observation")
             return
         if not self.fingerprint:
             raise ValueError("fingerprint is required for a comparable observation")
@@ -545,26 +821,81 @@ class MonitorState:
     last_probe_at: float = 0.0
     last_decision: MonitorDecision | None = None
     last_provider_error: ProviderErrorKind | None = None
-    #: The coalescing window over successive changes to this one subject. A
-    #: structured monitor watches ONE subject, so a tick yields one observation
-    #: and there is no simultaneous set of anomalies to fold; the burst is the
-    #: same subject changing again before the last change settled. The window
-    #: holds the actionable fingerprint currently waiting out its floor.
+    #: The coalescing window, one entry per condition currently waiting out the
+    #: floor: dedupe key to the time that condition's window opened.
     #:
-    #: Empty ``coalesce_fingerprint`` means no window is open, so a persisted
-    #: record written before these fields load as an unopened window and the
-    #: first tick behaves as a fresh start -- neither a window opened at time
-    #: zero (which fires at once) nor one held open forever.
-    coalesce_fingerprint: str = ""
-    #: When the open window's fingerprint was first seen. Read only while
-    #: ``coalesce_fingerprint`` is non-empty; the pair moves together.
-    coalesce_opened_at: float = 0.0
-    #: Per-fingerprint time of the last wake it caused, for level-triggered
-    #: re-assertion: the same actionable fingerprint re-wakes only once its entry
-    #: is older than the re-alert interval. Pruned unconditionally each settled
-    #: decision, because on a durable per-loop record this map grows across
-    #: restarts and the growth is a durability cost, not untidiness.
+    #: Per condition rather than per subject, because a subject reports several
+    #: conditions at once and one timestamp cannot age them. Two scalars held the
+    #: window before this, and the pair was only harmless while a tick produced
+    #: exactly one observation: with several, the window would hold conditions of
+    #: different ages against a single opened-at, so a condition that arrived
+    #: late would be released by a window opened before it existed.
+    #:
+    #: An empty map means no window is open, so a record written before this
+    #: field loads as an unopened window and the first tick behaves as a fresh
+    #: start -- neither a window opened at time zero, which fires at once, nor one
+    #: held open forever.
+    coalesce_windows: dict[str, float] = field(default_factory=dict)
+    #: Per-condition time of the last wake it caused, for level-triggered
+    #: re-assertion: a condition re-wakes only once its entry is older than the
+    #: re-alert interval. Keyed by dedupe key, so the key space says whether a
+    #: head change clears it. Pruned unconditionally each settled decision,
+    #: because on a durable per-loop record this map grows across restarts and
+    #: the growth is a durability cost, not untidiness.
     coalesce_alerted: dict[str, float] = field(default_factory=dict)
+    #: The stall streak: a digest of the last COUNTED verdict, and how many
+    #: consecutive ticks have reached exactly that verdict.
+    #:
+    #: A tick counts only when it settled the subject AND the engine then did
+    #: nothing about it -- a ``NO_CHANGE``. Any other settled decision zeroes all
+    #: three fields, because it means the watch was working: a wake acted, a
+    #: record or a retry deferred on purpose, a stop already ended it.
+    #:
+    #: The digest is DERIVED from the verdict on every tick and never stored
+    #: alongside a second copy of what it summarizes, so the two cannot
+    #: disagree. What is persisted here is history -- the digest of the verdict
+    #: BEFORE this tick's -- which nothing else in the record holds, so there is
+    #: still one source of truth for the present verdict.
+    #:
+    #: All three fields load as absent-means-fresh. A record written before them
+    #: starts its streak on its first post-upgrade tick, which costs at most one
+    #: ceiling of ticks once and can neither miss a wake nor retire a live watch
+    #: early. Seeding a streak from the recorded ``last_decision`` and
+    #: ``last_fingerprint`` was considered and rejected: the record does not carry
+    #: the rest of the last verdict's entry, so a seeded digest could claim a
+    #: match that never happened, and the only direction that error runs is
+    #: stopping a working watch.
+    stall_digest: str = ""
+    #: Consecutive counted ticks whose verdict digest matched ``stall_digest``,
+    #: counting this one. Zero before the first counted tick and after ANY tick
+    #: that was not one, so the word "consecutive" means what it says.
+    stall_streak: int = 0
+    #: When the current streak's first counted tick landed. Zero means no streak.
+    #:
+    #: The trip needs both a repeated-conclusion count and elapsed wall-clock, and
+    #: this is the wall-clock measured DIRECTLY rather than translated. Storing a
+    #: tick ceiling derived from ``cadence_secs`` would make the trip a pure
+    #: integer comparison, at the price of a cached value derived from a mutable
+    #: input with nothing invalidating it: a streak opened at the 300s default
+    #: would carry that ceiling into a 15s cadence and trip a quarter of the way
+    #: into its floor. Any translation from ticks to seconds breaks on a cadence
+    #: change in one direction or the other, so nothing is translated.
+    #:
+    #: Reading the clock in the trip does NOT reopen the hazard a ceiling guards
+    #: against, which is a predicate an operator can make true between two folds by
+    #: rewriting the cadence. This is ``time.time()``, a WALL clock, so it is not
+    #: monotonic and can move either way -- but neither direction reopens that
+    #: hazard. Backwards, ``now - stall_started_at`` goes negative and fails the
+    #: floor, so a jump can only DELAY a trip. Forwards, a jump can satisfy the
+    #: floor early but cannot manufacture the twelve counted ticks, which is the
+    #: other half of the condition and the reason both halves are required.
+    #: What it does require is that the fold zero this pair on every tick that is
+    #: not a counted one -- an unsettled tick INCLUDED -- because a stale streak
+    #: sitting through a long pending stretch would let the clock satisfy the floor
+    #: and hand the next NON-RETRYABLE PROVIDER ERROR a stall's reason. A merge or
+    #: close is settled and takes its own branch, so the exposure is exactly the
+    #: unsettled terminal tick.
+    stall_started_at: float = 0.0
     #: Adoption metering. Without these two numbers a probe gate that never
     #: fires and a probe gate that is doing its job are indistinguishable from
     #: the outside, so a gate stuck at zero adoption goes unnoticed.
@@ -672,6 +1003,7 @@ class MonitorState:
             "last_probe_at",
             "next_probe_at",
             "stopped_at",
+            "stall_started_at",
         ):
             value = getattr(self, name)
             if not is_finite_non_negative_number(value):
@@ -690,6 +1022,7 @@ class MonitorState:
             "followup_ticks",
             "quiet_streak",
             "floor_ticks",
+            "stall_streak",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -756,10 +1089,13 @@ class MonitorState:
             self.last_provider_error, ProviderErrorKind
         ):
             raise ValueError("last_provider_error must be a ProviderErrorKind")
-        if not isinstance(self.coalesce_fingerprint, str):
-            raise ValueError("coalesce_fingerprint must be a string")
-        if not is_finite_non_negative_number(self.coalesce_opened_at):
-            raise ValueError("coalesce_opened_at must be a finite non-negative number")
+        if not isinstance(self.coalesce_windows, dict):
+            raise ValueError("coalesce_windows must be an object")
+        for key, value in self.coalesce_windows.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError("coalesce_windows keys must be non-empty strings")
+            if not is_finite_non_negative_number(value):
+                raise ValueError("coalesce_windows values must be finite non-negative numbers")
         if not isinstance(self.coalesce_alerted, dict):
             raise ValueError("coalesce_alerted must be an object")
         for key, value in self.coalesce_alerted.items():
@@ -767,6 +1103,21 @@ class MonitorState:
                 raise ValueError("coalesce_alerted keys must be strings")
             if not is_finite_non_negative_number(value):
                 raise ValueError("coalesce_alerted values must be finite non-negative numbers")
+        # A dedupe key names a condition, and the engine only ever computes one
+        # inside a key space. A key carrying no space therefore matches nothing
+        # it computes, so the window or mask entry it stands for is silently
+        # inert: an open window never closes, and an alerted condition reads as
+        # never alerted and wakes again. Adopting here rather than in the loader
+        # holds the invariant for every path that builds a state, so a caller
+        # cannot construct one whose own entries the engine cannot see.
+        self.coalesce_windows = {
+            adopt_monitor_dedupe_key(key): value for key, value in self.coalesce_windows.items()
+        }
+        self.coalesce_alerted = {
+            adopt_monitor_dedupe_key(key): value for key, value in self.coalesce_alerted.items()
+        }
+        if not isinstance(self.stall_digest, str):
+            raise ValueError("stall_digest must be a string")
         if self.outcome is not None and not isinstance(self.outcome, MonitorOutcome):
             raise ValueError("outcome must be a MonitorOutcome")
         if not isinstance(self.stopped_reason, str):
@@ -825,7 +1176,11 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
         if item.name not in {"extra_fields", "_raw_payload"}
     }
     values = {key: value for key, value in raw.items() if key in allowed}
-    values["extra_fields"] = {key: value for key, value in raw.items() if key not in allowed}
+    values["extra_fields"] = {
+        key: value
+        for key, value in raw.items()
+        if key not in allowed and key not in _RETIRED_MONITOR_STATE_FIELDS
+    }
     budgets = values.get("budgets")
     if isinstance(budgets, dict):
         values["budgets"] = MonitorBudgets(**budgets)
@@ -871,7 +1226,19 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
             and is_finite_non_negative_number(woke_at)
             and woke_at > 0
         ):
-            values["coalesce_alerted"] = {woke_on: float(woke_at)}
+            values["coalesce_alerted"] = {adopt_monitor_dedupe_key(woke_on): float(woke_at)}
+    else:
+        # A record persisted before the key spaces existed keys this map by
+        # whole-subject fingerprint. Adopting each key into the revision space
+        # keeps a monitor that already alerted from reading as never-alerted, so
+        # a subject with no conditions of its own -- whose synthesized key IS its
+        # fingerprint -- crosses the upgrade without one extra wake.
+        stored = values.get("coalesce_alerted")
+        if isinstance(stored, dict):
+            values["coalesce_alerted"] = {
+                (adopt_monitor_dedupe_key(key) if isinstance(key, str) else key): value
+                for key, value in stored.items()
+            }
     return MonitorState(**values)
 
 

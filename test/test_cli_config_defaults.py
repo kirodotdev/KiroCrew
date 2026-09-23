@@ -191,6 +191,72 @@ def test_a_clean_install_says_so(tmp_path, capsys):
     assert "No stored value holds a superseded default" in capsys.readouterr().out
 
 
+def test_listing_shows_what_auto_adoption_already_removed(tmp_path, capsys):
+    """An adopted key holds no stored value, so it is listed from the ledger instead.
+
+    The load path announced the removal once, at WARNING, in a gateway log; this
+    command is where an operator asks the question again later. Listed even when
+    nothing is currently drifted -- that is the common state right after an upgrade.
+    """
+    d = tmp_path / "crew"
+    d.mkdir()
+    (d / "config.json").write_text(json.dumps({"agent": {}}), "utf-8")
+    with patch("kiro_crew.config.loader.config_dir", return_value=d):
+        SD.record_adoptions({"agent.subagent_timeout_secs": 1800})
+
+    _run(_args(), d)
+    out = capsys.readouterr().out
+    assert "agent.subagent_timeout_secs" in out
+    assert "1800" in out
+    assert "kirocrew config set agent.subagent_timeout_secs 1800" in out
+    assert "No stored value holds a superseded default" in out
+    # Listing changes nothing, in either file.
+    assert _stored(d) == {"agent": {}}
+    with patch("kiro_crew.config.loader.config_dir", return_value=d):
+        assert SD.adopted_superseded() == {"agent.subagent_timeout_secs": 1800}
+
+
+def test_listing_renders_the_ledger_even_without_a_config_file(tmp_path, capsys):
+    d = tmp_path / "crew"
+    d.mkdir()
+    with patch("kiro_crew.config.loader.config_dir", return_value=d):
+        SD.record_adoptions({"agent.subagent_timeout_secs": 1800})
+
+    _run(_args(), d)
+    out = capsys.readouterr().out
+    assert "agent.subagent_timeout_secs" in out and "1800" in out
+    assert "No config.json yet" in out
+
+
+def test_listing_renders_the_ledger_before_a_corrupt_config_is_refused(tmp_path, capsys):
+    """The ledger is printed before config.json is opened, so a corrupt file cannot
+    hide what an earlier load removed from it."""
+    d = tmp_path / "crew"
+    d.mkdir()
+    (d / "config.json").write_text("{ not json", encoding="utf-8")
+    with patch("kiro_crew.config.loader.config_dir", return_value=d):
+        SD.record_adoptions({"agent.subagent_timeout_secs": 1800})
+
+    with pytest.raises(SystemExit):
+        _run(_args(), d)
+    captured = capsys.readouterr()
+    assert "kirocrew config set agent.subagent_timeout_secs 1800" in captured.out
+    assert "Could not read" in captured.err
+
+
+def test_an_adopted_key_is_not_an_adopt_or_keep_target(tmp_path, capsys):
+    """Nothing is stored for it, so naming it is refused like any other non-drift."""
+    d = tmp_path / "crew"
+    d.mkdir()
+    (d / "config.json").write_text(json.dumps({"agent": {}}), "utf-8")
+    with patch("kiro_crew.config.loader.config_dir", return_value=d):
+        SD.record_adoptions({"agent.subagent_timeout_secs": 1800})
+
+    with pytest.raises(SystemExit):
+        _run(_args(keys=["agent.subagent_timeout_secs"], keep=True), d)
+    assert "Not holding a superseded default" in capsys.readouterr().err
+
+
 def test_a_missing_config_needs_no_action(tmp_path, capsys):
     d = tmp_path / "crew"
     d.mkdir()

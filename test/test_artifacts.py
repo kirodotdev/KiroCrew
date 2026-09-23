@@ -209,6 +209,12 @@ class TestCreateValidation:
         with pytest.raises(ArtifactValidationError):
             store.create(name="x", content="a", tags=["bad tag with spaces"])
 
+    @pytest.mark.parametrize("tag", ["cr\n", "a" * 64 + "\n"])
+    def test_trailing_newline_tag_is_rejected(self, store: ArtifactStore, tag: str) -> None:
+        """A raw HTTP/store tag cannot use ``$``'s before-newline match."""
+        with pytest.raises(ArtifactValidationError):
+            store.create(name="x", content="a", tags=[tag])
+
     def test_dedupes_tags(self, store: ArtifactStore) -> None:
         art = store.create(name="x", content="a", tags=["a", "b", "a"])
         assert art.tags == ["a", "b"]
@@ -310,12 +316,46 @@ class TestList:
     def test_empty(self, store: ArtifactStore) -> None:
         assert store.list() == []
 
-    def test_returns_newest_first(self, store: ArtifactStore) -> None:
+    def test_returns_newest_first(self, store: ArtifactStore, monkeypatch) -> None:
+        from kiro_crew import artifacts
+
+        # All timestamp reads within a write share its explicit instant.
+        now = "2026-01-01T00:00:00.000001+00:00"
+        monkeypatch.setattr(artifacts, "_now_iso", lambda: now)
         store.create(name="alpha", content="a")
+        now = "2026-01-01T00:00:00.000002+00:00"
         store.create(name="bravo", content="b")
+        now = "2026-01-01T00:00:00.000003+00:00"
         store.create(name="charlie", content="c")
         items = store.list()
         assert [a.slug for a in items] == ["charlie", "bravo", "alpha"]
+
+        now = "2026-01-01T00:00:00.000004+00:00"
+        store.update("alpha", content="updated oldest artifact")
+        assert [a.slug for a in store.list()] == ["alpha", "charlie", "bravo"]
+
+    def test_a_timestamp_tie_still_has_one_defined_order(
+        self, store: ArtifactStore, monkeypatch
+    ) -> None:
+        """Equal ``updated_at`` must not leave the order to the filesystem.
+
+        ``_now_iso`` is microsecond ISO, so two artifacts written inside one
+        microsecond carry the identical stamp. Sorting on ``updated_at`` alone is a
+        stable sort over equal keys, which preserves directory scan order and makes
+        "newest first" answer differently per platform and per filesystem -- Windows
+        CI failed ``test_artifacts_handlers.TestList.test_returns_items`` on exactly
+        that. The ``slug`` tie-break is what makes the answer total.
+        """
+        from kiro_crew import artifacts
+
+        monkeypatch.setattr(
+            artifacts, "_now_iso", lambda: "2026-01-01T00:00:00.000001+00:00"
+        )
+        # Created out of slug order, so passing cannot be an accident of insertion.
+        for name in ("bravo", "alpha", "charlie"):
+            store.create(name=name, content=name)
+
+        assert [a.slug for a in store.list()] == ["charlie", "bravo", "alpha"]
 
     def test_filter_by_tag(self, store: ArtifactStore) -> None:
         store.create(name="a", content="a", tags=["x"])
@@ -550,7 +590,10 @@ class TestSecurity:
         self, store: ArtifactStore, monkeypatch
     ) -> None:
         # _snapshot_version() reads through self._read_text(), not src.read_text()
-        # directly, so the is_sensitive_path() gate always applies.
+        # directly, so the sensitive-path gate always applies. The helper hands
+        # the gate the realpath it already computed through
+        # is_sensitive_canonical_path; that is the name to patch, since the
+        # bounded is_sensitive_path is not on this read path.
         # If the gate ever started flagging artifact-internal paths (e.g. a
         # symlink expansion landing on a sensitive path), the snapshot read
         # must refuse rather than silently leak. Verify the gated helper is
@@ -558,20 +601,20 @@ class TestSecurity:
         from kiro_crew import artifacts as art_mod
 
         store.create(name="x", content="v1")
-        # First update succeeds — is_sensitive_path() returns False normally.
+        # First update succeeds: the gate returns False normally.
         store.update("x", content="v2", snapshot=True)
 
-        # Now make is_sensitive_path() return True for current.html only.
+        # Now make the gate return True for current.html only.
         # _snapshot_version reads from current.html via self._read_text() now;
         # that read must surface ArtifactError.
-        original = art_mod.is_sensitive_path
+        original = art_mod.is_sensitive_canonical_path
 
         def _selective(p: str) -> bool:
             if "current.html" in p:
                 return True
             return original(p)
 
-        monkeypatch.setattr(art_mod, "is_sensitive_path", _selective)
+        monkeypatch.setattr(art_mod, "is_sensitive_canonical_path", _selective)
         with pytest.raises(ArtifactError):
             store.update("x", content="v3", snapshot=True)
 

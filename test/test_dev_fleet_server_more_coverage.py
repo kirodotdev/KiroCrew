@@ -494,12 +494,17 @@ async def test_fetch_pr_head_oid_none_on_bad_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_pr_head_oid_gated_on_merged_state(monkeypatch):
-    """An OPEN PR yields None: only a MERGED verdict may authorize removal."""
+    """An OPEN PR yields None: only a MERGED verdict may authorize removal.
+
+    The lookup is now ``gh pr list`` (a JSON array), not ``gh pr view`` (a
+    single object), so the destructive boundary keeps working after the head
+    branch is deleted on merge.
+    """
     _run_cmd_queue(
         monkeypatch,
         [
-            (0, json.dumps({"state": "OPEN", "headRefOid": "deadbeef"}), ""),
-            (0, json.dumps({"state": "MERGED", "headRefOid": "cafe1234"}), ""),
+            (0, json.dumps([{"state": "OPEN", "headRefOid": "deadbeef"}]), ""),
+            (0, json.dumps([{"state": "MERGED", "headRefOid": "cafe1234"}]), ""),
         ],
     )
     assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r") is None
@@ -1386,3 +1391,133 @@ def test_completed_cutover_undo_target_hides_non_actionable_history(
     )
 
     assert out is None
+
+
+# --------------------------------------------------------------------------
+# _fetch_pr_head_oid -- survives a deleted head branch (Defect 2)
+# --------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_uses_list_not_view(monkeypatch):
+    """The lookup uses ``gh pr list --head`` (which resolves a merged PR after
+    its head branch is deleted), never a name-keyed ``gh pr view``."""
+    payload = json.dumps([{"state": "MERGED", "headRefOid": "a" * 40}])
+    seen = _run_cmd_queue(monkeypatch, [(0, payload, "")])
+
+    oid = await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r")
+
+    assert oid == "a" * 40
+    argv = seen[0]
+    assert argv[:3] == ["gh", "pr", "list"]
+    assert "--head" in argv and "feat/x" in argv
+    assert "--state" in argv and "all" in argv
+    # state and headRefOid come from the SAME response (contract (b))
+    json_flag = argv[argv.index("--json") + 1]
+    assert set(json_flag.split(",")) == {"state", "headRefOid"}
+    # The saturation sentinel: the query asks for one row BEYOND the ceiling so
+    # an overflow is detectable. Weakening this back to the bare ceiling reopens
+    # the reused-head miss, so pin the exact --limit value.
+    limit_flag = argv[argv.index("--limit") + 1]
+    assert limit_flag == str(fleet_state._PR_HEAD_LOOKUP_LIMIT + 1)
+    # a name-keyed pr view (which cannot resolve a deleted head branch) is not used
+    assert "view" not in argv
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_merged_after_branch_deleted(monkeypatch):
+    """A merged PR whose head branch is deleted: the list query still returns
+    the MERGED PR with its head OID, so the OID resolves and the tree is
+    prunable. Uses the head OID observed live on a real deleted-branch PR."""
+    observed = "7fead2a803d5bea489c88206d75b0f58e6472ab5"
+    payload = json.dumps([{"state": "MERGED", "headRefOid": observed}])
+    _run_cmd_queue(monkeypatch, [(0, payload, "")])
+
+    assert await fleet_state._fetch_pr_head_oid("gone/branch", repo="o/r") == observed
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_none_when_no_merged_pr(monkeypatch):
+    """No MERGED PR on the head -> None (contract (c): nothing to authorize)."""
+    _run_cmd_queue(monkeypatch, [(0, json.dumps([{"state": "CLOSED", "headRefOid": "c" * 40}]), "")])
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_reused_head_with_open_pr_refuses(monkeypatch):
+    """A head carrying BOTH a MERGED PR and an OPEN one is a reused branch --
+    the OPEN PR is work a MERGED verdict does not describe, so the lookup
+    returns None regardless of row order (contract (c))."""
+    payload = json.dumps(
+        [
+            {"state": "OPEN", "headRefOid": "n" * 40},
+            {"state": "MERGED", "headRefOid": "o" * 40},
+        ]
+    )
+    _run_cmd_queue(monkeypatch, [(0, payload, "")])
+    assert await fleet_state._fetch_pr_head_oid("reused/branch", repo="o/r") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_saturated_batch_fails_closed(monkeypatch):
+    """The query asks for one row beyond the ceiling. When gh returns MORE than
+    _PR_HEAD_LOOKUP_LIMIT rows, the batch may be truncated so an OPEN PR could
+    sit past it: the lookup refuses even when every returned row is MERGED."""
+    saturated = [
+        {"state": "MERGED", "headRefOid": "m" * 40}
+        for _ in range(fleet_state._PR_HEAD_LOOKUP_LIMIT + 1)
+    ]
+    _run_cmd_queue(monkeypatch, [(0, json.dumps(saturated), "")])
+    assert await fleet_state._fetch_pr_head_oid("busy/head", repo="o/r") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_exactly_ceiling_is_complete(monkeypatch):
+    """Exactly _PR_HEAD_LOOKUP_LIMIT rows is a COMPLETE view (the sentinel row
+    did not come back), so a merged head with no OPEN PR still resolves -- the
+    sentinel distinguishes a full, complete window from a truncated one."""
+    rows = [{"state": "MERGED", "headRefOid": "m" * 40}] + [
+        {"state": "CLOSED", "headRefOid": "c" * 40}
+        for _ in range(fleet_state._PR_HEAD_LOOKUP_LIMIT - 1)
+    ]
+    assert len(rows) == fleet_state._PR_HEAD_LOOKUP_LIMIT
+    _run_cmd_queue(monkeypatch, [(0, json.dumps(rows), "")])
+    assert await fleet_state._fetch_pr_head_oid("full/head", repo="o/r") == "m" * 40
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_none_on_gh_failure(monkeypatch):
+    """A non-zero gh exit still fails closed."""
+    _run_cmd_queue(monkeypatch, [(1, "", "gh: rate limited")])
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_none_on_unparseable_json(monkeypatch):
+    _run_cmd_queue(monkeypatch, [(0, "<html>rate limited</html>", "")])
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r") is None
+
+
+@pytest.mark.asyncio
+async def test_prunable_merged_deleted_branch_becomes_candidate(monkeypatch, tmp_path):
+    """A merged, clean tree whose head branch is deleted resolves to verdict
+    ``merged`` (ok:True) end-to-end through _prunable.
+
+    The head OID lookup goes through the REAL _fetch_pr_head_oid so the query
+    shape is exercised, not stubbed: gh ``pr list`` is scripted to return the
+    MERGED PR with a head OID matching the worktree HEAD.
+    """
+    head = "a" * 40
+    monkeypatch.setattr(
+        fleet_state, "_pr_status_cached", AsyncMock(return_value={"state": "MERGED", "_repo": "o/r"})
+    )
+    monkeypatch.setattr(repository, "_own_commits_count", AsyncMock(return_value=2))
+    monkeypatch.setattr(repository, "_real_dirty", AsyncMock(return_value=False))
+    monkeypatch.setattr(repository, "_git", AsyncMock(return_value=head))
+    # git merge-base --is-ancestor: HEAD == PR head, so containment holds
+    monkeypatch.setattr(fleet_state, "_head_contained_in_pr", AsyncMock(return_value=True))
+    # The only gh call is _fetch_pr_head_oid's list query: the head branch is
+    # deleted, yet the MERGED PR is still resolved through the list shape.
+    _run_cmd_queue(monkeypatch, [(0, json.dumps([{"state": "MERGED", "headRefOid": head}]), "")])
+
+    v = await worktree_ops._prunable(str(tmp_path), "gone/branch")
+    assert v["ok"] is True
+    assert v["code"] == "merged"

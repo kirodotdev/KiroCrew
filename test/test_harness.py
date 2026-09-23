@@ -58,6 +58,24 @@ _POSIX_ONLY = pytest.mark.skipif(
 )
 
 
+def _end_descendant_pinned(pid: int, token: str) -> None:
+    """Teardown for a raw descendant pid: SIGKILL it only while it is still ours.
+
+    The tests below publish a grandchild's pid through a pipe and hold nothing
+    else on it -- no ``Popen``, so nothing keeps the number as a zombie once it
+    exits. After the body has proven that pid dead the kernel is free to hand the
+    number to any other process, so a bare ``os.kill(pid, SIGKILL)`` in a
+    ``finally`` would go out on every PASSING run at whatever now holds it. The
+    start-time token captured at spawn is the identity: it reads ``None`` once the
+    process is gone and never matches a different process, so a mismatch means
+    there is nothing of ours left to signal.
+    """
+    if platform_compat.process_start_time(pid) != token:
+        return
+    with contextlib.suppress(OSError):
+        platform_compat.kill_pid_pinned(pid, token, platform_compat.SIGKILL)
+
+
 class FakePopen:
     """Minimal ``subprocess.Popen`` stand-in for ``_wait_for_ready_line``.
 
@@ -316,14 +334,15 @@ def test_terminate_ends_a_descendant_that_left_the_process_group() -> None:
     )
     assert proc.stdout is not None
     escaped_pid = int(proc.stdout.readline().strip())
+    escaped_token = platform_compat.process_start_time(escaped_pid)
+    assert escaped_token is not None
     assert os.getpgid(escaped_pid) != proc.pid, "the child must be outside the group"
     try:
         assert _terminate_process_group(proc) is True
         assert proc.poll() is not None
         assert not platform_compat.pid_exists(escaped_pid), "the escaped child outlived teardown"
     finally:
-        with contextlib.suppress(OSError):
-            os.kill(escaped_pid, signal.SIGKILL)
+        _end_descendant_pinned(escaped_pid, escaped_token)
         with contextlib.suppress(OSError):
             proc.kill()
         proc.wait(timeout=10)
@@ -1338,8 +1357,7 @@ def test_dead_root_ends_saved_in_group_child() -> None:
         assert _terminate_process_group(proc, {child_pid: token}) is False
         assert not platform_compat.pid_exists(child_pid), "the saved child outlived teardown"
     finally:
-        with contextlib.suppress(OSError):
-            os.kill(child_pid, signal.SIGKILL)
+        _end_descendant_pinned(child_pid, token)
         with contextlib.suppress(OSError):
             proc.kill()
         proc.wait(timeout=10)
@@ -1383,14 +1401,15 @@ def test_terminate_preserves_home_after_root_exits() -> None:
         assert _terminate_process_group(proc, {escaped_pid: token}) is False
         assert not platform_compat.pid_exists(escaped_pid), "the saved child outlived teardown"
     finally:
-        with contextlib.suppress(OSError):
-            os.kill(escaped_pid, signal.SIGKILL)
+        _end_descendant_pinned(escaped_pid, token)
         with contextlib.suppress(OSError):
             proc.kill()
         proc.wait(timeout=10)
 
 
-def test_preflight_runs_after_seed_and_preserves_its_files(tmp_path, monkeypatch):
+def test_preflight_runs_after_seed_and_preserves_its_files(
+    tmp_path, monkeypatch, nonbundled_python_with_user_site
+):
     """A native whoami/config preflight may legitimately populate private state."""
     from kiro_crew.seed import seed
 
@@ -1398,8 +1417,10 @@ def test_preflight_runs_after_seed_and_preserves_its_files(tmp_path, monkeypatch
     proc = _make_fake_proc_with_ready('{"port": 51234, "token": "synthetic"}')
 
     def seed_child(argv, **kwargs):
+        assert argv[1:3] == ["-s", "-c"]
         assert argv[-1] == "minimal"
-        assert "replace" not in argv[2]
+        seed_source = argv[argv.index("-c") + 1]
+        assert "replace" not in seed_source
         home = Path(kwargs["env"]["KIROCREW_HOME"])
         assert not any(home.iterdir())
         with monkeypatch.context() as child:
@@ -1467,7 +1488,9 @@ def test_gateway_launcher_rejects_command_input(tmp_path, monkeypatch, field):
         spawn.assert_not_called()
 
 
-def test_gateway_launcher_fixed_command_and_restart_seed(tmp_path):
+def test_gateway_launcher_fixed_command_and_restart_seed(
+    tmp_path, nonbundled_python_with_user_site
+):
     from kiro_crew.testing import harness
 
     env = {"KIROCREW_HOME": str(tmp_path)}
@@ -1475,7 +1498,14 @@ def test_gateway_launcher_fixed_command_and_restart_seed(tmp_path):
         for fixture in ("minimal", None):
             harness._launch_gateway(tmp_path, env, fixture=fixture, approval="reads", crons=False)
             cmd = spawn.call_args.args[0]
-            expected = [sys.executable, "-m", "kiro_crew", "gateway", "--test-mode"]
+            expected = [
+                sys.executable,
+                "-s",
+                "-m",
+                "kiro_crew",
+                "gateway",
+                "--test-mode",
+            ]
             if fixture is not None:
                 expected += ["--seed", fixture]
             assert cmd == expected + ["--approval", "reads", "--no-crons"]

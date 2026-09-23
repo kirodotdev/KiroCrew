@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import itertools
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,6 +31,7 @@ from kiro_crew.providers.base import (
     EVENT_THINKING_CHUNK,
     LLMEvent,
 )
+from kiro_crew.validation import MAX_TOOL_NAME_LEN
 
 # ── Helpers ──
 
@@ -777,6 +779,12 @@ class TestResolveApprovalSlotFallback:
 
         assert result is True
         assert fut.result() == "rejected"
+        # A decided rejection broadcasts bare; only an expired wait names its
+        # decision in the frame.
+        state.broadcast_ws.assert_called_with(
+            "approval_resolved",
+            {"id": "req-43", "approved": False, "slot": "chat-1-test"},
+        )
 
     @pytest.mark.asyncio
     async def test_state_futures_checked_first(self, tmp_path):
@@ -1106,7 +1114,16 @@ class TestBatchCascadeAttribution:
         # flag is down, so only a source guard can hold that pairing).
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         slot = _make_slot()
-        state.approval_timeout_for = MagicMock(return_value=0.05)
+        # Only the FIRST prompt is meant to expire. The revised call must be
+        # answered by the approver below, which polls for its future; a 50 ms
+        # window on that second prompt races the poll on a slow runner (the
+        # runner declines tool_b as unanswered before the approver sees it),
+        # and a declined tool_b is the very outcome this test says never
+        # happens. So the shrunken bound applies to one prompt; the next gets
+        # a window the approver cannot miss.
+        state.approval_timeout_for = MagicMock(
+            side_effect=itertools.chain([0.05], itertools.repeat(_ANSWER_WAIT_SECS))
+        )
         timed_out = _permission_event(title="tool_a")
         timed_out.request_id = "req-1"
         timed_out.tool_call_id = "tc-1"
@@ -1370,6 +1387,244 @@ class TestBackgroundApprovalDenyFast:
         asyncio.get_event_loop().create_task(_approve_soon())
         result = await state.request_approval("req-bg2", "cron", "fs_write", is_background=True)
         assert result is True
+
+
+class TestExpiredApprovalRetiresTheCard:
+    """An expired or cancelled coordinator wait retires its rendered card.
+
+    The card is client-injected from the WS ``approval`` frame and retires
+    through one ``approval_resolved`` broadcast. Slot permission rows belong
+    to the chat-runner registry and stay untouched when per-connection request
+    ids collide. A normally resolved approval broadcasts exactly once.
+    """
+
+    @staticmethod
+    def _expire_fast(state, monkeypatch, *, background: bool = False) -> None:
+        """Shrink the real approval window so the genuine ``wait_for`` expires.
+
+        Shadows the class default on the instance rather than patching
+        ``asyncio.wait_for`` process-wide, so these tests exercise the
+        coordinator's own timeout/cancellation path — and cannot pass because
+        an unrelated ``wait_for`` on the same path was force-cancelled.
+        """
+        attr = "_BACKGROUND_APPROVAL_TIMEOUT_SECS" if background else "_APPROVAL_TIMEOUT"
+        monkeypatch.setattr(state, attr, 0.01)
+
+    @staticmethod
+    def _slot_with_permission(state, request_id: str) -> _ChatSlot:
+        """A registered slot whose transcript renders one pending approval bar."""
+        import json
+
+        slot = _make_slot()
+        slot.append(
+            "permission", "fs_write", json.dumps({"request_id": request_id}), broadcast=False
+        )
+        slot._dirty = False
+        state._slots[slot.key] = slot
+        return slot
+
+    @staticmethod
+    def _resolved_broadcasts(state) -> list:
+        return [c for c in state.broadcast_ws.call_args_list if c[0][0] == "approval_resolved"]
+
+    @staticmethod
+    async def _register_request(state, request_id: str, slot_key: str) -> asyncio.Task:
+        """Start a real (unexpired) approval wait and return once it registered.
+
+        Polls ``_pending_approvals`` — registered in the same synchronous block
+        as the future — so this waits on registration itself, never on the
+        clock relative to the future (see TestApprovalAnswerersDoNotRaceTheStream).
+        """
+        task = asyncio.get_running_loop().create_task(
+            state.request_approval(request_id, "dashboard", "fs_write", slot=slot_key)
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _ANSWER_WAIT_SECS
+        while request_id not in state._pending_approvals:
+            assert loop.time() < deadline, (
+                f"approval {request_id!r} was never registered — the wait "
+                f"never started, so there is nothing to expire or resolve"
+            )
+            await asyncio.sleep(_ANSWER_POLL_SECS)
+        return task
+
+    @pytest.mark.asyncio
+    async def test_slot_scoped_expiry_retires_the_card(self, tmp_path, monkeypatch):
+        """Timeout broadcasts retirement without mutating a foreign permission row."""
+        import json
+
+        state, _ = _make_state(tmp_path)
+        slot = self._slot_with_permission(state, "req-exp")
+        mock_sel = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.state.sel", lambda: mock_sel)
+        self._expire_fast(state, monkeypatch)
+
+        result = await state.request_approval("req-exp", "dashboard", "fs_write", slot=slot.key)
+
+        assert result is False
+        cls = json.loads(slot.messages[-1]["cls"])
+        assert "resolved" not in cls
+        assert slot._dirty is False
+        resolved = self._resolved_broadcasts(state)
+        assert len(resolved) == 1
+        # The client cannot derive "expired" from ``approved``; without the
+        # decision in the frame the card would render as a rejection.
+        assert resolved[0][0][1] == {
+            "id": "req-exp",
+            "approved": False,
+            "slot": slot.key,
+            "decision": "expired",
+        }
+        mock_sel.log_tool_invocation.assert_called_once_with(
+            session_key=slot.key,
+            tool_name="approval_decision",
+            outcome="expired",
+            request_id="req-exp",
+            source="dashboard",
+        )
+        assert "req-exp" not in state._pending_approvals
+        assert "req-exp" not in state._approval_futures
+
+    @pytest.mark.asyncio
+    async def test_expiry_keeps_the_slot_key_after_the_slot_is_gone(self, tmp_path, monkeypatch):
+        """Timeout frames retain the owning slot key after slot removal."""
+        state, _ = _make_state(tmp_path)
+        slot_key = "slot-removed-during-wait"
+        assert slot_key not in state._slots
+        self._expire_fast(state, monkeypatch)
+
+        result = await state.request_approval(
+            "req-removed-slot", "dashboard", "fs_write", slot=slot_key
+        )
+
+        assert result is False
+        resolved = self._resolved_broadcasts(state)
+        assert len(resolved) == 1
+        assert resolved[0][0][1] == {
+            "id": "req-removed-slot",
+            "approved": False,
+            "slot": slot_key,
+            "decision": "expired",
+        }
+
+    @pytest.mark.asyncio
+    async def test_state_level_expiry_broadcasts_only(self, tmp_path, monkeypatch):
+        """A background approval has no slot messages: broadcast, no marker."""
+        state, _ = _make_state(tmp_path)
+        marker = MagicMock(return_value=True)
+        monkeypatch.setattr("kiro_crew.dashboard.state._mark_permission_resolved", marker)
+        self._expire_fast(state, monkeypatch, background=True)
+
+        result = await state.request_approval("req-bg", "cron", "fs_write", is_background=True)
+
+        assert result is False
+        marker.assert_not_called()
+        resolved = self._resolved_broadcasts(state)
+        assert len(resolved) == 1
+        # Session key "state" carries no slot in the payload.
+        assert resolved[0][0][1] == {"id": "req-bg", "approved": False, "decision": "expired"}
+        assert "req-bg" not in state._pending_approvals
+        assert "req-bg" not in state._approval_futures
+
+    @pytest.mark.asyncio
+    async def test_cancellation_retires_like_timeout(self, tmp_path):
+        """A cancelled wait retires through the same broadcast as a timeout."""
+        state, _ = _make_state(tmp_path)
+        slot = self._slot_with_permission(state, "req-can")
+        task = await self._register_request(state, "req-can", slot.key)
+
+        task.cancel()
+        result = await task
+
+        assert result is False
+        assert len(self._resolved_broadcasts(state)) == 1
+        assert "req-can" not in state._pending_approvals
+        assert "req-can" not in state._approval_futures
+
+    @pytest.mark.asyncio
+    async def test_resolved_approval_retires_exactly_once(self, tmp_path):
+        """The healthy path emits one broadcast and leaves foreign rows untouched."""
+        import json
+
+        state, _ = _make_state(tmp_path)
+        slot = self._slot_with_permission(state, "req-ok")
+        task = await self._register_request(state, "req-ok", slot.key)
+
+        assert state.resolve_approval("req-ok", True) is True
+        result = await task
+
+        assert result is True
+        resolved = self._resolved_broadcasts(state)
+        assert len(resolved) == 1
+        # A decided approval carries no decision key: the client derives it.
+        # ``resolve_state`` keys the broadcast "state", so no slot rides along.
+        assert resolved[0][0][1] == {"id": "req-ok", "approved": True}
+        cls = json.loads(slot.messages[-1]["cls"])
+        assert "resolved" not in cls
+        assert "req-ok" not in state._pending_approvals
+        assert "req-ok" not in state._approval_futures
+
+    @pytest.mark.asyncio
+    async def test_rejected_approval_payload_carries_no_decision(self, tmp_path):
+        """A real rejection shares ``approved=False`` with expiry but stays bare."""
+        state, _ = _make_state(tmp_path)
+        slot = self._slot_with_permission(state, "req-no")
+        task = await self._register_request(state, "req-no", slot.key)
+
+        assert state.resolve_approval("req-no", False) is True
+        result = await task
+
+        assert result is False
+        resolved = self._resolved_broadcasts(state)
+        assert len(resolved) == 1
+        assert resolved[0][0][1] == {"id": "req-no", "approved": False}
+        assert "req-no" not in state._pending_approvals
+        assert "req-no" not in state._approval_futures
+
+    @pytest.mark.asyncio
+    async def test_broadcast_failure_still_pops(self, tmp_path, monkeypatch):
+        """A raising broadcast does not leak coordinator registry entries."""
+        state, _ = _make_state(tmp_path)
+        slot = self._slot_with_permission(state, "req-ws")
+        monkeypatch.setattr(
+            state,
+            "_audit_and_broadcast_approval",
+            MagicMock(side_effect=RuntimeError("ws boom")),
+        )
+        self._expire_fast(state, monkeypatch)
+
+        result = await state.request_approval("req-ws", "dashboard", "fs_write", slot=slot.key)
+
+        assert result is False
+        assert "req-ws" not in state._pending_approvals
+        assert "req-ws" not in state._approval_futures
+
+    @pytest.mark.asyncio
+    async def test_expiry_does_not_clobber_an_already_decided_row(self, tmp_path, monkeypatch):
+        """A colliding chat-runner row keeps its resolved trust decision."""
+        import json
+
+        state, _ = _make_state(tmp_path)
+        slot = _make_slot()
+        slot.append(
+            "permission",
+            "fs_write",
+            json.dumps({"request_id": "req-keep", "resolved": "trust"}),
+            broadcast=False,
+        )
+        slot._dirty = False
+        state._slots[slot.key] = slot
+        self._expire_fast(state, monkeypatch)
+
+        result = await state.request_approval("req-keep", "dashboard", "fs_write", slot=slot.key)
+
+        assert result is False
+        cls = json.loads(slot.messages[-1]["cls"])
+        assert cls["resolved"] == "trust"
+        assert slot._dirty is False
+        assert len(self._resolved_broadcasts(state)) == 1
+        assert "req-keep" not in state._pending_approvals
+        assert "req-keep" not in state._approval_futures
 
 
 class TestStateMetaAndPermissions:
@@ -2274,6 +2529,76 @@ class TestDenyRowTitleRedaction:
         # Each deny shape is rendered in exactly one place — its helper.
         assert source.count('f"🚫 {title} (invalid: {error})"') == 1
         assert source.count('f"🚫 {title} (hook error)"') == 1
+
+
+# ── Long read titles carrying a canonical identity ──
+
+
+class TestLongTitleWithCanonicalIdentity:
+    """A ``read`` whose title embeds long image paths must not be refused as a bad name.
+
+    kiro-cli titles a ``read`` with ``image_paths`` by its operation content, so the
+    title grows with the user's filenames while the tool's identity travels beside
+    it as ``AcpEvent.tool_name`` (``_meta.kiro.toolName``). The length cap in
+    ``_validate_tool_name`` protects the case where the title is the ONLY identity;
+    with the canonical name present the title is content, like a shell command
+    line, and the call must proceed.
+    """
+
+    _TITLE = "View image " + " ".join(
+        f"/mnt/Sign in with Apple - screenshot {i:02d} of the consent sheet.png" for i in range(6)
+    )
+
+    def _read_event(self, *, tool_name: str) -> LLMEvent:
+        assert len(self._TITLE) > MAX_TOOL_NAME_LEN
+        return LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title=self._TITLE,
+            tool_kind="read",
+            request_id="req-1",
+            tool_input="",
+            tool_name=tool_name,
+        )
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_proceeds_with_canonical_name(self, tmp_path):
+        state, client = _make_state(
+            tmp_path, context_builder=_context_builder(ToolHookResult.auto_approve())
+        )
+        slot = _make_slot()
+        _set_stream(client, [self._read_event(tool_name="fs_read"), _complete_event()])
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+
+        client.approve_tool.assert_called_once_with("req-1")
+        client.reject_tool.assert_not_called()
+        rows = [m.get("content", "") for m in slot.messages]
+        assert not any("(invalid:" in row for row in rows), rows
+        # The scripted PreToolUse gate still ran, keyed on the sanitised title.
+        pre = [
+            c
+            for c in state._hook_store.fire.call_args_list
+            if c.args and c.args[0] == HOOK_EVENT_PRE_TOOL_USE
+        ]
+        assert pre, state._hook_store.fire.call_args_list
+        assert pre[0].kwargs["tool_name"] == self._TITLE
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_without_identity_keeps_the_loud_refusal(self, tmp_path):
+        """A backend publishing no ``_meta`` identity is refused exactly as before."""
+        state, client = _make_state(
+            tmp_path, context_builder=_context_builder(ToolHookResult.auto_approve())
+        )
+        slot = _make_slot()
+        _set_stream(client, [self._read_event(tool_name=""), _complete_event()])
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+
+        client.approve_tool.assert_not_called()
+        rows = [m.get("content", "") for m in slot.messages]
+        assert any("(invalid:" in row and "exceeds max length" in row for row in rows), rows
 
 
 class TestApprovalAnswerersDoNotRaceTheStream:

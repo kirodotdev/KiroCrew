@@ -395,6 +395,17 @@ describe('awsControlApi.backup*', () => {
     expect(JSON.parse(init.body as string)).toEqual({ enabled: false })
   })
 
+  it('backupNightlySessions POSTs to its own endpoint, never the snapshot one', async () => {
+    // A separate path is what keeps one request from carrying both grants; if
+    // this ever pointed at /nightly, asking for transcripts would silently flip
+    // the memory schedule instead.
+    fetchSpy.mockResolvedValue(jsonResponse({ nightlySessions: true }))
+    await awsControlApi.backupNightlySessions('a', true)
+    const [url, init] = firstCall(fetchSpy)
+    expect(url).toBe(`${BASE}/backup/a/nightly-sessions`)
+    expect(JSON.parse(init.body as string)).toEqual({ enabled: true })
+  })
+
   it('backupRestore POSTs {key} to /backup/{account}/restore', async () => {
     fetchSpy.mockResolvedValue(jsonResponse({ downloaded: true, path: '/tmp/x', bytes: 1 }))
     await awsControlApi.backupRestore('a', 'archive/2026.tar')

@@ -206,6 +206,18 @@ def test_dashboard_playwright_suite() -> None:
                 ]
 
                 def _seed_legacy_members(data: dict) -> dict:
+                    # Unsandboxed consent, for THIS disposable gateway only. The
+                    # agent binary here is `fake_acp_backend.py`, a stdlib echo
+                    # stub, so OS isolation guards nothing this suite asserts --
+                    # and the CodeBuild container CI runs on refuses
+                    # `unshare(CLONE_NEWUSER)` at the runtime policy level, which
+                    # no sysctl can lift. Without this the browser specs get a
+                    # sandbox-refusal card instead of a turn. A real sandboxed
+                    # spawn completing real work stays covered by ci.yml's
+                    # `e2e-private-namespace` lane, which runs the member sandbox
+                    # on a hosted runner with a usable namespace, and by
+                    # `e2e-boot-matrix`, which asserts both sandbox tiers.
+                    data.setdefault("agent", {})["sandbox_allow_unsandboxed_exec"] = True
                     agents = data.setdefault("agents", {})
                     for name in legacy_members:
                         assert name not in agents

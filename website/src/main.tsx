@@ -41,6 +41,7 @@ import {
 import 'katex/dist/katex.min.css'
 import './index.css'
 import './styles/cli-mode.css'
+import './styles/message-font-size.css'
 // Register shared modules for federated app bundles (must be before any app loads)
 import './app-sdk/shared-modules'
 

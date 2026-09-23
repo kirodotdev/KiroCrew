@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.mcp_cron import _call_tool
+from kiro_crew.mcp_cron import _call_tool_locally
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +39,7 @@ class TestCronAddChannel:
                 },
             )()
             mock_svc.add_job.return_value = mock_job
-            result = _call_tool(
+            result = _call_tool_locally(
                 "cron_add",
                 {"name": "ops", "message": "check", "every": 300, "channel": "C0AP77JJSN6"},
             )
@@ -71,7 +71,9 @@ class TestCronAddChannel:
                 },
             )()
             mock_svc.add_job.return_value = mock_job
-            result = _call_tool("cron_add", {"name": "ops", "message": "check", "every": 300})
+            result = _call_tool_locally(
+                "cron_add", {"name": "ops", "message": "check", "every": 300}
+            )
             call_kwargs = mock_svc.add_job.call_args
             assert (
                 call_kwargs.kwargs.get("channel") is None or call_kwargs[1].get("channel") is None

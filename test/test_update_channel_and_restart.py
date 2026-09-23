@@ -448,7 +448,7 @@ class TestChannelEndpoint:
         assert resp.status == 409
         assert not (_isolated_channel_home / "channel").exists()
 
-    @pytest.mark.parametrize("kind", ["dmg", "appimage", "docker"])
+    @pytest.mark.parametrize("kind", ["dmg", "appimage", "nsis", "docker"])
     def test_refuses_an_externally_managed_install(self, kind, _isolated_channel_home):
         layout = InstallLayout(
             kind=kind,

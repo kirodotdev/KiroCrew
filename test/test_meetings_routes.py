@@ -391,6 +391,74 @@ class TestMeetingLifecycleRoutes:
             assert resp.status == 409
 
     @pytest.mark.asyncio
+    async def test_start_releases_an_abandoned_meeting_holding_the_latch(
+        self, app, root: Path, fake_sessions
+    ):
+        """A meeting whose agent slots were retired must not block a fresh start.
+
+        A gateway-wide session sweep (the dashboard's
+        "Kiro identity changed" reconcile) retires a meeting's agent sessions
+        while it is still INITIALIZING. The session object survives, never became
+        dispatch-ready, and is not yet expired, so the single-active-meeting latch
+        stayed held and every later start answered 409 -- the meeting was wedged
+        with no live session.
+        """
+        async with client_for(app) as client:
+            first = await _start_and_get_session(client, "first")
+            # Model the sweep hitting mid-init: slots gone AND never became
+            # dispatch-ready (an established meeting whose idle slots were reaped
+            # keeps became_ready=True and stays recoverable, so it is NOT this).
+            fake_sessions.live_keys = set()
+            # The completed start above must have marked the session ready --
+            # asserting it before the reset means deleting the readiness
+            # assignment in the start path cannot survive this test.
+            assert first.became_ready is True
+            first.became_ready = False
+            assert first.abandoned is True
+
+            await client.post(f"{BASE}/meetings/second/init", json={})
+            resp = await client.post(f"{BASE}/meetings/second/start", json={})
+            assert resp.status == 200, await resp.text()
+            # The new meeting took over the latch (checked while the app is up;
+            # ACTIVE is cleared on shutdown when the client context exits).
+            second = _common.ACTIVE.get("second")
+            assert second is not None and second.meeting_id == "second"
+
+        # The abandoned meeting is torn down terminal, not left persisted active
+        # (two `active` meetings at once breaks the single-active invariant).
+        first_meta = store.read_meeting_meta("first", root)
+        assert first_meta is not None
+        assert first_meta["status"] != k.STATUS_ACTIVE
+
+    @pytest.mark.asyncio
+    async def test_status_active_does_not_mark_a_never_ready_session_ready(
+        self, app, root: Path, fake_sessions
+    ):
+        """The /status unpause path must not fake readiness.
+
+        ``resume_dispatches`` is shared between the post-init start path and the
+        ``/status active`` unpause path, and same-status ``active`` is accepted
+        as an idempotent retry. If the unpause path set ``became_ready``, a
+        routine status call against a retired-mid-init session would falsely
+        mark it ready: ``abandoned`` goes False, the single-active latch
+        re-wedges, and agents receive transcript with no output setup. Only the
+        start path (after ``init_agents``) may mark readiness.
+        """
+        async with client_for(app) as client:
+            first = await _start_and_get_session(client, "first")
+            # Model the sweep hitting mid-init: slots gone, never dispatch-ready.
+            fake_sessions.live_keys = set()
+            first.became_ready = False
+            assert first.abandoned is True
+
+            # Idempotent same-status retry: reopens ingress via
+            # resume_dispatches but must NOT mark the session ready.
+            resp = await client.post(f"{BASE}/meetings/first/status", json={"status": "active"})
+            assert resp.status == 200, await resp.text()
+            assert first.became_ready is False
+            assert first.abandoned is True
+
+    @pytest.mark.asyncio
     async def test_restart_re_initializes_agents_and_then_notices(self, app, fake_sessions):
         """A restart must re-state OUTPUT_FILE, not just say "carry on".
 

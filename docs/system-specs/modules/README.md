@@ -12,19 +12,21 @@ agent loads only the one it needs.
 
 | Spec | Subsystem |
 |---|---|
-| [acp-client.md](acp-client.md) | The ACP JSON-RPC client that drives `kiro-cli`: transport, framing, timeouts, and the backend seam. |
+| [acp-client.md](acp-client.md) | The ACP JSON-RPC clients that drive supported harnesses: dedicated and shared transports, framing, timeouts, and the backend seam. |
 | [providers.md](providers.md) | The `LLMProvider` interface, the `AcpProvider` the factory selects, and how a backend id is chosen. |
-| [agent-host-contract.md](agent-host-contract.md) | What an agent backend must supply besides speaking ACP: agent layout, session store, identity, sandbox, MCP delivery, billing, permission engine, auxiliary runtimes — kiro-cli, KAS and Claude Code side by side, with the new-provider checklist. |
+| [agent-host-contract.md](agent-host-contract.md) | What every known agent backend supplies besides speaking ACP: agent layout, session store, identity, sandbox, MCP delivery, billing, permission engine, auxiliary runtimes, and the new-provider checklist. |
 | [claude-code-provider.md](claude-code-provider.md) | Claude Code as a selectable ACP harness: the live spawn path, the two binaries it needs on the machine, and the MCP gap a Claude session still carries. |
 | [harness-parity.md](harness-parity.md) | The invariants keeping the Kiro harness first-class while other harnesses are adapted, and the test pinning each. |
 | [harness-onboarding.md](harness-onboarding.md) | The sequence a new ACP harness walks to land: vocabulary, capability decisions, spawn path, handshake, install probe, selectability, and what a live harness additionally touches. |
-| [model-fallback.md](model-fallback.md) | The throttle-exhaustion model fallback (`agent.fallback_model`): trigger, shared walk, sticky restore, visibility. |
+| [model-fallback.md](model-fallback.md) | The throttle-exhaustion model fallback (`agent.fallback_model`): trigger, shared walk, sticky restore, visibility — plus the single-message content-filter refusal fallback (`agent.refusal_fallback_model`). |
 | [session.md](session.md) | Sessions, slots, session keys, the warm pool, and PID tracking. |
 | [history.md](history.md) | Conversation persistence, JSONL rotation, and transcript search. |
 | [session-summary.md](session-summary.md) | Intent-level session summaries: the sidecar cache, extraction, and the turn-end pass. |
+| [member-event-log.md](member-event-log.md) | Per-member append-only event log, its four projections, the whole-value push frames, and load-time closers behind the Members page. |
 | [session-work-ledger.md](session-work-ledger.md) | Per-session durable work state (goal, phase, tried, artifacts) on disk, its MCP tools, and monitor-loop snapshot injection. |
-| [ledger-core.md](ledger-core.md) | Append-only per-crew and per-session ledgers: the wire format, type ownership and guest namespacing, the torn-tail rule, and how the stream relates to `kiro_crew.events`. |
-| [session-ledger-emitter.md](session-ledger-emitter.md) | The flag-gated writer that turns the ACP turn lifecycle into an append-only per-session `ledger.jsonl`: which facts are recorded, from which call site, and which are deliberately not. |
+| [crew-log-core.md](crew-log-core.md) | Append-only per-crew and per-session crew logs: the wire format, type ownership and guest namespacing, the torn-tail rule, and the pre-release status of the session vocabulary. |
+| [crew-log-emitter.md](crew-log-emitter.md) | The flag-gated writer that turns the ACP turn lifecycle into an append-only per-session `log.jsonl`: which facts are recorded, from which call site, and which are deliberately not. |
+| [crew-log-projection.md](crew-log-projection.md) | The five session folds (`status`, `usage`, `timeline`, `tools`, `approvals`), their resumable checkpoints, the paged `crew-log` reads with refs resolved, and the `session_projection` push. |
 | [file-search.md](file-search.md) | The `@`-mention file/folder search: index, ranking, `kinds` filter, and the sensitive-path symmetry. |
 | [session-storage.md](session-storage.md) | What sessions cost on disk, and the user-initiated trash that reclaims it. |
 | [session-control.md](session-control.md) | One chat session opening, stopping, and reading another. |
@@ -50,6 +52,8 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [subagent.md](subagent.md) | Spawning background workers, result delivery, and orphan recovery. |
+| [adaptive-concurrency.md](adaptive-concurrency.md) | The adaptive concurrency controller: a runtime execution cap beneath the user's ceiling and the MCP daemon's spawn-gate capacity, halved on corroborated host pressure, +1 per clean window, pause-and-probe under severe pressure; provider throttling scoped to its dependency channel. |
+| [taskq.md](taskq.md) | The durable task queue under every accepted unit of work: `tasks.db`, the validated state machine, write-before-ack, atomic claim with lease and generation fencing, the bounded dispatch window, legacy import and reconcile-first boot. |
 | [monitor-architecture.md](monitor-architecture.md) | The paradigm every monitoring loop follows: the seven layers, the plural probe contract, level-triggered decision, versioned state, and how to add a new monitored kind. Umbrella over the two implementation specs below. |
 | [agent-interrupt-controller.md](agent-interrupt-controller.md) | `kiro_crew.irq`: masking, coalescing, epoch resets and an error backstop for script-cron pollers, so a cheap probe interrupts an expensive agent turn instead of the turn polling. Also the app-facing probe SDK. |
 | [babysit-pr-watch.md](babysit-pr-watch.md) | Zero-token PR polling for babysit loops: a script cron that wakes the owning session only on unexpected state. |
@@ -57,6 +61,7 @@ agent loads only the one it needs.
 | [taskrunner.md](taskrunner.md) | The execution engine that runs a task spec to completion. |
 | [workflows.md](workflows.md) | The dynamic-workflow engine: the frozen `ctx` contract, the event stream, budgets, and the named conformance gates with the test pinning each. |
 | [autopilot.md](autopilot.md) | Plan-driven orchestration and its lifecycle. |
+| [decisions.md](decisions.md) | The Jev decision seam: `decisions.enabled` as the only opt-in, session-key sampling through `decisions.bucket`, the scrub-before-send refusal, `skills.select` as the one integration that consumes an answer (with the word-overlap result as its fallback), and the basic call-metadata log. |
 | [crew-mode.md](crew-mode.md) | Crews: the config record, `select_crew` roster and binding, model and workspace resolution, the Crews UI, and the record of the retired `"crew"` slot mode (Crew Mode). |
 | [pipeline-conductor.md](pipeline-conductor.md) | The `kirocrew-pipeline-conductor` agent and its skill: the generated spec's permission narrowing, the three deterministic scripts, the patrol cycle, and what the RFC leaves unbuilt. |
 | [persistent-agent-channels.md](persistent-agent-channels.md) | Long-lived channels for multi-agent collaboration. |
@@ -86,6 +91,8 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [app-kit-platform.md](app-kit-platform.md) | App contracts: MCP scoping, agent JSON composition, permissions, and dependencies. |
+| [plugin-import.md](plugin-import.md) | Converting a manifest-declared plugin package into an installable app: manifest discovery, per-kind mapping, root containment, and what is reported instead of converted. |
+| [harness-plugin-mapping.md](harness-plugin-mapping.md) | Where other harnesses' plugin contribution kinds land -- an existing extension point, a converter, or nowhere -- and the reason per kind. |
 | [mcp-apps.md](mcp-apps.md) | Apps that surface as MCP servers. |
 | [mcp-shareability.md](mcp-shareability.md) | Predicting which MCP servers can share one backend, from local evidence. |
 | [mcp-gateway-backend-replacement.md](mcp-gateway-backend-replacement.md) | Validating a replacement MCP backend's tool set before a live session adopts it. |
@@ -100,7 +107,7 @@ agent loads only the one it needs.
 | [themes.md](themes.md) | The theme tier model and the CSS variable contract. |
 | [md-notebook.md](md-notebook.md) | The inline markdown viewer and editor. |
 | [side.md](side.md) | The chat side panel. |
-| [browser.md](browser.md) | Website browsing through the `playwright-cli` shell commands. |
+| [browser.md](browser.md) | Website browsing through the native Browser-panel MCP transport, with `playwright-cli` as the fallback path. |
 
 ## Built-in apps
 
@@ -125,5 +132,7 @@ agent loads only the one it needs.
 | [connector-capability-manifest.md](connector-capability-manifest.md) | The connector campaign's manifest field schema (one row per required operation) and the `W00`–`W16` work-stream DAG that sequences its provider rounds. |
 | [connector-github.md](connector-github.md) | The GitHub connector (`W02`): per-operation instance data and the GitHub-specific wire parsing (pagination, rate-limit signals, status/body-to-error-class mapping, capability-signature resolution). |
 | [microsoft-graph-runtime.md](microsoft-graph-runtime.md) | The shared Microsoft Graph runtime base (`W05`): the resource locator (`/me` vs `/users/{id}`, the app-only `/me` refusal, the required Graph resource shapes), request/response payload shaping, and the `@odata.nextLink` pagination variants. Pure logic; defines no vendor-error taxonomy. |
+| [connector-zoom.md](connector-zoom.md) | The Zoom connector's `W11-A` contract-semantics slice: identity/UUID double-encoding, recurrence-occurrence time semantics, per-endpoint pagination, the AI Companion processing tri-state, and error classification plus credential redaction — pure logic, no network/auth/dispatch. |
+| [connector-conformance.md](connector-conformance.md) | The `W00-S4` conformance foundation: which component owns each `ConformanceRun`/`EvidenceReceipt` conformance responsibility, so none is dropped when the slice-unique validation remainder is empty. Records the `evidence_tier` contract-vs-spec item as pending. |
 | [instances.md](instances.md) | Managing multiple instances over SSH. Sections here are cited by number from `cloud/connect.py`, so do not renumber them. |
 | [dev-fleet.md](dev-fleet.md) | Worktree fleet management and pruning. |

@@ -2,6 +2,11 @@
 
 *Who this is for: the person who owns (or can create apps in) the Slack workspace that Kiro Crew should read. You need a browser and a Slack account with permission to install apps in that workspace. Expected time: 20 minutes, plus any wait for a workspace admin to approve the app.*
 
+**Slack has no Connections entry yet** — see the
+[index](README.md) for the providers pre-registered on this build — so its card
+and its **Connect** button appear once that entry ships. Registering the redirect
+URI below now means it already matches when it does.
+
 This runbook covers the **Slack MCP server** (`https://mcp.slack.com/mcp`), which lets Kiro Crew search and read Slack on behalf of the signed-in user. It is not the Slack channel bot described in `docs/guides/slack-setup.md`; that is a separate feature with separate tokens. You can reuse one Slack app for both, but this document only covers the MCP side.
 
 ## Before you start

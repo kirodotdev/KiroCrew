@@ -95,7 +95,11 @@ def verified_correction(
         return CorrectionEvidence(
             key,
             before["value_json"],
-            json.dumps(value),
+            # ensure_ascii=False matches the representation set_semantic
+            # persists and compares against when it verifies a correction; an
+            # escaped dump can never equal the raw value_json, so a non-ASCII
+            # correction would stall as a conflict proposal.
+            json.dumps(value, ensure_ascii=False),
             revision,
             f"{session_key}#message:{index}: {statement}",
             observed,
@@ -422,6 +426,12 @@ def sync_record(
     )
     if limit_v1_history:
         limit_v1_accepted_history(db, record_id)
+    if db.execute("SELECT 1 FROM sqlite_schema WHERE name='member_database'").fetchone():
+        # The index is published in the same transaction as content and revisions.
+        db.execute("DELETE FROM memory_fts WHERE path=?", (record_id,))
+        if after and not after.get("is_deleted") and current["status"] == "active":
+            body = " ".join(str(after.get(key) or "") for key in ("key", "text", "value_json"))
+            db.execute("INSERT INTO memory_fts (path,content) VALUES (?,?)", (record_id, body))
     return result
 
 

@@ -91,11 +91,10 @@ def _apply_stdin_json(a, *fields):
 def _flock(fd, acquire):
     """Acquire/release an OS advisory lock on ``fd`` (auto-released on exit)."""
     if sys.platform == "win32":
-        # msvcrt.locking needs a real byte range to lock; a freshly created
-        # lock file is empty, so seed one byte before the first acquire or the
-        # lock (and thus the first mutation) would fail.
-        if acquire and os.fstat(fd).st_size == 0:
-            os.write(fd, b"\0")
+        # Nothing is written through this descriptor. A byte-range lock covers
+        # byte 0 of a zero-length file, and while it is held that byte is
+        # unwritable through every other descriptor, so a write here fails with
+        # EACCES against whoever acquired first.
         os.lseek(fd, 0, os.SEEK_SET)
         msvcrt.locking(fd, msvcrt.LK_LOCK if acquire else msvcrt.LK_UNLCK, 1)
     else:

@@ -6,8 +6,10 @@ Delegates to: task_models, task_planner, task_executor, task_reporter.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -18,7 +20,14 @@ from kiro_crew import git_coord, shutdown_event
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.execution_context import (
+    ExecutionContext,
+    bind_session_execution,
+    capture_session_execution,
+    execution_from_record,
+)
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.llm_helpers import stream_and_collect_json
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -69,7 +78,11 @@ from kiro_crew.task_reporter import (  # noqa: F401  (NotifyCallback re-exported
     notify,
     save_progress,
 )
-from kiro_crew.workflow_memory import TaskSnapshotError, private_task_operation
+from kiro_crew.workflow_memory import (
+    TaskSnapshotError,
+    capture_admission_execution,
+    capture_execution,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
@@ -77,6 +90,7 @@ if TYPE_CHECKING:
     from kiro_crew.learn import LessonStore
     from kiro_crew.providers.base import LLMEvent
     from kiro_crew.session import SessionManager
+    from kiro_crew.taskq.adapters import runner as _runner_adapter
 
 from kiro_crew.learn import Lesson
 
@@ -142,6 +156,7 @@ class WorkflowRunPublisher(Protocol):
         workflow_revision: int = 0,
         derived_from_workflow_id: str = "",
         derived_from_revision: int = 0,
+        execution_context: ExecutionContext | None = None,
     ) -> str: ...
 
     async def phase(self, run_id: str, title: str) -> None: ...
@@ -237,10 +252,120 @@ def _resolve_workspace_dir(raw: str) -> str:
     return resolved
 
 
+def _read_spec_text(path: str, max_chars: int | None) -> str | None:
+    """Read and normalize spec text through the descriptor gate.
+
+    A caller may hold a *path* that passed ``hooks.validate_file_path``, but that
+    judges the NAME; re-opening the name reads whatever inode the name points at
+    by then. A hardlink alias shares its target's inode under an innocent name,
+    so every name-based check passes while the bytes belong to the target. The
+    read therefore goes through ``hooks.safe_read_file_bytes_nolink``: it opens
+    FIRST (refusing a link at the final component), ``fstat``s that one
+    descriptor and refuses ``st_nlink > 1``, a non-regular inode, and a sensitive
+    or out-of-root real path, then reads that same descriptor. ``within_root`` is
+    the spec's own directory, which also pins the opened inode on Windows where
+    ``O_NOFOLLOW`` does not exist.
+
+    ``max_chars`` asks for a bounded prefix, cut to fit. ``None`` asks for the
+    whole spec, bounded by the gate's own ``hooks.MAX_FILE_BYTES``, where a file
+    past that cap raises ``hooks.FileTooLargeError`` instead of yielding a silent
+    prefix.
+
+    Returns ``None`` for anything the gate refuses or cannot read. Every spec
+    read shares this one function, so the gate holds at all of them: a read that
+    skipped it would place the aliased target's bytes in the LLM prompt, the
+    persisted run and the review context.
+    """
+    # ``within_root`` is derived from the CANONICAL path: a caller may hand over
+    # ``~/specs/task.md`` or a path relative to the process directory, and the
+    # root has to name the same directory the descriptor lands in.
+    canonical = validate_file_path(path)
+    if canonical is None:
+        try:
+            sel().log_tool_invocation(
+                session_key="taskrunner",
+                source="taskrunner",
+                tool_name="spec_read_validate",
+                outcome="denied",
+                metadata={
+                    "raw": path,
+                    "reason": "name_validation_rejected",
+                    "bounded": max_chars is not None,
+                },
+            )
+        except Exception:
+            logger.debug("SEL audit for spec name rejection failed", exc_info=True)
+        return None
+    read_limit: int | None
+    if max_chars is None:
+        read_limit = None
+        allow_truncate = False
+    else:
+        # A UTF-8 code point is at most four bytes, so this many bytes always
+        # holds at least ``max_chars`` characters; the bound stays in characters
+        # below.
+        read_limit = 4 * max_chars
+        allow_truncate = True
+    raw = safe_read_file_bytes_nolink(
+        canonical,
+        within_root=os.path.dirname(canonical),
+        max_bytes=read_limit,
+        allow_truncate=allow_truncate,
+    )
+    if raw is None:
+        try:
+            sel().log_tool_invocation(
+                session_key="taskrunner",
+                source="taskrunner",
+                tool_name="spec_read_validate",
+                outcome="denied",
+                metadata={
+                    "raw": path,
+                    "resolved": canonical,
+                    "reason": "descriptor_gate_rejected",
+                    "bounded": max_chars is not None,
+                },
+            )
+        except Exception:
+            logger.debug("SEL audit for spec descriptor rejection failed", exc_info=True)
+        return None
+    try:
+        sel().log_tool_invocation(
+            session_key="taskrunner",
+            source="taskrunner",
+            tool_name="spec_read_validate",
+            outcome="allowed",
+            metadata={"raw": path, "resolved": canonical, "bounded": max_chars is not None},
+        )
+    except Exception:
+        logger.debug("SEL audit for spec read acceptance failed", exc_info=True)
+    # The decode is strict, as a text-mode read is: invalid UTF-8 raises, and a
+    # bounded caller maps that to "". A truncating read returns at most
+    # ``read_limit`` bytes without saying whether it cut, so a full-length result
+    # is the one case that may end mid code point through no fault of the file;
+    # there the tail is held back (``final=False``), which loses nothing — every
+    # complete character before a cut at ``read_limit`` bytes lies at or past
+    # index ``max_chars`` and is dropped by the bound below. Any other result is
+    # the whole file and is finalized, so an incomplete sequence at EOF is the
+    # malformed spec it is, not a silently shorter one.
+    cut_possible = allow_truncate and len(raw) == read_limit
+    text = codecs.getincrementaldecoder("utf-8")().decode(raw, final=not cut_possible)
+    # Universal newlines, as a text-mode read normalizes them.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if max_chars is not None:
+        text = text[:max_chars]
+    return text.strip()
+
+
 def _read_spec_prefix(path: str, max_chars: int) -> str:
-    """Read and normalize a bounded spec prefix on a worker thread."""
-    with open(path, encoding="utf-8") as spec_file:
-        return spec_file.read(max_chars).strip()
+    """Read a bounded spec prefix on a worker thread.
+
+    Returns ``""`` for anything the gate refuses or cannot read — the same empty
+    prefix the caller substitutes for an unreadable spec, so a refusal tells a
+    caller nothing about whether a path is protected.
+    """
+    text = _read_spec_text(path, max_chars)
+    return "" if text is None else text
 
 
 def _decompose_yaml_with_audit(
@@ -359,7 +484,6 @@ class TaskRunner:
         )
         self._ctor_max_parallel_steps = max_parallel_steps
         self._runs: dict[str, Project] = {}
-        self._unavailable_run_refs: list[dict] = []
         # Serialize registry writes and enforce monotonic ordering. Snapshots
         # are always built on the event-loop thread (see _serialize_runs), so
         # an older snapshot whose offloaded write lands late must not clobber a
@@ -389,7 +513,259 @@ class TaskRunner:
         self._workflow_service = workflow_service
         self._workflow_initializing = False
         self._agent: str = ""
+        # Durable task queue (``taskq``): attached by the gateway once the
+        # SubagentManager's store is open. None keeps the legacy behaviour --
+        # a fixed run cap and no rows. See ``attach_task_admission``.
+        self._task_admission: _runner_adapter.RunnerAdmission | None = None
+        self._run_handles: dict[str, _runner_adapter.Admitted] = {}
+        self._adopt_inflight: asyncio.Task[Any] | None = None
         self._load_runs()
+
+    # ── Durable task queue (taskq) ──
+
+    def attach_task_admission(self, admission: "_runner_adapter.RunnerAdmission | None") -> None:
+        """Route every step through the shared task queue and its lane.
+
+        With an admission attached: a run is a ``taskrunner:<id>`` row, each
+        step a child row admitted through ``RunnerAdmission.admit`` (deferred
+        under memory pressure, bounded by the effective cap, claimed under a
+        lease), and the run cap ``_MAX_CONCURRENT_TASKS`` does not refuse --
+        excess steps queue in the lane instead. Rows a dead incarnation left
+        behind are adopted on the running loop (``adopt_task_rows``).
+
+        The sweep is armed only when the admission already HAS a store, as the
+        workflow service's own attach does: the store getter is live, so a task
+        armed while the store was still opening would otherwise adopt on the
+        loop pass after it lands, concurrently with the sweep the gateway arms
+        at that boundary -- two sweeps over one set of rows.
+        """
+        self._task_admission = admission
+        if admission is None or admission.store is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._adopt_inflight = loop.create_task(self.adopt_task_rows())
+
+    @property
+    def task_admission(self) -> "_runner_adapter.RunnerAdmission | None":
+        return self._task_admission
+
+    async def adopt_task_rows(self) -> "_runner_adapter.AdoptReport | None":
+        """Resume the runs whose rows the boot reconciler left ``awaiting_adapter``.
+
+        A run row that is safe to retry (``params.safe_retry`` -- the run is
+        git-coordinated, so its checkpoint is the last committed step) is
+        resumed through ``execute_plan``, which re-runs only the steps that
+        did not PASS. One that is not safe stays ``paused`` for a human and
+        its row is settled ``unknown_side_effect``. A row that was only ever
+        ACCEPTED (``queued``: the crash landed while it waited for a lane slot)
+        is settled ``cancelled`` -- a resume is a NEW row, so nothing is lost,
+        and no dispatcher exists for this kind to pick the old one up. One sweep
+        at a time: a call that overlaps the sweep ``attach_task_admission``
+        started joins it instead of adopting the same rows twice.
+        """
+        inflight = self._adopt_inflight
+        if inflight is not None and not inflight.done() and inflight is not asyncio.current_task():
+            return await inflight
+        admission = self._task_admission
+        store = admission.store if admission is not None else None
+        if store is None:
+            return None
+        from kiro_crew.taskq import model as _taskq_model
+        from kiro_crew.taskq.adapters import runner as _runner_adapter
+
+        resumable: list[str] = []
+
+        def _resume(rec: _taskq_model.TaskRecord) -> bool:
+            run_id = str(rec.params.get("task_id") or "")
+            if not run_id:
+                run_id = rec.id[len(_runner_adapter.TASKRUNNER_ID_PREFIX) :]
+            run = self._runs.get(run_id)
+            if run is None or run.status not in ("paused", "planned"):
+                return False
+            if (
+                run.execution_context is not None
+                and run.execution_context.memory_mode != "persistent"
+            ):
+                return False
+            resumable.append(run_id)
+            return True
+
+        report = await asyncio.to_thread(
+            _runner_adapter.adopt_orphaned_rows,
+            store,
+            kinds=(_taskq_model.KIND_TASKRUNNER_STEP,),
+            resume=_resume,
+        )
+        for run_id in resumable:
+            try:
+                await self.execute_plan(run_id)
+            except ValueError as exc:
+                logger.warning("taskq adopt: could not resume run %s: %s", run_id, exc)
+        for rec_id in report.unknown_side_effect:
+            if ":task" in rec_id:
+                continue
+            run = self._runs.get(rec_id[len(_runner_adapter.TASKRUNNER_ID_PREFIX) :])
+            if run is not None and run.status == "paused":
+                await self._notify(
+                    "\u23f8\ufe0f Run not auto-resumed",
+                    "The interrupted step may have had a side effect (no git worktree "
+                    "to checkpoint against). Review the workspace and resume manually.",
+                    run=run,
+                )
+        return report
+
+    def _taskq_lane_inputs(self, run: Project) -> tuple[str, str]:
+        return self._run_session_keys.get(run.task_id, ""), str(run.source or "")
+
+    async def _taskq_begin_run(self, run: Project) -> None:
+        """Accept + claim the run's container row (no lane slot; steps take those)."""
+        if run.execution_context is not None and run.execution_context.memory_mode != "persistent":
+            return
+        admission = self._task_admission
+        if admission is None or admission.store is None:
+            return
+        from kiro_crew.taskq import model as _taskq_model
+        from kiro_crew.taskq.adapters import runner as _runner_adapter
+
+        session_key, source = self._taskq_lane_inputs(run)
+        row_id = _runner_adapter.run_task_id(run.task_id)
+        try:
+            rec = await admission.accept_async(
+                kind=_taskq_model.KIND_TASKRUNNER_STEP,
+                task_id=row_id,
+                session_key=session_key,
+                source=source,
+                params={
+                    "task_id": run.task_id,
+                    "name": run.name,
+                    "spec_path": run.spec_path,
+                    "steps": len(run.tasks),
+                    _runner_adapter.PARAM_SAFE_RETRY: bool(run.branch_name),
+                },
+                workspace=run.work_dir or None,
+                scope_ref={"auto_approve": False, "agent": self._agent},
+                side_effect_class=_taskq_model.SIDE_EFFECT_UNKNOWN,
+            )
+        except _runner_adapter.RunnerAdmissionRefused as exc:
+            logger.warning("taskq: run row for %s not accepted: %s", run.task_id, exc)
+            return
+        if rec is None:
+            return
+        handle = await admission.claim_only_async(
+            rec.id, kind=rec.kind, lane=_runner_adapter.lane_for(session_key, source)
+        )
+        if handle is None:
+            return
+        if not await handle.running_async({"phase": "executing", "steps": len(run.tasks)}):
+            # THE ROW'S STATE DECIDES, not the refusal. A refused mark on this
+            # container row is not the sibling case that fails the unit
+            # (``_execute_single_task`` below, ``workflows.agent_pool``): a STEP row
+            # holds a lane slot and must reach a WAITING state, which ``starting``
+            # cannot, while this row holds no slot, enters no wait, and settles from
+            # ``starting`` because ``TRANSITIONS[STARTING]`` carries every active
+            # terminal -- so an uncommitted mark under a live row costs the run its
+            # progress marker and nothing else. What the refusal CAN mean is that
+            # another incarnation's reconcile already gave the row an outcome, and a
+            # plan must never execute under a row that has one, so the state is read
+            # and only a terminal one ends the start.
+            state = await self._taskq_row_state(rec.id)
+            if state is not None and state in _taskq_model.TERMINAL:
+                raise _runner_adapter.RunnerTaskCancelled(
+                    f"{rec.id} is {state}; the run did not start"
+                )
+            logger.warning(
+                "taskq: run row %s did not take the running mark (state=%s); "
+                "the run proceeds and the row settles from %s",
+                rec.id,
+                state,
+                _taskq_model.STARTING,
+            )
+        self._run_handles[run.task_id] = handle
+
+    async def _taskq_row_state(self, row_id: str) -> str | None:
+        """The row's state read on the store's writer thread; None when unreadable.
+
+        Unreadable and absent answer the same, because both leave the caller with
+        no evidence that the row ended: a read that could not be taken must never
+        be the reason an accepted run is refused.
+        """
+        admission = self._task_admission
+        store = admission.store if admission is not None else None
+        if store is None:
+            return None
+        from kiro_crew.taskq.store import TaskStoreUnavailable
+
+        try:
+            state = await store.run(store.state_of, row_id)
+        except TaskStoreUnavailable:
+            logger.debug("taskq: state read for %s failed", row_id, exc_info=True)
+            return None
+        return str(state) if isinstance(state, str) else None
+
+    async def _taskq_end_run(self, run: Project) -> None:
+        handle = self._run_handles.pop(run.task_id, None)
+        if handle is None:
+            return
+        if run.status == "completed":
+            ref = str(Path(run.work_dir) / PROGRESS_FILE) if run.work_dir else None
+            await handle.done_async(result_ref=ref)
+        elif run.status == "failed":
+            await handle.fail_async(run.error or "run failed")
+        else:
+            # ``paused`` / ``cancelled`` are operator decisions: this execution
+            # is over and a later resume is a NEW row. Never left ``recovering``,
+            # or the adopter would restart what the operator stopped.
+            await handle.cancel_async(f"run {run.status}")
+
+    async def _taskq_admit_step(
+        self, run: Project, task: Task
+    ) -> "_runner_adapter.Admitted | None":
+        """Persist the step as a child row and wait for its lane slot."""
+        admission = self._task_admission
+        if admission is None:
+            return None
+        if run.execution_context is not None and run.execution_context.memory_mode != "persistent":
+            admission = admission.in_memory()
+        from kiro_crew.taskq import model as _taskq_model
+        from kiro_crew.taskq.adapters import runner as _runner_adapter
+
+        session_key, source = self._taskq_lane_inputs(run)
+        lane = _runner_adapter.lane_for(session_key, source)
+        parent = self._run_handles.get(run.task_id)
+        row_id = _runner_adapter.step_task_id(run.task_id, task.index)
+        if admission.store is not None:
+            try:
+                rec = await admission.accept_async(
+                    kind=_taskq_model.KIND_TASKRUNNER_STEP,
+                    task_id=row_id,
+                    session_key=session_key,
+                    source=source,
+                    params={
+                        "task_id": run.task_id,
+                        "index": task.index,
+                        "title": task.title[:200],
+                        _runner_adapter.PARAM_SAFE_RETRY: bool(run.branch_name),
+                    },
+                    workspace=run.work_dir or None,
+                    scope_ref={"auto_approve": bool(run.auto_approve), "agent": self._agent},
+                    side_effect_class=_taskq_model.SIDE_EFFECT_UNKNOWN,
+                    parent_id=parent.task_id if parent is not None else None,
+                )
+            except _runner_adapter.RunnerAdmissionRefused:
+                # Nothing accepted: the step fails closed rather than running
+                # off the record. ONE writer records the verdict on the task --
+                # ``_execute_single_task``'s refusal arm, which catches an admit
+                # refusal by the same name -- so a message written here would
+                # only be the one it overwrites.
+                raise
+            if rec is not None:
+                row_id = rec.id
+        return await admission.admit(
+            row_id, kind=_taskq_model.KIND_TASKRUNNER_STEP, lane=lane, session_key=session_key
+        )
 
     @staticmethod
     def _clamp_parallel_steps(requested: int | None, cfg: KiroCrewConfig | None) -> int:
@@ -503,6 +879,22 @@ class TaskRunner:
         self._workflow_service = service
         self._workflow_initializing = False
 
+    def _capture_execution(self, session_key: str = "") -> ExecutionContext:
+        execution = capture_execution(session_key)
+        modes = getattr(self._ctx, "_session_memory_modes", None)
+        if isinstance(modes, dict):
+            execution = execution.with_mode(modes.get(session_key, "persistent"))
+        return execution
+
+    async def _bind_run_execution(self, run: Project, session_key: str) -> None:
+        if run.execution_context is None:
+            run.execution_context = self._capture_execution()
+        execution = run.execution_context
+        await asyncio.to_thread(bind_session_execution, session_key, execution)
+        modes = getattr(self._ctx, "_session_memory_modes", None)
+        if isinstance(modes, dict):
+            modes[session_key] = execution.memory_mode
+
     async def _workflow_begin(
         self, run: Project, *, source: str = "", persist_link: bool = False
     ) -> None:
@@ -523,6 +915,7 @@ class TaskRunner:
                 workflow_revision=run.workflow_revision,
                 derived_from_workflow_id=run.derived_from_workflow_id,
                 derived_from_revision=run.derived_from_revision,
+                execution_context=run.execution_context,
             )
             if persist_link:
                 persist_task = asyncio.create_task(self._apersist_runs())
@@ -672,7 +1065,6 @@ class TaskRunner:
 
     # ── Plan Mode ──
 
-    @private_task_operation
     async def plan(
         self,
         input_text: str = "",
@@ -686,14 +1078,23 @@ class TaskRunner:
         workflow_revision: int = 0,
         workflow_source: str = "",
         session_key: str = "",
+        execution_context: ExecutionContext | None = None,
     ) -> Project:
+        execution = await capture_admission_execution(
+            self._ctx,
+            session_key,
+            execution_context=execution_context,
+            capture_fn=self._capture_execution,
+        )
         self._require_workflow_ready()
         self._agent = agent
         if source == "file":
             p = Path(spec_path)
             if not p.exists():
                 raise FileNotFoundError(f"Spec not found: {spec_path}")
-            content = p.read_text(encoding="utf-8").strip()
+            content = await asyncio.to_thread(_read_spec_text, str(p), None)
+            if content is None:
+                raise PermissionError(f"Spec file refused by the file gate: {spec_path}")
             if not content:
                 raise ValueError("Spec file is empty")
             decompose_input = spec_content = original_input = content
@@ -751,6 +1152,7 @@ class TaskRunner:
                 workflow_id=workflow_id,
                 workflow_slug=workflow_slug,
                 workflow_revision=workflow_revision,
+                execution_context=execution,
             )
         except BaseException:
             if created_task_dir:
@@ -761,11 +1163,7 @@ class TaskRunner:
             self._start_ids_in_flight.discard(task_id)
             raise
         try:
-            from kiro_crew.context import inherit_session_memory
-
-            await inherit_session_memory(
-                self._ctx, session_key, f"{_SESSION_PREFIX}:{task_id}:runtime"
-            )
+            await self._bind_run_execution(run, f"{_SESSION_PREFIX}:{task_id}:runtime")
             if source == "yaml":
                 run.tasks = _decompose_yaml_with_audit(
                     decompose_input,
@@ -850,6 +1248,7 @@ class TaskRunner:
         input_text: str = "",
         author: str = "",
         session_key: str = "",
+        execution_context: ExecutionContext | None = None,
     ) -> dict[str, str]:
         """Execute one saved task-plan revision through the existing TaskRunner."""
         del author  # reserved for a future TaskRunner attribution surface
@@ -862,6 +1261,7 @@ class TaskRunner:
             workflow_revision=int(definition.get("revision") or 0),
             workflow_source=str(definition.get("source", "")),
             session_key=session_key,
+            execution_context=execution_context,
         )
         run.original_input = input_text
         await self._apersist_runs()
@@ -958,7 +1358,6 @@ class TaskRunner:
             "force_approval": task.force_approval,
         }
 
-    @private_task_operation
     async def execute_plan(
         self,
         task_id: str,
@@ -998,9 +1397,11 @@ class TaskRunner:
             if _override and run.status == "planned":
                 run.work_dir = _override
 
-            # Guard: limit concurrent running tasks — check BEFORE mutating state
+            # Guard: limit concurrent running tasks — check BEFORE mutating state.
+            # With the task queue attached the cap is the lane's: excess steps
+            # queue instead of the run being refused.
             active = sum(1 for t in self._tasks.values() if not t.done())
-            if active >= _MAX_CONCURRENT_TASKS:
+            if self._task_admission is None and active >= _MAX_CONCURRENT_TASKS:
                 raise ValueError(
                     f"Too many concurrent tasks ({active}/{_MAX_CONCURRENT_TASKS}). "
                     "Cancel or wait for a running task to finish."
@@ -1069,6 +1470,7 @@ class TaskRunner:
                     f"{len(run.tasks)} task(s):\n{task_list}",
                     run=run,
                 )
+                await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)
                 if run.status == "running":
@@ -1101,6 +1503,7 @@ class TaskRunner:
                 save_progress(run)
                 try:
                     await self._apersist_runs()
+                    await self._taskq_end_run(run)
                     if run.branch_name and not workspace_lost:
                         try:
                             await git_coord.finalize(run)
@@ -1137,12 +1540,23 @@ class TaskRunner:
         source: str = "",
         workspace_dir: str = "",
         auto_approve: bool = False,
+        input_content: str | None = None,
     ) -> Project:
         self._require_workflow_ready()
         spec_path = Path(spec_path)
-        if not spec_path.exists():
-            raise FileNotFoundError(f"Spec not found: {spec_path}")
-        spec_content = spec_path.read_text(encoding="utf-8").strip()
+        if input_content is not None:
+            spec_content = input_content.strip()
+        else:
+            if not spec_path.exists():
+                raise FileNotFoundError(f"Spec not found: {spec_path}")
+            # The whole file goes into the LLM prompt, the persisted run and the
+            # review context, so it is read through the same descriptor gate as
+            # the planning prefix. A refusal fails the run: proceeding on a
+            # refused spec is what puts an aliased sensitive file's bytes there.
+            gated = await asyncio.to_thread(_read_spec_text, str(spec_path), None)
+            if gated is None:
+                raise PermissionError(f"Spec file refused by the file gate: {spec_path}")
+            spec_content = gated
         if not spec_content:
             raise ValueError("Spec file is empty")
         if not task_id:
@@ -1166,6 +1580,7 @@ class TaskRunner:
             workflow_revision=existing.workflow_revision if existing else 0,
             derived_from_workflow_id=existing.derived_from_workflow_id if existing else "",
             derived_from_revision=existing.derived_from_revision if existing else 0,
+            execution_context=existing.execution_context if existing else self._capture_execution(),
         )
         run.task_id = task_id
         run.name = name or auto_name(spec_content, str(spec_path))
@@ -1242,6 +1657,7 @@ class TaskRunner:
             await self._notify(
                 "\U0001f4cb Plan ready", f"{len(run.tasks)} task(s):\n{task_list}", run=run
             )
+            await self._taskq_begin_run(run)
             watchdog_task = asyncio.create_task(self._watchdog_loop(run))
             await self._execute_tasks(run, history_key)
             if run.status == "running":
@@ -1269,6 +1685,7 @@ class TaskRunner:
             save_progress(run)
             try:
                 await self._apersist_runs()
+                await self._taskq_end_run(run)
                 if run.branch_name:
                     try:
                         await git_coord.finalize(run)
@@ -1410,33 +1827,108 @@ class TaskRunner:
         session_key: str = "",
     ) -> bool:
         service = self._workflow_service
+        # Admission FIRST: the step holds no session and no slot until the
+        # lane grants one, so a queued step costs a row and a future, nothing
+        # else. A cancel that lands while it waits is settled by the ADMISSION
+        # (``RunnerAdmission.admit``), not here: ``CancelledError`` is a
+        # BaseException and passes this arm, which catches only the row this
+        # incarnation finds already ended.
+        #
+        # A REFUSED admission is a FAILED STEP, in band. Both refusals reach
+        # here -- the store would not accept or claim the row (a fenced
+        # ``starting`` write, an outage, a row another owner holds) and the
+        # lane is held end to end by this step's own ancestors
+        # (``RunnerLaneSelfBlocked``, a ``RunnerAdmissionRefused`` subclass) --
+        # and raising out of one step would unwind the whole accepted RUN past
+        # ``_try_replan``, which is the runner's answer to a step that did not
+        # land. The parallel branch already gets that answer, because
+        # ``gather(return_exceptions=True)`` turns the same raise into a failed
+        # step; the sequential branch has no such net, so the verdict is
+        # returned here and both branches route through one path.
+        if self._task_admission is None:
+            handle = None
+        else:
+            from kiro_crew.taskq.adapters import runner as _runner_adapter
+
+            try:
+                handle = await self._taskq_admit_step(run, task)
+            except _runner_adapter.RunnerTaskCancelled as exc:
+                task.status = TaskStatus.FAILED
+                task.error = f"step cancelled before it started: {exc}"
+                task.finished_at = time.time()
+                return False
+            except _runner_adapter.RunnerAdmissionRefused as exc:
+                task.status = TaskStatus.FAILED
+                task.error = f"the durable queue refused the step: {exc}"
+                task.finished_at = time.time()
+                return False
+        if handle is not None and not await handle.running_async(
+            {"index": task.index, "title": task.title[:120]}
+        ):
+            # PERSIST BEFORE PUBLISH: ``admit`` committed ``starting`` under this
+            # generation one statement ago, so a refused ``starting -> running``
+            # is a newer owner or a store outage, never a forbidden edge. The
+            # step body does not run under it: a row left ``starting`` reaches no
+            # WAITING state, so the first dependency or input wait the step needs
+            # could not persist, and a fenced row means another incarnation owns
+            # the work. The terminal write below is fenced the same way -- it
+            # commits for the outage and is refused for the newer owner, which is
+            # the row that owner already ended.
+            task.status = TaskStatus.FAILED
+            task.error = "the durable row did not take the running mark; the step did not run"
+            task.finished_at = time.time()
+            await handle.fail_async(task.error)
+            return False
         if service is not None and run.workflow_run_id:
             try:
                 await service.step(run.workflow_run_id, task.index, task.title, status="running")
             except Exception:
                 logger.debug("TaskRunner workflow step start publication failed", exc_info=True)
-        success = await execute_single_task(
-            run=run,
-            task=task,
-            history_key=history_key,
-            sessions=self._sessions,
-            ctx=self._ctx,
-            agent=self._agent,
-            on_notify=self._notify,
-            on_approval=self._on_approval,
-            on_tool_approval=self._on_tool_approval,
-            auto_test=self._auto_test,
-            test_cmd=self._test_cmd,
-            # Run-scoped workspace wins over the runner default: a run whose
-            # workspace_dir selected project B must EXECUTE against B, not the
-            # runner's startup dir A (planning already used run.work_dir —
-            # executing elsewhere edits/tests the wrong project). Mirrors
-            # _build_task_prompt's resolution above.
-            work_dir=Path(run.work_dir) if run.work_dir else self._work_dir,
-            log_task_fn=self._log_task,
-            extract_lesson_fn=self._extract_lesson,
-            session_key=session_key,
-        )
+        success = False
+        try:
+            success = await execute_single_task(
+                run=run,
+                task=task,
+                history_key=history_key,
+                sessions=self._sessions,
+                ctx=self._ctx,
+                agent=self._agent,
+                on_notify=self._notify,
+                on_approval=self._on_approval,
+                on_tool_approval=self._on_tool_approval,
+                auto_test=self._auto_test,
+                test_cmd=self._test_cmd,
+                # Run-scoped workspace wins over the runner default: a run whose
+                # workspace_dir selected project B must EXECUTE against B, not the
+                # runner's startup dir A (planning already used run.work_dir —
+                # executing elsewhere edits/tests the wrong project). Mirrors
+                # _build_task_prompt's resolution above.
+                work_dir=Path(run.work_dir) if run.work_dir else self._work_dir,
+                log_task_fn=self._log_task,
+                extract_lesson_fn=self._extract_lesson,
+                session_key=session_key,
+                **({"taskq": handle} if handle is not None else {}),
+            )
+        except asyncio.CancelledError:
+            # The SYNCHRONOUS write on both exceptional arms, deliberately: an
+            # ``await`` here can be interrupted before the terminal write is
+            # submitted, and a dropped one leaves the step row active for the
+            # next boot's reconciler to re-dispatch.
+            if handle is not None:
+                handle.cancel("step cancelled")
+            raise
+        except BaseException as exc:
+            if handle is not None:
+                handle.fail(f"{type(exc).__name__}: {exc}"[:500])
+            raise
+        else:
+            if handle is not None:
+                if success:
+                    await handle.done_async()
+                elif run.status == "paused":
+                    await handle.cancel_async(task.error or "run paused")
+                else:
+                    await handle.fail_async(task.error or "step failed")
         if service is not None and run.workflow_run_id:
             try:
                 await service.step(
@@ -1541,6 +2033,8 @@ class TaskRunner:
         auto_approve: bool = False,
         *,
         session_key: str = "",
+        execution_context: ExecutionContext | None = None,
+        input_content: str | None = None,
     ) -> str:
         """Plan and execute *spec_path* in the background; returns the task id.
 
@@ -1550,6 +2044,12 @@ class TaskRunner:
         approval request, a denial) reach the surface the operator started the
         task on rather than one hard-wired destination.
         """
+        execution = await capture_admission_execution(
+            self._ctx,
+            session_key,
+            execution_context=execution_context,
+            capture_fn=self._capture_execution,
+        )
         if self._admission_closed():
             raise ValueError("gateway admission is closed")
         self._require_workflow_ready()
@@ -1561,7 +2061,9 @@ class TaskRunner:
             from kiro_crew.hooks import validate_file_path
 
             safe_sp = validate_file_path(str(spec_path))
-            if safe_sp:
+            if input_content is not None:
+                early_content = input_content[:4000]
+            elif safe_sp:
                 early_content = await asyncio.to_thread(
                     _read_spec_prefix,
                     safe_sp,
@@ -1582,7 +2084,7 @@ class TaskRunner:
             if self._admission_closed():
                 raise ValueError("gateway admission is closed")
             active = sum(1 for task in self._tasks.values() if not task.done())
-            if active >= _MAX_CONCURRENT_TASKS:
+            if self._task_admission is None and active >= _MAX_CONCURRENT_TASKS:
                 raise ValueError(
                     f"Too many concurrent tasks ({active}/{_MAX_CONCURRENT_TASKS}). "
                     "Cancel or wait for a running task to finish."
@@ -1620,11 +2122,6 @@ class TaskRunner:
             self._start_ids_in_flight.add(task_id)
 
             try:
-                from kiro_crew.context import inherit_session_memory
-
-                await inherit_session_memory(
-                    self._ctx, session_key, f"{_SESSION_PREFIX}:{task_id}:runtime"
-                )
                 self._runs[task_id] = Project(
                     spec_path=str(spec_path),
                     spec_content=early_content,
@@ -1634,6 +2131,10 @@ class TaskRunner:
                     started_at=time.time(),
                     source=source,
                     auto_approve=bool(auto_approve),
+                    execution_context=execution,
+                )
+                await self._bind_run_execution(
+                    self._runs[task_id], f"{_SESSION_PREFIX}:{task_id}:runtime"
                 )
                 if session_key:
                     self._run_session_keys[task_id] = session_key
@@ -1658,6 +2159,11 @@ class TaskRunner:
                             source=source,
                             workspace_dir=workspace_dir,
                             auto_approve=auto_approve,
+                            **(
+                                {"input_content": input_content}
+                                if input_content is not None
+                                else {}
+                            ),
                         )
                     except Exception as exc:
                         logger.exception("start_background task %s failed", task_id)
@@ -1734,7 +2240,9 @@ class TaskRunner:
             except Exception:
                 pass
             try:
-                await self._sessions.reset(key)
+                # Cancel cleanup: the run is over, so each step conversation ends and
+                # takes its sub-agent runs with it.
+                await self._sessions.reset(key, ends_conversation=True)
             except (asyncio.CancelledError, Exception) as exc:
                 logger.warning("reset failed for session %s: %s", key, exc)
                 failed_keys.append(key)
@@ -1897,7 +2405,6 @@ class TaskRunner:
         )
         return False
 
-    @private_task_operation
     async def retry_from_task(self, task_id: str, from_task: int, agent: str = "") -> str:
         self._require_workflow_ready()
         run = self._resolve_task(task_id)
@@ -1956,8 +2463,7 @@ class TaskRunner:
             except BaseException:
                 # Persistence drains its worker even on repeated cancellation.
                 # Restore in place: callers may retain the Project/Task objects.
-                # A failed public projection can follow a hidden commit; this
-                # restores live state, not disk, until a later snapshot succeeds.
+                # Restore live state until a later snapshot succeeds.
                 run.status, run.error, run.finished_at, run.started_at, run.last_task_time = (
                     previous_run
                 )
@@ -1981,6 +2487,7 @@ class TaskRunner:
                 if not await self._ensure_resumable_workspace(run, "retry"):
                     return
                 await self._notify("\U0001f504 Retrying", f"From task {from_task}", run=run)
+                await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)
                 if run.status == "running":
@@ -2010,6 +2517,7 @@ class TaskRunner:
                 save_progress(run)
                 try:
                     await self._apersist_runs()
+                    await self._taskq_end_run(run)
                     await self._workflow_finalize(run)
                 finally:
                     if watchdog_task and not watchdog_task.done():
@@ -2053,18 +2561,21 @@ class TaskRunner:
     # ── History Integration ──
 
     async def _bound_history_key(self, run: Project, legacy_key: str) -> str:
-        from kiro_crew.context import inherit_session_memory
-        from kiro_crew.member_memory_auth import read_private_session_store
-
         runtime_key = f"{_SESSION_PREFIX}:{run.task_id}:runtime"
-        if await asyncio.to_thread(read_private_session_store, runtime_key) is None:
-            return legacy_key
-        history_key = f"taskrunner:run:{run.task_id}"
-        await inherit_session_memory(self._ctx, runtime_key, history_key)
+        await self._bind_run_execution(run, runtime_key)
+        execution = run.execution_context
+        history_key = (
+            f"taskrunner:run:{run.task_id}"
+            if execution and (execution.member_id or execution.memory_mode != "persistent")
+            else legacy_key
+        )
+        await self._bind_run_execution(run, history_key)
         return history_key
 
     def _log_task(self, history_key: str, run: Project, task: Task) -> None:
-        if not self._conversation_log:
+        if not self._conversation_log or (
+            run.execution_context and run.execution_context.memory_mode != "persistent"
+        ):
             return
         spec_name = Path(run.spec_path).name if run.spec_path else run.task_id
         user_msg = f"[Task: {spec_name}] Task {task.index}: {task.title}"
@@ -2106,35 +2617,32 @@ class TaskRunner:
     # ── Learn from Failures ──
 
     async def _extract_lesson(self, task: Task, run: Project | None = None) -> None:
+        # Global persistence switch (memory.persistence_enabled):
+        # skip BEFORE the LLM call, so a disabled system spends no turn
+        # distilling a lesson it is not allowed to store. Placed ahead of store
+        # resolution so member-private lesson stores are covered too.
+        if not KiroCrewConfig.load().memory.persistence_enabled:
+            return
         try:
-            from kiro_crew.member_memory_auth import read_private_session_store
             from kiro_crew.memory_stores import UnknownMemoryStore
 
+            execution = run.execution_context if run else self._capture_execution()
+            if execution is None:
+                execution = self._capture_execution()
+            if execution.memory_mode != "persistent":
+                return
             runtime_key = f"{_SESSION_PREFIX}:{run.task_id}:runtime" if run else ""
-            mode_resolver = (
-                getattr(self._ctx, "memory_mode_for_session", None)
-                if isinstance(getattr(self._ctx, "_session_memory_modes", None), dict)
-                else None
-            )
-            if runtime_key and mode_resolver is not None:
-                if await mode_resolver(runtime_key) != "persistent":
-                    return
-            private_store = (
-                await asyncio.to_thread(read_private_session_store, runtime_key)
-                if runtime_key
-                else None
-            )
+            private_store = execution.store.legacy_name if execution.member_id else None
             lesson_store = self._lesson_store
             if not private_store and not lesson_store:
                 return
             private_vectors = None
             if private_store:
-                from kiro_crew.context import inherit_session_memory
-
                 context = self._ctx
                 if context is None:
                     raise UnknownMemoryStore("The task's private lesson context is unavailable")
-                await inherit_session_memory(context, runtime_key, runtime_key)
+                if run is not None:
+                    await self._bind_run_execution(run, runtime_key)
                 private_vectors = await context.ensure_store(private_store)
             prompt = (
                 "A task failed after multiple attempts.\n\n"
@@ -2334,9 +2842,11 @@ class TaskRunner:
         or capture a torn snapshot, so persistence always snapshots here first
         and offloads only the byte-level write.
         """
-        data = list(self._unavailable_run_refs)
+        data: list[dict] = []
         for run in self._runs.values():
-            if run.source == "cron":
+            if run.source == "cron" or (
+                run.execution_context and run.execution_context.memory_mode != "persistent"
+            ):
                 continue
             if run.status in (
                 "planning",
@@ -2352,6 +2862,11 @@ class TaskRunner:
                 data.append(
                     {
                         "task_id": run.task_id,
+                        **(
+                            {"execution_context": run.execution_context.to_record()}
+                            if run.execution_context
+                            else {}
+                        ),
                         "name": run.name,
                         "spec_path": run.spec_path,
                         "status": run.status,
@@ -2485,7 +3000,7 @@ class TaskRunner:
             from kiro_crew.workflow_memory import read_task_registry
 
             try:
-                raw = read_task_registry(path, strict=True)
+                raw = read_task_registry(path)
             except TaskSnapshotError:
                 self._snapshot_recovery_incomplete = True
                 logger.error("Task snapshot recovery incomplete; writes require a restart")
@@ -2501,6 +3016,7 @@ class TaskRunner:
             # and potentially the gateway — from starting. Log loudly and
             # start with an empty in-memory registry without touching the file
             # on disk (so a later, successful read can still recover it).
+            self._snapshot_recovery_incomplete = True
             logger.error(
                 "Failed to read runs registry %s; starting with an empty "
                 "registry (file left untouched)",
@@ -2530,25 +3046,39 @@ class TaskRunner:
         try:
             from kiro_crew.workflow_memory import read_task_snapshot
 
-            private_task_ids: set[str] = set()
-            items = json.loads(
-                read_task_snapshot(
-                    path,
-                    public_payload=raw,
-                    preserve_unavailable=True,
-                    private_task_ids=private_task_ids,
-                )
-            )
-            self._unavailable_run_refs = [
-                item for item in items if item.get("private_payload") is True
-            ]
+            items = json.loads(read_task_snapshot(path, public_payload=raw))
         except Exception as exc:
-            logger.error("Failed to hydrate task snapshot (%s)", type(exc).__name__)
+            self._snapshot_recovery_incomplete = True
+            logger.error("Failed to read task snapshot (%s)", type(exc).__name__)
             return
         for item in items:
-            if item.get("private_payload") is True:
-                continue
             try:
+                execution_context = execution_from_record(item, required=False)
+                if execution_context is None and any(
+                    key in item for key in ("member_id", "memory_store", "memory_mode")
+                ):
+                    # Legacy task snapshots may predate canonical execution
+                    # records. Recover named V1 routing from this run's own
+                    # runtime metadata, never from the current gateway session
+                    # (which would silently select Global after a restart).
+                    task_id = item.get("task_id")
+                    if not isinstance(task_id, str) or not task_id:
+                        raise TaskSnapshotError("Task run has no stable identity")
+                    runtime_key = f"{_SESSION_PREFIX}:{task_id}:runtime"
+                    from kiro_crew.history import ConversationLog
+
+                    metadata, readable = ConversationLog().get_metadata_status(runtime_key)
+                    if not readable or not isinstance(metadata, dict):
+                        raise TaskSnapshotError(
+                            "Task run execution identity is unreadable; Global was not used"
+                        )
+                    if not metadata or not any(
+                        key in metadata for key in ("execution_context", "memory_store")
+                    ):
+                        raise TaskSnapshotError(
+                            "Task run execution identity is unavailable; Global was not used"
+                        )
+                    execution_context = capture_session_execution(runtime_key)
                 tasks = [
                     Task(
                         index=t["index"],
@@ -2568,6 +3098,7 @@ class TaskRunner:
                 run = Project(
                     spec_path=item["spec_path"],
                     spec_content=item.get("spec_content", ""),
+                    execution_context=execution_context,
                     task_id=item["task_id"],
                     name=item.get("name", ""),
                     status=item["status"],
@@ -2648,11 +3179,7 @@ class TaskRunner:
                     )
                 self._runs[run.task_id] = run
             except Exception as exc:
-                # Hydration can succeed even when construction or crash recovery
-                # cannot. Keep private payloads out of both V1 and diagnostics.
-                task_id = item.get("task_id")
-                if isinstance(task_id, str) and task_id in private_task_ids:
-                    self._unavailable_run_refs.append({"task_id": task_id, "private_payload": True})
+                self._snapshot_recovery_incomplete = True
                 logger.error("Failed to deserialize a task snapshot row (%s)", type(exc).__name__)
 
     def _save_progress(self, run: Project) -> None:

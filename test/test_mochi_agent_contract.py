@@ -215,3 +215,103 @@ class TestSpawnPromptsDoNotOverclaim:
         from kiro_crew.apps.builtins.mochi.queue_poller import _BG_PREAMBLE
 
         assert "get_messages" not in _BG_PREAMBLE
+
+
+def _watch_skill() -> str:
+    return _text(SKILLS / "mochi-watch" / "SKILL.md")
+
+
+def _url_row() -> str:
+    """The `url` row of the "How to check" table."""
+    for line in _watch_skill().splitlines():
+        if line.startswith("| url |"):
+            return line
+    raise AssertionError("the url kind lost its row in the check table")
+
+
+def _nudge_block() -> str:
+    """The 3-strike nudge bullet, plus its indented continuation."""
+    lines = _watch_skill().splitlines()
+    start = next(
+        i for i, ln in enumerate(lines) if ln.startswith("- A watched URL has returned an error")
+    )
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end].startswith((" ", "\t"))):
+        end += 1
+    return "\n".join(lines[start:end])
+
+
+class TestAnAuthWalledPageIsNotReportedAsDown:
+    """A 401 means "sign in", not "the site is down".
+
+    The checker is an agent following this skill, so both halves of the bug are
+    prose: the ``url`` row bound the check to one tool, and the 3-strike nudge had
+    only one sentence to say. A login-walled page therefore failed three times and
+    was announced as an outage.
+    """
+
+    def test_the_url_row_names_a_fallback_path_not_one_tool(self):
+        row = _url_row()
+        assert "web_fetch" in row, "the first step is still a plain fetch"
+        assert (
+            "401" in row and "403" in row
+        ), "the url row must say what to do on an auth refusal, not just name a tool"
+        # The idiom the slack-* rows already use: discover the tool, never guess a
+        # name. A hardcoded reader name would be wrong on every other install.
+        assert "tools you actually have" in row
+
+    def test_the_nudge_has_its_own_reason_for_an_auth_wall(self):
+        block = _nudge_block()
+        assert "needs-auth" in block
+        summaries = re.findall(r'summary: "([^"]+)"', block)
+        assert len(set(summaries)) >= 2, "one summary cannot serve both causes"
+        auth = [s for s in summaries if "login" in s or "signed in" in s]
+        assert auth, "no summary tells the user the page wants a login"
+        for line in auth:
+            assert "may be down" not in line, f"still calls an auth wall an outage: {line}"
+
+    def test_a_bare_403_is_not_called_a_login_wall(self):
+        """403 is also a bot, rate or region block, and a login does not clear those.
+
+        Telling the user to sign in to a page that rate-limited the checker points
+        them at the wrong repair, which is the same class of wrong advice as the
+        outage sentence this change removes.
+        """
+        row = _url_row()
+        assert "access-denied" in row
+
+    def test_every_nudge_bubble_fits_the_summary_cap(self):
+        """``summary`` is the speech bubble: the ``perform_pet_action`` schema caps
+        it at 100 chars, so guidance goes in ``chatMessage``."""
+        for text in re.findall(r'summary: "([^"]+)"', _nudge_block()):
+            assert len(text) <= 100, f"{len(text)} chars of bubble: {text}"
+
+    def test_the_reader_the_fallback_asks_for_is_an_allowed_tool(self):
+        """A fallback the Tool Restrictions section forbids is not a fallback."""
+        body = _watch_skill()
+        allowed = body.split("Allowed tools:", 1)[1].split("\u26d4", 1)[0]
+        assert "page reader" in allowed
+
+    def test_the_chat_prompt_no_longer_forbids_an_authenticated_target(self):
+        """It asserted web_fetch was the only reader, so such items were refused."""
+        body = _text(CONTEXT / "prompt.md")
+        assert "can only `web_fetch`" not in body
+
+    def test_the_background_agent_grant_did_not_widen(self):
+        """The skill makes a user-granted reader *usable*; it must not grant one.
+
+        ``mochi-bg`` runs unattended, which is why ``_BUILTIN_GRANTS`` covers the
+        foreground agent only. Byte-pinned: an added tool here, or an mcp opt-in,
+        would hand an unsupervised agent reach it was never reviewed for.
+        """
+        spec = json.loads(_text(AGENTS / "mochi-bg.json"))
+        assert spec["tools"] == [
+            "fs_read",
+            "grep",
+            "glob",
+            "web_search",
+            "web_fetch",
+            "@mochi:mochi",
+        ]
+        assert spec["mcpServers"] == {}
+        assert spec["includeMcpJson"] is False

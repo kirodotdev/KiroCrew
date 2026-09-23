@@ -47,7 +47,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-import os
 import re
 import sys
 import time
@@ -59,7 +58,7 @@ from aiohttp import web
 
 from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactValidationError, get_default_store
 from kiro_crew.dashboard.origin import frame_ancestors_value, is_direct_local_request
-from kiro_crew.deploy.handlers import _allowed_local_roots
+from kiro_crew.deploy.handlers import WebAppRootError, resolve_webapp_public_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -105,54 +104,25 @@ def _resolve_webroot(slug: str) -> Path | None:
 
     Returns None (fail closed) unless the artifact exists, is kind=webapp,
     carries an app_dir, and the resolved dir sits under an allow-listed root.
+
+    The rules themselves live in ``deploy.handlers.resolve_webapp_public_dir``,
+    which the publish path uses too — the web root is REQUIRED to be
+    ``app_dir/public``, and serving app_dir itself would turn any workspace
+    directory that happens to contain an index.html into a fully-listable web
+    root (source files, config JSON, ...). Sharing the resolver is what stops
+    the preview and the publish surface drifting apart on what is servable; the
+    difference here is only the disposition, which is a silent 404 rather than a
+    reported reason (no public/ -> no local preview, and the card falls back to
+    the remote deployment or the status hero).
     """
-    store = get_default_store()
     try:
-        art = store.get(slug)
-    except (ArtifactNotFoundError, ArtifactValidationError):
-        # Defense-in-depth: even if the route regex and the
-        # store grammar ever drift again, a store-side validation reject
-        # must fail closed (404), never propagate as a 500.
+        return resolve_webapp_public_dir(slug)
+    except (ArtifactNotFoundError, ArtifactValidationError, WebAppRootError):
+        # Defense-in-depth: even if the route regex and the store grammar ever
+        # drift again, a store-side validation reject must fail closed (404),
+        # never propagate as a 500. WebAppRootError carries a reason this
+        # surface has nowhere to show, so it collapses to the same 404.
         return None
-    meta = getattr(art, "webapp_metadata", None)
-    if art.kind != "webapp" or meta is None:
-        return None
-    raw = (meta.app_dir or "").strip()
-    if not raw:
-        return None
-    try:
-        app_dir = Path(os.path.expanduser(raw)).resolve()
-    except (OSError, ValueError):
-        # ValueError: embedded NUL in a crafted app_dir — the
-        # write path rejects control chars, but legacy metadata predating
-        # that validation must still fail closed, never 500.
-        return None
-    if not app_dir.is_dir():
-        return None
-    for root in _allowed_local_roots():
-        try:
-            app_dir.relative_to(root)
-            break
-        except ValueError:
-            continue
-    else:
-        return None
-    # The web root is REQUIRED to be `app_dir/public` — the
-    # deploy-contract layout. Serving app_dir itself as a fallback would turn
-    # any workspace directory that happens to contain an index.html into a
-    # fully-listable web root (source files, config JSON, ...), reachable by
-    # the preview's own scripts. No public/ → no local preview (the card
-    # falls back to the remote deployment or the status hero).
-    public = app_dir / "public"
-    try:
-        if not public.is_dir():
-            return None
-        resolved = public.resolve()
-        # `public` itself may be a symlink planted by a crafted
-        # app_dir tree. The resolved web root must stay INSIDE the validated
-        # app_dir.
-        resolved.relative_to(app_dir)
-        return resolved
     except (OSError, ValueError):
         return None
 

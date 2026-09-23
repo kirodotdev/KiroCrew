@@ -1,5 +1,5 @@
-/** The remote-crew status dot must use color tokens that tailwind.config.js
- * actually defines.
+/** The remote-crew status dot must use color tokens that the Tailwind theme
+ * (src/tailwind-theme.css) actually defines.
  *
  * `STATE_DOT` in InstancesPanel.tsx mapped `connected` to `bg-success` and
  * `connecting` to `bg-warning`. Neither `success` nor `warning` is a key in the
@@ -10,10 +10,9 @@
  * why the "Crews you can switch to" list showed a dot next to Disconnected and
  * nothing next to Connected.
  *
- * The allow-list here is READ OUT of tailwind.config.js (the config is
- * importable, as `tailwindAlphaTokens.test.ts` already does) rather than
- * hardcoded, so renaming or dropping a theme token fails this test instead of
- * silently reintroducing an invisible dot.
+ * The allow-list here is READ OUT of the theme file's `--color-*` keys rather
+ * than hardcoded, so renaming or dropping a theme token fails this test instead
+ * of silently reintroducing an invisible dot.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -21,17 +20,15 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
-import tailwindConfig from '../../tailwind.config.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const panelSrc = readFileSync(resolve(__dirname, '../pages/settings/InstancesPanel.tsx'), 'utf-8')
 
-/** Color token names declared in tailwind.config.js's `theme.extend.colors`. */
+/** Color token names declared as `--color-*` keys in src/tailwind-theme.css. */
 function themeColorTokens(): Set<string> {
-  const colors = (tailwindConfig as { theme: { extend: { colors: Record<string, unknown> } } })
-    .theme.extend.colors
-  return new Set(Object.keys(colors))
+  const theme = readFileSync(resolve(__dirname, '../tailwind-theme.css'), 'utf-8')
+  return new Set([...theme.matchAll(/^\s*--color-([a-z0-9-]+):/gm)].map(m => m[1]))
 }
 
 /** The class string each tunnel state maps to, read out of the STATE_DOT map. */

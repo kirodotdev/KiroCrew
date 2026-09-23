@@ -36,9 +36,24 @@ function buildMenuTemplate(deps) {
     openConfigFile,
   } = deps;
 
-  // Shared destinations. CmdOrCtrl+, is the Settings convention on macOS and
-  // the emerging one elsewhere (VS Code, Chrome DevTools, Slack).
-  const settingsItem = { label: "Settings…", accelerator: "CmdOrCtrl+,", click: openSettings };
+  // Shared destinations. Settings keeps its Cmd+, accelerator on macOS (the
+  // platform convention). Off macOS the caption reads Alt+, and is DISPLAYED
+  // ONLY: `registerAccelerator: false` is a Linux/Windows option that shows a
+  // chord without binding it, so this menu claims no key and the in-page handler
+  // in src/lib/shortcutRegistry.ts keeps Alt+, together with its focus and
+  // enable/disable gates. Ctrl+, is absent by design: there Ctrl is the comma
+  // key for Chinese/Japanese IMEs (Ctrl+, types the fullwidth comma), so a
+  // REGISTERED menu accelerator on Ctrl+, swallows the keystroke before the IME
+  // sees it and a CJK user cannot type a comma at all. `isMac` is the single
+  // "this platform can hold Ctrl+," predicate shared by both surfaces; the
+  // caption is what tells a user reaching for Ctrl+, where the chord now lives.
+  const settingsItem = {
+    label: "Settings…",
+    ...(isMac
+      ? { accelerator: "CmdOrCtrl+," }
+      : { accelerator: "Alt+,", registerAccelerator: false }),
+    click: openSettings,
+  };
   const aboutItem = { label: `About ${appName}`, click: openAbout };
 
   return [

@@ -17,7 +17,7 @@ import { join, relative } from 'node:path'
  * in jsdom (where `env(safe-area-inset-*)` is 0). It is only visible on physical
  * notched hardware, which CI does not have. Hence this static guard.
  *
- * The utilities come from a local Tailwind plugin — see `tailwind.config.js`.
+ * The utilities are declared as `@utility` blocks in `src/tailwind-theme.css`.
  */
 
 const WEBSITE_ROOT = join(__dirname, '..', '..')
@@ -126,9 +126,9 @@ describe('safe-area prerequisites', () => {
   })
 
   it('emits the safe-area utilities locally, covering every family in use', () => {
-    const config = readFileSync(join(WEBSITE_ROOT, 'tailwind.config.js'), 'utf8')
-    expect(config).toMatch(/plugins:\s*\[[^\]]*safeArea/)
-    expect(config, 'the plugin must emit real env() values').toContain('env(safe-area-inset-')
+    const theme = readFileSync(join(WEBSITE_ROOT, 'src', 'tailwind-theme.css'), 'utf8')
+    expect(theme).toMatch(/@utility p-safe\s*\{/)
+    expect(theme, 'the utilities must emit real env() values').toContain('env(safe-area-inset-')
 
     // A safe-area utility CANDIDATE: a whitespace-delimited token inside a string
     // literal whose prefix is a real Tailwind property family. The closed prefix
@@ -139,28 +139,35 @@ describe('safe-area prerequisites', () => {
     // offered, so a migration leftover like `me-safe` or `inset-x-safe-or-3` is
     // still caught even though this plugin never emits it.
     const CANDIDATE = new RegExp(
-      '^(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me'
+      '^-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me'
       + '|inset|inset-x|inset-y|top|right|bottom|left|start|end'
       + '|h|min-h|max-h|h-screen|min-h-screen|max-h-screen'
       + ')-safe(?:-(?:offset|or)-(?:\\[[^\\]]+\\]|[\\d.]+))?$',
     )
-    // What this plugin actually emits. Anything else compiles to NOTHING and
-    // fails silently -- the same invisible-regression class the guard exists for.
-    // (This replaced an exact-version pin and a banned-utility list that only
-    // existed to police the third-party package this plugin took over from.)
-    const EMITTED = /^(?:p-safe|(?:top|right|bottom|left)-safe(?:-(?:offset|or)-(?:\[[^\]]+\]|[\d.]+))?)$/
+    // What tailwind-theme.css actually emits, READ from its `@utility` names so
+    // the list can never drift from the file: a static `name` matches exactly,
+    // a functional `name-*` matches a spacing step or an arbitrary `[value]`.
+    // Anything else compiles to NOTHING and fails silently -- the same
+    // invisible-regression class the guard exists for. Only the families this
+    // codebase uses are declared, so a `top-safe-or-3` or a negative
+    // `-bottom-safe-offset-4` written tomorrow lands here, not in a blank inset.
+    const utilities = [...theme.matchAll(/^@utility\s+(-?[a-z][a-z-]*)(\*)?\s*\{/gm)]
+      .filter(m => m[1].includes('-safe'))
+    expect(utilities.length, 'no safe-area @utility blocks found in tailwind-theme.css').toBeGreaterThan(0)
+    const emitted = (token: string) => utilities.some(([, name, star]) =>
+      star ? new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\[[^\\]]+\\]|[\\d.]+)$`).test(token) : token === name)
     const unsupported = new Set<string>()
     for (const file of [...walk(SRC), join(WEBSITE_ROOT, 'index.html')]) {
       for (const literal of stringLiterals(readFileSync(file, 'utf8'))) {
         for (const token of literal.split(/\s+/)) {
-          if (CANDIDATE.test(token) && !EMITTED.test(token)) unsupported.add(token)
+          if (CANDIDATE.test(token) && !emitted(token)) unsupported.add(token)
         }
       }
     }
     expect(
       [...unsupported].sort(),
-      'these safe-area utilities are used but NOT emitted by tailwind.config.js, so they compile to '
-        + 'nothing. Add the family to the plugin or use one it emits.',
+      'these safe-area utilities are used but NOT emitted by tailwind-theme.css, so they compile to '
+        + 'nothing. Add the family as an @utility or use one it emits.',
     ).toEqual([])
   })
 })
@@ -319,20 +326,26 @@ describe('fixed surfaces inset themselves from the safe area', () => {
    * the app IS the window (installed PWA: standalone/fullscreen display mode)
    * does the viewport really extend under the cutout.
    *
-   * So the tailwind plugin routes the top edge through `--safe-area-top`, and
-   * index.css zeroes that variable outside standalone/fullscreen. Pinned at
-   * the source, like the compositor test pins the drawer's left inset: jsdom
+   * So the safe-area utilities route the top edge through `--safe-area-top`,
+   * and index.css zeroes that variable outside standalone/fullscreen. Pinned
+   * at the source, like the compositor test pins the drawer's left inset: jsdom
    * implements neither `env()` nor `display-mode`, so no behavioural assertion
    * can tell the gated form from a bare env() — but reverting EITHER half
-   * (plugin back to env(), or the index.css gate deleted) silently reopens the
-   * dead band, and only on physical hardware.
+   * (utilities back to env(), or the index.css gate deleted) silently reopens
+   * the dead band, and only on physical hardware.
    */
   it('routes the top inset through the display-mode-gated variable', () => {
-    const tailwindConfig = readFileSync(join(WEBSITE_ROOT, 'tailwind.config.js'), 'utf8')
-    // The plugin half: top resolves the variable (env() only as a load-race
-    // fallback), the other edges stay bare env() — those insets are real even
-    // in-browser (iOS landscape notch flanks, home indicator).
-    expect(tailwindConfig).toContain("'var(--safe-area-top, env(safe-area-inset-top))'")
+    const theme = readFileSync(join(WEBSITE_ROOT, 'src', 'tailwind-theme.css'), 'utf8')
+    // The utility half: every top-edge utility resolves the variable (env()
+    // only as a load-race fallback), the other edges stay bare env() — those
+    // insets are real even in-browser (iOS landscape notch flanks, home
+    // indicator). No top utility may read env() directly.
+    expect(theme).toMatch(/@utility top-safe\s*\{\s*top:\s*var\(--safe-area-top, env\(safe-area-inset-top\)\)/)
+    expect(theme).toMatch(/padding-top:\s*var\(--safe-area-top, env\(safe-area-inset-top\)\)/)
+    for (const m of theme.matchAll(/^\s*(?:padding-)?top:\s*([^;]+);/gm)) {
+      expect(m[1], `top-edge declaration must go through --safe-area-top: ${m[1]}`)
+        .toContain('var(--safe-area-top, env(safe-area-inset-top))')
+    }
 
     const indexCss = readFileSync(join(SRC, 'index.css'), 'utf8')
     // The stylesheet half: 0 by default, env() re-enabled only when the app is

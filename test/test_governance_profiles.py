@@ -7,10 +7,12 @@ narrowing, and mtime hot-reload.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -946,15 +948,35 @@ def test_under_lock_restat_commits_fingerprint_of_published_snapshot(profiles_di
     assert calls["n"] == 0, "a converged store must not reload again on the next access"
 
 
+class _ChmodStat:
+    """What a ``chmod`` leaves behind: ``st_ctime_ns`` moved, nothing else did.
+
+    Every other field is the real ``os.stat_result``'s, so ``is_file()`` / mode /
+    size / mtime readers see the unchanged inode; only the fingerprint's ctime
+    term observes the metadata write.
+    """
+
+    def __init__(self, real: os.stat_result, shift_ns: int) -> None:
+        self._real = real
+        self.st_ctime_ns = real.st_ctime_ns + shift_ns
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+
 def test_unreadable_profile_recovers_on_ctime_change(profiles_dir, monkeypatch):
     # A chmod that FIXES perms on an unreadable profile changes ctime but NOT
-    # mtime/size — so the fingerprint must
-    # include ctime, else the unreadable fallback stays cached forever and the
-    # profile's restrictions remain bypassed. Simulate: file readable → unreadable
-    # (fallback) → readable again with ONLY ctime bumped → must re-read.
-    import os
-    from pathlib import Path
-
+    # mtime/size — so the fingerprint must include ctime, else the unreadable
+    # fallback (deny-all) stays cached forever and the profile never recovers its
+    # real permissions. Sequence: file readable → unreadable (deny-all fallback)
+    # → readable again with ONLY ctime moved → must re-read.
+    #
+    # The ctime move is CONSTRUCTED through the seam the fingerprint reads
+    # (``Path.stat`` on the profile) rather than performed by a real ``chmod``:
+    # the kernel stamps ctime from a coarse clock, so a chmod issued within the
+    # same tick as the preceding ``utime`` leaves ``st_ctime_ns`` unchanged, and a
+    # test that waited for the filesystem to move it was measuring timestamp
+    # granularity (and skipping most runs), not the store.
     path = profiles_dir / "cron.json"
     path.write_text(
         json.dumps(
@@ -966,37 +988,54 @@ def test_unreadable_profile_recovers_on_ctime_change(profiles_dir, monkeypatch):
         )
     )
     gp.reset_store()
-    assert gp.resolve_active_scope("cron:j:r") is not None  # last-known-good
+    prof = gp.resolve_active_scope("cron:j:r")
+    assert prof is not None and resolve(None, prof, "tools", "read").permitted
 
     real_read_text = Path.read_text
-    state = {"fail": True}
+    real_stat = Path.stat
+    state = {"fail": True, "ctime_shift_ns": 0}
+    reads = {"ok": 0}
     target = str(path)
 
-    def _patched(self, *a, **k):
-        if str(self) == target and state["fail"]:
-            raise OSError("EACCES")
+    def _patched_read_text(self, *a, **k):
+        if str(self) == target:
+            if state["fail"]:
+                raise OSError(errno.EACCES, "EACCES")
+            reads["ok"] += 1
         return real_read_text(self, *a, **k)
 
-    monkeypatch.setattr(Path, "read_text", _patched)
-    # Make it unreadable and bump mtime so the store reloads and hits the failure.
+    def _patched_stat(self, *a, **k):
+        st = real_stat(self, *a, **k)
+        if str(self) == target and state["ctime_shift_ns"]:
+            return _ChmodStat(st, state["ctime_shift_ns"])
+        return st
+
+    monkeypatch.setattr(Path, "read_text", _patched_read_text)
+    monkeypatch.setattr(Path, "stat", _patched_stat)
+
+    # Make it unreadable, with an EXPLICIT mtime bump so the fingerprint moves and
+    # the reload hits the failure. The bind is preserved but the permissions fail
+    # CLOSED: the fallback denies what the real profile allowed.
     st = path.stat()
-    os.utime(path, (st.st_atime, st.st_mtime + 5))
-    # Preserved (last-known-good) while unreadable — still resolves.
-    assert gp.resolve_active_scope("cron:j:r") is not None
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    unreadable = gp.resolve_active_scope("cron:j:r")
+    assert unreadable is not None, "the bind must survive an unreadable profile"
+    assert not resolve(None, unreadable, "tools", "read").permitted
 
-    # Now perms are "fixed": readable again, but ONLY ctime changes (a chmod does
-    # not touch mtime/size). Force a ctime bump by leaving mtime/size identical and
-    # relying on the fingerprint including st_ctime_ns. On most FSes any metadata
-    # write bumps ctime; simulate by re-writing identical bytes then restoring mtime.
+    # Perms are "fixed" (the read now succeeds) but NOTHING in the fingerprint has
+    # moved yet: the deny-all fallback is served from cache and the file is not
+    # re-read. This is the negative control that gives the ctime step below its
+    # discriminating power.
     state["fail"] = False
-    before_ct = path.stat().st_ctime_ns
-    os.chmod(path, 0o644)  # a real chmod — bumps ctime, not mtime/size
-    # If the platform's chmod didn't move ctime (rare), skip rather than false-fail.
-    if path.stat().st_ctime_ns == before_ct:
-        import pytest as _pytest
+    cached = gp.resolve_active_scope("cron:j:r")
+    assert reads["ok"] == 0, "an unchanged fingerprint must not trigger a re-read"
+    assert cached is not None and not resolve(None, cached, "tools", "read").permitted
 
-        _pytest.skip("platform chmod did not change st_ctime_ns")
+    # The chmod: ctime moves, mtime/size do not. The fingerprint's ctime term is
+    # the only thing that can bust the cache here.
+    state["ctime_shift_ns"] = 1
     prof = gp.resolve_active_scope("cron:j:r")
+    assert reads["ok"] >= 1, "a ctime-only change must force a re-read"
     assert prof is not None and prof.name == "cron"
     assert resolve(None, prof, "tools", "read").permitted
 

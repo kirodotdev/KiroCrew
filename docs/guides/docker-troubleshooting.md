@@ -208,13 +208,15 @@ consent · `--privileged`) are documented once in
 Start there — this section exists only to get you from the symptom to that
 table.
 
-The short version: the sandbox needs `unshare(CLONE_NEWUSER)` and
-`unshare(CLONE_NEWNS)`, which Docker's default seccomp profile blocks, so
-the probe fails closed and agent execution stays disabled until you choose.
-Prefer [Option A — the shipped seccomp profile](docker.md#option-a--kiro-crew-seccomp-profile-recommended);
+The short version: the sandbox needs `unshare(CLONE_NEWUSER)`,
+`unshare(CLONE_NEWNS)`, and a private mount namespace. Whether those calls work
+inside a container depends on the runtime's seccomp and AppArmor profiles;
+hardened profiles commonly block one of them. The startup probe is the source
+of truth and fails closed when no backend works. Prefer
+[Option A — the shipped seccomp profile](docker.md#option-a--kiro-crew-seccomp-profile-recommended);
 fall back to [Option B](docker.md#option-b--explicit-unsandboxed-consent)
-only where you cannot set seccomp at all (managed Kubernetes, some Docker
-Desktop setups).
+only where you cannot set seccomp or AppArmor policy at all (managed
+Kubernetes, some Docker Desktop setups).
 
 ### `KIROCREW_ALLOW_UNSANDBOXED=1` had no effect
 
@@ -381,9 +383,10 @@ agent execution is disabled by design. See [section 4](#4-sandbox-related-errors
 
 ### Missing tools in the container
 
-The image is minimal — it does not include language runtimes, compilers, or
-package managers beyond Python. If the agent needs `git`, `node`, `gcc`, etc.,
-they are not available by default.
+The image ships `git`, `curl`, `ripgrep` and `unzip` alongside Python and
+`kiro-cli`. It carries no second language runtime and no compiler toolchain,
+so `node`, `gcc` and `npm` are not available by default (`pip` and `apt` are
+there, being Python's and Debian's own).
 
 **Options:**
 
@@ -392,12 +395,12 @@ they are not available by default.
    ```dockerfile
    FROM ghcr.io/kirodotdev/kirocrew:stable
    USER root
-   RUN apt-get update && apt-get install -y git nodejs npm && rm -rf /var/lib/apt/lists/*
+   RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
    USER kirocrew
    ```
 
 2. **Mount a tools volume read-only.** Only worth trying for a statically
-   linked binary — a host `git` or `node` is dynamically linked against the
+   linked binary — a host `node` is dynamically linked against the
    host's libc and will not run under this image. Where it does apply, mount
    it `:ro`: the container runs as uid 1000, which a typical host account
    shares, so a writable mount lets the agent replace the executable and the
@@ -412,21 +415,26 @@ they are not available by default.
 
 ### Agent skill not found
 
-Skills are files, not packages: the built-in set is synced from the wheel to
-`~/.kiro/crew/skills/` at startup, and there is no install command to run.
-List what the container actually has:
+Skills are directories containing `SKILL.md`. The built-in set is synced from
+the wheel to `~/.kiro/crew/skills/` at startup. List what the container actually
+has:
 
 ```bash
 docker exec kirocrew ls /home/kirocrew/.kiro/crew/skills
 ```
 
-To add your own, write it into that directory and restart:
+For a registry skill, use **Settings → Skills → Discover**; installation is a
+human-only dashboard action. For your own local skill, copy its directory into
+the global skill tree and restore uid 1000 ownership:
 
 ```bash
 docker cp ./my-skill kirocrew:/home/kirocrew/.kiro/crew/skills/my-skill
 docker exec -u 0 kirocrew chown -R kirocrew:kirocrew /home/kirocrew/.kiro/crew/skills/my-skill
-docker restart kirocrew
 ```
+
+The skills catalog reads current on-disk state, so the copied skill appears
+without a gateway restart. Start a new chat to have its context assembled with
+the new skill.
 
 ---
 
@@ -437,9 +445,10 @@ OOM killer terminates the container.
 
 ### Cap the container
 
-Each active chat session can spawn subagents, so peak usage scales with how
-many sessions are running at once. There is no setting that caps that count
-— bound the container instead:
+Active chats and concurrent subagents both consume memory. Subagent fan-out is
+bounded by `agent.max_subagents` (or the auto-sized ceiling when it is `0`), but
+there is no single setting that caps the number of open chat sessions. Keep a
+container-level limit as the final guard:
 
 ```yaml
 # compose.yaml
@@ -482,15 +491,19 @@ step fail once the bytes have all arrived, so a download that was nearly done
 is discarded and starts over from zero. Only a `.tmp` file that has not been
 written to for an hour is genuinely stranded.
 
-Do not clear the directory itself either — the models re-download on next use,
-and on a metered or slow link that is a multi-GB round trip for nothing.
+Do not clear the directory itself either — the default model (about 610 MB)
+re-downloads on next use, which is a substantial round trip on a metered or
+slow link.
 
 ### Reduce memory pressure
 
-- Avoid mounting very large repositories as context — the agent indexes
-  them into memory.
-- Close chat sessions you are not using; each one that is running is a
-  live agent process, and that count is what peak memory tracks.
+- Set `agent.max_subagents` to a conservative explicit ceiling (minimum `3`)
+  when auto-sizing is too aggressive for the container; the adaptive controller
+  may reduce live concurrency below that ceiling.
+- Avoid running several large-context chats and fan-out jobs at once.
+- Close chat sessions you are not using. Some harnesses share a backend process,
+  but every live session retains context and runtime state, and other session
+  shapes still own a dedicated process.
 
 Embeddings cannot be traded away here: they are always-on and there is no
 config knob to disable them (`embedding_provider` is coerced to `llama_cpp`
@@ -498,6 +511,83 @@ whatever you set, and `POST /api/memory/disable-embeddings` is a deliberate
 HTTP 410 stub). On a memory-constrained host they degrade gracefully to
 keyword/FTS search while the model is absent, so a memory cap is the lever,
 not a provider swap.
+
+---
+
+## 9. Channel bot never authenticates
+
+**Symptoms:** the dashboard works, but a Slack / Discord / Telegram / WeCom /
+Weixin / Webex / Microsoft Teams / Feishu bot never comes online — and the
+gateway's own process environment has no trace of the token you passed in.
+
+### The variable is gone from the environ by design
+
+`docker/entrypoint.sh` moves every credential it finds in the environment into
+the data home's `.env` (written mode 600), unsets it, and exports
+`_KIROCREW_CREDS_SCRUBBED=1`. `KiroCrewConfig.load_credentials`
+(`src/kiro_crew/config/loader.py`) reads that marker and refuses to re-inject
+those keys into `os.environ`, so they never sit in the long-lived gateway's
+`/proc/<pid>/environ`.
+
+`docker exec kirocrew env` is **not** the probe: the daemon injects the
+container's configured environment into the processes it starts, so your `-e`
+token appears there whether or not the gateway still holds it. Read a long-lived
+process's `execve`-time snapshot instead — `tini` becomes PID 1 only after the
+scrub, which is what makes it a fair witness:
+
+Pass **your** bot's credential name as the last argument — the probe checks the
+key you name and nothing else, so a Discord or WeCom bot checked with Slack's key
+would read as healthy while its own credential sat in the environ. It prints a
+verdict, never the value: a scrub that failed must not be diagnosed by pasting
+the credential into your scrollback.
+
+```bash
+docker exec kirocrew sh -c '
+  if tr "\0" "\n" < /proc/1/environ | grep -q "^$1="; then
+    echo "$1 is STILL in PID 1 environ — the scrub did not run"
+  else
+    echo "$1 is absent from PID 1 environ — healthy"
+  fi' probe DISCORD_BOT_TOKEN
+```
+
+The keys moved this way are `CREDENTIAL_KEYS` — the Slack, Discord, Telegram,
+WeCom, Webex, Microsoft Teams, Weixin, Feishu, Jira, Azure DevOps and Bitbucket
+credentials plus `KIROCREW_OWNER_ID` and `KIRO_API_KEY` — and any per-host
+`JIRA_TOKEN_<hex>`.
+
+### Confirm what was stored
+
+```bash
+# One line per credential moved, printed on every start:
+docker logs kirocrew | grep 'Stored .* and removed it from the environment'
+
+# Key names in the stored file (no values):
+docker exec kirocrew cut -d= -f1 /home/kirocrew/.kiro/crew/.env
+```
+
+Neither a `Stored …` line nor a warning for your variable means the entrypoint
+saw no non-empty value for it: the `-e` flag or the compose `environment:` entry
+did not reach the container, or it arrived empty. A `Stored …` line present and
+the bot still offline points at the value or at the channel's own setup, not at
+the scrubbing path.
+
+Environment values outrank previously stored ones, so fixing a token in your
+compose `.env` and restarting overwrites the stored copy. The reverse also
+holds: an obsolete `-e` value overwrites a corrected `.env` line on the next
+start.
+
+One warning is worth reading closely:
+
+```
+[entrypoint] WARNING: could not read /home/kirocrew/.kiro/crew/.env (grep exit 2); leaving it untouched and keeping SLACK_BOT_TOKEN in the environment.
+```
+
+The move is abandoned rather than rewriting `.env` with a single key, so the
+other stored credentials survive and the credential stays in the environ. Treat
+it as a failure rather than a degraded success: the gateway reads that same file
+on startup without guarding the read, so a `.env` the entrypoint could not read
+can stop credential loading outright. Repair the file's owner and mode — uid
+1000 and `600`, as in [section 3](#3-permission-denied-errors) — and restart.
 
 ---
 

@@ -432,7 +432,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <div className="flex gap-2">
           <input
             type="text"
-            className="flex-1 min-w-0 rounded-lg border border-border bg-bg px-3 py-2 text-[13px] font-mono text-text placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+            className="flex-1 min-w-0 rounded-lg border border-border bg-bg px-3 py-2 text-[13px] font-mono text-text placeholder:text-muted focus:border-accent focus:outline-hidden disabled:opacity-50"
             aria-label={i18nT('apps.issueRadar.views.settings.repoSettings.local_workspace_path')}
             placeholder={i18nT('apps.issueRadar.views.settings.repoSettings.users_you_code_owner_repo')}
             spellCheck={false}

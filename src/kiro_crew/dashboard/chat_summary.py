@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
 from kiro_crew.session_summary import (
@@ -373,6 +373,12 @@ async def _generate_locked(
         prompt,
         model=model,
         sel_source="session_summary",
+        # Charged to the session being summarized, not to the shared background
+        # session that ran the call. ``effective_session_key`` rather than the
+        # transcript key above: this addresses the SESSION, and a channel-born
+        # slot's session lives under the channel's own key.
+        crew_log_kind="summary",
+        crew_log_session_key=effective_session_key(slot),
     )
     payload = normalize_payload(
         _parse_reply(text),

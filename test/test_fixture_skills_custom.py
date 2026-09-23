@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+
 from kiro_crew.skills import _BUILTIN_SKILLS_DIR, SkillsLoader, _iter_skill_files
 from kiro_crew.testing.fixtures import seeded_home
 
@@ -13,13 +15,15 @@ _TRIGGERS = "flaky test, red shard, rerun failed, triage failure"
 
 
 def test_skills_custom_fixture_drives_live_and_pending_readers() -> None:
-    with seeded_home("skills-custom") as home:
+    with (
+        seeded_home("skills-custom") as home,
+        closing(SkillsLoader(skills_path=home / "skills", install_builtins=False)) as loader,
+    ):
         pending_dir = home / "skills" / "auto" / ".pending" / "flaky-triage"
         meta_file = pending_dir / ".meta.json"
         assert pending_dir.is_dir()
         assert meta_file.is_file()
 
-        loader = SkillsLoader(skills_path=home / "skills", install_builtins=False)
         live = {entry["key"]: entry for entry in loader.list_skills()}
         builtin_names = {name for name, _path in _iter_skill_files(_BUILTIN_SKILLS_DIR)}
 
@@ -48,8 +52,10 @@ def test_skills_custom_fixture_drives_live_and_pending_readers() -> None:
         assert approved == {"release-notes", "auto/flaky-triage"}
         assert approved.isdisjoint(builtin_names)
 
-    with seeded_home("skills-custom") as home:
-        loader = SkillsLoader(skills_path=home / "skills", install_builtins=False)
+    with (
+        seeded_home("skills-custom") as home,
+        closing(SkillsLoader(skills_path=home / "skills", install_builtins=False)) as loader,
+    ):
         assert loader.dismiss_pending_skill("flaky-triage") is True
         assert loader.list_pending_skills() == []
         assert {entry["key"] for entry in loader.list_skills()} == {"release-notes"}

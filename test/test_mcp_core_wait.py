@@ -14,7 +14,7 @@ def test_spawn_run_single_task():
     with patch("kiro_crew.mcp_core._post") as mock_post:
         mock_post.return_value = {"id": "abc123"}
 
-        result = _call_tool("spawn_run", {"task": "test task"})
+        result = _call_tool("spawn_run", {"task": "test task", "solo_reason": "bulk_data"})
 
         assert "abc123" in result
         assert "Spawned" in result
@@ -41,7 +41,7 @@ def test_spawn_run_error():
          patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:chat-1"):
         mock_post.return_value = {"error": "Forbidden"}
 
-        result = _call_tool("spawn_run", {"task": "failing task"})
+        result = _call_tool("spawn_run", {"task": "failing task", "solo_reason": "bulk_data"})
 
         assert "Error: 1 task(s) failed to start" in result
         assert "failing task: Forbidden" in result
@@ -140,7 +140,7 @@ def test_spawn_run_orphan_warning_when_parent_unresolved():
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value=""):
         mock_post.return_value = {"id": "abc123"}
-        result = _call_tool("spawn_run", {"task": "test task"})
+        result = _call_tool("spawn_run", {"task": "test task", "solo_reason": "bulk_data"})
     assert "parent_session UNRESOLVED" in result
     assert "abc123" in result
     assert "Monitor results via polling" in result
@@ -153,7 +153,7 @@ def test_spawn_run_no_orphan_warning_when_all_spawns_fail():
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value=""):
         mock_post.return_value = {"error": "Forbidden"}
-        result = _call_tool("spawn_run", {"task": "failing task"})
+        result = _call_tool("spawn_run", {"task": "failing task", "solo_reason": "bulk_data"})
     assert "these subagents are orphaned" not in result
     assert "⚠ parent_session UNRESOLVED —" not in result
     assert "none of the requested subagents were started" in result
@@ -171,7 +171,7 @@ class TestSpawnRunApprovalModeForwarding:
         with patch("kiro_crew.mcp_core._post") as mock_post, \
                 patch.dict("os.environ", {"KIROCREW_APPROVAL_MODE": "auto"}):
             mock_post.return_value = {"id": "abc123"}
-            _call_tool("spawn_run", {"task": "test task"})
+            _call_tool("spawn_run", {"task": "test task", "solo_reason": "bulk_data"})
 
         body = mock_post.call_args[0][1]
         assert body["approval_mode"] == "auto"
@@ -181,7 +181,7 @@ class TestSpawnRunApprovalModeForwarding:
                 patch.dict("os.environ", {}, clear=False):
             os.environ.pop("KIROCREW_APPROVAL_MODE", None)
             mock_post.return_value = {"id": "abc123"}
-            _call_tool("spawn_run", {"task": "test task"})
+            _call_tool("spawn_run", {"task": "test task", "solo_reason": "bulk_data"})
 
         body = mock_post.call_args[0][1]
         assert "approval_mode" not in body
@@ -202,7 +202,7 @@ def test_spawn_run_no_orphan_warning_when_parent_resolved():
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:chat-1"):
         mock_post.return_value = {"id": "abc123"}
-        result = _call_tool("spawn_run", {"task": "test task"})
+        result = _call_tool("spawn_run", {"task": "test task", "solo_reason": "bulk_data"})
     assert "parent_session UNRESOLVED" not in result
 
 
@@ -211,7 +211,7 @@ def test_spawn_run_failed_only_orphan_no_completion_promise():
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value=""):
         mock_post.return_value = {"error": "capacity reached"}
-        result = _call_tool("spawn_run", {"task": "failed task"})
+        result = _call_tool("spawn_run", {"task": "failed task", "solo_reason": "bulk_data"})
     assert "failed to start" in result
     assert "none of the requested subagents were started" in result
     assert "queued" not in result
@@ -224,7 +224,7 @@ def test_spawn_run_failed_only_with_parent_promises_nothing():
     with patch("kiro_crew.mcp_core._post") as mock_post, \
          patch("kiro_crew.mcp_core._resolve_session_key", return_value="dashboard:chat-1"):
         mock_post.return_value = {"error": "capacity reached"}
-        result = _call_tool("spawn_run", {"task": "failed task"})
+        result = _call_tool("spawn_run", {"task": "failed task", "solo_reason": "bulk_data"})
     assert "failed to start" in result
     assert "none of the requested subagents were started" in result
     assert "queued" not in result
@@ -252,7 +252,7 @@ def test_spawn_run_passes_parent_session():
             mock_post.return_value = {"id": "x1"}
             # This test verifies the parent_session plumbing exists;
             # exact file lookup depends on home dir structure
-            result = _call_tool("spawn_run", {"task": "test"})
+            result = _call_tool("spawn_run", {"task": "test", "solo_reason": "bulk_data"})
             assert "Spawned" in result
 
 

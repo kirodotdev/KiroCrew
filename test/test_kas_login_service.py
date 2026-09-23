@@ -50,10 +50,12 @@ class _FakeSession:
     def __init__(self, responses: list[_FakeResp] | None = None):
         self._responses = responses or []
         self.calls: list[tuple[str, dict]] = []
+        self.calls_with_headers: list[tuple[str, dict, dict]] = []
         self.closed = False
 
     def post(self, url, *, json=None, headers=None):  # noqa: A002
         self.calls.append((url, json or {}))
+        self.calls_with_headers.append((url, json or {}, dict(headers or {})))
         return self._responses.pop(0)
 
     async def close(self):
@@ -697,7 +699,7 @@ async def test_begin_device_evicts_expired_pending(tmp_path, monkeypatch):
 # scripted fake session as the social tests.
 # ---------------------------------------------------------------------------
 
-from kiro_crew.auth.login import builder_id  # noqa: E402
+from kiro_crew.auth.login import builder_id, control_plane  # noqa: E402
 from kiro_crew.auth.service import MissingStartUrlError  # noqa: E402
 
 
@@ -799,10 +801,14 @@ async def test_poll_idc_resolves_profile_arn(tmp_path, monkeypatch):
     assert saved is not None
     assert saved.identity == "identity_center"
     assert saved.profile_arn == "arn:aws:kiro:us-east-1:1:profile/p1"
-    # The control-plane call carried the fresh bearer token.
-    cp_url, cp_body = session.calls[-1]
-    assert "kirocontrolplanebearerservice" in cp_url
+    # The control-plane call went to the regional CPS (the host kiro-cli itself
+    # uses) with the fresh bearer token and the CodeWhisperer-family target.
+    cp_url, cp_body, cp_headers = session.calls_with_headers[-1]
+    assert cp_url == "https://management.us-east-1.kiro.dev/"
     assert cp_body == {"maxResults": 10}
+    assert cp_headers["X-Amz-Target"] == "AmazonCodeWhispererService.ListAvailableProfiles"
+    assert cp_headers["Authorization"] == "Bearer at-2"
+    assert cp_headers["Content-Type"] == "application/x-amz-json-1.0"
 
 
 @pytest.mark.asyncio
@@ -912,6 +918,26 @@ async def test_begin_oidc_accepts_real_region_grammar(tmp_path, monkeypatch):
             service, monkeypatch, "idc", start_url="https://a.awsapps.com/start", region=good
         )
         assert result["_seen"]["region"] == good
+
+
+def test_control_plane_url_is_the_regional_cps_host():
+    """IdC profile resolution must hit the CPS host kiro-cli uses, not a derived one.
+
+    A hostname derived from the vendored client's service id has no DNS record: the
+    device code gets redeemed, then the profile call dies in the resolver and the
+    dashboard reads a 502 for a login that succeeded. Pin the real hosts (kiro-cli
+    ``Endpoint::cps_for_region``) and the us-east-1 fallback for regions without a CPS.
+    """
+    assert control_plane.control_plane_url("us-east-1") == "https://management.us-east-1.kiro.dev/"
+    assert (
+        control_plane.control_plane_url("eu-central-1")
+        == "https://management.eu-central-1.kiro.dev/"
+    )
+    # No dedicated CPS for that region: same fallback as kiro-cli's DEFAULT_ENDPOINT.
+    assert control_plane.control_plane_url("ap-southeast-2") == control_plane.control_plane_url(
+        "us-east-1"
+    )
+    assert "amazonaws.com" not in control_plane.control_plane_url("us-east-1")
 
 
 @pytest.mark.asyncio

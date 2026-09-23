@@ -4,7 +4,7 @@ import { Trans } from 'react-i18next'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
 } from './ui/dropdown-menu'
-import { baseCommandLabel, trustBasePattern, truncateCommandLabel } from '../utils/trustPatterns'
+import { baseCommandLabel, trustBasePattern } from '../utils/trustPatterns'
 
 import { i18nT } from '../i18n/t'
 interface TrustDropdownProps {
@@ -44,7 +44,6 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
   // tiered trust grants an identical scope for the same click.
-  const truncated = truncateCommandLabel(fullCommand)
   const basePattern = trustBasePattern(baseCommand)
   const baseLabel = baseCommandLabel(baseCommand)
 
@@ -69,22 +68,39 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       action: 'trust_command',
       fire: () => onAction('trust_command', fullCommand),
       icon: <Shield size={12} className="shrink-0 text-accent" />,
-      // The untruncated command as a tooltip: this grant is an exact-string
-      // match, so the user must be able to read the whole thing before agreeing
-      // to it. No `truncate` here on purpose -- CSS ellipsis would clip the tail
-      // that `truncateCommandLabel` deliberately preserved, re-colliding two
-      // commands that differ only in their filename. The label wraps instead;
-      // the menu's own max-width still bounds it.
+      // The WHOLE command, never a shortened one. This grant is an exact-STRING
+      // match, so the label is not a description of the scope -- it IS the
+      // scope. Any elision leaves two commands that differ only inside the cut
+      // rendering identically, and the `title` below was the only way back to
+      // the rest: `title` needs a pointer, so on touch the elided label was the
+      // entire basis for the grant (#4700). No `truncate` either -- a CSS
+      // ellipsis would clip what the string kept. The label wraps instead, over
+      // as many lines as it needs: `break-all` breaks an unspaced run (a sha, a
+      // base64 argument), the menu's viewport-aware max-width bounds the width,
+      // and DropdownMenuContent's own max-height + `overflow-y-auto` bound the
+      // height, so even a pathological command scrolls inside the menu rather
+      // than running off screen. `title` stays for the pointer user, who gets
+      // the command as one unwrapped line.
+      //
+      // `whitespace-pre-wrap` because HTML's default `white-space: normal`
+      // COLLAPSES runs of whitespace, which is the same defect as an elision:
+      // `grep "a  b" f` would render as `grep "a b" f` and ask for consent to a
+      // string the user never saw. `break-all` governs where a word may break,
+      // not whether spaces survive, so it does not cover this.
       body: (
-        <span className="min-w-0 break-all" title={fullCommand}>
+        <span className="min-w-0 break-all whitespace-pre-wrap" title={fullCommand}>
           <Trans
             i18nKey="components.trustDropdown.trust_this_command"
-            values={{ cmd: truncated }}
+            values={{ cmd: fullCommand }}
             components={{ mono: <span className="font-mono" /> }}
           />
         </span>
       ),
-      plain: i18nT('components.trustDropdown.trust_this_command', { cmd: truncated }),
+      // No `aria-label` beside the visible text: the row's accessible name is
+      // its own content, which is now the whole command, so an added label
+      // could only duplicate it -- and would silently stop matching the visible
+      // one the day either changes (WCAG 2.5.3).
+      plain: i18nT('components.trustDropdown.trust_this_command', { cmd: fullCommand }),
     })
   }
   if (hasCommand && isShell) {

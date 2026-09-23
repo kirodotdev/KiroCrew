@@ -12,7 +12,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { useAppApi, useAppEvents, useAppInfo, useNavigate, useNotify } from '../../app-sdk'
 import { i18nT } from '../../i18n/t'
-import IncidentChat, { incidentSlotKey } from './IncidentChat'
+import IncidentChat, {
+  INCIDENT_CHAT_BOX_HEIGHT_PX,
+  INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX,
+  incidentSlotKey,
+} from './IncidentChat'
 
 const probeProps = vi.hoisted(() => ({ current: {} as Record<string, unknown> }))
 const unsubscribes = vi.hoisted(() => ({ current: [] as unknown[] }))
@@ -63,6 +67,20 @@ describe('IncidentChat', () => {
     )
   })
 
+  it('caps the composer below the shared default so the transcript keeps most of the box', () => {
+    // The panel is a fixed-height box. Left at the embed's shared 240px cap, a
+    // long draft would claim more than half of it and squeeze the agent's
+    // findings to a few lines. The cap is a proportion of the box and the box
+    // reads its height from the same module, so neither can move alone.
+    render(<IncidentChat incidentId="zzq-42" />)
+    expect(probeProps.current.composerMaxHeight).toBe(INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX)
+    expect(INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX).toBeLessThan(240)
+    // At the maxed-out draft, at least ~240px of the box is still transcript.
+    expect(INCIDENT_CHAT_BOX_HEIGHT_PX - INCIDENT_CHAT_COMPOSER_MAX_HEIGHT_PX).toBeGreaterThanOrEqual(240)
+    const box = screen.getByTestId('zzq-embed').parentElement?.parentElement as HTMLElement
+    expect(box.style.height).toBe(`${INCIDENT_CHAT_BOX_HEIGHT_PX}px`)
+  })
+
   it('scopes the provider to the chat AND approvals APIs', () => {
     render(<IncidentChat incidentId="zzq-42" />)
     const perms = screen.getByTestId('zzq-perms').textContent ?? ''
@@ -104,9 +122,10 @@ describe('IncidentChat', () => {
     ).toBeInTheDocument()
   })
 
-  it('unmounts cleanly, so subscribeFn returned a real unsubscribe', () => {
-    // useAppEvents calls subscribe() on mount and its RETURN VALUE on cleanup;
-    // a subscribeFn returning undefined would throw during unmount.
+  it('mounts and unmounts cleanly with the provider default subscribe', () => {
+    // useAppEvents calls subscribe() during its effect, so an ABSENT subscribe is
+    // a TypeError on mount. (An effect cleanup of `undefined` is legal React and
+    // throws nothing, so this does not prove what the old comment here claimed.)
     const { unmount } = render(<IncidentChat incidentId="zzq-42" />)
     expect(() => unmount()).not.toThrow()
   })
@@ -117,8 +136,16 @@ describe('IncidentChat', () => {
     expect(window.location.pathname).toBe('/zzq-elsewhere')
   })
 
-  it('notify is a no-op rather than a missing callback', () => {
+  it('routes notify to the host toast bus', () => {
+    // Was a hand-written no-op purely to satisfy the old provider contract, which
+    // meant an embed error message was dropped on the floor. The scoped provider's
+    // default is the host's own `mc:notify` bus, so it now surfaces.
+    const seen: unknown[] = []
+    const listener = (e: Event) => seen.push((e as CustomEvent).detail?.message)
+    window.addEventListener('mc:notify', listener)
     render(<IncidentChat incidentId="zzq-42" />)
-    expect(() => fireEvent.click(screen.getByTestId('zzq-notify'))).not.toThrow()
+    fireEvent.click(screen.getByTestId('zzq-notify'))
+    window.removeEventListener('mc:notify', listener)
+    expect(seen).toEqual(['zzq hello'])
   })
 })

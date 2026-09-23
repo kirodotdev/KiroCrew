@@ -106,6 +106,7 @@ afterEach(() => window.history.replaceState({}, '', '/'))
 async function loaded() {
   await screen.findByText('Memory for reviewer')
   await screen.findByText(FACT.value_json)
+  expect(screen.getByText('Member memory · V2')).toBeVisible()
 }
 
 async function openProfile() {
@@ -115,7 +116,7 @@ async function openProfile() {
 
 async function chooseWriter() {
   fireEvent.click(screen.getByRole('combobox', { name: 'Memory store' }))
-  fireEvent.click(await screen.findByRole('option', { name: 'Private to writer · Memory V2' }))
+  fireEvent.click(await screen.findByRole('option', { name: 'writer · Member memory (V2)' }))
 }
 
 describe('private member memory lifecycle', () => {
@@ -125,10 +126,10 @@ describe('private member memory lifecycle', () => {
 
     await screen.findByRole('heading', { name: `Memory for ${LEGACY_STORE}` })
     expect(screen.getByText('Memory V1', { exact: true })).toBeVisible()
-    const guidance = screen.getByText(/This member uses its current memory \(V1\)\./)
-    expect(guidance).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
+    const guidance = screen.getByText(/This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\./)
+    expect(guidance).toHaveTextContent(/^This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\.$/)
     expect(screen.queryByText(/This member cannot return to its previous memory/)).toBeNull()
-    expect(screen.queryByText('Private to this member · Memory V2')).toBeNull()
+    expect(screen.queryByText('Member memory · V2')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
     expect(api.memberMemoryPage).toHaveBeenCalledWith(LEGACY_STORE, 'semantic', 0)
   })
@@ -396,7 +397,7 @@ describe('private member memory lifecycle', () => {
     const picker = screen.getByRole('combobox', { name: 'Memory store' })
     expect(picker.querySelector('img')).toHaveAttribute('src', '/api/agents/reviewer/avatar?v=17')
     fireEvent.click(picker)
-    const writer = await screen.findByRole('option', { name: 'Private to writer · Memory V2' })
+    const writer = await screen.findByRole('option', { name: 'writer · Member memory (V2)' })
     expect(writer.querySelector('img')).toHaveAttribute('src', writerSrc)
     expect(screen.getByRole('option', { name: 'Shared · Global Memory V1' }).querySelector('img')).toBeNull()
     fireEvent.click(writer)

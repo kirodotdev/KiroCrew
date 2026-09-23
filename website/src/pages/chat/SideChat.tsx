@@ -13,7 +13,8 @@ import ChatInput from '../../components/ChatInput'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SlotProvider } from '../../providers/SlotContext'
 import { useConnected } from '../../hooks/useConnected'
-import { consumeSideChatSeed, readSideChatDraft, writeSideChatDraft, useSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
+import { consumeSideChatSeed, readSideChatDraft, restoreSideChatDraft, writeSideChatDraft, writeSideChatPastes, useSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
+import { type PasteBlock, expandAll as expandPasteTokens, pruneBlocks } from '../../utils/pasteTokens'
 import { mergeIntoDraft as appendToDraft } from '../../utils/chatDrafts'
 import type { SideMessage, SideQueueEntry } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
@@ -43,7 +44,10 @@ const EMPTY_SIDE_QUEUE: SideQueueEntry[] = []
 type SideSubmit = { q: string; steer: boolean; optimistic: boolean; slot: string;
   /** True when `q` came from a follow-up chip rather than the composer, so the draft the
    *  user is still writing must survive the send. */
-  override?: boolean }
+  override?: boolean
+  /** The composer's TOKEN text and the blocks behind it, when `q` was expanded from a
+   *  collapsed paste — what a failed submit hands back, so the pill returns as a pill. */
+  display?: string; pastes?: PasteBlock[] }
 
 /** Put `released` text back in the composer without discarding what is there.
  *
@@ -90,6 +94,11 @@ export default function SideChat({ slot }: { slot: string }) {
   // Transient, non-error feedback (e.g. a steer the server had to demote to a
   // queue entry). Kept apart from localError so it renders as a notice, not red.
   const [localNotice, setLocalNotice] = useState<string | null>(null)
+  // Length validation for the draft: nothing failed, the question simply has
+  // not been sent yet, so it is a hint beside the composer — not an
+  // ErrorNotice, which is for an operation that went wrong. It stays until the
+  // draft changes (the user is acting on it) or a send goes out.
+  const [lengthHint, setLengthHint] = useState<string | null>(null)
 
   // Retire the notice on its own so it cannot outlive the moment it describes.
   useEffect(() => {
@@ -174,8 +183,14 @@ export default function SideChat({ slot }: { slot: string }) {
   // restores text into the store while the panel may be bound elsewhere, and
   // a cache then hid that restored text (and the next keystroke overwrote it)
   // when the panel came back.
-  const { text: storedDraft, seedTick } = useSideChatDraft(slot)
-  const onDraftChange = useCallback((next: string) => { writeSideChatDraft(slot, next) }, [slot])
+  const { text: storedDraft, seedTick, pastes: pasteBlocks } = useSideChatDraft(slot)
+  const onDraftChange = useCallback((next: string) => { writeSideChatDraft(slot, next); setLengthHint(null) }, [slot])
+  // The collapsed paste blocks behind the `[ Paste #N · M lines ]` tokens in
+  // the draft — the sidecar ChatInput needs before it collapses a large paste
+  // into a chip at all. They live in the same store entry as the text (so a
+  // remount restores both, and neither outlives the page), are expanded at
+  // send, and clear with the text.
+  const onPasteBlocksChange = useCallback((next: PasteBlock[]) => { writeSideChatPastes(slot, next) }, [slot])
   const composer = useComposerDraft({ followUpOptions, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H, draft: storedDraft, onDraftChange })
   const {
     draft, setDraft,
@@ -277,12 +292,15 @@ export default function SideChat({ slot }: { slot: string }) {
     onMutate: ({ q, optimistic, slot: target, override }: SideSubmit) => {
       setLocalError(null)
       setLocalNotice(null)
+      setLengthHint(null)
       if (optimistic) {
         const message: SideMessage = { role: 'user', content: q, ts: new Date().toISOString() }
         dispatch(sideOptimisticAppend({ slot: target, message }))
       }
       // Only a composer submit owns the composer's text. An override send carries its own
       // text, so clearing here would throw away a draft the user has not sent yet.
+      // The blocks go with the text: `writeSideChatDraft('')` prunes every block
+      // whose token left the text, which for an empty text is all of them.
       if (!override) setDraft('')
     },
     onSuccess: (res, vars) => {
@@ -381,7 +399,11 @@ export default function SideChat({ slot }: { slot: string }) {
       // this panel shows now: a host can re-bind the panel while the request
       // is in flight (split view's Ask, a member switch), and handing A's
       // question to B's draft would lose it for A and corrupt B.
-      restoreDraftTo(vars.slot, vars.q)
+      // A paste that was collapsed goes back collapsed — token text plus its
+      // blocks (restoreSideChatDraft carries them in) — never as the expanded
+      // lines, which would lose the tokens' identity on the retry.
+      if (vars.pastes?.length && vars.display) restoreSideChatDraft(vars.slot, vars.display, vars.pastes)
+      else restoreDraftTo(vars.slot, vars.q)
     },
   })
 
@@ -566,8 +588,15 @@ export default function SideChat({ slot }: { slot: string }) {
    *  is the source of truth. Every call site wraps this in an arrow, so a click event can never
    *  arrive here as the override. */
   const send = useCallback((override?: string, steerRequested = false) => {
-    const q = (override ?? draft).trim()
-    if (!q || sendMutation.isPending || !slot) return
+    const typed = (override ?? draft).trim()
+    if (!typed || sendMutation.isPending || !slot) return
+    // Collapsed pastes expand for the model here, on both the send and the
+    // steer branch (one path). The side transcript carries no per-message
+    // meta, so the bubble shows the expanded text as well — what the server
+    // stores and re-serves. Only a composer submit owns the composer's blocks:
+    // an override (a follow-up chip) supplies its own text and has none.
+    const blocks = override != null ? [] : pruneBlocks(typed, pasteBlocks)
+    const q = blocks.length ? expandPasteTokens(typed, blocks) : typed
     if (exceedsByteLimit(q)) {
       // The limit is enforced in UTF-8 bytes (server contract), but a byte count is
       // not actionable to the user — report a character target instead, derived
@@ -581,7 +610,10 @@ export default function SideChat({ slot }: { slot: string }) {
       const chars = [...q].length
       const bytes = draftByteSize(q)
       const max = Math.floor((chars * MAX_QUESTION_BYTES) / bytes)
-      setLocalError(i18nT('pages.chat.sideChat.question_too_long', {
+      // The count is of the EXPANDED text, so when a collapsed paste is part of
+      // it the message says so: the composer visibly holds one line and a pill,
+      // and a bare "yours: 12,000" against that would read as nonsense.
+      setLengthHint(i18nT(blocks.length ? 'pages.chat.sideChat.question_too_long_with_paste' : 'pages.chat.sideChat.question_too_long', {
         max: fmtNumber(max),
         current: fmtNumber(chars),
       }))
@@ -593,8 +625,8 @@ export default function SideChat({ slot }: { slot: string }) {
     // STARTS — a steer's bubble has to land above the streaming answer and a
     // queued one is a card, so the server frame places both.
     const steer = isBusy && steerRequested
-    sendMutation.mutate({ q, steer, optimistic: !isBusy, slot, override: override != null })
-  }, [draft, slot, sendMutation, isBusy, exceedsByteLimit])
+    sendMutation.mutate({ q, steer, optimistic: !isBusy, slot, override: override != null, ...(blocks.length ? { display: typed, pastes: blocks } : {}) })
+  }, [draft, pasteBlocks, slot, sendMutation, isBusy, exceedsByteLimit])
 
   const sendErr = sendMutation.error
   const displayError = sendErr
@@ -665,7 +697,7 @@ export default function SideChat({ slot }: { slot: string }) {
                 <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '150ms' }} />
                 <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '300ms' }} />
               </span>
-              <span className="text-[12px] streaming-indicator">{i18nT('pages.chat.sideChat.thinking')}</span>
+              <span className="text-[12px]">{i18nT('pages.chat.sideChat.thinking')}</span>
             </div>
           ) : undefined,
         }}
@@ -678,7 +710,10 @@ export default function SideChat({ slot }: { slot: string }) {
           <ErrorNotice variant="inline" message={displayError} />
         </div>
       )}
-      {!displayError && localNotice && (
+      {!displayError && lengthHint && (
+        <div className="px-3 py-1 text-[12px] text-warn border-t border-border" role="status" data-testid="side-chat-length-hint">{lengthHint}</div>
+      )}
+      {!displayError && !lengthHint && localNotice && (
         <div className="px-3 py-1 text-[12px] text-muted border-t border-border" role="status">{localNotice}</div>
       )}
       {queueCards.length > 0 && (
@@ -728,6 +763,8 @@ export default function SideChat({ slot }: { slot: string }) {
           <ChatInput
             value={draft}
             onChange={setDraft}
+            pasteBlocks={pasteBlocks}
+            onPasteBlocksChange={onPasteBlocksChange}
             onSend={() => { void send() }}
             canSteer
             onSteer={() => { void send(undefined, true) }}

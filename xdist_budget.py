@@ -103,6 +103,33 @@ _GIB_PER_WORKER = 3
 # more workers than the host has memory for at the moment it is asked.
 _GIB_PER_WORKER_AVAILABLE = 3
 
+# The two reservations above are REMEASURED for Linux (the host this suite's
+# agents run on), but a worker's footprint is PLATFORM-DEPENDENT and the Linux
+# number is fatally low elsewhere. A full-suite worker was measured at ~1.5 GiB
+# on Linux but 14.9-16.1 GiB on macOS (issue #10061), where four workers granted
+# by ``-n auto`` reserved 62 GiB on a 36 GiB host and the kernel jetsam-killed
+# it. A single constant cannot be right for both: 3 GiB is fatally low for a
+# macOS worker, and 16 would clamp a healthy Linux host to a handful of workers
+# for no reason. So the reservation is PLATFORM-AWARE -- macOS uses 16 GiB, every
+# other platform keeps the remeasured Linux/Windows number above. Still a
+# constant, not a config key: ``xdist_auto_cap`` remains the single operator
+# knob. The static and live axes stay distinct (they describe the same worker
+# but differ in KIND, per the comments above); each is selected for the
+# platform, so on macOS both become 16 and the aggregate ``N x per-worker <=
+# memory`` can never grant four workers against the reporter's 36 GiB host.
+_MACOS_GIB_PER_WORKER = 16
+
+
+def _gib_per_worker() -> int:
+    """Per-worker reservation for the STATIC (total-RAM / cgroup) readings."""
+    return _MACOS_GIB_PER_WORKER if platform_compat.IS_MACOS else _GIB_PER_WORKER
+
+
+def _gib_per_worker_available() -> int:
+    """Per-worker reservation for the LIVE (currently-available) reading."""
+    return _MACOS_GIB_PER_WORKER if platform_compat.IS_MACOS else _GIB_PER_WORKER_AVAILABLE
+
+
 # Lock files this process holds for its whole lifetime -- the fds MUST stay open,
 # because the lock lives exactly as long as the fd does.
 _held_slots: list[int] = []
@@ -306,8 +333,8 @@ def _static_memory_bounded_capacity(cores: int) -> int:
     return _bounded_by(
         cores,
         (
-            (_host_total_gib() * 1024, _GIB_PER_WORKER),
-            (_cgroup_limit_mib(), _GIB_PER_WORKER),
+            (_host_total_gib() * 1024, _gib_per_worker()),
+            (_cgroup_limit_mib(), _gib_per_worker()),
         ),
     )
 
@@ -322,7 +349,7 @@ def _live_memory_bounded_cap(cap: int) -> int:
     place for a transient reading: it throttles THIS run without reshaping the namespace
     every other run has to agree on.
     """
-    return _bounded_by(cap, ((_host_available_mib(), _GIB_PER_WORKER_AVAILABLE),))
+    return _bounded_by(cap, ((_host_available_mib(), _gib_per_worker_available()),))
 
 
 def _claim_worker_slots(capacity: int, cap: int) -> int:
@@ -433,7 +460,7 @@ def _warn_if_clamped(resolved: int, cap: int, unbudgeted: int) -> None:
         warnings.warn(
             f"xdist worker budget: {cap} of {unbudgeted} workers ({free}, "
             f"{_host_total_gib()} GiB installed). Each worker needs about "
-            f"{_GIB_PER_WORKER_AVAILABLE} GiB, mostly to collect the suite. A run this "
+            f"{_gib_per_worker_available()} GiB, mostly to collect the suite. A run this "
             "narrow is slow, not stuck -- free some memory, run a subset "
             "(pytest test/test_thing.py), or pass an explicit -n <N> to bypass "
             "this budget.",

@@ -52,6 +52,13 @@ logger = logging.getLogger(__name__)
 MIN_NODE_MAJOR = 20
 
 CLI_BIN = "playwright-cli"
+# Verified on September 19, 2026, with ``@playwright/cli@0.1.21``. These launches:
+# ``npx --yes @playwright/cli@0.1.21 show --port 45613 --host 127.0.0.1``
+# ``npx --yes @playwright/cli@0.1.21 show --port 0 --host 127.0.0.1``
+# printed ``Listening on http://127.0.0.1:45613`` and
+# ``Listening on http://127.0.0.1:42963``, respectively. Each line was read only
+# after its listener had bound. ``@latest`` may change that wording; the parser
+# then fails closed and reports the installed version for diagnosis.
 NPM_SPEC = "@playwright/cli@latest"
 
 # ``install --skills`` writes the command reference where an agent can read it.
@@ -71,6 +78,7 @@ _PROBE_TIMEOUT_S = 20.0
 _NPM_INSTALL_TIMEOUT_S = 900.0
 _BROWSER_INSTALL_TIMEOUT_S = 1800.0
 _SKILLS_INSTALL_TIMEOUT_S = 180.0
+_CLI_PACKAGE_JSON_MAX_BYTES = 1024 * 1024
 
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
@@ -182,6 +190,25 @@ def _managed_node_path() -> Path:
     return _managed_cli_root() / name
 
 
+def _staged_node_runs(candidate: Path) -> str | None:
+    """Reason the staged Node copy cannot run standalone, or ``None`` if it can.
+
+    Runs the copy exactly as the gateway will run it -- by absolute path, from
+    the managed leaf, under :func:`cli_env` -- and asks for its version. One
+    probe covers every way a copy can be dead: a launcher script whose relative
+    targets are not in the leaf, a binary that only links under a wrapper's
+    ``LD_LIBRARY_PATH``, a build for another architecture. The reason names the
+    failure so ``stage-node`` reports it instead of a later call.
+    """
+    code, out, err = _run([str(candidate), "--version"], _PROBE_TIMEOUT_S)
+    if code != 0:
+        detail = (err or out).strip().splitlines()
+        return f"exit {code}" + (f": {detail[-1]}" if detail else "")
+    if _first_version(out) is None:
+        return f"did not report a version (stdout: {out.strip()[:80]!r})"
+    return None
+
+
 def _stage_managed_node(source: str) -> Path:
     """Copy the installer-selected Node into the managed leaf atomically.
 
@@ -189,6 +216,16 @@ def _stage_managed_node(source: str) -> Path:
     entrypoint directly. That keeps both executable choices inside the read-only
     leaf instead of letting ``#!/usr/bin/env node`` or a generated wrapper select
     a version-manager binary from the gateway's broad PATH.
+
+    The copy is run before it becomes ``gateway-node``. Being a regular,
+    executable file is not enough: a launcher script locates the binary it
+    starts relative to its own path, and a binary from a wrapped distribution
+    may link only under the wrapper's ``LD_LIBRARY_PATH``. Either copies
+    cleanly, passes the mode checks, and then fails on the first CLI call with
+    an error naming a path under the leaf, while the status probe, which checks
+    that the staged file exists rather than that it runs, keeps reporting the
+    CLI as installed. Running the staged copy once, from the leaf, under the
+    gateway's own environment, fails at ``stage-node`` with the cause named.
     """
     source_path = Path(source).resolve(strict=True)
     try:
@@ -212,6 +249,12 @@ def _stage_managed_node(source: str) -> Path:
         shutil.copyfile(source_path, incoming)
         if not platform_compat.IS_WINDOWS:
             os.chmod(incoming, 0o500)
+        reason = _staged_node_runs(Path(incoming))
+        if reason is not None:
+            raise OSError(
+                f"Node copied from {source_path} does not run from the managed leaf "
+                f"({reason}). Install Node as a self-contained binary."
+            )
         os.replace(incoming, destination)
     finally:
         with contextlib.suppress(OSError):
@@ -325,9 +368,29 @@ def _managed_candidate(candidate: Path) -> tuple[Path | None, str | None]:
     return (None, common) if (common := _common_candidate_rejection(resolved)) else (resolved, None)
 
 
-def _gateway_writable_component(path: Path) -> Path | None:
-    """First executable hierarchy component writable by this gateway process."""
-    for component in (path, *path.parents):
+def _gateway_writable_component(candidate: Path, resolved: Path) -> Path | None:
+    """First executable hierarchy component writable by this gateway process.
+
+    The question ("can this process write it") is asked of every directory the
+    walk from *candidate* to *resolved* actually reads plus the target itself,
+    enumerated by :func:`kiro_crew.platform_compat.traversed_components`. A
+    lexical chain over the already-collapsed *resolved* path cannot name a
+    symlink hop in the middle of the chain, nor a symlinked directory
+    component's own parent, and both are places where whoever can write chooses
+    what executes. The whole *candidate* is the answer when the walk cannot be
+    enumerated: unknown is not shown-to-be-unwritable.
+
+    Windows keeps the lexical chain over *resolved*: the walker is POSIX-shaped
+    and the mode bits carry no information there, so ``os.access`` over the
+    resolved spelling is the check that exists.
+    """
+    if platform_compat.IS_WINDOWS:
+        components: list[Path] | None = [resolved, *resolved.parents]
+    else:
+        components = platform_compat.traversed_components(candidate)
+    if components is None:
+        return candidate
+    for component in components:
         try:
             mode = component.stat().st_mode
         except OSError:
@@ -344,7 +407,7 @@ def _system_candidate(candidate: Path) -> tuple[Path | None, str | None]:
         return None, reason
     if common := _common_candidate_rejection(resolved):
         return None, common
-    if writable := _gateway_writable_component(resolved):
+    if writable := _gateway_writable_component(candidate, resolved):
         return None, f"the executable hierarchy is writable by the gateway user at {writable}"
     return resolved, None
 
@@ -447,11 +510,23 @@ def _node_major(version: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# Ask the kernel which file is executing, not Node. ``process.execPath`` is argv[0]
+# made absolute, and a launcher script that starts the binary with ``exec -a
+# <script>`` sets argv[0] to itself -- Node then reports the script as its own
+# executable. ``/proc/self/exe`` is the link the kernel keeps to the running
+# image; no argv trick reaches it. Linux only: macOS and Windows have no procfs,
+# and there ``process.execPath`` is the best answer available.
+_NODE_EXECUTABLE_PROBE = (
+    "(function(){try{return require('fs').realpathSync('/proc/self/exe')}"
+    "catch(e){return process.execPath}})()"
+)
+
+
 def _node_runtime_executable(node: str) -> str | None:
-    """Native executable behind a version-manager shim, if Node can name it."""
-    rc, out, err = _run([node, "-p", "process.execPath"], _PROBE_TIMEOUT_S)
+    """Native executable behind a version-manager shim, if the host can name it."""
+    rc, out, err = _run([node, "-p", _NODE_EXECUTABLE_PROBE], _PROBE_TIMEOUT_S)
     if rc != 0:
-        logger.debug("node process.execPath failed (rc=%d): %s", rc, err.strip())
+        logger.debug("node executable probe failed (rc=%d): %s", rc, err.strip())
         return None
     raw = out.strip()
     if not raw or "\n" in raw or "\0" in raw or not os.path.isabs(raw):
@@ -702,7 +777,7 @@ def _resolve_executable_file_for_system(candidate: Path) -> tuple[Path | None, s
         return None, "the direct launcher target is not a regular file"
     if common := _common_candidate_rejection(resolved):
         return None, common
-    if writable := _gateway_writable_component(resolved):
+    if writable := _gateway_writable_component(candidate, resolved):
         return None, f"the direct launcher hierarchy is writable by the gateway user at {writable}"
     return resolved, None
 
@@ -1074,6 +1149,50 @@ def _standalone_install_command() -> str:
     )
 
 
+def _cli_package_json_for_command(command: list[str] | None) -> Path | None:
+    """Package metadata served by *command*, or the vetted launcher fallback."""
+    if command is not None and len(command) >= 2:
+        try:
+            entry = Path(command[1]).resolve(strict=True)
+        except OSError:
+            entry = None
+        if (
+            entry is not None
+            and entry.name == "playwright-cli.js"
+            and entry.parent.name == _CLI_PKG_NAME
+            and entry.parent.parent.name == _CLI_PKG_SCOPE
+        ):
+            return entry.parent / "package.json"
+    path = cli_path()
+    if path is None:
+        return None
+    package = _cli_package_for_launcher(Path(path))
+    return package / "package.json" if package is not None else None
+
+
+def installed_cli_version(command: list[str] | None = None) -> str | None:
+    """Return the attributed package version without spawning the CLI."""
+    manifest = _cli_package_json_for_command(command)
+    if manifest is None:
+        return None
+    try:
+        info = manifest.stat()
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_size <= 0
+        or info.st_size > _CLI_PACKAGE_JSON_MAX_BYTES
+    ):
+        return None
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = payload.get("version") if isinstance(payload, dict) else None
+    return _first_version(version) if isinstance(version, str) else None
+
+
 def detect() -> dict[str, Any]:
     """Report what is installed, without changing anything.
 
@@ -1085,14 +1204,8 @@ def detect() -> dict[str, Any]:
     path = cli_path()
     node_version = _node_version()
     major = _node_major(node_version)
-    cli_version: str | None = None
     command = cli_command(path) if path is not None else None
-    if command is not None:
-        rc, out, err = _run([*command, "--version"], _PROBE_TIMEOUT_S)
-        if rc == 0:
-            cli_version = _first_version(out)
-        else:
-            logger.debug("%s --version failed (rc=%d): %s", CLI_BIN, rc, err.strip())
+    cli_version = installed_cli_version(command)
     return {
         "installed": command is not None,
         "cli_path": path if command is not None else None,

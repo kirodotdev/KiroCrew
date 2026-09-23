@@ -1,10 +1,13 @@
 # Durable Run Coordinator Implementation Plan
 
-> **Dormant plan — do not read the checkboxes as in-flight work.** 0 of 53 steps
-> are done and `RunCoordinator` has zero hits in `src/` and `test/`. Nothing here
-> is on main. Its spec is
-> [`../rfc-durable-run-coordinator.md`](../rfc-durable-run-coordinator.md), which
-> is still live, so the plan is unstarted rather than obsolete.
+> **Obsolete plan — do not read the checkboxes as in-flight work.** 0 of 52
+> checklist steps are done and `RunCoordinator` has zero hits in `src/` and
+> `test/`, and none will be executed: its RFC
+> [`../rfc-durable-run-coordinator.md`](../rfc-durable-run-coordinator.md) is
+> `superseded` by
+> [`../rfc-overload-resilience.md`](../rfc-overload-resilience.md), which ships
+> the same store as `src/kiro_crew/taskq/`. Read it only as the intent behind
+> that store.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or

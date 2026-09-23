@@ -5,6 +5,7 @@ import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import ExportSessionItem from './ExportSessionItem'
+import ImportSessionItem from './ImportSessionItem'
 import SessionColorSwatches from './SessionColorSwatches'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
@@ -219,6 +220,11 @@ export default function SessionActionsMenu({
         Item={Item}
         memoryMode={slot?.memory_mode}
       />,
+      // The reverse direction, and the reason it is here rather than in a global
+      // menu: the file this reads is the file the row above writes, and a user
+      // looking for "how do I get that file back in" looks where it came out.
+      // Acts on no session -- it creates one -- so it takes no slotKey.
+      <ImportSessionItem key="install-file" Item={Item} />,
       // Channel-neutral link state and actions — connected origins are read-only,
       // explicit mirrors can be reminded/stopped, and an otherwise-unlinked
       // dashboard session retains the existing Slack channel picker.

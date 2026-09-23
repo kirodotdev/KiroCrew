@@ -616,10 +616,40 @@ describe('AppDetailPage — uncovered surfaces', () => {
     renderDetail()
     await loaded()
 
-    fireEvent.click(screen.getByRole('button', { name: /enable/i }))
-    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME))
+    fireEvent.click(screen.getByRole('button', { name: /^enable$/i }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false))
     await waitFor(() => expect(changed.count()).toBeGreaterThan(0))
     changed.stop()
+  })
+
+  it('confirms pending session approval from the detail disclosure', async () => {
+    getApp.mockResolvedValue(installedApp({ enabled: false, sessionApprovalConsentPending: true }))
+    renderDetail()
+    await loaded()
+
+    const consentButton = screen.getByRole('button', { name: 'Enable and allow chat control' })
+    expect(screen.queryByRole('button', { name: /^enable$/i })).not.toBeInTheDocument()
+    fireEvent.click(consentButton)
+    // One ceremony on every path: the click restates the grant in a dialog and
+    // nothing is enabled until it is confirmed there.
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/Allow .* to control your chats\?/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Can send messages and choose response options/)).toBeInTheDocument()
+    expect(enableApp).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true))
+  })
+
+  it('cancelling the consent dialog enables nothing', async () => {
+    getApp.mockResolvedValue(installedApp({ enabled: false, sessionApprovalConsentPending: true }))
+    renderDetail()
+    await loaded()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(enableApp).not.toHaveBeenCalled()
   })
 
   it('syncs a gateway-managed app that has no update waiting', async () => {
@@ -630,6 +660,46 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(screen.queryByRole('button', { name: /^update$/i })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /sync/i }))
     await waitFor(() => expect(updateApp).toHaveBeenCalledWith(NAME))
+  })
+
+  it('says the app is disabled pending consent when an update widens the grant', async () => {
+    getApp
+      .mockResolvedValueOnce(installedApp())
+      .mockResolvedValueOnce(installedApp({
+        enabled: false,
+        sessionApprovalConsentPending: true,
+      }))
+    // The backend left the app disabled because the new version newly asks for
+    // session control; a generic "updated" toast would report success over an
+    // app that just stopped running.
+    updateApp.mockResolvedValue({ ok: true, notice: 'session_approval_reconsent' })
+    renderDetail()
+    await loaded()
+
+    fireEvent.click(screen.getByRole('button', { name: /sync/i }))
+    const notice = await screen.findByText(/newly asks to control your chats/)
+    expect(notice).toHaveTextContent('Review the permission on this page before enabling it.')
+    expect(screen.getByRole('button', { name: 'Enable and allow chat control' })).toBeInTheDocument()
+    expect(screen.queryByText(/from the registry\./)).not.toBeInTheDocument()
+    // Warn-styled, not the green success box: the text says the app is disabled.
+    const box = notice.closest('[role="status"]')
+    expect(box).not.toBeNull()
+    expect(box?.className).toContain('bg-warn-subtle')
+    expect(box?.className).not.toContain('bg-ok')
+  })
+
+  it('restores the consent warning after leaving and reopening the page', async () => {
+    getApp.mockResolvedValue(installedApp({
+      enabled: false,
+      sessionApprovalConsentPending: true,
+    }))
+
+    renderDetail()
+    await loaded()
+
+    const notice = await screen.findByText(/newly asks to control your chats/)
+    expect(notice).toHaveTextContent('Review the permission on this page before enabling it.')
+    expect(notice.closest('[role="status"]')).not.toBeNull()
   })
 
   it('reports a failed sync inline and lets the user dismiss it', async () => {
@@ -765,6 +835,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
           cron: true,
           network: true,
           memory: 'read',
+          sessionApproval: true,
         },
         mcpServers: {
           ledgerd: {
@@ -796,6 +867,17 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(screen.getByText('Cron: yes')).toBeInTheDocument()
     expect(screen.getByText('Network: yes')).toBeInTheDocument()
     expect(screen.getByText(/Memory:/)).toBeInTheDocument()
+    expect(screen.getByText(/Can send messages and choose response options in your chats/)).toBeInTheDocument()
+    expect(screen.getByText('Chat approval modes it can set')).toBeInTheDocument()
+    // Each mode carries the picker's gloss, so "Trust" here cannot be read as
+    // the consent verb.
+    expect(screen.getByText(/checks with you before doing anything/)).toBeInTheDocument()
+    expect(screen.getByText('sessionApproval')).toBeInTheDocument()
+    expect(screen.getByText('Normal')).toBeInTheDocument()
+    expect(screen.getByText('Reads')).toBeInTheDocument()
+    expect(screen.getByText('Trust (chat mode)')).toBeInTheDocument()
+    // YOLO is process-global and dashboard-only, so it is not offered to apps.
+    expect(screen.queryByText('YOLO')).toBeNull()
 
     expect(screen.getByText('MCP Servers')).toBeInTheDocument()
     expect(screen.getByText('ledgerd')).toBeInTheDocument()

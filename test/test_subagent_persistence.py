@@ -17,12 +17,15 @@ from kiro_crew.subagent_persistence import (
     list_orphans,
     mark_delivered,
     prune_stale_tombstones,
+    read_run_agent_selection,
+    read_run_app,
     read_state,
     read_tombstone,
     record_slow_command,
     remember_live_cleanup_identity,
     update_state,
     write_result_chunk,
+    write_run_agent,
     write_tombstone,
 )
 
@@ -65,6 +68,57 @@ class TestCreateAgentFolder:
         path = create_agent_folder("abc123", task="t2")
         state = json.loads((path / "state.json").read_text(encoding="utf-8"))
         assert state["task"] == "t2"
+
+
+class TestCanonicalRunAgent:
+    def test_template_uses_same_owner_record(self, agent_root):
+        create_agent_folder("selected", agent="worker")
+        update_state("selected", agent="display-only")
+        assert read_run_agent_selection("selected") == ("template", "worker")
+        assert read_state("selected")["execution_context"]["template_id"] == "worker"
+        assert not (agent_root.parent / "member-memory-bindings").exists()
+
+    @pytest.mark.parametrize(
+        "kind,agent", [("unknown", "worker"), ("member", ""), (None, "worker"), ("template", [])]
+    )
+    def test_invalid_selection_cannot_replace_execution(self, agent_root, kind, agent):
+        create_agent_folder("selected", agent="worker")
+        with pytest.raises(ValueError):
+            write_run_agent("selected", agent, kind=kind)
+        assert read_run_agent_selection("selected") == ("template", "worker")
+
+    def test_missing_owner_record_refuses(self, agent_root):
+        folder = create_agent_folder("selected", agent="worker")
+        (folder / "state.json").unlink()
+        with pytest.raises(ValueError, match="unavailable"):
+            read_run_agent_selection("selected")
+
+    def test_template_override_preserves_memory_and_app(self, agent_root):
+        create_agent_folder("selected", app="example-app")
+        before = read_state("selected")["execution_context"]
+        write_run_agent("selected", "worker")
+        after = read_state("selected")["execution_context"]
+        assert after["store"] == before["store"]
+        assert after["app"] == before["app"]
+        assert after["template_id"] == "worker"
+
+
+class TestCanonicalRunApp:
+    @pytest.mark.parametrize("app", ["", "example-app"])
+    def test_app_attribution_is_in_owner_execution(self, agent_root, app):
+        create_agent_folder("app-owner", app=app)
+        update_state("app-owner", app="display-only")
+        assert read_run_app("app-owner") == app
+        assert read_state("app-owner")["execution_context"]["app"] == app
+
+    @pytest.mark.parametrize("app", [None, 42, []])
+    def test_invalid_app_cannot_become_person_owned(self, agent_root, app):
+        folder = create_agent_folder("app-owner", app="example-app")
+        record = read_state("app-owner")
+        record["execution_context"]["app"] = app
+        (folder / "state.json").write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(ValueError):
+            read_run_app("app-owner")
 
 
 # ── update_state ─────────────────────────────────────────────────────
@@ -736,6 +790,7 @@ class TestSpawnCreatesFolder:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
 
         ctx = MagicMock()
         ctx.build_message = MagicMock(return_value=("built_message", None))
@@ -803,6 +858,7 @@ class TestSpawnCreatesFolder:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
 
         ctx = MagicMock()
         ctx.build_message = MagicMock(return_value=("built_message", None))
@@ -874,6 +930,7 @@ class TestResultStreamingToAgentFolder:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -930,6 +987,7 @@ class TestPerTurnStateUpdates:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -989,6 +1047,7 @@ class TestPerTurnStateUpdates:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1129,6 +1188,7 @@ class TestTombstoneOnAbnormalExit:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1195,6 +1255,7 @@ class TestTombstoneOnAbnormalExit:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1247,6 +1308,7 @@ class TestFolderCleanupOnSuccess:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1300,6 +1362,7 @@ class TestFolderCleanupOnSuccess:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1331,7 +1394,7 @@ class TestOrphanReconciliation:
     """Verify _reconcile_orphans handles all three branches."""
 
     @pytest.mark.asyncio
-    async def test_dead_pid_with_result_tombstoned_as_delivered(self, agent_root):
+    async def test_dead_pid_with_complete_result_tombstoned_as_delivered(self, agent_root):
         from unittest.mock import MagicMock, patch
 
         from kiro_crew.subagent import SubagentManager
@@ -1340,12 +1403,13 @@ class TestOrphanReconciliation:
         sessions = MagicMock()
         manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
 
-        # Simulate orphan from prior run: dead PID, has result
+        # Simulate orphan from prior run: dead PID, has a result its run
+        # finished writing (result_complete recorded at the complete event).
         create_agent_folder("orphan1", task="old task", parent_session="dashboard:default")
         write_result_chunk("orphan1", "some result")
         from kiro_crew.subagent_persistence import update_state
 
-        update_state("orphan1", pid=99999)  # dead PID
+        update_state("orphan1", pid=99999, result_complete=True)  # dead PID
 
         with patch.object(manager, "_is_pid_alive", return_value=False):
             await manager._reconcile_orphans()
@@ -1353,6 +1417,62 @@ class TestOrphanReconciliation:
         ts = json.loads((agent_root / "orphan1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "gateway_restart"
         assert ts["recovery_action"] == "result_available"
+
+    @pytest.mark.asyncio
+    async def test_dead_pid_with_partial_result_is_not_offered_as_a_result(self, agent_root):
+        """Streamed bytes without a complete event are a fragment, not an answer.
+
+        ``write_result_chunk`` appends per streamed chunk, so result.txt is
+        non-empty from the agent's first token. A restart landing mid-turn
+        therefore leaves a file that looks exactly like a finished result to
+        anyone measuring its size — which is what the parent is told to go read.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.subagent import SubagentManager
+        from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
+
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+
+        create_agent_folder("orphan1p", task="old task", parent_session="dashboard:default")
+        # An opening sentence, nothing more — no complete event ever arrived.
+        write_result_chunk("orphan1p", "I'll start by opening a scratch worktree")
+        from kiro_crew.subagent_persistence import update_state
+
+        update_state("orphan1p", pid=99999)
+
+        with patch.object(manager, "_is_pid_alive", return_value=False):
+            await manager._reconcile_orphans()
+
+        ts = json.loads((agent_root / "orphan1p" / "tombstone.json").read_text(encoding="utf-8"))
+        assert ts["cause"] == "gateway_restart"
+        assert ts["recovery_action"] == "partial_result"
+
+    @pytest.mark.asyncio
+    async def test_partial_orphan_notice_does_not_promise_a_result(self, agent_root):
+        """The notice is the only thing standing between a fragment and a parent."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from kiro_crew.subagent import SubagentManager
+        from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
+
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        create_agent_folder("orphan1n", task="old task", parent_session="dashboard:default")
+        write_result_chunk("orphan1n", "I'll start by opening a scratch worktree")
+        state = {"id": "orphan1n", "task": "old task", "parent_session": ""}
+
+        with patch.object(
+            manager, "_try_inject_orphan_notification", AsyncMock(return_value=False)
+        ):
+            partial = await manager._notify_orphan("orphan1n", state, "partial_result", True)
+            whole = await manager._notify_orphan("orphan1n", state, "result_available", True)
+
+        assert partial is not None and whole is not None
+        assert "Partial output saved at" in partial
+        assert "unfinished fragment" in partial
+        # The complete-result wording must not leak onto the partial notice.
+        assert "Use the read tool to retrieve it." not in partial
+        assert "Use the read tool to retrieve it." in whole
 
     @pytest.mark.asyncio
     async def test_dead_pid_no_result_tombstoned_as_notified(self, agent_root):
@@ -1504,7 +1624,8 @@ class TestOrphanNotification:
 
         create_agent_folder("notif1", task="important task", parent_session="dashboard:default")
         write_result_chunk("notif1", "the answer is 42")
-        update_state("notif1", pid=99999)
+        # The run finished writing before the restart, so it recorded completion.
+        update_state("notif1", pid=99999, result_complete=True)
 
         with (
             patch.object(manager, "_is_pid_alive", return_value=False),
@@ -1944,60 +2065,39 @@ class TestRecordSlowCommandRotation:
             os.close(lock_fd)
 
 
-class TestProtectedMemoryMode:
+class TestCanonicalMemoryMode:
     @pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
-    def test_mode_survives_editable_metadata_replacement(self, agent_root, mode):
+    def test_recreation_keeps_original_restriction(self, agent_root, mode):
         from kiro_crew.subagent_persistence import read_run_memory_mode
 
         folder = create_agent_folder("privacy-mode", memory_mode=mode)
-        (folder / "state.json").write_text(
-            json.dumps({"memory_mode": "persistent", "parent_session": "dashboard:replacement"}),
-            encoding="utf-8",
-        )
-        assert read_run_memory_mode("privacy-mode") == mode
         create_agent_folder("privacy-mode", memory_mode="persistent")
         assert read_run_memory_mode("privacy-mode") == mode
+        assert (folder / "state.json").exists() == (mode == "persistent")
 
-    def test_recreation_can_only_tighten_mode(self, agent_root):
+    def test_tightening_survives_restart_without_new_body(self, agent_root):
+        from kiro_crew import subagent_persistence as persistence
+
+        folder = create_agent_folder(
+            "privacy-tighten", task="original persisted body", app="example-app"
+        )
+        assert persistence.tighten_run_memory_mode("privacy-tighten", "temporary") == "temporary"
+        update_state("privacy-tighten", task="restricted new body")
+        durable = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+        assert durable["task"] == "original persisted body"
+        persistence._LIVE_RUN_STATES.clear()
+        assert persistence.read_run_memory_mode("privacy-tighten") == "temporary"
+        assert read_run_app("privacy-tighten") == "example-app"
+
+    def test_malformed_mode_cannot_default(self, agent_root):
+        folder = create_agent_folder("privacy-damaged")
+        state = read_state("privacy-damaged")
+        state["execution_context"]["memory_mode"] = "unknown"
+        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
         from kiro_crew.subagent_persistence import read_run_memory_mode
 
-        expected = "persistent"
-        for mode in ("persistent", "incognito", "temporary", "incognito", "persistent"):
-            create_agent_folder("privacy-tighten", memory_mode=mode)
-            expected = "temporary" if mode == "temporary" or expected == "temporary" else mode
-            assert read_run_memory_mode("privacy-tighten") == expected
-
-    @pytest.mark.parametrize("damage", ["missing", "legacy", "unknown", "corrupt"])
-    def test_unknown_mode_cannot_be_recreated_as_persistent(self, agent_root, damage):
-        from kiro_crew.subagent_persistence import _run_memory_identity_path, read_run_memory_mode
-
-        create_agent_folder("privacy-damaged", memory_mode="temporary")
-        record = _run_memory_identity_path("privacy-damaged")
-        if damage == "missing":
-            record.unlink()
-        elif damage == "corrupt":
-            record.write_text("not json", encoding="utf-8")
-        else:
-            payload = {"memory_store": "", "version": 2}
-            if damage == "unknown":
-                payload["memory_mode"] = "unexpected"
-            record.write_text(json.dumps(payload), encoding="utf-8")
-        original = record.read_bytes() if record.exists() else None
-        with pytest.raises(ValueError, match="memory binding unavailable"):
+        with pytest.raises(ValueError):
             read_run_memory_mode("privacy-damaged")
-        with pytest.raises(ValueError, match="memory binding unavailable"):
-            create_agent_folder("privacy-damaged", memory_mode="persistent")
-        assert (record.read_bytes() if record.exists() else None) == original
-
-    def test_tightening_does_not_recreate_run_state(self, agent_root):
-        from kiro_crew.subagent_persistence import read_run_memory_mode, tighten_run_memory_mode
-
-        folder = create_agent_folder("mode-only-update", task="keep this original task")
-        before = (folder / "state.json").read_bytes()
-        assert tighten_run_memory_mode("mode-only-update", "temporary") == "temporary"
-        assert tighten_run_memory_mode("mode-only-update", "persistent") == "temporary"
-        assert read_run_memory_mode("mode-only-update") == "temporary"
-        assert (folder / "state.json").read_bytes() == before
 
 
 @pytest.mark.parametrize("original", ["persistent", "incognito", "temporary"])
@@ -2014,16 +2114,11 @@ def test_runtime_mode_binding_only_tightens(agent_root, original, requested):
     assert read_session_memory_mode(key) == expected
 
 
-def test_runtime_mode_publication_error_is_sanitized(agent_root, monkeypatch):
-    from kiro_crew.subagent import _describe_exception
+def test_restricted_runtime_record_never_calls_disk_writer(agent_root, monkeypatch):
     from kiro_crew.subagent_persistence import bind_session_memory_mode
 
     def fail(*args, **kwargs):
-        raise OSError("private-path-must-not-escape")
+        raise AssertionError("restricted record attempted a disk write")
 
     monkeypatch.setattr("kiro_crew.subagent_persistence._atomic_write", fail)
-    with pytest.raises(ValueError) as error:
-        bind_session_memory_mode("taskrunner:failed:runtime", "temporary")
-    assert _describe_exception(error.value) == (
-        "ValueError: memory binding unavailable: session policy publication failed"
-    )
+    assert bind_session_memory_mode("taskrunner:restricted:runtime", "temporary") == "temporary"

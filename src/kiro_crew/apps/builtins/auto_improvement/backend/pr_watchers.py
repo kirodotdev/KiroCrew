@@ -134,13 +134,24 @@ _PR_URL_RE = re.compile(r"^https://[^\s]+/(?:pull|merge_requests)/\d+", re.IGNOR
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 
-def _git(*args: str, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
+def _git(
+    *args: str, timeout: float = 60.0, cwd: str | None = None
+) -> subprocess.CompletedProcess[str]:
     # Callers pass their own ``-C <clone>``; recover it so the attributes pin (which unbinds
     # repository-controlled filter/diff drivers) is refreshed for the tree being touched.
-    if "-C" in args:
-        i = args.index("-C")
-        if i + 1 < len(args):
-            require_pinned(args[i + 1])
+    # The same path becomes the child's ``cwd``: ``-C`` fixes the tree git reads, but the
+    # working directory would otherwise be inherited from the gateway, which is the one
+    # thing about a host-side spawn that must never be ambient. Both name the SAME absolute
+    # path -- git resolves ``-C`` against the child's cwd, so a relative clone handed to both
+    # would be applied twice. A call with no ``-C`` (``clone``) names its cwd explicitly.
+    argv = list(args)
+    if "-C" in argv:
+        i = argv.index("-C")
+        if i + 1 < len(argv):
+            require_pinned(argv[i + 1])
+            argv[i + 1] = os.path.abspath(argv[i + 1])
+            if cwd is None:
+                cwd = argv[i + 1]
     # ``errors="replace"``, not a strict decode. `git diff` emits the CONTENT of changed
     # files, and a repository legitimately contains non-UTF-8 bytes — a PNG fixture, a
     # latin-1 source file. A strict decode raises UnicodeDecodeError from inside
@@ -151,12 +162,13 @@ def _git(*args: str, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
     # need — whether the diff is EMPTY — and never fabricates emptiness, since a replaced
     # byte is still a byte.
     return subprocess.run(
-        ["git", *_GIT_SAFE_CONFIG, *args],
+        ["git", *_GIT_SAFE_CONFIG, *argv],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+        cwd=cwd,
     )
 
 
@@ -228,7 +240,18 @@ def setup_isolated_clone(
             shutil.rmtree(dest, ignore_errors=True)
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
         # --local hardlinks the object store: no network, near-instant, cheap on disk.
-        proc = _git("clone", "--local", shared_clone, dest, timeout=300)
+        # Absolute operands and the destination's parent as cwd: ``clone`` has no ``-C``
+        # to pin the child's working directory, and a relative operand must not be
+        # re-resolved against the pinned cwd.
+        dest_abs = os.path.abspath(dest)
+        proc = _git(
+            "clone",
+            "--local",
+            os.path.abspath(shared_clone),
+            dest_abs,
+            timeout=300,
+            cwd=os.path.dirname(dest_abs),
+        )
         if proc.returncode != 0:
             # Redact BEFORE the bound: a slice can cut a credential in the URL git
             # echoes mid-match, leaving a fragment no downstream pass recognises.

@@ -83,8 +83,12 @@ export function useAppUpdates({
   // shape). Not `runUpdate` itself — that catch-all resolves on failure and
   // would make the gate report success over a failed update.
   const retryUpdate = async (name: string) => {
-    await api.updateApp(name)
+    const updateResult = await api.updateApp(name)
     announceAppsChanged()
+    if (updateResult?.notice === 'session_approval_reconsent') {
+      updateApp(name)
+      return
+    }
     setSuccess(i18nT('pages.appsPage.updated_app', { count: 1 }))
   }
 
@@ -103,8 +107,12 @@ export function useAppUpdates({
     setUpdatePending(name)
     setError('')
     try {
-      await api.updateApp(name)
+      const updateResult = await api.updateApp(name)
       announceAppsChanged()
+      if (updateResult?.notice === 'session_approval_reconsent') {
+        updateApp(name)
+        return
+      }
       // An in-place sync is the one action here whose success is otherwise
       // INVISIBLE: re-copying a source directory usually carries the same
       // version, so the card re-renders byte-identical and the dev cannot tell
@@ -134,10 +142,14 @@ export function useAppUpdates({
     setError('')
     const failed: string[] = []
     let succeeded = 0
+    const consentNeeded: string[] = []
     for (let i = 0; i < targets.length; i++) {
       try {
-        await api.updateApp(targets[i])
+        const updateResult = await api.updateApp(targets[i])
         succeeded += 1
+        if (updateResult?.notice === 'session_approval_reconsent') {
+          consentNeeded.push(targets[i])
+        }
       } catch {
         failed.push(targets[i])
       }
@@ -151,7 +163,19 @@ export function useAppUpdates({
     // is carried by the {done}/{total} label, not by rows dropping early. A
     // run with zero successes changed nothing worth refreshing.
     if (succeeded > 0) announceAppsChanged()
-    if (failed.length) setError(i18nT('pages.appsPage.failed_to_update', { names: failed.join(', ') }))
+    // One notice for the whole batch. An update that newly asks for chat
+    // control leaves that app DISABLED pending consent; that is not a failure,
+    // but the user must hear about every such app, not be routed to the first.
+    const label = (name: string) => apps.find(a => a.name === name)?.displayName || name
+    const notices: string[] = []
+    if (failed.length) notices.push(i18nT('pages.appsPage.failed_to_update', { names: failed.map(label).join(', ') }))
+    for (const name of consentNeeded) {
+      notices.push(i18nT('pages.appsPage.updated_needs_session_approval_consent', { name: label(name) }))
+    }
+    // One line per fact: the notice surface is whitespace-pre-wrap, so a
+    // newline keeps "Docs failed" and "Crew Keyboard awaits consent" from
+    // reading as one sentence about each other.
+    if (notices.length) setError(notices.join('\n'))
     else setSuccess(i18nT('pages.appsPage.updated_app', { count: targets.length }))
   }
 

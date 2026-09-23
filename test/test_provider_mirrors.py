@@ -102,27 +102,35 @@ def _tracking_resolves(tracking: str) -> bool:
 
 
 #: A spec that references one server and defines it. Fed to the ref resolver to
-#: ask the only question that distinguishes a `native` backend structurally: is
-#: this an id whose refs are satisfied by the spec's OWN mcpServers, because the
-#: harness reads that file itself? Every other kind is judged against the wire
-#: array, so the same spec leaves the ref unresolved there.
-_NATIVE_PROBE_SPEC = {"tools": ["@probesrv"], "mcpServers": {"probesrv": {}}}
+#: ask the one question that separates the kinds structurally: is this an id whose
+#: refs are satisfied by the spec's OWN mcpServers, because those servers reach the
+#: session by a channel other than the ``session/new`` array? `native` (the harness
+#: reads the file itself) and `external` (Crew projects the spec through a channel
+#: of its own, KAS's ``_meta.kiro.customAgents``) both answer yes. Every other kind
+#: mounts exactly the array it is sent, so the same spec leaves the ref unresolved.
+_OFF_WIRE_PROBE_SPEC = {"tools": ["@probesrv"], "mcpServers": {"probesrv": {}}}
+
+#: The kinds whose spec servers reach the session OFF the wire. `mirror` is BY
+#: DEFINITION the array projection, and `no-channel` / `broker-only` put none of
+#: the spec's servers anywhere, so those three are judged against the array.
+_OFF_WIRE_KINDS = frozenset({ProjectionKind.NATIVE, ProjectionKind.EXTERNAL})
 
 
 def _resolver_reads_the_spec_itself(backend: str) -> bool:
     """Does the ref resolver credit *backend* with the spec's own servers?
 
-    This is what makes `native` checkable by something other than a list of
+    This is what makes the kind checkable by something other than a list of
     forbidden words. `native` claims the harness reads
-    ``~/.kiro/agents/<name>.json`` itself, and exactly one other module already
-    has to know that:
+    ``~/.kiro/agents/<name>.json`` itself; `external` claims Crew projects the
+    spec down a channel that is not this folder's array. Exactly one other module
+    already has to know which backends those are:
     ``agent_sdk.mcp_refs`` satisfies a ``@server`` ref from the spec's own
-    definitions for such a backend and from the wire array for every other. So a
-    declaration claiming `native` is cross-checked against the resolver that acts
-    on the claim, in a different package, rather than against how its prose is
-    worded.
+    definitions for a member of ``ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE`` and from
+    the wire array for every other. So a declaration's kind is cross-checked
+    against the resolver that acts on the claim, in a different package, rather
+    than against how its prose is worded.
     """
-    return unresolved_server_refs(_NATIVE_PROBE_SPEC, [], backend=backend) == []
+    return unresolved_server_refs(_OFF_WIRE_PROBE_SPEC, [], backend=backend) == []
 
 
 def projection_complaints(
@@ -157,10 +165,15 @@ def projection_complaints(
             complaints.append(
                 f"{backend!r}: has a MIRRORS class but declares kind={declared.kind.value}"
             )
-        if (declared.kind is ProjectionKind.NATIVE) != _resolver_reads_the_spec_itself(backend):
-            claimed = "claims native" if declared.kind is ProjectionKind.NATIVE else "does not"
+        if (declared.kind in _OFF_WIRE_KINDS) != _resolver_reads_the_spec_itself(backend):
+            claimed = (
+                f"kind={declared.kind.value} says the spec's servers reach the session "
+                "off the wire"
+                if declared.kind in _OFF_WIRE_KINDS
+                else f"kind={declared.kind.value} says the session mounts only the array"
+            )
             complaints.append(
-                f"{backend!r}: {claimed} claim native, but agent_sdk.mcp_refs "
+                f"{backend!r}: {claimed}, but agent_sdk.mcp_refs "
                 "disagrees about whether this backend resolves refs from the spec "
                 "itself -- the kind and the resolver acting on it must not diverge"
             )

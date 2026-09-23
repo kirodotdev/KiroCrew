@@ -27,15 +27,23 @@
     "are checked only on their own host -- a Windows row reported broken on Linux",
     "would be a false rejection of a fix.",
     "",
-    "verify_fix.py NEVER runs anything out of this corpus, because a row is data and",
+    "verify_fix.py NEVER takes a row's text as a command, because a row is data and",
     "not authorization: whoever can edit a JSON file or reach a database is not",
-    "thereby authorized to run commands with the operator's access.",
+    "thereby authorized to run commands with the operator's access. A 'test' row is",
+    "the one kind it executes, and the row supplies only a pytest node id spliced",
+    "into a fixed argv -- 'python -m pytest -- <selector>', no shell -- after the",
+    "selector is validated as worktree-relative.",
     "",
     "So a 'shell' row is CHECKED -- classified against the fixed worktree's own tool",
     "gate, all four checks it applies to a shell command in its order (path fence,",
     "sensitive-command tier, exfiltration auditor, deny-rule catalog -- the same tier",
     "table scripts/deny_diff.py declares), and a refusal by any of them rejects the",
-    "fix. A 'flow' or 'cron' row is RECORDED and reported for a human to exercise: an",
+    "fix. A 'test' row is RUN -- its pytest node is collected and executed against",
+    "the fixed worktree, a failure rejects the fix, and a node that does not resolve",
+    "rejects it too rather than passing quietly. That is the kind for a behaviour no",
+    "command line can express: an environment variable that must still reach a child,",
+    "a tier that must still resolve the same way. A 'flow' or 'cron' row is RECORDED",
+    "and reported for a human to exercise: an",
     "MCP tool has no command line, a chat turn needs a gateway, and firing a schedule",
     "has effects no deadline bounds. Their value is naming what to try, and the test",
     "suite asserts they are well formed at review time. A row is named in every",
@@ -384,6 +392,48 @@
       "command_or_flow": "0 9 * * 1-5 :: gh pr list --json number,title",
       "platform": "any",
       "reason": "An operator's weekday digest cron: a range field plus a command carrying flags, which is the pair shape most likely to break under stricter parsing."
+    },
+    {
+      "kind": "test",
+      "surface": "S10 cron + scripts",
+      "command_or_flow": "test/test_s10_cron_env_governance_escape.py::test_the_operators_own_policy_path_still_reaches_the_child",
+      "platform": "any",
+      "reason": "The operator's own KIROCREW_SECURITY_POLICY and KIROCREW_ADMISSION_POLICY must keep reaching every agent child: an absent tier resolves the standalone ungoverned ceiling, so scrubbing the pair from the spawn costs the operator the ceiling they configured. This is the exact behaviour the first round-2 fix for finding 16 regressed, and no shell row can notice an env var going missing. The node is the positive control added by PR #11724 on the finding-16 branch, so the row becomes checkable when that PR lands on main; it is proposed now because the regression it catches is the one that shipped green."
+    },
+    {
+      "kind": "test",
+      "surface": "S10 cron + scripts",
+      "command_or_flow": "test/test_acp_pod_home_remap.py::TestAwsCredentialPointersAreNotExportedIntoThePod::test_the_global_secret_scrub_still_owns_the_secret_carrying_vars",
+      "platform": "any",
+      "reason": "The same class of behaviour as the operator-env row, but checkable on main TODAY: it asserts that scrub_agent_subprocess_env passes the non-denied CREDENTIAL_POINTER_ENV_VARS through while still dropping the secret-carrying names, so any fix that widens the agent env denylist trips it. Proposed alongside the finding-16 node because that node lives only on the fix branch; this one gives the corpus an over-strict-scrub tripwire in the meantime."
+    },
+    {
+      "kind": "test",
+      "surface": "S7 secrets + governance ceiling",
+      "command_or_flow": "test/test_governance_tier_ladder.py",
+      "platform": "any",
+      "reason": "Single-tier and tighten-only governance must resolve exactly as before a ceiling fix: the round-2 fix for findings 19 and 20 changed how a composed ceiling's patterns are read, and the ladder file is where an over-tightened or over-relaxed tier shows up. A deny fence classification cannot see this at all, because the behaviour is resolution precedence rather than a refused command."
+    },
+    {
+      "kind": "test",
+      "surface": "S7 secrets + governance ceiling",
+      "command_or_flow": "test/test_governance_policy.py",
+      "platform": "any",
+      "reason": "The policy loader and resolver a single-tier operator depends on: env tier, home tier and the ungoverned default, plus the permit/deny resolution every caller reads. A ceiling fix that tightens the composed-ruleset readers must leave the plain one-tier case untouched, and this file is where that is asserted."
+    },
+    {
+      "kind": "test",
+      "surface": "S10 cron + scripts",
+      "command_or_flow": "test/test_s10_cron_env_governance_escape.py::test_cron_job_env_must_not_deliver_governance_policy_paths",
+      "platform": "any",
+      "reason": "An app's cron job must keep delivering its own ordinary variables: this node carries the BENIGN positive control (extra_env['BENIGN'] == '1') beside the security property, so a screen that grew from refusing two governance paths into refusing a job's whole env map fails it. Scheduled app features are a legitimate product use, and the fix for finding 16 is a filter sitting directly on that path. The node is from PR #11724 on the finding-16 branch, so the row becomes checkable when that PR lands on main."
+    },
+    {
+      "kind": "test",
+      "surface": "S1 bash classifier fence",
+      "command_or_flow": "test/test_denied_commands_security.py",
+      "platform": "any",
+      "reason": "The deny fence's own assertions, as a behaviour row rather than a classification: the shell rows of this corpus each ask 'is this one command still permitted', and this file asks the complementary question -- that the real refusals still fire and the documented permits still pass. A fix that widened a rule until every golden path happened to survive would still trip it, which is the failure mode a per-command corpus cannot see."
     }
   ]
 }

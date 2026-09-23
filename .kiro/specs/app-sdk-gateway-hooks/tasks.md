@@ -1,5 +1,7 @@
 # Implementation Plan: App SDK Gateway Hooks
 
+Status: implemented in `src/kiro_crew/apps/hooks_integration.py` and the related `apps` modules.
+
 ## Overview
 
 Implement gateway-side hooks enabling apps to register routes, manage crons, and participate in lifecycle events without modifying KiroCrew core files. Implementation is in Python (aiohttp) within the KiroCrew package.

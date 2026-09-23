@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
+import sys
 
 import pytest
 
@@ -763,6 +764,75 @@ class TestRepoExecConfigRefusal:
         _git_config(repo, "--worktree", "filter.evil.process", "sh -c ':'")
         assert "filter.evil.process" in update_governance.repo_exec_config_reason(repo)
 
+    def test_worktree_extension_without_config_file_is_allowed(self, tmp_path):
+        """Extension on, `config.worktree` absent: git creates the file lazily,
+        so this is a healthy EMPTY scope, not an unreadable one. Probing it
+        anyway exits 128 and misreports a filter-free repo as unprobeable."""
+        repo = _init_repo(tmp_path / "wt-nofile")
+        _git_config(repo, "--local", "extensions.worktreeConfig", "true")
+        assert not (pathlib.Path(repo) / ".git" / "config.worktree").exists()
+        assert update_governance.repo_exec_config_reason(repo) == ""
+
+    @pytest.mark.parametrize("spelling", ["yes", "on", "1", None])
+    def test_worktree_driver_refused_under_every_true_spelling(self, tmp_path, spelling):
+        """git accepts `yes`/`on`/`1` and the valueless boolean form as TRUE for
+        `extensions.worktreeConfig`, and honors `config.worktree` under each.
+        A raw-spelling compare reads them as off and never probes the scope, so
+        a worktree-scoped driver executes unseen; `--bool` folds them all."""
+        repo = _init_repo(tmp_path / f"wt-{spelling or 'valueless'}")
+        if spelling is None:
+            with open(pathlib.Path(repo) / ".git" / "config", "a") as fh:
+                fh.write("[extensions]\n\tworktreeConfig\n")
+        else:
+            _git_config(repo, "--local", "extensions.worktreeConfig", spelling)
+        _git_config(repo, "--worktree", "filter.evil.process", "sh -c ':'")
+        assert "filter.evil.process" in update_governance.repo_exec_config_reason(repo)
+
+    @pytest.mark.skipif(os.name == "nt", reason="CR is not a legal NTFS name byte")
+    def test_probe_hands_a_cr_bearing_git_dir_to_the_classifier_intact(self, tmp_path):
+        """A ``\\r`` in the repo path is CONTENT in git's answer, not a newline.
+
+        ``worktree_probe_failure_is_empty_scope`` lstats the exact directory
+        ``rev-parse --absolute-git-dir`` names. A text-mode capture puts a
+        universal-newline ``TextIOWrapper`` on the pipe, which rewrites the
+        ``\\r`` and misdirects that lstat to a path that names nothing --
+        clearing a ``--worktree`` scope whose ``config.worktree`` EXISTS as the
+        healthy empty scope, i.e. dropping the caller's refusal. The probe must
+        return git's bytes decoded, never newline-translated."""
+        repo = _init_repo(tmp_path / "wt\rcr")
+        out = update_governance._git_probe(repo, "rev-parse", "--absolute-git-dir")
+        assert out is not None
+        assert "\r" in out, "the CR in the path was rewritten by newline translation"
+        gitdir = out[:-1] if out.endswith("\n") else out
+        assert pathlib.Path(gitdir).is_dir()
+
+    @pytest.mark.skipif(
+        os.name == "nt" or sys.platform == "darwin",
+        reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+    )
+    def test_probe_hands_a_non_utf8_git_dir_to_the_classifier_round_trippable(self, tmp_path):
+        """Decode fidelity is the CR test's sibling: a repo-path byte that is
+        not valid UTF-8 must survive the probe's decode as a PEP 383 surrogate
+        (``utf8_path_stdout``), or the classifier's ``os.fsencode``-backed
+        ``lstat`` inspects a U+FFFD path that names nothing -- clearing a
+        ``--worktree`` scope whose ``config.worktree`` EXISTS, i.e. dropping
+        the caller's refusal exactly the way the newline rewrite did."""
+        from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
+        from kiro_crew.subprocess_utf8 import utf8_path_stdout
+
+        repo = _init_repo(tmp_path / os.fsdecode(b"wt-\xff"))
+        out = update_governance._git_probe(
+            repo, "rev-parse", "--absolute-git-dir", decoder=utf8_path_stdout
+        )
+        assert out is not None
+        gitdir = out[:-1] if out.endswith("\n") else out
+        assert "\udcff" in gitdir, "the non-UTF-8 byte was rewritten by the decode"
+        assert pathlib.Path(gitdir).is_dir()
+        # End to end: with the file PRESENT the classifier must fail closed.
+        with open(os.fsencode(gitdir) + b"/config.worktree", "wb"):
+            pass
+        assert worktree_probe_failure_is_empty_scope(out, repo) is False
+
     def test_included_driver_is_refused(self, tmp_path):
         """For a SPECIFIC scope query git defaults include-following OFF.
 
@@ -780,6 +850,7 @@ class TestRepoExecConfigRefusal:
         # Precondition: git itself must resolve it, or the case proves nothing.
         resolved = subprocess.run(
             ["git", "-C", repo, "config", "--includes", "--get", "filter.evil.clean"],
+            cwd=repo,
             capture_output=True,
             env=_fixture_git_env(repo),
             **UTF8_TEXT,

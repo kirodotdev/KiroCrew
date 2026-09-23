@@ -13,11 +13,14 @@ When an app's executable surfaces are **admitted** and enabled, its in-process b
 - Manifest `setup` lifecycle scripts run via `/bin/bash -c` (OS-sandbox-wrapped, but
   the script body comes from the app's `app.json`)
 
-The app **permission system** (`permissions.py`, `context.py`, `app.json`
-`permissions.mcpTools`) gates only the **SDK tool surface** handed to the app
-context. It does **not** restrict imports, filesystem, network, or subprocess use
-by the loaded module. There is currently **no process-level sandbox** around app
-code itself.
+The `AppContext` capability permissions (`permissions.cron`,
+`permissions.events`, `permissions.spawn`, `permissions.storage`, and
+`permissions.jobs`) gate only which SDK objects `context.py` populates.
+`permissions.mcpTools` is validated and displayed by `permissions.py`, but it
+currently has no runtime call site and must not be treated as an execution
+boundary. Neither mechanism restricts imports, filesystem, network, or
+subprocess use by the loaded module. There is currently **no process-level
+sandbox** around app code itself.
 
 > **Admitting and enabling an app is therefore equivalent to running that code with the same privileges as Kiro Crew itself.** Only trust apps you trust.
 
@@ -32,6 +35,70 @@ code itself.
 - **SEL audit** — every module load is recorded in the Security Event Log with its
   trust class (`builtin` / `third_party`), so app-code execution is auditable.
 - **Execution admission defaults to deny** — `agent.apps_allow_third_party` defaults to `false`. A non-builtin app needs either an explicit per-app `agent.apps_trusted` grant (with its repository binding, where applicable) or the broad `apps_allow_third_party=true` grant. `app_execution_denied` is consulted before in-process module loading, backend spawning, enable-time side effects, and manifest shell lifecycle commands; allowed and denied decisions are SEL-audited. Builtin status is accepted only when the registered app name and resolved path prove shipped provenance.
+- **Turning admission off REVOKES, it does not merely stop admitting** — the app's
+  tracked BACKEND PROCESS is stopped, so the setting is never a label that changes
+  nothing until the next restart. Three paths enforce it, and they exist because
+  the setting has three writers:
+  - `PUT /api/security/trusted-apps/allow-all` sweeps on the falling edge before
+    persisting `false`, so each app's `on_shutdown` hook can still load, then
+    sweeps a second time after the write to catch an app enabled during the
+    window. It reports what it could not stop rather than claiming success, and
+    `agent.apps_allow_third_party` is excluded from the generic settings PATCH so
+    no caller reaches the setting without that sequencing.
+  - `start_enabled_app_backends` revokes at boot: an app the ceiling no longer
+    admits has its agents, skills, and MCP entries deregistered and its backend
+    is not spawned. A policy tightened while the gateway was down therefore does
+    not survive the restart.
+  - the per-backend liveness watch re-reads the ceiling each sweep and stops a
+    backend that is no longer admitted. This is what closes the CLI and the
+    hand-edited `config.json`: both reach the setting without passing the
+    endpoint, and before this a backend they un-trusted kept serving until the
+    next boot. Bound is one `_HEALTH_WATCH_INTERVAL`.
+
+  Scope is the executing surface. An app with its own `agent.apps_trusted` grant
+  keeps running while that grant stands — the blanket flag does not govern it — and
+  non-executable resources (agents, skills, MCP declarations, cron definitions)
+  are outside the ceiling. Anything that tries to RUN app code meets
+  `app_execution_denied` and fails closed on its own.
+  The liveness watch is level-triggered on the ceiling rather than edge-triggered
+  on one setting, so REMOVING an app's own grant from `config.json` also stops its
+  backend within one interval. That follows from the same rule and is intended: an
+  app the gateway would refuse to load is an app it should not keep running.
+  Turning the blanket flag off, on its own, never touches an app that still holds
+  its own grant.
+
+  **What revocation does NOT reach.** Only processes the gateway TRACKS are
+  stoppable, because only those have a recorded identity to signal. An
+  `openCommand` child is launched fire-and-forget by `POST /api/apps/<name>/open`
+  and is never recorded, so one already running when the ceiling closes keeps
+  running until it exits or the user closes it. What the closed ceiling does stop
+  is the next one: that endpoint calls `app_execution_denied` before it spawns, so
+  no new open is admitted. The same holds for any process an app's own backend
+  spawned as a child of itself, which dies with its parent only if it is in the
+  parent's process group.
+
+  **Adopted backends are never builtin-exempt.** A backend found already answering
+  a declared port is adopted rather than launched, so the gateway never vetted the
+  executable behind it and cannot classify it as shipped code — there is no
+  portable way to read a listening process's executable path. It is therefore
+  recorded as third-party and is revocable, which fails closed. The consequence is
+  that a revoked adopted backend is not respawned until the next gateway start. No
+  shipped builtin can reach this: adoption requires a manifest to declare a
+  concrete port, and every shipped builtin either declares `"auto"` or omits the
+  key, which defaults to `"auto"`. A test pins that, so a future builtin that
+  declares a fixed port fails CI rather than silently losing its exemption.
+
+  **An unreadable policy is a deny.** `third_party_execution_allowed` fails closed,
+  and the config loader falls back to defaults when neither config file can be read,
+  where the flag is `false` and the trusted set is empty. Because the liveness watch
+  re-reads the ceiling each sweep, that answer now stops running backends rather than
+  only refusing new admissions. This is deliberate: sparing a backend whenever the
+  policy cannot be read would make deleting `config.json` the one operator action
+  guaranteed to stop nothing. It is the mirror of the `installed.json` rule above --
+  that file belongs to the app, so its absence must not spare it, and this file
+  belongs to the operator, so its absence is honoured as a withdrawal. The cost is
+  availability and it is bounded: a genuine transient read fault stops third-party
+  backends for that sweep, and they return at the next gateway start.
 
 ### App-token scope confinement (CWE-269)
 
@@ -44,6 +111,40 @@ are **deny-by-default** confined by the dashboard auth middleware
 `/apps/<name>/api` reverse proxy (`apps/routes.py` `handle_app_api_proxy`)
 independently re-checks that the caller's token app matches the target app, since
 the proxy signs requests with the target app's secret.
+
+User-session routes add a second, semantic check. An enabled app must declare
+`permissions.sessionApproval: true` before its app token can send a message to
+an existing local user-owned session, choose a generated response option,
+approve or deny a pending tool request, or change that session's approval mode.
+The app still needs the matching route in `permissions.api`. Cron, system,
+remote, member-mode, and other apps' sessions are denied; an app's existing
+access to its own slots is unchanged. Mode changes must name a live allowed
+slot, which prevents one app call from silently widening every session, and are
+limited to Normal, Reads and Trust. YOLO is a process-global override: an app
+token can neither arm it nor revoke it, so it stays a dashboard-only decision.
+
+The guard reads the live manifest so that removing the flag revokes the grant at
+once. Live-read is not a grant path for this flag: `update_app` compares the old
+and new manifests, and a version that newly declares `sessionApproval` on an
+enabled app comes back disabled with a `session_approval_reconsent` notice that
+the detail page renders in place of its "updated" toast. `register_external_app`
+applies the same comparison to self-managed apps, which author their own
+manifest and re-register on every launch: a registration that newly declares the
+flag (first or later) is written disabled, so a self-managed app cannot grant
+itself session control. Enabling is the consent moment those two gates lean on,
+and `disable_app` leaves the app's token valid, so `handle_enable_app` refuses
+app-token callers outright (`app_token_forbidden`): an app cannot POST its own
+`/api/apps/<name>/enable` to restore a grant the user has not re-consented to.
+
+The consent surface is the **detail page**: the update notice and the Permissions
+card. The trust dialog opens only when repo trust is missing, so re-enabling an
+already-trusted app from a store card shows no dialog. At first install the
+dialog's session row comes from the catalog or registry projection, not from the
+cloned manifest, so a projection that omits the flag under-discloses. Two sibling
+grants are also live-enforced and are not re-gated on update today
+(`permissions.api`, `permissions.events`). A generic widened-permission check
+across install, update and enable, and a structured enable-route refusal that
+drives the dialog, are tracked in issue #11212.
 
 ### WebSocket event scope (CWE-269)
 
@@ -136,6 +237,17 @@ inherent to embedding app UI in the dashboard page, not a defect, but it means t
 frontend scoping prevents *accidental* use rather than abuse. The enforceable boundaries
 are the app **token** ones above (HTTP paths and WS events), which apply to app-owned
 *processes* holding their own credential.
+
+The scoped client's generic `request` method and JSON verb helpers share the
+same initial-path check. Request options do not add API grants or expand wildcard
+strings; browser redirect targets are not rechecked, and callers can use
+`redirect: 'error'` to refuse redirects. Session attribution is host-owned: a bound host overrides any supplied
+`X-Session-Key`, and a host without a binding rejects caller-supplied session
+identity. Routed app pages explicitly use `dashboard:ui`, the core API client's
+dashboard-page identity; chat surfaces retain their actual bound session. This
+remains a guardrail inside the dashboard document, not a sandbox or a replacement
+for server-side authorization. Hosts of restricted chat sessions must provide the
+real session key; absence cannot identify the restricted session to the backend.
 
 This is an **HTTP-reach boundary distinct from the in-process module-loading
 privilege**: an app's loaded Python still runs with full gateway privileges (the

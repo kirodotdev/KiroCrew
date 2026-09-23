@@ -1,11 +1,11 @@
 {
   "_comment": "Error responses without a machine-readable `code`, per file. Generated - regenerate with `python test/test_error_code_contract.py --update`. This is both the CI ratchet and the Track B worklist: drive `missing_code` to zero, one PR per file or per directory, moving each frontend consumer in the same PR. Never raise a number to make CI pass. See test/test_error_code_contract.py for what each bucket means and which false negatives it accepts.",
   "_totals": {
-    "missing_code": 1120,
+    "missing_code": 1106,
     "opaque_body": 18,
     "dynamic_status": 39
   },
-  "_compliant": 2039,
+  "_compliant": 2300,
   "files": {
     "apps/builtins/auto_research/handlers.py": {
       "dynamic_status": 1,
@@ -52,7 +52,7 @@
       "missing_code": 3
     },
     "dashboard/handlers/agents.py": {
-      "missing_code": 51
+      "missing_code": 50
     },
     "dashboard/handlers/artifacts.py": {
       "dynamic_status": 2
@@ -76,7 +76,7 @@
       "missing_code": 15
     },
     "dashboard/handlers/files.py": {
-      "missing_code": 89
+      "missing_code": 88
     },
     "dashboard/handlers/kiro_prerequisite.py": {
       "missing_code": 1
@@ -109,11 +109,8 @@
     "dashboard/handlers/optimizer.py": {
       "missing_code": 1
     },
-    "dashboard/handlers/portability.py": {
-      "missing_code": 9
-    },
     "dashboard/handlers/prompts.py": {
-      "missing_code": 30
+      "missing_code": 28
     },
     "dashboard/handlers/security.py": {
       "missing_code": 16
@@ -169,7 +166,7 @@
       "opaque_body": 1
     },
     "dashboard/openai_compat.py": {
-      "missing_code": 19
+      "missing_code": 18
     },
     "deploy/handlers.py": {
       "dynamic_status": 5,

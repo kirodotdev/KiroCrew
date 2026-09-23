@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -48,29 +49,77 @@ _CONFIG = {
 }
 
 
-@pytest.fixture
-def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A data home declaring the default store and one silo."""
-    (tmp_path / "config.json").write_text(json.dumps(_CONFIG), encoding="utf-8")
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+#: Rows every populated store here holds. Asserted as ``20`` throughout the file.
+_SEED_ROWS = 20
+
+
+def _point_home_at(monkeypatch: pytest.MonkeyPatch, data_home: Path) -> None:
+    """Make *data_home* the data home, with the default store and one silo declared."""
+    (data_home / "config.json").write_text(json.dumps(_CONFIG), encoding="utf-8")
+    monkeypatch.setenv("KIROCREW_HOME", str(data_home))
     import kiro_crew.config.paths as paths
 
     monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
-    return tmp_path
+
+
+def _write_seed_rows(store: VectorMemoryStore) -> None:
+    """The one spelling of the populated store's contents, written through *store*."""
+    for i in range(_SEED_ROWS):
+        store.set_semantic(f"project.p{i}", f"v{i}", 1.0, "user_explicit")
 
 
 @pytest.fixture
-def live_store(home: Path):
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A data home declaring the default store and one silo."""
+    _point_home_at(monkeypatch, tmp_path)
+    return tmp_path
+
+
+@pytest.fixture(scope="module")
+def seeded_memory_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The populated default store, built ONCE per module and closed.
+
+    Every ``set_semantic`` is two durable commits (the row and its audit event), and a
+    fresh ``init`` is four more, so building the 20-row store costs 44 fsyncs. The
+    Windows shard prices an fsync in whole seconds when its disk is contended, and
+    the shard's per-test budget is 180 s counted from setup, so paying those 44 once
+    per parametrized case is what tipped a case over the cap and took the worker
+    down with it. Built here in its own home so the per-case fixture only copies it.
+    """
+    seed_home = tmp_path_factory.mktemp("memory-backup-seed")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _point_home_at(monkeypatch, seed_home)
+        store = VectorMemoryStore()
+        store.init()
+        try:
+            _write_seed_rows(store)
+        finally:
+            store.close()
+        db_file = resolve_store_path(DEFAULT_MEMORY_STORE)
+    # Closing the last handle checkpointed the WAL, so the one file IS the database.
+    # A sidecar left behind would mean the copy below silently drops rows.
+    assert not Path(f"{db_file}-wal").exists()
+    assert _rows(db_file) == _SEED_ROWS
+    return db_file
+
+
+@pytest.fixture
+def live_store(home: Path, seeded_memory_db: Path):
     """A populated default store, left OPEN — the state a real backup runs against.
 
     Held open deliberately: a backup taken while nothing has the file is the easy case
     and not the one that loses data.
+
+    Populated by copying :func:`seeded_memory_db` into place and opening it, which is
+    one commit per case instead of 44. Its rows therefore sit in the main file, not the
+    WAL; a test whose property IS "the committed tail is in the WAL" needs the rows
+    written through the open handle, which :class:`TestABackupIsConsistentUnderALiveWriter`
+    does with its own ``live_store``.
     """
+    shutil.copyfile(seeded_memory_db, resolve_store_path(DEFAULT_MEMORY_STORE))
     store = VectorMemoryStore()
     store.init()
     try:
-        for i in range(20):
-            store.set_semantic(f"project.p{i}", f"v{i}", 1.0, "user_explicit")
         yield store
     finally:
         store.close()
@@ -95,6 +144,24 @@ def _integrity(db_file: Path) -> str:
 
 
 class TestABackupIsConsistentUnderALiveWriter:
+    @pytest.fixture
+    def live_store(self, home: Path):
+        """The rows written THROUGH the open handle, so the committed tail is in the WAL.
+
+        Overrides the module fixture for this class only. The property under test is
+        that a backup captures rows a plain copy of ``memory.db`` would miss, and a
+        store seeded by file copy has nothing in its WAL for a plain copy to miss --
+        every test here would pass against a file copy. This is the one class that
+        pays the per-row writes, and it pays them for that reason.
+        """
+        store = VectorMemoryStore()
+        store.init()
+        try:
+            _write_seed_rows(store)
+            yield store
+        finally:
+            store.close()
+
     def test_it_captures_every_committed_row_while_the_store_is_open(
         self, live_store: VectorMemoryStore
     ) -> None:
@@ -284,7 +351,7 @@ class TestEveryDeclaredStoreIsCovered:
             mb.back_up_all_stores(keep=3)
         finally:
             default.close()
-        assert mb.list_backups(stray / "memory.db") == []
+        assert list(stray.iterdir()) == [stray / "memory.db"]
 
     def test_one_unreadable_store_does_not_cost_another_its_backup(self, home: Path) -> None:
         """Fail soft PER STORE. The whole point of the loop being inside the module."""
@@ -549,18 +616,9 @@ class TestRestoreIsNonDestructive:
         try:
             if source_kind in ("v2", "owner_only"):
                 db.executescript(memory_schema.CREW_SCHEMA_SQL)
-                db.execute(
-                    "INSERT INTO memory_meta VALUES (?, ?, ?)",
-                    (
-                        (
-                            memory_schema.PRIVATE_MEMORY_VERSION_META_KEY
-                            if source_kind == "v2"
-                            else memory_schema.OWNER_MEMBER_META_KEY
-                        ),
-                        "2" if source_kind == "v2" else "alice",
-                        "2026-09-09",
-                    ),
-                )
+                db.executescript(memory_schema.MEMBER_SCHEMA_SQL)
+                if source_kind == "v2":
+                    db.execute("INSERT INTO member_database VALUES (1, 1, 'alice', 'member-alice')")
                 db.commit()
             elif source_kind == "unrelated":
                 db.execute("CREATE TABLE unrelated (value TEXT)")
@@ -574,7 +632,12 @@ class TestRestoreIsNonDestructive:
             if (path := Path(str(target) + suffix)).exists()
         }
 
-        with pytest.raises(ValueError, match="V1 restore requires a V1 memory database"):
+        error = (
+            "V1 restore cannot install a member memory database"
+            if source_kind in ("v2", "owner_only") and store_name != DEFAULT_MEMORY_STORE
+            else "V1 restore requires a V1 memory database"
+        )
+        with pytest.raises(ValueError, match=error):
             mb.restore_from_backup(candidate, store_name)
 
         assert candidate.read_bytes() == candidate_before

@@ -41,7 +41,7 @@ The helper preserves pre-existing `meta`, always records a positive `elapsed_ms`
 
 `website/src/pages/ChatPage.tsx` passes `m.meta.turn_stats` to `AssistantMessage` only when `ChatConfig.showTurnStats` is true. `ChatSettings.loadChatConfig` defaults and repairs that persisted setting as enabled under `mc-chat-config`; `ChatPanel` does not currently expose a control for it. `website/src/app-sdk/messageRenderers.tsx` separately forwards `turn_stats` without consulting `ChatConfig`.
 
-`website/src/pages/chat/AssistantMessage.tsx` renders the footer only when the message is not streaming, `showFooter` is true, and `turnStats.elapsed_ms` is positive. `ChatPage` computes `showFooter` for the last assistant message before a user message or, at the end of the transcript, after the slot is no longer running. Together with the backend boundary, these gates prevent an in-progress or earlier assistant segment from presenting the completed-turn footer.
+`website/src/pages/chat/AssistantMessage.tsx` renders the footer only when the message is not streaming, `showFooter` is true, and `turnStats.elapsed_ms` is positive. `ChatPage` computes `showFooter` for the last assistant message before a user message or, at the end of the transcript, once the slot is no longer running. A positive persisted `turn_stats` record keeps that completed footer visible if a later run starts before another message is appended. Together with the backend boundary, these gates prevent an in-progress or earlier assistant segment from presenting the completed-turn footer without retracting an already completed turn's metadata.
 
 The footer is visible rather than hover-revealed, uses muted tabular numerals, and places a clock beside elapsed time. Only the optional model label uses the monospace face; `messageFooterFont.test.tsx` protects the footer-level font-setting contract. It displays credits when positive and otherwise displays positive dollar cost; elapsed time always follows the billed value. `fmtTurnModel` trims known routing prefixes for the inline label while the title retains the untrimmed model identifier. `fmtTurnElapsed`, `fmtCredits`, and their formatter tests in `AssistantMessage.test.tsx` pin the display rules. Missing `turn_stats`, `showFooter=false`, and streaming messages render no stats footer.
 
@@ -50,5 +50,6 @@ The footer is visible rather than hover-revealed, uses muted tabular numerals, a
 - `test/test_turn_stats.py` (`TestAttachTurnStats`) covers attachment, omission, rounding, current-turn targeting, model attribution, and meta coexistence.
 - `test/test_usage.py` (`TestReadTurnModel`) covers resolved, Auto, and unattributable model states.
 - `website/src/test/AssistantMessage.test.tsx` (`turn stats footer`) covers rendering, ordering, model display, suppression gates, and formatters.
+- `website/src/test/ChatPage.footerNotRetracted.test.ts` protects a completed footer from being retracted by a later run.
 - `website/src/test/ChatSettings.test.tsx` covers the persisted `showTurnStats` default and validation.
 - `website/src/test/messageFooterFont.test.tsx` verifies that the footer follows the configured font family.

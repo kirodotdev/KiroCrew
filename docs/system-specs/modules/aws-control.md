@@ -138,8 +138,11 @@ parameter. The dashboard shows a confirmation strip before either deletion, and
 `routes._handle_drive_delete` and `routes._handle_drive_folder_delete` then
 execute after the owner, restricted-session, S3-consent, and key-scope guards.
 On the versioned drive, `storage.delete_key` writes an S3 delete marker rather
-than purging historical versions. This is the current recovery property; the
-app does not implement a version purge.
+than purging historical versions. This is the current recovery property, and it
+is also why a delete on this path reaches no billing-zero. `storage.list_object_versions`
+and `storage.delete_object_versions` are the version-aware pair that does erase
+bytes; the Drive's own object and folder deletes deliberately do not use it, so
+the operator keeps the S3-layer recovery. Backup retention is its one caller.
 
 `routes._handle_drive_move` moves one object as a server-side copy followed by
 a delete, both through `storage` (`storage.copy_object`, then
@@ -310,7 +313,8 @@ says whether the rows were compared against the drive, because an absent
 `objectMissing` otherwise reads as "the object is there" on a render where the
 drive was never read. WHY the check did not run is logged rather than sent — the
 reason is a backend-authored English sentence and the console is rendered in
-thirteen locales, so it shows a translated "not checked" line gated on `checked`,
+12 production locales plus the development pseudolocale, so it shows a
+translated "not checked" line gated on `checked`,
 the same resolution the Library's `remoteError` reaches.
 `storage.list_object_keys` raises rather than degrading to an empty set, and
 per-row `storage.object_exists` is deliberately not used — it answers `rc == 0`,
@@ -342,8 +346,9 @@ transactional: a local file and a remote bucket cannot be committed as one, and
 objects-then-record leaves at worst a record the bucket does not back, which
 `library.reconcile` repairs. The reverse order would leave objects that no
 surface lists. Removal writes delete markers on the versioned bucket, so it
-empties the listing rather than reaching billing-zero; a version purge remains
-outstanding, as it does for the Drive's own deletes.
+empties the listing rather than reaching billing-zero; the version-aware purge
+`storage.delete_object_versions` provides is deliberately not used here or by the
+Drive's own deletes, which keep the S3-layer recovery those surfaces promise.
 
 `library.reconcile` is the direction that makes the ledger's "display state, not
 truth" claim hold: it drops records the bucket does not back and never invents a
@@ -437,6 +442,551 @@ locally; it does not restore it into live gateway state.
 `test_aws_control_app.py::TestRound22Hardening.test_restore_refuses_a_symlinked_destination`
 pins the staged restore safety boundary.
 
+Both runs build their archive and then decide whether to send it.
+`backup._tree_fingerprint` digests one row per archive member -- path, kind, permission
+mode, size and a content hash -- in sorted path order, read from the packed payload.
+The comparison is over that entry set rather than the archive's bytes because a
+`tar.gz` embeds per-entry
+mtimes and a gzip stamp, so two runs over an identical tree produce different bytes and
+an archive-level comparison reports "changed" every night. Reading it from the payload
+rather than by a second walk of the source also means it cannot disagree with what would
+actually be sent, and that a redaction switch changes the fingerprint.
+
+Two normalizations are part of the digest's definition, each measured against the real
+engine rather than assumed. `_VOLATILE_MANIFEST_FIELDS` drops `created_at` from
+`MANIFEST.json`, the one field `snapshot.py` rewrites on a rebuild of an unchanged tree;
+the member's other fields stay, because `purpose`, `staging` and `version` are not
+derivable from the file set. The snapshot bundle's root directory carries a timestamp, so
+snapshots pass `volatile_root=True` while the sessions archive passes `False` -- its
+`crew` and `cli` roots are meaningful. `test_aws_control_backup_unchanged.py::TestRealBundleAssumption`
+builds real bundles and pins that assumption, so a second volatile field turns CI red
+instead of the skip quietly never firing again.
+
+`backup._unchanged_baseline` decides the skip, and returns the matched run record rather
+than a boolean so a skip can carry the baseline's own key, fingerprint and version
+forward. It skips only when the previous archive is PROVEN still in the drive at its
+recorded key, its recorded length and its recorded version; every other branch uploads,
+including a moved tree, a missing object, an unanswerable `head-object`, an unreadable
+archive, and a version id that identifies no single version. `backup._is_provable_version_id`
+is that last rule: the empty string names nothing, and `"null"` is the id S3 gives every
+object written to a key while the bucket's versioning is SUSPENDED, where an overwrite
+replaces that version rather than adding one. Both the recorded id and the stored one run
+through it, so the skip never fires on an unversioned or suspended drive and those
+accounts keep uploading in full.
+
+The `head-object` that proves the baseline is a request on the operator's account, so it
+passes `backup._authorize_upload` under its own operation, `SEL_OP_BASELINE_PROBE`,
+distinct from the gate that guards bytes leaving. It is taken after the local checks, so a
+run that could not skip anyway spends no round trip discovering it.
+
+A run record persists `tree` (the fingerprint, which is what tomorrow compares against)
+and `uploaded`. A skip writes `uploaded: false`, keeps the matched run's key, fingerprint
+and version so the baseline survives, and takes a fresh `at` so `due_for_nightly` does not
+rebuild on the next wake. It writes that record only when `runs[kind]` is still the very
+record the baseline was read from, identified by its `(process, sequence)` pair, under the
+state lock. `sequence` is bumped on every run-record write and `process` carries the pid,
+so no two records an install writes share the pair; `_run_is_newer` already requires that
+same pairing, because a bare sequence counts one process's own writes and two processes can
+both sit at the same number. Neither `at` nor `key` can stand in for it and neither is
+compared: `datetime.now` resolves to the platform's clock tick, so two writes on a coarse
+clock share one `at` value, while a skip carries the matched run's own `key` and so cannot
+be told from a second skip by key. Windows CI produced both collisions at once and accepted
+a second skip against a baseline the first had already replaced. A record predating these
+fields carries neither, so the skip is refused and a full copy uploads -- the direction
+every other proof here fails toward, and the reason there is no fallback to `at` alone.
+`test_aws_control_backup_unchanged.py::TestRecordSkipCompareAndSet` pins each term with a
+case no other term can see, including the coarse-clock collision reproduced by hand; the
+two sequence type guards cover each other on a record with no sequence, so they are pinned
+as a pair. If the slot is absent or moved while the archive is
+being built, the skip is refused, the refusal leaves the newer record in place, and the
+run logs the reason before uploading the archive. `hooks._run_once` reads `uploaded` and
+reports and audits a skip as `unchanged` rather than as a push; a record without the field
+reads as a push. Neither the label publish nor the retention sweep runs on a successful
+skip. Labels follow a push, so a local rename reaches the drive on the next real upload
+rather than on a skip. An unchanged night cannot consume a keep slot or prune the archive
+the next skip depends on.
+
+Both push keys carry a timestamp, so nothing is overwritten and the drive would
+otherwise only grow. `backup._prune_remote_archives` runs as the LAST step of a
+successful push, and by default it retires nothing: retention is OFF unless this
+account's `backup.json` holds a usable count under `RETENTION_KEEP_STATE_KEY`. That
+key is the whole switch. Absent, or holding anything that is not an integer, means
+keep every archive, so a fresh install and an upgraded one both behave exactly as
+before and no first run after an upgrade deletes anything. There is deliberately no
+count that applies without being configured: a default would perform permanent
+deletes on a value the operator never wrote, and while shipping off costs storage
+they can see in a listing and reclaim with one command, shipping on destroys archives
+somebody was deliberately keeping and leaves nothing to restore from. It is also the
+house shape rather than a new policy — `nightly` ships off, reads fail-closed, and is
+never inferred from an adjacent grant.
+
+The shape is the one this repository already recorded, not one chosen here.
+`docs/request-for-change/rfc-s3-backup.md` O5 ("retention, partly answered") observes
+that a lifecycle rule can express "delete older than N days" but never "keep the newest
+N", so on a host that stopped backing up such a rule "would delete the last surviving
+copy of its memory exactly when it is needed"; it concludes that unbounded growth is the
+cheaper failure and frames the remaining question as "whether operators want an opt-in,
+count-based remote prune, which needs a lister and a deleter rather than a lifecycle
+rule". Opt-in, count-based, a lister and a deleter is what this module implements, and
+the by-name protection of the newest archive is that document's own reason. The RFC is
+`status: draft`, so it is cited for SCOPE rather than as an approval; the question it
+leaves open is whether operators want the prune, which is exactly what shipping off
+leaves open.
+
+`backup._retention_keep_for_sweep` reads it fail-closed and returns the count with
+the reason when there is none, because the two roads to off need different handling:
+nothing configured is the ordinary state of an unconfigured install and audits as a
+successful sweep with nothing to do, while a state file this process could not read
+keeps everything too but audits as failed, since an operator who DID configure a
+count is silently not getting it. "Could not read" includes bytes that are not valid
+UTF-8, not only a refusal from the OS: `read_text` raises `UnicodeDecodeError`, which is
+a `ValueError`, so the reader catches it explicitly rather than letting it escape past
+the sweep -- which runs outside its own best-effort handler, so an escaping decode error
+would report a backup already off-host as failed and skip the audited unreadable branch
+entirely. The read-modify-write treats the same bytes as unreadable too, and abandons the
+mutation rather than publishing over them: repair-on-write is justified for a document
+that DECODED and then failed to parse, and bytes that are not UTF-8 never reached the
+parser. Overwriting them would replace every account's toggles, retention count and run
+history -- including the `upload_versions` records the ownership test reads -- on the
+strength of a document nobody read. The abandoning error stays an `OSError` subclass, so
+`set_nightly`'s existing handler needs no change. Neither reader catches the wider
+`ValueError`,
+so a surprising one stays loud. Neither is ever derived from `nightly` in either
+direction: authorizing unattended uploads is not authorizing permanent deletes, and
+turning the nightly off does not withdraw a configured count. The two ends of the
+range are NOT treated alike, because the two directions are not alike. Zero and
+negatives clamp UP to `RETENTION_KEEP_MIN` rather than reading as off, because a typo
+must not silently stop doing what the operator asked for, and that direction deletes
+FEWER archives than the stored number named. There is no ceiling. A count larger than
+the number of archives that exist keeps all of them, which is not a harm worth refusing
+an operator over, and both alternatives were worse: clamping down would delete archives
+the stored number named, and reading it as off would ignore what they configured. The
+write path validates the floor only, for the same reason. Once on, turning it on is the whole
+consent and the sweep prunes to the count without asking again.
+
+A key that is PRESENT and does not resolve to a usable count -- a string, a float, a
+`bool` -- keeps everything and reports the same reason as a
+state file that could not be read, which audits as a failure. Only an ABSENT key is the
+ordinary off state that audits as a success. Somebody wrote the unusable value, so
+reporting it as "not enabled" would audit a clean sweep and leave them believing a
+count they set is in force.
+
+`POST /backup/{account}/retention` is the shipped way in, beside the nightly toggle
+and guarded the same way. It takes the COUNT rather than a flag, because a count is on
+and `null` is off, and `null` is what turns retention back off -- a switch that can
+only be turned on would leave an operator hand-editing state to stop it. The value
+authorizes permanent deletion, so the route validates and never coerces: a `bool` is
+refused rather than read as `keep=1`, and an out-of-range count is refused rather than
+clamped, so nobody configures `0` and is later told they configured `1`. A large
+hand-edited count is honoured as written, by the route and by the sweep alike: there is
+no upper bound for either to police. A state
+write that fails returns `state_persist_failed` and does not echo the value, because
+reporting a setting the next read contradicts is worse than an error. The status read
+reports `retentionKeep` as the EFFECTIVE count the sweep would use, or `null` when
+retention is off, `retentionUnclaimed` as the last sweep's per-kind count and bytes
+of archives no sweep can ever retire, and `retentionUnrecorded` as its per-kind count and
+bytes of objects under this install's folder that it holds no record of -- a number that
+claims neither ownership nor reclaimability. No console control ships for any of them: the
+count is set and read over HTTP
+only, and the status field exists so an operator who wrote one can confirm what was
+stored instead of trusting the write. A renderer is a separate surface and is not part
+of this module.
+
+The count is read again at the moment of deletion, not carried over from before the
+listing. That final check and the delete are held under TWO locks: an in-process one so
+another thread's write cannot interleave, and the state file's own sidecar lock so
+another PROCESS's write cannot either. Both are required, and a thread lock alone would
+have been the weaker half of the pair: this module treats a second install sharing one
+bucket and one state file as a designed-for case, so a count cleared over there has to
+be ordered against this delete too. The cost is that a state write in any process waits
+for the purge, which is one batched delete rather than the whole sweep. `list_object_versions` is a network round trip that follows a build which may
+have taken minutes, so an owner who switches retention off inside that window has chosen
+to keep the versions the sweep already selected. A count that GREW protects keys the
+candidate set was built to delete, so the set is stale and the sweep refuses; a count
+that shrank authorizes every key in the set and more, so the set stays valid; unreadable
+refuses. This is the same rule the consent gate beside it follows: a check is good for
+the call that follows it, not for a later one. The re-read is deliberately not a lock
+held across the deletion, because `_run_lock` also serializes the status read, which
+would then stall for the length of a purge.
+
+One archive is never retired, and that guarantee is separate from the count rather
+than a consequence of it: the key this run just uploaded is removed from the
+candidates by name, whatever the count says, including `1`. The floor at
+`RETENTION_KEEP_MIN` also spares the first entry of the age order, but that is a
+different claim — the run's own key is only first while nothing else carries a later
+timestamp, and a co-writer with a skewed clock is enough to move it, which is exactly
+the case the by-name guard exists for. If the listing does not show that key the
+sweep deletes nothing at all, because a view missing the newest object cannot be
+trusted about which objects are old. That refusal is the cloud form of the guard
+`snapshot`'s local `--keep` already carries.
+
+The sweep is scoped per kind and per install prefix, so one kind's cadence cannot
+evict the other's last copy. Scoping alone is not ownership, though: the drive is
+shared by design, so an object can sit under this install's prefix without this
+install having written it. Candidates are therefore intersected with
+`backup.uploaded_keys` — what `_record_run` wrote down — and anything outside that
+record is neither retired nor allowed to occupy a `keep` slot, since a co-writer's
+upload filling a slot would push one of ours over the edge. That record proves the
+KEY, though, and a key can carry versions this install never wrote, so ownership is
+settled at the VERSION: `storage.put_file` returns the `VersionId` S3 assigns and
+`_record_run` stores it per key, and the sweep erases only a version id present in
+that record and present in the listing. A key absent from the version record is not
+retired at all, which is the fail-closed direction — an unversioned bucket and a
+response naming no version both land there, and erasing bytes nothing proves are
+ours is the worse outcome. A co-writer's version riding on one of our keys survives
+while ours is erased, so the key still reaches billing-zero for the bytes we paid
+for. A version the record names and the listing lacks is skipped as well: ours is
+already gone, so whatever remains under that key belongs to someone else. Delete
+markers carry no version in the record and are left alone; they carry no bytes
+either, so leaving them costs nothing billable. Ownership also decides which keys
+COUNT, not just which bytes may be erased. A key is a restorable copy of this
+install's while the version the record names is the current one, which is what
+`backup._current_version_is_ours` answers. A key failing that holds no `keep` slot
+and is not retired either -- its current version is a delete marker, whose
+noncurrent bytes belong to the manual delete path, or it is a co-writer's, in which
+case our bytes are on the drive as a noncurrent version. Those bytes are reachable:
+`storage.get_file` takes an optional version, and when the current object fails the
+body fingerprint `backup._recover_recorded_version` makes one further read of the
+version the record names, accepting it only on that same fingerprint re-taken over
+the bytes that arrive. Retention still declines such a key,
+which is now the CONSERVATIVE reading rather than a forced one: it retains more,
+never less, and counting a recoverable-but-noncurrent copy toward `keep` is a
+decision about what may be DELETED and is not taken here.
+Erasing them would also be this sweep deciding a key someone else is
+actively writing is finished with. Because the rule is about the CURRENT version
+rather than the newest by timestamp, a live key also carries our version as its
+newest, so `_newest_first` orders by the age of the archive we wrote with no second
+rule to drift from. Two harms fall out of it. A co-writer overwriting an older
+recorded key would otherwise inflate that key's apparent recency, push it into the
+`keep` newest and displace a genuinely newer archive of ours into the candidate set
+to be erased. And an overwrite of the key this run JUST uploaded would leave the
+sweep trading older backups against an archive that is no longer restorable, so that
+case aborts under its own reason, distinct from a listing that omits the upload
+entirely -- an auditor needs to tell those apart. One consequence
+is worth stating
+plainly rather than leaving a reader to derive it: an archive uploaded before the
+version record existed has no id in it, so it is kept PERMANENTLY, not drained
+gradually. Retention therefore bounds forward growth and reclaims nothing already
+on the drive. Adopting those archives would mean proving ownership another way --
+downloading each version and matching it against the body fingerprint `uploads`
+already stores -- and that migration, like a one-shot reclaim, is a separate
+change. The restore path draws
+the same line for a cheaper operation, and a permanent delete is held to at least
+that standard. It deletes object VERSIONS, not objects: on this versioned bucket a
+plain delete leaves a marker and the bytes keep billing, so a count-based
+retention built that way would empty the listing and save nothing. The keep count
+is read fail-closed — an unreadable or corrupt `backup.json` yields no number
+rather than the default, and the sweep then deletes nothing, because a default
+silently replacing a configured 50 would erase the 47 archives the owner asked to
+keep. `_authorize_upload` runs under its own `SEL_OP_RETENTION` operation TWICE:
+once before the listing and again immediately before the delete, since a listing
+round trip separates the two and consent withdrawn in that window must not reach
+an irreversible call. The sweep is best-effort throughout — a cleanup that fails
+logs one line and leaves the successful backup reported as done.
+
+Every terminal outcome of the sweep files one `SEL_OP_RETENTION` event, because
+this is the app's only permanent version-erasing path and a purge with no entry
+reads exactly like no purge: `successful` when it completed, with or without
+anything to delete, and `failed` for an AWS error, for the refusal to act on a
+listing missing the newest key, for an unreadable keep count, and for an
+authorization failure that never reached the gate's own record — an expired
+credential raises before `_refuse_upload`, so without that the commonest failure
+on this path filed nothing at all. A refusal BY the gate is not filed twice: it is
+already recorded as `denied` where the decision is made, and the exception type is
+what separates the two. The event carries the counts (`keep`, `live`, `retired`,
+`versions`) that say which outcome happened, and a delete that fails partway
+through its batches reports the versions it had already erased rather than zero,
+because a half-finished purge recorded as nothing is the one shape an auditor must
+not be handed. `Quiet` is set on every `delete-objects` call, so a 200 response
+names only the entries it could not remove and the rest of that batch is counted
+too — otherwise a first batch that half succeeded would still report zero. The audit is best-effort
+like the sweep, so a SEL write that fails cannot reach the backup. The failure LOG
+line follows the same rule as the audit entry: when versions were already erased it
+names that count instead of saying nothing was deleted, because a line claiming
+nothing happened beside an audit entry carrying a nonzero count contradicts the
+record and points a reader at a purge that did not happen. Only the version count is
+named there -- batches are filled to the API's limit without regard to key
+boundaries, so a number of retired KEYS is not something that failure measured.
+
+Every sweep also reports what it CANNOT own: the count and total bytes of keys this
+install wrote but recorded no version for. Those hold no `keep` slot and no sweep
+can delete them, so their bytes are billed permanently, and the report is what makes
+that cost visible in the audit trail instead of only on an invoice. The total is
+over every version under such a key, because every version is billed. It is
+reported even when the sweep aborts on an untrustworthy listing, which is the case
+most likely to carry a large one.
+
+`test_aws_control_backup_retention.py` pins the keep-newest rule, the default-off
+switch including an unconfigured install deleting nothing, every unusable stored
+value reading as off, the refusal to infer the count from `nightly` in either
+direction, a garbled count beside intact upload records still deleting nothing, the
+failure log naming the erased count in one direction and saying nothing was deleted in
+the other, the two off reasons staying distinguishable with their different audit
+outcomes, and `test_aws_control_routes.py` pins the enablement route: registration,
+the write, `null` clearing it, a `bool` and a string and an out-of-range count all
+refused, a missing field refused rather than read as off, and a failed state write
+reporting the failure rather than the value. The retention suite also pins the writer
+end to end -- setting a count turns the next sweep on, clearing it turns the next sweep
+off, clearing removes the key rather than storing a sentinel, and the nightly grant is
+untouched either way. It further pins the per-kind and
+per-install scoping, the ownership record down to the version id, the refusal to
+retire a key with no recorded version, the refusal to count a foreign current
+version, the overwritten-upload abort, the live gate at the delete, the
+fail-closed keep count, the version-pinned deletes, the client-side paging that
+bounds one listing response, the refusal to answer a folder whose history is too
+large to hold rather than returning the part that fits, the unclaimed-archive count
+and bytes reaching the audit event AND the status read, the unrecorded-object count
+beside it, the refusal to persist either pair -- or to prune a version record -- from a
+listing the sweep would not act on, the survival of a version record past its key
+leaving the panel history, the audit events including the
+partial-purge count, and the best-effort contract.
+
+What the sweep measures is the keys this install still REMEMBERS whose recorded version
+id is missing: an archive pushed before the version record existed, an unversioned
+bucket, or a put response that named no version. `_current_version_is_ours` is false for
+all of them, so they hold no `keep` slot and no sweep will ever delete them, and the
+status read serves the last sweep's pair per kind as `retentionUnclaimed` so that floor
+appears beside the count that will not collect it rather than only in audit events.
+Letting the sweep adopt an archive it has no record for would weaken the one property
+the ownership test exists for, so that choice is tracked separately in issue 12274
+rather than settled here; the disclosure does not reclaim anything.
+
+A version record's lifetime is the ARCHIVE's, not the panel listing's. Trimming it to
+the keys `uploads` still holds under `MAX_REMEMBERED_UPLOADS` would let a number chosen
+for a 20-per-kind panel decide what retention is able to retire: with retention shipping
+off, an install pushing nightly passes that bound on its 201st push, and a `keep` count
+enabled afterwards would reach nothing behind that point -- no recorded version, so the
+ownership test refuses the archive and its bytes are billed for as long as the bucket
+keeps it. That bound would MINT the floor rather than only inherit legacy data. So
+`upload_versions` is bounded separately: a record is dropped when a listing the
+sweep TRUSTED proves its object is gone (`_prune_recorded_versions`), and
+`MAX_RECORDED_VERSIONS` (5000) is a backstop under which a pathological document stays
+bounded rather than a horizon. It is the one path left that can still drop a version
+record without a listing having proved anything, so its overflow is COUNTED before
+anything is dropped and reported with that count at both trim sites -- the persisted map
+and the recovery map, named apart in the message. Silently it would read exactly like a
+population that never held those records, and with retention off the sweep returns before
+any listing, so nothing else would ever measure them. The retained value needs no length
+bound of its own: it is a version id S3 issues under S3's own limit and a key this app
+mints, and truncating either would be worse than unbounded, since a shortened version id
+is not the version and would fail the ownership test it exists to pass. The sweep's ownership set is `retention_owned_keys` --
+`uploads` union the recorded versions -- because a recorded version id is strictly
+stronger evidence than an `uploads` entry, and reading only the weaker one would discard
+the record that makes an older archive retireable. Nothing is retired on weaker proof: every
+admitted key still has to pass `_current_version_is_ours`, so the version erased is the
+one a restore would fetch. `classify_key` and the restore path deliberately keep reading
+`uploads` alone, because their question is whether this install vouches for these BYTES,
+which the fingerprint answers and a version id does not.
+
+Three bounds make the prune's absence a proof rather than a guess: it runs only past the
+gate that accepted the listing, and `list_object_versions` walks the whole token chain
+and RAISES rather than returning a partial answer, so partial data arrives as an
+exception and never as a short list; only records under `<kind subpath>/<install id>/`
+are eligible, since the listing is evidence about that folder alone; and only records
+that existed BEFORE the listing began are eligible, so a push landing while the listing
+is in flight -- a manual run racing the nightly loop -- cannot have its record pruned.
+The prune deletes STATE and never an object, and its two failure directions are not
+symmetric: a record wrongly kept costs document space, while a record wrongly dropped
+returns its archive to the unreclaimable floor. Neither can erase data.
+
+The prune's deletion is also FINAL, which takes one more release than the bound above.
+`_unpersisted_versions` holds a version whose state write failed, and `_merge_pending`
+copies that map whole into the next successful update -- so a held entry the state
+already carries would be written back on every later update, re-adding precisely the
+records the prune deleted. It is therefore released on its own contract as well as with
+the fingerprint it arrived with: `_release_persisted_versions` drops a held record once
+the document just written carries the same id for the same key. Equality with the
+persisted id is the release condition, never the key's presence, because a different id
+under one key is exactly the record the state does not have. The two maps are bounded
+differently, which is why one release cannot cover both: a held version outlives its
+`uploads` counterpart, and after that eviction the paired release can never reach it.
+
+`retentionUnclaimed` still does NOT cover every unretirable archive, and that is the
+contract rather than an oversight: it counts keys in `retention_owned_keys` whose
+recorded version is missing, so an object with neither an `uploads` entry nor a version
+record is filtered out before the measurement and reads 0 there however many bytes it
+holds. It is read against the `keep` count to say what retention will collect out of the
+set it can SEE, and absorbing an object nothing has a record of would make it a figure
+that answers neither question. Those objects are counted separately and claim nothing:
+`retentionUnrecorded` (`{kind: {objects, bytes, at}}`) reaches the same status read and
+the same audit event, holding what the listing showed under this kind's install folder
+that the install has no record of. Two unlike things land in it and this code cannot
+separate them -- archives of this install's own for which its state holds no record,
+and another writer's objects under a prefix that is co-writable by design
+-- so the leaf is `objects` rather than `archives`, because the install id in a key is a
+string any co-writer can type. A key the listing shows only as a delete marker is not
+one of them: it holds nothing and is billed nothing, so counting it would put a phantom
+in the floor that no later listing can remove, and the same reading
+`_current_version_is_ours` already applies to a marker is applied here. A key that also
+carries a real version still counts, on that version's row, because those bytes are
+billed whatever sits on top of them. The prune's own set is deliberately WIDER: a marker
+adds its key there, because that set decides whether a RECORD survives and a record
+wrongly dropped is unrecoverable proof where one wrongly kept costs document space.
+Nothing acts on the count: those keys are skipped before
+ownership is tested, hold no `keep` slot, and are never deleted. Whether any of them
+could be PROVEN this install's and reclaimed is a separate design owing its own argument
+about proof, tracked in issue 12274 rather than settled here; a count erases nothing, so
+it needs no such proof.
+
+`retentionUnclaimed` is written only from a listing the sweep accepted as showing the
+archive it just uploaded, and `retentionUnrecorded` and the version-record prune share
+that gate for the same reason. Before it the sweep has already declined to trust the
+listing about age, so it cannot be trusted about how many keys it omitted either, and
+an undercount published as the floor would read as no floor at all. The audit event
+still carries the number on that path, where its `failed` result says how much to trust
+it. One write covers every later path because deletion draws only from `live` and an
+unclaimed key is absent from `live` by construction. The value is stamped rather than
+live: refreshing it would need the bucket listing this payload keeps opt-in, and
+without the stamp a reader cannot tell a measurement taken before a manual delete from
+one taken after. A measured zero is stored like any other count, so an absent kind
+means only that no sweep has measured it.
+
+`run_sessions_backup` always archives the crew half (the display transcript under
+the data home). It archives the kiro-cli half -- Layer B, the byte-exact
+unredacted model context window -- only when the operator has granted it for that
+account; the default is withhold, and an unreadable or non-boolean stored value
+also withholds. The permission is read once, before the archive is opened, and
+the resulting run record carries `layer_b` so whoever inspects the run can tell
+which layers the archive holds rather than inferring it from an absent key. That
+value is taken from the number of kiro-cli files actually added, not from the
+permission: a granted run whose kiro-cli directory is absent or empty adds none,
+and a record is written once, so reading the permission there would state a
+fidelity the object does not hold with nothing afterwards to correct it.
+Nothing reads the field programmatically -- `restore_download` does not consult
+it -- so it is a record for a human or an incident review, and the two archives
+it distinguishes are otherwise identical by name.
+
+The grant is stored PER ACCOUNT as `sessionsIncludeLayerB` in the app's state
+document, `backup.json`, which sits inside the `apps/aws-control/data` directory
+registered in `security._CREW_SECRET_LEAVES` -- the read+write keystone floor,
+beside the `nightly` bit. It is deliberately NOT a `config.json` key.
+`config.json` is writable by any auto-approved agent shell, so a permission
+honoured from there is one a prompt-injected agent can grant itself, and an
+unredacted archive already in a bucket cannot be recalled; an authorization whose
+subject can write it is not an authorization. The sole writer is the owner-gated
+`POST /api/apps/aws-control/backup/{account}/layer-b`, which opens the state file
+directly rather than through the agent file gate. The grant is per account
+because the risk it prices is the destination bucket, so granting it for one
+account must not grant it for another.
+
+A revocation landing while an archive is being built refuses the upload:
+`run_sessions_backup` re-reads the permission immediately before the PUT and
+raises rather than shipping bytes under a permission the operator has withdrawn.
+On the permitted path that re-read, the live authorization checks, and the PUT all
+run inside one acquisition of the state file's sidecar lock, taken before
+`_authorize_upload` through `_upload_lock`. Taking it after authorizing put a
+blocking wait between the consent check and the PUT: a concurrent account's backup
+can hold this lock across its own upload, and consent withdrawn during that wait
+was never re-read, because the Layer B re-read does not cover consent. This is the
+same rule `routes._reauthorize_in_lock` already states for `routes._library_lock`
+-- a lock that makes a caller wait must re-run the authorization inside it, because
+the wait sits between the checks that authorized the call and the call itself.
+
+ONE shape takes no lock: an owner-initiated WITHHELD run. Which shape may skip it
+is decided by what is RE-READ inside the block, not by the Layer B decision alone.
+The Layer B re-read is `layer_b and not sessions_layer_b_enabled(account)`, which
+short-circuits on its first operand when the half is withheld, so it contributes
+no read there. But the crew display half rides on EVERY run, withheld or not, and
+for a scheduled caller that half is authorized by the unattended grant, which
+`_authorize_upload` re-reads inside this block and `set_nightly_sessions` writes
+under this same sidecar lock. So a scheduled withheld run still holds it: unlocked,
+a revocation committing between that read and the PUT is not ordered against the
+PUT, and the transcript ships after the grant was withdrawn, which no later action
+recovers.
+
+An owner-initiated withheld run has neither read. Both scheduled-only re-reads are
+skipped -- an owner who clicked the button is present and authorized the run by
+clicking -- the Layer B re-read short-circuits, and what remains
+(`is_app_enabled`, `aws_consent`, STS) is not stored in this module's state file,
+so an exclusive hold would order nothing. Taking none serves the
+`_authorize_upload` rule above directly rather than by holding something -- with no
+blocking acquisition in the block, the authorization and the PUT are adjacent.
+Taking one would cost what an exclusive hold costs: the lock file is
+`_state_path()`'s sidecar, `backup.json` in the app data directory, one path for
+every account rather than one per account, so every state writer of every account
+-- `_record_run`, `set_sessions_layer_b`, `set_retention_keep`, and the nightly
+loop -- waits out one account's upload up to `_STATE_LOCK_TIMEOUT_SECS`. That is
+the cross-account stall this module already removed from the status read, one layer
+down. The predicate is written so that only this one proven shape skips the lock
+and any other caller holds it, because the exposure it prevents has no recovery.
+
+`_upload_lock` takes ONLY the sidecar file lock, deliberately not `_run_lock` --
+the same shape `_delete_under_the_retention_gate` composes, and for the same
+reason. `_run_lock` also serializes `last_runs`, which the dashboard's backup
+status read goes through (`routes.py`), so holding it across a PUT allowed up to
+`_PUSH_TIMEOUT_SECS` stalled every account's status surface for one account's
+upload. The revocation guarantee does not need `_run_lock`: the setter
+(`set_sessions_layer_b` -> `_locked_state_update` -> `_state_lock`) takes this
+same sidecar file lock exclusively, so an exclusive hold across the upload already
+orders a revocation wholly before or wholly after it, across processes as well as
+threads. Dropping `_run_lock` therefore keeps the guarantee.
+
+Dropping it there was necessary and not sufficient. The stall arrives through the
+contending WRITER, not through the upload: `_state_lock` took `_run_lock` before
+parking on the sidecar file lock, so a writer meeting an in-flight upload -- a
+mid-upload revocation, or any second account's `_record_run` finishing -- held
+`_run_lock` for the upload's whole duration and `last_runs` queued behind the
+writer. So the module has ONE acquisition order, stated in a comment above
+`_state_lock` and pointed at from `_run_lock`'s own definition:
+
+    _RETENTION_GATE -> state sidecar FILE lock -> _run_lock -> leaf locks
+
+Nothing may hold `_run_lock` while waiting for the file lock. `_state_lock` takes
+the file lock first, and `_record_run` and `_record_skip` no longer wrap it in
+`_run_lock` at all -- `_record_run_locked` takes that lock only for the
+`_run_sequence` bump, which cannot park. The bump has to stay under it: the
+callers' outer hold was the only thing serialising it, and `(process, sequence)`
+is the identity the compare-and-set inside `mutate` reads, so a shared sequence
+would let a stale baseline pass a check it must fail.
+The sidecar lock is taken with a ceiling derived from that hold rather than
+`file_lock`'s 300s default, which is sized for a sub-second read plus a rename.
+A shorter ceiling would refuse a contender that is only waiting, and that refusal
+arrives as the `OSError` `_record_run` absorbs by keeping a completed upload's
+record in memory alone -- so a short-lived process that exits first loses the
+record and leaves the nightly loop due. `frontend._STAGING_LOCK_TIMEOUT` derives
+its ceiling the same way, for a lock spanning a frontend build.
+Nothing is uploaded and no run record is written, so the archive-and-record
+agreement above is preserved -- rebuilding without Layer B instead would be the
+torn state the read-once rule exists to prevent. Only the withdrawn direction
+refuses; a grant arriving mid-build leaves an archive without Layer B, which the
+next run picks up.
+
+`test_aws_control_backup.py::TestSessionsArchiveLayerBGate` pins both directions,
+that a permitted upload holds the setter's lock, that a scheduled withheld one holds
+it too, and that an owner-initiated withheld one does not, that
+no `config.json` key can grant it, that a grant does not cross accounts, and that
+the store stays inside the fenced directory.
+
+This decision is separate from the file export's
+`dashboard.export_include_layer_b`: a downloaded file can be handed to another
+person, while this archive lands in a bucket the operator owns, so the two are
+different risk decisions and enabling one must not enable the other.
+
+### Run identity and failed state writes
+
+A run's `at` is the observed UTC wall time, not a unique identifier or a
+monotonic clock. `process` (a random process token plus PID) and `sequence`
+distinguish and order this process's completed run records even when wall time
+ties or moves backwards. Recording and state updates share an in-process lock;
+the existing sidecar lock still serializes disk writes across processes.
+A newly recorded run unconditionally replaces its kind's prior state under the
+sidecar lock, including prior-process or legacy records with equal or later wall
+times. Only best-effort overlay/recovery comparisons use local sequence or the
+other-process/legacy wall-time fallback; that fallback does not establish global
+newest when a process's state was unobservable.
+
+A successful upload stays successful if its state read or write fails. Memory
+holds one last run per account/kind and at most `MAX_REMEMBERED_UPLOADS` pending
+key/fingerprint pairs per account, not full run history. `last_runs` and the
+restore proof read that memory. The next successful state update considers the
+pending runs and merges their fingerprints under the sidecar lock. Its final
+run slot can supersede a pending run rather than storing that run as history;
+only after the write succeeds are the exact processed pending records cleared.
+Failed recovery acknowledges nothing. Same-time acknowledgement of a different
+run cannot clear the current one. The existing durable fingerprint bound still
+applies, and a restart before recovery loses process-only metadata.
+No API ordering envelope or UI state is added.
+
 ### Several installs, one drive
 
 Drive discovery is by tag, so every install pointed at the account finds the same
@@ -493,6 +1043,68 @@ safety property in one client, so any caller that did not open the dashboard
 restored a planted archive with no override. `ORIGIN_SELF` is the only origin that
 needs none, and it is the one the local upload record can vouch for.
 
+An `ORIGIN_SELF` key whose downloaded bytes fail the recorded body fingerprint is
+the one case where this install's archive can still be ON the drive: a co-writer
+overwrote the key, so our bytes are the noncurrent version. `storage.get_file` takes
+an optional version, and `backup._recover_recorded_version` uses it for exactly one
+further read, of the `VersionId` `uploaded_versions` records for that key. It accepts
+that read on the same evidence the current-version read uses and nothing more -- the
+same body fingerprint, re-taken over the bytes that arrive. A match settles
+provenance: those ARE the bytes this install uploaded. Whether they still open as a
+`tar.gz` is not asked, because the current-version read does not ask it either and the
+upload side pushes payloads it cannot read, so an own archive can legitimately be
+malformed; refusing one only on the recovery path would hand the operator their own
+file when nobody overwrote the key and a refusal when somebody did. An absent,
+deleted or mismatched version returns the same `ORIGIN_UNVERIFIED` refusal, and so
+does a staged copy that cannot be hashed -- reading the bytes back is part of
+fetching them, so it sits inside the same guard as the transfer rather than escaping
+a helper whose every non-matching outcome is that refusal. The recovery can only
+find bytes that already pass; it can never widen what a restore accepts.
+
+The extra read is also the one AWS call in a restore the caller did not ask for, so
+`backup._authorize_recovery_read` authorizes it again immediately before it is made,
+asking the same four questions `backup._authorize_upload` asks of the paid upload and
+in the same order: the live caller identity must still name the requested account,
+the app must still be enabled, S3 consent must still hold for this profile and
+region, and the recorded grant must name THIS account. The network round-trip runs
+FIRST and the cheap local decisions LAST, so no window sits between a check and the
+read it guards. The first read can take minutes, and the route's pre-flight cannot
+speak for a decision made after it ran -- a withdrawn grant, a disabled app, or a
+profile repointed at another account. The stored grant is read ONCE and its profile,
+region and account all checked against that one snapshot: grant reads are unlocked
+while writes take the consent lock, so checking profile and region against one read
+and the account against a second would let a re-grant landing between them satisfy
+each half from a different record, turning a refusal into an allow. The parity between
+the two gates is in the four questions they ask, not in the mechanism underneath them.
+They differ in what a refusal does -- the upload raises, because a refused upload is a
+failed run, while this returns a reason, so the recovery does not run and the caller
+keeps exactly the refusal it already had -- and in how the grant is reached: the upload
+gate still asks `is_granted` and then reads the grant again for its account, which is
+a pre-existing race recorded in #12705 for its own review rather than changed here.
+
+That further read is authorized against `s3:GetObjectVersion` rather than
+`s3:GetObject` -- S3 treats a version-pinned `GetObject` as a distinct action -- and
+`storage.get_file` reports whichever of the two matches the request it made.
+`engine._checked` uses that name twice: as the failure label on every error, and, on an
+`AccessDenied`, as the permission its remediation hint tells the operator to add.
+Neither GetObject action appears in `_ACTION_STATEMENT_HINTS`, so the statement Sid
+inside that hint falls back to the generic policy pointer; the action name in it is
+still whatever the call passed. Naming the unversioned action on a pinned read would
+send a denied operator to add a permission they already hold. The recommended drive
+tier grants neither on `backup/*`: that prefix is write-only there on purpose, so any
+restore already needs rights beyond it.
+
+The recovery runs only where the mismatch would REFUSE. Under `foreign_ok` the caller
+has already said it will take whatever is current at the key without proof, so there
+is no refusal to rescue, and reaching past the current object would hand that caller
+different bytes than it accepted, labelled `ORIGIN_SELF` instead of
+`ORIGIN_UNVERIFIED`. Gating on the override keeps its meaning intact.
+
+Retention is deliberately not taught about this: `_current_version_is_ours` stays a
+question about the CURRENT version, so a recoverable-but-noncurrent key still holds
+no `keep` slot. That errs toward retaining more, and counting it is a decision about
+what may be DELETED.
+
 The override is mandatory rather than optional: restoring onto a replacement
 machine means nothing in the bucket is provably this install's, which is what
 disaster recovery is, so a hard wall would block the one case the backup exists
@@ -512,6 +1124,153 @@ logs and SEL-audits the observation and then PROCEEDS. It does not take ownershi
 of the schedule: with the keys namespaced there is nothing left to collide, and a
 single-owner schedule would leave one machine silently un-backed-up, which is
 discovered at restore time and is worse than the state it replaced.
+
+### A failed unattended attempt is recorded, so the loop can back off
+
+The half-hourly wake is a due-CHECK interval and never a retry interval. Only
+completed runs used to be recorded, so a deterministic fault — an unreadable file,
+a disconnected mount, a payload database that cannot be shown free of credentials —
+left the state file unable to distinguish
+"never ran" from "keeps breaking": `due_for_nightly` took its never-ran branch on
+every wake, re-staged the whole data home into a fresh temporary directory, and
+repeated the same traceback roughly every half hour for as long as the fault
+lasted.
+
+`hooks._failed_attempt` closes that. It is the single place a failed unattended
+attempt is both SEL-audited and recorded, reached from the shared setup's handler
+and from each kind's own push, so the backoff cannot depend on which way the run
+broke.
+
+It closes that for a fault that leaves the state file writable, which is not every
+fault. A full disk fails the failure-write as well, so nothing is recorded and every
+wake is due exactly as before. That residual is deliberate rather than overlooked:
+`record_nightly_failure` never raises, because a state file it cannot write must not
+turn a logged backup failure into an unhandled one, and a count that did not persist
+leaves the loop retrying as it does today. So a full disk is still a repeated-traceback
+case; what this closes is the larger class where the disk is fine and the backup is not.
+
+Cancellation does not reach it: a cancelled attempt is teardown, and
+counting it would let a clean shutdown push the next night out.
+
+The record lives under `backup.NIGHTLY_FAILURE_STATE_KEY`, per account then per
+kind, as `{"at": iso8601, "since": iso8601, "consecutive": int, "error": str}`. It is a SEPARATE key
+from `runs`, because `runs` is read by `uploaded_versions`, `_unchanged_baseline`
+and the retention sweep as proof an archive exists — a failed attempt filed there
+would hand each of them a baseline to compare against and a version to retire for
+an upload that never happened.
+
+`backup.NIGHTLY_RETRY_BACKOFF_SECS` maps consecutive failures to a wait, indexed by
+N-1 with the last entry as the ceiling: 0, 1 h, 2 h, 4 h, 8 h, then 12 h. The first
+entry is zero, so a single failure is retried on the next wake exactly as before —
+one failure is not yet a pattern. A module-level assertion pins the ceiling below
+`NIGHTLY_WINDOW_SECS`, which is what keeps this a backoff rather than a second way
+for a backup the owner enabled to go quiet.
+
+`_backoff_withholds` answers DUE for every unusable reading — a corrupt count, a
+corrupt or absent stamp, a stamp in the future from a backwards clock step. That is
+the rule `_a_day_since_last_run` already states for an unparseable success stamp,
+and a failure record is a new place for the same silence to appear.
+
+Any success clears the count, atomically inside `_record_run_locked`'s mutate
+rather than as a second write beside it, so no wake can land between the run record
+and the clear. Only the SCHEDULED path records a failure, while a success from
+anywhere clears one: an owner pressing the button is present and has just
+demonstrated the fault is gone, which is the line `_unattended_sessions_redaction_gap`
+already draws. The status read serves the record as `nightlyFailures` so an operator
+can see the count and the day it started; no console renderer ships with it.
+
+The clear alone is not enough, because the two writers serialize under the sidecar lock
+but each mutate re-reads fresh state. An unconditional failure write can therefore land
+AFTER a concurrent manual success cleared the count and record a failure against a kind
+that just succeeded. So `nightly_run_witness` reads the run slot's `(process, sequence)`
+identity BEFORE an attempt starts, `record_nightly_failure` requires it, and the write is
+refused when the slot moved during the attempt. Absent compares equal to absent, which is
+what keeps a nightly that has never succeeded recording its count normally; only an actual
+move refuses. That identity is the one `_record_run_locked`'s `expected` parameter
+already established for this compare-and-set, because neither `at` nor `key` can stand
+in for it: the clock resolves to a platform tick and a skip copies the matched run's key.
+
+What the raced write costs was measured, not assumed, and the obvious claim is wrong: it
+restarts the count at 1, `nightly_retry_delay_secs` answers 0 there, and the fresh run
+record already holds the account not-due for the window, so it withholds no attempt. What
+it produces is a false `nightlyFailures` row for an account that just backed up, plus a
+one-step skew on the next genuine failure. The row is why the guard ships -- making that
+state readable is half of what this change is for -- and a review lane that priced the
+guard against the withheld-attempt claim was right to reject that claim.
+
+A run record reaches the document by TWO paths, so the clear sits on both. The second is
+`_merge_pending`, which carries a run whose own state write raised and was held in memory;
+before it also cleared, a stale count outlived the success that should have ended it, and
+after a restart withheld one nightly for up to the ceiling on an account that had already
+backed up. It is gated on `_run_is_newer` for the same reason the run write is.
+
+`run_witness` is a required keyword with no default, so a call site added later cannot
+opt out of the protocol silently -- which is the shape of the bug it closes. Each hooks
+call site reads it at the top of its own attempt, never in the handler, because by then
+the window it has to witness has closed. A refusal returns `None` and is logged as the
+good case it is: skipping a real failure costs the extra attempts the loop already makes,
+while writing a false one misreports a healthy account, so this ambiguity resolves toward
+attempting the backup like every other one here.
+
+The row carries TWO stamps. `at` is the latest attempt and is what the backoff measures
+from; `since` is when the current run of failures began, carried forward while the streak
+continues and cleared with the row. Both are needed because the issue asks for the second
+by name -- an operator has to see that the nightly has been failing since a particular day
+-- and one overwritten stamp cannot say both. A stored `since` is carried only when it
+PARSES as a timestamp, not merely when it is a non-empty string: it is published in an
+operator-facing row and each write carries the previous one forward, so an unparseable
+value would otherwise be rendered as the day the failures began for the whole life of the
+streak. Anything unusable restarts the streak, so corruption can only ever under-report the
+outage. The backoff never reads `since`, so a corrupt value there cannot affect scheduling
+in either direction.
+
+### The nightly sessions archive is a second, separate grant
+
+`backup.nightly_sessions_enabled` authorizes the scheduled SESSIONS archive and
+is never `nightly`. The two answer different questions -- one about memory and
+workspace, one about every conversation the agent was ever shown -- so an
+operator who enabled nightly snapshots has said nothing about transcripts. The
+key is absent by default and an absent key reads False, so no install begins
+uploading transcripts by being upgraded. Both read fail-closed: an unreadable
+state file answers False, because a corrupt file must never be the reason an
+unattended upload starts.
+
+Due-ness is keyed per kind (`backup.due_for_sessions_nightly` against
+`KIND_SESSIONS`), so a snapshot that ran an hour ago does not make the
+transcripts look backed up, and a wake proceeds when EITHER kind is due. Each
+kind is pushed inside its own `hooks._push_nightly` call with its own
+try/except and its own audit subject (`backup/snapshots`, `backup/sessions`), so
+one kind failing costs the other nothing and an incident review can tell which
+bytes left the host. A platform without descriptor-pinned traversal is never due
+for the archive: `run_sessions_backup` refuses there, so scheduling it would
+record a failed run every wake for a payload that platform cannot produce.
+
+The grant is settable on every registered account while the loop runs for the one
+`resolve_default_account_profile` names, so "granted" and "will run" are separate
+answers and `backup.scheduled_sessions_blocked_code` carries the second. Its
+`scheduled_account` argument is the part only a per-account surface can answer:
+the status route compares its target against `accounts.default_account_id` -- the
+account half of the loop's own resolution, so the two cannot disagree about which
+account is scheduled -- and reports `other_account` when they differ. The console
+renders that beside the switch, which keeps reading back exactly as the owner set
+it. Without it a grant recorded on a second account is authorized and unreachable
+at once, and the operator learns which at the host loss the feature exists to
+survive. The loop never sees that code: it reads the scheduling answer for the
+account it just resolved, where the condition is false by construction, which is
+why `scheduled_sessions_blocked_reason` covers only the other two conditions.
+A host that cannot produce the archive outranks the account, because naming the
+account would send the operator to a page carrying the same notice.
+
+The scheduled path calls `backup.run_sessions_backup` unchanged, with the same
+arguments the owner-triggered job passes and `CALLER_SCHEDULED`. So the
+archive's CONTENTS, its redaction posture and its size behaviour are not
+decided here and are not changed by scheduling: both session halves ship as they
+are, byte-exact and unredacted, exactly as the owner-triggered archive already
+ships them, and the push shares the one `_PUSH_TIMEOUT_SECS` budget. Whether
+that posture is right for the archive at all is a question about the archive,
+tracked on its own; the scheduler inherits whatever that path decides, because it
+is the same function. What scheduling adds is one consent bit that is strictly
+narrower than the owner-triggered route's gate, never wider.
 
 ## Dashboard surface
 
@@ -569,8 +1328,9 @@ profiles, reconnect guidance, drive status/list/download/preview/search, costs,
 library, backup status, share metadata, and rendered IAM policy. Its mutations
 are profile registration and unregistration; drive bootstrap, upload, delete,
 move, folder create/delete, and share; share-ledger removal; library push and
-library removal; backup run, nightly toggle, and staged restore; and renaming
-this install (local, display only -- see "Several installs, one drive").
+library removal; backup run, the snapshot and sessions nightly toggles,
+retention-count updates, and staged restore; and renaming this install (local,
+display only -- see "Several installs, one drive").
 
 Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, move,
 profile registration, library push, library removal, share creation, and backup

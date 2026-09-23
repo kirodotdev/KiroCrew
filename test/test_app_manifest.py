@@ -408,6 +408,7 @@ class TestRoundTrip:
                 "network": True,
                 "memory": "shared",
                 "cron": True,
+                "sessionApproval": True,
             },
             "setup": {
                 "onInstall": "setup.py:init",
@@ -420,6 +421,21 @@ class TestRoundTrip:
         serialized = json.loads(m.to_json())
         m2 = AppManifest.from_dict(serialized)
         assert m2.to_dict() == m.to_dict()
+
+    @pytest.mark.parametrize("raw", ["false", "true", "yes", 1, {}, [], None])
+    def test_session_approval_requires_json_true(self, raw):
+        m = AppManifest.from_dict(
+            _valid_manifest(permissions={"sessionApproval": raw})
+        )
+        assert m.permissions.sessionApproval is False
+        assert "sessionApproval" not in m.to_dict().get("permissions", {})
+
+    def test_session_approval_round_trips_when_true(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(permissions={"sessionApproval": True})
+        )
+        assert m.permissions.sessionApproval is True
+        assert m.to_dict()["permissions"]["sessionApproval"] is True
 
     def test_extra_fields_preserved(self):
         data = _valid_manifest(customField="hello", anotherOne=42)

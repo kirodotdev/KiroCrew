@@ -176,6 +176,30 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     expect(treeMock.last().calls.resetPaths).toEqual([['README.md', 'src/a.ts']])
   })
 
+  it('keeps explicit directory rows and marks directories whose files were sampled', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['alpha/a.ts'],
+      directories: ['alpha', 'late', 'late/nested'],
+      truncatedDirectories: ['late'],
+      truncated: true,
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['alpha/a.ts', 'alpha/', 'late/', 'late/nested/'],
+    ])
+    const decorate = treeMock.last().options.renderRowDecoration as (
+      context: { item: MenuItem },
+    ) => { text: string; title?: string } | null
+    expect(decorate({ item: { kind: 'directory', name: 'late', path: 'late' } })).toEqual({
+      text: 'files hidden',
+      title: 'files hidden',
+    })
+    expect(decorate({ item: { kind: 'directory', name: 'alpha', path: 'alpha' } })).toBeNull()
+    expect(screen.getByText(/all folders remain available/i)).toBeInTheDocument()
+  })
+
   it('reports an empty workspace instead of an empty tree', async () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: [] }))
     renderTree()
@@ -191,11 +215,62 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     expect(screen.getByText(/Large workspace/)).toBeInTheDocument()
     unmount()
 
-    // Changed mode renders the git-status set, which is never truncated.
+    // Changed mode renders the git-status set, which carries no WORKSPACE-level
+    // truncation notice -- that one is about the tree payload's own file budget.
+    // The git-status set has its own cap and its own notice, asserted below.
     vi.mocked(api.projectGitStatus).mockResolvedValue(mkStatus([mkFile('project/a.ts', 'M')]))
     renderTree({ mode: 'changed' })
     await waitForTree()
     expect(screen.queryByText(/Large workspace/)).not.toBeInTheDocument()
+  })
+
+  // The server caps the changed-file listing at 500 and reports it. Without a
+  // notice of its own the tree simply ended at 500 rows, presenting a cut list
+  // as a complete one.
+  it('says the changed listing was cut when the git status was capped', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus(
+        Array.from({ length: 500 }, (_, i) => mkFile(`project/f${i}.ts`, 'M')),
+        { truncated: true },
+      ),
+    )
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+    const notice = await screen.findByTestId('workspace-tree-changed-truncated')
+    // The count names the rows THIS surface shows, not the payload length: the
+    // 500 listed files are filtered to those under the project root and
+    // de-duplicated across staged/unstaged first.
+    expect(notice).toHaveTextContent('first 500 shown')
+  })
+
+  it('leaves the changed tree unqualified when the git status was complete', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/a.ts', 'M')], { truncated: false }),
+    )
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+    expect(screen.queryByTestId('workspace-tree-changed-truncated')).not.toBeInTheDocument()
+  })
+
+  // The notice is gated on the mode it describes: `all` renders the tree payload,
+  // whose cap the workspace notice above already covers, so a capped git status
+  // must not put a changed-list claim over a full-workspace tree.
+  it('keeps the changed-listing notice out of all mode', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ truncated: false }))
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/a.ts', 'M')], { truncated: true }),
+    )
+    renderTree({ mode: 'all' })
+    await waitForTree()
+    // `all` mode gates the tree on the TREE payload, so it paints before the
+    // status lands -- asserting the notice's absence straight after
+    // `waitForTree` would pass with the mode gate deleted. Wait until the
+    // capped status has been folded into the model, so the absence below is
+    // about the gate rather than about timing.
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([{ path: 'a.ts', status: 'modified' }]),
+    )
+    expect(screen.queryByTestId('workspace-tree-changed-truncated')).not.toBeInTheDocument()
   })
 })
 
@@ -321,6 +396,112 @@ describe('PierreWorkspaceTreeImpl — changed mode', () => {
 
     await waitFor(() => expect(screen.getByText('Working tree clean')).toBeInTheDocument())
     expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
+  })
+
+  it('names a filter refusal instead of wearing the generic failed copy', async () => {
+    // Turning the refusal into a 503 made these two surfaces render their
+    // generic "failed" notice on every LFS-configured repository, forever, with
+    // no cause and no "retry won't help" -- the outage spelling this change
+    // exists to end, one panel over. Both must recognise the refusal code.
+    const errorReport = await import('../utils/errorReport')
+    const i18n = await import('../i18n/t')
+    const refusal = Object.assign(new Error('CHECKS-OFF'), {
+      status: 503,
+      code: 'git_status_filter_refused',
+      body: JSON.stringify({
+        error: 'CHECKS-OFF',
+        code: 'git_status_filter_refused',
+        cause: 'declared',
+      }),
+    })
+    errorReport.__resetErrorJournalForTests()
+    vi.mocked(api.projectGitStatus).mockRejectedValue(refusal)
+
+    const direct = renderTree({ mode: 'changed' })
+    const notice = await screen.findByTestId('workspace-tree-status-error')
+    expect(notice).toHaveTextContent(i18n.i18nT('components.gitPanel.filter_refused'))
+    expect(notice).not.toHaveTextContent(
+      i18n.i18nT('components.workspaceTree.status_failed'),
+    )
+    // And NO title. `inline` lays a title out as a flex sibling of the message,
+    // so at this width it stacks into two-word fragments -- the capture is what
+    // showed that. The panel needs the title to separate two coexisting notices;
+    // nothing renders beside this one.
+    expect(notice.querySelector('strong')).toBeNull()
+
+    direct.unmount()
+    const { default: FileBrowserRail } = await import('../pages/chat/FileBrowserRail')
+    const railClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={railClient}>
+        <FileBrowserRail projectDir={ROOT} onFileOpen={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    // All mode, which is where the rail owns the notice.
+    const railNotice = await screen.findByText(
+      i18n.i18nT('components.gitPanel.filter_refused'),
+    )
+    expect(railNotice).toBeInTheDocument()
+    expect(
+      screen.queryByText(i18n.i18nT('pages.chat.fileBrowserRail.git_status_failed')),
+    ).toBeNull()
+    errorReport.__resetErrorJournalForTests()
+  })
+
+  it('reports a changed-mode 503 once with its own copy and structured agent handoff', async () => {
+    const errorReport = await import('../utils/errorReport')
+    const serverMessage = 'server-only workspace status detail'
+    errorReport.__resetErrorJournalForTests()
+    errorReport.__resetNavSeamForTests()
+    sessionStorage.clear()
+    errorReport.installSoftNavigate(() => {})
+
+    try {
+      errorReport.recordError({
+        source: 'api',
+        message: serverMessage,
+        status: 503,
+        code: 'git_status_unavailable',
+        endpoint: '/api/project/git/status',
+      })
+      vi.mocked(api.projectGitStatus).mockRejectedValue(
+        Object.assign(new Error(serverMessage), {
+          status: 503,
+          code: 'git_status_unavailable',
+        }),
+      )
+
+      const direct = renderTree({ mode: 'changed' })
+
+      const notice = await screen.findByTestId('workspace-tree-status-error')
+      expect(notice).toHaveTextContent('Couldn’t read the repository status.')
+      expect(notice).not.toHaveTextContent('Commit history may be out of date.')
+      expect(screen.queryByRole('status', { name: 'Loading workspace…' })).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Ask the agent' }))
+      const prompt = errorReport.consumeChatHandoff()
+      expect(prompt).toContain('- Request: /api/project/git/status -> HTTP 503')
+      expect(prompt).toContain('- Code: git_status_unavailable')
+      expect(prompt).toContain(`- Message: ${serverMessage}`)
+
+      direct.unmount()
+      const { default: FileBrowserRail } = await import('../pages/chat/FileBrowserRail')
+      const railClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      render(
+        <QueryClientProvider client={railClient}>
+          <FileBrowserRail projectDir={ROOT} onFileOpen={vi.fn()} />
+        </QueryClientProvider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Changed' }))
+
+      const hostedNotice = await screen.findByTestId('workspace-tree-status-error')
+      expect(hostedNotice).toHaveTextContent('Couldn’t read the repository status.')
+      expect(screen.getAllByRole('alert')).toHaveLength(1)
+    } finally {
+      errorReport.__resetErrorJournalForTests()
+      errorReport.__resetNavSeamForTests()
+      sessionStorage.clear()
+    }
   })
 })
 
@@ -470,13 +651,13 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
     })
   })
 
-  it('wires renderContextMenu only when a host is present to hand the row to', async () => {
-    // `<FileTree>`'s own `renderContextMenu != null` check forces the menu
-    // enabled unconditionally, so passing it with no `onAddToContext` would
-    // open a menu whose only action closes itself and does nothing.
+  it('always wires renderContextMenu, since a file row always has Download', async () => {
+    // A file row is downloadable on its own, so the menu is wired
+    // unconditionally. The per-node component still renders nothing on a node
+    // with no action (asserted in the Download suite).
     const { update } = renderTree()
     await waitForTree()
-    expect(treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBeUndefined()
+    expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
 
     update({ onAddToContext: vi.fn() })
     expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
@@ -654,6 +835,221 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
   })
 })
 
+describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
+  // Download streams the file's bytes through /api/file-download — the SAME
+  // credential-gated endpoint the viewer's Download uses — then hands the blob
+  // to the browser as a save-to-disk. These tests pin: the row is file-only,
+  // the fetch hits that endpoint (so the gate is in front of it), a refusal is
+  // surfaced not bypassed, and the menu offers Download even with no host.
+  const openMenu = (item: MenuItem) => {
+    const close = vi.fn()
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close,
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(item, context)
+    return { close, ...render(<>{node}</>) }
+  }
+
+  /** Stub fetch, URL.createObjectURL/revoke and the anchor click so the
+   *  download can be observed without a real network or DOM navigation.
+   *  `code` populates the JSON body the helper reads to tell a credential
+   *  refusal (`content_redacted`) apart from any other 400. */
+  function captureDownload(response: { ok: boolean; status?: number; code?: string }) {
+    const names: string[] = []
+    const origFetch = global.fetch
+    const origCreate = URL.createObjectURL
+    const origRevoke = URL.revokeObjectURL
+    const body = response.code ? { error: 'refused', code: response.code } : { error: 'refused' }
+    const mkRes = () => ({
+      ok: response.ok,
+      status: response.status ?? (response.ok ? 200 : 400),
+      statusText: response.ok ? 'OK' : 'Bad Request',
+      blob: async () => new Blob(['bytes'], { type: 'application/octet-stream' }),
+      json: async () => body,
+      clone() { return mkRes() },
+    })
+    const fetchMock = vi.fn().mockImplementation(async () => mkRes())
+    global.fetch = fetchMock as unknown as typeof fetch
+    URL.createObjectURL = vi.fn(() => 'blob:dl') as typeof URL.createObjectURL
+    URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function mockClick(this: HTMLAnchorElement) { names.push(this.download) })
+    return {
+      fetchMock, names,
+      restore: () => {
+        clickSpy.mockRestore()
+        global.fetch = origFetch
+        URL.createObjectURL = origCreate
+        URL.revokeObjectURL = origRevoke
+      },
+    }
+  }
+
+  it('offers Download on a file row and streams the bytes through /api/file-download', async () => {
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      // The absolute path goes to the credential-gated endpoint; absolute paths
+      // carry no resolve=1.
+      await waitFor(() => expect(cap.fetchMock).toHaveBeenCalledTimes(1))
+      expect(cap.fetchMock).toHaveBeenCalledWith(
+        `/api/file-download?path=${encodeURIComponent(`${ROOT}/src/a/b.ts`)}`,
+      )
+      // The saved file keeps its basename.
+      await waitFor(() => expect(cap.names).toEqual(['b.ts']))
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('offers no Download on a directory row', async () => {
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+      // The ask is file rows only, and /api/file-download serves one file.
+      expect(screen.queryByRole('menuitem', { name: 'Download' })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: 'Add to chat' })).toBeInTheDocument()
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('surfaces the gate refusal as a distinct credential message and reaches no bytes', async () => {
+    // The credential gate aborts a flagged file with `code: content_redacted`.
+    // The row names that specifically -- not a generic failure a user would
+    // retry forever -- reports it through the tree notice, never falls back to
+    // another transport, and creates no blob.
+    const cap = captureDownload({ ok: false, status: 400, code: 'content_redacted' })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('flagged by the credential scan')
+      expect(URL.createObjectURL).not.toHaveBeenCalled()
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('does not read a non-credential 400 as a credential refusal', async () => {
+    // /api/file-download also answers 400 for an invalid or out-of-project path
+    // (no `content_redacted` code). Keying on the bare status would falsely tell
+    // the user their file holds secrets; keying on the body code shows generic.
+    const cap = captureDownload({ ok: false, status: 400 })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('Download failed')
+      expect(notice).not.toHaveTextContent('credential scan')
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('surfaces a non-400 failure as the generic Download failed, not the credential message', async () => {
+    // Any other non-ok status (a 500, a gone file) is an ordinary failure the
+    // user may retry -- it must NOT read as a credential refusal.
+    const cap = captureDownload({ ok: false, status: 500 })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('Download failed')
+      expect(notice).not.toHaveTextContent('credential scan')
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('offers Download on a file row even with no host onAddToContext', async () => {
+    // A file row is downloadable on its own, so the menu is wired and focused
+    // on Download with no Add-to-chat row above it to own focus entry.
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree()
+      await waitForTree()
+      expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      const row = screen.getByRole('menuitem', { name: 'Download' })
+      expect(row).toHaveFocus()
+      fireEvent.keyDown(row, { key: 'Enter' })
+
+      await waitFor(() => expect(cap.fetchMock).toHaveBeenCalledTimes(1))
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('shows Download as the ONLY row on a file with no host onAddToContext', async () => {
+    // The reachable shape on a hostless render site (e.g. the Members DM file
+    // tree, which mounts the panel with no onAddToContext): the file row menu
+    // holds Download alone -- no Add to chat above it. This is shipped UI, not a
+    // defensive dead path, so the single-row Download layout must render.
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree()
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      const items = screen.getAllByRole('menuitem')
+      expect(items).toHaveLength(1)
+      expect(items[0]).toHaveTextContent('Download')
+      expect(screen.queryByRole('menuitem', { name: 'Add to chat' })).not.toBeInTheDocument()
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('renders no menu on a directory row with no host and no app rows', async () => {
+    // The wiring is now unconditional, but a directory node with nothing to
+    // offer must still render nothing rather than an empty popup.
+    renderTree()
+    await waitForTree()
+
+    const { node } = (() => {
+      const context: MenuContext = {
+        anchorElement: document.createElement('div'),
+        anchorRect: document.createElement('div').getBoundingClientRect(),
+        close: vi.fn(),
+        restoreFocus: vi.fn(),
+      }
+      return { node: treeMock.fileTreeProps.at(-1)!.renderContextMenu!({ kind: 'directory', name: 'a', path: 'src/a' }, context) }
+    })()
+    render(<>{node}</>)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+  })
+})
+
 describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)', () => {
   // The DEGENERATE case of the shared `role="menu"` contract: this menu hosts
   // exactly ONE menuitem, so every focus-move assertion is vacuously true —
@@ -676,11 +1072,13 @@ describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)
   }
 
   /** Open the row menu and hand back its single item, focused (the
-   *  component's own firstItemRef effect owns that focus entry). */
+   *  component's own firstItemRef effect owns that focus entry). A DIRECTORY
+   *  row is the one-item case: it carries Add to chat but no Download (which is
+   *  file-only), so the degenerate single-menuitem contract still holds. */
   const openSingleItemMenu = async () => {
     renderTree({ onAddToContext: vi.fn() })
     await waitForTree()
-    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
     const menuitem = screen.getByRole('menuitem', { name: 'Add to chat' })
     expect(menuitem).toHaveFocus()
     return menuitem
@@ -723,6 +1121,33 @@ describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)
     fireEvent.keyDown(menuitem, { key: 'Enter' })
     expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
   })
+
+  it('moves focus between Add to chat and Download with ArrowDown/ArrowUp', async () => {
+    // The real two-item case: a FILE row with a host holds Add to chat AND
+    // Download, so the arrows do actual roving focus (not the degenerate
+    // one-item no-op above). ArrowDown steps to the next item and ArrowUp wraps
+    // back, both consumed so neither scrolls the tree behind the open menu.
+    renderTree({ onAddToContext: vi.fn() })
+    await waitForTree()
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+
+    const add = screen.getByRole('menuitem', { name: 'Add to chat' })
+    const download = screen.getByRole('menuitem', { name: 'Download' })
+    // Focus enters on the first row.
+    expect(add).toHaveFocus()
+
+    // ArrowDown -> Download, claimed (false = preventDefault called).
+    expect(fireEvent.keyDown(add, { key: 'ArrowDown' })).toBe(false)
+    expect(download).toHaveFocus()
+
+    // ArrowUp -> back to Add to chat, claimed.
+    expect(fireEvent.keyDown(download, { key: 'ArrowUp' })).toBe(false)
+    expect(add).toHaveFocus()
+
+    // ArrowUp from the first item wraps to the last (Download).
+    expect(fireEvent.keyDown(add, { key: 'ArrowUp' })).toBe(false)
+    expect(download).toHaveFocus()
+  })
 })
 
 describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
@@ -752,16 +1177,24 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
     return { close, node: render_ ? render_(item, context) : null }
   }
 
-  it('wires the context menu for an app row even with no host onAddToContext', async () => {
-    // The gate is what decides whether Pierre offers a menu at all. Before this seam
-    // it tracked `onAddToContext` alone, so an app-only row could never be reached.
+  it('reaches an app row with no host onAddToContext, on a node with no built-in row', async () => {
+    // A directory node has no host row and no Download, so before an app
+    // contributes, its menu renders nothing; a contributed row is what makes it
+    // reachable. (A file node is always reachable now — it has Download — so a
+    // directory is the node that isolates app-row reachability.)
     const { qc, update } = renderTree()
     await waitForTree()
-    expect(treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBeUndefined()
+
+    const dir = { kind: 'directory', name: 'a', path: 'src/a' } as const
+    const before = openMenu(dir)
+    render(<>{before.node}</>)
+    expect(screen.queryByRole('menuitem')).toBeNull()
 
     seed(qc, appsWith())
     update()
-    expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+    const after = openMenu(dir)
+    render(<>{after.node}</>)
+    expect(screen.getByRole('menuitem', { name: /^Send to store\b/ })).toBeInTheDocument()
   })
 
   it('renders the app row, POSTs the path and root, and never the file content', async () => {
@@ -790,7 +1223,8 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
 
   it('renders NOTHING rather than an empty popup when no row survives `when`', async () => {
     // The gate counts registered rows; `when` then filters per node. A row scoped to
-    // markdown files makes right-clicking a .ts file an empty bordered box with no
+    // markdown files does not match a directory node, which also has no Download
+    // (file-only) and no host row — so the menu is an empty bordered box with no
     // menuitem for the focus effect to land on.
     const { qc, update } = renderTree()
     await waitForTree()
@@ -799,7 +1233,7 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
     }))
     update()
 
-    const { node } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
     // Assert on the RENDERED output, not on `node`: Pierre's slot always receives a
     // `<TreeContextMenu/>` element, and the component's own empty-menu guard is what
     // renders nothing — so an element-identity check would pass whatever it renders.
@@ -809,14 +1243,15 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
   })
 
   it('focuses the first app row when there is no built-in row to focus', async () => {
-    // `firstItemRef` hangs off the built-in row, which is gated on `onAddToContext`;
-    // the querySelector fallback is what gives an app-only menu a focus target.
+    // `firstItemRef` hangs off the built-in rows (Add to chat, Download); on a
+    // directory node with no host neither exists, and the querySelector fallback
+    // is what gives an app-only menu a focus target.
     const { qc, update } = renderTree()
     await waitForTree()
     seed(qc, appsWith())
     update()
 
-    const { node } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
     render(<>{node}</>)
     const row = screen.getByRole('menuitem', { name: /^Send to store\b/ })
     expect(row).toHaveFocus()
@@ -829,7 +1264,11 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
     await waitForTree()
     seed(qc, appsWith({ enabled: false }))
     update()
-    expect(treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBeUndefined()
+    // A directory node has no built-in row, so a disabled app contributing
+    // nothing leaves the menu empty.
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+    render(<>{node}</>)
+    expect(screen.queryByRole('menuitem')).toBeNull()
   })
 
   it('surfaces a rejected dispatch on the TREE, which outlives the menu', async () => {

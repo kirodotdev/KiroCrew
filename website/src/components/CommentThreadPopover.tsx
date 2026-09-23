@@ -179,7 +179,7 @@ export function CommentThreadPopover({
             // not a submit at all, and taking it would cost the newline it means there.
             if (e.key === 'Enter' && !e.shiftKey && reply.trim()) { if (ime.claimEnter(e)) submit() }
           }}
-          className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-none resize-none focus-ring leading-[18px]"
+          className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
         />
         <div className="flex justify-end mt-1">
           <button

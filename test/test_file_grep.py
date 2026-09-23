@@ -32,6 +32,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from pdf_test_helpers import flate_bomb_pdf, text_pdf
 
 from kiro_crew.dashboard.handlers import api_file_grep
 from kiro_crew.dashboard.handlers import files as f
@@ -555,29 +556,67 @@ class TestDocumentPass:
         assert "WIDGET" in hit["preview"]
 
     @pytest.mark.asyncio
-    async def test_a_pdf_is_not_searched_at_all(self, tmp_path):
-        """PDF is deliberately OUT of the document pass, and that needs pinning.
+    async def test_a_pdf_reports_the_page_it_matched(self, tmp_path, monkeypatch):
+        # The extractor child costs an interpreter start; the budget under test
+        # is the ceiling, not a CI runner's spawn latency.
+        monkeypatch.setattr(f, "_GREP_TIME_BUDGET_SECS", 30.0)
+        root = tmp_path / "papers"
+        root.mkdir()
+        (root / "paper.pdf").write_bytes(text_pdf("the WIDGET plan on page one"))
+        payload = await _grep(root, "widget")
+        hit = next(r for r in payload["results"] if r["file"].endswith("paper.pdf"))
+        assert hit["label"] == "page 1"
+        assert "WIDGET" in hit["preview"]
+        assert payload["truncated"] is False
+        assert payload["skipped_docs"] == 0
 
-        Its text extraction has no memory ceiling this process can enforce:
-        `pdfplumber` exposes no length limit and the allocation is the parsed
-        character list itself, so any check runs after the memory is committed. A
-        25 MB input can decompress to orders of magnitude more text.
+    @pytest.mark.asyncio
+    async def test_a_flate_bomb_pdf_is_skipped_and_the_search_still_answers(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        """The bound this pass depends on: one page past the ceiling is a SKIP.
 
-        Without `.pdf` in `_GREP_DOC_EXTS` a PDF is not a document to this pass,
-        and both engines then skip it as binary -- ripgrep by its own detection,
-        the python walk by its NUL sniff. Asserted rather than assumed, because
-        "no hit" is also what a silently broken extractor produces: the .docx
-        beside it must still be found, so this cannot pass by finding nothing.
+        The extractor runs in a child under ``RLIMIT_AS``, so the inflate that
+        would have been this process's memory is refused there and reported as a
+        ``memory`` failure. The pass counts the document in ``skipped_docs`` and
+        marks the answer partial -- and still answers, with the .docx beside the
+        bomb found, so this cannot pass by finding nothing. The log line names
+        the failure kind: ``memory``, not ``timeout``, which is what tells the
+        ceiling firing apart from the deadline giving up on a child still
+        inflating.
         """
+        monkeypatch.setattr(f, "_GREP_TIME_BUDGET_SECS", 30.0)  # the kind, not the clock
         root = tmp_path / "mixed"
         root.mkdir()
-        # A real PDF header plus a NUL, which is what makes both engines treat it
-        # as binary. The query appears in it verbatim.
+        (root / "bomb.pdf").write_bytes(flate_bomb_pdf())
+        _write_docx(root / "spec.docx", ["the WIDGET decision"])
+
+        with caplog.at_level("WARNING", logger=f.logger.name):
+            payload = await _grep(root, "WIDGET")
+        assert _files(payload) == {"spec.docx"}
+        assert payload["truncated"] is True
+        assert payload["skipped_docs"] == 1
+        assert "bomb.pdf skipped: extractor memory" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_the_parser_refuses_is_a_settled_answer(self, tmp_path, monkeypatch):
+        """Not a PDF under a .pdf name: no hit, no skip, no partial flag -- the
+        same shape as a workbook that is not a zip."""
+        # The refusal still costs an extractor child (an interpreter start), and
+        # the .docx beside it is opened only after that child answers. Under
+        # the default budget a slow runner spends the whole deadline on the
+        # spawn, reports the PDF as a timeout skip and never reaches spec.docx
+        # -- the budget under test is the parser's verdict, not spawn latency.
+        monkeypatch.setattr(f, "_GREP_TIME_BUDGET_SECS", 30.0)
+        root = tmp_path / "mixed"
+        root.mkdir()
         (root / "paper.pdf").write_bytes(b"%PDF-1.4\n\x00 the WIDGET plan\n")
         _write_docx(root / "spec.docx", ["the WIDGET decision"])
 
         payload = await _grep(root, "WIDGET")
         assert _files(payload) == {"spec.docx"}
+        assert payload["truncated"] is False
+        assert payload["skipped_docs"] == 0
 
     @pytest.mark.asyncio
     async def test_a_workbook_reports_its_sheet_and_row(self, tmp_path):
@@ -1506,11 +1545,30 @@ class TestHelpers:
         home = os.path.expanduser("~")
         args = f._grep_sensitive_globs(home)
         assert args[0::2] == ["--iglob"] * (len(args) // 2)
-        patterns = set(args[1::2])
+        patterns = {p.casefold() for p in args[1::2]}
         for entry in sensitive_home_dirs():
             relative = entry.strip("/")
             if relative:
-                assert f"!/{relative}" in patterns
+                # CASE is folded, separators are NOT. The emitted spelling is the
+                # ON-DISK one: ``sandbox_credential_targets`` realpaths every target,
+                # and on Windows that folds a leaf to the real directory name, so the
+                # ``AppData/Local/kiro-cli`` fence entry surfaces as
+                # ``!/AppData/Local/Kiro-Cli``. Case cannot cost coverage -- every
+                # pattern is emitted under ``--iglob``, which ripgrep matches
+                # case-insensitively -- so byte-identical case is a stricter claim
+                # than the contract makes, and one only a case-insensitive volume can
+                # break.
+                #
+                # Separators carry a real claim and stay compared exactly: ripgrep
+                # reads only ``/`` as a separator, which is why the emitting side runs
+                # each path through ``PurePath.as_posix``, so a pattern carrying
+                # Windows backslashes matches nothing and the store gets read.
+                # ``os.path.normcase`` would hide that regression, because on Windows
+                # it rewrites ``/`` to ``\`` on both sides of this comparison;
+                # ``casefold`` drops the case claim alone. The sibling anchor test
+                # checks the leading ``!/`` only, so it is not a net for an
+                # internal-separator slip.
+                assert f"!/{relative}".casefold() in patterns
 
     def test_every_exclusion_is_anchored_to_the_root(self):
         """The leading slash is the anchor, and without it the exclusion is not

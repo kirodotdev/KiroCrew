@@ -39,6 +39,14 @@ shape in the first place. The intended workflow is therefore: probe once
 against the real API (authorized), encode the observed shape here as a
 fixture, and let the fixture guard every layer forever after. When a vendor
 changes, one fixture changes and the whole stack is re-verified.
+
+It also proves the stack agrees with ``aiohttp`` on how a response is READ,
+because the reading is done by ``aiohttp`` itself -- see
+:class:`_FakeResponseCM`. It does NOT prove agreement on how a request is
+ENCODED: ``aiohttp`` builds a body inside ``ClientRequest``, which lives below
+the ``client._session`` seam this module replaces, so
+:class:`RecordedRequest` holds the value the client passed rather than the
+bytes a real request would carry.
 """
 
 from __future__ import annotations
@@ -46,7 +54,22 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from http import HTTPStatus
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    Union,
+)
+
+from aiohttp import ClientResponse, RequestInfo, hdrs
+from aiohttp.helpers import HeadersMixin
+from multidict import CIMultiDict, CIMultiDictProxy
+from yarl import URL
 
 __all__ = [
     "RecordedRequest",
@@ -55,6 +78,18 @@ __all__ = [
     "FakeWireWebSocket",
     "UnroutedRequestError",
 ]
+
+
+def _reason_for(status: int) -> str:
+    """The reason phrase a real server would put on the status line.
+
+    ``raise_for_status`` asserts ``reason is not None``, so a fixture that
+    only sets a status still produces the error production would raise.
+    """
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return ""
 
 
 _QUEUED = object()
@@ -158,13 +193,17 @@ class WireResponse:
 
     ``body`` may be a str (returned verbatim) or any JSON-serializable object
     (encoded). ``content_type`` matters more than it looks: the iLink QR bug
-    was a ``text/html`` response where the code assumed image bytes.
+    was a ``text/html`` response where the code assumed image bytes. It is
+    enforced the way aiohttp enforces it, so a body read with ``.json()``
+    under a non-JSON ``content_type`` raises ``ContentTypeError`` here too.
     """
 
     body: Any = field(default_factory=dict)
     status: int = 200
     content_type: str = "application/json"
     headers: Dict[str, str] = field(default_factory=dict)
+    """Extra response headers. Matched case-insensitively, as a real server's
+    are: a ``content-type`` here overrides the ``content_type`` field above."""
 
     def text(self) -> str:
         if isinstance(self.body, str):
@@ -179,36 +218,89 @@ class WireResponse:
         return self.text().encode("utf-8")
 
 
-class _FakeResponseCM:
-    """Async context manager mimicking ``aiohttp``'s response object."""
+class _FakeResponseCM(HeadersMixin):
+    """Async context manager standing in for ``aiohttp``'s response object.
 
-    def __init__(self, resp: WireResponse) -> None:
+    The read side is deliberately NOT modelled here. ``json``, ``text``,
+    ``get_encoding``, ``raise_for_status``, ``ok`` and the ``content_type`` /
+    ``charset`` properties are ``aiohttp``'s own implementations bound onto
+    this object, so a canned response answers whatever the real library would
+    answer. A wire test therefore cannot pass because this file's idea of
+    ``aiohttp`` is wrong:
+
+    * ``.json()`` on a ``text/html`` body raises ``ContentTypeError``, which is
+      the shape of the iLink QR bug (a ``text/html`` reply read as image
+      bytes) that the harness exists to catch;
+    * ``content_type=None`` bypasses that check, as it does in production;
+    * an empty body reads as ``None`` rather than raising a decode error;
+    * a ``+json`` suffix type is accepted and ``application/json;
+      charset=...`` has its parameters stripped, per aiohttp's own matcher;
+    * ``ok`` is ``status < 400``, which is aiohttp's rule -- an informational
+      1xx status counts as ok, where an intuitive ``200 <= status < 400``
+      would not.
+
+    Only the attributes those methods read are supplied: a bytes ``_body``,
+    ``_headers``, ``status``, ``reason``, ``request_info``, ``history`` and a
+    no-op ``release``. That surface is narrow and stable, unlike
+    ``ClientResponse.__init__`` -- constructing a real response is what ties a
+    fake to aiohttp's private constructor and breaks it on a minor upgrade.
+    """
+
+    json = ClientResponse.json
+    text = ClientResponse.text
+    get_encoding = ClientResponse.get_encoding
+    raise_for_status = ClientResponse.raise_for_status
+    ok = ClientResponse.ok
+
+    history: Tuple[Any, ...] = ()
+    """aiohttp's redirect chain. A canned response was never redirected."""
+
+    _resolve_charset = staticmethod(lambda *_: "utf-8")
+    """aiohttp's own class default, used by ``get_encoding`` when the body is
+    neither JSON nor charset-tagged. A real ``ClientSession`` installs its
+    ``fallback_charset_resolver`` here; nothing in this harness overrides it."""
+
+    def __init__(self, resp: WireResponse, rec: Optional[RecordedRequest] = None) -> None:
         self._resp = resp
         self.status = resp.status
-        self.headers = {"Content-Type": resp.content_type, **resp.headers}
+        self.reason = _reason_for(resp.status)
+        self._body = resp.raw()
+        # A real response's headers are case-insensitive, so ``content-type``
+        # and ``Content-Type`` are one field. A plain dict makes them two, and
+        # ``HeadersMixin`` asks for aiohttp's own spelling: a fixture using the
+        # lowercase form would be looked past and the default below answered
+        # instead, letting ``.json()`` accept a body production refuses. This
+        # is the mapping type aiohttp itself carries, for that reason.
+        headers: CIMultiDict[str] = CIMultiDict()
+        if resp.content_type is not None:
+            headers[hdrs.CONTENT_TYPE] = resp.content_type
+        # ``update`` replaces case-insensitively, so a fixture header wins over
+        # the ``content_type`` field however either one is spelled.
+        headers.update(resp.headers)
+        # HeadersMixin reads ``_headers``; callers read ``headers``. One mapping
+        # serves both so a fixture header cannot be visible through only one.
+        self._headers = headers
+        self.headers = headers
+        self.request_info = RequestInfo(
+            URL(rec.url if rec is not None else "https://fake.invalid/"),
+            rec.method if rec is not None else "GET",
+            CIMultiDictProxy(headers),
+        )
+        self._in_context = False
 
-    @property
-    def ok(self) -> bool:
-        return 200 <= self.status < 400
-
-    @property
-    def content_type(self) -> str:
-        return self._resp.content_type
-
-    async def text(self) -> str:
-        return self._resp.text()
+    def release(self) -> Any:
+        """No connection to release; present because ``raise_for_status`` calls it."""
+        return None
 
     async def read(self) -> bytes:
-        return self._resp.raw()
-
-    async def json(self, **_kw: Any) -> Any:
-        return json.loads(self._resp.text())
+        return self._body
 
     async def __aenter__(self) -> "_FakeResponseCM":
+        self._in_context = True
         return self
 
     async def __aexit__(self, *_exc: Any) -> None:
-        return None
+        self._in_context = False
 
 
 # A route resolves to a single response, an iterable of responses (consumed in
@@ -349,8 +441,8 @@ class FakeWireSession:
                     f"route({method!r}, <path substring>, <response>) -- a channel "
                     f"calling an unpinned endpoint is exactly what this guards."
                 )
-            return _FakeResponseCM(WireResponse())
-        return _FakeResponseCM(_coerce(target, rec))
+            return _FakeResponseCM(WireResponse(), rec)
+        return _FakeResponseCM(_coerce(target, rec), rec)
 
     def _match(self, method: str, path: str) -> Any:
         best: Optional[Tuple[int, Tuple[str, str]]] = None

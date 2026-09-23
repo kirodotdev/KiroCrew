@@ -1,6 +1,6 @@
 # OpenCode frame corpus
 
-Five files, all live. Read `../README.md` first for what a fixture is and what
+Six files, all live. Read `../README.md` first for what a fixture is and what
 the corpus does and does not prove.
 
 | File | Provenance | Frame classes it carries |
@@ -10,6 +10,7 @@ the corpus does and does not prove.
 | `permission-request-live.jsonl` | live | `tool_call`, `session/request_permission`, and the `tool_call_update` frames through to `completed` with the command's real output |
 | `session-load-live.jsonl` | live | a `session/load` from a second process: the replayed `user_message_chunk` / `agent_message_chunk` updates and the load result, which carries `configOptions` and no `modes` |
 | `mcp-directive-call-live.jsonl` | live | a Crew MCP `tool_call`, its `in_progress` refinement and its terminal `tool_call_update` -- the single-underscore `kirocrew-core_<tool>` title, an empty-then-refined `rawInput`, and a result carrying a directive marker |
+| `compact-live.jsonl` | live | a MANUAL `/compact`: an ordinary turn's `usage_update` and `stopReason`, then the `/compact` turn's summary `agent_message_chunk`, its far smaller `usage_update`, and its `stopReason: end_turn` with NO compaction status frame |
 
 Captured off `opencode acp` 1.18.30 driving a local Ollama model, agent-to-client
 lines verbatim, with the recording user's home directory replaced by `~`.
@@ -62,9 +63,44 @@ That spelling resolved to no directive tool at all before the fix:
 `mcp__<server>__<tool>` (Claude), and `match_tool` splits only on a run of two or
 more underscores -- so every #755 tool answered and none applied.
 
-Two things it does *not* pin. Crew does not itself send this backend an MCP array
-today (`agent-host-contract.md` §5), so the element here is the capture harness's,
-not shipping code's -- what is observed is how OpenCode NAMES a mounted Crew server,
-which is the premise the fix rests on. And it was observed on 1.18.30 only; the
-naming rule is `sanitize(server) + "_" + sanitize(tool)` in that release's bundle,
-and nothing in this repository pins it across upgrades.
+The capture pins how OpenCode names a mounted Crew server. Shipping code now
+sends this backend its MCP array through `ACP_BACKENDS_SESSION_MCP_ARRAY`, using
+the same element shape; `agent-host-contract.md` §5 describes that production
+path. The remaining boundary is version-specific: this naming rule was observed
+on 1.18.30, and nothing in this repository pins it across adapter upgrades.
+
+## What the compaction capture establishes
+
+This one is load-bearing for a MEMBERSHIP, so it is worth saying what it proves and
+what it does not.
+
+`ACP_BACKENDS_COMPACT` and `ACP_BACKENDS_INLINE_COMPACTION` both rest on one
+question: does this harness finish a `/compact` inside the `session/prompt` turn,
+emitting no separate status? `compact-live.jsonl` answers both halves in one slice:
+
+```
+usage_update       used=14011   (an ordinary turn)
+id=3 result        stopReason=end_turn
+agent_message_chunk            (the /compact turn's summary)
+usage_update       used=514
+id=4 result        stopReason=end_turn      <- and nothing after it
+```
+
+The ABSENCE is the evidence. No `compaction_status` frame of any kind follows the
+`/compact` turn, so the turn's own terminal frame is the only done signal this
+harness gives — which is why `AcpProvider.wait_for_compaction` answers from the
+capability rather than waiting on the queue, and why waiting on the queue instead
+would spend the whole `COMPACT_WAIT_TIMEOUT_SECS` and then recycle a session that
+had just compacted correctly.
+
+What it does not prove on its own is that the SESSION shrank rather than that one
+request was smaller. A longer drive settles that: over four growing turns `used`
+climbed 14863 → 15727 → 16614 → 17478, and the first ordinary turn after a
+`/compact` read 14577 — below the pre-compact peak — with the model answering from
+a summary of the dropped turns. That series is recorded in the pull request that
+added this file rather than here, because it is six turns of filler text and carries
+no frame class this corpus needs.
+
+pi and goose have no such capture and are therefore in neither set, even though
+their adapter and harness source both say they compact inline. See
+`ACP_BACKENDS_COMPACT` for why source is not the bar this set holds its members to.

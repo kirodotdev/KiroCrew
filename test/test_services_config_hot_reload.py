@@ -745,8 +745,10 @@ class TestSkillsLoader:
         with patch("kiro_crew.skills.asyncio.to_thread", side_effect=spy):
             await loader._on_config_change(_change(cfg, "skills.extra_paths"))
         assert added.resolve() in loader._extra_paths
-        # The resolve/is_dir screening stats every root; it belongs off the loop.
-        assert seen == [loader._screen_extra_paths]
+        # The resolve/is_dir screening stats every root, and the adoption that
+        # follows invalidates the persisted skill catalog — which takes SQLite's
+        # write lock and can wait out its busy timeout. Neither belongs on the loop.
+        assert seen == [loader._screen_extra_paths, loader._adopt_extra_paths]
 
     def test_a_removed_root_is_dropped(self, tmp_path: Path) -> None:
         first = tmp_path / "first"

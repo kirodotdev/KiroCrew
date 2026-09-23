@@ -127,12 +127,11 @@ class TestPinnedRegistries:
         assert names == ["official", "mine"]
 
     def test_a_contested_name_serves_neither_row(self, monkeypatch):
-        """Same name, DIFFERENT repos: refuse both rather than mis-attribute.
+        """Same public name, different sources: refuse ambiguous ownership.
 
-        The index cache is keyed by registry NAME, so serving either row would
-        read the other repository's cached index under the winner's identity, and
-        every reader stamps `_registry` from the registry it asked for — apps the
-        winning repo does not list, presented as its own.
+        Source-coordinate cache paths keep the indexes isolated, but both rows
+        would stamp the same ``_registry`` attribution and use the same trust
+        lookup key. Serving either would silently hide the other claimant.
         """
         _with_config(
             monkeypatch,
@@ -151,11 +150,7 @@ class TestPinnedRegistries:
         assert _registry_trust_tier("official") == _TRUST_INDEX
 
     def test_the_same_name_at_the_same_repo_is_not_contested(self, monkeypatch):
-        """An operator row that already agreed is superseded, not a conflict.
-
-        The shared cache is correct here, so refusing would disable a registry
-        for no reason.
-        """
+        """An operator row that already agreed is superseded, not a conflict."""
         _with_config(
             monkeypatch,
             [ExternalRegistryConfig(name="official", repo=FORGE, trust=_TRUST_INDEX)],
@@ -165,11 +160,7 @@ class TestPinnedRegistries:
         assert [(r.name, r.repo, r.trust) for r in rows] == [("official", FORGE, _TRUST_OWNER)]
 
     def test_the_same_repo_on_a_different_branch_is_contested(self, monkeypatch):
-        """The index is fetched from ONE branch, so branch is part of its identity.
-
-        Same name and repo but different refs list different apps, and the cache
-        is keyed by name — so the pinned row would read the other branch's index.
-        """
+        """Different refs still contest one public attribution and trust key."""
         _with_config(
             monkeypatch,
             [ExternalRegistryConfig(name="official", repo=FORGE, branch="staging")],

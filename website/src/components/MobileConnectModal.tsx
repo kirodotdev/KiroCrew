@@ -100,7 +100,7 @@ export default function MobileConnectModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-sm flex items-center justify-center animate-rise"
+      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise"
       role="presentation"
     >
       <div
@@ -109,7 +109,7 @@ export default function MobileConnectModal({
         role="dialog"
         aria-modal="true"
         aria-label={t('components.mobileConnect.use_kiro_crew_on_your_phone')}
-        className="bg-card border border-border rounded-xl shadow-xl w-[440px] max-w-[90vw] max-h-[85vh] overflow-y-auto outline-none p-6 relative"
+        className="bg-card border border-border rounded-xl shadow-xl w-[440px] max-w-[90vw] max-h-[85vh] overflow-y-auto outline-hidden p-6 relative"
       >
         <button
           onClick={onClose}

@@ -743,6 +743,11 @@ class TestVoiceMemoRejections:
         assert result.rejections == [
             "[Audio attachment — exceeds the 60-minute transcription limit]"
         ]
+        # Two-way pin: the Slack path's shared constant must render byte-identical
+        # to what this neutral path emits, so neither side can drift alone.
+        from kiro_crew.slack.files import VOICE_MEMO_TOO_LONG
+
+        assert result.rejections == [VOICE_MEMO_TOO_LONG.format(minutes=60)]
         transcribe_call.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -764,6 +769,10 @@ class TestVoiceMemoRejections:
         )
 
         assert result.rejections == ["[Audio attachment — duration could not be verified]"]
+        # Two-way pin: see test_over_duration_attachment_is_refused_before_transcription.
+        from kiro_crew.slack.files import VOICE_MEMO_DURATION_UNVERIFIED
+
+        assert result.rejections == [VOICE_MEMO_DURATION_UNVERIFIED]
         transcribe_call.assert_not_awaited()
 
 

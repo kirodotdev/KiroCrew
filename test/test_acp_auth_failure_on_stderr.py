@@ -63,8 +63,20 @@ def _runtime(lines):
     from kiro_crew.acp.runtime import AcpRuntime
 
     runtime = AcpRuntime.__new__(AcpRuntime)
+    runtime.recording_allowed = True
     runtime._stderr_lines = []
     runtime._saw_auth_failure = False
+    # The same sink latches an OS-sandbox refusal. Seeded here because the drain
+    # guards itself with a broad `except Exception`, so a missing attribute does
+    # not raise -- it ends the drain after one line, and every assertion below
+    # then fails on a precondition instead of on what it is about.
+    runtime._saw_sandbox_init_failure = False
+    # Read by the sandbox latch's startup-window guard, on the same sink. That
+    # window runs to the first session handle, so both flags have to be present:
+    # the drain guards itself with a broad `except Exception`, and a missing
+    # attribute ends it after one line instead of raising.
+    runtime._initialized = False
+    runtime._first_session_ready = False
     runtime._process = _FakeProcess(lines)
     return runtime
 

@@ -40,6 +40,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -105,9 +106,28 @@ _OPENSSL_TIMEOUT_SECS = 30
 _VENV_CREATE_TIMEOUT_SECS = 120
 #: pip resolves and downloads the full dependency set into a tree that has
 #: never seen it — the same bound dep_sync uses for a cold reinstall, doubled
-#: because a shadow build also compiles any sdist fallbacks from scratch.
+#: for a slow index on a cold cache, and for the compile fallback a host can
+#: opt back into below.
 _PIP_INSTALL_TIMEOUT_SECS = 900
 _PROBE_TIMEOUT_SECS = 60
+#: Dependencies are installed from prebuilt wheels only (the same policy as
+#: cli.sh's `PIP_BINARY_ONLY`). Without it pip builds any dependency that has
+#: no wheel for this host from its sdist, which needs a C toolchain the gateway
+#: host was never required to have; with it, such a host fails fast with pip's
+#: "No matching distribution found" naming the dependency.
+_PIP_BINARY_ONLY = "--only-binary=:all:"
+#: cli.sh's opt-in for a host that has the toolchain and wants the compile
+#: fallback back; read from this (gateway) process's environment, so a service
+#: unit has to carry it for an update to honour it.
+_ALLOW_SOURCE_BUILDS_ENV = "KIROCREW_ALLOW_SOURCE_BUILDS"
+
+
+def _pip_binary_policy() -> list[str]:
+    """The pip flags that keep dependency resolution binary-only (see above)."""
+    if os.environ.get(_ALLOW_SOURCE_BUILDS_ENV, "0") == "1":
+        return []
+    return [_PIP_BINARY_ONLY]
+
 
 # Signed-but-optional, mirroring cli.sh: a breaking release adds a fleet
 # floor (`min_version`). The signature still covers it (it stays in the
@@ -793,11 +813,77 @@ def build_shadow_venv(wheel_path: Path, shadow_dir: Path, stable_link: Path | No
         )
     except (OSError, subprocess.SubprocessError):
         pass
-    _run(
-        [str(shadow_python), "-m", "pip", "install", "--quiet", str(wheel_path)],
-        _PIP_INSTALL_TIMEOUT_SECS,
-        "pip install into the shadow venv",
-        cwd=str(shadow_dir),
+    # Binary-only, exactly as cli.sh installs: a dependency with no wheel for
+    # this host fails the update up front instead of being compiled from its
+    # sdist in the shadow tree (the gateway host is not required to have a C
+    # toolchain, and a half-built tree is what the sentinel cleanup exists for).
+    policy = _pip_binary_policy()
+    try:
+        _run(
+            [str(shadow_python), "-m", "pip", "install", "--quiet"] + policy + [str(wheel_path)],
+            _PIP_INSTALL_TIMEOUT_SECS,
+            "pip install into the shadow venv",
+            cwd=str(shadow_dir),
+        )
+    except WheelUpdateError as exc:
+        # Same classification cli.sh's _report_pip_failure applies: under the
+        # binary-only policy, pip's "No matching distribution found" means no
+        # release it may install has a wheel for this host, so the refusal
+        # names the platform, the usual cause and the way out (and the index
+        # as the other cause) rather than leaving the operator with pip's raw
+        # text alone.
+        missing = _no_wheel_packages(str(exc)) if policy else []
+        if not missing:
+            raise
+        raise WheelUpdateError(_no_wheel_message(missing) + f" (pip said: {exc})") from exc
+
+
+_NO_WHEEL_RE = re.compile(r"No matching distribution found for ([^\s]+)")
+
+
+def _no_wheel_packages(pip_text: str) -> list[str]:
+    """The requirements pip could not satisfy from wheels, in pip's own order.
+
+    Deliberately not gated on pip's ``(from versions: ...)`` list: pip builds
+    that list from the candidates that survived its link filter, so a package
+    whose every wheel targets a newer libc or another arch reads ``none`` --
+    the same text as an index that does not carry the package -- and a numeric
+    list only means versions outside the required range have a wheel here.
+    The message therefore states the usual cause and names the index as the
+    other one rather than reading a verdict into the list. cli.sh's
+    ``_report_pip_failure`` draws the same line.
+    """
+    seen: list[str] = []
+    for name in _NO_WHEEL_RE.findall(pip_text):
+        if name not in seen:
+            seen.append(name)
+    return seen[:5]
+
+
+def _no_wheel_message(missing: list[str]) -> str:
+    """The operator-facing refusal when no wheel of ``missing`` may be installed here.
+
+    Mirrors cli.sh's message so an install and its later update describe the
+    same platform floor and the same two causes; adds the one fact that is
+    specific to the update path: the opt-in is read from the gateway process's
+    environment, so a host that installed with it has to carry it in the
+    service unit for updates to honour it.
+    """
+    host = f"{platform.system()} {platform.machine()}"
+    if platform.system() == "Linux":
+        libc = platform.libc_ver()
+        if libc[0]:
+            host += f", {libc[0]} {libc[1]}"
+    return (
+        f"pip found no prebuilt wheel of {', '.join(missing)} it may install on this host "
+        f"({host}). Kiro Crew installs prebuilt wheels only and never compiles a dependency. "
+        "Usually this means the host is older than the wheels' floor: the current dependency "
+        "set needs a newer Linux (Amazon Linux 2023, RHEL/Rocky 8+, Ubuntu 22.04+, Debian "
+        "12+) on x86_64/aarch64, or macOS. It can also mean the package index could not be "
+        "reached or does not carry these releases; pip's own words follow. To compile on "
+        f"this host instead, install a C/C++ toolchain and the -dev headers, then set "
+        f"{_ALLOW_SOURCE_BUILDS_ENV}=1 in the environment the gateway runs under "
+        "(the service unit for a service install) and run `kirocrew update` again"
     )
 
 

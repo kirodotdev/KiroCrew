@@ -83,7 +83,9 @@ import LibraryPage from '../pages/apps/LibraryPage'
 import AppDetailPage from '../pages/AppDetailPage'
 import {
   isTrustDeniedError,
+  isSessionApprovalConsentRequiredError,
   APP_EXECUTION_DENIED,
+  SESSION_APPROVAL_CONSENT_REQUIRED,
   credentialFreeRepository,
   safeHref,
 } from '../components/appstore/TrustAppModal'
@@ -96,6 +98,11 @@ function apiError(status: number, body: object, message = 'boom') {
 const TRUST_DENIED = () => apiError(403, {
   error: 'App third-party is not trusted to run its own code.',
   code: APP_EXECUTION_DENIED,
+})
+
+const SESSION_APPROVAL_REQUIRED = () => apiError(400, {
+  error: 'session approval consent must be confirmed from a disclosure surface',
+  code: SESSION_APPROVAL_CONSENT_REQUIRED,
 })
 
 /**
@@ -126,6 +133,7 @@ const THIRD_PARTY = {
   enabled: false,
   origin: 'registry',
   updateAvailable: false,
+  manifest: { permissions: { sessionApproval: true } },
 }
 
 function renderPage() {
@@ -200,6 +208,7 @@ beforeEach(() => {
       manifest: {
         name: THIRD_PARTY.name, version: '1.0.0', displayName: THIRD_PARTY.displayName,
         description: THIRD_PARTY.description, author: THIRD_PARTY.author, repo: THIRD_PARTY.repo,
+        permissions: { sessionApproval: true },
       },
     },
   ])
@@ -235,6 +244,14 @@ describe('isTrustDeniedError', () => {
   })
 })
 
+describe('isSessionApprovalConsentRequiredError', () => {
+  it('matches only the consent-required code', () => {
+    expect(isSessionApprovalConsentRequiredError(SESSION_APPROVAL_REQUIRED())).toBe(true)
+    expect(isSessionApprovalConsentRequiredError(TRUST_DENIED())).toBe(false)
+    expect(isSessionApprovalConsentRequiredError(new Error(SESSION_APPROVAL_CONSENT_REQUIRED))).toBe(false)
+  })
+})
+
 describe('LibraryPage trust gate', () => {
   // The consent flow is reached by clicking Enable on a DISABLED third-party
   // tile, which the Library's default "enabled only" view filters out. This
@@ -246,6 +263,15 @@ describe('LibraryPage trust gate', () => {
   })
   afterEach(() => {
     localStorage.removeItem('mc-apps-library-show-all')
+  })
+
+  it('routes consent-required enable to the detail disclosure', async () => {
+    enableApp.mockRejectedValue(SESSION_APPROVAL_REQUIRED())
+    renderPage()
+    await clickEnable()
+
+    expect(await screen.findByTestId('detail-route')).toBeTruthy()
+    expect(modalTitle()).toBeNull()
   })
 
   it('opens the consent modal when enable is refused with app_execution_denied', async () => {
@@ -262,6 +288,18 @@ describe('LibraryPage trust gate', () => {
     expect(screen.getByText(`${K}.capability_python`)).toBeTruthy()
     expect(screen.getByText(`${K}.capability_backend`)).toBeTruthy()
     expect(screen.getByText(`${K}.capability_shell`)).toBeTruthy()
+    // The session-approval grant sits OUTSIDE the three-row ceiling, in plain
+    // words, with the modes listed under their own label.
+    expect(screen.getByText(`${K}.session_approval_heading`)).toBeTruthy()
+    expect(screen.getByText(`${K}.session_approval_desc`)).toBeTruthy()
+    expect(screen.getByText(`${K}.session_approval_modes`)).toBeTruthy()
+    expect(screen.queryByText('sessionApproval')).toBeNull()
+    expect(screen.getByText('components.approvalModePicker.normal_label')).toBeTruthy()
+    expect(screen.getByText('components.approvalModePicker.normal_desc')).toBeTruthy()
+    expect(screen.getByText('components.approvalModePicker.reads_label')).toBeTruthy()
+    expect(screen.getByText('components.approvalModePicker.trust_label (components.approvalModePicker.chat_mode_hint)')).toBeTruthy()
+    // YOLO is process-global and dashboard-only: never offered to an app.
+    expect(screen.queryByText('components.approvalModePicker.yolo_label')).toBeNull()
     expect(screen.getByText(`${K}.source`)).toBeTruthy()
     expect(screen.getByText(THIRD_PARTY.trustRepository)).toBeTruthy()
     expect(screen.queryByText(THIRD_PARTY.repo)).toBeNull()

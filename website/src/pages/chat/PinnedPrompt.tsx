@@ -27,6 +27,16 @@ interface PinnedPromptProps {
   bodyBeyondPreview?: boolean
   /** px to translate up so the incoming prompt pushes this banner out of view. */
   pushUp: number
+  /**
+   * Height the card should be on THIS frame — the progressive fold, computed from
+   * the pinned row by `computeLiveCardH`. Absent means "content decides", which is
+   * the resting state.
+   *
+   * While folding this is set as an inline height with NO transition, because it is
+   * scroll-driven: the reader's own scrolling is the animation, so a 150ms morph
+   * chasing it would lag behind the row it is supposed to track.
+   */
+  liveH?: number
   /** Measured card height, used to shrink the backing band as the card is pushed. */
   bannerH: number
   expanded: boolean
@@ -35,6 +45,21 @@ interface PinnedPromptProps {
   onJump: () => void
   /** Ref on the card — measured for the push geometry. */
   cardRef: React.Ref<HTMLDivElement>
+  /**
+   * Scroll the transcript by `dy` pixels. The card needs this because of where it
+   * lives: it sits in a `pointer-events-none` overlay that is a SIBLING of the
+   * transcript scroller, never an ancestor. An interactive box there is the target
+   * of a wheel, and the browser then looks for a scrollable ANCESTOR of that box —
+   * the overlay, then the page — so the transcript never moves and the gesture is
+   * swallowed. Measured in a browser: a wheel over the card left the scroller at
+   * `scrollTop` 0 while the same wheel over bare scroller moved it 400px.
+   *
+   * The host owns the scroller, so it does the scrolling; the card only reports the
+   * delta. That keeps the card interactive — its text stays selectable and its two
+   * buttons stay clickable — which the reader needs while the fold holds the card
+   * over content they have not finished reading.
+   */
+  scrollTranscriptBy?: (dy: number) => void
   /**
    * Reports the card's SETTLED collapsed height. ChatPage derives the hand-off
    * line from it (`pinHandoffY`), so it must never come from measuring the card
@@ -151,7 +176,7 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * size and the band it slides through is sized for it.
  */
 export default function PinnedPrompt({
-  text, fullText, images, bodyBeyondPreview, pushUp, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight,
+  text, fullText, images, bodyBeyondPreview, pushUp, liveH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy,
 }: PinnedPromptProps) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
@@ -176,6 +201,15 @@ export default function PinnedPrompt({
   // can treat "pushed" and "at rest" as the same shape.
   const peek = !expanded && pushUp <= 0 && (hovered || focused)
   const clampLines = peek ? PINNED_PREVIEW_LINES : PINNED_RESTING_LINES
+  // The fold is running: the box is being held at the pinned row's remaining
+  // height (see `liveH`). The TEXT has to track that height, not just the box.
+  // A grown box with the resting one-line clamp still inside it is a tall empty
+  // card sitting on top of the lines the reader has not read yet — the same hole
+  // the fold exists to close, moved inside the card. So while folding the
+  // paragraph drops its clamp and renders the whole prompt, and the box's own
+  // `overflow: hidden` at exactly `liveH` is what trims it: the bottom edge
+  // consumes a line at a time as the row leaves, which IS the fold.
+  const folding = liveH != null
   // Native listeners on the box rather than JSX handlers: the box is a plain
   // container (its two buttons are the interactive elements), and `pointerenter`
   // / `pointerleave` do not bubble, which is exactly the "over the card as a
@@ -249,7 +283,137 @@ export default function PinnedPrompt({
   useEffect(() => { setFailed([]) }, [fullText])
   const shown = images.filter(src => !failed.includes(src))
 
-  // Height MORPH on expand/collapse and on peek open/close. The card's height is
+  // The progressive FOLD owns the box height while it is active. Written here
+  // rather than through JSX so there is exactly one writer of `style.height` at a
+  // time — the expand / peek morph below is the other, and two writers of one
+  // property is how a card ends up stuck at an animation's intermediate value.
+  //
+  // No transition, on purpose: `liveH` already changes once per scroll frame, so
+  // the reader's own scrolling IS the animation. A 150ms ease chasing it would
+  // trail the row it is meant to sit flush against, which is the gap this removes.
+  useLayoutEffect(() => {
+    const el = boxRef.current
+    if (!el) return
+    if (liveH == null) {
+      // Clear only what THIS effect set. A morph in flight owns the property and
+      // clears its own value on transitionend.
+      if (el.dataset.foldOwned === '1') {
+        delete el.dataset.foldOwned
+        el.style.height = ''
+        el.style.overflow = ''
+      }
+      return
+    }
+    el.dataset.foldOwned = '1'
+    el.style.transition = ''
+    el.style.overflow = 'hidden'
+    el.style.height = `${liveH}px`
+  }, [liveH])
+
+  // Hand every scroll gesture over the card to the transcript, because the browser
+  // will not. The card is interactive (its text is selectable, its buttons work) and
+  // it lives in an overlay that is a SIBLING of the scroller, so a wheel here finds
+  // no scrollable ancestor and the transcript stays put. Forwarding restores the one
+  // thing being interactive costs, and leaves everything it buys.
+  //
+  // `wheel` and selection do not collide: a drag selects, a wheel scrolls, and they
+  // are separate events. `touchmove` is forwarded for the same reason a wheel is —
+  // on touch, dragging over the card would otherwise do nothing.
+  //
+  // Non-passive on purpose: `preventDefault` is what stops the PAGE scrolling
+  // instead, and a passive listener may not call it.
+  useEffect(() => {
+    const box = boxRef.current
+    if (!box || !scrollTranscriptBy) return
+    // `deltaMode` is not always pixels. Firefox reports lines, and page mode exists
+    // too; treating either as pixels would move the transcript by a few px when the
+    // reader asked for a screen. The line height to convert with is the PARAGRAPH's
+    // (`my-1 leading-6`, 24px), not the box's: `box` is the `.user-bubble` div and its
+    // `text-sm` sets line-height to 1.25rem (20px), while `.user-bubble` in index.css
+    // only sets `background-color`. Reading the box made a line-mode wheel travel 20px
+    // per line instead of 24 — short by a sixth, on every notch.
+    const lineHeight = parseFloat(getComputedStyle(textRef.current ?? box).lineHeight) || 24
+    const pixels = (e: WheelEvent) => {
+      if (e.deltaMode === 1) return e.deltaY * lineHeight
+      if (e.deltaMode === 2) return e.deltaY * (box.ownerDocument.defaultView?.innerHeight ?? 800)
+      return e.deltaY
+    }
+    // The card can hold its OWN scroll region: while `expanded` the paragraph is
+    // `max-h-[40vh] overflow-y-auto`. Forwarding there is a regression, because the
+    // native scroll being cancelled is the reader's way through the prompt they just
+    // expanded — and the transcript moving underneath recomputes the pin, so the card
+    // can collapse or swap while they are inside it. So the forwarder yields whenever
+    // something between the event target and the box can still take the delta, and
+    // claims the gesture only once that region is at its edge. While folding the
+    // paragraph is `overflow-hidden`, which the overflow check below excludes, so the
+    // fold keeps forwarding every gesture.
+    const yieldsToInnerScroll = (target: EventTarget | null, dy: number) => {
+      let el = target instanceof Element ? target : null
+      while (el) {
+        if (el.scrollHeight - el.clientHeight > 1) {
+          const overflowY = getComputedStyle(el).overflowY
+          if (overflowY === 'auto' || overflowY === 'scroll') {
+            const room = dy > 0
+              ? el.scrollTop + el.clientHeight < el.scrollHeight - 1
+              : el.scrollTop > 0
+            if (room) return true
+          }
+        }
+        if (el === box) break
+        el = el.parentElement
+      }
+      return false
+    }
+    const onWheel = (e: WheelEvent) => {
+      // Ctrl+wheel is the browser's zoom gesture, and trackpad pinch-zoom arrives as
+      // the same event. It is a low-vision path, so it must reach the browser: taking
+      // it and scrolling the transcript instead would make the card the one place on
+      // the page that cannot be zoomed.
+      if (e.ctrlKey) return
+      const dy = pixels(e)
+      if (!dy) return
+      if (yieldsToInnerScroll(e.target, dy)) return
+      e.preventDefault()
+      scrollTranscriptBy(dy)
+    }
+    // One finger, tracked across the drag: a touch has no delta of its own, so the
+    // distance since the previous move IS the delta, inverted (dragging content up
+    // scrolls down).
+    let lastY: number | null = null
+    const onTouchStart = (e: TouchEvent) => {
+      lastY = e.touches.length === 1 ? e.touches[0].clientY : null
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (lastY == null || e.touches.length !== 1) return
+      const y = e.touches[0].clientY
+      const dy = lastY - y
+      lastY = y
+      if (!dy) return
+      // Same yield as the wheel: a drag inside the expanded paragraph is that
+      // paragraph's scroll, not the transcript's.
+      if (yieldsToInnerScroll(e.target, dy)) return
+      e.preventDefault()
+      scrollTranscriptBy(dy)
+    }
+    const onTouchEnd = () => {
+      lastY = null
+    }
+    box.addEventListener('wheel', onWheel, { passive: false })
+    box.addEventListener('touchstart', onTouchStart, { passive: true })
+    box.addEventListener('touchmove', onTouchMove, { passive: false })
+    box.addEventListener('touchend', onTouchEnd, { passive: true })
+    box.addEventListener('touchcancel', onTouchEnd, { passive: true })
+    return () => {
+      box.removeEventListener('wheel', onWheel)
+      box.removeEventListener('touchstart', onTouchStart)
+      box.removeEventListener('touchmove', onTouchMove)
+      box.removeEventListener('touchend', onTouchEnd)
+      box.removeEventListener('touchcancel', onTouchEnd)
+    }
+  }, [scrollTranscriptBy])
+
+  // Height MORPH on expand/collapse and on peek open/close —
+  // the fold. The card's height is
   // content-driven (the <p> switches between clamps and full wrap), so there is
   // no fixed value to CSS-transition
   // between. FLIP it instead: this layout effect runs after React commits the
@@ -257,12 +421,19 @@ export default function PinnedPrompt({
   // natural height (`target`); we snap back to the PREVIOUS height (`from`),
   // force a reflow, then transition to `target`. `overflow:hidden` for the
   // duration clips the taller content while the box grows/shrinks so text is
-  // revealed/consumed by the moving edge rather than spilling. Keyed on
-  // `expanded` and `peek` only, so scroll-driven pushes (which move the card via
-  // transform, not height) never trigger it.
+  // revealed/consumed by the moving edge rather than spilling. Scroll-driven
+  // pushes (which move the card via transform, not height) never trigger it.
+  //
+  // On a new pin `from` is the BUBBLE's height rather than the outgoing card's:
+  // this card is the continuation of that bubble, so the fold starts where the
+  // reader was already looking. `text` is in the deps because that is what
+  // changes when a different prompt takes the pin.
   useLayoutEffect(() => {
     const el = boxRef.current
     if (!el) return
+    // While the fold owns the height, a morph would fight it for the same property
+    // and land the card on an intermediate value the row has already scrolled past.
+    if (el.dataset.foldOwned === '1') return
     // A toggle landing INSIDE the previous morph leaves that morph's inline
     // height/transition in place — React runs the old effect's cleanup first, and
     // it only detaches the listener. Reading the box now would report the
@@ -309,8 +480,10 @@ export default function PinnedPrompt({
     // would report "not clamped" and take the chevron away — leaving no way back.
     // Hold the collapsed-state verdict instead; it is re-taken on collapse. The
     // peek is held out for the same reason, plus one more: its taller box is not
-    // the resting height and must not be re-reported as one.
-    if (expanded || peek) return
+    // the resting height and must not be re-reported as one. Folding is held out
+    // for the first reason exactly: the paragraph is unclamped for the duration,
+    // so measuring it would read "not clamped" and drop the chevron mid-fold.
+    if (expanded || peek || folding) return
     const el = textRef.current
     const box = boxRef.current
     if (!el) return
@@ -333,7 +506,7 @@ export default function PinnedPrompt({
     ro.observe(el)
     if (box) ro.observe(box)
     return () => ro.disconnect()
-  }, [text, expanded, peek, onCollapsedHeight])
+  }, [text, expanded, peek, folding, onCollapsedHeight])
 
   // Images earn the chevron on their own. Without this an image-only prompt never
   // clamps (no text to clamp), so the readable expanded strip was unreachable and
@@ -341,7 +514,13 @@ export default function PinnedPrompt({
   // exists to preserve. Widening the box is not a concern in that case: parity with
   // the bubble is already unattainable for a prompt whose bubble is a full-size
   // image, and a clamped prompt has by definition already hit its max width.
-  const showChevron = clamped || images.length > 0 || bodyBeyondPreview || expanded
+  // The chevron goes away for the duration of the fold. While folding, the card
+  // already renders `fullText` and the fold owns the height, so expanding changes
+  // nothing the reader can see: the click would land, `aria-expanded` would flip,
+  // and the only visible effect would arrive later, as a snap to the 40vh cap once
+  // the fold ends. A control whose feedback is deferred and displaced like that is
+  // worse than no control, and the thing it offers is already on screen.
+  const showChevron = !folding && (clamped || images.length > 0 || bodyBeyondPreview || expanded)
 
   return (
     <div
@@ -376,6 +555,15 @@ export default function PinnedPrompt({
       <div
         ref={cardRef}
         data-testid="pinned-prompt"
+        // Interactive, always. This card sits in a `pointer-events-none` overlay
+        // that is a SIBLING of the transcript scroller, so an interactive box here
+        // would swallow a wheel: the browser hunts for a scrollable ancestor of the
+        // box and finds the overlay, then the page, never the transcript. Going
+        // inert dodges that but costs the reader the content — while the fold holds
+        // the card over lines they have not read, an inert card cannot be selected,
+        // copied or clicked, and its two buttons keep their hover styling while
+        // doing nothing. So the gesture is FORWARDED instead (see
+        // `scrollTranscriptBy`) and the card keeps its pointer events.
         className="pointer-events-auto max-w-[550px] min-w-0"
         style={{ transform: `translateY(${-pushUp}px)`, willChange: 'transform' }}
       >
@@ -385,9 +573,18 @@ export default function PinnedPrompt({
         >
           <button
             type="button"
-            onClick={onJump}
-            title={i18nT('pages.chat.pinnedPrompt.jump_to_this_turn')}
-            className="min-w-0 flex-1 bg-transparent border-none p-0 m-0 text-left cursor-pointer"
+            // The jump is suppressed for the duration of the fold. This button wraps the
+            // prompt TEXT, and while the fold holds the card at the pinned row's height
+            // that text can cover most of the viewport — so a click meant to place a
+            // caret or start a selection would instead scroll the transcript away from
+            // the place the reader is holding, which is the exact harm this fold exists
+            // to prevent. At rest the card is one line and the jump is a deliberate
+            // target again.
+            onClick={folding ? undefined : onJump}
+            title={folding ? undefined : i18nT('pages.chat.pinnedPrompt.jump_to_this_turn')}
+            aria-disabled={folding || undefined}
+            tabIndex={folding ? -1 : undefined}
+            className={`min-w-0 flex-1 bg-transparent border-none p-0 m-0 text-left ${folding ? '' : 'cursor-pointer'}`}
           >
             {/* Expanded: images get their own strip at readable size, outside the
                 scrollable <p> so they stay put while long text scrolls. */}
@@ -412,8 +609,19 @@ export default function PinnedPrompt({
             )}
             <p
               ref={textRef}
-              className={`my-1 leading-6 ${expanded ? 'whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto' : 'overflow-hidden'}`}
-              style={expanded ? { overflowWrap: 'anywhere' } : {
+              // The fold outranks `expanded`. Both can be true at once: the reader can
+              // click the chevron while the card is mid-fold. `expanded` caps the text
+              // at 40vh, but the fold is holding the BOX at the pinned row's remaining
+              // height, so an expanded cap inside a taller box leaves opaque empty card
+              // over unread lines — the exact hole this fold exists to close. While
+              // folding the text always wraps in full, so the box stays full of text;
+              // the cap resumes the moment the fold ends.
+              className={`my-1 leading-6 ${folding
+                ? 'whitespace-pre-wrap break-words overflow-hidden'
+                : expanded
+                  ? 'whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto'
+                  : 'overflow-hidden'}`}
+              style={expanded || folding ? { overflowWrap: 'anywhere' } : {
                 // Tailwind ships `line-clamp-<n>` only for a literal n, and the
                 // line counts are shared with the geometry module — so set the
                 // clamp from the constants rather than duplicating them in a class
@@ -452,7 +660,7 @@ export default function PinnedPrompt({
               {!expanded && !text && images.length > 0 && shown.length === 0 && (
                 <ImageOff size={20} aria-hidden className="inline-block align-middle text-muted" />
               )}
-              {expanded ? fullText : text}
+              {expanded || folding ? fullText : text}
             </p>
           </button>
           {showChevron && (

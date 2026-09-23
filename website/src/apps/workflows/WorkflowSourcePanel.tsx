@@ -18,6 +18,7 @@ import { memo, useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { FileCode, Pencil, Play, ChevronRight } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -123,11 +124,12 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
       </button>
       {open && (
         <div className="p-2 flex flex-col gap-2">
-          {sourceError && (
-            <div className="text-[11px] text-red-500 border border-red-500/30 rounded p-2">
-              {i18nT('apps.workflows.workflowSourcePanel.could_not_load_source')} {sanitizeLlmOutput(sourceError).slice(0, 200)}
-            </div>
-          )}
+          {/* No hand-off: the edited source in `draft` is unsaved until Re-run. */}
+          <ErrorNotice
+            title={i18nT('apps.workflows.workflowSourcePanel.could_not_load_source')}
+            message={sourceError ? sanitizeLlmOutput(sourceError).slice(0, 200) : null}
+            messageClassName="font-mono"
+          />
           {source != null && source === '' && !sourceError && (
             <div className="text-[11px] text-muted italic">
               {i18nT('apps.workflows.workflowSourcePanel.no_source_captured_for_this_run')}
@@ -144,23 +146,17 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
             />
           )}
 
-          {errors && errors.length > 0 && (
-            <div className="text-[11px] text-red-500 border border-red-500/30 rounded p-2">
-              <div className="font-medium mb-1">{i18nT('apps.workflows.workflowSourcePanel.invalid_fix_before_rerun')}</div>
-              <ul className="list-disc pl-4">
-                {errors.map((e, i) => (
-                  <li key={i}>{sanitizeLlmOutput(e).slice(0, 200)}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {topError && (
-            <div className="text-[11px] text-red-500 border border-red-500/30 rounded p-2">
-              {sanitizeLlmOutput(topError).slice(0, 200)}
-            </div>
-          )}
+          {/* The backend's 400 body: a rejected rerun, one line per problem.
+              No hand-off: the edited source in `draft` is unsaved until Re-run. */}
+          <ErrorNotice
+            title={i18nT('apps.workflows.workflowSourcePanel.invalid_fix_before_rerun')}
+            message={errors && errors.length > 0 ? errors.map(e => sanitizeLlmOutput(e).slice(0, 200)).join('\n') : null}
+            messageClassName="font-mono whitespace-pre-line"
+          />
+          {/* No hand-off: the edited source in `draft` is unsaved until Re-run. */}
+          <ErrorNotice message={topError ? sanitizeLlmOutput(topError).slice(0, 200) : null} messageClassName="font-mono" />
           {newRunId && (
-            <div className="text-[11px] text-green-500 border border-green-500/30 rounded p-2 font-mono">
+            <div className="text-[11px] text-ok border border-ok/30 rounded p-2 font-mono">
               {i18nT('apps.workflows.workflowSourcePanel.started_run')} {sanitizeLlmOutput(newRunId).slice(0, 80)}
             </div>
           )}

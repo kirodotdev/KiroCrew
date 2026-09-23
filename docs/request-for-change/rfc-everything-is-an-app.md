@@ -1,10 +1,10 @@
 ---
 title: Everything is an App — the core/app boundary and what makes a surface replaceable
-status: draft
+status: partial
 author: zezhexu
 created: 2026-08-18
-last-audited: 2026-08-18
-audited-at: e6b06685e
+last-audited: 2026-09-22
+audited-at: 80bd0a81f
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -13,7 +13,12 @@ superseded-by: []
 ---
 # RFC: Everything is an App — the core/app boundary and what makes a surface replaceable
 
-- Status: draft — nothing implemented. Every phase is a proposal.
+- Status: partial — Phase 0's app boundary is implemented in
+  [`../architecture/overview.md`](../architecture/overview.md), and Tenet 8 in
+  [`../../TENETS.md`](../../TENETS.md) points to it. The dead-field ratchet and
+  Phases 1–3 remain unimplemented: `jobFamilies` is still only
+  parsed/serialized, and `registerOverviewStatCards` still exists with no stock
+  registrants.
 - Author: zezhexu
 - Created: 2026-08-18
 - Measured at: `e6b06685e`. Code line numbers below were verified against that

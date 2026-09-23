@@ -256,32 +256,33 @@ class TestFloorDenialExplainsItself:
 
     def test_inline_import_is_denied_at_all(self):
         # Guards the premise of every assertion below.
-        assert self._deny('python -c "import kiro_crew"')
+        assert self._deny('python -c "import kiro_crew.cli"')
 
     def test_reported_pattern_cannot_match_the_command(self):
         # The exact trap: the first line requires a `token` word this command
         # does not contain, so the identifier alone reads as a false reason.
-        command = 'python -c "import kiro_crew"'
+        command = 'python -c "import kiro_crew.cli"'
         first_line = self._deny(command).splitlines()[0]
         assert self.MINT_PATTERN_TAIL in first_line
         assert "token" not in command
 
     def test_second_line_says_the_match_was_structural(self):
-        lines = self._deny('python -c "import kiro_crew"').splitlines()
+        lines = self._deny('python -c "import kiro_crew.cli"').splitlines()
         assert len(lines) >= 2, "floor denial must carry an explanation line"
         assert "structurally" in lines[1]
         assert "argv" in lines[1]
 
     def test_explanation_names_the_import_gate(self):
-        # What the agent needs in order to adapt: it is the IMPORT that is
-        # gated, so retrying with a differently-worded command is futile.
-        note = self._deny('python -c "import kiro_crew"').splitlines()[1]
+        # What the agent needs in order to adapt: it is the IMPORT of the mint
+        # surface that is gated, so retrying with a differently-worded command
+        # that still names the CLI is futile.
+        note = self._deny('python -c "import kiro_crew.cli"').splitlines()[1]
         assert "import" in note
 
     def test_first_line_stays_single_line_and_prefixed(self):
         # RecoveryCard.tsx extracts the pattern with a per-line end-anchored
         # regex, so anything appended to line 1 would be read as the pattern.
-        out = self._deny('python -c "import kiro_crew"')
+        out = self._deny('python -c "import kiro_crew.cli"')
         assert out.startswith("Blocked by security policy: ")
         assert "\n" not in out.splitlines()[0]
 

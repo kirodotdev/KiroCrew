@@ -21,7 +21,18 @@ from typing import Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
-from kiro_crew.validation import LEARN_ADD_SCHEMA, MAX_SHORT_STRING
+from kiro_crew.lesson_validation import (
+    LESSON_APPLIES_INSTRUCTION,
+    LESSON_REFUSED_AT_CAPACITY,
+)
+from kiro_crew.validation import (
+    LEARN_ADD_SCHEMA,
+    LESSON_LIST_LIMIT,
+    LESSON_LIST_LIMIT_MAX,
+    LESSON_LIST_OFFSET_MAX,
+    MAX_RESPONSE_LEN,
+    MAX_SHORT_STRING,
+)
 
 
 def schemas() -> list[dict[str, Any]]:
@@ -127,14 +138,50 @@ def schemas() -> list[dict[str, Any]]:
                             "means it applies everywhere."
                         ),
                     },
+                    "applies": {
+                        "type": "string",
+                        "enum": ["always", "on_topic"],
+                        "description": LESSON_APPLIES_INSTRUCTION,
+                    },
                 },
                 "required": ["rule", "category"],
             },
         },
         {
             "name": "learn_list",
-            "description": "List all saved lessons and corrections",
-            "inputSchema": {"type": "object", "properties": {}},
+            "description": (
+                "List saved lessons and corrections, one window at a time. "
+                f"Returns the newest `limit` lessons (default {LESSON_LIST_LIMIT}) "
+                "and, when the store holds more, a first line saying how many are "
+                "shown of how many exist. Pass `offset` to page back to older "
+                "lessons; a lesson you are looking for and do not see may be on a "
+                "later page."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": LESSON_LIST_LIMIT_MAX,
+                        "description": (
+                            "Optional. How many lessons to return in this window "
+                            f"(default {LESSON_LIST_LIMIT}, at most "
+                            f"{LESSON_LIST_LIMIT_MAX})."
+                        ),
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": LESSON_LIST_OFFSET_MAX,
+                        "description": (
+                            "Optional. How many of the newest lessons to skip before "
+                            "the window starts (default 0). The 'showing N of M' line "
+                            "names the offset that reaches the next older page."
+                        ),
+                    },
+                },
+            },
         },
         {
             "name": "learn_remove",
@@ -155,6 +202,26 @@ def schemas() -> list[dict[str, Any]]:
                             "lessons; without this the substring removes both. "
                             "Omit to match every scope. Pass an empty string to "
                             "remove only the unscoped (global) lessons."
+                        ),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["global", "workspace"],
+                        "description": (
+                            "Optional. Which lessons file to delete from, as "
+                            "learn_list reports it: a row shown with "
+                            "'(workspace: NAME)' lives in that workspace's file "
+                            "and is reached only with scope='workspace' plus "
+                            "workspace=NAME; every other row is in the global "
+                            "file, which is also the default."
+                        ),
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": (
+                            "Optional. The workspace name from the row's "
+                            "'(workspace: NAME)' marker; required with "
+                            "scope='workspace'."
                         ),
                     },
                 },
@@ -224,6 +291,12 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
     repo_scope = args.get("repo_scope", "")
     if repo_scope:
         payload["repo_scope"] = repo_scope
+    # Forwarded only when the model stated it. An omitted value leaves the row
+    # unstated rather than asserting a tier on the model's behalf, which is the
+    # one thing no caller here may do: the tier records the user's intent.
+    applies = args.get("applies", "")
+    if applies:
+        payload["applies"] = applies
     d = mcp_core._post("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:
@@ -293,6 +366,16 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
             "wording that shares few significant words with it can coexist."
         )
     if outcome == "refused":
+        if reason == LESSON_REFUSED_AT_CAPACITY:
+            return (
+                f"Lesson was NOT saved{scope_note}: the lesson store is at its row "
+                "cap and every retained row outranks this one, so nothing was stored "
+                "and the correction is not in effect. The wording is not the problem "
+                "-- rewording it will not help. Free a row with learn_remove (read "
+                "the store with learn_list first) and re-submit, or tell the user the "
+                "store is full."
+                f"{lost}"
+            )
         if reason == "volatile_session_fact":
             return (
                 "Error: volatile_session_fact: lesson was NOT saved. Runtime model "
@@ -338,8 +421,10 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
             f"is NOT the stored lesson: {rule}\n"
             "An existing stored lesson already covers it, and that existing lesson "
             "stays in effect. If this was meant to correct or replace a stale lesson, "
-            "run learn_list to find the stored wording, learn_remove it, then add this "
-            "again -- otherwise the outdated lesson keeps applying."
+            "run learn_list to find the stored wording -- it shows the newest window "
+            "first, so page back with offset when its first line reports lessons not "
+            "shown -- then learn_remove it and add this again; otherwise the outdated "
+            "lesson keeps applying."
             f"{lost}"
         )
     if outcome == "unchanged":
@@ -377,7 +462,15 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
 
 
 def learn_list(name: str, args: dict[str, Any]) -> str:
-    d = mcp_core._get("/api/lessons")
+    # Forwarded only when the caller named them, so an absent pair keeps the
+    # route's own default window and the response says what that window was.
+    window = {
+        k: args[k]
+        for k in ("limit", "offset")
+        if isinstance(args.get(k), int) and not isinstance(args.get(k), bool)
+    }
+    path = "/api/lessons" + ("?" + urlencode(window) if window else "")
+    d = mcp_core._get(path)
     # Surface transport/auth failures instead of rendering them as "no
     # lessons". ``_get`` returns ``{"error": ...}`` on a non-2xx, which has
     # no ``lessons`` key — reporting that as an empty list told the agent its
@@ -387,17 +480,125 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
     if err_val:
         return f"Error: {err_val}"
     lessons = d.get("lessons", [])
+    lines = _window_header(d, len(lessons))
     if not lessons:
-        return "No lessons saved."
-    lines = []
+        return "\n".join(lines) if lines else "No lessons saved."
     for le in lessons:
         withheld = (
             " [WITHHELD: volatile_session_fact]"
             if le.get("withheld_reason") == "volatile_session_fact"
             else ""
         )
-        lines.append(f"[{le.get('category', '?')}] {le['rule']}{withheld}")
-    return "\n".join(lines)
+        lines.append(
+            f"[{le.get('category', '?')}] {le['rule']}{withheld}"
+            f"{_applies_suffix(le)}{_scope_suffix(le)}"
+        )
+    text = "\n".join(lines)
+    if len(text) > _LIST_RENDER_BUDGET:
+        # ``sanitize_response`` cuts the TAIL of a response over the cap, and
+        # the header above is the head -- so a page that renders past the cap
+        # would say "Showing N" and then lose rows the model never sees. Refuse
+        # the page and name a limit that fits instead of shipping that claim.
+        shown = len(lessons)
+        fits = max(1, min(shown - 1, shown * _LIST_RENDER_BUDGET // len(text)))
+        return (
+            f"This page of {shown} lessons renders to {len(text)} characters, past the "
+            f"{MAX_RESPONSE_LEN}-character tool response cap, so none of it is shown. "
+            f"Pass limit={fits} with the same offset to read it in parts."
+        )
+    return text
+
+
+# Rows are rendered whole, so a page must fit under the response cap with room
+# for the header line; past this the page is refused rather than cut.
+_LIST_RENDER_BUDGET = MAX_RESPONSE_LEN - 512
+
+
+def _window_header(body: dict[str, Any], shown: int) -> list[str]:
+    """The ``showing N of M`` line, or nothing when the body carries every lesson.
+
+    The route is the only lesson surface that omits rows, and this tool renders
+    its body verbatim -- so a store past the window showed the model a subset
+    with nothing to say so, and the ``deduped`` outcome of ``learn_add`` sent it
+    here to find a stored lesson that sat exactly outside the newest window.
+    The line names the offset that reaches the next older page when one exists;
+    otherwise it only states the count, since the rows not shown are the newer
+    ones the caller skipped on purpose. Both the older count and the next offset
+    advance by the window the store consumed (the body's ``limit``), not by the
+    rows shown: the route drops a row whose stored JSON does not decode, so a
+    page can come back short while the store still skipped ``limit`` rows for
+    it, and counting by the shorter number would overstate the rest and re-read
+    that tail. An older gateway that sends no ``total`` renders no line: it has
+    nothing truthful to say about the rest.
+    """
+    total = body.get("total")
+    if not isinstance(total, int) or isinstance(total, bool) or total <= shown:
+        return []
+    offset = _window_int(body.get("offset"), 0)
+    step = _window_int(body.get("limit"), shown) or shown
+    header = f"Showing {shown} of {total} lessons"
+    older = total - offset - step
+    if older > 0:
+        header += f"; {older} older not shown -- pass offset={offset + step} to list them"
+    return [header + "."]
+
+
+def _window_int(value: Any, default: int) -> int:
+    """``value`` when the body carries it as a real integer, else ``default``."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return default
+
+
+def _applies_suffix(row: dict[str, Any]) -> str:
+    """Mark a row filed as a past finding; render nothing for a standing rule.
+
+    Only ``on_topic`` is marked, because it is the only tier that changes whether
+    the row arrives: a standing rule and an untiered row are both injected every
+    session, so marking one of those two and not the other would show a
+    difference the injection path does not make. Rendering the common case bare
+    is the same policy ``_scope_suffix`` uses for a global row.
+
+    This exists because the overflow notices point the reader HERE. A rule the
+    model misfiled as a finding stops arriving on unrelated sessions, and without
+    this marker the listing the notice recommends is the one place that cannot
+    show why -- leaving re-tiering (remove plus re-add with the right tier)
+    impossible to even diagnose.
+    """
+    if row.get("applies") == "on_topic":
+        return " (applies: on_topic)"
+    return ""
+
+
+def _scope_suffix(row: dict[str, Any]) -> str:
+    """Render the row's ``repo_scope`` so same-rule rows in two scopes read apart.
+
+    A lesson's identity is ``(rule, repo_scope)``, and ``learn_remove`` below
+    takes that scope as its selector -- so a list that hid it showed two
+    distinct lessons as one duplicated line and gave the model nothing to pass.
+    Mirrors the route's per-row selector: a fragment names that scope, ``""``
+    is the global row (rendered bare, the common case), and ``null`` marks a
+    stored scope the store cannot use -- only the unselective remove reaches
+    such a row, which is worth saying where the model decides what to send.
+    An absent key (an older gateway) renders nothing.
+
+    The JSONL tier is the second half of the selector: the list is a union of
+    the global file and the active workspace's, and ``learn_remove`` defaults
+    to the global file, so a row read from a workspace file says so --
+    ``(workspace: NAME)`` -- and the model passes ``scope``/``workspace``
+    back. Global-file rows and vector rows render nothing for it.
+    """
+    parts = []
+    if "repo_scope" in row:
+        scope = row["repo_scope"]
+        if scope is None:
+            parts.append(" (scope: unusable)")
+        elif isinstance(scope, str) and scope:
+            parts.append(f" (scope: {scope})")
+    workspace = row.get("workspace")
+    if row.get("scope") == "workspace" and isinstance(workspace, str) and workspace:
+        parts.append(f" (workspace: {workspace})")
+    return "".join(parts)
 
 
 def learn_remove(name: str, args: dict[str, Any]) -> str:
@@ -414,6 +615,35 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     rs = args.get("repo_scope")
     if isinstance(rs, str):
         payload["repo_scope"] = rs
+    # The JSONL tier, forwarded as ``learn_list`` reported it. The route picks
+    # the file from these and defaults to the global one, so a row listed with
+    # "(workspace: NAME)" is reachable only when both ride along; forwarded
+    # only when the caller named them, so an absent pair keeps today's default.
+    tier_scope = args.get("scope")
+    workspace = args.get("workspace")
+    # The pair is validated together before anything is sent: a workspace-tier
+    # delete with no name would land on whichever file the route picks by
+    # default, and a name without the tier would be ignored -- either way a
+    # row the caller never pointed at. Nothing is deleted on a refused pair.
+    if tier_scope == "workspace" and not workspace:
+        return (
+            "No lessons were removed: scope='workspace' needs the workspace name "
+            "from the row's '(workspace: NAME)' marker in learn_list."
+        )
+    if workspace and tier_scope != "workspace":
+        return (
+            "No lessons were removed: 'workspace' is only meaningful together with "
+            "scope='workspace'."
+        )
+    if tier_scope == "workspace" and workspace == "default":
+        return (
+            "No lessons were removed: 'default' is the global lessons file, which "
+            "learn_list shows without a '(workspace: ...)' marker; omit scope to "
+            "target it."
+        )
+    for key, value in (("scope", tier_scope), ("workspace", workspace)):
+        if isinstance(value, str) and value:
+            payload[key] = value
     d = mcp_core._delete("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:

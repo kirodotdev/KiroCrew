@@ -316,8 +316,12 @@ class TestNoMetricIsEmittedAtImport:
         next(wrapper)
         ToolHookResult.allow()  # the import-time emission, with the process pin in force
         assert provider._ever_built, "the emission did not build a recorder; control is vacuous"
+        report = pytest.CollectReport(module.nodeid, "passed", None, [])
+        from pluggy import Result
+
         with pytest.raises(StopIteration):
-            next(wrapper)
+            wrapper.send(Result.from_call(lambda: report))
+        assert report.failed
 
         assert _root.IMPORT_TIME_METRIC_EMITTERS == [module.nodeid]
         assert not provider._ever_built, "the guard must undo the build it recorded"
@@ -336,8 +340,12 @@ class TestNoMetricIsEmittedAtImport:
 
         wrapper = _root.pytest_make_collect_report(module)
         next(wrapper)
+        report = pytest.CollectReport(module.nodeid, "passed", None, [])
+        from pluggy import Result
+
         with pytest.raises(StopIteration):
-            next(wrapper)
+            wrapper.send(Result.from_call(lambda: report))
+        assert report.failed
 
         assert _root.IMPORT_TIME_METRIC_EMITTERS == [f"conftest import (before {module.nodeid})"]
         assert not provider._ever_built
@@ -1703,6 +1711,24 @@ class TestTheWorkerBudgetIsMemoryBounded:
     back wrongly SMALL collapses the whole run to one worker, which looks like a hang
     rather than a bug. So each reading must degrade to "skip this bound", never to zero.
     """
+
+    #: The per-worker reservation is now platform-aware (3 GiB on Linux/Windows,
+    #: 16 GiB on macOS), so an assertion here computed against the live selector
+    #: would read one number on Linux and another on macOS. These tests are about
+    #: the shared division MECHANISM, not the platform default that feeds it, so
+    #: the autouse fixture below forces the selectors to the Linux/Windows
+    #: constants on every platform; each assertion then derives its expected
+    #: count from ``_GIB_PER_WORKER`` directly. The platform default itself is
+    #: covered by ``test_xdist_host_budget.py::test_per_worker_reservation_is_platform_aware``.
+
+    @pytest.fixture(autouse=True)
+    def _pin_per_worker_reservation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import xdist_budget as budget
+
+        monkeypatch.setattr(budget, "_gib_per_worker", lambda: budget._GIB_PER_WORKER)
+        monkeypatch.setattr(
+            budget, "_gib_per_worker_available", lambda: budget._GIB_PER_WORKER_AVAILABLE
+        )
 
     def test_the_budget_is_registered_from_the_rootdir_not_from_test_conftest(self) -> None:
         """The gap that was silent for every testpath but ``test/``.

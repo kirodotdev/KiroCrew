@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import platform as _platform
+import posixpath
 import re
 import shutil
 import sys
@@ -411,21 +412,13 @@ _REGISTRY_REVIEW_TIERS: frozenset[str] = frozenset(
 
 
 def _registry_identity_key(name_or_repo: str) -> str:
-    """The key two registries collide on: the cache file they would share.
+    """Canonical comparison key for a registry's public identifier.
 
-    Not the raw name. A registry's index cache is a FILE, and the file is what is
-    actually contended — so the collision rule has to be derived from the path, not
-    from the string. Two consequences that the raw name misses:
-
-    * On a case-insensitive filesystem (Windows, default macOS) ``Official`` and
-      ``official`` are one file, so they collide there and not on Linux. Folding
-      case makes the answer the same everywhere: a configuration that would corrupt
-      on one platform is refused on all of them, rather than working until someone
-      runs it on a laptop.
-    * ``_external_registry_cache_path`` slugifies and hash-disambiguates a name
-      carrying unusual characters, so the mapping from name to file is not the
-      identity function. Asking the path keeps this rule correct if that
-      derivation ever changes.
+    Registry names are normalized to their filename-safe cache-path form, then
+    case-folded so ``Official`` and ``official`` cannot be treated as separate
+    names on Linux but as one name on default macOS or Windows filesystems. This key governs build-pinned/config name ownership;
+    it is NOT the live index-cache identity, which additionally includes the
+    normalized repository and branch.
     """
     return _external_registry_cache_path(name_or_repo).name.casefold()
 
@@ -582,12 +575,10 @@ def _pinned_registries() -> list[Any]:
                 trust=trust if isinstance(trust, str) and trust else _TRUST_INDEX,
             )
         )
-    # Two pinned rows sharing an effective key would fetch into the SAME
-    # name-keyed cache file, so each refresh would overwrite the other and later
-    # reads would list — and install — entries from whichever repository wrote
-    # last. Drop ALL rows for a duplicated key rather than keeping the first: an
-    # edition shipping two registries under one name has a bug, and picking a
-    # winner would hide it behind intermittently wrong app listings.
+    # Two pinned rows sharing one public identifier are an edition bug. Their
+    # live caches are source-coordinate keyed, but every returned app still
+    # carries the same ``_registry`` attribution and trust lookup key. Drop ALL
+    # duplicated rows rather than picking a winner and hiding the ambiguity.
     counts: dict[str, int] = {}
     for reg in pinned:
         key = _registry_identity_key(reg.name or reg.repo)
@@ -596,8 +587,8 @@ def _pinned_registries() -> list[Any]:
     if duplicated:
         for key in sorted(duplicated):
             logger.error(
-                "Ignoring %d edition registries that would share the index cache file %r — "
-                "they would overwrite each other's entries.",
+                "Ignoring %d edition registries that share public identifier %r — "
+                "their app attribution and trust lookup would be ambiguous.",
                 counts[key],
                 key,
             )
@@ -616,21 +607,17 @@ def _effective_registries() -> list[Any]:
     some of those would surface an app the install path then refuses — the
     half-implemented-mechanism failure mode.
 
-    Merge rule: an **edition default wins** on a ``name`` collision, and when the
-    two rows name DIFFERENT repositories **neither is served**. The second half is
-    not fastidiousness: the on-disk index cache is keyed by registry NAME, so the
-    displaced row's cache would be read under the winning row's identity and every
-    reader stamps ``_registry`` from the registry it asked for — apps the pinned
-    repository does not list, attributed to it and installable under it. Refusing
-    the ambiguous name makes that a visible, diagnosable state instead. The
-    credential path is separately safe (``_owner_tier_confirmed`` re-reads the
-    real index), so this is about provenance, not escalation.
+    Merge rule: an **edition default wins** when an operator row has the same
+    public ``name``, repo, and branch. When the source coordinates differ,
+    **neither is served**. Their index caches are isolated by full source
+    identity, but both rows still claim one public ``_registry`` attribution
+    and trust lookup key: silently choosing either would hide the other
+    claimant and make the control-plane owner of that name ambiguous. Refusing
+    both makes the conflict visible and keeps build-owned trust/review metadata
+    from being associated with an operator's different source.
 
-    Same name AND same repo is not a conflict — the pinned row simply supersedes
-    an operator row that already agreed with it, and the shared cache is correct.
-
-    Operators can add registries freely; they just cannot silently repoint one the
-    edition pinned. ``PUT /api/apps/registries`` refuses to create such a
+    Operators can add registries freely; they just cannot silently repoint one
+    the edition pinned. ``PUT /api/apps/registries`` refuses to create such a
     collision, so the case that survives here is a ``config.json`` that already
     used the name before the build pinned it.
 
@@ -670,8 +657,8 @@ def _effective_registries() -> list[Any]:
             contested.add(key)
             logger.warning(
                 "Registry name %r is claimed by this build (%s@%s) and by your config (%s@%s); "
-                "serving neither until the names differ, because the index cache is keyed "
-                "by name and would otherwise be read under the wrong registry's identity.",
+                "serving neither until the names differ, because their public app attribution "
+                "and trust lookup identity would otherwise be ambiguous.",
                 key,
                 _redact_url_userinfo(rival.repo),
                 rival.branch,
@@ -2435,18 +2422,55 @@ _REGISTRY_ROW_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _store_asset_path(subdirectory: Any, asset_path: Any) -> Any:
+    """Repo-root-relative path of a store-card asset declared in ``app.json``.
+
+    The manifest is read from ``_contained_join(clone_dir, subdirectory)``, so
+    every art path it declares (``iconPath``, ``heroImage*``, ``screenshots*``)
+    is relative to that directory -- while ``/api/apps/blob`` resolves ``path``
+    against the repo root. This is the store-card reader's join; the field
+    itself keeps its meaning, because the installed-app reader
+    (``handle_app_art_file``) resolves the same value against the install
+    directory, where the subdirectory has already been stripped by the install.
+
+    Containment is preserved rather than re-derived: a ``subdirectory`` the
+    lexical gate :func:`_is_safe_registry_subdir` rejects (absolute, ``..``,
+    backslash) is NOT joined, so the join never manufactures a traversing path
+    -- such entries are dropped before listing anyway, and the bare path here
+    is exactly what the store built before. Empty or ``.`` means the repo root
+    (unchanged), an absolute path or URL is left untouched, and the join is a
+    plain posix join with no normalisation, so a ``..`` inside the asset path
+    still reaches the blob route's own rejection unchanged.
+    """
+    if not asset_path or not isinstance(asset_path, str) or not isinstance(subdirectory, str):
+        return asset_path
+    subdir = subdirectory.rstrip("/")
+    if subdir in ("", "."):
+        return asset_path
+    if not _is_safe_registry_subdir(subdir):
+        return asset_path
+    if asset_path.startswith("/") or "://" in asset_path:
+        return asset_path
+    return posixpath.join(subdir, asset_path)
+
+
 def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     """Merge app.json fields into a registry entry.
 
     Registry-only fields (``_REGISTRY_ROW_KEYS``) are preserved from the entry.
     Everything else comes from app.json, with the blob proxy URL pattern
-    applied to image paths.
+    applied to image paths -- each joined under the entry's ``subdirectory``
+    first (:func:`_store_asset_path`), the directory the manifest was read from.
     """
     raw_repo = entry.get("repo", "")
     repo = _strip_git_target_userinfo(raw_repo) if isinstance(raw_repo, str) else ""
     result = {k: v for k, v in entry.items() if k in _REGISTRY_ROW_KEYS}
     if isinstance(result.get("repo"), str):
         result["repo"] = _strip_git_target_userinfo(result["repo"])
+    subdirectory = entry.get("subdirectory", "")
+
+    def _blob_url(asset_path: str) -> str:
+        return f"/api/apps/blob?repo={repo}&path={_store_asset_path(subdirectory, asset_path)}"
 
     # Top-level display fields from app.json
     for key in (
@@ -2486,7 +2510,9 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     if "platform" in manifest:
         result["platform"] = manifest["platform"]
 
-    # Icon — convert repo-relative path to blob proxy URL.
+    # Icon — convert a manifest-relative path to a blob proxy URL, joined under
+    # the entry's ``subdirectory`` (the directory app.json was read from) so the
+    # blob path names the file where it actually lives in the repo.
     #
     # Only ``iconPath`` (repo-relative) is honoured, never a manifest-declared
     # ``iconUrl``: an index-fetched manifest is untrusted content, and copying an
@@ -2496,13 +2522,13 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # trusted-host gate.
     icon_path = manifest.get("iconPath", "")
     if icon_path and repo:
-        result["iconUrl"] = f"/api/apps/blob?repo={repo}&path={icon_path}"
+        result["iconUrl"] = _blob_url(icon_path)
     # Dark-appearance variant. Raster icons have fixed bytes, so an app that
     # must read well on both backgrounds ships two files; first-party
     # ``/app-assets/`` SVGs are inlined and repaint from theme tokens instead.
     icon_path_dark = manifest.get("iconPathDark", "")
     if icon_path_dark and repo:
-        result["iconUrlDark"] = f"/api/apps/blob?repo={repo}&path={icon_path_dark}"
+        result["iconUrlDark"] = _blob_url(icon_path_dark)
     # Lucide fallback icon from manifest extra fields
     if manifest.get("icon"):
         result["icon"] = manifest["icon"]
@@ -2510,31 +2536,29 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # Screenshots — convert repo-relative paths to blob proxy URLs
     screenshots = manifest.get("screenshots", [])
     if screenshots and repo:
-        result["screenshots"] = [f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots]
+        result["screenshots"] = [_blob_url(p) for p in screenshots]
 
     # Screenshots dark — convert repo-relative paths to blob proxy URLs
     screenshots_dark = manifest.get("screenshotsDark", [])
     if screenshots_dark and repo:
-        result["screenshotsDark"] = [
-            f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots_dark
-        ]
+        result["screenshotsDark"] = [_blob_url(p) for p in screenshots_dark]
 
     # Hero images — convert repo-relative paths to blob proxy URLs
     hero = manifest.get("heroImage", "")
     if hero and repo:
-        result["heroImage"] = f"/api/apps/blob?repo={repo}&path={hero}"
+        result["heroImage"] = _blob_url(hero)
     hero_dark = manifest.get("heroImageDark", "")
     if hero_dark and repo:
-        result["heroImageDark"] = f"/api/apps/blob?repo={repo}&path={hero_dark}"
+        result["heroImageDark"] = _blob_url(hero_dark)
     # Detail-page hero images (wide banner ratio) — convert repo-relative paths
     # to blob proxy URLs. The detail page prefers these over the (near-square)
     # Browse-card hero so the wide banner isn't cropped.
     hero_detail = manifest.get("heroImageDetail", "")
     if hero_detail and repo:
-        result["heroImageDetail"] = f"/api/apps/blob?repo={repo}&path={hero_detail}"
+        result["heroImageDetail"] = _blob_url(hero_detail)
     hero_detail_dark = manifest.get("heroImageDetailDark", "")
     if hero_detail_dark and repo:
-        result["heroImageDetailDark"] = f"/api/apps/blob?repo={repo}&path={hero_detail_dark}"
+        result["heroImageDetailDark"] = _blob_url(hero_detail_dark)
 
     return result
 
@@ -2878,25 +2902,64 @@ def _credential_free_external_registry_entries(
     return [_credential_free_external_registry_value(entry) for entry in entries]
 
 
-def _external_registry_cache_path_for_identity(name: str) -> Path:
+def _external_registry_cache_identity(reg: Any) -> str:
+    """Stable cache identity for one configured registry source.
 
-    # Pure-safe names keep the historical byte-identical path (no hash suffix)
-    # so existing caches stay valid. Names carrying disallowed characters (e.g.
-    # URL-derived registry names) are slugified AND disambiguated with a short
-    # stable hash of the ORIGINAL name, so two distinct such names can never
-    # clobber the same ``_registry_<name>.json`` cache file.
+    A display name is not provenance: operators may repoint the same name to a
+    different repository or branch. Include the normalized credential-free
+    source coordinates so stale-fallback readers cannot answer from the old
+    source after that change.
+
+    ``branch`` is read defensively: registry objects reaching this helper are
+    duck-typed and may not carry the attribute at all. An absent branch, a
+    ``None`` branch, and an empty-string branch all mean "the source's default
+    branch" and share one identity component (the empty string), which can
+    never collide with a real branch because a configured branch is always a
+    non-empty string.
+    """
+    name = _public_registry_name(reg)
+    repo = _normalize_git_target(reg.repo)
+    branch = str(getattr(reg, "branch", "") or "")
+    return f"{name}|{repo}|{branch}"
+
+
+def _external_registry_cache_path_for_identity(name: str, *, slug_cap: int | None = None) -> Path:
+
+    # Pure-safe names map to the historical byte-identical path (no hash
+    # suffix). A coordinate identity from _external_registry_cache_identity
+    # always contains "|", so live index caches always take the slug+digest
+    # form; the byte-identical branch remains load-bearing for LEGACY path
+    # computation (_legacy_external_registry_cache_path and the name-keyed
+    # cleanup need to derive exactly the file an older release wrote). Names
+    # carrying disallowed characters are slugified AND disambiguated with a
+    # stable hash of the ORIGINAL name.
+    #
+    # ``slug_cap`` bounds the human-readable prefix for CURRENT identity
+    # paths (an URL-derived name repeats much of the repo URL, and an
+    # over-long filename makes every cache write fail with ENAMETOOLONG,
+    # silently disabling the stale-fallback). A capped prefix uses the FULL
+    # SHA-256 digest so truncation cannot reduce collision resistance. The
+    # DEFAULT is uncapped and keeps the historical eight-hex digest: that is
+    # the byte-identical derivation every previous release used, and legacy
+    # cleanup must keep deriving exactly those paths — changing its digest or
+    # capping its slug would miss an existing legacy artifact.
     if re.match(r"^[A-Za-z0-9_\-]+$", name):
         safe = name
     else:
         slug = re.sub(r"[^A-Za-z0-9_\-]+", "-", name).strip("-") or "registry"
-        digest = sha256(name.encode("utf-8")).hexdigest()[:8]
+        full_digest = sha256(name.encode("utf-8")).hexdigest()
+        if slug_cap is not None:
+            slug = slug[:slug_cap].strip("-") or "registry"
+            digest = full_digest
+        else:
+            digest = full_digest[:8]
         safe = f"{slug}-{digest}"
     return _manifest_cache_dir() / f"_registry_{safe}.json"
 
 
 def _external_registry_cache_path(name: str) -> Path:
     safe_name = _credential_free_external_registry_value(name)
-    return _external_registry_cache_path_for_identity(safe_name)
+    return _external_registry_cache_path_for_identity(safe_name, slug_cap=120)
 
 
 def _legacy_external_registry_cache_path(name: str) -> Path:
@@ -2914,6 +2977,36 @@ def _remove_legacy_credential_registry_cache(name: str) -> None:
         legacy_path.unlink(missing_ok=True)
     except OSError:
         logger.warning("Failed to remove a legacy credential-bearing registry cache")
+
+
+def _remove_legacy_name_keyed_registry_cache(reg: Any) -> None:
+    """Best-effort removal of caches written under the pre-identity key.
+
+    Before the cache identity included source coordinates, the index cache
+    was keyed on ``reg.name or reg.repo`` alone. No reader derives that path
+    any more, so the file is reclaimed here rather than left behind — in BOTH
+    filename forms: the sanitized one a recent release wrote, and the raw one
+    an older release wrote, whose filename can embed URL userinfo when the
+    display name is a credential-bearing URL. Runs before the fetch so the
+    credential-bearing artifact is removed even when the registry is
+    unreachable. Both derivations are deliberately UNCAPPED
+    (``slug_cap=None``): previous releases wrote uncapped slugs, and a capped
+    derivation would miss any legacy file whose slug ran past the cap.
+    """
+    legacy_name = str(getattr(reg, "name", "") or "") or reg.repo
+    current_path = _external_registry_cache_path(_external_registry_cache_identity(reg))
+    for legacy_path in (
+        _external_registry_cache_path_for_identity(
+            _credential_free_external_registry_value(legacy_name)
+        ),
+        _legacy_external_registry_cache_path(legacy_name),
+    ):
+        if legacy_path == current_path:
+            continue
+        try:
+            legacy_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to remove a legacy name-keyed registry cache")
 
 
 def _read_external_registry_cache(
@@ -3254,8 +3347,12 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     """
     # An unnamed legacy registry used its raw URL as the old cache identity,
     # which exposed HTTP userinfo in the filename. Remove that exact artifact
-    # even when this is a fresh fetch with no preceding cache read.
+    # even when this is a fresh fetch with no preceding cache read — and the
+    # pre-identity name-keyed caches with it (both filename forms), so a
+    # credential-bearing artifact is reclaimed even when the fetch below
+    # fails. No reader derives any of these paths any more.
     _remove_legacy_credential_registry_cache(reg.repo)
+    _remove_legacy_name_keyed_registry_cache(reg)
     public_registry_repo = _strip_git_target_userinfo(reg.repo)
     name = _public_registry_name(reg)
     entries = await _fetch_external_registry_index(reg.repo, reg.branch)
@@ -3315,7 +3412,7 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
         entry.setdefault("repo", public_registry_repo)
         entry["_registry"] = name
     _apply_configured_branch(entries, reg, warn=True)
-    await asyncio.to_thread(_write_external_registry_cache, name, entries)
+    await asyncio.to_thread(_write_external_registry_cache, _external_registry_cache_identity(reg), entries)
     return entries
 
 
@@ -3333,7 +3430,7 @@ async def _load_external_registries() -> list[dict[str, Any]]:
     all_entries: list[dict[str, Any]] = []
 
     async def _load_one(reg) -> list[dict[str, Any]]:
-        cache_name = reg.name or reg.repo
+        cache_name = _external_registry_cache_identity(reg)
         public_name = _public_registry_name(reg)
 
         # Try cache first
@@ -3458,7 +3555,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     failed: list[str] = []
     results: list[dict[str, Any]] = []
     for reg in registries:
-        name = reg.name or reg.repo
+        name = _external_registry_cache_identity(reg)
         display_name = _public_registry_name(reg)
         # Read the (possibly stale) prior index up front so we know which
         # per-app manifest caches this registry contributed, even if the
@@ -4058,7 +4155,7 @@ def _external_registry_row(name: str) -> dict[str, Any] | None:
     attached here at the lookup boundary so a stale cache cannot omit it.
     """
     for reg in _effective_registries():
-        cache_name = reg.name or reg.repo
+        cache_name = _external_registry_cache_identity(reg)
         public_name = _public_registry_name(reg)
         cached = _read_external_registry_cache(cache_name, ignore_ttl=True)
         if cached:
@@ -4132,7 +4229,7 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         # this is its sibling and must refuse the same way.
         return []
     for reg in _effective_registries():
-        cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+        cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
                 _apply_configured_branch([entry], reg)
@@ -4207,7 +4304,7 @@ def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
     blob-proxy worker. Fails open to ``None``."""
     try:
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
             for entry in cached or []:
                 if (
                     isinstance(entry, dict)
@@ -4256,7 +4353,7 @@ def _external_registry_repos() -> set[str]:
     repos: set[str] = set()
     try:
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
             for entry in cached or []:
                 if (
                     isinstance(entry, dict)
@@ -6337,7 +6434,7 @@ async def _run_app_build(
                 "pip not available in the gateway interpreter — skipping Python build step"
             )
         else:
-            pip_cmd = [sys.executable, "-m", "pip"]
+            pip_cmd = platform_compat.isolated_python_argv("-m", "pip")
             if (build_dir / "requirements.txt").is_file() and not (
                 (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
             ):
@@ -7346,6 +7443,9 @@ async def install_from_registry(
                     "(self-managed)"
                 ),
             }
+            notice = getattr(reg_result, "notice", "")
+            if isinstance(notice, str) and notice:
+                outcome["notice"] = notice
             return outcome
 
         # Kirocrew-managed: copy to ~/.kiro/crew/apps/ and register resources
@@ -7417,6 +7517,10 @@ async def install_from_registry(
             "message": result.message,
             "error": result.error,
         }
+        if result.notice:
+            # e.g. ``session_approval_reconsent``: the app was left disabled on
+            # purpose and the routes must neither start it nor report plain success.
+            outcome["notice"] = result.notice
         return outcome
 
     except Exception as exc:

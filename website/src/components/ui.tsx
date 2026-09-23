@@ -150,7 +150,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
   ({ className = '', ...props }, ref) => (
     <input
       ref={ref}
-      className={twMerge('bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none flex-1 min-w-0 transition-colors focus-ring', className)}
+      className={twMerge('bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden flex-1 min-w-0 transition-colors focus-ring', className)}
       {...props}
     />
   )
@@ -161,7 +161,7 @@ export function SearchInput({ className = '', ...props }: React.InputHTMLAttribu
     <div className={`relative ${className}`}>
       <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <input
-        className="w-full bg-bg-elevated border border-border rounded-md pl-7 pr-3 py-1.5 text-text text-[13px] font-body outline-none transition-all focus-ring placeholder:text-muted/50"
+        className="w-full bg-bg-elevated border border-border rounded-md pl-7 pr-3 py-1.5 text-text text-[13px] font-body outline-hidden transition-all focus-ring placeholder:text-muted/50"
         {...props}
       />
     </div>
@@ -176,7 +176,9 @@ export function Badge({ variant, children, className, ...rest }: { variant: 'ok'
     : variant === 'muted' ? 'bg-[var(--bg-hover)] text-[var(--muted)]'
     : 'bg-warn-subtle text-warn'
   return (
-    <span className={twMerge(`inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono whitespace-nowrap hover:scale-105 transition-transform ${cls}`, className)} {...rest}>
+    // No hover transform: a Badge is a non-interactive status label, so growing
+    // it under the cursor announced an affordance that isn't there.
+    <span className={twMerge(`inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono whitespace-nowrap ${cls}`, className)} {...rest}>
       {children}
     </span>
   )
@@ -206,7 +208,7 @@ export function StatCard({ label, value, accent, colorClass, delay, onClick, act
     // the conditional role, hence the scoped disables.
     /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
-      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise hover:border-border-strong hover:-translate-y-0.5 hover:shadow-md transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer' : ''}`, className)}
+      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise hover:border-border-strong hover:shadow-md transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer' : ''}`, className)}
       style={delay ? { animationDelay: `${delay}ms` } : undefined}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
@@ -626,12 +628,12 @@ export function Slider({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onPointerLeave={onPointerLeave}
-        // outline-none is CORRECT here and must stay: the knob below already
+        // outline-hidden is CORRECT here and must stay: the knob below already
         // carries the replacement cue (`group-focus-visible:ring-2`), which
         // points at the current value instead of boxing the whole track. Letting
         // the global :focus-visible outline through as well would paint two
         // indicators on one control.
-        className={`group relative h-[18px] flex items-center select-none touch-none outline-none ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+        className={`group relative h-[18px] flex items-center select-none touch-none outline-hidden ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
       >
         {/* groove */}
         <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-border" />
@@ -683,9 +685,15 @@ export function Slider({
             the value; the inner circle owns press/drag scale + focus ring. */}
         <motion.div aria-hidden className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: motionPos }}>
           <motion.div
-            className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
+            className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 group-hover:border-black/30 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
             animate={{ scale: reduceMotion ? 1 : (dragging ? 1.15 : 1), boxShadow: dragging ? '0 2px 7px rgba(0,0,0,.4)' : atMax ? '0 0 10px var(--accent)' : '0 1px 3px rgba(0,0,0,.3)' }}
-            whileHover={disabled || reduceMotion ? undefined : { scale: 1.12 }}
+            // The knob is the visual grab target, so pointing at the slider has to
+            // say so — the removed `whileHover` scale was its only cue. It darkens
+            // its BORDER via `group-hover` rather than deepening its shadow, because
+            // `animate` above owns `boxShadow` as an INLINE style and an inline style
+            // beats any class, so a shadow cue would simply never paint. Nothing
+            // animates borderColor, so the two cannot fight, and no geometry changes.
+            // `group` is the same one the focus ring already keys on.
             whileTap={disabled || reduceMotion ? undefined : { scale: 1.2 }}
             transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 26 }}
           />

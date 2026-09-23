@@ -29,12 +29,6 @@ from kiro_crew.dashboard.ws_event_scope import (
     ws_event_allowed,
 )
 
-# One xdist worker for the whole module: every test here derives from ONE module-cached
-# scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
-# spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
-# per full run for this file alone. Grouping keeps the cache single-copy per run.
-pytestmark = pytest.mark.xdist_group(name="tree_scan_test_ws_event_scoping")
-
 
 @pytest.fixture(autouse=True)
 def _clear_module_caches():
@@ -2476,8 +2470,19 @@ class TestEventTableCompleteness:
             if "/builtins/" in str(path):
                 continue  # app code, not gateway fan-out
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):
+                source = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            # A call to a gated name carries that identifier in the source text, so
+            # a file naming none of them has nothing for the AST walk to find. Parsing
+            # only the files that can match (~35 of ~1,170) turns a 4-6 s full-tree
+            # parse into ~0.5 s without narrowing what the guard can see: the filter
+            # is derived from ``gated``, so a name added there widens it too.
+            if not any(name in source for name in gated):
+                continue
+            try:
+                tree = ast.parse(source)
+            except SyntaxError:
                 continue
             # Module-level ``NAME = "literal"`` bindings, so a constant passed
             # as the event type is resolved rather than skipped.

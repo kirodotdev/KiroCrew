@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SET_MODE,
+    JsonRpcMessage,
 )
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "acp_harness_wire"
@@ -67,6 +68,9 @@ _MCP_ROSTER: list[dict[str, Any]] = [
 _KAS_AGENTS = [{"name": _AGENT, "prompt": "pinned"}]
 # Advertised so set_mode is reached on both paths rather than skipped: the mode
 # activation request is part of what session start puts on the wire.
+# The per-session identity token, pinned. Minted from ``secrets`` in production,
+# so it is exactly the kind of value this capture pins rather than lets vary.
+_SESSION_TOKEN = "pinned-session-token"
 _MODES = {"currentModeId": "other-mode", "availableModes": [{"id": _AGENT}]}
 _INBOUND_REQUEST_ID = 7
 _AUTH_FAILURE = "pinned auth failure"
@@ -125,6 +129,35 @@ async def _capture(backend: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
             return {"sessionId": "pinned-new-sid", "modes": _MODES}
         if method == METHOD_SESSION_LOAD:
             return {"modes": _MODES}
+        if method == METHOD_SET_MODE and backend == ACP_BACKEND_KAS:
+            sid = params["sessionId"]
+            for notification, payload in (
+                (
+                    "_kiro/mcp/status",
+                    {
+                        "servers": [
+                            {
+                                "name": entry["name"],
+                                "status": "connected",
+                                "_meta": {"kiro": {"resource": {"source": {"origin": "client"}}}},
+                            }
+                            for entry in _MCP_ROSTER
+                        ]
+                    },
+                ),
+                (
+                    "_kiro/tools/didChange",
+                    {
+                        "tags": [
+                            {"source": "mcp", "tag": f"@{entry['name']}/tool"}
+                            for entry in _MCP_ROSTER
+                        ]
+                    },
+                ),
+            ):
+                rt._session_queues[sid].put_nowait(
+                    JsonRpcMessage(method=notification, params={"sessionId": sid, **payload})
+                )
         return {}
 
     monkeypatch.setattr(rt, "_send_and_await", _fake_send)
@@ -144,9 +177,27 @@ async def _capture(backend: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     # session/load resolves its own roster from the gateway overlay, which stats
     # files. Pin it to the same roster session/new is given so the two requests
     # are comparable and neither moves with the host's gateway configuration.
-    monkeypatch.setattr(runtime_mod, "pooled_session_servers", lambda overlay, agent: _MCP_ROSTER)
+    # ``**_kw`` keeps the double mirroring the real signature, which takes the
+    # session's checkout as ``work_dir``; a double that refuses it would make the
+    # capture fall through to a different code path than the one under test.
+    monkeypatch.setattr(
+        runtime_mod, "pooled_session_servers", lambda overlay, agent, **_kw: _MCP_ROSTER
+    )
 
-    async def _fake_kas_agents(agent, *, member_dispatch=False):
+    # Pin the per-session identity token, for the same reason the work dir and the
+    # session ids above are pinned: it is minted from ``secrets`` on every session
+    # start, so an unpinned capture could never match a golden twice. Pinning the
+    # INPUT rather than scrubbing the output keeps the golden a byte gate on the
+    # whole element, the env pair included -- which is the part that must not
+    # change silently.
+    monkeypatch.setattr(runtime_mod, "mint_stub_session_token", lambda: _SESSION_TOKEN)
+
+    # ...and the signed mapping publication it triggers, which writes to the real
+    # data home. The capture is about the frames the runtime BUILDS; a filesystem
+    # write is neither on the wire nor this gate's business.
+    monkeypatch.setattr(runtime_mod, "publish_session_token", lambda token, key: None)
+
+    async def _fake_kas_agents(agent, *, member_dispatch=False, session_key=""):
         # The real projection reads ~/.kiro/agents; the GATE it is behind is what
         # this capture is about, so the payload is pinned and the gate is not.
         from kiro_crew.acp.harness import SessionExtras

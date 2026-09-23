@@ -36,6 +36,29 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _openssl_runs_in_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every ``openssl`` this module spawns runs inside the test's own tree.
+
+    Two kinds of child reach the host's openssl here. The fixtures below generate
+    keys and certificates and say so with ``cwd=tmp_path`` at each call, because
+    ``openssl req -newkey`` on older builds drops a ``.rnd`` seed into its working
+    directory -- which, inherited from pytest, is this checkout. The verifier's
+    own ``_openssl`` is a stdin-to-stdout filter that writes nothing, and it is
+    deliberately NOT replaced with a fake: the module docstring's point is that
+    DER parsing is delegated to the real tool. What it must not do is run from the
+    checkout either, so its spawn funnel is given the same working directory. The
+    verifier's error handling stays its own; only the descriptor is pinned.
+    """
+    real_run = subprocess.run
+
+    def run_in_tmp_path(argv, **kwargs):
+        kwargs.setdefault("cwd", str(tmp_path))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(verifier.subprocess, "run", run_in_tmp_path)
+
+
 def _pe_image(machine: int, certificate: bytes | None, magic: int = 0x20B) -> bytes:
     """Build a minimal PE whose certificate table holds ``certificate``."""
     e_lfanew = 0x80
@@ -87,6 +110,7 @@ def _pkcs7(tmp_path: Path, common_name: str) -> bytes:
         ],
         check=True,
         capture_output=True,
+        cwd=str(tmp_path),
     )
     subprocess.run(
         [
@@ -102,6 +126,7 @@ def _pkcs7(tmp_path: Path, common_name: str) -> bytes:
         ],
         check=True,
         capture_output=True,
+        cwd=str(tmp_path),
     )
     return bundle.read_bytes()
 
@@ -280,6 +305,7 @@ def _chain_pkcs7(tmp_path: Path, ca_cn: str, leaf_cn: str) -> bytes:
         ],
         check=True,
         capture_output=True,
+        cwd=str(tmp_path),
     )
     subprocess.run(
         [
@@ -297,6 +323,7 @@ def _chain_pkcs7(tmp_path: Path, ca_cn: str, leaf_cn: str) -> bytes:
         ],
         check=True,
         capture_output=True,
+        cwd=str(tmp_path),
     )
     subprocess.run(
         [
@@ -318,6 +345,7 @@ def _chain_pkcs7(tmp_path: Path, ca_cn: str, leaf_cn: str) -> bytes:
         ],
         check=True,
         capture_output=True,
+        cwd=str(tmp_path),
     )
     subprocess.run(
         [
@@ -335,6 +363,7 @@ def _chain_pkcs7(tmp_path: Path, ca_cn: str, leaf_cn: str) -> bytes:
         ],
         check=True,
         capture_output=True,
+        cwd=str(tmp_path),
     )
     return bundle.read_bytes()
 

@@ -11,7 +11,7 @@ three properties that make the wider scan safe to ship:
   line — the standing constraint that memory v2 must not change the global memory;
 * one unreadable silo costs that silo's findings and nothing else.
 
-Two TIERS are audited, and the JSONL lessons tier is the one a vector-only audit is
+V1 has two audited tiers, and its JSONL lessons tier is the one a vector-only audit is
 blind to in the exact case that matters most. A silo-bound crew's lesson writes land in
 ``memory_stores/<name>/lessons.jsonl`` precisely when that silo has no vector store
 (``_lesson_jsonl_store`` routes by BINDING, and ``get_lessons_for`` creates only the
@@ -33,8 +33,12 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
+
+# pysqlite3 omits Connection.iterdump; use the same SQL dumper on either driver.
+from sqlite3.dump import _iterdump as iter_sql_dump
 from unittest import mock
 
 import pytest
@@ -721,3 +725,93 @@ class TestAnInstallWithNoNamedStoresIsUnchanged:
         assert "suspicious memory entries" not in out
         assert f"[{security.LESSON_FINDING_TYPE}]" not in out
         assert "✅ No suspicious tool usage found in recent history." in out
+
+
+class TestMemberDatabaseAudit:
+    """V2 is scanned through explicit identity validation, without old sidecars."""
+
+    def test_member_sqlite_rows_are_scanned_and_legacy_lessons_ignored(self):
+        from member_memory_helpers import write_member_home
+
+        from kiro_crew.vector_memory import open_member_database
+
+        write_member_home(config_dir(), "alice")
+        loader_mod._invalidate_config_cache()
+        path = memory_stores_root() / "member-alice" / MEMORY_DB_FILE
+        store = open_member_database(path, member_id="alice", store_id="member-alice")
+        with mock.patch.object(vector_memory, "_contains_injection", lambda text: False):
+            assert store.write_episodic(INJECTIONS[WORK], source="test")
+        before = "\n".join(iter_sql_dump(store.db))
+        sidecar = path.parent / "lessons.jsonl"
+        sidecar.write_text(json.dumps(_lesson_row(INJECTIONS[PERSONAL])), encoding="utf-8")
+        try:
+            findings = security.scan_memory()
+            member = [row for row in findings if row["store"] == "member-alice"]
+            assert len(member) == 1
+            assert member[0]["type"] == "episodic"
+            assert member[0]["value"] == INJECTIONS[WORK]
+            assert "\n".join(iter_sql_dump(store.db)) == before
+            assert INJECTIONS[PERSONAL] in sidecar.read_text(encoding="utf-8")
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize("damage", ["missing", "corrupt", "identity"])
+    def test_unavailable_member_database_reports_unknown_without_repair(self, damage):
+        from member_memory_helpers import write_member_home
+
+        write_member_home(config_dir(), "alice")
+        loader_mod._invalidate_config_cache()
+        path = memory_stores_root() / "member-alice" / MEMORY_DB_FILE
+        if damage == "missing":
+            path.unlink()
+            before = None
+        elif damage == "corrupt":
+            path.write_bytes(b"retained damaged database")
+            before = path.read_bytes()
+        else:
+            # A connection context commits but does not close. Finish the WAL
+            # checkpoint before taking the byte baseline for the read-only audit.
+            with closing(sqlite3.connect(path)) as db, db:
+                db.execute("UPDATE member_database SET member_id='bob'")
+            before = path.read_bytes()
+        findings = security.scan_memory()
+        member = [row for row in findings if row["store"] == "member-alice"]
+        assert len(member) == 1
+        assert member[0]["type"] == security.STORE_UNAUDITABLE
+        assert (path.read_bytes() if path.exists() else None) == before
+
+
+@pytest.mark.parametrize("tier", ["history", "consolidation"])
+def test_member_audit_includes_all_retained_learning_tables(tier):
+    from member_memory_helpers import write_member_home
+
+    from kiro_crew.vector_memory import open_member_database
+
+    write_member_home(config_dir(), "alice")
+    loader_mod._invalidate_config_cache()
+    path = memory_stores_root() / "member-alice" / MEMORY_DB_FILE
+    store = open_member_database(path, member_id="alice", store_id="member-alice")
+    try:
+        if tier == "consolidation":
+            store.db.execute(
+                "INSERT INTO memory_consolidations VALUES(?,?,?,?,?,?)",
+                (
+                    "span-1",
+                    1,
+                    1,
+                    "0" * 64,
+                    json.dumps({"source_id": INJECTIONS[WORK]}),
+                    "2026-09-18",
+                ),
+            )
+            store.db.commit()
+        else:
+            store.append_history(INJECTIONS[WORK])
+        before = list(iter_sql_dump(store.db))
+        member = [row for row in security.scan_memory() if row["store"] == "member-alice"]
+        assert len(member) == 1
+        assert member[0]["type"] == tier
+        assert INJECTIONS[WORK] in member[0]["value"]
+        assert list(iter_sql_dump(store.db)) == before
+    finally:
+        store.close()

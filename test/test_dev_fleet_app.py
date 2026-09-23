@@ -356,9 +356,16 @@ async def test_remove_succeeds_when_oid_matches():
 # --- session bus graceful degradation ---
 @pytest.mark.asyncio
 async def test_remove_proceeds_when_session_bus_absent():
-    """When require_backend() raises PodBackendAbsent, removal proceeds."""
+    """An absent backend is checked off-loop and leaves no live pod to protect."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
     from kiro_crew.pod.runtime import PodBackendAbsent
+
+    event_loop_thread = threading.get_ident()
+    backend_threads: list[int] = []
+
+    def absent_backend() -> None:
+        backend_threads.append(threading.get_ident())
+        raise PodBackendAbsent("no session bus")
 
     with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
                       return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
@@ -369,33 +376,65 @@ async def test_remove_proceeds_when_session_bus_absent():
          patch.object(fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
          patch.object(runtime_mod, "_POD_AVAILABLE", True), \
-         patch.object(runtime_mod.rt, "require_backend", side_effect=PodBackendAbsent("no session bus")), \
+         patch.object(runtime_mod.rt, "require_backend", side_effect=absent_backend), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
          patch.object(repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
         result = await mod._worktree_remove("feat-x", force=False)
     assert result["ok"] is True
+    assert len(backend_threads) == 2
+    assert all(thread != event_loop_thread for thread in backend_threads)
 
 
 @pytest.mark.asyncio
-async def test_remove_refuses_operational_pod_error():
-    """When require_backend() passes but active_names raises, removal is refused."""
+async def test_remove_refuses_stale_explicit_bus_address(monkeypatch):
+    """A stale explicit bus address must never authorize worktree removal."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
-    with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
-                      return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
-         patch.object(repository_mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
-         patch.object(fleet_state_mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
-         patch.object(repository_mod, "_own_commits_count", new_callable=AsyncMock, return_value=1), \
-         patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value="aaa1111"), \
-         patch.object(fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
-         patch.object(runtime_mod, "_load_cfg", return_value=object()), \
-         patch.object(runtime_mod, "_POD_AVAILABLE", True), \
-         patch.object(runtime_mod.rt, "require_backend", return_value=None), \
-         patch.object(runtime_mod.rt, "active_names", side_effect=OSError("launchctl error")), \
-         patch.object(repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
+    detail = "Failed to connect to bus: No such file or directory"
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/4242/stale-bus")
+    with (
+        patch.object(
+            repository_mod,
+            "_find_worktree",
+            new_callable=AsyncMock,
+            return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None),
+        ),
+        patch.object(repository_mod, "_real_dirty", new_callable=AsyncMock, return_value=False),
+        patch.object(
+            fleet_state_mod,
+            "_pr_status_cached",
+            new_callable=AsyncMock,
+            return_value={"state": "MERGED"},
+        ),
+        patch.object(repository_mod, "_own_commits_count", new_callable=AsyncMock, return_value=1),
+        patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value="aaa1111"),
+        patch.object(
+            fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"
+        ),
+        patch.object(runtime_mod, "_load_cfg", return_value=object()),
+        patch.object(runtime_mod, "_POD_AVAILABLE", True),
+        patch.object(runtime_mod.rt, "IS_MACOS", False),
+        patch.object(runtime_mod.rt, "IS_WINDOWS", False),
+        patch.object(runtime_mod.rt, "IS_LINUX", True),
+        patch.object(runtime_mod.rt.shutil, "which", return_value="/usr/bin/systemctl"),
+        patch.object(
+            runtime_mod.rt.platform_compat,
+            "trusted_system_bin",
+            return_value="/usr/bin/systemctl",
+        ),
+        patch.object(
+            runtime_mod.rt,
+            "_run",
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr=detail),
+        ),
+        patch.object(
+            repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"
+        ),
+    ):
         result = await mod._worktree_remove("feat-x", force=False)
     assert result["ok"] is False
-    assert "cannot verify pod state" in result["error"]
+    assert "cannot verify pod backend" in result["error"]
+    assert detail in result["error"]
 
 
 @pytest.mark.asyncio
@@ -2050,6 +2089,58 @@ def test_build_env_excludes_credentials(monkeypatch):
     assert mod._build_env(with_credentials=True)["PATH"] == mod._TRUSTED_PATH
 
 
+def test_build_env_passes_npm_registry_but_drops_credential_shaped_keys(monkeypatch):
+    """NPM_CONFIG_REGISTRY is a registry URL, not a credential -- it must reach
+    every Dev Fleet npm step (preflight AND the real ``npm ci``/``npm run
+    build``) so both resolve against the same registry. A credential-shaped
+    variable next to it must still be dropped by the same allowlist.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://registry.npmjs.org")
+    monkeypatch.setenv("NPM_CONFIG__AUTHTOKEN", "npm-secret-token")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-secret")
+
+    for env in (mod._build_env(), mod._build_env(with_credentials=True)):
+        assert env["NPM_CONFIG_REGISTRY"] == "https://registry.npmjs.org"
+        assert "NPM_CONFIG__AUTHTOKEN" not in env
+        assert "SLACK_BOT_TOKEN" not in env
+
+
+def test_build_env_rejects_npm_registry_values_that_smuggle_credentials(monkeypatch):
+    """``NPM_CONFIG_REGISTRY`` is forwarded only when it is a bare
+    ``http``/``https`` registry URL with no userinfo, query, fragment, or
+    embedded whitespace -- URL syntax otherwise permits a credential-bearing
+    value (``https://user:token@host/``) or a smuggled second value to reach
+    a worktree-controlled build script through this allowlist entry. A value
+    that fails validation is dropped outright (fail closed), never rewritten,
+    and an unrelated credential-shaped variable next to it is still dropped
+    too.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    dropped = (
+        "https://u:tok@registry.example/",  # userinfo
+        "https://registry.example/?x=1",  # query
+        "https://registry.example/#f",  # fragment
+        "file:///etc/passwd",  # non-http(s) scheme
+        "",  # empty
+        "https://registry.npmjs.org ",  # embedded whitespace
+    )
+    for value in dropped:
+        monkeypatch.setenv("NPM_CONFIG_REGISTRY", value)
+        monkeypatch.setenv("NPM_CONFIG__AUTHTOKEN", "npm-secret-token")
+        monkeypatch.setenv("NPM_TOKEN", "npm-secret-token-2")
+        env = mod._build_env()
+        assert "NPM_CONFIG_REGISTRY" not in env, value
+        assert "NPM_CONFIG__AUTHTOKEN" not in env
+        assert "NPM_TOKEN" not in env
+
+    # A clean value right after a dropped one still passes through.
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://registry.npmjs.org")
+    assert mod._build_env()["NPM_CONFIG_REGISTRY"] == "https://registry.npmjs.org"
+
+
 def test_is_safe_env_key_matches_documented_spelling_on_windows():
     """A mixed-case allowlist entry must still match what ``os.environ`` yields.
 
@@ -3438,6 +3529,9 @@ def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatc
     base_env["GIT_CONFIG_SYSTEM"] = os.devnull
 
     def run(*args, env=None):
+        # ``cwd=repo`` alongside ``-C repo``: the location is pinned twice on
+        # purpose. ``-C`` is what the module under test relies on; ``cwd`` keeps
+        # this fixture's real git from ever running in the worker's checkout.
         proc = subprocess.run(
             [git, "-C", str(repo), *args],
             capture_output=True,
@@ -3445,6 +3539,7 @@ def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatc
             encoding="utf-8",
             timeout=60,
             env={**base_env, **(env or {})},
+            cwd=repo,
         )
         assert proc.returncode == 0, proc.stderr
         return proc.stdout.strip()
@@ -5853,16 +5948,17 @@ async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
 async def test_fetch_pr_head_oid_refuses_non_merged(monkeypatch):
     """Branch-name reuse: a fresh OPEN PR on a recycled name must NOT yield a
     head OID at the destructive boundary, even if a stale MERGED verdict is
-    cached elsewhere."""
+    cached elsewhere. The query is ``gh pr list`` (a JSON array) so it survives
+    the head branch being deleted on merge."""
     async def fake_run(cmd, **kw):
-        return 0, json.dumps({"headRefOid": "a" * 40, "state": "OPEN"}), ""
+        return 0, json.dumps([{"headRefOid": "a" * 40, "state": "OPEN"}]), ""
 
     monkeypatch.setattr(fleet_state_mod, "_get_owner_repo", AsyncMock(return_value="o/r"))
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run)
     assert await mod._fetch_pr_head_oid("feature-x") is None
 
     async def fake_run_merged(cmd, **kw):
-        return 0, json.dumps({"headRefOid": "b" * 40, "state": "MERGED"}), ""
+        return 0, json.dumps([{"headRefOid": "b" * 40, "state": "MERGED"}]), ""
 
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run_merged)
     assert await mod._fetch_pr_head_oid("feature-x") == "b" * 40
@@ -5966,13 +6062,13 @@ async def test_upstream_remote_rejects_option_injection(monkeypatch):
     monkeypatch.setattr(repository_mod, "_UPSTREAM_REMOTE", None)
 
 
-def test_find_cli_is_module_invocation_only():
+def test_find_cli_is_module_invocation_only(nonbundled_python_without_user_site):
     """No filesystem resolution: a planted `kirocrew` shim must never become
     the pod CLI. Always our interpreter + the RUNNABLE ``kiro_crew`` package
     entry (its __main__), never ``kiro_crew.cli`` (no __main__ guard -> #220)."""
     import sys as _sys
 
-    assert mod._find_cli() == [_sys.executable, "-m", "kiro_crew"]
+    assert mod._find_cli() == [_sys.executable, "-s", "-m", "kiro_crew"]
 
     import subprocess as _sp
 
@@ -6896,12 +6992,12 @@ async def test_main_checkout_build_state_is_probed(tmp_path):
 # =============================================================================
 # Regression: _find_cli must target a RUNNABLE entry point
 # =============================================================================
-def test_find_cli_targets_kiro_crew_package():
+def test_find_cli_targets_kiro_crew_package(nonbundled_python_without_user_site):
     """_find_cli must invoke the ``kiro_crew`` package (its __main__), not
     ``kiro_crew.cli`` — the latter has no __main__ guard and no-ops silently."""
     import sys
 
-    assert mod._find_cli() == [sys.executable, "-m", "kiro_crew"]
+    assert mod._find_cli() == [sys.executable, "-s", "-m", "kiro_crew"]
 
 
 def test_kiro_crew_module_entry_actually_runs():
@@ -6928,7 +7024,9 @@ def test_kiro_crew_module_entry_actually_runs():
 @pytest.mark.asyncio
 async def test_pod_down_fails_closed_when_still_active():
     """A CLI exit 0 must NOT be reported as success if the unit is still up."""
-    with patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+    with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/worktrees/kirocrew-wt-x"}, None)), \
+         patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
          patch.object(runtime_mod, "_POD_AVAILABLE", True), \
@@ -6941,7 +7039,9 @@ async def test_pod_down_fails_closed_when_still_active():
 @pytest.mark.asyncio
 async def test_pod_down_ok_when_unit_gone():
     """rc 0 AND the unit not active -> genuine success."""
-    with patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+    with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/worktrees/kirocrew-wt-x"}, None)), \
+         patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
          patch.object(runtime_mod, "_POD_AVAILABLE", True), \
@@ -6954,7 +7054,9 @@ async def test_pod_down_ok_when_unit_gone():
 @pytest.mark.asyncio
 async def test_pod_down_fails_closed_when_verify_raises():
     """If the post-stop active-state check errors, fail closed (never claim ok)."""
-    with patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+    with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/worktrees/kirocrew-wt-x"}, None)), \
+         patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
          patch.object(runtime_mod, "_POD_AVAILABLE", True), \
@@ -6967,7 +7069,9 @@ async def test_pod_down_fails_closed_when_verify_raises():
 @pytest.mark.asyncio
 async def test_pod_down_nonzero_rc_is_failure():
     """A non-zero CLI exit is surfaced as failure verbatim."""
-    with patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
+    with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/worktrees/kirocrew-wt-x"}, None)), \
+         patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(1, "", "stop failed")):
         result = await mod._pod_down("kirocrew-wt-x")
     assert result["ok"] is False

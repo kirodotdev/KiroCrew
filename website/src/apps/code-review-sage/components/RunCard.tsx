@@ -19,7 +19,7 @@ import { i18nT } from '../../../i18n/t'
 function cardClass(selected: boolean): string {
   return (
     'w-full text-left rounded-lg border p-2.5 cursor-pointer bg-card hover:bg-bg-hover '
-    + 'transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 '
+    + 'transition-colors focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 '
     + (selected ? 'border-accent' : 'border-border')
   )
 }

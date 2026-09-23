@@ -11,6 +11,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { PublishHub } from '../components/PublishHub'
 import PublicPublishAckModal from '../components/PublicPublishAckModal'
 import ArtifactDeployPage from '../pages/ArtifactDeployPage'
+import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import type { Artifact } from '../types'
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -68,6 +69,10 @@ async function openCommitStep(secondResponse: unknown, status = 200) {
   fireEvent.click(startPublishBtn())
   return fetchSpy
 }
+
+// The public-web deploy destination sits behind the Artifact Deploy Feature
+// Preview, so tests that publish through it opt in.
+beforeEach(() => { localStorage.setItem(PREVIEW_ARTIFACT_DEPLOY, '1') })
 
 describe('PublishHub public-exposure acknowledgment (#3599)', () => {
   beforeEach(() => {

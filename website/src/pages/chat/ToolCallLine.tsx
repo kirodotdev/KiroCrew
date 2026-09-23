@@ -4,10 +4,12 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
+import ToolRiskBadge from './ToolRiskBadge'
+import { readToolRiskRecord, toolRiskFieldOf } from './toolRiskRecord'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
-import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
+import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown, AppWindow } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import ErrorNotice from '../../components/ErrorNotice'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
@@ -170,6 +172,11 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const dispatch = useAppDispatch()
   const label = message.content.replace(/^🔧\s*/, '')
   const toolCallId = message.meta?.tool_call_id as string | undefined
+  // Jev's risk annotation for this call, validated at the read. The raw field is
+  // returned off the message unchanged (`toolRiskFieldOf`), so the memo's
+  // dependency is stable across renders and this row pays one validation per
+  // record rather than one per repaint. `null` on every ordinary row.
+  const riskRecord = useMemo(() => readToolRiskRecord(toolRiskFieldOf(message)), [message])
   const simplified = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
 
@@ -182,11 +189,54 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     return toolCallId && sk ? s.chat.mcpApps?.[mcpAppKey(sk, toolCallId)] : undefined
   })
 
+  // An auto-approved call writes TWO tool rows under one `tool_call_id` (the
+  // pre-approval pill and the post-approval one), and the durable app flag is
+  // stored on both, so a bare flag check would draw the notice twice and read as
+  // two lost apps rather than one. The BACKEND marks one of them: it stamps
+  // `mcp_app_lead` on the first row it flags for that call, and only that row
+  // draws.
+  //
+  // Read rather than derived, because deriving it here cannot work. Two client
+  // rules were tried and each failed on a transcript-preserving reset, which
+  // leaves a historical row holding an id the backend later reissues: keying on
+  // the first row for the id picked the stale row, which the backend does not
+  // flag, so nothing drew at all; keying on the first FLAGGED row picked the
+  // stale row whenever IT had had an app of its own, so the newer app's notice
+  // was suppressed instead. The transcript simply does not say which rows belong
+  // to one call -- only the turn that wrote them does, and the marker is that
+  // turn speaking. It also removes the scan: no row index, no ordering compare.
+  //
+  // Every row carrying `mcp_app` is written by the code that also writes this
+  // marker, since both arrive together, so there is no earlier flagged row to
+  // fall back for. A flagged row without the marker is therefore a non-lead
+  // sibling and is meant to stay bare.
+  const isFirstRowForCall = message.meta?.mcp_app_lead === true
+
+  // Did this call produce an MCP App? Persisted by the backend on the tool row
+  // (`_meta["mcp_app"]`, chat_runner.py) when the app's single-use render was
+  // claimed, because the payload is the only carrier of the app and it is
+  // live-only: owner-scoped WS, a callback capability, and a spool record that
+  // expires. A reload, a bounded-cache eviction, a guest WebSocket and an
+  // unattended run with no viewer all leave `mcpApp` undefined with nothing to
+  // rebuild from, and this flag is what tells those apart from a row that never
+  // had an app. Rows written before the field existed read undefined and render
+  // nothing.
+  const hadMcpApp = message.meta?.mcp_app === true
+
+  // The server name for the ABSENCE NOTICE, read from the row's own persisted meta
+  // rather than from `mcpServer` below. The two disagree whenever a `tool_call_id`
+  // is shared: `mcpServer` prefers the matching tool-log entry, and a
+  // transcript-preserving reset can hand a NEWER call an id an older row also
+  // carries, so that lookup resolves to the newer call and names ITS server in a
+  // notice about this row's app. A row's meta is written with the row and no later
+  // call can reassign it, which is the property the notice needs.
+  const noticeServer = (message.meta?.mcp_server as string | undefined) || ''
+
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon. All transcript scans go
   // through the shared per-slot index (see toolRowIndex.ts): built once per
   // (messages, toolLog) identity change, O(1) per row per dispatch.
-  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, purpose, input, output, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, fromLog } = useAppSelector(s => {
+  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, fromLog } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -234,6 +284,11 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         purpose: e.purpose || '',
         input: e.input || '',
         output: e.output || '',
+        // Clamp seams for the two payloads (null when nothing was cut). The
+        // panel renders the localized marker there at view time; the store
+        // holds only the offset, so a language switch re-renders it.
+        inputCut: e.input_cut ?? null,
+        outputCut: e.output_cut ?? null,
         auto: !!e.auto,
         ts: e.ts || 0,
         executionStartedAt: e.execution_started_at || 0,
@@ -270,7 +325,9 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       isAutoDenied: !rejected && autoDenied,
       autoDenyReason,
       purpose: (message.meta?.purpose as string) || '',
-      input: metaInput, output: metaOutput, auto: false,
+      // Persisted meta is served whole by the server (_tool_meta caps at 1 MB,
+      // never clamps), so a historical row has no seam to mark.
+      input: metaInput, output: metaOutput, inputCut: null, outputCut: null, auto: false,
       // ChatMessage.ts is a string (ISO timestamp) when restored from history;
       // parse it for the meta-row time renderer. Falls to 0 if unparseable —
       // fmtTime hides the row when ts is 0.
@@ -583,8 +640,8 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // size caps in presentToolDiff.
   const denied = isRejected || isAutoDenied
   const diffView = useMemo(
-    () => (denied ? null : presentToolDiff(toolKind, input)),
-    [denied, toolKind, input],
+    () => (denied ? null : presentToolDiff(toolKind, input, inputCut)),
+    [denied, toolKind, input, inputCut],
   )
   // Per-card density control, FOLDED by default: a turn that edits several
   // files stacks a full patch per file, so the answer the reader came for
@@ -596,7 +653,6 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const [cardFolded, setCardFolded] = useState(
     () => !(toolCallId && openedDiffCards.has(toolCallId)),
   )
-  const diffTogglePendingFocus = useRef(false)
   const toggleCardFolded = useCallback(() => {
     setCardFolded(prev => {
       const next = !prev
@@ -606,32 +662,24 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       }
       return next
     })
-    // The two halves of the toggle unmount each other, so the activated
-    // control disappears and focus would fall to <body>. Hand focus to the
-    // counterpart once it mounts — both carry data-diff-toggle.
-    diffTogglePendingFocus.current = true
   }, [toolCallId])
-  useEffect(() => {
-    if (!diffTogglePendingFocus.current) return
-    diffTogglePendingFocus.current = false
-    const el = containerRef.current?.querySelector<HTMLElement>('[data-diff-toggle]')
-    el?.focus()
-  }, [cardFolded])
   const cardStats = useMemo(
     () => (diffView?.mode === 'card' ? countDiffStats(diffView.code) : null),
     [diffView],
   )
   const showCard = diffView?.mode === 'card' && !cardFolded
-  // The chip is the one-line handle for COMPACT states only: the folded
-  // card's re-open handle, and the summary / pathname rows. An OPEN card
-  // shows no chip — DiffBlock's own header row already carries the file
-  // icon, basename and ±counts, and its fold control lives there (onFold),
-  // so the facts never render twice.
+  // The chip is the one-line handle for every diff presentation and it STAYS
+  // MOUNTED while the card is open: the same chip that opened the patch is
+  // the one that closes it, so the reader never has to find a second control
+  // (the card's own header gets no fold handle — one toggle, one place — and
+  // the chip's `aria-expanded` names the state). An earlier design swapped the
+  // chip for a chevron in the card header; that chevron sat under Pierre's
+  // header in paint order and a card, once opened, could not be closed. The
+  // filename and ±counts do render twice while open — the price of a control
+  // that does not move out from under the pointer.
   const chipView: { path: string | null; added: number; removed: number; truncated: boolean; opensCard: boolean } | null =
     diffView?.mode === 'card'
-      ? (cardFolded
-        ? { path: extractDiffHeaderPath(diffView.code)?.path ?? filePath, added: cardStats?.added ?? 0, removed: cardStats?.removed ?? 0, truncated: false, opensCard: true }
-        : null)
+      ? { path: extractDiffHeaderPath(diffView.code)?.path ?? filePath, added: cardStats?.added ?? 0, removed: cardStats?.removed ?? 0, truncated: false, opensCard: true }
       : diffView?.mode === 'summary'
         ? { ...diffView, opensCard: false }
         : null
@@ -935,7 +983,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           writes. The file-path chip below keeps mono, where it is earned. */}
       <button
         ref={pillButtonRef}
-        className={`inline-flex ${ROW_PILL_BUTTON_CLASS} focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
+        className={`inline-flex ${ROW_PILL_BUTTON_CLASS} focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
         aria-expanded={effectivelyExpanded}
         title={pillLabelTitle}
         aria-label={hasPendingPerm
@@ -986,7 +1034,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           the wrapper's 4px before. */}
       {showFileOpen && filePath && (
         <button
-          className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden"
           style={{ marginTop: '1px' }}
           onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
           title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
@@ -999,7 +1047,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       </div>
 
       {/* Diff chip: the one-line handle for every diff presentation. For a
-          promoted card it folds/unfolds the card below; for a summary /
+          promoted card it folds/unfolds the card below and stays put while the
+          card is open (open look: filled background, full-strength text, and
+          the trailing chevron turned up — colour alone did not read as a
+          state); for a summary /
           pathname row it expands the details panel. Full path in the native
           tooltip — the visible basename alone cannot tell two same-named
           files apart. Truncated transports prefix counts with ≥ (lower
@@ -1010,7 +1061,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       {chipView && (
         <button
           type="button"
-          className="mt-1 ml-3 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className={`mt-1 ml-3 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${chipView.opensCard && showCard ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
           title={chipView.path ?? undefined}
           aria-expanded={chipView.opensCard ? showCard : effectivelyExpanded}
           data-diff-toggle={chipView.opensCard ? true : undefined}
@@ -1031,17 +1082,24 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           {chipView.truncated && (
             <span className="text-warn">· {i18nT('pages.chat.toolCallLine.diff_truncated')}</span>
           )}
+          {/* Card chips only: the disclosure cue. Down = a card can open below;
+              up = it is open and this same chip closes it. The summary chip
+              expands the details panel, whose own pill already carries that
+              cue. */}
+          {chipView.opensCard && (
+            <ChevronDown size={12} aria-hidden className={`shrink-0 transition-transform ${showCard ? 'rotate-180' : ''}`} />
+          )}
         </button>
       )}
-      {/* Diff card: the full inline diff, foldable via the chip above. A
-          sibling of the pill (not inside the expanded panel) — the primary
-          display of the change; the details panel keeps the raw copy. The
-          wrapper is a pointer-only event fence (role="presentation"): clicks
-          inside the card must never toggle a surrounding TurnBlock /
-          collapsed-group wrapper. */}
+      {/* Diff card: the full inline diff, folded by the chip above — no
+          `onFold`, the chip is the card's only toggle. A sibling of the pill
+          (not inside the expanded panel) — the primary display of the change;
+          the details panel keeps the raw copy. The wrapper is a pointer-only
+          event fence (role="presentation"): clicks inside the card must never
+          toggle a surrounding TurnBlock / collapsed-group wrapper. */}
       {showCard && diffView?.mode === 'card' && (
         <div className="mt-1.5" role="presentation" onClick={e => e.stopPropagation()}>
-          <DiffBlock code={diffView.code} complete onFileOpen={onFileOpen} onFold={toggleCardFolded} />
+          <DiffBlock code={diffView.code} complete onFileOpen={onFileOpen} />
         </div>
       )}
 
@@ -1094,6 +1152,14 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         </div>
       </StatusRow>
 
+      {/* Jev's risk annotation for this call, when the seam answered for it. A
+          SIBLING of the pill, drawn above the details panel: it describes the
+          call rather than its output, and it must be readable without expanding
+          anything. Absent on every ordinary row — `readToolRiskRecord` returns
+          null for a missing, unreadable or `safe` record — so a transcript
+          without the seam is byte-identical. */}
+      {riskRecord && <ToolRiskBadge record={riskRecord} />}
+
       <AnimatePresence initial={false}>
         {effectivelyExpanded && (
           <motion.div
@@ -1104,7 +1170,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
-            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={derived.rawTitle || label} input={input} output={isAutoDenied ? denyOutput : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
+            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={derived.rawTitle || label} input={input} output={isAutoDenied ? denyOutput : output} inputCut={inputCut} outputCut={isAutoDenied ? null : outputCut} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
           </motion.div>
         )}
       </AnimatePresence>
@@ -1118,18 +1184,44 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           diagram used to be reads as a broken render. Clicking it re-focuses —
           or re-creates — the tab, which is the route back after the user closes
           it, since auto-open does not re-open a tab they dismissed. */}
-      {mcpApp && (appInPanel
+      {mcpApp ? (appInPanel
         ? (
           <button
             type="button"
             onClick={() => { if (toolCallId) onOpenApp?.(toolCallId) }}
-            className="mt-1.5 flex items-center gap-2 px-1.5 py-0.5 -ml-1.5 rounded text-[12px] leading-5 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            className="mt-1.5 flex items-center gap-2 px-1.5 py-0.5 -ml-1.5 rounded text-[12px] leading-5 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
           >
             <PanelRight size={13} aria-hidden />
             <span>{i18nT('pages.chat.toolCallLine.opened_in_the_side_panel')}</span>
           </button>
         )
-        : <McpAppFrame payload={mcpApp} />)}
+        : <McpAppFrame payload={mcpApp} />)
+        /* The app this call produced is not on screen. Say so where the frame
+           would have been: the tool's own text survives a reload and can
+           describe a diagram the reader cannot see, and an unmarked gap gives
+           them no way to tell a degraded view from a turn that was only ever
+           text. The copy names the outcome and the way back rather than the
+           cause, because the causes differ (reload, eviction, a guest socket,
+           an unattended run) while the remedy is one: ask the agent again.
+           Plain content rather than an ErrorNotice -- nothing failed, and this
+           is the designed lifecycle. */
+        : hadMcpApp && isFirstRowForCall && (
+          <div className="mt-1.5 flex items-center gap-2 px-1.5 py-0.5 -ml-1.5 text-[12px] leading-5 text-muted">
+            <AppWindow size={13} aria-hidden />
+            {/* Name the app when the ROW knows which one it was -- `noticeServer`,
+                the row's own persisted `meta.mcp_server` (`_tool_identity_fields`),
+                never the log-preferring `mcpServer`, which a reused `tool_call_id`
+                can point at a newer call's server. It survives a reload for the
+                same reason, which matters because a reload is the main way this
+                notice is reached. The backend omits the field rather than sending
+                it empty when it has no identity, and the generic string covers
+                exactly that case. Two notices in one transcript then name two
+                different apps instead of reading as one app reported twice. */}
+            <span>{noticeServer
+              ? i18nT('pages.chat.toolCallLine.app_not_viewable_here_named', { server: noticeServer })
+              : i18nT('pages.chat.toolCallLine.app_not_viewable_here')}</span>
+          </div>
+        )}
     </motion.div>
   )
 })

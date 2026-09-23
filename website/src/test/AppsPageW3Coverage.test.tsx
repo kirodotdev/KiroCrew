@@ -487,7 +487,7 @@ describe('AppsPage — Library actions', () => {
     // Discover's Updates sub-tab, whose page owns the error notice surface.
     renderUpdates()
     fireEvent.click(await screen.findByRole('button', { name: 'Update All' }))
-    expect(await screen.findByText('Failed to update: secretary')).toBeInTheDocument()
+    expect(await screen.findByText('Failed to update: Secretary')).toBeInTheDocument()
   })
 
   it('reports success after Update All and shows no error', async () => {

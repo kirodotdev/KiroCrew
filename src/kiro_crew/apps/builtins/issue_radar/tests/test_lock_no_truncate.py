@@ -82,15 +82,6 @@ class TestLockOpenDoesNotTruncate(unittest.TestCase):
 
     # ── crew_store.py ─────────────────────────────────────────────────────
 
-    def test_skip_lock_does_not_truncate(self):
-        lock_path = crew_store._skip_lock_path(OWNER, REPO, 7, self.tmp)
-
-        def run():
-            with crew_store._skip_lock(OWNER, REPO, 7, self.tmp):
-                pass
-
-        self._assert_survives(lock_path, run)
-
     def test_write_settings_lock_does_not_truncate(self):
         lock_path = crew_store.crews_dir(OWNER, REPO, self.tmp) / "settings.lock"
 

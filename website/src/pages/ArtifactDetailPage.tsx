@@ -13,9 +13,9 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { fetchSlots, addSlotOptimistic, removeSlotOptimistic } from '../store/dashboardSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
-import { sanitizeCssValue } from '../lib/cssSanitize'
-import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
+import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
+import { sendTurn } from '../chat-core/transport/sendTurn'
 import { PageHeader, Card, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { useConfirm } from '../components/ConfirmDialog'
@@ -27,11 +27,14 @@ import { FolderPickerItems } from '../components/FolderMoveSubmenu'
 import { folderBreadcrumb } from '../utils/artifactFolderTree'
 import { CommentPopover } from '../components/CommentOverlay'
 import { CommentsSidebar } from '../components/CommentsSidebar'
+import { SubmitBar } from '../components/ArtifactPanel'
+import { formatArtifactCommentsMessage } from '../components/CommentOverlay'
 import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage, artifactAssetUrl, isEditableKind } from '../components/ArtifactBody'
+import { filterCommentsForForward } from '../lib/commentFilter'
 import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { useArtifactLiveReload } from '../hooks/useArtifactLiveReload'
 import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
@@ -57,6 +60,13 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
  * Module-level so `openCompanionChat` can apply the identical rule to a freshly
  * fetched slots payload, not just the Redux snapshot.
  */
+/** Sent-to-chat comment ids for one artifact. A corrupt or absent entry reads
+ *  as "nothing sent yet", which only ever over-counts the pending batch. */
+function readSentIds(key: string): Set<string> {
+  try { return new Set<string>(JSON.parse(localStorage.getItem(key) || '[]')) }
+  catch { return new Set<string>() }
+}
+
 function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): ChatSlot | null {
   const matches = (slots ?? []).filter((x) => x.artifact === slug)
   if (matches.length <= 1) return matches[0] ?? null
@@ -64,16 +74,6 @@ function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): ChatSlot | 
     (b.last_activity_ts || '').localeCompare(a.last_activity_ts || ''))[0]
 }
 
-function readThemeVars(): Record<string, string> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
-  const computed = getComputedStyle(document.documentElement)
-  const out: Record<string, string> = {}
-  for (const name of THEME_VAR_NAMES) {
-    const v = sanitizeCssValue(computed.getPropertyValue(name))
-    if (v) out[name] = v
-  }
-  return out
-}
 
 export { isEditableKind }
 
@@ -380,7 +380,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // on every render. React Query keeps `data` referentially stable between
   // refetches that resolve deep-equal, so this changes only on real data.
   const durableComments = useMemo(() => commentsQuery.data?.comments ?? [], [commentsQuery.data?.comments])
-  const commentCount = durableComments.length
+  // Two counts, deliberately distinct.
+  //
+  // `displayCommentCount` drives what the human sees — the toggle badge, the
+  // sidebar auto-reveal and the "add one" tip — so it counts every durable
+  // comment: a resolved thread is still there to be revealed and read.
+  const displayCommentCount = durableComments.length
+  // `commentCount` is what the AGENT is told about, so it omits resolved
+  // threads: counting those re-asks the agent to act on its own completed work.
+  // It keeps the shorter name because the prompt copy below interpolates it.
+  const commentCount = useMemo(
+    () => filterCommentsForForward(durableComments).length,
+    [durableComments],
+  )
   const remoteSyncError = commentsQuery.data?.remote_sync_error ?? null
   // Right-hand panel state machine: the comments sidebar and the companion
   // chat panel share the same flex space, icon-toggled and mutually exclusive.
@@ -401,8 +413,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     setPanel(p => (p === 'comments' ? 'none' : 'comments'))
   }, [])
   // Auto-reveal the comments panel when the artifact has comments; collapse it
-  // when it has none. Reacts to commentCount so adding the first comment reveals
-  // the panel and removing the last collapses it — unless the user has taken
+  // when it has none. Reacts to displayCommentCount so adding the first comment
+  // reveals the panel and removing the last collapses it — unless the user has taken
   // manual control via a toggle, and NEVER by auto-switching away from an open
   // chat panel (the chat panel only opens on explicit action, so yanking it for
   // a comment default would discard user intent). React Router reuses this
@@ -425,9 +437,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // find first. Auto-reveal was written for the side-by-side layout, where
       // the body stayed visible beside it. A manual open still survives, via the
       // user-toggled override this effect returns on above.
-      return commentCount > 0 && !isMobile ? 'comments' : 'none'
+      return displayCommentCount > 0 && !isMobile ? 'comments' : 'none'
     })
-  }, [slug, commentCount, isMobile])
+  }, [slug, displayCommentCount, isMobile])
   // Anchors are trimmed for matching; clipboard text stays exactly as selected.
   const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; copyText?: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
   // Bidirectional anchor↔comment linking: flash a sidebar row when
@@ -873,10 +885,22 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // save shortcut must not fire — a mid-dialog Cmd+S would persist the very
       // draft the user is about to confirm discarding.
       if (confirmOpen) return
-      if ((e.metaKey || e.ctrlKey) && e.key === 's' && dirty) {
+      // Own the save chord whenever editing, not only when dirty, so it never
+      // falls through to AppKit's default (selecting the word under the cursor).
+      // Match case-insensitively: with Shift held e.key is 'S', so an exact
+      // 's' match makes the Cmd+Shift+S snapshot branch unreachable. Read the
+      // Shift state from e.shiftKey (Cmd+Shift+S → snapshot, Cmd+S → silent
+      // save) and only issue the write when dirty so a clean buffer does not
+      // trigger a redundant save.
+      //
+      // Do NOT gate on !e.defaultPrevented here. This editor mounts no onSave
+      // into Pierre, yet Pierre's capture handler still preventDefaults the
+      // chord and then no-ops (onSaveRef is undefined) — so an already-prevented
+      // event carries no save. Standing down on it would drop both the save and
+      // the snapshot. This document handler is the only one that actually saves.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        // Cmd+Shift+S → snapshot (creates a new version), Cmd+S → silent save.
-        handleSaveRef.current(e.shiftKey)
+        if (dirty) handleSaveRef.current(e.shiftKey)
       }
       if (e.key === 'Escape') cancelEditing()
     }
@@ -1051,9 +1075,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     // rationale as the auto-reveal guard in the panel effect above.
     // Narrow: keep the override SET. Clearing it hands control back to the
     // auto-reveal effect, which is gated off while narrow -- so the panel the
-    // user just posted into would be closed again the moment `commentCount`
-    // changes. Revealing it here is a user-initiated open, which is exactly what
-    // the override means.
+    // user just posted into would be closed again the moment
+    // `displayCommentCount` changes. Revealing it here is a user-initiated open,
+    // which is exactly what the override means.
     sidebarUserToggledRef.current = isMobile
     setPanel(p => (p === 'chat' ? p : 'comments'))
     setPopover(null)
@@ -1118,6 +1142,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   )
   const boundSlot = useMemo(() => pickBoundSlot(slots, slug), [slots, slug])
   const [chatCreating, setChatCreating] = useState(false)
+  // Gateway connection flag: the chat send path refuses silently while it is
+  // false, so the batch submit is disabled (and bails) there — same gating as
+  // the file viewer's "Submit All".
+  const connected = useAppSelector((s) => s.dashboard.connected)
   // Serializes the two session-lifecycle entry points. `chatCreating` cannot do
   // this job: it is React state (so a second handler in the same tick still sees
   // the old value) and it is only set INSIDE createBoundSession, which runs
@@ -1303,6 +1331,78 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       sessionOpBusyRef.current = false
     }
   }, [boundSlots, createBoundSession, dispatch])
+
+  // ── batch submit to the companion session ──
+  // Durable comments survive a submission, so without per-id tracking every
+  // press would re-send the whole history and the count would never reset. Sent
+  // ids are persisted per artifact, mirroring the `mc-cmt-read:` key, and the
+  // set is append-only: a corrupt or absent entry reads as "nothing sent yet",
+  // which only ever over-counts the pending batch.
+  const sentKey = `mc-cmt-sent:${slug}`
+  const [sentIds, setSentIds] = useState<Set<string>>(() => readSentIds(sentKey))
+  useEffect(() => { setSentIds(readSentIds(sentKey)) }, [sentKey])
+  // Pending = forwarding-eligible AND human-authored AND not yet submitted —
+  // the same three-filter composition as ArtifactPanel, because this is the
+  // standalone-page twin of that Submit and both reach the same agent. Without
+  // filterCommentsForForward here the page would show the filtered count beside
+  // a bar that still ships resolved threads. Agent comments are dropped here AND
+  // inside formatArtifactCommentsMessage (hardened esc()); `!sentIds.has` stops
+  // an already-submitted batch being re-sent.
+  const pendingComments = useMemo(
+    () => filterCommentsForForward(durableComments).filter(c => !c.is_agent && !sentIds.has(c.id)),
+    [durableComments, sentIds],
+  )
+  const [submittingComments, setSubmittingComments] = useState(false)
+  /** Send every pending comment to the artifact's companion session as ONE
+   *  message — the standalone-page twin of the chat side panel's Submit.
+   *
+   *  Offered ONLY while a session is bound (see the render below), so the bar
+   *  never promises a send it cannot make: with none bound it would have to
+   *  decide whether this artifact has one, and a wrong answer there opens a
+   *  second companion chat. Unbound, the footer's "Ask agent to address" is the
+   *  affordance, and it says what it does. The `boundSlot` test here is the
+   *  backstop for that, not a second flow. */
+  const submitCommentsToChat = useCallback(async (extraPrompt?: string) => {
+    if (!connected || !artifact || !boundSlot || pendingComments.length === 0) return
+    const batch = pendingComments
+    setSubmittingComments(true)
+    try {
+      const receipt = await sendTurn({
+        message: formatArtifactCommentsMessage(slug, artifact.name, batch, extraPrompt),
+        slot: boundSlot.key,
+      })
+      // Mark sent only on a receipt that PROVES the server took custody: a
+      // dispatch, a queue entry, or a 2xx whose body would not parse (accepted,
+      // only the answer was mangled). Everything else keeps the batch pending.
+      //
+      // That is stricter than the composer's rule on this transport, on purpose.
+      // ChatPage can afford to read a refusal or a late answer optimistically
+      // because its payload stays on screen — the optimistic row holds the text
+      // and says it is unconfirmed. Here the payload is a set of ids in
+      // `mc-cmt-sent:<slug>`, the set is append-only, and no UI clears it: a
+      // batch marked sent for a POST that never arrived is a review nobody can
+      // re-offer. So an abort deadline (`response-late`) and a rejected fetch
+      // (`transport-error`) both leave it pending, and the cost of being wrong
+      // is one duplicate turn the user chooses, not a submitted review that is
+      // silently gone.
+      if (receipt.status !== 'dispatched' && receipt.status !== 'queued' && receipt.status !== 'unknown') {
+        setCommentActionError(receipt.reason || i18nT('pages.artifactDetailPage.couldn_t_send_your_comments_are_still_pending'))
+        return
+      }
+      setSentIds(prev => {
+        const next = new Set(prev)
+        for (const c of batch) next.add(c.id)
+        safeSetItem(sentKey, JSON.stringify([...next]))
+        return next
+      })
+      // Show the session the batch landed in; the panels are mutually exclusive,
+      // so this is what replaces the chat's own sent-message echo.
+      sidebarUserToggledRef.current = true
+      setPanel('chat')
+    } finally {
+      setSubmittingComments(false)
+    }
+  }, [connected, artifact, pendingComments, boundSlot, slug, sentKey])
 
   /** Full-page escape hatch — routes through sendNav so a popout forwards the
    *  intent to a main window instead of remounting the dashboard in-frame. */
@@ -1665,7 +1765,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               })}
               autoFocus
               placeholder={i18nT('pages.artifactDetailPage.tag')}
-              className="text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-accent text-text outline-none focus-ring"
+              className="text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-accent text-text outline-hidden focus-ring"
               style={{ width: '90px' }}
               aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
             />
@@ -1832,8 +1932,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             >
               <span className="inline-flex items-center gap-1">
                 <MessageSquare size={13} />
-                {commentCount > 0 && (
-                  <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{commentCount}</span>
+                {displayCommentCount > 0 && (
+                  <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{displayCommentCount}</span>
                 )}
               </span>
             </button>
@@ -2107,6 +2207,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               onDelete={removeComment}
               onRefresh={invalidateComments}
               onAskAgent={commentCount > 0 ? () => { void openCompanionChat({ address: true }) } : undefined}
+              submitBar={pendingComments.length > 0 && boundSlot ? (
+                <SubmitBar
+                  count={pendingComments.length}
+                  submitting={submittingComments}
+                  onSubmit={p => { void submitCommentsToChat(p) }}
+                  connected={connected}
+                />
+              ) : undefined}
               onClose={toggleSidebar}
               onCommentClick={activateFromSidebar}
               onEditComment={editComment}
@@ -2133,7 +2241,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             ? i18nT('pages.artifactDetailPage.showing_live_v', { version: detailQuery.data?.version ?? '?' })
             : i18nT('pages.artifactDetailPage.showing_v_historical', { version: effectiveVersion })}
           {dirty && <span className="ml-2 text-warn">{i18nT('pages.artifactDetailPage.unsaved_changes')}</span>}
-          {commentable && commentCount === 0 && (
+          {commentable && displayCommentCount === 0 && (
             <span className="ml-2 text-muted/80">{i18nT('pages.artifactDetailPage.tip_select_text_to_anchor_a_comment_or_use_the')} <strong>{i18nT('pages.artifactDetailPage.comments')}</strong> {i18nT('pages.artifactDetailPage.panel_to_add_one')}</span>
           )}
           {!commentable && !editing && isCurrent && (

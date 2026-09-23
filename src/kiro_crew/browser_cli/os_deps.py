@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import shutil
 from functools import lru_cache
 
 from kiro_crew import platform_compat
@@ -39,22 +40,35 @@ FAMILY_UNKNOWN = "unknown"
 #: base only in ``ID_LIKE``.
 _DEBIAN_IDS = frozenset({"debian", "ubuntu"})
 
-#: ``ID``/``ID_LIKE`` tokens that mean dnf/yum. ``amzn`` reports
-#: ``ID_LIKE=fedora``, so the ``ID_LIKE`` scan covers Amazon Linux without
-#: naming it, but it is listed anyway: Amazon Linux 2 omits ``ID_LIKE``.
-_RPM_IDS = frozenset(
-    {
-        "rhel",
-        "fedora",
-        "centos",
-        "amzn",
-        "rocky",
-        "almalinux",
-        "ol",
-        "opensuse",
-        "sles",
-        "suse",
-    }
+#: The SUSE side of the rpm family. rpm-packaged, so they belong in
+#: :data:`_RPM_IDS`, but their manager is ``zypper`` and their Chromium
+#: dependency packages are named differently from the Fedora/RHEL set
+#: (``libgbm1`` for ``mesa-libgbm``) -- so no command this module could compose
+#: from :data:`_RPM_CHROMIUM_PACKAGES` works there, even when ``dnf`` or
+#: ``yum`` happens to be installed from SUSE's own repos. Lineage decides,
+#: not which binaries the host carries: see :func:`_rpm_package_manager`.
+_SUSE_IDS = frozenset({"opensuse", "sles", "suse"})
+
+#: ``ID``/``ID_LIKE`` tokens that mean rpm packaging. Family membership says how
+#: packages are NAMED, not which manager installs them: Fedora-lineage hosts
+#: carry ``dnf`` or ``yum``, while the SUSE tokens mean ``zypper`` -- so the
+#: manager is probed per host (see :func:`_rpm_package_manager`), never assumed
+#: from the family. ``amzn`` reports ``ID_LIKE=fedora``, so the ``ID_LIKE`` scan
+#: covers Amazon Linux without naming it, but it is listed anyway: Amazon Linux 2
+#: omits ``ID_LIKE``.
+_RPM_IDS = (
+    frozenset(
+        {
+            "rhel",
+            "fedora",
+            "centos",
+            "amzn",
+            "rocky",
+            "almalinux",
+            "ol",
+        }
+    )
+    | _SUSE_IDS
 )
 
 #: Chromium's shared-library dependencies as rpm package names.
@@ -109,11 +123,17 @@ _RPM_CHROMIUM_PACKAGES: tuple[str, ...] = (
 
 #: Remedy for the apt family. Deliberately not a package list: Playwright installs
 #: its own, correct, per-version set there, and a copy here would go stale against
-#: the CLI the user actually has.
-_APT_DEPS_COMMAND = "sudo npx playwright install-deps chromium"
+#: the CLI the user actually has. Privilege elevation is composed separately by
+#: :func:`_sudo_prefix` so minimal root containers do not need a ``sudo`` binary.
+_APT_DEPS_COMMAND = "npx playwright install-deps chromium"
 
-#: Remedy for the rpm family, completed with :data:`_RPM_CHROMIUM_PACKAGES`.
-_DNF_DEPS_COMMAND_PREFIX = "sudo dnf install -y "
+#: Remedy prefix for the rpm family, completed with :data:`_RPM_CHROMIUM_PACKAGES`.
+#: ``{manager}`` is filled with whichever supported manager this host actually
+#: has -- see :func:`_rpm_package_manager` -- because half the rpm family does
+#: not carry ``dnf``, and a hardcoded manager fails on its own first argument
+#: exactly the way the module docstring warns about. Privilege elevation is
+#: composed separately by :func:`_sudo_prefix`.
+_RPM_DEPS_COMMAND_PREFIX = "{manager} install -y "
 
 #: What a blocked operator is told. One sentence of cause, then the command, so the
 #: actionable part is last and survives being appended after a truncated stderr.
@@ -121,6 +141,17 @@ _MISSING_DEPS_HINT = (
     "The browser needs OS libraries that only root can install. "
     "Run this yourself, then retry the install:\n{command}"
 )
+
+
+def _sudo_prefix() -> str:
+    """Use ``sudo`` only when the host actually provides it.
+
+    A host without ``sudo`` is either already root, where no prefix is needed,
+    or unprivileged, where no command this module can compose can elevate it. In
+    the latter case a bare command's permission error is the truthful remedy;
+    failing first on a nonexistent ``sudo`` token is not.
+    """
+    return "sudo " if shutil.which("sudo") else ""
 
 
 def _os_release_ids() -> set[str]:
@@ -181,6 +212,35 @@ def with_deps_supported() -> bool:
     return linux_family() == FAMILY_DEBIAN
 
 
+def _rpm_package_manager() -> str | None:
+    """The supported rpm-family manager for this host, or ``None``.
+
+    Lineage first, then the probe. A SUSE host (:data:`_SUSE_IDS` in its
+    os-release tokens) is answered ``None`` outright: its packages are named
+    differently, so a command completed from this module's list would fail on
+    its package list instead of its first argument -- the same defect the probe
+    exists to remove, wearing a different hat -- and that stays true even when
+    ``dnf`` or ``yum`` is installed there from SUSE's own repos. The caller
+    falls back to the silence the :func:`manual_deps_command` docstring
+    prescribes.
+
+    Everyone else in the family is probed in a deterministic order: ``dnf``
+    (the current generation -- Fedora, RHEL/CentOS 8+, Amazon Linux 2023), then
+    ``yum`` (the older one -- Amazon Linux 2, 7-era RHEL/CentOS), then
+    ``microdnf`` (minimal RHEL/UBI images, which ship it exclusively). All
+    three take the same rpm package names and the same ``install -y`` syntax,
+    so :data:`_RPM_CHROMIUM_PACKAGES` completes any of them; only the manager
+    token differs. The probe is a ``PATH`` stat, not a spawn -- this module
+    still never runs a package manager.
+    """
+    if _os_release_ids() & _SUSE_IDS:
+        return None
+    for manager in ("dnf", "yum", "microdnf"):
+        if shutil.which(manager):
+            return manager
+    return None
+
+
 def manual_deps_command() -> str | None:
     """The command the operator can run with root to install the OS libraries.
 
@@ -188,13 +248,23 @@ def manual_deps_command() -> str | None:
     is nothing to install. On an unknown Linux the return is also ``None``: a
     guessed package manager is worse than silence, because a command that fails
     on its own first argument reads as the product being broken rather than as
-    the host being unrecognized.
+    the host being unrecognized. The same rule governs the rpm family's SUSE
+    side (whose packages this module's list cannot name) and any rpm host with
+    no supported manager on ``PATH``: no correct command can be composed, so
+    none is -- see :func:`_rpm_package_manager`.
     """
     family = linux_family()
     if family == FAMILY_DEBIAN:
-        return _APT_DEPS_COMMAND
+        return _sudo_prefix() + _APT_DEPS_COMMAND
     if family == FAMILY_RPM:
-        return _DNF_DEPS_COMMAND_PREFIX + " ".join(_RPM_CHROMIUM_PACKAGES)
+        manager = _rpm_package_manager()
+        if manager is None:
+            return None
+        return (
+            _sudo_prefix()
+            + _RPM_DEPS_COMMAND_PREFIX.format(manager=manager)
+            + " ".join(_RPM_CHROMIUM_PACKAGES)
+        )
     return None
 
 

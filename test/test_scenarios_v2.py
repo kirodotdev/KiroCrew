@@ -36,6 +36,26 @@ def _passthrough_sandbox(monkeypatch):
         lambda argv, *a, **k: (list(argv), dict(_os.environ), None),
     )
 
+
+def _non_git_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Path:
+    """A directory ``init_workspace`` must treat as NOT a repository, on any host.
+
+    "Non-git dir" is not a property ``tmp_path`` has everywhere: a harness that
+    pins ``TMPDIR`` under the checkout gives it a real ``.git`` among its
+    ancestors, ``git rev-parse --is-inside-work-tree`` answers yes, and the run
+    then adds a REAL worktree and task branch to the enclosing repository -- the
+    very thing the non-git path exists to avoid. ``GIT_CEILING_DIRECTORIES`` is
+    git's own seam for that upward walk (discovery stops below the named
+    directory) and the spawn inherits ``os.environ``, so the state is constructed
+    here rather than assumed of the host. The directory is a CHILD of the ceiling
+    because git checks its starting directory before consulting the ceiling.
+    """
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    work = tmp_path / name
+    work.mkdir()
+    return work
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Scenario 1: Multi-step code task in existing git repo (worktree path)
 # User runs: "implement a REST API with 3 endpoints"
@@ -266,10 +286,9 @@ class TestScenarioStepFailureAndRevert:
 
 class TestScenarioGreenfieldProject:
     @pytest.mark.asyncio
-    async def test_git_init_in_empty_dir(self, tmp_path: Path) -> None:
+    async def test_git_init_in_empty_dir(self, tmp_path: Path, monkeypatch) -> None:
         """Non-git dir → git_enabled=False, no git init, runs in place."""
-        work = tmp_path / "newproject"
-        work.mkdir()
+        work = _non_git_dir(tmp_path, monkeypatch, "newproject")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "greenfield"
@@ -284,10 +303,9 @@ class TestScenarioGreenfieldProject:
         assert not (work / ".git").exists()  # no git init
 
     @pytest.mark.asyncio
-    async def test_git_init_with_existing_files(self, tmp_path: Path) -> None:
+    async def test_git_init_with_existing_files(self, tmp_path: Path, monkeypatch) -> None:
         """Non-git dir with existing files → git_enabled=False, no git init, files untouched."""
-        work = tmp_path / "existing"
-        work.mkdir()
+        work = _non_git_dir(tmp_path, monkeypatch, "existing")
         (work / "config.yaml").write_text("key: value")
         (work / "data.json").write_text("{}")
 
@@ -316,9 +334,8 @@ class TestScenarioGreenfieldProject:
 
 class TestScenarioNoFileChanges:
     @pytest.mark.asyncio
-    async def test_no_op_steps_dont_create_commits(self, tmp_path: Path) -> None:
-        work = tmp_path / "work"
-        work.mkdir()
+    async def test_no_op_steps_dont_create_commits(self, tmp_path: Path, monkeypatch) -> None:
+        work = _non_git_dir(tmp_path, monkeypatch, "work")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "noop"
@@ -581,10 +598,9 @@ class TestScenarioEdgeCases:
         await git_coord.finalize(run)
 
     @pytest.mark.asyncio
-    async def test_empty_dir_state_summary(self, tmp_path: Path) -> None:
+    async def test_empty_dir_state_summary(self, tmp_path: Path, monkeypatch) -> None:
         """State summary on fresh branch with no commits returns empty."""
-        work = tmp_path / "work"
-        work.mkdir()
+        work = _non_git_dir(tmp_path, monkeypatch, "work")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "empty_summary"
@@ -596,10 +612,9 @@ class TestScenarioEdgeCases:
         assert summary == ""
 
     @pytest.mark.asyncio
-    async def test_get_step_diff_no_commits(self, tmp_path: Path) -> None:
+    async def test_get_step_diff_no_commits(self, tmp_path: Path, monkeypatch) -> None:
         """get_step_diff with no commits → empty string (not error)."""
-        work = tmp_path / "work"
-        work.mkdir()
+        work = _non_git_dir(tmp_path, monkeypatch, "work")
 
         run = TaskRun(spec_path="/s.md", spec_content="s")
         run.task_id = "no_diff"

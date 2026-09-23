@@ -267,7 +267,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           <button
             type="button"
             onClick={toggleCollapsed}
-            className="shrink-0 flex items-center text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
+            className="shrink-0 flex items-center text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
             aria-expanded={!collapsed}
             aria-label={collapsed ? i18nT('pages.chat.subagentProgressBar.expand_agent_list') : i18nT('pages.chat.subagentProgressBar.collapse_agent_list')}
             title={collapsed ? i18nT('pages.chat.subagentProgressBar.expand_agent_list') : i18nT('pages.chat.subagentProgressBar.collapse_agent_list')}
@@ -325,8 +325,27 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           {visibleList.map((a, i) => {
             const isLast = i === visibleList.length - 1 && hiddenCount === 0
             const taskPreview = sanitizeLlmOutput((a.task || '').slice(0, 80)) + ((a.task || '').length > 80 ? '…' : '')
-            const agentLabel = taskPreview || sanitizeLlmOutput(a.agent || 'agent')
+            // Falls through to something that IDENTIFIES the agent. An entry
+            // recovered from an incremental frame has neither task nor agent, and
+            // stopping at the bare noun rendered every such row identically --
+            // two agents running in parallel were indistinguishable for the rest
+            // of their runs. The short id is the fallback rather than the last
+            // tool because the tool already has its own line directly beneath
+            // this one: a row titled "shell" above "-> shell" says one word twice
+            // and still does not say WHICH agent is running it. The kind is named
+            // alongside the id because a bare "#bb2222" reads as a hex colour
+            // code rather than as something that identifies an agent.
+            const agentLabel = taskPreview
+              || sanitizeLlmOutput(a.agent)
+              || (a.id ? `agent #${a.id.slice(-6)}` : 'agent')
             const elapsed = Math.round((Date.now() - a.startedAt) / 1000)
+            // An assumed start time cannot produce an elapsed figure: the agent
+            // may have been running long before the frame that minted its entry.
+            // The row then shows the SAME `--` placeholder the card does, rather
+            // than omitting the figure: an empty slot where a number belongs reads
+            // as "this agent has not started", while `--` reads as "the elapsed
+            // time is not known", which is what is true.
+            const elapsedShown = !a.startedAtAssumed
             // The backend sends `idle_secs` once, on the stalled transition, so a
             // bare render would freeze at that value beside the live `elapsed`
             // above — the same two-numbers-disagree confusion this row exists to
@@ -341,7 +360,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               <div key={a.id} data-testid="subagent-row" className="flex items-start gap-1">
                 <button
                   type="button"
-                  className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted hover:bg-accent/5 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                  className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted hover:bg-accent/5 transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
                   onClick={() => openAgent(a.id)}
                   aria-label={i18nT('pages.chat.subagentProgressBar.open_in_subagents_sidebar', { label: agentLabel })}
                 >
@@ -351,7 +370,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
                       <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
-                      <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsed}{i18nT('pages.chat.subagentProgressBar.s')}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: a.toolCount })}` : ''}</span>
+                      <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsedShown ? `${elapsed}${i18nT('pages.chat.subagentProgressBar.s')}` : '--'}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: a.toolCount })}` : ''}</span>
                     </span>
                     {isAwaitingSpawnApproval(a) ? (
                       /* Checked BEFORE retrying/stalled: a parked run never

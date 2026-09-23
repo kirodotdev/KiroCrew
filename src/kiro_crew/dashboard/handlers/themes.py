@@ -46,6 +46,7 @@ from kiro_crew.dashboard.theme_validate import (
     _THEME_EMOJI_MAX_LEN,
     _THEME_FILE_CAPS,
     _THEME_GITHUB_HOSTS,
+    _THEME_LEGACY_SLUG,
     _THEME_MANIFEST_NAME,
     _THEME_META_IGNORE,
     _THEME_OVERLAY_CSP,
@@ -57,20 +58,25 @@ from kiro_crew.dashboard.theme_validate import (
     _slugify_theme_name,
     _strip_to_allowed_vars,
     _theme_asset_descriptor,
+    _theme_identity_source,
+    _theme_slug_ascii_part,
     _themes_dir,
     _validate_theme_data,
     _validate_theme_dir,
 )
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import (
+    FileTooLargeError,
     is_unc_shape,
     safe_read_file_bytes_nolink,
     unc_probe_allowed,
 )
+from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform_compat import (
     IS_WINDOWS,
     first_linked_ancestor,
     is_link_or_junction,
+    pin_directory,
 )
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -431,6 +437,91 @@ def _read_theme_bytes_nolink(slug: str, target: Path) -> bytes | None:
     return safe_read_file_bytes_nolink(str(target), within_root=str(base))
 
 
+def _path_is_at_or_under(path: Path, ancestor: Path) -> bool:
+    """True when *path* IS *ancestor* or lies underneath it (resolved).
+
+    Lexical comparison is the fast path. On a miss, fall back to filesystem
+    identity: ``Path.resolve()`` preserves the caller's spelling while
+    ``PosixPath`` comparison is case-sensitive, so on a case-insensitive
+    filesystem (default macOS APFS) ``themes/LCARS/sub`` would lexically miss
+    ``themes/lcars`` even though they are the same directory on disk.
+    ``samestat`` compares inode identity, immune to spelling. A nonexistent
+    ancestor keeps the lexical answer (every ``stat`` raises → False).
+    """
+    resolved, root = path.resolve(), ancestor.resolve()
+    if resolved == root or root in resolved.parents:
+        return True
+    try:
+        root_stat = root.stat()
+    except OSError:
+        return False
+    for candidate in (resolved, *resolved.parents):
+        try:
+            if os.path.samestat(candidate.stat(), root_stat):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _installed_theme_identity(slug: str) -> str | None:
+    """Identity of the pack installed at ``themes/<slug>/``, or ``None``.
+
+    TOTAL by construction — every way the read can fail means "no identity",
+    never an exception and never a wrong match. A missing directory, a missing
+    or unreadable manifest, a manifest refused by the read chokepoint (symlink,
+    hardlink, escaping the theme dir), an OVERSIZED manifest, non-UTF-8 bytes,
+    malformed JSON, a non-object document and an identity-less one all return
+    ``None``, so the caller simply declines continuity and derives its own slug.
+
+    The oversize case is why ``FileTooLargeError`` is caught rather than left to
+    propagate: ``safe_read_file_bytes_nolink`` defaults to
+    ``allow_truncate=False`` and RAISES past a caller that has no business
+    turning a fringe on-disk state into an HTTP 500. Install itself caps the
+    manifest at ``_THEME_FILE_CAPS["manifest"]`` and rejects a bigger one with
+    400, so an oversized installed manifest cannot have come from install; a
+    truncated read would also be a DIFFERENT document, which must never be
+    allowed to satisfy an identity comparison.
+
+    Reads through ``safe_read_file_bytes_nolink`` (not ``_read_json_file``,
+    which is a plain ``read_bytes``) because this path decides whether an
+    existing directory may be OVERWRITTEN: the bytes that answer that question
+    must come from a regular file actually inside the theme dir, not from
+    whatever a swapped-in symlink points at.
+    """
+    base = _installed_theme_dir(slug)
+    try:
+        raw = safe_read_file_bytes_nolink(
+            str(base / _THEME_MANIFEST_NAME),
+            within_root=str(base),
+            max_bytes=_THEME_FILE_CAPS["manifest"],
+        )
+    except (FileTooLargeError, OSError, ValueError):
+        return None
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _theme_identity_source(data) or None
+
+
+def _tree_contains_directory(root: Path, expected_stat: os.stat_result) -> bool:
+    """Return whether *root* contains a directory matching *expected_stat*."""
+    for dirpath, dirnames, _filenames in os.walk(root):
+        base = Path(dirpath)
+        for candidate in (base, *(base / name for name in dirnames)):
+            try:
+                if os.path.samestat(candidate.stat(), expected_stat):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, int]:
     """Blocking theme-install worker — fetch → staged copy → validate the
     snapshot → promote. Runs OFF the
@@ -442,6 +533,8 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
     dict and ``error`` is ``None``; on failure ``error`` is the message and
     ``status`` the HTTP code. Manages its own temp dir lifecycle.
     """
+    source_fd = -1
+    source_stat: os.stat_result | None = None
     tmp_root = Path(tempfile.mkdtemp(prefix="theme-install-"))
     try:
         if stype == "local":
@@ -463,13 +556,39 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
         # first (bounded, symlink-safe), then validate THAT snapshot — which
         # nothing else can touch — and promote only the validated bytes.
         _themes_dir().mkdir(parents=True, exist_ok=True)
+        if stype == "local":
+            try:
+                source_fd = pin_directory(src)
+                source_stat = os.fstat(source_fd)
+            except OSError:
+                return None, "source directory is not accessible", 400
+            # The held handle blocks the rename the race needs on Windows; on
+            # POSIX its fstat identity stays authoritative regardless of
+            # pathname games.
+            #
+            # Walk the source by the kernel's spelling of the pinned directory,
+            # not the caller's. ``realpath`` follows links but keeps the case
+            # the caller typed, and on a case-insensitive filesystem (macOS
+            # APFS, Windows NTFS) that spelling can differ from the on-disk
+            # name. The staging read below checks each opened file's real path
+            # against the name it was opened by, so a source given as
+            # ``themes/LCARS/pack`` for a directory stored as ``themes/lcars/pack``
+            # is refused as unsafe before any later guard can name the real
+            # problem. The descriptor's own path is the one spelling every
+            # later comparison agrees on; when the kernel cannot report it,
+            # the caller's spelling stands and the read-side check still
+            # decides.
+            pinned_real = fd_real_path(source_fd)
+            if pinned_real is not None:
+                src = Path(pinned_real)
         # Staging lives INSIDE _themes_dir(), so a source that equals or
         # contains it would make os.walk recursively copy the staging dir's
         # own output (unbounded nesting → ENAMETOOLONG → residue). Reject by
-        # resolved-path containment before creating the snapshot.
-        themes_root = _themes_dir().resolve()
-        src_resolved = src.resolve()
-        if src_resolved == themes_root or src_resolved in themes_root.parents:
+        # containment before creating the snapshot -- judged on the spelling
+        # the walk below uses, after the pin, and by inode identity as well as
+        # by resolved path, so a case-variant spelling of the themes directory
+        # on a case-insensitive filesystem is caught too.
+        if _path_is_at_or_under(_themes_dir(), src):
             return None, "source directory must not contain the themes directory", 400
         token = uuid.uuid4().hex[:12]
         stage = _themes_dir() / f".install-staging-{token}"
@@ -492,29 +611,35 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
             return None, err or "invalid theme", 400
 
         slug = summary["slug"]
-        dest = _installed_theme_dir(slug)
-        # Kept for a clear message: staging first makes the copy out of dest
-        # safe anyway, but re-installing the installed dir onto itself is a user
-        # error worth naming. This is a source-path check, not a registry-state
-        # race, so it stays outside the lock.
-        if src.resolve() == dest.resolve():
-            shutil.rmtree(stage, ignore_errors=True)
-            return None, "source is already the installed theme directory", 400
-        old = dest.with_name(f".{slug}.old-{token}")
-        with _theme_install_lock(slug):
-            # Collision check INSIDE the lock, immediately before promotion: an
-            # editor-created custom record with the same slug is a hard collision
-            # (don't clobber the user's editor theme). Doing it here (not before
-            # the lock) closes the race where a concurrent create writes
-            # <slug>.json between an outside-the-lock check and the promote,
-            # leaving BOTH a .json record and a <slug>/ dir (duplicate slug). An
-            # existing installed <slug>/ dir IS overwritten — that's the update path.
-            if (_themes_dir() / f"{slug}.json").exists():
-                shutil.rmtree(stage, ignore_errors=True)
-                return None, f"a custom theme named '{slug}' already exists", 409
+        identity = summary["identity"]
+
+        def _swap_onto(target_slug: str) -> bool:
+            """Move the staged snapshot onto ``themes/<target_slug>/``.
+
+            The caller MUST hold ``_theme_install_lock(target_slug)`` — this is
+            the mutation the lock exists to serialize.
+
+            Returns ``True`` on success. Returns ``False`` when the pinned
+            source directory is found INSIDE the displaced tree: promotion
+            displaces the destination and deletes the displaced tree, so a
+            source that moved under the destination while the install ran
+            would be destroyed by that delete. On ``False`` the destination is
+            restored and the staging snapshot is removed; the caller refuses
+            the install.
+            """
+            dest = _installed_theme_dir(target_slug)
+            old = dest.with_name(f".{target_slug}.old-{token}")
             try:
                 if dest.exists():
                     dest.replace(old)
+                if (
+                    old.exists()
+                    and source_stat is not None
+                    and _tree_contains_directory(old, source_stat)
+                ):
+                    old.rename(dest)
+                    shutil.rmtree(stage, ignore_errors=True)
+                    return False
                 stage.replace(dest)
             except OSError:
                 if not dest.exists() and old.exists():
@@ -522,6 +647,95 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
                 shutil.rmtree(stage, ignore_errors=True)
                 raise
             shutil.rmtree(old, ignore_errors=True)
+            return True
+
+        _source_displaced = (
+            "source directory moved into the install destination during the install"
+        )
+
+        # ── Legacy-pack continuity ──
+        # An installed pack whose name filters to nothing sits at the CONSTANT
+        # slug `custom` rather than at a hashed one. A reinstall of it derives
+        # `custom-<hash>`, which would fork a twin beside the original. Keep
+        # addressing the original instead — but only after confirming the
+        # directory still holds THIS pack.
+        #
+        # The lock this runs under is `_theme_install_lock(_THEME_LEGACY_SLUG)`,
+        # NOT the derived slug's lock, and that distinction is the whole fix.
+        # `_theme_install_lock` is keyed by slug and each key guards exactly one
+        # directory; every writer of `themes/custom/` takes this same key — this
+        # promotion, the DELETE-dir branch's rmtree, and the create route's
+        # exists-check-plus-write. Holding it makes the identity read and the
+        # directory replacement ONE critical section, so the answer to "does
+        # `custom/` still hold my pack?" cannot go stale before the swap acts on
+        # it. Resolving identity under the DERIVED slug's lock would read as
+        # "inside the promotion lock" and serialize nothing: no writer of
+        # `themes/custom/` holds that key, so a concurrent install could swap the
+        # directory between the read and the swap and this install would delete a
+        # theme it never identified, returning 200.
+        #
+        # Every obstruction here means "no continuity", never an error: falling
+        # through to the derived slug is exactly the behaviour that shipped
+        # without continuity, so a blocked legacy target costs a forked twin
+        # rather than a failed install.
+        promoted = False
+        if slug != _THEME_LEGACY_SLUG and not _theme_slug_ascii_part(identity):
+            legacy_dest = _installed_theme_dir(_THEME_LEGACY_SLUG)
+            with _theme_install_lock(_THEME_LEGACY_SLUG):
+                if (
+                    # The installed pack is this pack (total read; see helper).
+                    _installed_theme_identity(_THEME_LEGACY_SLUG) == identity
+                    # An editor-created `custom.json` owns the slug — never
+                    # clobber it, and never leave a record plus a dir.
+                    and not (_themes_dir() / f"{_THEME_LEGACY_SLUG}.json").exists()
+                    # Promotion displaces `legacy_dest` and then rmtree's the
+                    # displaced tree, so a source AT or UNDER it would be
+                    # deleted along with any sibling content. Fork instead.
+                    and not _path_is_at_or_under(src, legacy_dest)
+                ):
+                    if not _swap_onto(_THEME_LEGACY_SLUG):
+                        return None, _source_displaced, 400
+                    slug = _THEME_LEGACY_SLUG
+                    promoted = True
+
+        if not promoted:
+            dest = _installed_theme_dir(slug)
+            # Kept for a clear message: staging first makes the copy out of dest
+            # safe anyway, but re-installing the installed dir onto itself is a
+            # user error worth naming. This is a source-path check, not a
+            # registry-state race, so it stays outside the lock.
+            if src.resolve() == dest.resolve():
+                shutil.rmtree(stage, ignore_errors=True)
+                return None, "source is already the installed theme directory", 400
+            # Promotion displaces dest to a `.old` dir and rmtree()s it. When
+            # dest is an ANCESTOR of the source, that displaced tree carries
+            # the source (and any unrelated siblings) with it, so the rmtree
+            # silently destroys them while still returning 200. There is no
+            # second slug to fall back to here, so refuse rather than fork the
+            # install elsewhere. This check needs the validated slug, so it
+            # cannot run before staging; like the neighbouring guards it must
+            # not leak the snapshot.
+            if _path_is_at_or_under(src, dest):
+                shutil.rmtree(stage, ignore_errors=True)
+                return (
+                    None,
+                    f"source directory is inside the install destination '{dest.name}'"
+                    " — installing would delete the source",
+                    400,
+                )
+            with _theme_install_lock(slug):
+                # Collision check INSIDE the lock, immediately before promotion: an
+                # editor-created custom record with the same slug is a hard collision
+                # (don't clobber the user's editor theme). Doing it here (not before
+                # the lock) closes the race where a concurrent create writes
+                # <slug>.json between an outside-the-lock check and the promote,
+                # leaving BOTH a .json record and a <slug>/ dir (duplicate slug). An
+                # existing installed <slug>/ dir IS overwritten — that's the update path.
+                if (_themes_dir() / f"{slug}.json").exists():
+                    shutil.rmtree(stage, ignore_errors=True)
+                    return None, f"a custom theme named '{slug}' already exists", 409
+                if not _swap_onto(slug):
+                    return None, _source_displaced, 400
         return (
             {
                 "slug": slug,
@@ -534,6 +748,8 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
             200,
         )
     finally:
+        if source_fd >= 0:
+            os.close(source_fd)
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 

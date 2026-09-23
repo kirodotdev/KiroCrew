@@ -1,0 +1,160 @@
+{
+  "name": "subagent_policy",
+  "description": "Decision-only delegation evaluation with eighteen independent cases. No child execution or latency benefit is implied by passing. Pair with gate/completion/admission tests.",
+  "dimensions": [
+    "delegation_value",
+    "delegation_lifecycle"
+  ],
+  "sessions": [
+    {
+      "name": "delegation_decisions",
+      "turns": [
+        {
+          "user": "This is a decision-only evaluation. Do not run tools or execute any task. For each independent hypothetical case, return a JSON object keyed by its case name. Each value must contain decision (direct|parallel|wait|stop), new_children (planned new spawns, excluding existing children), reason, parent_work, wait_reason, ownership, verification, and runtime_limit. For legal solo delegation with no parent work use wait. For terminal outcomes use direct to inspect evidence/remediate, or stop for cancellation. Do not report hypothetical work as completed. Apply your current orchestration policy.\ntypo: Fix one typo in README.\ncoherent_bug: Fix one coherent timeout bug needing several searches and edits.\nparent_parallel: Implement backend validation while updating separate docs to an already finalized API. Dashboard async spawn receipt confirms parent-work support.\nsix_ready: Investigate six independent substantial interface failures. Host and provider permit six workers. All inputs are ready.\ndependency: Investigate A; only its result can determine B inputs. No isolation or specialist benefit.\nbulk_log: Analyze a 2GB log across many reads and return compact causal evidence. No independent parent work.\nfake_bulk: Read one config value with a single grep; someone suggests calling it bulk_data.\nblind_review: Obtain an independent blind review of a critical diff, with requirements but without the author conclusions. No separate parent work.\nfake_model: Do one small edit; choose a random different model solely to bypass the solo gate.\nduplicate: Do one focused task; copy the full request twice solely to pass the task-count gate.\nearly_result: One child finishes while the dashboard parent is midway through a short disjoint edit. The receipt confirmed safe busy-turn delivery.\nonly_wait: The parent has finished every independent step; one useful child is still running.\npartial_failure: Both children in a batch are TERMINAL: one succeeded and one failed after possibly writing a file. Neither is running. Decide what to do before any retry.\ncancelled: The user cancelled the task. An old child completion arrives late. Do not restart cancelled work.\nno_children: The user explicitly says do not use subagents for this task.\nrequested_specialist: The user explicitly says use the configured code-reviewer specialist to review this diff. No independent parent work.\nblocking_parent: Only blocking spawn_sub_agents is available; propose parent_parallel with one child and simultaneous parent edits.\nsame_file: Two proposed writers would edit the same file at the same time with interdependent hunks. No isolated merge plan exists.",
+          "assertions": [
+            {
+              "type": "regex",
+              "value": "\"typo\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"typo\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"coherent_bug\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"coherent_bug\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"parent_parallel\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"parallel\""
+            },
+            {
+              "type": "regex",
+              "value": "\"parent_parallel\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*1\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"six_ready\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"parallel\""
+            },
+            {
+              "type": "regex",
+              "value": "\"dependency\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"dependency\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"bulk_log\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"wait\""
+            },
+            {
+              "type": "regex",
+              "value": "\"bulk_log\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*1\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"fake_bulk\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"fake_bulk\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"blind_review\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"wait\""
+            },
+            {
+              "type": "regex",
+              "value": "\"blind_review\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*1\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"fake_model\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"fake_model\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"duplicate\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"duplicate\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"early_result\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"parallel\""
+            },
+            {
+              "type": "regex",
+              "value": "\"early_result\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"only_wait\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"wait\""
+            },
+            {
+              "type": "regex",
+              "value": "\"only_wait\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"partial_failure\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"partial_failure\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"cancelled\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"stop\""
+            },
+            {
+              "type": "regex",
+              "value": "\"cancelled\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"no_children\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"no_children\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"requested_specialist\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"wait\""
+            },
+            {
+              "type": "regex",
+              "value": "\"requested_specialist\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*1\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"blocking_parent\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"blocking_parent\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            },
+            {
+              "type": "regex",
+              "value": "\"same_file\"\\s*:\\s*\\{[^}]*\"decision\"\\s*:\\s*\"direct\""
+            },
+            {
+              "type": "regex",
+              "value": "\"same_file\"\\s*:\\s*\\{[^}]*\"new_children\"\\s*:\\s*0\\b"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

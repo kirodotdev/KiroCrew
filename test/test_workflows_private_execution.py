@@ -1,14 +1,13 @@
 """Real workflow/service/session/store integration with only model I/O replaced.
 
-OS capability is pinned in this in-process suite. The namespace-enabled gateway
-E2E is a separate requirement; these tests do not claim kernel/MCP proof coverage.
+The owner records route independent workers without process-isolation proofs.
 """
 
 import asyncio
+import re
 from types import SimpleNamespace
 
 import pytest
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import KiroCrewAgentConfig
@@ -21,10 +20,8 @@ from kiro_crew.member_memory_auth import (
 from kiro_crew.memory_stores import persist_member_config, provision_member_memory
 from kiro_crew.session import SessionManager
 from kiro_crew.workflow_memory import (
-    WorkflowMemoryError,
     WorkflowScope,
     authorize_run,
-    binding_path,
 )
 from kiro_crew.workflows import agent_exec, agent_pool, service
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -72,7 +69,7 @@ def world(monkeypatch, event_loop, tmp_path):
 
     from kiro_crew import context
 
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
     home = tmp_path / "host-home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -117,7 +114,12 @@ def world(monkeypatch, event_loop, tmp_path):
         bind_private_session_store(key, stores[member])
         log.update_metadata(key, {"memory_store": stores[member]})
         vectors = event_loop.run_until_complete(builder.ensure_store(stores[member]))
-        vectors.write_lesson(f"{member.upper()}_PRIVATE_MARKER", "tool", None, "test")
+        vectors.write_lesson(f"{member.upper()}_LEARNED_MARKER", "tool", None, "test")
+        from kiro_crew.members import member_slug, write_member_rules
+
+        write_member_rules(
+            member_slug(member), member=member, text=f"{member.upper()}_PRIVATE_MARKER"
+        )
     models = []
 
     def factory(key, **kwargs):
@@ -154,31 +156,143 @@ def world(monkeypatch, event_loop, tmp_path):
             release_cached_memory_store(store)
 
 
-async def finished(svc, started):
+#: Wall budget for ONE run awaited through ``finished()``, sized from CI rather
+#: than from a local run. The cost here does not predict the cost there: in run
+#: 35010411010 (windows-latest, 4 vCPU, ``-n auto``) shard 8 measured 6.99 s for
+#: the ``[bob]`` param of ``test_simultaneous_services_never_share_run_identity``
+#: against 1.17 s on a Linux dev host, and 3.13 s for ``[global]`` against
+#: 0.52 s -- ~6x, because a run pays ~600 filesystem thread hops (the
+#: ``WorkflowScope`` binding re-reads plus ``build_message``) and that class is
+#: what a 4-vCPU Windows runner with four xdist workers is slowest at. An
+#: IDENTICAL workload also varied 1.42x inside that one job
+#: (``test_private_execution_keeps_scope_on_every_worker``: 3.31 s .. 4.69 s over
+#: its six params). A healthy run there therefore costs up to ~6x1.42 of its
+#: local cost, which for the two-service test is ~10.2 s. A budget of 10 s
+#: therefore sits BELOW the cost of a working run there, and reports cost as a
+#: hang: the run this measurement comes from had both pending calls inside a
+#: filesystem thread hop, and they completed 1.4 s past that deadline. Sized at
+#: 3x that worst measured cost, and still far under the 180 s per-test
+#: ``pytest-timeout`` whose expiry costs the whole xdist worker.
+WORKFLOW_RUN_BUDGET_SECS = 30.0
+
+#: How often ``finished()`` re-reads the run's own progress while it waits. The
+#: sample is what separates a SLOW run from a wedged one in the failure text:
+#: the last change to the pending-call set is a fact about the run, where the
+#: elapsed budget alone is only a fact about the clock.
+_PROGRESS_POLL_SECS = 0.25
+
+
+def _pending_task_locations():
+    """Code locations of every pending task, deepest frame last.
+
+    Locations only -- never coroutine locals, never a private payload. The
+    ``co_name`` chain is what a search for a frame name matches, and the deepest
+    frame also carries ``file:line``, because a chain of names alone cannot say
+    WHICH of a run's many ``to_thread`` call sites is the parked one.
+    """
+    from pathlib import PurePath
+
+    waits = []
+    for task in asyncio.all_tasks():
+        chain = []
+        deepest = ""
+        awaitable = task.get_coro()
+        while awaitable is not None:
+            code = getattr(awaitable, "cr_code", None)
+            if code is not None:
+                chain.append(code.co_name)
+                frame = getattr(awaitable, "cr_frame", None)
+                line = getattr(frame, "f_lineno", 0) or code.co_firstlineno
+                deepest = f"{PurePath(code.co_filename).name}:{line}"
+            awaitable = getattr(awaitable, "cr_await", None)
+        waits.append(chain + ([f"@{deepest}"] if deepest else []))
+    return waits
+
+
+async def finished(svc, started, *, budget=WORKFLOW_RUN_BUDGET_SECS):
     assert "run_id" in started, started
     handle = svc.registry.get(started["run_id"])
-    done, _ = await asyncio.wait({handle.task}, timeout=10)
-    if not done:
-        # Capture only code locations, never coroutine locals or private payloads.
-        waits = []
-        for task in asyncio.all_tasks():
-            chain = []
-            awaitable = task.get_coro()
-            while awaitable is not None:
-                code = getattr(awaitable, "cr_code", None)
-                if code is not None:
-                    chain.append(code.co_name)
-                awaitable = getattr(awaitable, "cr_await", None)
-            waits.append(chain)
-        from kiro_crew.testing.workflow_memory_scenario import progress_summary
+    from kiro_crew.testing.workflow_memory_scenario import progress_summary
 
-        progress = progress_summary(handle.snapshot(include_events=True))
+    began = asyncio.get_running_loop().time()
+    progress = progress_summary(handle.snapshot(include_events=True, include_result=False))
+    advanced_at = began
+    done = set()
+    while True:
+        remaining = budget - (asyncio.get_running_loop().time() - began)
+        if remaining <= 0:
+            break
+        done, _ = await asyncio.wait({handle.task}, timeout=min(_PROGRESS_POLL_SECS, remaining))
+        if done:
+            break
+        sample = progress_summary(handle.snapshot(include_events=True, include_result=False))
+        if sample != progress:
+            progress, advanced_at = sample, asyncio.get_running_loop().time()
+    if not done:
+        now = asyncio.get_running_loop().time()
+        waits = _pending_task_locations()
         handle.task.cancel()
         await asyncio.gather(handle.task, return_exceptions=True)
-        pytest.fail(f"Workflow exceeded 10s: progress={progress}; waits={waits}")
+        pytest.fail(
+            f"Workflow {handle.run_id} exceeded {budget:g}s (waited {now - began:.1f}s): "
+            f"progress={progress}; that progress last changed {now - advanced_at:.1f}s ago, "
+            f"so the pending calls made no observable progress over the last "
+            f"{100 * (now - advanced_at) / max(now - began, 1e-9):.0f}% of the budget; "
+            f"waits={waits}"
+        )
     await handle.task
     assert handle.status == "finished", handle.error
     return handle
+
+
+@pytest.mark.asyncio
+async def test_the_run_budget_failure_names_the_pending_call_and_whether_it_moved():
+    """The budget message IS the diagnosis, so a slow run never reads as a wedged one.
+
+    A run that blew the budget while still advancing and one parked on a grant
+    that never arrives produce the same ``pending_calls`` and the same frame
+    names; only the instant that set last CHANGED separates them, and that is a
+    fact no post-mortem snapshot carries. Here the run advances mid-budget, so
+    the stall the message reports must be strictly shorter than the wait.
+    """
+    stalled = asyncio.ensure_future(asyncio.Event().wait())
+    events = [
+        {"type": "run_started", "data": {}},
+        {"type": "agent_started", "data": {"call_index": 0}},
+        {"type": "agent_finished", "data": {"agent_id": "a0"}},
+        {"type": "agent_started", "data": {"call_index": 1}},
+    ]
+    advanced = [
+        {"type": "agent_finished", "data": {"agent_id": "a1"}},
+        {"type": "agent_started", "data": {"call_index": 2}},
+    ]
+    polls = []
+
+    def snapshot(**_kwargs):
+        polls.append(1)
+        return {"status": "running", "events": events + (advanced if len(polls) > 2 else [])}
+
+    handle = SimpleNamespace(
+        run_id="wf_000042", task=stalled, status="running", error=None, snapshot=snapshot
+    )
+    svc = SimpleNamespace(registry=SimpleNamespace(get=lambda run_id: handle))
+    try:
+        await finished(svc, {"run_id": "wf_000042"}, budget=1.5)
+    except BaseException as exc:  # pytest.fail's Failed is not an Exception
+        assert type(exc).__name__ == "Failed", exc
+        text = str(exc)
+    else:
+        raise AssertionError("finished() accepted a run that never completed")
+    assert len(polls) > 3, polls  # it sampled the run, not just the clock
+    assert "wf_000042" in text and "exceeded 1.5s" in text
+    assert "'pending_calls': [2]" in text, text
+    waited = float(re.search(r"waited (\d+\.\d)s", text).group(1))
+    stall = float(re.search(r"last changed (\d+\.\d)s ago", text).group(1))
+    assert 0.0 < stall < waited - 0.2, text
+    # Every pending task carries a file:line for its deepest frame, because a
+    # chain of co_names cannot say WHICH `to_thread` call site is parked.
+    assert len(re.findall(r"'@[\w.]+\.py:\d+'", text)) >= 2, text
+    assert stalled.cancelled()
 
 
 @pytest.mark.asyncio
@@ -207,76 +321,43 @@ async def test_private_execution_keeps_scope_on_every_worker(world, pooled, entr
         store_of_session(world.log, model.key) == world.stores["alice"] for model in world.models
     )
     assert not world.sessions.has_session("dashboard:bob")
-    with pytest.raises(WorkflowMemoryError):
-        await authorize_run(handle.run_id, "dashboard:bob")
-    with pytest.raises(WorkflowMemoryError):
-        await authorize_run(handle.run_id, "dashboard:global")
+    scope = await authorize_run(handle.run_id, "dashboard:bob", record=handle.to_store_json())
+    assert scope.execution_context.store.store_id == world.stores["alice"]
 
 
 @pytest.mark.asyncio
-async def test_private_author_and_restart_rerun_use_protected_binding(world, tmp_path):
+async def test_member_author_and_restart_rerun_use_owner_record(world, tmp_path):
     store = WorkflowRunStore(tmp_path / "workflow-records")
     svc = service.WorkflowService(
         sessions=world.sessions, context_builder=world.builder, store=store
     )
-    assert (await svc.author("private author", author="dashboard:alice"))["ok"]
+    assert (await svc.author("member author", author="dashboard:alice"))["ok"]
     first = await finished(svc, await svc.start(SCRIPT, session_key="dashboard:alice"))
-    assert not list(store.runs_dir.glob("*.json")), "private content leaked into ordinary runs"
+    assert store._path_for(first.run_id).is_file()
+    world.log._path("dashboard:alice").unlink()
     restored = service.WorkflowService(
         sessions=world.sessions, context_builder=world.builder, store=store
     )
-    assert restored.registry.get(first.run_id) is not None
-    denied = await restored.rerun_subtree(first.run_id, caller_session="dashboard:bob")
-    assert denied["code"] == "workflow_memory_unavailable"
+    prior = restored.registry.get(first.run_id)
+    assert prior.execution_context == first.execution_context
     rerun = await finished(
-        restored, await restored.rerun_subtree(first.run_id, 2, caller_session="dashboard:alice")
+        restored, await restored.rerun_subtree(first.run_id, 2, caller_session="dashboard:bob")
     )
     assert rerun.result == first.result
-    binding_path(first.run_id).unlink()
-    denied = await restored.rerun_subtree(first.run_id, caller_session="dashboard:alice")
-    assert denied["code"] == "workflow_memory_unavailable"
+    assert rerun.execution_context.store == first.execution_context.store
 
 
 @pytest.mark.asyncio
-async def test_published_scope_cannot_rebind_and_missing_record_refuses(world):
+async def test_scope_keeps_captured_member_when_parent_record_changes(world):
+    from kiro_crew.execution_context import bind_session_execution, read_session_execution
+
     scope = await WorkflowScope.admit("wf_test", world.builder, "dashboard:alice")
-    with pytest.raises(WorkflowMemoryError):
-        await WorkflowScope.admit("wf_test", world.builder, "dashboard:bob")
-    binding_path(scope.run_id).write_text("broken", encoding="utf-8")
-    before = len(world.models)
-    with pytest.raises(WorkflowMemoryError):
-        await scope.prepare(world.builder, scope.worker_key("unused"))
-    assert len(world.models) == before
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mid_run", [False, True])
-@pytest.mark.parametrize("pooled", [False, True])
-async def test_invalidated_run_fails_without_global_worker(world, monkeypatch, mid_run, pooled):
-    svc = service.WorkflowService(
-        sessions=world.sessions, context_builder=world.builder, pool_agents=pooled, persist=False
+    bind_session_execution(
+        "dashboard:alice", read_session_execution("dashboard:bob"), replace_existing=True
     )
-    started = await svc.start(SCRIPT, session_key="dashboard:alice")
-    assert "run_id" in started, started
-    run_id = started["run_id"]
-    path = binding_path(run_id)
-    if mid_run:
-
-        async def revoke(model, prompt, **kwargs):
-            path.write_text("invalid", encoding="utf-8")
-            return "already completed private work"
-
-        for module in (agent_exec, agent_pool):
-            monkeypatch.setattr(module, "stream_and_collect", revoke)
-    else:
-        path.unlink()
-    handle = svc.registry.get(run_id)
-    await asyncio.wait_for(handle.task, 10)
-    assert handle.status == "failed"
-    assert "Global V1 was not used" in handle.error
-    if not mid_run:
-        assert world.models == []
-    assert all(model._private_memory for model in world.models)
+    key = scope.worker_key("later")
+    await scope.prepare(world.builder, key)
+    assert read_session_execution(key).store.store_id == world.stores["alice"]
 
 
 @pytest.mark.asyncio
@@ -292,21 +373,14 @@ async def test_authenticated_scope_cannot_change_before_service_admission(world)
 
 
 @pytest.mark.asyncio
-async def test_private_persistence_acl_and_eviction_run_off_loop(world, tmp_path, monkeypatch):
+async def test_member_persistence_and_eviction_run_off_loop(world, tmp_path, monkeypatch):
     import json
     import threading
 
-    from kiro_crew import platform_compat
-    from kiro_crew.workflow_memory import private_payload_path, read_binding
-    from kiro_crew.workflows.store import WorkflowRunStore
-
     loop_thread = threading.get_ident()
     seen = []
-    acl_threads = []
-    store = WorkflowRunStore(tmp_path / "public-workflows")
-    save = store.save
-    delete = store.delete
-    restrict = platform_compat.restrict_dir_to_owner
+    store = WorkflowRunStore(tmp_path / "workflow-records")
+    save, delete = store.save, store.delete
 
     def observed_save(rid, payload):
         seen.append(("save", threading.get_ident(), payload["status"], len(payload["events"])))
@@ -316,37 +390,22 @@ async def test_private_persistence_acl_and_eviction_run_off_loop(world, tmp_path
         seen.append(("delete", threading.get_ident(), "", 0))
         return delete(rid)
 
-    def observed_restrict(path):
-        if path == private_payload_path("probe").parent:
-            acl_threads.append(threading.get_ident())
-        return restrict(path)
-
     monkeypatch.setattr(store, "save", observed_save)
     monkeypatch.setattr(store, "delete", observed_delete)
-    monkeypatch.setattr(platform_compat, "restrict_dir_to_owner", observed_restrict)
     svc = service.WorkflowService(
         sessions=world.sessions, context_builder=world.builder, store=store
     )
     svc.registry._max_runs = 1
-    script = """META = {"name": "private checkpoint"}
-async def workflow(ctx):
-    ctx.log("one")
-    ctx.log("two")
-    ctx.log("three")
-    ctx.log("four")
-    return "private result"
-"""
+    script = 'META = {"name": "checkpoint"}\nasync def workflow(ctx):\n    ctx.log("one")\n    ctx.log("two")\n    ctx.log("three")\n    ctx.log("four")\n    return "result"\n'
     first = await svc.start(script, session_key="dashboard:alice")
     rid = first["run_id"]
     await svc.registry.get(rid).task
-    assert read_binding(rid, required=True)["memory_store"] == world.stores["alice"]
-    payload = json.loads(private_payload_path(rid).read_text())
-    assert payload["result"] == "private result"
-    assert not store.runs_dir.exists()
+    payload = json.loads(store._path_for(rid).read_text(encoding="utf-8"))
+    assert payload["result"] == "result"
+    assert payload["execution_context"]["store"]["store_id"] == world.stores["alice"]
     second = await svc.start(script, session_key="dashboard:alice")
     await svc.registry.get(second["run_id"]).task
-    assert not private_payload_path(rid).exists()
+    assert not store._path_for(rid).exists()
     assert any(op == "delete" for op, *_ in seen)
     assert any(status == "running" and count >= 5 for _, _, status, count in seen)
     assert all(thread != loop_thread for _, thread, _, _ in seen)
-    assert acl_threads and all(thread != loop_thread for thread in acl_threads)

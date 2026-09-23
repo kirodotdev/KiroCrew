@@ -98,7 +98,7 @@ export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
 export const SECTION_CLASS =
   'flex min-h-[calc(100vh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0'
 export const SCRIM_CLASS =
-  'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-sm p-0 text-text sm:items-center sm:justify-center sm:p-6'
+  'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-xs p-0 text-text sm:items-center sm:justify-center sm:p-6'
 export const PANEL_CLASS =
   'relative flex min-h-screen w-full flex-col overflow-hidden bg-card shadow-xl sm:h-[min(760px,calc(100vh-48px))] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border'
 

@@ -3,8 +3,11 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
+import { copyToClipboard } from '../utils/clipboard'
 import { consumeChatHandoff, __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
+
+vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
 vi.mock('../api/client', () => {
   class ApiError extends Error {
@@ -39,6 +42,7 @@ vi.mock('../api/client', () => {
       cloudProvisioners: vi.fn(),
       cloudIamPolicy: vi.fn(),
       cloudLaunch: vi.fn(),
+      cloudIdentity: vi.fn(),
       cloudLaunchStatus: vi.fn(),
       cloudLaunchCancel: vi.fn(),
       cloudLaunchSignin: vi.fn(),
@@ -133,6 +137,7 @@ const AWS_EC2_ROW = {
 // test that seeds them would otherwise dictate what later tests probe.
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(copyToClipboard).mockResolvedValue(true)
   localStorage.clear()
   sessionStorage.clear()
   __resetErrorJournalForTests()
@@ -142,6 +147,7 @@ beforeEach(() => {
   // selected provisioner is known to be the built-in one). The stock single-row
   // answer is the default; a test that cares overrides it.
   vi.mocked(api.cloudProvisioners).mockResolvedValue({ provisioners: [AWS_EC2_ROW] })
+  vi.mocked(api.cloudIdentity).mockResolvedValue({ identity: { account_type: "BuilderId" }, suggested_target: { license: "", start_url: "", region: "" } })
 })
 
 describe('RemoteCrewPanel', () => {
@@ -198,7 +204,7 @@ describe('RemoteCrewPanel', () => {
 
   it('refreshes the crew list when a launch finishes, without waiting for a manual reload', async () => {
     // Switching tabs does not remount the panel, so nothing would invalidate the
-    // instances cache and the brand-new crew would stay missing from Your instances.
+    // instances cache and the brand-new crew would stay missing from Your crews.
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [RUNNING_JOB] })
     vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'done' as const })
@@ -267,6 +273,139 @@ describe('RemoteCrewPanel', () => {
     await u.click(screen.getByRole('menuitem', { name: /Remove gpu-box/i }))
     expect(await screen.findByText(/keeps running and billing/i)).toBeInTheDocument()
     expect(api.removeInstance).not.toHaveBeenCalled()
+  })
+
+  it('a connected fargate crew shows its chat API URL to copy, and nothing to open', async () => {
+    // RULING: a fargate crew has no dashboard and no token. The one thing its
+    // connect yields is the chat API's loopback URL, so the row offers that to
+    // copy and offers no button that would point a browser at a JSON endpoint.
+    const fargate = {
+      ...MANUAL_INSTANCE,
+      id: 'f1',
+      name: 'fargate-crew',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      aws_region: 'us-west-2',
+      remote_port: 8080,
+      local_port: 7790,
+      was_connected: true,
+      status: {
+        instance_id: 'f1',
+        state: 'connected' as const,
+        local_port: 7790,
+        turn_url: 'http://127.0.0.1:7790/v1/chat/completions',
+      },
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const field = await screen.findByTestId('turn-url')
+    expect(within(field).getByText('http://127.0.0.1:7790/v1/chat/completions')).toBeInTheDocument()
+    expect(within(field).getByRole('button', { name: 'Copy the chat API URL of fargate-crew' })).toBeInTheDocument()
+    // The row names the method and the ECS target it forwards to. The target
+    // is shortened so the tail that tells two tasks in one cluster apart
+    // survives the row's right-side truncation; the full target is on hover.
+    expect(screen.getByText('Fargate')).toBeInTheDocument()
+    const shownTarget = screen.getByText('ecs:crew_01234567\u2026-0123456789')
+    expect(shownTarget).toHaveAttribute('title', fargate.ssm_target)
+    // No open / dashboard affordance anywhere on the ROW (the page has other
+    // buttons whose copy mentions opening the app; the row is what RULING 2
+    // constrains).
+    const row = field.closest('[data-crew-id="f1"]') as HTMLElement
+    expect(row).not.toBeNull()
+    expect(within(row).queryByRole('button', { name: /open/i })).not.toBeInTheDocument()
+    expect(within(row).queryByRole('link')).not.toBeInTheDocument()
+    // Disconnect is the primary action of a connected row, fargate included.
+    expect(within(row).getByRole('button', { name: /Disconnect/i })).toBeInTheDocument()
+    // A fargate row IS an AWS resource, so its caption states that plainly and
+    // never hedges the way an unidentified SSM row does.
+    expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
+    expect(within(row).queryByText(/cannot verify whether this machine has AWS resources/)).not.toBeInTheDocument()
+  })
+
+  it('shows a failed turn URL copy and clears it after a successful retry', async () => {
+    const fargate = {
+      ...MANUAL_INSTANCE,
+      id: 'f-copy',
+      name: 'copy-crew',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      remote_port: 8080,
+      local_port: 7790,
+      was_connected: true,
+      status: {
+        instance_id: 'f-copy',
+        state: 'connected' as const,
+        local_port: 7790,
+        turn_url: 'http://127.0.0.1:7790/v1/chat/completions',
+      },
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const copyButton = await screen.findByRole('button', {
+      name: 'Copy the chat API URL of copy-crew',
+    })
+    await u.click(copyButton)
+    expect(await screen.findByTestId('turn-url-copy-error')).toBeInTheDocument()
+
+    await u.click(copyButton)
+    await waitFor(() => expect(screen.queryByTestId('turn-url-copy-error')).not.toBeInTheDocument())
+  })
+
+  it('a fargate crew that is not connected shows no chat API URL', async () => {
+    // The URL is a property of the open forward, not of the record: with the
+    // tunnel down there is no port behind it, so a stale URL would invite a
+    // call that can only fail.
+    const fargate = {
+      ...MANUAL_INSTANCE,
+      id: 'f2',
+      name: 'fargate-idle',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      remote_port: 8080,
+      status: { instance_id: 'f2', state: 'disconnected' as const },
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    expect(await screen.findByText('fargate-idle')).toBeInTheDocument()
+    expect(screen.queryByTestId('turn-url')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Connect$/i })).toBeInTheDocument()
+  })
+
+  it('a fargate row states it is an AWS task instead of hedging about AWS resources', async () => {
+    // A fargate record IS an AWS resource by definition, so the caption names
+    // it as a task and drops the unverified-cloud hedge, while keeping the same
+    // Remove confirm step. Holds whether or not the forward is up; an idle row
+    // is the cheapest fixture that reaches the caption.
+    const fargate = {
+      ...MANUAL_INSTANCE,
+      id: 'f3',
+      name: 'fargate-note',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      remote_port: 8080,
+      status: { instance_id: 'f3', state: 'disconnected' as const },
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const name = await screen.findByText('fargate-note')
+    const row = name.closest('[data-crew-id="f3"]') as HTMLElement
+    expect(row).not.toBeNull()
+    expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
+    expect(within(row).queryByText(/cannot verify whether this machine has AWS resources/)).not.toBeInTheDocument()
   })
 
   it('still lists the crews when the gateway cannot do cloud provisioning at all', async () => {
@@ -568,7 +707,7 @@ describe('RemoteCrewPanel', () => {
     const card = (await screen.findByText(/WXYZ-1234/)).closest('div')?.parentElement
     expect(card).toBeTruthy()
     const page = document.body.textContent ?? ''
-    expect(page).toMatch(/leave the page or switch instances and it keeps going/i)
+    expect(page).toMatch(/leave the page or switch crews and it keeps going/i)
     expect(page).not.toMatch(/quit the app/i)
     expect(page).not.toMatch(/get a notification/i)
   })
@@ -642,8 +781,8 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled'))
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
     renderWithProviders(<RemoteCrewPanel />)
-    expect(await screen.findByText(/Remote instance management is off/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Enable remote instance management/i })).toBeInTheDocument()
+    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Enable remote crew management/i })).toBeInTheDocument()
   })
 
   it('does not flash the tabbed UI before showing the disabled state', async () => {
@@ -659,14 +798,14 @@ describe('RemoteCrewPanel', () => {
 
     // While loading: a spinner, no tabs, no form.
     expect(screen.getByText(/Loading/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Your instances/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Your crews/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Set up a new one/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Enable remote instance management/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable remote crew management/i })).not.toBeInTheDocument()
 
     // After the 403 resolves: transitions directly to the disabled card.
     rejectInstances(new ApiError(403, 'instances feature is disabled'))
-    expect(await screen.findByText(/Remote instance management is off/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Your instances/i })).not.toBeInTheDocument()
+    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Your crews/i })).not.toBeInTheDocument()
   })
 
   it('distinguishes cloud crews from hand-added machines, and shows an in-progress launch', async () => {
@@ -726,7 +865,7 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     expect(await screen.findByText(/gateway exploded/i)).toBeInTheDocument()
-    expect(screen.queryByText(/No instances yet/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/No crews yet/i)).not.toBeInTheDocument()
     // A retry sits with the error, in addition to the header's refresh control.
     expect(screen.getAllByRole('button', { name: /Refresh/i }).length).toBeGreaterThan(1)
   })
@@ -798,6 +937,233 @@ describe('RemoteCrewPanel', () => {
     await waitFor(() => expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }))
     // Progress card polls the job and renders its steps.
     expect(await screen.findByText('Installing Kiro Crew')).toBeInTheDocument()
+  })
+
+  it('preselects the inherited Identity Center sign-in, gates launch on the region, and sends the target', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+    // The organization's portal is preselected and named; the form asks only for the region.
+    const idc = await screen.findByRole('radio', { name: /Company SSO/i })
+    await waitFor(() => expect(idc).toBeChecked())
+    expect(screen.getByText(/Preselected from this computer's Kiro sign-in/)).toBeInTheDocument()
+    const url = screen.getByRole('textbox', { name: /Identity Center start URL/i })
+    expect(url).toHaveValue('https://example.awsapps.com/start')
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    // Region missing: the launch is refused up front, never sent as Builder ID.
+    expect(launch).toBeDisabled()
+    expect(screen.getByText(/Enter the Identity Center start URL and region/)).toBeInTheDocument()
+
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-east-1')
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({
+        provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced',
+        login_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: 'us-east-1' },
+      }),
+    )
+  })
+
+  it('accepts any safe portal URL the backend accepts, scheme-less or on another domain', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const url = await screen.findByRole('textbox', { name: /Identity Center start URL/i })
+    await waitFor(() => expect(url).toHaveValue('https://example.awsapps.com/start'))
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-gov-west-1')
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+
+    // The form mirrors normalize_start_url: a GovCloud portal pasted without a
+    // scheme is a valid target, not a format the user has to guess at.
+    await u.clear(url)
+    await u.type(url, 'example.awsapps-us-gov.com/start')
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    // A shell metacharacter is the one shape the form does refuse up front.
+    await u.type(url, ';id')
+    await waitFor(() => expect(launch).toBeDisabled())
+  })
+
+  it('lets the user override the inherited identity back to Builder ID, which sends no target', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await waitFor(() => expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked())
+    await u.click(screen.getByRole('radio', { name: /^Builder ID$/i }))
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }),
+    )
+  })
+
+  it('keeps Launch disabled while the inherited identity is still being read', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    let resolveIdentity: (v: Awaited<ReturnType<typeof api.cloudIdentity>>) => void = () => {}
+    vi.mocked(api.cloudIdentity).mockReturnValue(new Promise((r) => { resolveIdentity = r }))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    // Prerequisites are satisfied, but the identity read is pending: the
+    // Builder ID default is a placeholder, so Launch must NOT be clickable —
+    // a click here would send no target and ignore the preselection that
+    // lands a moment later.
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    await screen.findByText(/Reading this computer's Kiro sign-in/i)
+    expect(launch).toBeDisabled()
+    resolveIdentity({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    // Resolved: the preselection landed, and the gate is now the region field.
+    await waitFor(() => expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked())
+    expect(launch).toBeDisabled()
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-east-1')
+    await waitFor(() => expect(launch).not.toBeDisabled())
+  })
+
+  it('lets an explicit user choice override the wait for the inherited identity', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockReturnValue(new Promise(() => {})) // never resolves
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    expect(launch).toBeDisabled()
+    await u.click(screen.getByRole('radio', { name: /^Builder ID$/i }))
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }),
+    )
+  })
+
+  it('surfaces an identity lookup failure inline and waits for an explicit choice before launch', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudIdentity).mockRejectedValue(new Error('kiro-cli whoami timed out'))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    // The failure is shown as a short human cause (never the raw exception
+    // text) and offers NO agent hand-off: a hand-off would unmount the form
+    // the user is about to submit.
+    const notice = await screen.findByText(/request to read this computer's Kiro sign-in failed/i)
+    expect(notice.textContent).not.toMatch(/whoami timed out/)
+    expect(screen.queryByRole('button', { name: /Ask the agent/i })).toBeNull()
+    // Nothing is known about this computer's sign-in, so NO radio renders
+    // checked and Launch waits for the user to pick: a checked Builder ID
+    // beside a gate that says "choose" would read as a choice already made,
+    // and an Identity Center user whose whoami failed must not be launched as
+    // Builder ID by a default they never confirmed.
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    expect(launch).toBeDisabled()
+    expect(screen.getByText(/Choose the crew's Kiro identity to launch/i)).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /^Builder ID$/i })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: /Company SSO/i })).not.toBeChecked()
+    await u.click(screen.getByRole('radio', { name: /^Builder ID$/i }))
+    expect(screen.getByRole('radio', { name: /^Builder ID$/i })).toBeChecked()
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }),
+    )
+  })
+
+  it('treats a server-reported unknown discovery as no preselection and waits for a choice', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    // whoami on the launching computer could not answer: the server suggests
+    // nothing rather than a Builder ID default that would read as a fact.
+    vi.mocked(api.cloudIdentity).mockResolvedValue({ identity: null, suggested_target: null, discovery: 'unknown' })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await screen.findByText(/kiro-cli whoami did not answer/i)
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    expect(launch).toBeDisabled()
+    expect(screen.getByText(/Choose the crew's Kiro identity to launch/i)).toBeInTheDocument()
+    // The user picks Identity Center by hand: the usual field gate applies.
+    await u.click(screen.getByRole('radio', { name: /Company SSO/i }))
+    expect(launch).toBeDisabled()
+    await u.type(screen.getByRole('textbox', { name: /start URL/i }), 'https://example.awsapps.com/start')
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'us-east-1')
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() =>
+      expect(api.cloudLaunch).toHaveBeenCalledWith({
+        provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced',
+        login_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: 'us-east-1' },
+      }),
+    )
+  })
+
+  it('names the Identity Center cause when the sign-in was read but its portal was not', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    // The server read an Identity Center sign-in but no portal address: the
+    // user IS an Identity Center user, so the notice must say so rather than
+    // hedge, and no radio may render checked as if Builder ID were a fact.
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter' }, suggested_target: null, discovery: 'unknown',
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const notice = await screen.findByText(/signed in through Identity Center, but its portal address could not be read/i)
+    expect(notice.textContent).not.toMatch(/did not answer/)
+    expect(screen.getByRole('radio', { name: /^Builder ID$/i })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: /Company SSO/i })).not.toBeChecked()
+    // The "preselected from this computer" hint belongs to a READ identity only.
+    expect(screen.queryByText(/Preselected from this computer's Kiro sign-in/i)).toBeNull()
+    expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled()
+    await u.click(screen.getByRole('radio', { name: /Company SSO/i }))
+    expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked()
+    expect(screen.getByRole('textbox', { name: /start URL/i })).toBeInTheDocument()
   })
 
   describe('agent hand-off from the diagnosis note', () => {
@@ -995,7 +1361,7 @@ describe('RemoteCrewPanel', () => {
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
       expect(await screen.findByRole('button', { name: /^Launch$/ })).toBeInTheDocument()
       // One choice is not a choice: no selector, and nothing asking the question.
-      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Where should the new crew run/i)).not.toBeInTheDocument()
       expect(
         screen.queryByRole('button', { name: /AWS EC2 in your own account/i }),
       ).not.toBeInTheDocument()
@@ -1016,7 +1382,7 @@ describe('RemoteCrewPanel', () => {
 
       // Every renderable row is offered by its SERVER-authored label; two rows may
       // share one kind, so the selector is per row, not per renderer.
-      expect(await screen.findByText(/Where should the new instance run/i)).toBeInTheDocument()
+      expect(await screen.findByText(/Where should the new crew run/i)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'AWS EC2 in your own account' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Amazon DevSpace (PDX)' })).toBeInTheDocument()
       const second = screen.getByRole('button', { name: 'Amazon DevSpace (IAD)' })
@@ -1153,7 +1519,7 @@ describe('RemoteCrewPanel', () => {
 
       await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
 
-      expect(await screen.findByText(/no way to create an instance that this dashboard can draw/i)).toBeInTheDocument()
+      expect(await screen.findByText(/no way to create a crew that this dashboard can draw/i)).toBeInTheDocument()
       expect(screen.queryByText(/Before you start/i)).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /^Launch$/ })).not.toBeInTheDocument()
       // (With no remembered lane the AWS probe fires before the list arrives, on
@@ -1201,7 +1567,7 @@ describe('RemoteCrewPanel', () => {
       // One renderable row is left, so there is no selector and no unpickable card.
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
       expect(screen.queryByText('Nobody draws me')).not.toBeInTheDocument()
-      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Where should the new crew run/i)).not.toBeInTheDocument()
     })
 
     it('falls back to the built-in form when the provisioners endpoint fails', async () => {
@@ -1218,7 +1584,7 @@ describe('RemoteCrewPanel', () => {
       await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
 
       expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
-      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Where should the new crew run/i)).not.toBeInTheDocument()
       // The failure is said, not swallowed: an ErrorNotice above the form names
       // it and offers the agent hand-off, while the form itself stays usable.
       expect(await screen.findByRole('alert')).toHaveTextContent(/not found|Could not read which ways/i)

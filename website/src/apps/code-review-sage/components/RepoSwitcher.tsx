@@ -111,7 +111,7 @@ export default function RepoSwitcher() {
                 onKeyDown={(e) => e.stopPropagation()}
                 placeholder={i18nT('apps.codeReviewSage.components.repoSwitcher.filter_repos')}
                 aria-label={i18nT('apps.codeReviewSage.components.repoSwitcher.filter_repositories')}
-                className="w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px] text-text placeholder:text-muted outline-none focus-visible:border-accent"
+                className="w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px] text-text placeholder:text-muted outline-hidden focus-visible:border-accent"
               />
             </div>
           )}

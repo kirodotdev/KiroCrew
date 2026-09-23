@@ -9,8 +9,9 @@
  *
  * This is a BUILTIN dashboard page (rendered by BuiltinAppRoute inside the main
  * React tree), so it uses same-origin `fetch` with the dashboard's session
- * cookie — NOT the app-sdk hooks (those require <AppApiProvider>, which only
- * wraps standalone/installed apps via AppHost).
+ * cookie — NOT the app-sdk data hooks (those need the SDK's scoped-API layer,
+ * which a builtin page mounts for itself via `AppScopedApiProvider`; app identity
+ * is published for every builtin page by BuiltinAppRoute).
  *
  * Backend contract: see kiro_crew/apps/builtins/workflows/server.py and the run
  * event schema in docs/system-specs/modules/workflows.md.
@@ -21,6 +22,7 @@ import { Workflow as WorkflowIcon, Play, FileCode, ListTree } from 'lucide-react
 import { PageHeader } from '../../components/ui'
 import SegmentedControl from '../../components/SegmentedControl'
 import SimpleSelect from '../../components/SimpleSelect'
+import ErrorNotice from '../../components/ErrorNotice'
 import WorkflowsRuns from './WorkflowsRuns'
 import WorkflowRunTree from './WorkflowRunTree'
 import { groupByPhase, latestBudget, type WfEvent, type AgentRow, type PhaseGroup } from './runModel'
@@ -118,17 +120,23 @@ export default function WorkflowsPage() {
   // concurrent validate+run sequences (duplicate runs). Include the pending
   // validation so the button is disabled for the whole gesture.
   const running = runMutation.isPending || validateMutation.isPending
-  const error = runMutation.error
-    ? runMutation.error instanceof Error
-      ? runMutation.error.message
-      : String(runMutation.error)
-    : null
+  const errText = (e: unknown) => (e ? (e instanceof Error ? e.message : String(e)) : null)
+  const error = errText(runMutation.error)
+  // The validator's TRANSPORT failure (non-2xx, network), as opposed to its
+  // verdict: `validation.ok === false` is a successful request that said no.
+  const validateError = errText(validateMutation.error)
 
-  const validate = useCallback(() => validateMutation.mutateAsync(source), [validateMutation, source])
+  // mutateAsync rejects on a transport failure; the rejection is already held
+  // in `validateMutation.error` for the notice, so the callers swallow it here
+  // instead of surfacing an unhandled promise.
+  const validate = useCallback(
+    () => validateMutation.mutateAsync(source).catch(() => null),
+    [validateMutation, source],
+  )
 
   const doRun = useCallback(async () => {
-    const v = await validateMutation.mutateAsync(source)
-    if (!v.ok) return // E1: invalid script blocks the run
+    const v = await validateMutation.mutateAsync(source).catch(() => null)
+    if (!v || !v.ok) return // E1: invalid script (or an unreachable validator) blocks the run
     runMutation.reset()
     runMutation.mutate(source)
   }, [validateMutation, runMutation, source])
@@ -207,14 +215,15 @@ export default function WorkflowsPage() {
               />
             )}
           </div>
-          {validation && !validation.ok && (
-            <div className="text-[12px] text-red-500 border border-red-500/30 rounded p-2">
-              <div className="font-medium mb-1">{i18nT('apps.workflows.workflowsPage.invalid_fix_before_running')}</div>
-              <ul className="list-disc pl-4">
-                {validation.errors.map((e, i) => <li key={i}>{e}</li>)}
-              </ul>
-            </div>
-          )}
+          {/* The validator's rejection, one line per problem; below it, the
+              validator being unreachable at all.
+              No hand-off: the workflow `source` in the editor is unsaved local state. */}
+          <ErrorNotice
+            title={i18nT('apps.workflows.workflowsPage.invalid_fix_before_running')}
+            message={validation && !validation.ok ? validation.errors.join('\n') : null}
+            messageClassName="font-mono whitespace-pre-line"
+          />
+          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.couldn_t_validate_the_script')} message={validateError} />
         </div>
 
         {/* ----- Live run view ----- */}
@@ -228,11 +237,8 @@ export default function WorkflowsPage() {
             )}
           </div>
 
-          {error && (
-            <div className="text-[12px] text-red-500 border border-red-500/30 rounded p-2">
-              {i18nT('apps.workflows.workflowsPage.request_failed')} {error}
-            </div>
-          )}
+          {/* No hand-off: the workflow `source` in the editor is unsaved local state. */}
+          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.couldn_t_start_the_run')} message={error} />
 
           {events.length === 0 && !error && (
             <div className="text-[12px] text-muted border border-dashed border-border rounded p-4">
