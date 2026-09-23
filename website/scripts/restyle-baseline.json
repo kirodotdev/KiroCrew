@@ -42,7 +42,6 @@
   "website/src/pages/chat/SidePanel.tsx": 6,
   "website/src/pages/knowledge/KnowledgeGraph.tsx": 2,
   "website/src/pages/members/DeployMyCrew.tsx": 1,
-  "website/src/pages/members/MembersPage.tsx": 2,
   "website/src/pages/overview/AgentTemplatesTab.tsx": 2,
   "website/src/pages/overview/KiroCrewCfgTab.tsx": 4,
   "website/src/pages/overview/MemberMemoryPanel.tsx": 2,
