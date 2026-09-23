@@ -13677,6 +13677,11 @@ class TestFolderCRUD:
     async def test_create_folder_accepts_default_agent(self, tmp_path, monkeypatch):
         """The create modal collects the full folder config, so POST must take it."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        # A globally installed agent: the server refuses one outside the scope.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_folders._global_agent_scope",
+            lambda: (frozenset({"kirocrew-dev"}), ""),
+        )
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -14127,6 +14132,10 @@ class TestFolderCRUD:
     @pytest.mark.asyncio
     async def test_update_folder_default_agent(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_folders._global_agent_scope",
+            lambda: (frozenset({"msad"}), ""),
+        )
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
         async with TestClient(TestServer(app)) as client:

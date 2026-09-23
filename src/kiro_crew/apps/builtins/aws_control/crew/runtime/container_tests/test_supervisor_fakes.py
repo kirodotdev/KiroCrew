@@ -38,9 +38,6 @@ p.add_argument("--ttl", type=float, default=30.0)
 p.add_argument("--leader-ttl", type=float, default=-1.0)
 a = p.parse_args()
 
-if a.pidfile:
-    Path(a.pidfile).write_text(str(os.getpid()))
-
 # Holds the escaped child's pid so the SIGTERM handler can reap its group,
 # modelling the real backend, whose kiro-cli workers setsid into their own
 # session and are reaped by the backend's own graceful shutdown.
@@ -58,6 +55,15 @@ if a.ignore_sigterm:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 else:
     signal.signal(signal.SIGTERM, _on_term)
+
+# AFTER the disposition is in place, never before: the pidfile is what every
+# caller waits on before signalling this process, so writing it earlier makes it
+# a barrier that proves only "argv parsed", and a SIGTERM arriving in the gap
+# runs the DEFAULT disposition. That shows up as the leader dying of -15 where
+# the test required an ignored SIGTERM escalated to -9, or as a cooperative
+# leader killed instead of exiting 0 -- both decided by how loaded the runner is.
+if a.pidfile:
+    Path(a.pidfile).write_text(str(os.getpid()))
 
 lsock = None
 if a.port:

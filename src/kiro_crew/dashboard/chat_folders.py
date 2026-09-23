@@ -4,6 +4,7 @@ LLM emoji generator here serves both chat folders and the artifact library."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import time
@@ -16,10 +17,13 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import pinned_fs
+from kiro_crew.agent_discovery import _linked_ancestor_refused, _unc_refused
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
+from kiro_crew.dashboard.handlers import agent_catalog, source_providers
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
@@ -31,7 +35,7 @@ from kiro_crew.dashboard.token_auth import (
     refuse_unattributable_caller,
     request_origin,
 )
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.folder_steering import crosses_memory_silo, memory_silo_fence
 from kiro_crew.hooks import is_unc_shape, unc_probe_allowed, validate_file_path
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -491,13 +495,43 @@ async def api_chat_folders(request: web.Request) -> web.Response:
     return web.json_response(folders)
 
 
+def _log_unc_denied(spelling: str) -> str:
+    """SEL-log an untrusted-UNC refusal of *spelling* and return its error message."""
+    sel().log_api_access(
+        caller="dashboard",
+        operation="chat.folder_project_dir",
+        outcome="denied",
+        resources=spelling,
+        error="untrusted UNC share",
+    )
+    return "project_dir refers to an untrusted UNC share"
+
+
 def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     """Validate and normalize project_dir. Returns (resolved_path, error_msg)."""
     if not raw:
         return "", None
+    # A UNC spelling (``\\host\share``) names a remote HOST: on Windows, resolving
+    # or opening one is an outbound SMB/NTLM probe the path's author controls. This
+    # validator realpaths the same user-typed folder project-dir field that the
+    # roster read path resolves, so it needs the same gate its sibling
+    # ``_resolve_roster_project_path`` (handlers/agents.py) applies -- shared
+    # here as the two ``agent_discovery`` preflights. Gate the RAW spelling
+    # BEFORE ``realpath`` (the realpath itself is the probe), reject a local
+    # linked ancestor into an untrusted share before resolution, and check the
+    # RESOLVED value again (so a redirected target is refused before isdir).
+    # Only the shares ``unc_probe_allowed`` names pass; off Windows both
+    # preflights are always ``False``.
+    if _unc_refused(raw):
+        return "", _log_unc_denied(raw)
     if not os.path.isabs(raw) and not raw.startswith("~"):
         return "", "Project directory must be an absolute path"
-    resolved = os.path.realpath(os.path.expanduser(raw))
+    expanded = os.path.expanduser(raw)
+    if _linked_ancestor_refused(expanded):
+        return "", _log_unc_denied(expanded)
+    resolved = os.path.realpath(expanded)
+    if _unc_refused(resolved):
+        return "", _log_unc_denied(resolved)
     if is_sensitive_path(resolved):
         sel().log_api_access(
             caller="dashboard",
@@ -594,6 +628,176 @@ async def resolve_folder_project_dir_off_loop(
     if raw_project is None or error:
         return "", error
     return await asyncio.to_thread(_validate_project_dir, raw_project)
+
+
+def _folder_inherited_agent(folders: list[dict[str, Any]], folder_id: str) -> str:
+    """Nearest non-empty ``default_agent`` on *folder_id* and its ancestors.
+
+    The server-side counterpart of ``website/src/utils/folderAgent.ts::
+    resolveFolderAgent`` minus its global-default fallback, which the caller
+    applies. A dict walk with no filesystem access; a missing id or a parent
+    cycle ends the walk with ``""``.
+    """
+    by_id = {str(folder.get("id") or ""): folder for folder in folders if isinstance(folder, dict)}
+    seen: set[str] = set()
+    current_id = folder_id
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        folder = by_id.get(current_id)
+        if folder is None:
+            break
+        agent = folder.get("default_agent")
+        if isinstance(agent, str) and agent.strip():
+            return agent.strip()
+        current_id = str(folder.get("parent_id") or "")
+    return ""
+
+
+def _global_agent_scope() -> tuple[frozenset[str], str]:
+    """Names the folder modal offers with no project scope, plus the default.
+
+    ``FolderConfigModal`` reads ``GET /api/agents/catalog``. Its global rows
+    include configured members and every selectable shared template returned
+    by :func:`handlers.agent_catalog._templates`; templates copied into the
+    kiro-cli agents directory remain dispatchable without being enrolled in
+    ``cfg.agents``. Reuse that catalog boundary so server validation cannot
+    reject a choice the picker offers. Blocking (config and discovery reads),
+    so callers run it on the discovery pool.
+    """
+    cfg = KiroCrewConfig.load()
+    names = set(cfg.agents.keys())
+    names.update(template.name for template in agent_catalog._templates(None))
+    return frozenset(names), str(cfg.default_agent or "")
+
+
+async def check_folder_agent_scope(
+    folders: list[dict[str, Any]],
+    *,
+    own_agent: str,
+    own_dir: str,
+    parent_id: str,
+    request_app: str = "",
+    is_owner: bool = True,
+    seeded: tuple[str, str] | None = None,
+) -> None:
+    """Refuse a folder whose EFFECTIVE agent its EFFECTIVE scope does not offer.
+
+    The server half of ``FolderConfigModal``'s Save gate, deciding the same
+    question on the same inputs:
+
+    * effective agent = *own_agent*, else the nearest ancestor's, else the
+      global default; an empty effective agent has nothing to validate.
+    * effective dir = *own_dir* (already validated), else the nearest
+      ancestor's validated ``project_dir``.
+    * accept-set = the global rows (:func:`_global_agent_scope`) unioned, when
+      an effective dir is set, with that directory's ``.kiro/agents`` names
+      scanned exactly as ``GET /api/agents?project_path=`` scans them
+      (``raise_unverifiable=True``).
+    * round-trip exception (update only, *seeded* = ``(stored own agent,
+      stored effective dir)``): an unchanged explicit own agent under an
+      unchanged effective dir stays savable when absent — only after the scan
+      settled, as in the modal, where a failed scan blocks even that case.
+
+    Project-directory discovery is owner-only. A non-owner principal is
+    validated against the global catalog only and never causes this check to
+    resolve or scan its supplied directory; folder permission is not authority
+    to probe an arbitrary host path. *is_owner* is the actual owner predicate
+    (``is_owner_dashboard_request`` at the HTTP call sites) — NOT whether
+    ``request_app`` happens to be empty: an allow-listed messaging caller's
+    dashboard token also carries an empty ``request_app`` (the same shape as
+    the person's own request) but is not the owner, and gating on
+    ``request_app`` alone would let that caller's request reveal whether its
+    named directory declares the agent (a name-presence oracle for an
+    arbitrary host path — the exact caller class this same module already
+    fences out of ``?project_path=``). Callers that do not originate from an
+    HTTP request (project scaffolding, internal folder creation) default to
+    ``is_owner=True``: they are trusted-equivalent to the person and carry no
+    request to test. An out-of-scope name stays an ordinary validation failure
+    and is not SEL-audited as a security denial.
+
+    Raises :class:`FolderAgentScopeError` (400) or
+    :class:`FolderAgentScopeUnverifiable` (503).
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        global_names, global_default = await loop.run_in_executor(
+            discovery_executor(), _global_agent_scope
+        )
+    except Exception as exc:
+        logger.warning("Folder agent scope: global roster unavailable", exc_info=True)
+        raise FolderAgentScopeUnverifiable(
+            "The agent roster could not be loaded to validate the folder's agent",
+            "default_agent_scope_unverifiable",
+        ) from exc
+    effective_agent = own_agent or _folder_inherited_agent(folders, parent_id) or global_default
+    if not effective_agent or effective_agent in global_names:
+        return
+    if not is_owner:
+        # Gated on the OWNER predicate, not on "is ``request_app`` empty?" —
+        # an allow-listed messaging caller's dashboard token also has an empty
+        # ``request_app`` (the person's own shape) but is not the owner, and
+        # folder permission is not authority to scan an arbitrary host
+        # directory on that caller's say-so. Derive only the error's scope
+        # wording from the in-memory folder tree; do not resolve or touch disk.
+        inherited_dir, _error = _folder_declared_project(folders, parent_id)
+        raise FolderAgentScopeError(
+            effective_agent,
+            has_dir=bool(own_dir or inherited_dir),
+        )
+    # Imported here, not at module scope, for TWO independent reasons -- both
+    # load-bearing, and a module-scope hoist (plain or attribute-dereferenced)
+    # breaks one or the other:
+    #   1. the call-site label ratchet in ``test_agent_spec_hardened_reads``
+    #      enumerates these readers by BARE name, so ``agent_discovery.x``
+    #      spelling makes this call site invisible to it;
+    #   2. the suite patches them on ``agent_discovery``, which a module-scope
+    #      ``from`` binding would defeat.
+    # GPT 5.6's ``top-level-imports`` finding here is answered by the ratchet,
+    # not by hoisting: the ratchet IS the invariant the bare name serves.
+    from kiro_crew.agent_discovery import ScanUnverifiable, project_agent_names
+
+    effective_dir = own_dir
+    if not effective_dir and parent_id:
+        effective_dir, _err = await resolve_folder_project_dir_off_loop(folders, parent_id)
+    if effective_dir:
+        try:
+            project_names = await loop.run_in_executor(
+                discovery_executor(),
+                functools.partial(
+                    project_agent_names,
+                    effective_dir,
+                    operation="chat.folder_default_agent",
+                    source="dashboard",
+                    raise_unverifiable=True,
+                ),
+            )
+        except (ScanUnverifiable, pinned_fs.PinnedPathRefusal) as exc:
+            if not pinned_fs.supports_pinned_walk():
+                raise FolderAgentScopeUnverifiable(
+                    "folder-level project-agent selection is not supported on this platform",
+                    "scan_unsupported_platform",
+                ) from exc
+            raise FolderAgentScopeUnverifiable(
+                "The folder's project directory could not be scanned to validate its agent",
+                "default_agent_scope_unverifiable",
+            ) from exc
+        except Exception as exc:
+            logger.warning("Folder agent scope: project scan failed", exc_info=True)
+            raise FolderAgentScopeUnverifiable(
+                "The folder's project directory could not be scanned to validate its agent",
+                "default_agent_scope_unverifiable",
+            ) from exc
+        if effective_agent in project_names:
+            return
+    if seeded is not None and own_agent and seeded == (own_agent, effective_dir):
+        return
+    # No SEL record: an agent outside the folder's scope is a VALIDATION
+    # failure, and this file audits only security refusals as denials (see the
+    # FolderOwnershipError branches, whose comments draw exactly that line).
+    # The security-relevant case inside this check — a scan pointed at a
+    # sensitive directory — is audited by ``project_agent_names`` itself, which
+    # is where the caller-supplied path is actually read.
+    raise FolderAgentScopeError(effective_agent, has_dir=bool(effective_dir))
 
 
 #: Ceiling on the extra steering directories one folder may declare. Small on
@@ -1143,6 +1347,26 @@ class FolderCapError(FolderCreateError):
         )
 
 
+class FolderAgentScopeError(FolderCreateError):
+    """The folder's effective agent is absent from its effective agent scope."""
+
+    def __init__(self, agent: str, *, has_dir: bool) -> None:
+        where = (
+            "this folder's project directory or the globally installed agents"
+            if has_dir
+            else "the globally installed agents, and this folder has no project directory"
+        )
+        super().__init__(f"Agent {agent!r} is not among {where}", "default_agent_out_of_scope")
+
+
+class FolderAgentScopeUnverifiable(FolderCreateError):
+    """The folder's agent scope could not be checked, so the agent is refused.
+
+    Answered 503: a retry can succeed once the scan or config read recovers,
+    except for ``scan_unsupported_platform``, where no retry can.
+    """
+
+
 async def create_folder_record(
     state: DashboardState,
     *,
@@ -1153,6 +1377,7 @@ async def create_folder_record(
     color: str = "",
     icon: str = "",
     request_app: str = "",
+    is_owner: bool = False,
     tags: list[str] | None = None,
     steering_dirs: list[str] | None = None,
     unique_project_dir: bool = False,
@@ -1233,6 +1458,20 @@ async def create_folder_record(
     A non-person principal may nest directly under the folder that session is
     filed in, even when the person owns that folder. The slot's ``folder_id``
     is read under the lock, where the parent is decided.
+    :func:`check_folder_agent_scope` runs on every new folder, unconditionally,
+    for the same reason every other validation here is: a caller cannot end up
+    with a weaker agent check than the others get. Project scaffolding is held
+    to it for its root and every selected child, and a refusal lands in the
+    scaffold's per-folder ``failed`` channel.
+
+    ``is_owner`` is the OWNER predicate (``is_owner_dashboard_request`` at the
+    HTTP call sites), not "is ``request_app`` empty?" — passed straight to
+    :func:`check_folder_agent_scope`, which is where directory discovery is
+    actually gated. Defaults to ``False``, so a caller reaches directory
+    discovery only by asserting ownership: an allow-listed messaging subject
+    carries an empty ``request_app`` and no owner identity, and a default of
+    ``True`` would hand it the person's filesystem authority through any path
+    that omits the argument.
 
     Raises:
         FolderCreateError: if the folder was refused (unusable name, missing
@@ -1242,13 +1481,45 @@ async def create_folder_record(
             not own.
         FolderNameExistsError: if ``refuse_duplicate_name`` is set and the
             parent already holds a folder of this name.
+        FolderAgentScopeError: the effective agent is outside the folder's
+            agent scope.
+        FolderAgentScopeUnverifiable: that scope could not be checked.
     """
 
+    folders_generation_before = state.folders_generation()
     name = name.strip()[:100]
     if not name:
         raise FolderCreateError("name required")
     if parent_id and not any(f["id"] == parent_id for f in state._folders):
         raise FolderCreateError("parent folder not found")
+    if parent_id and request_app:
+        # Preflight ownership on the intended parent, ahead of scope
+        # validation below: without this, an app nesting under a folder it
+        # does not own reaches `check_folder_agent_scope` first and gets a 400
+        # that NAMES the parent's effective agent — for a `member:` principal
+        # that discloses exactly what the ownership-filtered GET withholds
+        # (see the filter at line ~479; an APP principal already reads the
+        # whole tree, so there is no disclosure for that caller). The
+        # authoritative decision still happens under the lock in `_append`
+        # below (`forbidden_parent`, ~1488) and is not removed: a concurrent
+        # reparent can change who the parent belongs to between this read and
+        # the write, so only the locked check is safe to rely on for the
+        # actual create. This preflight only prevents scope validation from
+        # running — and thus answering — ahead of an ownership refusal it
+        # would otherwise leak through.
+        #
+        # It therefore carries the locked check's `home_slot` exemption too: a
+        # principal may nest directly under the folder its own calling session
+        # is filed in, so refusing that here would deny a create the locked
+        # check allows. A preflight that refuses MORE than the gate it shadows
+        # is not a disclosure fence, it is a second, stricter rule.
+        parent_for_scope = next((f for f in state._folders if f["id"] == parent_id), None)
+        if (
+            parent_for_scope is not None
+            and _folder_owner_app(parent_for_scope) != request_app
+            and parent_id != _slot_home_folder_id(home_slot)
+        ):
+            raise FolderOwnershipError()
     requested_dir = project_dir.strip()
     # Off-loop: realpath + isdir + the sensitive-path scan touch the filesystem,
     # and the scaffold calls this once per folder in a loop, so a slow or
@@ -1269,6 +1540,14 @@ async def create_folder_record(
         conflict = await asyncio.to_thread(_folder_project_overlap_denied, project_dir)
         if conflict is not None:
             raise FolderCreateError(conflict, "workspace_overlaps_data_home")
+    await check_folder_agent_scope(
+        state._folders,
+        own_agent=default_agent,
+        own_dir=project_dir,
+        parent_id=parent_id,
+        request_app=request_app,
+        is_owner=is_owner,
+    )
     color = color.strip().lower()
     if color and not _is_valid_folder_color(color):
         # `code` is the contract, `error` is advisory prose (RFC 9457 3.1.3) —
@@ -1368,6 +1647,11 @@ async def create_folder_record(
                 return False, "reused"
             if twins:
                 return False, "name_exists"
+        if state.folders_generation() != folders_generation_before:
+            # Scope validation can await a project-agent scan. A concurrent
+            # folder mutation must not let this create persist a binding
+            # validated against an older parent scope.
+            return False, "folder_target_changed"
         folder["order"] = len(folders)  # recount under the lock
         folders.append(folder)
         return True, ""
@@ -1385,6 +1669,11 @@ async def create_folder_record(
     if create_err == "parent_not_found":
         # The parent was deleted while this request waited for the lock.
         raise FolderCreateError("parent folder not found", "folder_parent_not_found")
+    if create_err == "folder_target_changed":
+        raise FolderCreateError(
+            "folder changed while this create was being validated; retry",
+            "folder_target_changed",
+        )
     if create_err == "forbidden_parent":
         raise FolderOwnershipError()
     if create_err == "project_dir_exists":
@@ -1401,6 +1690,7 @@ async def create_folder_record(
 async def api_chat_folder_create(request: web.Request) -> web.Response:
     """POST /api/chat/folders — create a project folder."""
     state: DashboardState = request.app["state"]
+
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
         return refusal
     # Rate-limit INTERNAL callers only. This endpoint is mixed-path: the browser's
@@ -1498,6 +1788,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
+            is_owner=source_providers.is_owner_dashboard_request(request),
             tags=folder_tags,
             steering_dirs=steering_dirs,
             # An agent (internal transport) never mints a same-name sibling: its
@@ -1529,12 +1820,16 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc), "code": exc.code}, status=403)
     except FolderCapError as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=429)
+    except FolderAgentScopeUnverifiable as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except FolderCreateError as exc:
         # Inline literals rather than one hoisted payload dict: the error-code
         # contract scan reads the body at the `json_response` site, and a local
         # reads as an opaque body there (test/test_error_code_contract.py). The
         # wire shape is unchanged — `code` appears only when the refusal carries
         # one, exactly as the pre-extraction handler answered.
+        if exc.code == "folder_target_changed":
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         if exc.code:
             return web.json_response({"error": str(exc), "code": exc.code}, status=400)
         return web.json_response({"error": str(exc)}, status=400)
@@ -1560,12 +1855,14 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
 async def api_chat_folder_update(request: web.Request) -> web.Response:
     """PATCH /api/chat/folders/{id} — rename or reorder a folder."""
     state: DashboardState = request.app["state"]
+
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
         return refusal
     fid = request.match_info["id"]
     folder = next((f for f in state._folders if f["id"] == fid), None)
     if not folder:
         return web.json_response({"error": "not found"}, status=404)
+    folders_generation_before = state.folders_generation()
     request_app = folder_principal(state, request)
     try:
         body = await request.json()
@@ -1638,7 +1935,9 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 )
         changes["parent_id"] = new_parent
     if "project_dir" in body:
-        pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
+        pd, err = await asyncio.to_thread(
+            _validate_project_dir, str(body["project_dir"] or "").strip()
+        )
         if err:
             return web.json_response({"error": err}, status=400)
         if pd:
@@ -1729,6 +2028,83 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         if tags_err:
             return web.json_response({"error": tags_err, "code": "tags_invalid"}, status=400)
         changes["tags"] = clean_tags
+    scope_sensitive = (
+        "default_agent" in changes or "project_dir" in changes or "parent_id" in changes
+    )
+    if scope_sensitive and request_app and _folder_owner_app(folder) != request_app:
+        # Preflight ownership, ahead of scope validation below: without this,
+        # a non-owner's scope-sensitive PATCH reaches `check_folder_agent_scope`
+        # first and gets a 400 that NAMES the folder's effective agent — for a
+        # `member:` principal that discloses exactly what the ownership-filtered
+        # GET withholds (see the filter at line ~479). The authoritative
+        # ownership decision still happens under the lock in `_apply` below
+        # (`not_owned`, ~1917) and is not removed: a concurrent reparent can
+        # change who owns this folder between this read and the write, so only
+        # the locked check is safe to rely on for the actual mutation. This
+        # preflight only prevents scope validation from running — and thus
+        # answering — ahead of an ownership refusal it would otherwise leak
+        # through. The response is built identically to the locked path's
+        # `not_owned` refusal so a caller cannot tell which gate refused.
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
+            error="app cannot change a folder it does not own",
+        )
+        return web.json_response(
+            {
+                "error": "this app does not own that folder",
+                "code": "folder_not_owned",
+            },
+            status=403,
+        )
+    if scope_sensitive:
+        # The modal's Save gate, re-decided here: a PATCH that sets the agent,
+        # directory, or parent must leave the folder's effective agent inside
+        # its effective scope. Reparenting can change both inherited values.
+        # A PATCH touching none of them (rename, collapse, order, color) is not
+        # an agent-scope edit and is never refused for one.
+        # Decided before the store lock, against the pre-state, as the other
+        # pre-lock field checks above are.
+        stored_agent = str(folder.get("default_agent") or "").strip()
+        stored_dir = str(folder.get("project_dir") or "")
+        stored_parent = str(folder.get("parent_id") or "")
+        if stored_dir:
+            # Re-screen the STORED spelling. ``check_folder_agent_scope`` takes
+            # ``own_dir`` as already validated and resolves it to scan, and that
+            # resolution IS the outbound probe for a UNC spelling: it happens
+            # inside ``is_sensitive_path``, ahead of the Windows
+            # unsupported-platform arm, so that 503 does not fence it. A stored
+            # value is not trustworthy for having been validated once on the way
+            # in — a junction re-pointed under a directory that passed keeps the
+            # same spelling — which is why every other read path re-screens it
+            # through ``_resolve_folder_project_dir``. Off-loop, as the incoming
+            # branch above is: the validator realpaths. A stored dir that no
+            # longer validates narrows the accept-set to the global rows rather
+            # than widening it, and the seed below inherits the screened value
+            # so the round-trip exception still compares like with like.
+            stored_dir, _stored_err = await asyncio.to_thread(_validate_project_dir, stored_dir)
+        seeded_dir = stored_dir
+        if not seeded_dir and stored_parent:
+            seeded_dir, _err = await resolve_folder_project_dir_off_loop(
+                state._folders, stored_parent
+            )
+        try:
+            await check_folder_agent_scope(
+                state._folders,
+                own_agent=str(changes.get("default_agent", stored_agent)),
+                own_dir=str(changes.get("project_dir", stored_dir)),
+                parent_id=str(changes.get("parent_id", stored_parent)),
+                request_app=request_app,
+                is_owner=source_providers.is_owner_dashboard_request(request),
+                seeded=(stored_agent, seeded_dir),
+            )
+        except FolderAgentScopeUnverifiable as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=503)
+        except FolderAgentScopeError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     # All fields validated — apply atomically under the store lock, re-finding
     # the folder there so a concurrent delete cannot resurrect it, and
     # re-deciding the tree-shape rules there so two concurrent reparents cannot
@@ -1743,6 +2119,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         target = next((f for f in folders if f["id"] == fid), None)
         if target is None:
             return False, "not_found"
+        if scope_sensitive and state.folders_generation() != folders_generation_before:
+            # Scope validation can await a project-agent scan. A concurrent
+            # PATCH must not combine fields validated against different folder
+            # snapshots, so commit only against the generation this request read.
+            return False, "folder_target_changed"
         # Ownership, decided here for the same reason the cycle rule is: a
         # concurrent reparent can change who the target or the destination
         # belongs to between validation and the write.
@@ -1821,6 +2202,14 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if err == "not_found":
         # Deleted between the validation above and acquiring the store lock.
         return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
+    if err == "folder_target_changed":
+        return web.json_response(
+            {
+                "error": "folder changed while this update was being validated; retry",
+                "code": "folder_target_changed",
+            },
+            status=409,
+        )
     if err in ("not_owned", "forbidden_parent", "foreign_descendant"):
         # Distinguished in the audit, not to the caller: one code for all three
         # keeps the response from reporting which folder was foreign.
