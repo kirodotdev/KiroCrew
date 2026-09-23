@@ -1276,6 +1276,7 @@ class MemoryStore:
         query: str = "",
         *,
         include_activity: bool = True,
+        prefs_startup_cap: int = 0,
     ) -> str:
         """Build memory context block with source citations for prompt injection.
 
@@ -1288,6 +1289,9 @@ class MemoryStore:
             query: User message for episodic memory retrieval (optional).
             include_activity: Explicit readers may include activity; startup passes
                 False to read complete preferences only, without history/search.
+            prefs_startup_cap: Startup allowance (chars, 0 = unbounded) for the
+                ``pref.*`` semantic rows read when ``include_activity`` is False.
+                Rows past it are deferred to memory_recall and the block says so.
         """
         parts: list[str] = []
 
@@ -1321,7 +1325,9 @@ class MemoryStore:
             semantic_ctx = (
                 self._vector_store.get_semantic_context(query_text=query, cap=semantic_cap)
                 if include_activity
-                else self._vector_store.get_preferences_context()
+                else self._vector_store.get_preferences_context(
+                    query_text=query, cap=prefs_startup_cap
+                )
             )
             if semantic_ctx:
                 parts.append(semantic_ctx)

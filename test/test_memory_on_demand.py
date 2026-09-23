@@ -120,3 +120,30 @@ def test_withheld_memory_does_not_advertise_automatic_recall(tmp_path, options):
     message, _ = builder.build_message("Current question", True, "session", **options)
     assert "[Memory tools]" not in message
     assert "Facts and past experiences are not searched automatically" not in message
+
+
+def test_v1_new_session_bounds_pref_rows_at_the_startup_cap(tmp_path):
+    """The cap must reach the store through the real plumbing
+    (context._ResolvedCaps -> memory.get_context -> get_preferences_context).
+    Mocks cannot see a dropped keyword argument; a real store over the cap can."""
+    from kiro_crew.context import _PREFS_STARTUP_CAP
+    from kiro_crew.vector_memory import VectorMemoryStore
+
+    vectors = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    vectors.init()
+    for i in range(60):
+        vectors.set_semantic(f"pref.rule_{i:02d}", f"standing rule {i} " * 25, 0.9, "user_explicit")
+    memory = MemoryStore(workspace=tmp_path / "workspace", vector_store=vectors)
+    builder = ContextBuilder(
+        memory=memory,
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        lessons=LessonStore(base_dir=tmp_path),
+    )
+    first, _ = builder.build_message("plan the deploy", True, "session")
+    start = first.index("[Semantic Memory")
+    end = first.index("[End of semantic memory]\n") + len("[End of semantic memory]\n")
+    block = first[start:end]
+    assert len(block) <= _PREFS_STARTUP_CAP
+    assert "preference facts above the" in block
+    assert f"{_PREFS_STARTUP_CAP}-character startup budget" in block
+    assert 0 < block.count("\npref.rule_") < 60

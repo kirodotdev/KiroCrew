@@ -468,20 +468,22 @@ class TestAppendedSuffixDoesNotShiftUserOffset:
         header = "[CURRENT USER REQUEST -- respond to this]\n"
         typed = "deploy and report back"
         # A marker-bearing segment right after the typed text (an inline $skill
-        # body opens with a [Skill: ...] marker), then an APPENDED persona with
-        # no marker of its own — it folds into the loaded_skill block.
+        # body opens with a [Skill: ...] marker, which chat_runner appends after
+        # a "\n\n" separator), then an APPENDED persona with no marker of its own
+        # — it folds into the loaded_skill block.
+        sep = "\n\n"
         trailer = "[Skill: demo]\nskill body line one\nskill body line two\n"
         persona = (
             "\n[THEME PERSONA]\n" + ("persona voice line. " * 12) + "\n[END THEME PERSONA]\n\n"
         )
-        prompt = f"{header}{typed}{trailer}{persona}"
+        prompt = f"{header}{typed}{sep}{trailer}{persona}"
 
         # Correct offset excludes the appended suffix: no prepend here, so 0.
         out = split_blocks(prompt, user_chars=len(typed), user_offset=0)
         assert out[USER_LABEL] == len(typed)
         # The user text was carved out of the request_header block, leaving only
-        # the header line there — NOT the typed text.
-        assert out["request_header"] == len(header)
+        # the header line and the separator there — NOT the typed text.
+        assert out["request_header"] == len(header) + len(sep)
         # The skill body keeps its own bytes; the appended persona is now its
         # own theme_persona block rather than folded in here.
         assert out["loaded_skill"] == len(trailer) + 1  # + the persona's leading "\n"
@@ -810,3 +812,54 @@ class TestDomainGrouping:
             "following_interaction",
             "background",
         }
+
+
+class TestOpenersAreLineAnchored:
+    """A marker mentioned mid-line is prose, not a block start.
+
+    The assembly emits every opener at the start of a line. The same phrases also
+    appear inside blocks as explanation — the agent prompt teaches the model what
+    ``[RESOURCES]`` and ``[Hook context:]`` mean — and an unanchored scan booked
+    those mentions as blocks of their own, carving the agent prompt into pieces
+    labelled with modes that were not even on.
+    """
+
+    def test_a_marker_quoted_inside_a_block_does_not_start_a_new_one(self):
+        body = (
+            "[AGENT SYSTEM PROMPT]\n"
+            "A `[RESOURCES]` line means the host is under memory pressure.\n"
+            "An `[INCOGNITO SESSION]` or `[TEMPORARY SESSION]` prefix forbids memory.\n"
+            "The same state can arrive as a `[Hook context:]` block instead.\n"
+            "[END AGENT SYSTEM PROMPT]\n\n"
+        )
+        prompt = body + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["agent_instructions"] == len(body)
+        for phantom in ("resource_advisory", "incognito", "temporary_session", "hook_context"):
+            assert phantom not in out, f"{phantom} was minted from a quoted mention"
+        assert sum(out.values()) == len(prompt)
+
+    def test_the_shipped_agent_prompt_yields_no_phantom_blocks(self):
+        """The real ``config/prompt.md`` is the text that produced the mis-attribution
+        in the field, so it is the regression fixture: wrapped in its envelope it must
+        classify as ONE agent_instructions block."""
+        from importlib import resources
+
+        text = resources.files("kiro_crew").joinpath("config/prompt.md").read_text("utf-8")
+        body = "[AGENT SYSTEM PROMPT]\n" + text + "\n[END AGENT SYSTEM PROMPT]\n\n"
+        prompt = body + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out == {"agent_instructions": len(body), "date": len(prompt) - len(body)}
+
+    def test_the_request_header_still_matches_after_the_guidance_paragraph(self):
+        """The interactive-guidance paragraphs end with ``)`` and no newline, so the
+        request header legitimately sits mid-line; it is the one opener that must
+        stay unanchored."""
+        rules = "[REPLY FORMAT RULES]\n\n(If presenting choices, end with [OPTIONS: a | b].)"
+        header = "[CURRENT USER REQUEST — respond to this]\n"
+        prompt = rules + header + "hi"
+        out = split_blocks(prompt, user_chars=2)
+        assert out[USER_LABEL] == 2
+        assert out["request_header"] == len(header)
+        assert out[REPLY_FORMAT_LABEL] == len(rules)
+        assert sum(out.values()) == len(prompt)

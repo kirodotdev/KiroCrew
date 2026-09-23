@@ -1166,6 +1166,14 @@ _LESSONS_CAP = _budget(0.226)  # learned corrections (high priority)  = 22.6%
 # value restores the allowance a 1M-window session had before the base was
 # pinned to its smallest-window value (165_000 * 0.226 = 37_290).
 _LESSONS_STARTUP_CAP = 37_000
+# Startup allowance for the ``pref.*`` semantic rows read complete on a fresh
+# session. Window-INDEPENDENT for the same reason as the rule allowance above,
+# and derived the same way: the semantic share (7.7%) of the 165_000 reference
+# base a 1M-window session had before the base was pinned (165_000 * 0.077 =
+# 12_705). Until now this block had NO cap below the model-safe ceiling, and it
+# was the one startup block that had outgrown the rule budget (47.7K measured
+# on one real store). Rows past it are deferred to memory_recall, not dropped.
+_PREFS_STARTUP_CAP = 12_700
 # Past findings the author marked as experience rather than as standing rules.
 # A SEPARATE, deliberately smaller allowance instead of a share of
 # ``_LESSONS_CAP``: the two tiers answer different questions, so a user with many
@@ -1252,6 +1260,7 @@ class _ResolvedCaps:
     memory_history: int
     lessons: int
     lessons_startup: int
+    prefs_startup: int
     lesson_experience: int
     semantic: int
     episodic: int
@@ -1310,6 +1319,7 @@ def _resolve_caps_cached(window: int) -> _ResolvedCaps:
         memory_history=_scaled(_MEMORY_HISTORY_CAP),
         lessons=_scaled(_LESSONS_CAP),
         lessons_startup=_scaled(_LESSONS_STARTUP_CAP),
+        prefs_startup=_scaled(_PREFS_STARTUP_CAP),
         lesson_experience=_scaled(_LESSON_EXPERIENCE_CAP),
         semantic=_scaled(_SEMANTIC_MEMORY_CAP),
         episodic=_scaled(_EPISODIC_MEMORY_CAP),
@@ -4317,6 +4327,7 @@ class ContextBuilder:
                     episodic_cap=min(_EPISODIC_INJECT_CAP, caps.episodic),
                     query=query_text,
                     include_activity=False,
+                    prefs_startup_cap=caps.prefs_startup,
                 )
                 if memory_ctx:
                     # Preferences are read complete below the model-safe ceiling.
@@ -5462,6 +5473,16 @@ class ContextBuilder:
         # appended after the user's text, so the authoritative user slice owns EOF.
         if request_prefix_context:
             parts.append(_neutralize_structural_markers(request_prefix_context))
+            # The prefix is caller-shaped text: a `$skill` body arrives with its
+            # frontmatter stripped and `.strip()`ed, so it ends mid-line. Every
+            # block the assembly emits opens at the start of a line, and the
+            # context breakdown relies on that when it attributes bytes to
+            # blocks; a prefix that ends without a newline would put the next
+            # opener mid-line and fold that block into the skill's. Terminate
+            # the line here, at the one seam whose text this assembly did not
+            # shape itself.
+            if not request_prefix_context.endswith("\n"):
+                parts.append("\n")
 
         # Triggered skills (on-demand, any message) — skip for custom agents.
         # A match injects the skill's full body by DEFAULT, unchanged. A skill

@@ -75,7 +75,35 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("request_header", r"\[CURRENT USER REQUEST"),
 )
 
-_COMPILED: Final = tuple((label, re.compile(pat)) for label, pat in _MARKERS)
+# Every opener above is emitted by the assembly at the START of a line: each
+# block ends its own text with a newline before the next one is appended. The
+# same bracketed phrases also appear MID-LINE as prose — the agent prompt
+# (``config/prompt.md``) explains ``[RESOURCES]``, ``[Hook context:]``,
+# ``[INCOGNITO SESSION]`` and nine more to the model, in backticks — and an
+# unanchored scan took each mention for a real block start. Measured on one
+# real session: the 38,236-char agent prompt was reported as 438, and its
+# remaining 37.8K was booked to ``resource_advisory`` (12,348), ``hook_context``
+# (10,374), ``surface``, ``working_folder`` and two session modes that were
+# not even on. Anchoring to line start is what makes "the assembly emitted
+# this marker" and "the marker matched" the same statement.
+#
+# ``request_header`` is the one exception: the interactive-guidance paragraphs
+# before it end with ``)`` and no newline, so the header legitimately follows
+# them on the same line. The hyphenated form the assembly emits is scrubbed out
+# of every untrusted source before assembly; a bare ``[CURRENT USER REQUEST]``
+# is not, and can still count as a header hit here. That is a pre-existing
+# breakdown-only concern (the span the panel trusts comes from the assembly,
+# not from this scan), not a boundary-forgery one.
+#
+# The one seam whose text the assembly does not shape itself -- the caller's
+# ``request_prefix_context`` (a ``$skill`` body arrives ``.strip()``ed) -- is
+# newline-terminated by the assembly for exactly this reason.
+_LINE_START_EXEMPT: Final[frozenset[str]] = frozenset({"request_header"})
+
+_COMPILED: Final = tuple(
+    (label, re.compile(pat if label in _LINE_START_EXEMPT else r"^" + pat, re.MULTILINE))
+    for label, pat in _MARKERS
+)
 
 # Closing markers, by label. A block that has one owns only up to its OWN
 # closer; the characters between that closer and the next opening marker belong
