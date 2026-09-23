@@ -26,6 +26,15 @@ import type { ToolPayloadCut } from '../../types'
  *  wrapped lines, transparent background so the row's own surface shows. */
 const CMD_CODE_OPTIONS = { disableLineNumbers: true, overflow: 'wrap' } as const
 
+/** Whether a payload is JSON-ish, i.e. whether Formatted and Raw differ on it.
+ *
+ *  ONE predicate on purpose: it decides both whether the Raw/Formatted toggle
+ *  is offered and how `PayloadView` renders, so the control cannot be shown
+ *  above a payload that ignores it. It reads the payload's HEAD, which is what
+ *  a clamped payload still carries — the tail starts mid-line and would sniff
+ *  as plain text on its own. */
+const isJsonish = (text: string): boolean => /^\s*[{[]/.test(text)
+
 import { i18nT } from '../../i18n/t'
 export function ToolDetails({ purpose, pillLabel, toolName, input, output, inputCut, outputCut, auto, pending, ts, hasEntry, fmtTime, barColor, layoutId, compact, flush }: {
   purpose: string
@@ -99,7 +108,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, input
   // The Raw/Formatted toggle only matters for JSON-ish payloads (the sole place
   // the whitespace unescape applies) — hide it for plain text / diff output.
   const activeText = active === 'input' ? input : output
-  const activeIsJson = /^\s*[{[]/.test(activeText)
+  const activeIsJson = isJsonish(activeText)
   const rawMode = viewMode === 'raw'
   // Whether to offer a section control at all. Two sections is always a real
   // choice. ONE section only earns a naming label on the inline panel, which the
@@ -393,12 +402,17 @@ function PayloadView({ text, cut, raw, maxH }: { text: string; cut?: ToolPayload
   // at all. Both halves render verbatim around the marker, so what the reader
   // sees is exactly the fragment the store holds.
   if (cut && cut.at >= 0 && cut.at <= text.length) {
+    // Each half still renders in the mode the toggle above promises. The kind
+    // is decided ONCE, on the whole clamped payload, and handed to both halves:
+    // the tail begins mid-line, so sniffing it on its own would leave it as
+    // plain text while the head was formatted — two renderings of one payload.
+    const jsonish = isJsonish(text)
     return (
       <pre className={`${base} whitespace-pre-wrap break-all`}>
-        {text.slice(0, cut.at)}
+        <ClampedHalf text={text.slice(0, cut.at)} jsonish={jsonish} raw={raw} />
         <TruncationMarker count={cut.count} />
         {'\n'}
-        {text.slice(cut.at)}
+        <ClampedHalf text={text.slice(cut.at)} jsonish={jsonish} raw={raw} />
       </pre>
     )
   }
@@ -409,6 +423,25 @@ function PayloadView({ text, cut, raw, maxH }: { text: string; cut?: ToolPayload
     }
   }
   return <pre className={`${base} whitespace-pre-wrap break-all`}><ToolInputText text={text} raw={raw} /></pre>
+}
+
+/** One side of a clamped payload, rendered as a FRAGMENT of a larger whole.
+ *
+ *  A JSON-ish payload goes through `ToolInputText`'s JSON lane, which is purely
+ *  lexical — it unescapes `\n`/`\t`/`\r` under Formatted and highlights tokens,
+ *  and its own comment says it works on truncated JSON. Without it the
+ *  Raw/Formatted control above the payload is rendered (its gate reads the same
+ *  head) and does nothing, so a multi-line command inside a clamped input stays
+ *  a single line littered with literal `\n` in both modes.
+ *
+ *  Anything else renders as a plain span — never through the diff lane. That is
+ *  the seam branch's own rule: the head would be drawn as a finished patch and
+ *  the tail, which starts mid-line, cannot be parsed at all. Only the lexical
+ *  work is safe on a fragment, and only the lexical work is what the toggle
+ *  promises. */
+function ClampedHalf({ text, jsonish, raw }: { text: string; jsonish: boolean; raw: boolean }): ReactNode {
+  if (jsonish) return <ToolInputText text={text} raw={raw} jsonish />
+  return <span>{text}</span>
 }
 
 /** The "…(N characters truncated — reopen the session…)" line at a clamp seam.
