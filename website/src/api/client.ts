@@ -56,9 +56,62 @@ export const SKILLS_TIMEOUT_MS = 15_000
  *  whose fetch blocks Enter while it is unsettled, so a divergent bound here
  *  would only be a second number to explain. Rationale in the CR description. */
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
+
+/** Deadline for the whole-tree walks, `api.fileSearch` and `api.projectTree`. Its own literal,
+ *  deliberately not an alias of the skills menu's: the two happen to agree today, and retuning
+ *  that menu must not silently retune these walks. The tree read shares this bound rather than
+ *  the listings' 10s because it walks the tree, which is what the figures below timed.
+ *  This bounds an unbounded wait, it does not judge staleness — a reply for a
+ *  superseded query cannot be shown as the answer to a newer one, since the query key
+ *  carries `debouncedQuery` — so a merely slow walk is still worth waiting for.
+ *
+ *  It has to be, because the timeout path offers recovery: a bound under the honest walk time
+ *  fails every attempt alike. The walk is ceilinged, not open-ended (`_WALK_MAX_DIRS_VISITED`
+ *  20k dirs, `_WALK_MAX_SCAN_SCOPED` 50k entries), so its worst case follows those ceilings
+ *  rather than repo size. Measured on trees that reach a ceiling: an 877k-dir tree 4.20s,
+ *  `/var` 0.35s cold against 0.34s warm, `/usr` 0.17s. The worst is 28% of this budget, and
+ *  cold-vs-warm moved 2%, so store latency dominates cache state — a store ~3.6x slower than
+ *  that tree would exhaust 15s, and no tree size alone can.
+ *
+ *  Margin: this is the only wall-clock bound on either read — the backend's pool ceiling bounds
+ *  how many probes can wedge, not how long a client waits (`_PATH_PROBE_EXEC_CEILING_SECS`). The
+ *  search's own work is the ceilinged walk above, worst 4.20s, leaving ~10s of 15 for admission
+ *  (2s at most, then a coded 503) and round trips. The tree read's git steps carry per-step kill
+ *  switches (`rev-parse` 5s, `ls-files` 15s) that sum PAST this bound on purpose: a git wedged that
+ *  long is what the bound is for, and the read rejects here at 15s into the Refresh notice.
+ *  The walk figures are local-disk only; a network-mount sample, and a slow-store escape if the
+ *  headroom does not hold there, are tracked in #11419 -- until then a timed-out search's Retry /
+ *  Refresh re-enters this same bound, deliberately (see lib/withDeadline.ts on retry).
+ *
+ *  One constant rather than one per surface: a caller's `limit` only caps rows returned
+ *  (the server truncates before responding), so a wider page is not a longer walk. */
+export const FILE_SEARCH_TIMEOUT_MS = 15_000
+
+/** Deadline for the picker/panel listing endpoints (`api.browseFiles`, `api.browseDirs`,
+ *  `api.recentProjects`). Its own constant rather than the composer menus' 15s: a listing
+ *  is a different endpoint on the same wedged gateway, so retuning the skills menu must
+ *  not silently retune folder listings.
+ *
+ *  Shorter than the search's 15s because a listing is ONE `scandir` plus a per-entry directory
+ *  test, so its cost tracks a single directory's ENTRY COUNT rather than tree size. Measured that
+ *  way: the widest directory on the dev host, `/usr/share/man/man3` at 8,974 entries, listed in
+ *  3.1ms cold against 3.0ms warm — 0.03% of this budget, so cache state is not the term and the
+ *  bound tolerates a store some 3,200x slower per entry. Local storage only; no network mount was
+ *  available to sample, which is the one case this figure does not cover.
+ *
+ *  Margin, in place of that sample: this is the only wall-clock bound on the read — the backend's
+ *  pool ceiling bounds how many probes can wedge, not how long a client waits, by design. Its own
+ *  per-request work is a 2s admission wait at most (then a coded 503, not silence) plus the
+ *  millisecond listing above, so healthy work spends under a quarter of the 10s and the rest is
+ *  round trips and store latency. A mount whose per-entry stats outrun that remainder rejects HERE
+ *  at 10s into the notice (Retry / Refresh) path: the bounded refusal is the designed outcome, not a
+ *  hang. No config knob, because a knob asks the user to know a number this comment exists to spare
+ *  them. */
+export const BROWSE_FILES_TIMEOUT_MS = 10_000
+
 import { installApiTransport } from './apiTransport'
 import type { SessionSummary } from '../types/sessionSummary'
-import { queryClient, resolveDefaultMemoryMode } from './queryClient'
+import { isDeadlineError, queryClient, resolveDefaultMemoryMode } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
 import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
@@ -2088,6 +2141,26 @@ const jNullable = async (r: Response) => {
   }
   return r.json()
 }
+/** Add transport failures that have no HTTP Response to the same journal as apiFailure. */
+function withJournaledDeadline<T>(
+  ms: number,
+  outer: AbortSignal | undefined,
+  endpoint: string,
+  attempt: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  return withDeadline(ms, outer, attempt).catch((error: unknown) => {
+    if (isDeadlineError(error)) {
+      recordError({
+        source: 'api',
+        message: error instanceof Error ? error.message : String(error),
+        code: 'timeout',
+        endpoint,
+      })
+    }
+    throw error
+  })
+}
+
 // X-Session-Key ensures the server-side ephemeral gate always runs.
 // Without it, browser requests would skip the `if sk:` check — a fail-open
 // path that an MCP subprocess could exploit by omitting its own header.
@@ -3916,7 +3989,7 @@ export const api = {
   // Bounded HERE, not per initiator: react-query dedupes on the key, so the
   // weakest initiator would otherwise decide whether the promise is bounded.
   slashCommands: (signal?: AbortSignal) =>
-    withDeadline(SLASH_COMMANDS_TIMEOUT_MS, signal, s =>
+    withJournaledDeadline(SLASH_COMMANDS_TIMEOUT_MS, signal, '/api/slash-commands', s =>
       fetch('/api/slash-commands', { signal: s }).then(j)),
   /** `kind` names the namespace the user picked from. Omitted, the backend
    *  keeps its legacy name-first resolution; stated, a same-name template and
@@ -3958,15 +4031,18 @@ export const api = {
       base?: string
       error?: string
     }>,
-  recentProjects: () => fetch('/api/recent-projects').then(j) as Promise<{ dirs: string[] }>,
-  browseDirs: (path?: string) => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
+  recentProjects: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/recent-projects', s => fetch('/api/recent-projects', { signal: s }).then(j)) as Promise<{ dirs: string[] }>,
+  // Bounded HERE, not per initiator: react-query dedupes on the key, so the weakest
+  // initiator would decide the bound.
+  browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
   /** Windows only: the mounted drive roots, as the virtual level above every `X:\`. `path` is `""`: this listing is not a directory. */
-  browseDrives: () => fetch('/api/browse-dirs?drives=1').then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
-  browseFiles: (path?: string) => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
+  browseDrives: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs?drives=1', { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
+  browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
   projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
   projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
   projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
-  projectTree: (path: string) => fetch('/api/project/tree?path=' + encodeURIComponent(path)).then(j) as Promise<{ root: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[] }>,
+  projectTree: (path: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
+    fetch('/api/project/tree?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<{ root: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[] }>,
   workspaces: () => fetch('/api/workspaces').then(j),
   createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
   updateWorkspace: (name: string, body: object) =>
@@ -4124,7 +4200,7 @@ export const api = {
   // Bounded HERE, not per initiator: react-query dedupes on the key, so the
   // weakest initiator would otherwise decide whether the promise is bounded.
   skills: (sessionKey?: string, agent?: string, signal?: AbortSignal) =>
-    withDeadline(SKILLS_TIMEOUT_MS, signal, s =>
+    withJournaledDeadline(SKILLS_TIMEOUT_MS, signal, '/api/skills', s =>
       get('/api/skills' + (agent ? '?agent=' + encodeURIComponent(agent) : ''),
           sessionKey, s).then(j)),
   /** Project-skills trust: this chat's grant state plus every stored grant. */
@@ -4903,13 +4979,18 @@ export const api = {
    *  Filtering server-side rather than dropping unwanted hits here matters because the
    *  backend caps results BEFORE the response, so a client-side filter would silently
    *  shrink an already-capped list. `limit` raises the server's result cap (default 15);
-   *  the server clamps it to a fixed ceiling, so a large value cannot amplify the walk. */
+   *  the server clamps it to a fixed ceiling, so a large value cannot amplify the walk.
+   *
+   *  Bounded HERE, not per initiator: react-query dedupes on the key, so the
+   *  weakest initiator would otherwise decide whether the promise is bounded —
+   *  and a future caller would arrive unbounded by default. */
   fileSearch: (q: string, project?: string, signal?: AbortSignal, kinds?: 'files' | 'dirs', limit?: number) => {
     const p = new URLSearchParams({ q })
     if (project) p.set('project', project)
     if (kinds) p.set('kinds', kinds)
     if (limit) p.set('limit', String(limit))
-    return fetch(`/api/file-search?${p}`, signal ? { signal } : undefined).then(j) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string }>
+    return withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, signal, '/api/file-search', s =>
+      fetch(`/api/file-search?${p}`, { signal: s }).then(j)) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string }>
   },
   /** One directory level of a project, for the composer's `./` path completion.
    *  `dir` is the literal prefix typed (`./`, `../src/`) and `q` the partial entry

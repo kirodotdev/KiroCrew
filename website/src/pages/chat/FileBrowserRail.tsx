@@ -6,8 +6,6 @@ import { Files, Diff, Search, X, RefreshCw, FileText } from 'lucide-react'
 import { api } from '../../api/client'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
 import ErrorNotice from '../../components/ErrorNotice'
-import { findReport } from '../../utils/errorReport'
-import { errMessage } from '../../utils/thunkError'
 import {
   gitFilterRefusalCause,
   gitFilterRefusalCopyKey,
@@ -15,9 +13,12 @@ import {
 } from '../../utils/gitStatusError'
 import { EmptyState } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import { searchErrorCause, namingRefresh } from '../../lib/searchErrorCause'
 import { cn } from '../../lib/utils'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { PierreWorkspaceTree } from '../../pierre/tree'
+import { findReport } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
 
 /** Rail width bounds; the grip clamps between them. */
 const RAIL_MIN_W = 300
@@ -83,23 +84,52 @@ function rememberQuery(projectDir: string, value: string): void {
  *
  * `ready` covers the in-flight case on purpose: the tree renders its own loading
  * state, so the rail should mount rather than flashing an error first.
+ *
+ * `error` stays ONE state because the rail renders the same notice either way, keyed on
+ * the deadline-vs-other split the pickers use. Whether it counts as AVAILABLE is
+ * cause-keyed, exactly as the pickers' Retry is: see `useTreeAvailable`.
  */
-export type TreeState = 'no-dir' | 'error' | 'ready'
+export type TreeState = 'no-dir' | 'error' | 'recoverable' | 'ready'
 
-export function useTreeState(projectDir: string | null | undefined): TreeState {
-  const q = useQuery({
+/** The `['project-tree']` read itself. Exported for the surfaces that need the failed read's OWN
+ *  error beside `useTreeState`'s verdict -- the hand-off on a tree notice is keyed on the server's
+ *  message, which the verdict does not carry. Same key, so react-query dedupes a second observer
+ *  into the one request. */
+export function useTreeQuery(projectDir: string | null | undefined) {
+  return useQuery({
     queryKey: ['project-tree', projectDir ?? ''],
     queryFn: () => api.projectTree(projectDir ?? ''),
     enabled: !!projectDir,
     retry: false,
     staleTime: 10_000,
   })
-  if (!projectDir) return 'no-dir'
-  return q.isError ? 'error' : 'ready'
 }
 
+export function useTreeState(projectDir: string | null | undefined): TreeState {
+  const q = useTreeQuery(projectDir)
+  if (!projectDir) return 'no-dir'
+  if (!q.isError) return 'ready'
+  // A deadline or a codeless failure: either can answer differently on a Refresh, so the rail
+  // must stay to carry one. A refusal or a missing root cannot, and stays hidden.
+  const cause = searchErrorCause(q.error)
+  return cause === 'timed_out' || cause === 'failed' ? 'recoverable' : 'error'
+}
+
+/**
+ * Whether the rail is worth mounting. Delegates to `useTreeState` rather than re-spelling the
+ * cause rule, because two spellings of one rule is how the surfaces came to disagree.
+ *
+ * A RECOVERABLE read keeps the rail — a deadline or a codeless failure, both of which can answer
+ * differently on a Refresh. On the FILE-TAB rail hiding it strands the user outright: `SidePanel`
+ * drops the rail AND its toggle with no notice, so there is no statement of the failure and no way
+ * to re-ask. The Files-home surface does not consume this hook — it renders its own `tree_error`
+ * notice beside a labelled Refresh for every failed read, recoverable or not. A denial
+ * or a missing root returns the same answer however often it is re-asked, so those keep the
+ * hidden-rail behaviour rather than promising a recovery that cannot arrive.
+ */
 export function useTreeAvailable(projectDir: string | null | undefined): boolean {
-  return useTreeState(projectDir) === 'ready'
+  const state = useTreeState(projectDir)
+  return state === 'ready' || state === 'recoverable'
 }
 
 /** A hit's path as the rail shows it: relative to the searched root, because the
@@ -353,6 +383,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     _setQuery(v)
   }
 
+  const { isError: treeError, error: treeErr } = useTreeQuery(projectDir)
   const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
@@ -419,6 +450,12 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
        on ? 'bg-bg text-text shadow-[0_0_0_1px_var(--border)]' : 'bg-transparent text-muted hover:text-text')
 
   const contentMode = searchMode === 'content'
+  // The tree notice belongs only to the body the `['project-tree']` read backs. Changed
+  // mode lists `['git-status']` (PierreWorkspaceTreeImpl: `ready = mode === 'changed'
+  // ? status != null : tree != null`) and Content mode lists grep hits, so a failed
+  // tree read there would paint a failure banner above a fully populated list. The same
+  // flag reveals the header Refresh's label, since the notice is what names it.
+  const treeNotice = treeError && !changedMode && !contentMode
 
   return (
     <>
@@ -500,11 +537,24 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
           <button
             onClick={refresh}
             disabled={refreshing}
-            className="flex flex-none items-center justify-center w-[26px] h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-default"
+            className={cn(
+              'flex flex-none items-center justify-center h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-default',
+              treeNotice ? 'gap-1 px-1.5' : 'w-[26px]',
+            )}
             title={t('pages.chat.fileBrowserRail.refresh')}
             aria-label={t('pages.chat.fileBrowserRail.refresh')}
           >
             <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            {/* The tree notice below names "Refresh" as the remedy, so the control it
+                names has to show that word: an icon alone leaves a first-time user
+                scanning for a label that is not rendered. Same reveal FolderPanel's
+                header Refresh makes while its notices name it; `aria-hidden` because
+                the accessible name is already the aria-label above. */}
+            {treeNotice && (
+              <span aria-hidden className="text-[11px] leading-none">
+                {t('pages.chat.fileBrowserRail.refresh')}
+              </span>
+            )}
           </button>
         </div>
         {/* The Name/Content toggle has its own row, in words, both always
@@ -571,6 +621,24 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             />
           </div>
         )}
+        {/* A bounded tree read that rejects used to paint an empty tree, which reads as
+            an empty project. File rail, no draft -> hand-off on. Mode-gated like the
+            status notice above: see `treeNotice`. */}
+        {treeNotice && (
+          <div className="px-2 pt-1.5 shrink-0 flex items-center gap-2">
+            <ErrorNotice
+              variant="inline"
+              // Names the TREE, and the same way FolderPanel's root notice names it: this is one
+              // failed `['project-tree']` read, so two surfaces must not call it two things.
+              // Named as retryable without a cause check because the rail only MOUNTS while
+              // `useTreeAvailable` holds, i.e. while the failure is recoverable -- and the header
+              // Refresh above refetches this very key, so the remedy it names is real.
+              message={namingRefresh(t, t('pages.chat.filesHome.tree_error'))}
+              report={findReport(errMessage(treeErr))}
+              askAgent
+            />
+          </div>
+        )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">
           {contentMode ? (
             <ContentResults
@@ -584,6 +652,12 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
                 onFileOpen(hit.file, false, line !== undefined ? { line } : undefined)
               }}
             />
+          ) : treeNotice ? (
+            // The notice above already speaks for this body. Mounting the tree here too
+            // would leave its Suspense/loading skeleton shimmering under a notice that says
+            // the read failed -- two claims about one read. The tree returns with the data:
+            // the header Refresh refetches the same key, and a success clears `treeError`.
+            null
           ) : (
             <PierreWorkspaceTree
               mode={changedMode ? 'changed' : 'all'}

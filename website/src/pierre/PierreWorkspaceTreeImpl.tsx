@@ -334,7 +334,11 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     queryKey: ['project-tree', projectDir],
     queryFn: () => api.projectTree(projectDir),
     enabled: !!projectDir,
-    refetchInterval: 10_000,
+    // No poll while the read is failing: `api.projectTree` runs under a deadline, so a
+    // wedged gateway would otherwise be re-walked every interval for as long as the tree
+    // is mounted, each pass rejecting on the same deadline. A failed read recovers through
+    // the host's Refresh (it refetches this key), and the poll resumes once that succeeds.
+    refetchInterval: q => (q.state.error ? false : 10_000),
     refetchOnWindowFocus: true,
   })
   const { data: status, error: statusError } = useQuery({

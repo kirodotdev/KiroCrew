@@ -99,6 +99,30 @@ afterEach(() => {
 })
 
 describe('PierreWorkspaceTreeImpl — data loading', () => {
+  it('stops polling the tree while its read is failing, and polls again once it answers', async () => {
+    // `api.projectTree` runs under a deadline, so a wedged gateway turns every poll into a
+    // rejection ~15s in; an un-gated 10s interval re-walked the server for as long as the
+    // tree was mounted. The host's Refresh refetches this key and is the recovery path.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      vi.mocked(api.projectTree).mockRejectedValue(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+      const { qc } = renderTree()
+      await waitFor(() => expect(qc.getQueryState(['project-tree', ROOT])?.status).toBe('error'))
+      expect(api.projectTree).toHaveBeenCalledTimes(1)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(25_000) })
+      expect(api.projectTree).toHaveBeenCalledTimes(1)
+
+      vi.mocked(api.projectTree).mockResolvedValue(mkTree())
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      expect(api.projectTree).toHaveBeenCalledTimes(2)
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_500) })
+      expect(api.projectTree).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows the shimmer skeleton until the first payload decides empty vs populated', async () => {
     let resolveTree: (payload: TreePayload) => void = () => {}
     vi.mocked(api.projectTree).mockReturnValue(new Promise<TreePayload>(r => { resolveTree = r }))
