@@ -623,20 +623,44 @@ def _ceiling_permitted(
     ``rebuild_agent_config``'s last sanitizer pass over ``mcpServers``, is deliberate.
 
     Each entry is asked of *permits* under Crew's name for it (``subagent`` as
-    ``use_subagent``). It fails closed: what is dropped here keeps prompting.
+    ``use_subagent``). It fails closed: what is dropped here keeps prompting. A
+    literal ``@server`` entry covering ``background_run`` is narrowed to the server's
+    other verbs (``agent_sdk.drivers.acp.narrowed_grant``). Any other spelling that
+    reaches it never derived an MCP allow (a server glob such as ``@*``, a bare
+    pattern), so it is dropped rather than widened into one. ``*`` grants the shell,
+    so ``narrowed_grant`` leaves it to *permits* exactly as on main.
     """
+    from kiro_crew.acp.kas_permissions import _mcp_pattern
+
+    # circular import: the driver imports this layer.
+    from kiro_crew.agent_sdk.drivers.acp import narrowed_grant
+
     if not isinstance(allowed_tools, list):
         return []
     permitted: list[str] = []
     withheld: list[str] = []
+    narrowed_away: list[str] = []
     for raw in allowed_tools:
         if not isinstance(raw, str) or not raw.strip():
             continue
         entry = canonical_kiro_cli_tool_name(raw.strip())
-        if permits(entry):
+        narrowed = narrowed_grant(entry)
+        if narrowed is not None:
+            derives = entry.startswith("@") and _mcp_pattern(entry) is not None
+            subs = [s for s in narrowed if derives and permits(s)]
+            permitted.extend(s for s in subs if s not in permitted)
+            narrowed_away.append(entry)
+        elif permits(entry):
             permitted.append(entry)
         else:
             withheld.append(entry)
+    if narrowed_away:
+        _audit_permission_decision(
+            ", ".join(sorted(narrowed_away)),
+            "withheld",
+            "background_run is never auto-approved; narrowed to the server's other verbs",
+            agent_id,
+        )
     if withheld:
         names = ", ".join(sorted(withheld))
         logger.info(
@@ -883,6 +907,8 @@ def to_client_custom_agent(
     permissions = merge_user_permissions(
         permissions,
         spec.get("permissions"),
+        # The shared predicate refuses an allow covering ``background_run``
+        # (``@kirocrew-cron``), so such an authored allow keeps prompting.
         ceiling_permits=authored_gate,
         audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
             refs, outcome, reason, agent_id

@@ -273,6 +273,7 @@ GET /api/artifacts api_artifacts_list
 POST /api/workflows/author api_workflow_author
 POST /api/workflows/run api_workflow_run
 POST /api/workflows/run_intent api_workflow_run_intent
+POST /api/workflows/background api_workflow_background_run
 HEAD /api/workflows/definitions api_workflow_definitions
 GET /api/workflows/definitions api_workflow_definitions
 POST /api/workflows/definitions api_workflow_definitions_create

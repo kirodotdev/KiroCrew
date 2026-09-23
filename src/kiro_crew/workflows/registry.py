@@ -50,6 +50,12 @@ _FALLBACK_FOLDER_ID_MAX = 64
 # Max concurrently-tracked runs kept in memory (oldest finished evicted first).
 DEFAULT_MAX_RUNS = 200
 
+
+def _evictable(handle: "RunHandle") -> bool:
+    """A finished run whose driver owes its outcome no delivery."""
+    return handle.status not in ACTIVE_STATUSES and not handle.delivery_pending
+
+
 # Callback fired (once) when a run reaches a terminal state, to inject the
 # result back into the originating chat session.
 #   on_done(run_id, snapshot: dict) -> None
@@ -157,6 +163,8 @@ class RunHandle:
     task_id: str = ""
     capabilities: tuple[str, ...] = ()
     completion_injection: bool = True
+    # Set by a host driver whose outcome still owes a delivery: eviction skips the run.
+    delivery_pending: bool = False
     workflow_id: str = ""
     workflow_slug: str = ""
     workflow_revision: int = 0
@@ -205,6 +213,11 @@ class RunHandle:
         """Admission fixes privacy before the first checkpoint is scheduled."""
         context_mode = getattr(self.execution_context, "memory_mode", self.memory_mode)
         return self.memory_mode == "persistent" and context_mode == "persistent"
+
+    @property
+    def persistence_error(self) -> Optional[str]:
+        """Why the latest checkpoint did not save, or ``None`` once one has."""
+        return self._persistence_error
 
     def snapshot(self, *, include_events: bool = True, include_result: bool = True) -> dict:
         """JSON-serializable view of this run (never leaks the asyncio.Task).
@@ -354,6 +367,7 @@ class RunHandle:
             "timeout_secs": self.timeout_secs,
             "budget_total": self.budget_total,
             "admitted_at": self.admitted_at,
+            **({"delivery_pending": True} if self.delivery_pending else {}),
             "workflow_id": self.workflow_id,
             "workflow_slug": self.workflow_slug,
             "workflow_revision": self.workflow_revision,
@@ -413,6 +427,7 @@ class RunHandle:
             timeout_secs=_stored_limit(obj.get("timeout_secs")),
             budget_total=_stored_limit(obj.get("budget_total")),
             admitted_at=_stored_time(obj.get("admitted_at")),
+            delivery_pending=obj.get("delivery_pending") is True,
             workflow_id=obj.get("workflow_id", ""),
             workflow_slug=obj.get("workflow_slug", ""),
             workflow_revision=int(obj.get("workflow_revision") or 0),
@@ -507,10 +522,7 @@ class RunRegistry:
 
     async def _evict_async(self) -> None:
         while len(self._runs) > self._max_runs:
-            rid = next(
-                (rid for rid, h in self._runs.items() if h.status not in ACTIVE_STATUSES),
-                None,
-            )
+            rid = next((rid for rid, h in self._runs.items() if _evictable(h)), None)
             if rid is None:
                 break
             await self.delete_async(rid)
@@ -526,7 +538,7 @@ class RunRegistry:
         # Drop oldest TERMINAL runs first; never evict a still-running run.
         while len(self._runs) > self._max_runs:
             for rid, h in list(self._runs.items()):
-                if h.status not in ACTIVE_STATUSES:
+                if _evictable(h):
                     self.delete(rid)
                     break
             else:

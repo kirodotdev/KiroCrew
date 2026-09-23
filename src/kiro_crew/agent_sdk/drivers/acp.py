@@ -42,8 +42,11 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+# Defined beside their matcher; re-exported here for the writers that narrow.
+from kiro_crew.agent_sdk.mcp_refs import NEVER_AUTO_APPROVED, reaches_never_auto_approved
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Iterable
 
     from kiro_crew.agent_sdk.context import ContextPromptProvider
     from kiro_crew.providers.acp import AcpProvider
@@ -77,6 +80,9 @@ __all__ = [
     "kas_start_was_refused",
     "kiro_cli_resolves",
     "narrowed_agent_permissions",
+    "narrowed_grant",
+    "NEVER_AUTO_APPROVED",
+    "reaches_never_auto_approved",
     "provider_error_client",
     "provider_label",
     "provider_label_for_backend",
@@ -501,6 +507,52 @@ def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dic
 
     derived = allowed_tools_to_permissions(allowed_tools, agent_id=Path(agent_filename).stem)
     return derived if derived is not None else {"rules": []}
+
+
+def narrowed_grant(entry: str, servers: Iterable[str] = ()) -> list[str] | None:
+    """The grants that replace *entry*, or ``None`` when it may stand as written.
+
+    ``None`` too for an entry that also grants the shell (``*``): ``background_run``
+    adds nothing to an unprompted shell (``mcp_refs.withholds_never_auto_approved``).
+    Any other covering grant keeps everything else it covered. On each OTHER server
+    in *servers* (the config's mounted ``mcpServers`` names) it becomes that server's
+    scoped form (``@*`` -> ``@other``, ``@*/*_run`` -> ``@other/*_run``; a bare
+    ``*_run`` gains none, ``mcp_refs.server_scoped_grants``). On the withheld ref's own server
+    (``@kirocrew-cron``, ``@kirocrew-cron/*``, ``@*``) it becomes the
+    ``@server/verb`` grants it reaches among the server's own declared tools, minus
+    the withheld ones: the same auto-approve less ``background_run``. The verbs come
+    from the declaration ``tools/list`` serves (``managed_tool_names_for_policy``), so
+    a verb added later joins on the next build, as the covering grant would have let
+    it. An exact or verb-glob grant of a withheld ref reaches no other verb and is
+    dropped. An unreadable declaration substitutes nothing (fail closed): the
+    covering grant goes and any per-verb grants beside it stand.
+    """
+    from kiro_crew.agent_sdk.mcp_refs import (
+        entry_reaches,
+        server_scoped_grants,
+        withholds_never_auto_approved,
+    )
+
+    if not withholds_never_auto_approved(entry):
+        return None
+    from kiro_crew import mcp_discovery_managed
+
+    withheld_servers = dict.fromkeys(r[1:].partition("/")[0] for r in NEVER_AUTO_APPROVED)
+    out: list[str] = server_scoped_grants(entry, servers, skip=withheld_servers)
+    for server in withheld_servers:
+        verbs = mcp_discovery_managed.managed_tool_names_for_policy(server)
+        if verbs is None:
+            logger.warning(
+                "cannot read @%s's tools; withholding %s whole rather than narrowing it",
+                server,
+                entry,
+            )
+            continue
+        for verb in verbs:
+            sub = f"@{server}/{verb}"
+            if entry_reaches(entry, sub) and not reaches_never_auto_approved(sub):
+                out.append(sub)
+    return list(dict.fromkeys(out))
 
 
 def _rule_label(rule: dict) -> str:

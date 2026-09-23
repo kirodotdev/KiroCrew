@@ -426,6 +426,7 @@ def derive(request, native_tree, managed):
         assert json.dumps(spec) == original
         return out
 
+    project_spec.route = request.param  # type: ignore[attr-defined]
     return project_spec
 
 
@@ -440,7 +441,10 @@ def test_single_tool_deny_drops_covering_approvals(derive, per_tool_ceiling):
     ).permitted
     assert governance.may_skip_gate_now("@kirocrew-cron") is False
     assert governance.may_skip_gate_now("*") is True
-    assert governance.may_skip_gate_now("@kirocrew-*") is True
+    # Covers ``background_run`` without granting the shell, which the shared
+    # predicate never lets skip; the helper's per-server check withholds it here.
+    assert governance.may_skip_gate_now("@kirocrew-*") is False
+    assert governance.may_skip_gate_now("@other") is True
 
     out = derive({"name": "custom", "tools": ["read"], "allowedTools": _APPROVALS})
 
@@ -489,10 +493,22 @@ def test_single_tool_deny_audits_withheld_approvals(derive, per_tool_ceiling, au
 
 
 def test_ungoverned_keeps_approvals(derive, per_tool_ceiling, monkeypatch, audit_events):
+    """No ceiling: every approval keeps what it covered, except ``background_run``.
+
+    ``*`` grants the shell and stands as on main. Every other entry reaching the
+    added cron server's ``background_run`` is replaced by what else it covered.
+    """
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+
     monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: None)
     out = derive({"name": "custom", "tools": ["read"], "allowedTools": _APPROVALS})
-    assert out["allowedTools"] == _APPROVALS
-    assert audit_events == []
+    allowed = out["allowedTools"]
+    unchanged = ["*", "@other", "@kirocrew-cron/cron_*", "@kirocrew-*/cron_*", "web_search"]
+    for ref in [*unchanged, "@kirocrew-core", "@other/read", "@kirocrew-cron/cron_list"]:
+        assert ref in allowed, (ref, allowed)
+    assert len(allowed) == len(set(allowed)), allowed
+    reaching = [g for g in allowed if entry_reaches(g, "@kirocrew-cron/background_run")]
+    assert reaching == ["*"], allowed
 
 
 def test_audit_failure_keeps_approvals_withheld(derive, per_tool_ceiling, monkeypatch):
@@ -525,7 +541,12 @@ def test_only_added_servers_narrow_covering_approvals(derive, per_tool_ceiling):
         "excludedTools": ["@kirocrew-cron"],
     }
     out = derive(spec)
-    assert out["allowedTools"] == spec["allowedTools"]
+    if derive.route == "helper":
+        assert out["allowedTools"] == spec["allowedTools"]
+    else:
+        # The view keeps ``*`` (it grants the shell) and narrows ``@kirocrew-*`` to
+        # the mounted core server; the ceiling here refuses the cron verbs.
+        assert out["allowedTools"] == ["*", "@kirocrew-core", "@other"]
     assert set(out["mcpServers"]) == {"kirocrew-core"}
 
 

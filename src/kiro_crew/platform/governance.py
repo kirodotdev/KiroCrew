@@ -274,6 +274,17 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     # entries, but this keeps the predicate safe for any caller.
     if not isinstance(ref, str):
         return False
+    # A ref no grant may cover (``mcp_refs.NEVER_AUTO_APPROVED``: background_run
+    # starts an arbitrary command) is refused here, with or without a ceiling, so
+    # every writer that consults this predicate withholds it without knowing the
+    # feature: exact refs, covering ones (``@kirocrew-cron``, ``@*``, a case-folded
+    # server) and the bare verb. Refusing means "prompt", never "deny". A ref that
+    # also grants the shell (``*``) is not refused for it: background_run adds
+    # nothing to an unprompted shell, so the rest of this predicate judges it.
+    from kiro_crew.agent_sdk.mcp_refs import withholds_never_auto_approved
+
+    if withholds_never_auto_approved(ref):
+        return False
     # A builtin whose MANDATORY, ceiling-INDEPENDENT floor lives at the
     # PreToolUse gate must NEVER be auto-approved: auto-approve is the one path
     # that skips hooks.on_tool_call, and that floor (sensitive-path blocking for
@@ -511,6 +522,26 @@ def _is_honourable_shape(asked: object) -> bool:
     return isinstance(asked, list) and all(isinstance(v, str) for v in asked)
 
 
+def _past_never_auto_approved(name: str, spec: dict) -> tuple[dict, bool]:
+    """``(spec, governed)`` for one server entry's ``autoApprove`` under the ceiling.
+
+    A server whose whole-server ref covers a never-auto-approved verb
+    (``mcp_refs.NEVER_AUTO_APPROVED``) is refused by :func:`may_skip_gate` whatever
+    the ceiling says, so its list is judged per verb instead: the ceiling, profiles
+    and ``hooks.confirm_tools`` answer ``@server/verb`` as they answer ``@server``,
+    and only the refused verbs go. Returns *spec* itself when nothing is dropped.
+    """
+    from kiro_crew.agent_sdk.mcp_refs import reaches_never_auto_approved
+
+    if may_skip_gate_now(f"@{name}"):
+        return spec, False
+    asked = spec["autoApprove"]
+    if not isinstance(asked, list) or not reaches_never_auto_approved(f"@{name}"):
+        return spec, True
+    narrowed = [v for v in asked if isinstance(v, str) and may_skip_gate_now(f"@{name}/{v}")]
+    return (spec if narrowed == asked else {**spec, "autoApprove": narrowed}), not narrowed
+
+
 def strip_ungoverned_auto_approve(
     servers: Mapping[str, object],
     *,
@@ -573,7 +604,9 @@ def strip_ungoverned_auto_approve(
             out[name] = spec
             continue
         kept: list = []
-        if not may_skip_gate_now(f"@{name}"):
+        original = spec
+        spec, governed = _past_never_auto_approved(name, spec)
+        if governed:
             pass  # governed: nothing survives, and the enterprise path is unchanged
         elif (
             honoured
@@ -590,14 +623,16 @@ def strip_ungoverned_auto_approve(
             undeclared = _undeclared_verbs(spec["autoApprove"], seeded.get(name) or ())
             if undeclared and audit:
                 _audit_auto_approve_honoured(name, undeclared)
-            out[name] = spec
-            continue
+            if spec is original:
+                out[name] = spec
+                continue
+            kept = list(spec["autoApprove"])  # a narrowed verb is a withhold: audit it
         else:
             asked = spec["autoApprove"]
             declared = seeded.get(name) or ()
             kept = [v for v in asked if v in declared] if isinstance(asked, list) else []
-            if kept == asked:
-                out[name] = spec
+            if kept == original["autoApprove"]:
+                out[name] = original
                 continue
         trimmed = dict(spec)
         if kept:
@@ -609,7 +644,8 @@ def strip_ungoverned_auto_approve(
             continue
         logger.info(
             "Withheld autoApprove verbs on MCP server %s (kept %r): the ceiling "
-            "constrains it, or no spec declared them and the opt-in is off",
+            "constrains it, a verb is never auto-approved, or no spec declared them "
+            "and the opt-in is off",
             name,
             kept,
         )
@@ -1071,13 +1107,24 @@ def sanitize_agent_config_governance(
     """
     allowed = config.get("allowedTools")
     if isinstance(allowed, list):
+        # A grant covering a never-auto-approved ref is replaced by what else it
+        # covered (``narrowed_grant``), each part asked of the ceiling in turn.
+        from kiro_crew.agent_sdk.drivers.acp import narrowed_grant
+
+        mounted = config.get("mcpServers")
+        names = list(mounted) if isinstance(mounted, dict) else []
         kept: list[str] = []
         withheld: list[str] = []
         for ref in allowed:
             if not isinstance(ref, str):
                 continue  # non-string junk is not a valid ref — drop silently
+            narrowed = narrowed_grant(ref, names)
+            if narrowed is not None:
+                withheld.append(ref)
+                kept.extend(s for s in narrowed if s not in kept and may_skip_gate_now(s))
+                continue
             (kept if may_skip_gate_now(ref) else withheld).append(ref)
-        config["allowedTools"] = kept
+        config["allowedTools"] = list(dict.fromkeys(kept))
         if withheld and audit:
             # Withholding a grant is a permission DECISION — every other
             # allowedTools writer emits this event, so a silent drop here would

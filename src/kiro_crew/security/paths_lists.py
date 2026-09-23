@@ -950,6 +950,7 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
         "subagents",
         "app-agent-launch",
         "update_next_start.json",
+        "background",  # gateway-owned command records: a forged one would aim its kill
     )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write

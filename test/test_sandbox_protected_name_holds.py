@@ -548,6 +548,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #: it cannot take a stand-in; nothing republishes ``state`` itself (its writers rename
     #: files INSIDE it), and its parents are pinned against rename.
     #:
+    #: ``background`` -- the gateway-owned background command records, exit
+    #: statuses and logs, sealed read-only so a forged record cannot aim the
+    #: gateway's kill -- is one more data-home root leaf, three entries per tier.
+    #: The gateway only ever creates names beneath it and never republishes the
+    #: leaf itself.
+    #:
     #: The record is one line per name, not a count per tier: two changes that each
     #: add a different leaf add different lines and stay green merged, where a count
     #: would be rewritten to the same number by both (testing-conventions.md
@@ -578,6 +584,7 @@ class TestLeafOnlyPopulationIsRecorded:
         "<crew>/auth-store-staging": (3, "standard cc strict"),
         "<crew>/aws-control-staging": (3, "standard cc strict"),
         "<crew>/aws_service_consent.json": (3, "standard cc strict"),
+        "<crew>/background": (3, "standard cc strict"),
         "<crew>/backup": (3, "standard cc strict"),
         "<crew>/browser-cookies.txt": (3, "standard cc strict"),
         "<crew>/browser-engine": (3, "standard cc strict"),
