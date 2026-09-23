@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -89,8 +90,22 @@ case "$url" in
       printf '%s\n' "$state"
     fi
     exit 0 ;;
-  *"/actions/workflows/ci.yml/runs"*)      cat "$FIXTURES/ci_runs.json"; exit 0 ;;
-  *"/actions/workflows/"*"/runs"*)         cat "$FIXTURES/green_runs.json"; exit 0 ;;
+  *"/actions/runs?event=pull_request"*)
+    # The one consolidated read of every pull_request run on the head. The
+    # URL used to name the lane (one request per workflow file); the fixture
+    # files keep that role: CI answers from ci_runs.json, every other
+    # monitored lane -- and the fast-gate.yml trigger a fork check-run binds
+    # to -- from green_runs.json, each entry re-labelled with the lane's path
+    # so the step's own `.path` select finds it. LANE_FILES is the step's
+    # spec list, derived by the Runner from the workflow text.
+    jq -cs --arg names "$LANE_FILES" '
+      {workflow_runs:
+        ([.[0].workflow_runs[] | .path = ".github/workflows/ci.yml"]
+         + [.[1].workflow_runs[] as $r
+            | ($names | split(" ")[] | select(. != "")) as $n
+            | $r | .path = ".github/workflows/" + $n])}
+    ' "$FIXTURES/ci_runs.json" "$FIXTURES/green_runs.json"
+    exit 0 ;;
   *"/actions/runs?event=dynamic"*)         cat "$FIXTURES/codeql_runs.json"; exit 0 ;;
 esac
 echo "gh stub: unhandled: $*" >&2
@@ -125,6 +140,23 @@ def _evaluate_script() -> str:
         if step.get("id") == "verdict":
             return step["run"]
     raise AssertionError("evaluate step not found")
+
+
+# The consolidated runs read (`actions/runs?event=pull_request&head_sha=`) is
+# the only request the step makes for its workflow-run lanes, so it is the
+# substring every transport-failure test targets.
+RUNS_READ = "actions/runs?event=pull_request"
+
+
+def _lane_files() -> list[str]:
+    """Every workflow FILE the evaluate step monitors, in spec order, from the
+    step's own `"<file>.yml|<label>"` spec entries -- so the stub never drifts
+    from the lane list it stands in for."""
+    seen: list[str] = []
+    for name in re.findall(r'"([a-z0-9-]+\.yml)\|', _evaluate_script()):
+        if name not in seen:
+            seen.append(name)
+    return seen
 
 
 # `id` and `run_attempt` are not decoration: readiness derives the expected
@@ -217,6 +249,8 @@ class Runner:
             "RUNNER_TEMP": str(self.temp),
             "GITHUB_OUTPUT": str(self.output),
             "REPO": "kirodotdev/KiroCrew",
+            # Every non-CI lane file, for the stub's consolidated runs read.
+            "LANE_FILES": " ".join(f for f in _lane_files() if f != "ci.yml"),
             "PR": "2650",
             "SHA": "a686d96a83859a73eb93b322de04b21bdea5f093",
             "HEAD_REPO": "kirodotdev/KiroCrew",
@@ -396,11 +430,11 @@ class TestPendingLanesAreNamedInTheStatus:
 
 class TestTransientFailureIsRetried:
     def test_one_flake_still_reaches_the_real_verdict(self, runner: Runner):
-        # The failure site this guards: the per-workflow runs read. One
+        # The failure site this guards: the consolidated runs read. One
         # transient failure, then success -- the retry must absorb it and the
         # evaluation must land on the REAL verdict, not the fallback.
         proc, outputs = runner.evaluate(
-            flaky_substr="codex-review.yml/runs", flaky_fails=1
+            flaky_substr=RUNS_READ, flaky_fails=1
         )
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "success"
@@ -414,7 +448,7 @@ class TestTransientFailureIsRetried:
         # corrupted and jq would blow up. Reaching the real verdict proves
         # per-attempt buffering.
         proc, outputs = runner.evaluate(
-            flaky_substr="build.yml/runs", flaky_fails=2
+            flaky_substr=RUNS_READ, flaky_fails=2
         )
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "success"
@@ -425,7 +459,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         # Endpoint dead for all 3 attempts: the job must NOT go red. It exits
         # 0 with the explicit non-terminal verdict so the publish step runs.
         proc, outputs = runner.evaluate(
-            flaky_substr="codex-review.yml/runs", flaky_fails=99
+            flaky_substr=RUNS_READ, flaky_fails=99
         )
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"
@@ -442,7 +476,7 @@ class TestPersistentTransportFailureIsNonTerminal:
 
     def test_commit_status_description_fits_the_api_limit(self, runner: Runner):
         proc, outputs = runner.evaluate(
-            flaky_substr="ci.yml/runs", flaky_fails=99
+            flaky_substr=RUNS_READ, flaky_fails=99
         )
         assert proc.returncode == 0, proc.stderr
         assert len(outputs["description"]) <= 140
@@ -469,7 +503,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         # would only discard its diagnostics and set the sweep re-firing.
         # The truncated run defers: exit 0, nothing published.
         proc, outputs = runner.evaluate(
-            flaky_substr="codex-review.yml/runs",
+            flaky_substr=RUNS_READ,
             flaky_fails=99,
             existing_status_state="failure",
         )
@@ -489,7 +523,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         # only ever BLOCK a merge -- publishing it over success is the
         # fail-safe write, and re-evaluation restores the true verdict.
         proc, outputs = runner.evaluate(
-            flaky_substr="codex-review.yml/runs",
+            flaky_substr=RUNS_READ,
             flaky_fails=99,
             existing_status_state="success",
         )
@@ -505,7 +539,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         # nothing, and the refreshed timestamp keeps the self-heal sweep's
         # staleness clock honest.
         proc, outputs = runner.evaluate(
-            flaky_substr="codex-review.yml/runs",
+            flaky_substr=RUNS_READ,
             flaky_fails=99,
             existing_status_state="pending",
         )
@@ -521,7 +555,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         # that re-evaluation will unblock, while deferring would leave a
         # possibly-stale green mergeable -- so unreadable publishes pending.
         proc, outputs = runner.evaluate(
-            flaky_substr="codex-review.yml/runs",
+            flaky_substr=RUNS_READ,
             flaky_fails=99,
             existing_status_state="__FAIL__",
         )
@@ -538,9 +572,9 @@ class TestPermanentHttpErrorFailsLoud:
         # failure" forever (the sweep re-fires pending statuses endlessly).
         # The helper must not retry it, and the job must fail loudly.
         proc, outputs = runner.evaluate(
-            flaky_substr="codex-review.yml/runs",
+            flaky_substr=RUNS_READ,
             flaky_fails=99,
-            http_error="HTTP 404: Not Found (repos/x/actions/workflows/codex-review.yml/runs)",
+            http_error="HTTP 404: Not Found (repos/x/actions/runs?event=pull_request)",
         )
         assert proc.returncode != 0
         assert outputs.get("status_state") != "pending"
@@ -550,7 +584,7 @@ class TestPermanentHttpErrorFailsLoud:
     def test_http_429_is_still_retried_as_transient(self, runner: Runner):
         # Rate limiting is the one HTTP error class that IS transient.
         proc, outputs = runner.evaluate(
-            flaky_substr="build.yml/runs",
+            flaky_substr=RUNS_READ,
             flaky_fails=1,
             http_error="HTTP 429: rate limited",
         )
@@ -558,13 +592,13 @@ class TestPermanentHttpErrorFailsLoud:
         assert outputs["status_state"] == "success"
         assert int((runner.fixtures / "flaky_count").read_text()) >= 2
 
-    def test_rate_limit_403_is_retried_as_transient(self, runner: Runner):
-        # GitHub's primary and secondary rate limits surface as HTTP 403
-        # (not 429) with rate-limit text in the body. They are transient:
-        # classifying them permanent would turn readiness red on a busy
-        # runner -- recreating the exact symptom this change fixes.
+    def test_secondary_rate_limit_403_is_retried_as_transient(self, runner: Runner):
+        # GitHub's secondary rate limit surfaces as HTTP 403 (not 429) with
+        # rate-limit text in the body. It is transient and lifts within the
+        # backoff window: classifying it permanent would turn readiness red
+        # on a busy runner -- recreating the exact symptom this change fixes.
         proc, outputs = runner.evaluate(
-            flaky_substr="build.yml/runs",
+            flaky_substr=RUNS_READ,
             flaky_fails=1,
             http_error=(
                 "HTTP 403: You have exceeded a secondary rate limit. "
@@ -576,17 +610,81 @@ class TestPermanentHttpErrorFailsLoud:
         # It WAS retried past the failure.
         assert int((runner.fixtures / "flaky_count").read_text()) >= 2
 
+    def test_primary_rate_limit_is_not_retried(self, runner: Runner):
+        # The PRIMARY limit is the shared hourly pool, and it refills at the
+        # top of the hour, not in the seconds the backoff waits. A retry is
+        # certain to fail and only adds to the volume that emptied the pool
+        # -- this step, at ~250 evaluations an hour under load, is itself the
+        # largest draw on it. So: hit once, no backoff, and the
+        # non-terminal "could not be evaluated" verdict (never a red) for the
+        # next event or the sweep to recompute once the hour has turned.
+        proc, outputs = runner.evaluate(
+            flaky_substr=RUNS_READ,
+            flaky_fails=99,
+            http_error=(
+                "HTTP 403: API rate limit exceeded for installation. If you "
+                "reach out to GitHub Support for help, please include the "
+                "request ID 9412:2D"
+            ),
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+        assert "could not be evaluated" in outputs["description"]
+        assert int((runner.fixtures / "flaky_count").read_text()) == 1
+        assert runner.backoff() == []
+
     def test_plain_403_is_still_permanent(self, runner: Runner):
         # A 403 WITHOUT rate-limit text (missing scope, SSO enforcement)
         # is a real misconfiguration: no retry, fail loud.
         proc, outputs = runner.evaluate(
-            flaky_substr="codex-review.yml/runs",
+            flaky_substr=RUNS_READ,
             flaky_fails=99,
             http_error="HTTP 403: Resource not accessible by integration",
         )
         assert proc.returncode != 0
         assert outputs.get("status_state") != "pending"
         assert int((runner.fixtures / "flaky_count").read_text()) == 1
+
+
+class TestLaneReadsAreConsolidated:
+    """The step reads its lanes from ONE page of the head's pull_request runs
+    (and, on a fork, ONE collection of the head's check-runs), not one request
+    per lane. Per-lane reads were ~11 requests per evaluation at ~250
+    evaluations an hour -- the largest single draw on the hourly pool every
+    workflow in this repository shares through GITHUB_TOKEN; when it runs dry,
+    every AI lane fails closed."""
+
+    def test_workflow_runs_are_read_once(self, runner: Runner):
+        # flaky_fails=0 never fails the call; the counter still tallies every
+        # request whose URL carries the substring.
+        proc, outputs = runner.evaluate(flaky_substr=RUNS_READ, flaky_fails=0)
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+        assert int((runner.fixtures / "flaky_count").read_text()) == 1
+
+    def test_fork_check_runs_are_read_once(self, runner: Runner):
+        # Seven checkrun: specs on a fork; one check-runs request serves all.
+        proc, outputs = runner.evaluate(
+            flaky_substr="check-runs", flaky_fails=0, fork=True
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert int((runner.fixtures / "flaky_count").read_text()) == 1
+
+    def test_no_per_workflow_runs_endpoint_remains(self):
+        # The per-file endpoint is the shape that costs one request per lane.
+        assert "/actions/workflows/" not in _evaluate_script()
+
+    def test_every_monitored_workflow_file_exists(self):
+        # The per-file endpoint answered a renamed monitored workflow with a
+        # loud 404 at run time; the consolidated read cannot tell "renamed"
+        # from "not started yet" and would hold the verdict at pending. The
+        # existence check moves here, where it is free and fires on the PR
+        # that renames the file rather than on every PR afterwards.
+        files = _lane_files()
+        assert "ci.yml" in files and "fast-gate.yml" in files
+        missing = [f for f in files if not (WORKFLOW.parent / f).exists()]
+        assert missing == [], f"monitored workflow file(s) missing: {missing}"
 
 
 class TestGenuineFailureStaysRed:
@@ -613,7 +711,7 @@ class TestGenuineFailureStaysRed:
             _run_json("ci.yml", status="completed", conclusion="failure")
         )
         proc, outputs = runner.evaluate(
-            flaky_substr="claude-review.yml/runs", flaky_fails=1
+            flaky_substr=RUNS_READ, flaky_fails=1
         )
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
@@ -631,8 +729,10 @@ class TestGenuineFailureStaysRed:
         (runner.fixtures / "ci_runs.json").write_text(
             _run_json("ci.yml", status="completed", conclusion="failure")
         )
+        # The consolidated runs read has already observed CI red; the read
+        # that keeps failing is a LATER one -- CodeQL's `event=dynamic` runs.
         proc, outputs = runner.evaluate(
-            flaky_substr="claude-review.yml/runs", flaky_fails=99
+            flaky_substr="event=dynamic", flaky_fails=99
         )
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
@@ -1475,9 +1575,11 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
             _run_json("ci.yml", status="completed", conclusion="action_required")
         )
 
+        # A read that happens AFTER the consolidated runs read has observed
+        # CI: on a fork that is the head SHA's check-runs.
         proc, outputs = runner.evaluate(
             fork=True,
-            flaky_substr="build.yml/runs",
+            flaky_substr="check-runs",
             flaky_fails=3,
         )
 

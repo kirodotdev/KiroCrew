@@ -2058,8 +2058,9 @@ check-run `[scope-floor:unsettled]`, sets no per-head floor, and clears on a re-
 ## `pr-readiness.yml`: the aggregator
 
 It executes no tests. It resolves the PR's current head SHA, **drops stale events**,
-queries the latest run per monitored workflow, and publishes **one `PR Readiness`
-commit status plus one `readiness:` label**.
+reads the head's `pull_request` workflow runs **once** and picks the latest run per
+monitored workflow out of that page, and publishes **one `PR Readiness` commit
+status plus one `readiness:` label**.
 
 - **Always required:** Fast Gate, CI, Build, Code Review, and Internal Content
   Scan (the same-repository workflow or the fork check-run). `Fast Gate` is a lane in
@@ -2176,12 +2177,34 @@ Two subtleties:
   recompute it on an unchanged commit, freezing the status at pending indefinitely.
   So it is added only when the live evaluation still found something genuinely
   incomplete.
+- **It reads each collection once, not once per lane.** All monitored workflow runs
+  come from one `actions/runs?event=pull_request&head_sha=` page (19 workflows in this
+  repository fire on `pull_request`, one run each per head), selected per lane by
+  `.path`; on a fork, all seven check-run lanes come from one paginated read of the
+  head's check-runs, bound per lane by `external_id`. Per-lane reads were ~11
+  requests per evaluation at ~250 evaluations an hour under load -- the largest
+  single draw on the hourly REST pool every workflow here shares through
+  `GITHUB_TOKEN` (15,000 requests an hour, the Enterprise Cloud ceiling). That pool
+  ran dry on 2026-09-15 and again on 2026-09-23: every AI lane failed closed and this
+  job logged `API rate limit exceeded for installation`. The one cost of the
+  consolidated read is that a renamed monitored workflow file reads as
+  `(not started)` instead of a loud 404; `test_pr_readiness_evaluate.py` pins every
+  monitored file to `.github/workflows/`, so the rename fails its own PR instead.
+  The PR lookup for a `workflow_run` event is scoped the same way: the event
+  carries the head repository and branch, so `pulls?state=open&head=<owner>:<branch>`
+  answers in one request; the walk over every open PR (seven pages at 600 open PRs)
+  remains only for an event that carries neither field.
 - **A transport error during evaluation is non-terminal.** Every read-only `gh`
   call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
   attempt); a non-429 HTTP 4xx is treated as permanent misconfiguration and fails
-  the job loudly instead of retrying. If an **evaluation** read still fails after
-  the retries, the evaluate step publishes an explicit non-terminal "could not be
-  evaluated" verdict (`pending` under `readiness: checking`) instead of exiting
+  the job loudly instead of retrying. A secondary rate limit (`HTTP 403 ... secondary
+  rate limit`) is retried like a 429; the **primary** limit (`API rate limit exceeded
+  for installation`) is not -- it refills at the top of the hour, not within the
+  backoff, so a retry only adds to the volume that emptied the shared pool. It takes
+  the same non-terminal branch below after a single attempt. If an **evaluation**
+  read still fails after the retries, the evaluate step publishes an explicit
+  non-terminal "could not be evaluated" verdict (`pending` under
+  `readiness: checking`) instead of exiting
   non-zero — so a transient network/TLS blip during evaluation never leaves a red
   check-run or skips the publish step (issue #2753: the same commit evaluated
   green then red 39 seconds apart). Exhausted retries in the other steps (context
@@ -2207,11 +2230,14 @@ Two subtleties:
 - **Nothing keys off `workflow_run.pull_requests`.** That array is empty whenever the
   head repository is a fork, the same GitHub behaviour the `fork-*` workflows already
   work around. The job gate admits every `pull_request` and `dynamic` run and lets the
-  head SHA resolve to a PR via `repos/:repo/commits/:sha/pulls`, and a monitored run is
-  bound back to the PR by `(head_repository.full_name, head_branch)` on top of the
-  `head_sha=` query — a pair that is populated on a fork run, and unique because only
-  one open PR can exist per source repository + branch. Keying either place on the PR
-  number froze a fork PR at pending forever: the gate skipped every re-evaluation, so
+  head SHA resolve to a PR through `pulls?state=open&head=<owner>:<branch>` matched on
+  `head.sha` (not `repos/:repo/commits/:sha/pulls`, which lists only PRs whose head
+  commit is reachable in this repository -- empty for every open fork PR), and a
+  monitored run is bound back to the PR by `(head_repository.full_name, head_branch)`
+  on top of the `head_sha=` query — a pair that is populated on a fork run, and
+  unique because only one open PR can exist per source repository + branch. Keying
+  either place on the PR number froze a fork PR at pending forever: the gate skipped
+  every re-evaluation, so
   the verdict was whatever the `pull_request_target` run saw *before* the monitored
   workflows existed, and the lookup independently reported already-green workflows as
   `(not started)`.

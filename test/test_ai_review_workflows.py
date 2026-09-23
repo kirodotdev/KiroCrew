@@ -956,7 +956,10 @@ class TestPrReadiness:
         assert '"checkrun:GPT 5.6 Review|GPT 5.6 Review|gpt-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:Design Review|Design Review|design-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:UX Review|UX Review|ux-pr-|fast-gate.yml"' in workflow
-        assert "commits/$SHA/check-runs?check_name=$enc" in workflow
+        # One read of the head's check-runs serves all seven lanes; the
+        # external_id match, not a check_name filter, names the lane.
+        assert "commits/$SHA/check-runs?per_page=100" in workflow
+        assert "check-runs?check_name=$enc" not in workflow
         # The blanket fork skip and the maintainer-review verdict are gone.
         assert '"GPT 5.6 Review (fork PR)"' not in workflow
         assert 'state="maintainer_review"' not in workflow

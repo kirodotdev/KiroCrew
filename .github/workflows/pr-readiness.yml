@@ -226,6 +226,22 @@ jobs:
                 echo "gh_retry: permanent HTTP error (no retry): $*" >&2
                 return 22
               fi
+              # The PRIMARY limit is the exception to the exception. It is
+              # the hourly budget every workflow in this repository shares
+              # through GITHUB_TOKEN, and it refills at the top of the hour,
+              # not in the seconds this loop waits -- so attempts 2 and 3 are
+              # certain to fail and only add to the request volume that
+              # emptied the pool. GitHub words it "API rate limit exceeded
+              # for <installation|user|...>"; the secondary limit says
+              # "secondary rate limit" and IS worth a short backoff. Return
+              # the transient code without retrying: the evaluate step turns
+              # it into the non-terminal "could not be evaluated" verdict
+              # and the next event (or the sweep) recomputes once the hour
+              # has turned.
+              if grep -q 'API rate limit exceeded' <<<"$err"; then
+                echo "gh_retry: primary rate limit exhausted (no retry): $*" >&2
+                return "$rc"
+              fi
               echo "gh_retry: attempt $attempt/3 failed (rc=$rc): $*" >&2
               if [ "$attempt" -lt 3 ]; then
                 sleep $(( attempt * 2 ))
@@ -275,21 +291,44 @@ jobs:
               # the same commit (e.g. the same fork commit pushed to two
               # branches). Disambiguate with the triggering run's head
               # repository + branch (both populated on every workflow_run),
-              # exactly as the verdict step binds monitored runs below; fall
-              # back to SHA-only when either is absent.
+              # exactly as the verdict step binds monitored runs below.
+              #
+              # Ask for THAT branch, not for every open PR. `head=<owner>:<ref>`
+              # is the list endpoint's own filter, so the answer is one page
+              # of (almost always) one PR instead of a walk over the whole
+              # open set -- at 600 open PRs that walk was seven requests on
+              # the pool every lane shares, on every fork trigger. The owner
+              # is the head repository's owner: a fork PR's head lives under
+              # the fork owner, and a same-repo PR's under this repository's
+              # owner. The filter cannot express the repository NAME, so a
+              # user with two forks under one account would match both; the
+              # `.head.repo.full_name` check below keeps the right one. The
+              # SHA-only walk stays as the fallback for the event shape that
+              # carries neither field.
               if [ -z "$PR" ]; then
-                PR="$(gh_retry gh api --paginate \
-                  "repos/$REPO/pulls?state=open&per_page=100" \
-                  | jq -rs \
-                      --arg sha "$RUN_SHA" \
-                      --arg repo "$RUN_HEAD_REPO" \
-                      --arg ref "$RUN_HEAD_REF" '
-                      first(.[][]
-                        | select(.head.sha == $sha
-                                 and ($repo == "" or .head.repo.full_name == $repo)
-                                 and ($ref  == "" or .head.ref == $ref))
-                        | .number) // empty
-                    ')"
+                select_pr='
+                  first(.[][]
+                    | select(.head.sha == $sha
+                             and ($repo == "" or .head.repo.full_name == $repo)
+                             and ($ref  == "" or .head.ref == $ref))
+                    | .number) // empty
+                '
+                if [ -n "$RUN_HEAD_REPO" ] && [ -n "$RUN_HEAD_REF" ]; then
+                  head_q="$(jq -rn --arg v "${RUN_HEAD_REPO%%/*}:$RUN_HEAD_REF" '$v | @uri')"
+                  PR="$(gh_retry gh api \
+                    "repos/$REPO/pulls?state=open&head=$head_q&per_page=100" \
+                    | jq -rs \
+                        --arg sha "$RUN_SHA" \
+                        --arg repo "$RUN_HEAD_REPO" \
+                        --arg ref "$RUN_HEAD_REF" "$select_pr")"
+                else
+                  PR="$(gh_retry gh api --paginate \
+                    "repos/$REPO/pulls?state=open&per_page=100" \
+                    | jq -rs \
+                        --arg sha "$RUN_SHA" \
+                        --arg repo "$RUN_HEAD_REPO" \
+                        --arg ref "$RUN_HEAD_REF" "$select_pr")"
+                fi
               fi
               if [ -z "$PR" ]; then
                 {
@@ -643,6 +682,49 @@ jobs:
           # out of `pending[]` because automation cannot clear it by itself.
           awaiting_approval=()
 
+          # ONE read for every workflow-run lane. Every `pull_request` run on
+          # this head comes back in a single page (19 workflows in this
+          # repository trigger on pull_request, one run each per head; a rerun
+          # re-uses the run and bumps its attempt), so the per-lane reads
+          # below are jq selects over it rather than one request per lane.
+          # Read per lane, this step cost ~11 requests per evaluation at
+          # ~250 evaluations an hour under load -- the largest single draw on
+          # the hourly pool every workflow here shares through GITHUB_TOKEN.
+          # That pool ran dry on 2026-09-15 and again on 2026-09-23, with
+          # every AI lane failing closed and this step logging
+          # "API rate limit exceeded for installation". `--paginate` is the
+          # ceiling guard: a head that somehow carries more than a page of
+          # runs still reads completely.
+          #
+          # A monitored file that does not exist is caught in CI, not here:
+          # test_pr_readiness_evaluate.py pins every `.yml` spec to a file
+          # under .github/workflows/, where the per-lane endpoint's loud 404
+          # used to catch a rename at run time. The consolidated list cannot
+          # tell "renamed" from "not started yet", and a runtime check would
+          # cost the request this read exists to save.
+          #
+          # A transport failure here is the one-lane transport failure it
+          # replaces, observed before any lane: the loop runs over no specs
+          # and the non-terminal "could not be evaluated" verdict publishes,
+          # exactly as it does for a `break` on the first spec.
+          pr_runs='{"workflow_runs":[]}'
+          if [ "${#workflow_specs[@]}" -gt 0 ]; then
+            pr_runs="$(gh_retry gh api --method GET --paginate \
+              "repos/$REPO/actions/runs?event=pull_request&head_sha=$SHA&per_page=100" \
+              | jq -cs '{workflow_runs: [.[].workflow_runs[]]}')" || {
+              rc=$?
+              if [ "$rc" -eq 22 ]; then exit 1; fi
+              transport_failed=true
+              workflow_specs=()
+            }
+          fi
+          # The head SHA's check-runs, read once and lazily: only a fork
+          # evaluation has checkrun: specs, and all seven read the same
+          # collection. Paginated because a head carries one check-run per
+          # JOB (89 on a typical same-repo head), and the second page is the
+          # one that would otherwise drop the lane posted last.
+          sha_check_runs=""
+
           for spec in "${workflow_specs[@]}"; do
             # Four fields: <workflow file or checkrun:NAME>|<label>|<external_id
             # prefix>|<triggering workflow file>. The last two are OPTIONAL and
@@ -674,16 +756,22 @@ jobs:
                 pending+=("$label (rerun starting)")
                 continue
               fi
-              enc="$(jq -rn --arg v "$cname" '$v | @uri')"
-              cruns="$(gh_retry gh api --method GET \
-                "repos/$REPO/commits/$SHA/check-runs?check_name=$enc&per_page=100")" || {
-                rc=$?
-                # 22 = permanent HTTP error (misconfiguration): fail loud so it
-                # is diagnosed, never diluted into "transient network trouble".
-                if [ "$rc" -eq 22 ]; then exit 1; fi
-                transport_failed=true
-                break
-              }
+              if [ -z "$sha_check_runs" ]; then
+                sha_check_runs="$(gh_retry gh api --method GET --paginate \
+                  "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                  | jq -cs '{check_runs: [.[].check_runs[]]}')" || {
+                  rc=$?
+                  # 22 = permanent HTTP error (misconfiguration): fail loud so it
+                  # is diagnosed, never diluted into "transient network trouble".
+                  if [ "$rc" -eq 22 ]; then exit 1; fi
+                  transport_failed=true
+                  break
+                }
+              fi
+              # No name filter on the read: the external_id match below
+              # already names the lane (each lane stamps its own prefix), and
+              # it is the only binding a fork verdict is trusted on anyway.
+              cruns="$sha_check_runs"
               # Bind the verdict to THIS pull request AND THIS review attempt
               # when the lane stamps an external_id.
               #
@@ -718,13 +806,6 @@ jobs:
               if [ -n "${extid:-}" ]; then
                 want="$extid$PR"
                 if [ -n "${trigfile:-}" ]; then
-                  trg="$(gh_retry gh api --method GET \
-                    "repos/$REPO/actions/workflows/$trigfile/runs?event=pull_request&head_sha=$SHA&per_page=100")" || {
-                    rc=$?
-                    if [ "$rc" -eq 22 ]; then exit 1; fi
-                    transport_failed=true
-                    break
-                  }
                   # Bind the trigger run to THIS PR by (head repository, head
                   # branch) before picking the newest, for the same reason the
                   # workflow-run branch below does it: the query is pinned to the
@@ -734,12 +815,14 @@ jobs:
                   # saw, nothing would ever match, and the lane would sit pending
                   # forever -- the exact opposite failure to the stale-verdict one
                   # the binding exists to prevent, and just as bad.
-                  trun="$(jq -c --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" '
+                  trun="$(jq -c --arg path ".github/workflows/$trigfile" \
+                    --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" '
                     [.workflow_runs[]
-                     | select((.head_repository.full_name // "") == $repo
+                     | select(.path == $path
+                              and (.head_repository.full_name // "") == $repo
                               and (.head_branch // "") == $ref)]
                     | max_by(.id) // empty
-                  ' <<<"$trg")"
+                  ' <<<"$pr_runs")"
                   if [ -z "$trun" ]; then
                     # The trigger has not run for this head yet, so no review is
                     # owed and none can have reported. Pending, not passed.
@@ -841,13 +924,6 @@ jobs:
                 | max_by(.id) // empty
               ' <<<"$runs")"
             else
-              runs="$(gh_retry gh api --method GET \
-                "repos/$REPO/actions/workflows/$file/runs?event=pull_request&head_sha=$SHA&per_page=100")" || {
-                rc=$?
-                if [ "$rc" -eq 22 ]; then exit 1; fi
-                transport_failed=true
-                break
-              }
               # Bind the run to this PR by (head repository, head branch), NOT
               # by `.pull_requests`: that array is empty on every fork run, so
               # filtering on it matched nothing and reported each already-green
@@ -870,12 +946,14 @@ jobs:
               # cancelled-run filter here: dropping a cancelled newest run
               # would revive an older verdict -- a manually cancelled rerun
               # must read failure-class, not resurface a stale green.
-              run="$(jq -c --arg head_repo "$HEAD_REPO" --arg head_ref "$HEAD_REF" '
+              run="$(jq -c --arg path ".github/workflows/$file" \
+                --arg head_repo "$HEAD_REPO" --arg head_ref "$HEAD_REF" '
                 [.workflow_runs[]
-                 | select(.head_repository.full_name == $head_repo
+                 | select(.path == $path
+                          and .head_repository.full_name == $head_repo
                           and .head_branch == $head_ref)]
                 | max_by(.id) // empty
-              ' <<<"$runs")"
+              ' <<<"$pr_runs")"
             fi
             if [ -z "$run" ]; then
               pending+=("$label (not started)")
