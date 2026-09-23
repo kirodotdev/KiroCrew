@@ -97,6 +97,14 @@ def channel_namespace_of(key: str) -> str:
 #: Non-channel session-key prefixes that still deserve their own telemetry label.
 #: Kept in sync with the prefixes ``SessionManager`` mints; anything absent here
 #: folds into ``"other"`` so an unrecognised key can never mint a metric series.
+#:
+#: ADDING A NAMESPACE: this tuple bounds telemetry label cardinality and nothing more,
+#: so being absent from it is not a bug on its own — ``wf-unpooled``, ``wf-worker`` and
+#: ``wf-scope`` are all live session keys that are not listed here. But a namespace whose
+#: transcripts reach disk also needs classifying at
+#: ``dashboard/handlers/sessions.py::_MACHINE_NAMESPACES``, which decides whether the
+#: Older-sessions pane presents it as a conversation. Unclassified means VISIBLE there,
+#: so a new machine namespace silently repopulates that pane until it is added.
 _TELEMETRY_LOCAL_PREFIXES: tuple[tuple[str, str], ...] = (
     ("dashboard", "dashboard"),
     ("cron", "cron"),
