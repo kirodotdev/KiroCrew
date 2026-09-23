@@ -47,7 +47,35 @@ export interface SendResponseLike {
   json(): Promise<unknown>
   /** Whether the browser followed a redirect chain to produce this response. */
   redirected?: boolean
+  /** The FINAL URL the response was read from, after any redirect chain
+   *  (`Response.url`). Optional so every existing double stays valid; a double
+   *  that omits it reads as "no final URL known", which is the pre-existing
+   *  behaviour. */
+  url?: string
   headers?: { get(name: string): string | null }
+}
+
+/** The endpoint path a send POST targets, as it appears in `Response.url`'s
+ *  pathname. `POST /api/chat?ws=1` reads back as pathname `/api/chat`, so a
+ *  redirect chain that method-preserves (307/308) and lands right back here is
+ *  the ENDPOINT answering, not an intermediary. */
+const CHAT_ENDPOINT_PATH = '/api/chat'
+
+/** Whether a redirect landed BACK on the send endpoint itself. A 307/308
+ *  method-preserving redirect to a working gateway endpoint produces
+ *  `redirected === true` with a final URL still on the chat path; treating that
+ *  as interception would hand a delivered turn's payload back and re-send it
+ *  (the #5672 duplicate class). Returns false when the final URL is unknown or
+ *  unparseable — absence of evidence is not evidence the endpoint answered. */
+function redirectLandedOnEndpoint(url: string | undefined): boolean {
+  if (!url) return false
+  try {
+    // A relative or absolute URL both parse against the current location.
+    const base = typeof location !== 'undefined' ? location.href : 'http://localhost/'
+    return new URL(url, base).pathname === CHAT_ENDPOINT_PATH
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -57,9 +85,15 @@ export interface SendResponseLike {
  *
  * Both signals are about PROVENANCE, not about content:
  *
- *   - `redirected` — the browser followed a redirect chain, so whatever answered
- *     sits at the end of that chain. `POST /api/chat` never redirects, so a
- *     redirected answer did not come from it.
+ *   - `redirected` to somewhere OTHER than the send endpoint — the browser
+ *     followed a redirect chain whose final URL is not `POST /api/chat`, so
+ *     whatever answered sits at the end of that chain (a login form), not the
+ *     gateway. A redirect that method-preserves (307/308) and lands right back
+ *     ON the chat endpoint is the endpoint itself answering and is deliberately
+ *     NOT treated as interception: reclassifying that unreadable-but-delivered
+ *     reply `refused` would hand the payload back and duplicate an executed turn
+ *     (the #5672 class). When the final URL is unknown, `redirected` alone is no
+ *     longer trusted — absence of the URL is not evidence of interception.
  *   - an HTML content type — the endpoint answers JSON on every path, refusals
  *     included, so `text/html` is a page (a login form), not a receipt.
  *
@@ -70,7 +104,7 @@ export interface SendResponseLike {
  * demonstrably did not write is reclassified.
  */
 function answeredByIntermediary(response: SendResponseLike): boolean {
-  if (response.redirected) return true
+  if (response.redirected && !redirectLandedOnEndpoint(response.url)) return true
   const contentType = response.headers?.get('content-type') ?? ''
   return /^\s*text\/html\b/i.test(contentType)
 }

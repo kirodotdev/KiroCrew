@@ -135,19 +135,22 @@ describe('readSendReceipt provenance', () => {
   const res = (
     ok: boolean,
     json: () => Promise<unknown>,
-    extra: { redirected?: boolean; contentType?: string } = {},
+    extra: { redirected?: boolean; contentType?: string; url?: string } = {},
   ) => ({
     ok,
     json,
     redirected: extra.redirected,
+    url: extra.url,
     headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? extra.contentType ?? null : null) },
   })
   const notJson = () => Promise.reject(new Error('unexpected token < in JSON'))
 
   it('refuses a 2xx the browser was REDIRECTED to, so the payload is handed back', async () => {
-    // `POST /api/chat` never redirects, so a redirected answer came from wherever
-    // the chain ended — a login form, not the gateway.
+    // `POST /api/chat` never redirects to another page, so a redirected answer
+    // whose final URL is elsewhere (or unknown) came from wherever the chain
+    // ended — a login form, not the gateway.
     expect((await readSendReceipt(res(true, notJson, { redirected: true }))).outcome).toBe('refused')
+    expect((await readSendReceipt(res(true, notJson, { redirected: true, url: 'https://sso.example.com/login' }))).outcome).toBe('refused')
   })
 
   it('refuses a 2xx that answers in HTML, the proxy shape with no redirect', async () => {
@@ -163,6 +166,26 @@ describe('readSendReceipt provenance', () => {
     expect((await readSendReceipt(res(true, notJson, { contentType: 'application/json' }))).outcome).toBe('unknown')
     // No provenance information at all is also not evidence of interception.
     expect((await readSendReceipt(res(true, notJson))).outcome).toBe('unknown')
+  })
+
+  it('KEEPS unknown for a method-preserving redirect BACK to the chat endpoint (#5672)', async () => {
+    // A 307/308 redirect that lands right back on `/api/chat` is the working
+    // gateway answering, not an intermediary. Its receipt may be unreadable but
+    // the turn still ran, so `redirected` alone must NOT reclassify it `refused`
+    // — that would hand the payload back and re-send an executed turn.
+    expect(
+      (await readSendReceipt(res(true, notJson, { redirected: true, url: 'https://app.example.com/api/chat?ws=1' }))).outcome,
+    ).toBe('unknown')
+    // A relative final URL resolves the same way.
+    expect(
+      (await readSendReceipt(res(true, notJson, { redirected: true, url: '/api/chat?ws=1' }))).outcome,
+    ).toBe('unknown')
+    // But an HTML body still wins even when the redirect landed on the endpoint:
+    // the endpoint never answers a send in HTML, so that is a login page proxied
+    // onto the path.
+    expect(
+      (await readSendReceipt(res(true, notJson, { redirected: true, url: '/api/chat?ws=1', contentType: 'text/html' }))).outcome,
+    ).toBe('refused')
   })
 
   it('leaves a readable receipt alone even when redirected', async () => {
