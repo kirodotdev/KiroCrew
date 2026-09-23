@@ -279,11 +279,32 @@ are the other alternative and are worse on both counts: they leak content, and G
 Camo blocks them on private repos.
 
 The review lanes read the same URL the author wrote: the UX lane's blind read
-downloads the `user-attachments` links from the PR body (a committed image still
-counts), and the screenshot-evidence gate accepts them as visual evidence. Dragging
-a file into the description in the web UI produces an identical URL, so a fork
-contributor without push access — the one case `--attach` refuses — reaches the same
-place by hand, and a human reviewer and the lanes see one convention, not two.
+downloads the `user-attachments` links from the PR body, and the screenshot-evidence
+gate accepts them as visual evidence. Dragging a file into the description in the web
+UI produces an identical URL, so a human reviewer and the lanes see one convention.
+
+**The one scoped exception: a contributor with no write access on the repository.**
+`gh --attach` uploads through an endpoint that answers read permission with a 404
+(cli/cli#14302), so a fork contributor has no CLI path to an attachment at all; the
+web-UI drag is their only one. For them, and only them, committing the media under
+`temp-screenshots/<topic>/` (`git add -f`, past the ignore rule) and referencing the
+repository-relative path from the body is admissible evidence:
+`.github/scripts/pr-committed-evidence.sh` reads the blobs out of the object store for
+the fork lanes, and the screenshot-evidence gate accepts a still-linked committed
+path. The exception does not weaken the rule for anyone who CAN attach: every reason
+above still holds for them, and the cost below is one they would pay for nothing.
+
+**What the exception costs, and which part is irreversible.** When the PR merges,
+the committed file becomes a tracked file on `main` and a blob in history. The tracked
+file is the reversible half: the merging maintainer removes it in a follow-up
+`chore(evidence): drop the committed review media of #<n>` PR, so review media never
+accumulates on the tip again (the sweep that emptied the tree took out 1,739 files
+and 286 MB). The blob is the irreversible half: a deletion commit leaves it in every
+clone's pack, and only a history rewrite removes it, which that sweep deliberately
+deferred. The cost is accepted because it is bounded — fork PRs are the minority, the
+evidence script refuses a file over its size ceiling, and the guidance asks for two or
+three shots — and because it never lands silently: the files are in the diff the
+maintainer squash-merges. The merge-time steps are in `docs/ci/ci-and-reviews.md`.
 
 ## Why the closing-keyword check reads the API back
 

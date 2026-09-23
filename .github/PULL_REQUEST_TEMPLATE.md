@@ -81,6 +81,18 @@
          ![alt](./evidence/after.png)
          ![](./evidence/demo.mp4)   <- alone in its paragraph renders as a player
        Limits: 10 MB per image/GIF, 100 MB per video.
+     - WITHOUT write access on this repository (a fork PR), `--attach` is not
+       available to you: the upload endpoint answers read permission with a
+       404 (cli/cli#14302). Either drag the file into this box in the web UI,
+       which works with read access, or commit it -- `git add -f
+       temp-screenshots/<topic>/after.png`, forced because that directory is
+       gitignored -- and reference the repository-relative path here. The
+       review lanes read committed media the same way they read an attachment,
+       with ONE limit for a committed file: 10 MB, video included -- a bigger
+       file is skipped, not reviewed. A recording over 10 MB goes into this
+       box via the web UI, where the 100 MB video limit above applies.
+       Know the cost: a committed file merges into main's history for good;
+       the maintainer removes it from the tip afterwards, the blob stays.
      - Non-media evidence is neither attached with --attach nor committed.
        Text (a provenance JSON, a perf baseline, an assertion dump) goes in
        a fenced code block in a PR comment (65,536 characters max). A

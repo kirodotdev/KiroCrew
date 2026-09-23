@@ -121,16 +121,19 @@ jobs:
       # has no shell to fetch with, so a bare URL in the description would
       # otherwise count as evidence whether or not it renders; this step
       # downloads and types every attachment the description offers (the
-      # same allowlisted, anonymous fetch both UX lanes source),
-      # lists the committed images this revision adds or changes,
-      # and writes one file the prompt is told to read, so the predicate is
-      # what the workflow could actually see, never the description's text.
+      # same allowlisted, anonymous fetch both UX lanes source), reads the
+      # media this revision commits out of the object store through the
+      # shared committed-evidence script (the same copy the fork lanes
+      # source, so there is ONE admission contract and no inline loop here
+      # to drift from it), and writes one file the prompt is told to read,
+      # so the predicate is what the workflow could actually see, never the
+      # description's text.
       # A transport failure is listed as such rather than failing this step:
       # the UX lane fails its run on the same failure, so readiness already
       # holds, and this lane reports presence as unconfirmed. It runs BEFORE
       # the credential step below on purpose: on a same-repo pull request
-      # the sourced script is the checkout's copy, which the PR can edit,
-      # so nothing it could run must have Bedrock credentials in its
+      # the sourced scripts are the checkout's copies, which the PR can edit,
+      # so nothing they could run must have Bedrock credentials in their
       # environment -- the same order the UX lane keeps.
       - name: Collect rendered evidence
         if: >-
@@ -144,6 +147,14 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The revision the committed media is listed against and read AT.
+          # The checkout is the pull request's merge ref, whose second parent
+          # is this head, so `fetch-depth: 0` has every blob of it in the
+          # object store; the committed-evidence script reads them there
+          # with `git cat-file`, never off the working tree, so a same-repo
+          # pull request and a fork one take the same path through the same
+          # gates (mode, size, bytes) -- the checkout is not what admits.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           FETCH_DIR: ${{ runner.temp }}/design-fetch
           DEST_DIR: ${{ runner.temp }}/design-evidence
           NAME_STEM: attachment
@@ -160,34 +171,34 @@ jobs:
           : > "$SHOTS"
           : > "$SHOT_MAP"
           : > "$CLIPS"
-          . .github/scripts/pr-attachment-evidence.sh
-          # Committed images this revision adds or changes, present at HEAD --
-          # the same paths and formats the UX lane admits.
-          committed=""
-          while IFS= read -r path; do
-            [ -n "$path" ] || continue
-            if git cat-file -e "HEAD:$path" 2>/dev/null; then
-              committed="${committed}${path}"$'\n'
-            fi
-          done < <(git diff --name-only "$BASE_SHA"...HEAD | grep -iE '^(temp-screenshots/|\.github/screenshots/).*\.(png|jpe?g|webp|gif|webm|mp4|mov)$' || true)
-          k="$(printf '%s' "$committed" | grep -c . || true)"
+          . "$GITHUB_WORKSPACE/.github/scripts/pr-attachment-evidence.sh"
+          # Media this revision COMMITS is evidence too. It is read by the
+          # one script the fork lanes source -- out of the object store at
+          # HEAD_SHA, typed by its bytes, mode- and size-gated, every refusal
+          # named -- and deliberately NOT by a loop of this step's own: the
+          # script's header is the single admission contract, and a second
+          # listing here is what once dropped a renamed screenshot (it listed
+          # additions and modifications only; a rename is neither). Counted
+          # apart from the attachments so the reviewer can see which source
+          # each piece came from.
+          attached_images="$n"
+          attached_clips="$clips"
+          . "$GITHUB_WORKSPACE/.github/scripts/pr-committed-evidence.sh"
           {
             echo "RENDERED EVIDENCE OF THIS REVISION -- written by the workflow. The description's text is not the predicate; this file is."
-            echo "attachments downloaded and typed as images: $n"
-            echo "attachments downloaded and typed as recordings: $clips"
-            echo "committed images this revision adds or changes: $k"
+            echo "attachments downloaded and typed as images: $attached_images"
+            echo "attachments downloaded and typed as recordings: $attached_clips"
+            echo "committed images this revision adds or changes, read from the object store and typed by their bytes: $committed_kept"
+            echo "committed recordings this revision adds or changes, read from the object store and typed by their bytes: $((clips - attached_clips))"
             echo "attachment downloads that failed for a transport reason (presence unconfirmed, not absent): ${failed:-0}"
             echo
-            echo "images (opaque copies, body order):"
+            echo "images (opaque copies, attachments in body order, then committed files):"
             if [ -s "$SHOTS" ]; then cat "$SHOTS"; else echo "(none)"; fi
             echo
-            echo "recordings:"
+            echo "recordings (attachments in body order, then committed files by repository path):"
             if [ -s "$CLIPS" ]; then cat "$CLIPS"; else echo "(none)"; fi
-            echo
-            echo "committed images:"
-            if [ -n "$committed" ]; then printf '%s' "$committed"; else echo "(none)"; fi
           } > "$EVIDENCE"
-          echo "Rendered evidence: $n image(s), $clips recording(s), $k committed image(s); ${failed:-0} download(s) failed."
+          echo "Rendered evidence: $n image(s) ($committed_kept committed), $clips recording(s) ($((clips - attached_clips)) committed); ${failed:-0} download(s) failed."
 
       # Dependabot (a design review adds little to a mechanical version bump)
       # and let the advisory status pass — same skip contract as the Opus 5 /
@@ -281,8 +292,8 @@ jobs:
             RENDERED EVIDENCE: before you judge the missing-evidence trigger below,
             Read ${{ runner.temp }}/design-evidence.txt. The workflow wrote it: it
             downloaded every github.com/user-attachments asset the description
-            offers, typed each by its bytes, and (on a same-repo pull request)
-            listed the committed images this revision adds or changes. That
+            offers, typed each by its bytes, and listed the committed images or
+            recordings this revision adds or changes after typing their bytes. That
             file is the predicate for "rendered evidence of THIS revision": a
             URL in the description that is not in it did not download or is
             not an image, and is not evidence. A non-zero "failed for a
@@ -445,10 +456,13 @@ jobs:
               list the workflow wrote (RENDERED EVIDENCE above) names no image
               or recording downloaded from its description (a
               github.com/user-attachments asset the workflow fetched and typed;
-              a URL that did not download is not evidence) and none committed
-              at HEAD that THIS checkout can render (on a fork pull request the head is
-              never checked out, so a committed image is not evidence here --
-              the same rule the fork UX lane applies; the attachment is). An
+              a URL that did not download is not evidence) and no committed
+              image or recording it names (media this revision adds or changes
+              under temp-screenshots/ or .github/screenshots/ counts the same
+              as an attachment -- in a same-repo checkout as the file at HEAD,
+              on a fork pull request as bytes the workflow read out of the
+              object store; a committed path the list does not name was not
+              admitted and is not evidence -- the rule the UX lanes apply). An
               image hosted off a commit outside this PR, or one the description
               itself says shows another PR's state, is not evidence of this
               revision. You cannot judge the shape of a surface you have not

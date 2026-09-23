@@ -435,9 +435,11 @@ QA screenshots and demo videos follow a **review-then-attach** contract:
      path is rewritten in place to a permanent
      `https://github.com/user-attachments/assets/<uuid>` URL; an attached file the
      body does not reference is appended at the end. Limits: 10 MB per image/GIF,
-     100 MB per video. `--attach` needs push access to the repository -- a fork
-     contributor without it drags the file into the description in the web UI,
-     which yields the same URL.
+     100 MB per video. `--attach` needs push access to the repository (its upload
+     endpoint 404s on read permission, cli/cli#14302) -- a fork contributor without
+     it either drags the file into the description in the web UI, which yields the
+     same URL, or commits it with `git add -f temp-screenshots/<topic>/shot.png`
+     and references that repository-relative path; the review lanes read both.
    - Verify the body update landed: `gh api repos/<o>/<r>/pulls/<n> --jq .body | grep -c user-attachments`
      prints the number of files you attached.
    - The URL is tied to no commit or branch, so a later amend, force-push, branch

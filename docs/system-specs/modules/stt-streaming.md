@@ -436,14 +436,17 @@ state from an environment variable for exactly that. The accelerated stills also
 a second fact worth seeing: the slow-model warning under the picker DISAPPEARS on an
 accelerated build, because `large-v3-turbo` is not slow there.
 
-**UI evidence is attached, never committed.** `gh pr edit --attach` rewrites a local
-path into a permanent `user-attachments` URL, which is what `docs/ci/ci-and-reviews.md`
-prescribes and what the review lanes read. Two wrong answers were tried first and are
-worth naming: force-adding the files into `temp-screenshots/` puts binaries in this
-repository's history forever past a `.gitignore` rule that exists to prevent exactly
-that, and hosting them on a side branch leaves the evidence outside the PR with no tie
-to its head, which the design lane rejects as unevaluable. The attachment path is the
-only one that satisfies both.
+**UI evidence is attached, never committed by anyone who can attach.** `gh pr edit
+--attach` rewrites a local path into a permanent `user-attachments` URL, which is what
+`docs/ci/ci-and-reviews.md` prescribes and what the review lanes read. Two wrong
+answers were tried first and are worth naming: force-adding the files into
+`temp-screenshots/` puts binaries in this repository's history forever past a
+`.gitignore` rule that exists to prevent exactly that -- the force-add is reserved for
+a fork contributor whom GitHub's upload endpoint refuses, never for this repository's
+own agents (prepare-pr's `references/rationale.md` records the exception and its
+merge-time cost) -- and hosting them on a side branch leaves the evidence outside the
+PR with no tie to its head, which the design lane rejects as unevaluable. For an
+author with write access the attachment path is the only one that satisfies both.
 
 Four restraints, each with a test, because a task on every boot has more ways to do
 harm than good:
