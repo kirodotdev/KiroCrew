@@ -153,7 +153,7 @@ describe('chatSlice sseSlots reconciliation', () => {
 
   it('prunes the small per-slot maps too (statusDetail, contextPct, contextTokens, stopPressedAt)', () => {
     const state = seeded(['chat-1', 'chat-2'])
-    state.slotStatusDetail = { 'chat-2': { kind: 'compacting', text: 'Compacting…', ts: 1 } }
+    state.slotStatusDetail = { 'chat-2': { kind: 'thinking', label: 'Compacting…', ts: 1 } }
     state.slotContextPct = { 'chat-2': 42 }
     state.slotContextTokens = { 'chat-2': { used: 1234, window: 200000 } }
     state.stopPressedAt = { 'chat-2': 999 }
@@ -172,7 +172,7 @@ describe('slot teardown parity', () => {
     const base = seeded(keys)
     return {
       ...base,
-      slotStatusDetail: Object.fromEntries(keys.map(k => [k, { kind: 'compacting' as const, text: 'Compacting…', ts: 1 }])),
+      slotStatusDetail: Object.fromEntries(keys.map(k => [k, { kind: 'thinking' as const, label: 'Compacting…', ts: 1 }])),
       slotContextPct: Object.fromEntries(keys.map(k => [k, 42])),
       slotContextTokens: Object.fromEntries(keys.map(k => [k, { used: 1234, window: 200000 }])),
       stopPressedAt: Object.fromEntries(keys.map(k => [k, 999])),

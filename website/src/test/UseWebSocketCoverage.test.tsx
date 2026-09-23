@@ -1617,11 +1617,11 @@ describe('useWebSocket frame router', () => {
       ws.simulateMessage({ type: 'chat_status', data: { slot: ACTIVE, status: 'Compacting…' } })
     })
     expect(chat().slotContextPct[ACTIVE]).toBe(42)
-    expect(chat().slotStatusDetail[ACTIVE]?.text).toBe('Compacting…')
+    expect(chat().slotStatusDetail[ACTIVE]).toMatchObject({ kind: 'thinking', label: 'Compacting…' })
 
     // A status frame with no text is ignored rather than clearing the detail.
     act(() => { ws.simulateMessage({ type: 'chat_status', data: { slot: ACTIVE } }) })
-    expect(chat().slotStatusDetail[ACTIVE]?.text).toBe('Compacting…')
+    expect(chat().slotStatusDetail[ACTIVE]).toMatchObject({ kind: 'thinking', label: 'Compacting…' })
   })
 
   it('re-reads the transcript when a variant switch names a slot', () => {

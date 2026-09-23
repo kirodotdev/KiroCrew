@@ -348,18 +348,22 @@ describe('chatSlice reducers', () => {
     })
   })
 
-  it('setSlotStatusDetail updates kind, text, and ts', () => {
+  it('setSlotStatusDetail updates kind and ts, and keeps a server status label', () => {
     const now = Date.now()
-    const state = reducer(initial, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking', text: 'Thinking…', ts: now }))
+    const state = reducer(initial, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking', ts: now }))
     expect(state.slotStatusDetail['test-slot'].kind).toBe('thinking')
-    expect(state.slotStatusDetail['test-slot'].text).toBe('Thinking…')
+    // A fixed phase stores no copy: the label is resolved from `kind` at render time.
+    expect(state.slotStatusDetail['test-slot']).toEqual({ kind: 'thinking', ts: now })
     expect(state.slotStatusDetail['test-slot'].ts).toBe(now)
     // Tool name optional
-    const state2 = reducer(state, setSlotStatusDetail({ slot: 'test-slot', kind: 'tool', text: 'Tool: read', toolName: 'read', ts: now }))
+    const state2 = reducer(state, setSlotStatusDetail({ slot: 'test-slot', kind: 'tool', purpose: 'Tool: read', toolName: 'read', ts: now }))
     expect(state2.slotStatusDetail['test-slot'].toolName).toBe('read')
     // Idle clears
-    const state3 = reducer(state2, setSlotStatusDetail({ slot: 'test-slot', kind: 'idle', text: 'Ready', ts: now }))
+    const state3 = reducer(state2, setSlotStatusDetail({ slot: 'test-slot', kind: 'idle', ts: now }))
     expect(state3.slotStatusDetail['test-slot'].kind).toBe('idle')
+    // A server-supplied status is the one non-tool phase that carries a label.
+    const state4 = reducer(state3, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking', label: 'Compacting…', ts: now }))
+    expect(state4.slotStatusDetail['test-slot']).toEqual({ kind: 'thinking', label: 'Compacting…', ts: now })
   })
 
   it('clearMessages resets messages and pagination', () => {
@@ -2300,7 +2304,7 @@ describe('slotHistory — session navigation stack', () => {
       loadingOlder: true,
       lastChunkSeq: 99,
       _wsChunkedDuringFetch: true,
-      slotStatusDetail: { x: { kind: 'tool', text: 'hi', ts: 1 } },
+      slotStatusDetail: { x: { kind: 'tool', purpose: 'hi', ts: 1 } },
       voicePlaying: true,
       voiceAudio: 'base64data',
     }

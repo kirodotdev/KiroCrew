@@ -10,7 +10,7 @@ import { useAppDispatch, useAppSelector } from '../../../store'
 import { createSlot, resumeFromHistory, switchSlot } from '../../../store/chatSlice'
 import type { ChatSlot, ChatFolder, CronJob } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
-import { toolStatusLabel } from '../../../utils/toolStatusLabel'
+import { toolStatusLabel, type ToolStatusDetail } from '../../../utils/toolStatusLabel'
 
 import { i18nT } from '../../../i18n/t'
 import { fmtDateFields, fmtRelative, toDate } from '../../../i18n/format'
@@ -180,7 +180,7 @@ function shortMsg(slot: ChatSlot): string {
 export function sessionStatus(
   slot: ChatSlot,
   unread: string[],
-  statusDetail?: { kind?: string; text?: string; toolName?: string },
+  statusDetail?: ToolStatusDetail,
   // Defaults to the ChatSettings default (on) so callers that don't care about
   // the preference keep the purpose-first behavior.
   simplifiedToolNames = true,

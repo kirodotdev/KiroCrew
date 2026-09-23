@@ -127,7 +127,7 @@ describe('useWebSocket tool-call refinement status detail', () => {
 
   const detail = () => globalStore.getState().chat.slotStatusDetail['slot-1']
   /** What the session-list row actually paints, under the default
-   *  `simplifiedToolNames` preference. The stored `text` is only half the input
+   *  `simplifiedToolNames` preference. The stored `purpose` is only half the input
    *  — toolStatusLabel owns the fallback from an absent purpose to the title —
    *  so the label is the assertion that matches what a user sees. */
   const label = () => toolStatusLabel(detail(), true, 'en')
@@ -168,7 +168,7 @@ describe('useWebSocket tool-call refinement status detail', () => {
     // Simplified mode with no purpose: the derived title, not the raw command.
     expect(label()).toBe('List files in tmp')
     expect(toolStatusLabel(detail(), false, 'en')).toBe('ls /tmp')
-    expect(detail().text).toBe('')
+    expect(detail()).toMatchObject({ kind: 'tool', purpose: '' })
   })
 
   it('adopts a purpose the refinement does supply', () => {

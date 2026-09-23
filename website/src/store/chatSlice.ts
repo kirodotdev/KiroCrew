@@ -10,7 +10,7 @@ import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
 import { isStopEvent } from '../lib/stopEvent'
 import { isNoteRow } from '../lib/noteContract'
-import type { ToolAction } from '../utils/toolAction'
+import type { PhaseDetail, ToolPhaseDetail } from '../utils/toolStatusLabel'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
@@ -875,13 +875,21 @@ export interface FollowupItem {
   branch?: string
 }
 
+/** A slot's live status line, keyed by `kind`: a `tool` phase carries the
+ *  agent-written `purpose` (plus the `toolCallId` it describes, so a refinement
+ *  of the SAME call merges into it); a fixed phase carries no copy, and a
+ *  server-supplied status carries its `label`. Purpose and label are separate
+ *  fields so a reader cannot paint one for the other; `toolStatusLabel`
+ *  resolves any of them into the string a row shows. */
+export type SlotStatusDetail = ((ToolPhaseDetail & { toolCallId?: string }) | PhaseDetail) & { ts: number }
+
 interface ChatState {
   activeSlot: string | null
   messages: ChatMessage[]
   slotRunning: boolean
   slotStopping: boolean
   slotState: SlotState
-  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; derivedTitle?: string; derivedAction?: ToolAction; derivedMore?: number; toolCallId?: string }>
+  slotStatusDetail: Record<string, SlotStatusDetail>
   slotHasMore: boolean
   slotOldestIndex: number
   /** Slot the cursor above describes. A switch moves activeSlot first, so
@@ -4849,7 +4857,7 @@ const chatSlice = createSlice({
      *  merged into it (see the `tool_call` case in useWebSocket) without a
      *  refinement of one call inheriting a sibling's purpose when tools run in
      *  parallel. */
-    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; derivedTitle?: string; derivedAction?: ToolAction; derivedMore?: number; toolCallId?: string }>) {
+    setSlotStatusDetail(state, action: PayloadAction<SlotStatusDetail & { slot: string }>) {
       const { slot, ...detail } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail

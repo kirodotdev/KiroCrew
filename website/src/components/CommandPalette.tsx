@@ -357,14 +357,18 @@ export default function CommandPalette({
     () =>
       activeProvider.id === 'recents'
         ? slots
-            .map(
-              (s) =>
-                `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
-                  s.pinned ? 1 : 0
-                }:${s.last_activity_ts ?? s.last_ts ?? ''}:${
-                  slotStatusDetail[s.key]?.kind ?? ''
-                }:${slotStatusDetail[s.key]?.text ?? ''}:${slotStatusDetail[s.key]?.ts ?? ''}`,
-            )
+            .map((s) => {
+              const detail = slotStatusDetail[s.key]
+              // The status string that can change under a stable `kind`: a tool
+              // phase's agent-written purpose, any other phase's label. Only a
+              // fingerprint input — the row itself renders via toolStatusLabel.
+              const detailText = detail?.kind === 'tool' ? detail.purpose ?? '' : detail?.label ?? ''
+              return `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
+                s.pinned ? 1 : 0
+              }:${s.last_activity_ts ?? s.last_ts ?? ''}:${
+                detail?.kind ?? ''
+              }:${detailText}:${detail?.ts ?? ''}`
+            })
             .join('|') + `#${unreadSlots.join(',')}#${simplifiedToolNames ? 1 : 0}`
         : '',
     [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames],

@@ -179,7 +179,7 @@ describe('sessionStatus', () => {
     const st = sessionStatus(slot({ key: 'zzq', running: true }), [], {
       kind: 'tool',
       toolName: 'fs_read',
-      text: 'zzq reading',
+      purpose: 'zzq reading',
     })
     expect(st.label).toBeTruthy()
   })

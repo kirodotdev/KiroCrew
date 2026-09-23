@@ -34,7 +34,7 @@ const H = vi.hoisted(() => {
     chat: {
       slotStatusDetail: {} as Record<
         string,
-        { kind: string; text: string; ts: number; toolName?: string }
+        { kind: string; purpose?: string; label?: string; ts: number; toolName?: string }
       >,
     },
   }
@@ -442,11 +442,44 @@ describe('CommandPalette — render', () => {
     expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
 
     H.storeState.chat.slotStatusDetail = {
-      'chat-1': { kind: 'tool', text: 'Running: read /workspace/src/app.ts', ts: 1 },
+      'chat-1': { kind: 'tool', purpose: 'Running: read /workspace/src/app.ts', ts: 1 },
     }
     rerender(<CommandPalette open onClose={vi.fn()} />)
 
     await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
+  })
+
+  it('refreshes recents when only the status string changes under a stable kind and ts', async () => {
+    // The live fingerprint has to read the field each phase actually carries: a
+    // tool phase's `purpose`, any other phase's `label`. A refinement that
+    // rewrites the purpose (same kind, same tick) must still re-run the search.
+    H.storeState.dashboard.slots = [
+      { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
+    ]
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'tool', purpose: 'Terminal', ts: 1 },
+    }
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
+
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'tool', purpose: 'List the temp dir', ts: 1 },
+    }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
+
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'thinking', label: 'Compacting…', ts: 1 },
+    }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(3))
+
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'thinking', ts: 1 },
+    }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(4))
   })
 
   it('refreshes recents when the simplified-tool-names preference changes', async () => {
@@ -457,7 +490,7 @@ describe('CommandPalette — render', () => {
       { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
     ]
     H.storeState.chat.slotStatusDetail = {
-      'chat-1': { kind: 'tool', text: 'Reading the app entrypoint', ts: 1 },
+      'chat-1': { kind: 'tool', purpose: 'Reading the app entrypoint', ts: 1 },
     }
     const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
     await screen.findByText('Recent Session')
