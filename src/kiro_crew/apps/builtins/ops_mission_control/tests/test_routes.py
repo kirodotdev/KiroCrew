@@ -641,6 +641,17 @@ class TestLedgerHygieneWiring(unittest.IsolatedAsyncioTestCase):
             result = routes._index_ledger_safely()
         self.assertEqual(result, {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0})
 
+    async def test_persistence_switch_skips_automatic_ledger_index_write(self):
+        """The nightly app sweep must obey the global automatic-write switch."""
+        cfg = mock.MagicMock()
+        cfg.memory.persistence_enabled = False
+        with mock.patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
+            with mock.patch("kiro_crew.vector_memory.VectorMemoryStore") as store_cls:
+                result = routes._index_ledger_safely()
+
+        store_cls.assert_not_called()
+        self.assertEqual(result, {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0})
+
     async def test_a_prune_fault_cannot_cost_the_ledger_push(self):
         """`prune_closed` sits before the push, and making the index read strict gave it a
         new way to raise.

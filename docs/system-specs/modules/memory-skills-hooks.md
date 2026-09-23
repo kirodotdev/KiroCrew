@@ -281,6 +281,12 @@ withheld-groups block stays keyed to the caller-passed value only: "your parent
 withheld" describes per-spawn narrowing, not the operator's standing config
 choice.
 
+The switch also gates automatic app-owned projections into the shared memory
+store. Ops Mission Control's daily ledger-hygiene pass skips its vector-index
+stage before constructing `VectorMemoryStore`, so disabling persistence neither
+writes episodic rows nor creates or migrates `memory.db`. Its deterministic
+ledger cleanup and git sync still run because those are app state, not memory.
+
 `MemoryStore.get_context()` retains `history_cap=25_000` as its default for
 programmatic readers. V1 `ContextBuilder` calls it with the scaled history cap
 when building fresh session context. V2 reads preference/project anchors without
