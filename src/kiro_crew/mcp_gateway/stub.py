@@ -536,18 +536,30 @@ _KIROCREW_MCP_SUBCOMMANDS = frozenset(
 )
 
 
-def pool_binary_version(command: str, target_args: list[str]) -> str:
-    """The ``binary_version`` a stub registers: the binary's hash, plus the Kiro
-    Crew code fingerprint when the target is one of Kiro Crew's own servers.
+def _pool_binary_identity(command: str, target_args: list[str]) -> tuple[str, str]:
+    """Return ``(pool version, Crew code generation)`` for one target.
+
+    The second value is empty for a third-party target. Keeping both values from
+    one calculation lets the Register frame bind the stub/daemon protocol
+    generation without parsing the pool token back apart or hashing the source
+    tree twice.
     """
     base = _binary_version(command)
     if not any(a in _KIROCREW_MCP_SUBCOMMANDS for a in target_args):
-        return base
+        return base, ""
     # Imported here, not at module top: the stub's cold-start path is timed
     # and this module is only needed on the Kiro Crew branch.
     from kiro_crew.code_fingerprint import code_fingerprint
 
-    return f"{base}+{code_fingerprint()}"
+    generation = code_fingerprint()
+    return f"{base}+{generation}", generation
+
+
+def pool_binary_version(command: str, target_args: list[str]) -> str:
+    """The ``binary_version`` a stub registers: the binary's hash, plus the Kiro
+    Crew code fingerprint when the target is one of Kiro Crew's own servers.
+    """
+    return _pool_binary_identity(command, target_args)[0]
 
 
 def binary_fingerprint(command: str) -> str:
@@ -634,6 +646,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
     The result is accepted verbatim by :meth:`PoolKey.from_register` —
     callers do not post-process."""
     target_args = _resolve_target_args(args)
+    binary_version, stub_code_fingerprint = _pool_binary_identity(args.target_command, target_args)
     # Prefer --env-json when present (commas/equals round-trip intact);
     # fall back to the legacy --env CSV for overlay files written by a
     # pre-JSON rewriter that may still be on disk during the transition.
@@ -667,7 +680,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "command_args_hash": hash_command(args.target_command, target_args),
         "effective_env_hash": hash_effective_env(env_pairs, identity_keys=identity_keys),
         "work_dir": work_dir,
-        "binary_version": pool_binary_version(args.target_command, target_args),
+        "binary_version": binary_version,
         # Not os.getuid(): that attribute does not exist on Windows, where an
         # AttributeError here would abort the Register frame and send every
         # session to per-session exec -- pooling would appear enabled and
@@ -715,6 +728,13 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "session_type": caller["session_type"],
         "principal_id": caller["principal_id"],
     }
+    if stub_code_fingerprint:
+        # Compatibility attestation, not a PoolKey dimension. The daemon answers
+        # with its own fingerprint in ``registered``; an absent or different
+        # value means an adopted pre-upgrade daemon cannot safely carry this
+        # control plane's current per-session protocol, so handshake requests the
+        # existing direct-exec fallback instead of serving subtly stale frames.
+        payload["stub_code_fingerprint"] = stub_code_fingerprint
     if session_token:
         # Sibling field, deliberately NOT a PoolKey dimension: a per-connection
         # value in the key would give every session its own backend and pooling
@@ -861,6 +881,19 @@ async def handshake(
 
     msg_type = resp.get("type")
     if msg_type == "registered":
+        expected_generation = payload.get("stub_code_fingerprint")
+        if isinstance(expected_generation, str) and expected_generation:
+            daemon_generation = resp.get("fingerprint")
+            if not isinstance(daemon_generation, str) or not daemon_generation:
+                await _safe_close(writer)
+                raise FallbackRequestedError(
+                    "gateway did not report its code fingerprint; using direct execution"
+                )
+            if daemon_generation != expected_generation:
+                await _safe_close(writer)
+                raise FallbackRequestedError(
+                    "gateway code fingerprint does not match this stub; using direct execution"
+                )
         return reader, writer, payload["stub_uuid"], resp
     await _safe_close(writer)
     if msg_type == "rejected":

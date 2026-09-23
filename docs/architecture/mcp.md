@@ -778,7 +778,19 @@ admission FIRST -- queued waiters fail with `SpawnGateClosed`, watchers are
 cancelled (releasing their permits neutral), charges are dropped -- then
 proceeds with the existing teardown.
 
-**Wire.** `REGISTERED_CAPABILITIES` carries `spawn_queue`. A stub that saw it
+**Wire.** The `registered` reply carries the daemon's `code_fingerprint`.
+A stub targeting one of Kiro Crew's own MCP servers also puts its
+`stub_code_fingerprint` on the Register frame and requires the two values to
+match exactly before it keeps the broker connection. A missing value identifies
+a pre-fingerprint daemon; a different value identifies another installed code
+generation. Either condition closes that connection and takes the stub's normal
+per-session `fallback_exec`, so a package upgrade cannot leave current MCP
+servers consuming stale caller-identity or directive frames. This is a protocol
+compatibility check, not an authorization proof. Third-party targets send no
+`stub_code_fingerprint` and retain their existing binary-version pooling and
+old-daemon compatibility.
+
+`REGISTERED_CAPABILITIES` carries `spawn_queue`. A stub that saw it
 sends `{"type": "ensure_backend", "wait_budget_secs": N}` and the daemon queues
 the spawn for `min(N, spawn_queue_wait_secs)` LESS
 `_QUEUE_REFUSAL_MARGIN_SECS` (capped at half, so the subtraction is strict for
