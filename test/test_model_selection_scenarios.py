@@ -28,8 +28,10 @@ from kiro_crew.acp.client import (
     advertised_model_ids,
     model_is_unusable,
     resolve_pin_spelling,
+    resolve_pin_spelling_on,
     resolve_usable_model,
 )
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
 
 # Representative advertised sets for the scenarios below.
 _ENTITLED = ["claude-opus-4.8", "claude-sonnet-4.6", "auto"]  # serves auto
@@ -385,3 +387,120 @@ class TestRejectionClassifier:
     def test_non_dict_returns_none(self):
         assert _rejected_model_from_error("nonsense") is None
         assert _rejected_model_from_error(None) is None
+
+
+class TestThePairIdBackendVocabulary:
+    """``resolve_pin_spelling_on``: the same fold, asked ON a named harness.
+
+    ``resolve_pin_spelling`` answers with an ADVERTISED spelling because that is
+    what ``session/set_model`` accepts. A member of
+    ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` breaks that identity: its advertised
+    rows are ``<model>[<effort>]`` pairs its ``model`` config option refuses, and
+    the spelling that option DOES take -- the bare model -- is never advertised.
+    So on those harnesses, and only there, the fold may answer with an id that is
+    not on the list.
+    """
+
+    _PAIRS = [
+        "openai.gpt-6-astra[high]",
+        "openai.gpt-6-astra[xhigh]",
+        "openai.gpt-6-astra[max]",
+    ]
+
+    def test_without_a_backend_the_generic_contract_is_unchanged(self):
+        # Every caller that is not choosing a wire spelling for a live session
+        # -- the picker filter, the fallback chain -- passes none and keeps the
+        # advertised-spelling answer, including the withhold.
+        assert resolve_pin_spelling_on("openai.gpt-6-astra", self._PAIRS) == ""
+        assert resolve_pin_spelling_on("openai.gpt-6-astra", self._PAIRS, backend="") == ""
+
+    def test_a_non_member_backend_is_not_widened(self):
+        # Harness-parity H13 is opt-in. kiro advertises exactly the ids its wire
+        # takes, so an unadvertised bare id there is genuinely unserved.
+        assert (
+            resolve_pin_spelling_on("openai.gpt-6-astra", self._PAIRS, backend=ACP_BACKEND_KIRO)
+            == ""
+        )
+
+    def test_a_bare_pin_resolves_to_the_bare_model_the_option_takes(self):
+        assert (
+            resolve_pin_spelling_on("openai.gpt-6-astra", self._PAIRS, backend=ACP_BACKEND_CODEX)
+            == "openai.gpt-6-astra"
+        )
+
+    def test_an_advertised_pair_still_wins_verbatim(self):
+        # The literal test runs first, so a pin that names an advertised effort
+        # keeps resolving to that row and the split applies both halves.
+        assert (
+            resolve_pin_spelling_on(
+                "openai.gpt-6-astra[max]", self._PAIRS, backend=ACP_BACKEND_CODEX
+            )
+            == "openai.gpt-6-astra[max]"
+        )
+
+    def test_an_unserved_effort_degrades_to_the_model_never_to_another_effort(self):
+        # The invariant this whole change exists for: an effort the account does
+        # not advertise loses the EFFORT, not the MODEL, and never borrows a
+        # neighbour's bracket. It is the same degradation
+        # ``_push_model_via_effort_split`` performs when the adapter refuses the
+        # effort write -- the model is applied, the adapter owns the dial.
+        for pin in ("openai.gpt-6-astra[low]", "openai.gpt-6-astra[medium]"):
+            got = resolve_pin_spelling_on(pin, self._PAIRS, backend=ACP_BACKEND_CODEX)
+            assert got == "openai.gpt-6-astra", (pin, got)
+            assert "[" not in got
+
+    def test_a_model_no_row_names_is_still_withheld(self):
+        # Per-MODEL evidence, not a licence to send anything: an id no advertised
+        # row carries under any effort has no bare half to answer with.
+        assert (
+            resolve_pin_spelling_on("openai.gpt-7-nova", self._PAIRS, backend=ACP_BACKEND_CODEX)
+            == ""
+        )
+        assert (
+            resolve_pin_spelling_on(
+                "openai.gpt-7-nova[max]", self._PAIRS, backend=ACP_BACKEND_CODEX
+            )
+            == ""
+        )
+
+    def test_a_window_suffix_is_not_an_effort_and_is_never_shed(self):
+        # ``[1m]`` names a context WINDOW, and the widening declines every pin
+        # carrying one: the bare half of a pair row has no window marker, so
+        # answering with it would hand a 1M pin its 200K neighbour -- the swap
+        # ``same_registered_model`` refuses one dial over. Stated as the property
+        # rather than per case: on a window-suffixed pairing the backend adds
+        # NOTHING, and the answer is exactly the generic fold's, marker and all.
+        for pin, adv in (
+            ("claude-opus-4.8[1m]", ["claude-opus-4.8"]),
+            ("claude-opus-4.8", ["claude-opus-4.8[1m]"]),
+            ("global.anthropic.claude-opus-4-8[1m]", ["claude-opus-4.8"]),
+            ("openai.gpt-6-astra", ["openai.gpt-6-astra[1m]"]),
+        ):
+            assert resolve_pin_spelling_on(
+                pin, adv, backend=ACP_BACKEND_CODEX
+            ) == resolve_pin_spelling(pin, adv), (pin, adv)
+        # The case the guard is FOR: a 1M pin meeting only effort rows. Without it
+        # the bare half answers and the pin silently loses its window.
+        assert (
+            resolve_pin_spelling_on(
+                "openai.gpt-6-astra[1m]",
+                ["openai.gpt-6-astra[high]"],
+                backend=ACP_BACKEND_CODEX,
+            )
+            == ""
+        )
+
+    def test_an_empty_advertised_set_resolves_to_nothing_either_way(self):
+        # "Nothing to resolve against" is not "withheld", and the widening does
+        # not invent a second vocabulary out of an absent first one.
+        assert resolve_pin_spelling_on("openai.gpt-6-astra", [], backend=ACP_BACKEND_CODEX) == ""
+        assert resolve_pin_spelling_on("openai.gpt-6-astra", None, backend=ACP_BACKEND_CODEX) == ""
+
+    def test_the_substitute_path_carries_the_backend_through(self):
+        # ``resolve_usable_model`` is the entry the session handle uses; without
+        # the pass-through it answers the withhold a second time.
+        assert resolve_usable_model("openai.gpt-6-astra", self._PAIRS) == ""
+        assert (
+            resolve_usable_model("openai.gpt-6-astra", self._PAIRS, backend=ACP_BACKEND_CODEX)
+            == "openai.gpt-6-astra"
+        )

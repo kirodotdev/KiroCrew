@@ -110,7 +110,14 @@ class AllocationDeps:
     #: would make the pool's scope rule the only one a test cannot swap.
     model_pin_applies: Callable[[str, str, Sequence[str] | None], bool]
     provider_model_namespace: Callable[[LLMProvider], str]
-    resolve_pin_spelling: Callable[[str, list[str]], str]
+    #: The pin fold, taking the PROVIDER as well so the answer can be the one
+    #: that harness's wire takes: a ``<model>[<effort>]`` pair-id backend
+    #: advertises rows its own ``model`` option refuses, and resolves a bare pin
+    #: to the bare id that option does accept. Reading the backend HERE rather
+    #: than passing a pre-resolved id keeps this site answering from the same
+    #: fold the cold start uses, which is the property this dependency exists
+    #: to hold.
+    resolve_pin_spelling: Callable[[str, list[str], LLMProvider], str]
     to_provider_id: Callable[[str, str], str]
     to_acp_id: Callable[[str], str]
     inc_session_created: Callable[[], None]
@@ -1696,7 +1703,7 @@ class SessionAllocationService:
                                 # runs. A pin absent under either spelling still
                                 # takes the withhold below.
                                 _send_model = self._deps.resolve_pin_spelling(
-                                    switch_model, advertised
+                                    switch_model, advertised, provider
                                 )
                             if not _send_model:
                                 self._deps.logger.warning(

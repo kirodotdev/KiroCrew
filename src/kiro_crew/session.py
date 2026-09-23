@@ -128,7 +128,7 @@ from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import model_registry_namespace
-from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
+from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.live import ConfigChange
@@ -1165,7 +1165,11 @@ class SessionManager:
             provider_model_namespace=lambda provider: model_registry_namespace(
                 getattr(getattr(provider, "client", provider), "backend", "") or ""
             ),
-            resolve_pin_spelling=lambda model, advertised: resolve_pin_spelling(model, advertised),
+            resolve_pin_spelling=lambda model, advertised, provider: resolve_pin_spelling_on(
+                model,
+                advertised,
+                getattr(getattr(provider, "client", provider), "backend", "") or "",
+            ),
             to_provider_id=lambda model, provider: model_registry.to_provider_id(model, provider),
             to_acp_id=lambda model: model_registry.to_acp_id(model),
             inc_session_created=lambda: Stats().inc_session_created(),

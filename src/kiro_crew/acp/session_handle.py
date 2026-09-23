@@ -2012,7 +2012,9 @@ class AcpSessionHandle:
         This is the shared-runtime SUBSTITUTE path (background one-liners, tips,
         contradiction sweep, and any caller that did not pre-guard an explicit
         user pick). ``resolve_usable_model`` maps the request to what the account
-        can run: a served id is sent; ``"auto"`` is sent only when the backend
+        can run: a served id is sent; a bare pin a pair-id harness serves only as
+        the model half of its advertised ``<model>[<effort>]`` rows is sent as
+        that bare id; ``"auto"`` is sent only when the backend
         advertises it; and anything else — ``"auto"`` on a partition that doesn't
         serve it, or an unentitled concrete id — resolves to ``""``,
         meaning **inherit the session's backend default** (the served model
@@ -2021,7 +2023,16 @@ class AcpSessionHandle:
         reset-to-default. Explicit user picks raise instead, upstream in
         ``AcpSessionProvider.set_model`` / ``AcpClient.set_model``.
         """
-        resolved = resolve_usable_model(model_id, self._advertised_model_ids())
+        # Backend-aware: on a ``<model>[<effort>]`` pair-id harness the advertised
+        # list is the picker's vocabulary while the ``model`` config option's is
+        # the BARE id, so a bare pin misses the list yet is exactly what the wire
+        # takes. Without the backend this layer answers the provider's already
+        # resolved pin with a SECOND withhold, and the pin is dropped after all.
+        resolved = resolve_usable_model(
+            model_id,
+            self._advertised_model_ids(),
+            backend=self._runtime.acp_backend,
+        )
         if not resolved:
             # Inherit the backend default — nothing to send. For the ephemeral
             # _bg session the current model IS session/new's served default.

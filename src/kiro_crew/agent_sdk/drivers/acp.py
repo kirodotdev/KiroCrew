@@ -56,6 +56,7 @@ __all__ = [
     "kiro_cli_resolves",
     "provider_error_client",
     "resolve_pin_spelling",
+    "resolve_pin_spelling_on",
     "run_kiro_native_commands",
 ]
 
@@ -103,6 +104,20 @@ def resolve_pin_spelling(model_id: str, advertised: object) -> str:
     from kiro_crew.acp.client import resolve_pin_spelling as _impl
 
     return _impl(model_id, advertised)  # type: ignore[arg-type]
+
+
+def resolve_pin_spelling_on(model_id: str, advertised: object, backend: str) -> str:
+    """The spelling *model_id* resolves to on *backend*, or ``""`` when none.
+
+    The same delegation as :func:`resolve_pin_spelling`, to the backend-aware
+    resolver: a harness whose advertised rows are ``<model>[<effort>]`` pairs
+    takes the bare model on its ``model`` config option, so a bare pin resolves
+    there even though the advertised list never spells it. *backend* stays a
+    plain string, so no ACP type crosses the boundary here either.
+    """
+    from kiro_crew.acp.client import resolve_pin_spelling_on as _impl
+
+    return _impl(model_id, advertised, backend=backend)  # type: ignore[arg-type]
 
 
 def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dict:
