@@ -13861,7 +13861,7 @@
         "minimap_location": "미니맵 위치",
         "minimap_location_desc": "오른쪽 가장자리에 있으면 미니맵이 스크롤바를 대체합니다.",
         "message_font_size": "메시지 글꼴 크기",
-        "message_font_size_desc": "모든 세션에서 메시지 텍스트의 글꼴 크기입니다. 사이드바, 세션 목록 및 나머지 인터페이스에는 영향을 주지 않습니다."
+        "message_font_size_desc": "모든 세션에서 대화의 글꼴 크기입니다: 메시지 텍스트, 코드, 표, 추천 답변 및 메시지 입력창. 콤팩트 콘텐츠 너비도 이에 맞춰 넓어집니다. 사이드바, 세션 목록 및 나머지 인터페이스에는 영향을 주지 않습니다."
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

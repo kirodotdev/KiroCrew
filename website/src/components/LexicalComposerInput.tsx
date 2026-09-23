@@ -594,11 +594,15 @@ export default function LexicalComposerInput({
               spellCheck={spellCheck}
               data-composer-input=""
               data-lexical-composer=""
+              data-composer-typo=""
               className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-hidden whitespace-pre-wrap break-words ${INPUT_TYPO}`}
             />
           }
           placeholder={
-            <div className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO}`}>
+            /* Not a real `::placeholder`, so it carries the same hook as the
+               editor: on a coarse pointer both get the 16px floor together and
+               the overlay stays metric-identical to the text it stands in for. */
+            <div data-composer-typo="" className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO}`}>
               {placeholder}
             </div>
           }

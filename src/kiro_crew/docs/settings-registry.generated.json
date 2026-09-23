@@ -597,7 +597,7 @@
       "label": "Message Font Size",
       "tab": "chat",
       "route": "/settings/chat?highlight=chat.message-font-size",
-      "description": "Font size for message text, in every session. Sidebar, session list and the rest of the interface are unaffected."
+      "description": "Font size for the conversation, in every session: message text, code, tables, suggested replies and the message input. The Compact content width grows to match. Sidebar, session list and the rest of the interface are unaffected."
     },
     {
       "id": "chat.minimap-location",

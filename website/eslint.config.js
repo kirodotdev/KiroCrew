@@ -211,7 +211,10 @@ export default [
           // hooks/useMessageSearch.ts locate these elements by class.
           'message-bubble', 'input-area', 'chat-container', 'session-agent-label', 'primary',
           'pierre-editor-fallback',
-          'mc-message-font-scope', // styles/message-font-size.css (imported in main.tsx, outside index.css's @source graph)
+          // styles/message-font-size.css (imported in main.tsx, outside index.css's
+          // @source graph): the bubble scope, the chip/text size classes, and the
+          // marker MarkdownRenderer's link chips carry.
+          'mc-message-font-*', 'mc-md-ref-chip',
         ],
       }],
       'shadcn/require-static-classes': 'error',

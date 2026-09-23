@@ -14259,7 +14259,7 @@
         "minimap_location": "Posizione della minimappa",
         "minimap_location_desc": "Sul bordo destro, la minimappa sostituisce la barra di scorrimento.",
         "message_font_size": "Dimensione del carattere dei messaggi",
-        "message_font_size_desc": "Dimensione del carattere del testo dei messaggi, in ogni sessione. La barra laterale, l'elenco delle sessioni e il resto dell'interfaccia non sono interessati."
+        "message_font_size_desc": "Dimensione del carattere della conversazione, in ogni sessione: testo dei messaggi, codice, tabelle, risposte suggerite e campo di inserimento del messaggio. La larghezza compatta del contenuto cresce di conseguenza. La barra laterale, l'elenco delle sessioni e il resto dell'interfaccia non sono interessati."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

@@ -2608,21 +2608,26 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 
    The placeholder stays at the desktop size because the zoom scale is computed
    from the FIELD's font-size, not this pseudo-element's — so holding the hint
-   at 0.875rem costs no zoom protection and keeps it on one line. At 16px the
-   hint wraps, and an empty composer cannot grow to show the second line: a
+   at the desktop size costs no zoom protection and keeps it on one line. At 16px
+   the hint wraps, and an empty composer cannot grow to show the second line: a
    placeholder contributes nothing to scrollHeight, so applyHeight pins the box
    at INPUT_MIN_H and the wrapped line is clipped.
 
-   The field selector repeats the attribute to reach specificity (0,2,0). Tailwind's
-   `.text-sm` on the same element is (0,1,0), so a single `[data-composer-typo]`
-   would only TIE and win on source order — leaving the fix inert on device, with
-   no test able to see it, if the utilities are ever emitted after this file. The
-   repeat is used instead of qualifying by element because the hook is on the
-   composer's <textarea> and on the paste mirror's <div>, and the mirror's font
-   metrics must track the field's. */
+   The desktop size is the message font setting (`--mc-message-font-size`, set
+   on the chat pane root; 14px where unset). The field rule is a FLOOR over it,
+   `max(16px, setting)`, not a replacement: a user who chose 20px keeps 20px on
+   touch, and only a setting below WebKit's threshold is raised.
+
+   The field selector repeats the attribute to reach specificity (0,2,0). The
+   `.mc-message-font-text` class on the same element is (0,1,0), so a single
+   `[data-composer-typo]` would only TIE and win on source order — leaving the
+   fix inert on device, with no test able to see it, if the class rule is ever
+   emitted after this file. The repeat is used instead of qualifying by element
+   because the hook is on the composer's <textarea> and on the paste mirror's
+   <div>, and the mirror's font metrics must track the field's. */
 @media (pointer: coarse) {
-  [data-composer-typo][data-composer-typo] { font-size: 16px; }
-  [data-composer-typo]::placeholder { font-size: 0.875rem; }
+  [data-composer-typo][data-composer-typo] { font-size: max(16px, var(--mc-message-font-size, 14px)); }
+  [data-composer-typo]::placeholder { font-size: var(--mc-message-font-size, 14px); }
 }
 
 /* ── Why there is deliberately NO app-wide 16px field rule here ──

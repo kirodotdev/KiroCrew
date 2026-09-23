@@ -14259,7 +14259,7 @@
         "minimap_location": "Localização do minimapa",
         "minimap_location_desc": "Na borda direita, o minimapa substitui a barra de rolagem.",
         "message_font_size": "Tamanho da fonte das mensagens",
-        "message_font_size_desc": "Tamanho da fonte do texto das mensagens, em todas as sessões. A barra lateral, a lista de sessões e o restante da interface não são afetados."
+        "message_font_size_desc": "Tamanho da fonte da conversa, em todas as sessões: texto das mensagens, código, tabelas, respostas sugeridas e o campo de entrada de mensagens. A largura de conteúdo compacta cresce na mesma proporção. A barra lateral, a lista de sessões e o restante da interface não são afetados."
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

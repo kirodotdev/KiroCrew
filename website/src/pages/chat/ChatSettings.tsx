@@ -4,15 +4,14 @@
  * pages/settings/ChatPanel.tsx and pages/settings/VoicePanel.tsx.
  */
 import { safeSetItem } from '../../utils/safeStorage'
+import { DEFAULT_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, MIN_MESSAGE_FONT_SIZE } from './contentWidth'
 
 export type ContentWidth = 'compact' | 'comfortable' | 'full'
 
-/** Chat message bubble font-size bounds, in px. Mirrors useTerminalFont's
- *  MIN/MAX_TERMINAL_FONT_SIZE bracket — below 12 body text is unreadable,
- *  above 22 a bubble wastes more width wrapping than it gains in legibility. */
-export const MIN_MESSAGE_FONT_SIZE = 12
-export const MAX_MESSAGE_FONT_SIZE = 22
-export const DEFAULT_MESSAGE_FONT_SIZE = 14
+/* The font-size bounds live in ./contentWidth (with the width scaling that
+ * needs them) and are re-exported here so importers of the config module keep
+ * one source for everything chat-config shaped. */
+export { DEFAULT_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, MIN_MESSAGE_FONT_SIZE }
 
 /** Send-key mode: enter (Enter sends), ctrl-enter (Ctrl+Enter sends), enter-ctrl-newline (Enter sends, Ctrl+Enter = newline) */
 export type SendMode = 'enter' | 'ctrl-enter' | 'enter-ctrl-newline'
@@ -69,10 +68,13 @@ export interface ChatConfig {
    *  the user's call rather than something a client with no stored config
    *  inherits. Cmd/Ctrl+Shift+V remains the per-paste escape hatch either way. */
   showFullPastes: boolean
-  /** Font size in px for message bubble body text (paragraphs, list items),
-   *  clamped to [MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE]. Scoped to the
-   *  message content itself — sidebar, session list, and other chrome are
-   *  unaffected, same as `contentWidth`. */
+  /** Font size in px for the conversation surface — what the user reads and
+   *  writes: message text, inline and block code, tables, follow-up chips and
+   *  the composer — clamped to [MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE].
+   *  Each element keeps the ratio to body text it has at the default, and the
+   *  Compact content width scales with it (see `scaleContentWidth` in ./contentWidth). Chrome —
+   *  sidebar, session list, status lines, toolbars — is unaffected, same as
+   *  `contentWidth`. */
   messageFontSize: number
 }
 

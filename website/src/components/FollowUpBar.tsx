@@ -140,8 +140,10 @@ function chipEntrance(index: number, animating: boolean): { className: string, s
 // Shape/typography shared by every chip body; the rounding and the flex sizing
 // (cap + shrink vs grow) are the only things that differ between a standalone
 // chip and the main button of a split-button, so they are supplied per-call
-// rather than baked in — see `splitMainChipClassName`.
-const CHIP_BASE = 'px-3 py-1.5 text-[13px] text-left leading-snug cursor-pointer transition-all border'
+// rather than baked in — see `splitMainChipClassName`. The size follows the
+// message font setting (`mc-message-font-chip`, styles/message-font-size.css):
+// a chip is conversation text the user reads, not chrome.
+const CHIP_BASE = 'px-3 py-1.5 mc-message-font-chip text-left leading-snug cursor-pointer transition-all border'
 
 function chipColors(isPicked: boolean) {
   return isPicked

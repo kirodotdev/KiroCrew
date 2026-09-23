@@ -52,6 +52,7 @@ import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capt
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
+import { scaleContentWidth } from '../pages/chat/contentWidth'
 import { tryQuickSend } from '../lib/quickSend'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { takePaneDraft, writePaneDraft, mergePaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
@@ -1232,10 +1233,10 @@ export default function ChatPane({
             : `rounded-lg border transition-colors ${focused ? 'border-accent' : 'border-border'}`
         }`}
         style={{
-          '--mc-content-width': followContentWidth ? CONTENT_WIDTH[chatConfig.contentWidth].messages : '100%',
+          '--mc-content-width': followContentWidth ? scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages : '100%',
           // Split-view panes leave --mc-input-width UNSET so ChatInput keeps
           // its own fallback — byte-for-byte the pre-prop behavior.
-          ...(followContentWidth ? { '--mc-input-width': CONTENT_WIDTH[chatConfig.contentWidth].input } : {}),
+          ...(followContentWidth ? { '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } : {}),
           // Unlike content width, message font size is not a follow/independent
           // choice per pane — it is one reading preference, so every pane gets it.
           '--mc-message-font-size': `${chatConfig.messageFontSize}px`,

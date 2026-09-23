@@ -1257,7 +1257,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   if (source?.provider === 'jira') {
     const jira = source
     return (
-      <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
+      <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] mc-md-ref-chip transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
         <a
           href={jira.url}
           target="_blank"
@@ -1276,7 +1276,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     const forgeMeta = sourceProviderMeta(source.provider)
     const ForgeIcon = forgeMeta.icon
     return (
-      <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
+      <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] mc-md-ref-chip transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
         <a
           href={href}
           target="_blank"

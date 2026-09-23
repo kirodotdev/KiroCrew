@@ -6108,7 +6108,7 @@
         "failed_to_load_feature_video_status": "Failed to load feature-video cache status",
         "failed_to_start_feature_video_download": "Failed to start the download",
         "message_font_size": "Message Font Size",
-        "message_font_size_desc": "Font size for message text, in every session. Sidebar, session list and the rest of the interface are unaffected."
+        "message_font_size_desc": "Font size for the conversation, in every session: message text, code, tables, suggested replies and the message input. The Compact content width grows to match. Sidebar, session list and the rest of the interface are unaffected."
       },
       "displayPanel": {
         "color": "Color {{n}}",

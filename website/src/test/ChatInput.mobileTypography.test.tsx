@@ -25,17 +25,18 @@ describe('mobile composer typography', () => {
     // (`textarea[data-composer-typo]`) would raise specificity but silently drop
     // the mirror, whose font metrics must track the field's.
     expect(INDEX_CSS).toMatch(
-      /@media\s*\(pointer:\s*coarse\)\s*\{[\s\S]*?\[data-composer-typo\]\[data-composer-typo\]\s*\{\s*font-size:\s*16px;\s*\}/,
+      /@media\s*\(pointer:\s*coarse\)\s*\{[\s\S]*?\[data-composer-typo\]\[data-composer-typo\]\s*\{\s*font-size:\s*max\(16px,\s*var\(--mc-message-font-size,\s*14px\)\);\s*\}/,
     )
   })
 
   // jsdom does not evaluate media queries, so this matches the rule's text rather
-  // than its effect: it guards the pairing (a 16px field must keep a smaller
-  // placeholder) against one half being edited away, and cannot show the cascade
-  // resolves. That is covered by the device capture on the pull request.
+  // than its effect: it guards the pairing (a floored field must keep its
+  // placeholder at the un-floored desktop size) against one half being edited
+  // away, and cannot show the cascade resolves. That is covered by the device
+  // capture on the pull request.
   it('holds the placeholder at the desktop size so the hint stays on one line', () => {
     expect(INDEX_CSS).toMatch(
-      /\[data-composer-typo\]::placeholder\s*\{\s*font-size:\s*0\.875rem;\s*\}/,
+      /\[data-composer-typo\]::placeholder\s*\{\s*font-size:\s*var\(--mc-message-font-size,\s*14px\);\s*\}/,
     )
   })
 })

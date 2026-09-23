@@ -335,6 +335,7 @@ import { deriveFollowUpOptions, parseOptions } from '../app-sdk/protocol'
 import { isNoteRow } from '../lib/noteContract'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
+import { scaleContentWidth } from './chat/contentWidth'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
 import { focusComposer, focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
@@ -6580,6 +6581,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
          attribute carries a guarantee about a case it cannot affect. */
       data-owns-swipe={embedded ? undefined : 'left right'}
       className="flex flex-1 min-h-0 h-full overflow-hidden relative"
+      /* Published here, not on the chat pane, because the side panel (Activity,
+         Browser, SideChat's composer and follow-up chips) is this element's
+         child and the chat pane's SIBLING. Anything that reads the setting via
+         `var(--mc-message-font-size, 14px)` from inside the panel would
+         otherwise silently take the fallback and look right at the default
+         only. Content width stays on the pane: it is a column geometry, and the
+         panel has its own. */
+      style={{ '--mc-message-font-size': `${chatConfig.messageFontSize}px` } as React.CSSProperties}
     >
       <AnimatePresence>
         {isMobile && drawerMounted && (
@@ -6729,7 +6738,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
-      <div ref={setChatPaneEl} className={`relative flex flex-col bg-bg min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: '-0.5rem' } : {}), '--mc-content-width': CONTENT_WIDTH[chatConfig.contentWidth].messages, '--mc-input-width': CONTENT_WIDTH[chatConfig.contentWidth].input, '--mc-message-font-size': `${chatConfig.messageFontSize}px` } as React.CSSProperties}>
+      <div ref={setChatPaneEl} className={`relative flex flex-col bg-bg min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: '-0.5rem' } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
         {snipFrame && (
           <SnipOverlay
             frame={snipFrame}

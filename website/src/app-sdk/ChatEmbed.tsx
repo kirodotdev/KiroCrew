@@ -404,7 +404,7 @@ function ChatEmbed({
           rows={1}
           {...composition}
           aria-label={i18nT('appSdk.chatEmbed.chat_message')}
-          className="flex-1 min-w-0 min-h-[38px] resize-none overflow-y-auto px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-hidden focus-visible:border-accent transition-colors"
+          className="flex-1 min-w-0 min-h-[38px] resize-none overflow-y-auto px-3 py-2 mc-message-font-text bg-bg-elevated border border-border rounded-md text-text outline-hidden focus-visible:border-accent transition-colors"
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => submitOnEnter(e, () => send())}

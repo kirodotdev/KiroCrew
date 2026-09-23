@@ -1012,7 +1012,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.message-font-size",
     "label": "Message Font Size",
     "labelKey": "pages.settings.chatPanel.message_font_size",
-    "description": "Font size for message text, in every session. Sidebar, session list and the rest of the interface are unaffected.",
+    "description": "Font size for the conversation, in every session: message text, code, tables, suggested replies and the message input. The Compact content width grows to match. Sidebar, session list and the rest of the interface are unaffected.",
     "tab": "chat",
     "type": "stepper",
     "occurrence": 1
