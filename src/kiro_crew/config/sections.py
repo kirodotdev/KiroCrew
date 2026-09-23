@@ -2030,11 +2030,15 @@ class MemoryConfig:
         metadata=_meta(
             "Embedding Threads",
             "CPU threads for an explicit memory query or user-started re-embedding. "
-            "Defaults to 4, capped one core below the machine's core count -- never "
-            "below one thread, so a single-core host still embeds -- to leave the "
+            "Defaults to 4, capped one core below the CPUs this process may run on -- "
+            "never below one thread, so a single-core host still embeds -- to leave the "
             "event loop a core wherever there is one to spare; 4 means that default, "
-            "so pinning threads on a 4-core host takes another number. Any other "
-            "setting is honoured up to the core count. All memory stores share one "
+            "so pinning threads where the process may use 4 or fewer CPUs takes "
+            "another number. Any other "
+            "setting is honoured up to that count, which a CPU-set restriction "
+            "(--cpuset-cpus, taskset) narrows; a CFS quota (--cpus, cpu.max) sets "
+            "no mask and is not seen, while a limit a scheduler turns into an "
+            "exclusive cpuset is. All memory stores share one "
             "model and inference worker. "
             "V2 message context does not run an embedding search; V1 retains "
             "its session-start retrieval.",
@@ -2051,7 +2055,7 @@ class MemoryConfig:
             "use fewer resources rather than finish early. Both classes share one "
             "inference worker; waiting interactive queries take priority. 0 means "
             "inherit Embedding Threads. Explicit settings are honoured up to "
-            "the machine's core count.",
+            "the CPUs this process may run on.",
         ),
     )
     embedding_bulk_duty: float = field(

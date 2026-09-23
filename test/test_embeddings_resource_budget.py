@@ -28,7 +28,11 @@ def test_loaded_saved_config_preserves_explicit_threads_and_core_limit(
     path.write_text(json.dumps({"memory": settings}), encoding="utf-8")
     monkeypatch.setattr(loader, "config_path", lambda: path)
     monkeypatch.setattr(emb, "config_path", lambda: path)
+    # Both sources: the resolver reads the CPU set where the platform has one,
+    # and a container host reports more cores than it allows its processes.
     monkeypatch.setattr(emb.os, "cpu_count", lambda: 16)
+    if hasattr(emb.os, "sched_getaffinity"):
+        monkeypatch.setattr(emb.os, "sched_getaffinity", lambda pid: set(range(16)))
     loader._invalidate_config_cache()
     before = (emb._embed_threads(), emb.bulk_embed_threads())
     cfg = loader.KiroCrewConfig.load()

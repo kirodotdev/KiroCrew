@@ -47,7 +47,6 @@ import asyncio
 import functools
 import importlib.util
 import logging
-import os
 import platform
 import time
 from dataclasses import dataclass
@@ -56,6 +55,7 @@ from typing import Any, Callable
 import numpy as np
 
 from kiro_crew import extras
+from kiro_crew.cpu_affinity import affinity_cpu_count
 from kiro_crew.executors import stt_executor
 from kiro_crew.stt import capabilities as caps_mod
 from kiro_crew.stt import models, telemetry
@@ -104,19 +104,13 @@ def _consume_future_exception(future: asyncio.Future) -> None:
 
 
 def available_cpus() -> int:
-    """Return the core count this process may actually run on.
+    """Return the core count this process may actually run on, at least one.
 
-    ``os.sched_getaffinity`` rather than ``os.cpu_count``: under a CPU-set
-    restriction (containers, cgroups, ``taskset``) the latter reports the whole
-    machine, which is exactly the environment that over-threads worst. Falls back
-    to ``os.cpu_count`` where affinity is unavailable (macOS, Windows).
+    The platform read lives in :func:`kiro_crew.cpu_affinity.affinity_cpu_count`,
+    which prefers the CPU-set-aware count; a host that cannot answer reads as one
+    core here.
     """
-    if hasattr(os, "sched_getaffinity"):
-        try:
-            return len(os.sched_getaffinity(0)) or 1
-        except OSError:
-            pass
-    return os.cpu_count() or 1
+    return affinity_cpu_count() or 1
 
 
 def thread_count() -> int:

@@ -57,6 +57,7 @@ from typing import Any, BinaryIO, Callable, NamedTuple, Protocol
 from kiro_crew import asset_downloader
 from kiro_crew.config.loader import config_path
 from kiro_crew.config.paths import config_dir
+from kiro_crew.cpu_affinity import affinity_cpu_count
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.security import is_sensitive_path
 
@@ -1010,21 +1011,27 @@ def _embed_threads() -> int:
     this module does: the download thread and the backend factory must not pull
     in the full config dataclass import graph.
 
+    The count comes from :func:`kiro_crew.cpu_affinity.affinity_cpu_count`, not
+    ``os.cpu_count``: under a CPU-set restriction (``--cpuset-cpus``, ``taskset``)
+    the latter reports the host's cores, so the cap below would compute from 64 on
+    a 2-core allowance and answer four threads where two is the whole allowance.
+
     An operator value OTHER than the declared :data:`_DEFAULT_EMBED_THREADS` is
-    honoured up to the host's CPU count. Default policy caps that default one
-    core BELOW the count instead, so a 2-vCPU host keeps a core for the event
-    loop rather than handing llama.cpp the whole box. It is a ceiling on the
-    default, not a replacement for it: a 16-core host still answers 4.
+    honoured up to that count. Default policy caps the default one core BELOW it
+    instead, so a 2-vCPU host keeps a core for the event loop rather than handing
+    llama.cpp the whole box. It is a ceiling on the default, not a replacement
+    for it: a 16-core host still answers 4.
 
     A raw value EQUAL to the default is default policy, not operator intent.
     ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4 and
     ``KiroCrewConfig.save()`` publishes every field, so a fresh install's
     ``config.json`` carries a 4 nobody typed; reading that as a choice would
     hand the whole box to exactly the hosts this cap protects. The cost is that
-    4 cannot be pinned on a host with 4 or fewer cores -- any other number can.
+    4 cannot be pinned where the process may use 4 or fewer CPUs -- any other
+    number can.
     """
     raw = _read_memory_config().get("embedding_threads")
-    cores = os.cpu_count()
+    cores = affinity_cpu_count()
     requested = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
     if requested and requested != _DEFAULT_EMBED_THREADS:
         return max(1, min(requested, cores or _DEFAULT_EMBED_THREADS))
@@ -1055,14 +1062,15 @@ def bulk_embed_threads() -> int:
     waiting on bulk work and a single thread is what keeps it off the fans. An
     explicit 0 means "inherit :func:`_embed_threads`", which is how a deployment
     opts back into the interactive pool for its sweeps. A value above the
-    interactive count is honoured but still clamped to the machine's cores.
+    interactive count is honoured but still clamped to the CPUs this process
+    may run on, the same count :func:`_embed_threads` reads.
     """
     raw = _read_memory_config().get("embedding_bulk_threads")
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
         raw = _DEFAULT_BULK_THREADS
     elif raw == 0:
         return _embed_threads()
-    return max(1, min(raw, os.cpu_count() or _DEFAULT_EMBED_THREADS))
+    return max(1, min(raw, affinity_cpu_count() or _DEFAULT_EMBED_THREADS))
 
 
 def bulk_duty_cycle() -> float:

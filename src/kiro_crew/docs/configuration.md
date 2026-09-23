@@ -395,7 +395,7 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 |-----|-------------|---------|
 | `memory.embedding_provider` | Vector embedding backend. `"llama_cpp"` is the only accepted value; any other value in an existing config (including a legacy `"ollama"` or `"none"`) is coerced to it on load | `"llama_cpp"` |
 | `memory.embedding_dim` | Output width of the embedding model in use. Must match a custom model's real width, or the load is refused | `1024` |
-| `memory.embedding_threads` | CPU threads llama.cpp may use per embedding call; explicit settings are clamped to the machine core count | `4` |
+| `memory.embedding_threads` | CPU threads llama.cpp may use per embedding call; explicit settings are clamped to the CPUs the process may run on, which a CPU-set restriction (`--cpuset-cpus`, `taskset`) narrows below the host's cores | `4` |
 | `memory.embedding_bulk_threads` | Threads used for background embedding; `0` inherits `embedding_threads` | `1` |
 | `memory.embedding_bulk_duty` | Target fraction of worker time spent on background embedding; interactive queries take priority | `0.2` |
 | `memory.embed_model_url` | Override HTTPS URL for the embedding-model GGUF download (mirrored or airgapped hosts). Empty uses the public Kiro Crew CDN. `KIROCREW_EMBED_MODEL_URL` wins over both. Downloads are sha256-verified regardless of source | `""` |

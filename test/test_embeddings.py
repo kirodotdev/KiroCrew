@@ -1745,6 +1745,23 @@ class TestSingletons:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _pin_cores(monkeypatch, count: int | None) -> None:
+    """Pin every core-count source this platform offers.
+
+    ``_embed_threads`` asks the platform how many CPUs the process may use, and
+    WHICH call answers is a platform property: ``os.sched_getaffinity`` where it
+    exists, ``os.cpu_count`` otherwise. Pinning both, and removing the affinity
+    call for an unknown count, states the host without assuming Linux.
+    """
+    monkeypatch.setattr(os, "cpu_count", lambda: count)
+    if not hasattr(os, "sched_getaffinity"):
+        return
+    if count is None:
+        monkeypatch.delattr(os, "sched_getaffinity")
+    else:
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(count)))
+
+
 class TestEmbedThreads:
     """llama.cpp must not size its compute pools from the host core count.
 
@@ -1759,25 +1776,23 @@ class TestEmbedThreads:
         # the default answers with its own core count and the assertion would pin
         # the runner. Pinned above the default, the same way
         # ``test_clamped_to_the_core_count`` below pins it under one.
-        monkeypatch.setattr("os.cpu_count", lambda: 8)
+        _pin_cores(monkeypatch, 8)
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
-        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
         assert embeddings_mod._DEFAULT_EMBED_THREADS == 4
         assert embeddings_mod._embed_threads() == 4
 
     def test_configured_value_is_used(self, monkeypatch) -> None:
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 6})
-        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
+        _pin_cores(monkeypatch, 8)
         assert embeddings_mod._embed_threads() == 6
 
     @pytest.mark.parametrize("bad", [0, -1, True, False, "4", 2.5, None])
     def test_invalid_values_fall_back_to_the_default(self, monkeypatch, bad) -> None:
         """Booleans are rejected explicitly: ``True`` would coerce to 1 thread."""
-        monkeypatch.setattr("os.cpu_count", lambda: 8)
+        _pin_cores(monkeypatch, 8)
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": bad}
         )
-        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
         assert embeddings_mod._embed_threads() == 4
 
     @pytest.mark.parametrize("cores,expected", [(1, 1), (8, 8)])
@@ -1785,7 +1800,7 @@ class TestEmbedThreads:
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 9999}
         )
-        monkeypatch.setattr("os.cpu_count", lambda: cores)
+        _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == expected
 
     @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 4)])
@@ -1798,7 +1813,7 @@ class TestEmbedThreads:
         default, so a big host answers 4, not 15.
         """
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
-        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == expected
         if cores > 1:
             assert embeddings_mod._embed_threads() < cores
@@ -1826,7 +1841,7 @@ class TestEmbedThreads:
             "_read_memory_config",
             lambda: {"embedding_threads": embeddings_mod._DEFAULT_EMBED_THREADS},
         )
-        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == expected
 
     @pytest.mark.parametrize("cores,configured", [(1, 1), (2, 2), (4, 3), (16, 8)])
@@ -1837,13 +1852,44 @@ class TestEmbedThreads:
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": configured}
         )
-        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: cores)
+        _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == configured
+
+    def test_a_cpu_set_decides_the_cap_not_the_machine(self, monkeypatch) -> None:
+        """Two cores out of sixty-four means two cores.
+
+        ``os.cpu_count`` reports the whole host inside a cpuset, so reading it
+        would hand llama.cpp four threads on a two-core allowance. Skipped where
+        the platform cannot narrow affinity at all -- a probe of ``os``, so a
+        reader that stopped consulting affinity fails here rather than skipping.
+        """
+        if not hasattr(os, "sched_getaffinity"):
+            pytest.skip("this platform has no os.sched_getaffinity to narrow")
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.setattr(os, "cpu_count", lambda: 64)
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1})
+        assert embeddings_mod._embed_threads() == 1
+
+    def test_an_operator_value_is_clamped_to_the_cpu_set(self, monkeypatch) -> None:
+        """An explicit value is still honoured, up to what the process may use."""
+        if not hasattr(os, "sched_getaffinity"):
+            pytest.skip("this platform has no os.sched_getaffinity to narrow")
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 8})
+        monkeypatch.setattr(os, "cpu_count", lambda: 64)
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1})
+        assert embeddings_mod._embed_threads() == 2
+
+    def test_the_host_count_answers_without_an_affinity_api(self, monkeypatch) -> None:
+        """macOS and Windows have no affinity call, and keep the old reading."""
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: 8)
+        assert embeddings_mod._embed_threads() == 4
 
     def test_unknown_core_count_keeps_the_flat_default(self, monkeypatch) -> None:
         """No count means no core to subtract, so the default is not reduced."""
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
-        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: None)
+        _pin_cores(monkeypatch, None)
         assert embeddings_mod._embed_threads() == embeddings_mod._DEFAULT_EMBED_THREADS
 
     def test_threads_reach_the_llama_constructor(self, tmp_path: Path, monkeypatch) -> None:
@@ -1851,7 +1897,7 @@ class TestEmbedThreads:
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 3})
-        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
+        _pin_cores(monkeypatch, 8)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
         assert emb.wait_ready(timeout=5)
         kwargs = fake_cls.instances[0].kwargs

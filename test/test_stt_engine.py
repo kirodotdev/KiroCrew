@@ -776,6 +776,14 @@ def test_empty_pcm_is_an_empty_array():
 # ── Thread sizing ──
 
 
+def test_available_cpus_reads_the_affinity_helper(monkeypatch):
+    """The platform read lives in ``cpu_affinity``; an unknown count reads as one."""
+    monkeypatch.setattr(engine_mod, "affinity_cpu_count", lambda: 6)
+    assert engine_mod.available_cpus() == 6
+    monkeypatch.setattr(engine_mod, "affinity_cpu_count", lambda: None)
+    assert engine_mod.available_cpus() == 1
+
+
 def test_thread_count_is_bounded_and_positive(monkeypatch):
     monkeypatch.setattr(engine_mod, "available_cpus", lambda: 256)
     assert engine_mod.thread_count() == engine_mod.THREAD_CEILING
