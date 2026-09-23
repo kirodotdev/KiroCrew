@@ -362,6 +362,37 @@ _SESSION_CLASS_FIELDS: tuple[Field, ...] = (
     ),
 )
 
+#: The members of a parent citation on the two entries that MOVE a session in the
+#: tree. One tuple rather than two identical ones, for the reason
+#: :data:`_SESSION_CLASS_FIELDS` is one: an adoption and the release that undoes it
+#: cite a parent the same way, and a member declared on one and not the other would
+#: be readable from one half of a takeover and silently missing from the other.
+#:
+#: ``session/opened.parent`` deliberately keeps its own copy. It carries the same two
+#: keys, but its notes describe what ``session_create`` attributed at birth, which is
+#: not what these two record -- and the reference tables are read per entry type.
+_PARENT_EDGE_FIELDS: tuple[Field, ...] = (
+    Field(
+        "slot",
+        JSON_STRING,
+        required=True,
+        note=(
+            "The parent session's slot key. The tree's own key, so this is the "
+            "member a fold reads."
+        ),
+    ),
+    Field(
+        "sid",
+        JSON_STRING,
+        note=(
+            "The parent's ACP session id at the moment of the call -- a citation of "
+            "that session's log for a reader, never a tree key, since a slot outlives "
+            "its ACP session. Absent when the gateway had no live handle for it, and "
+            "when the id exceeded MAX_ACP_SESSION_ID_LEN."
+        ),
+    ),
+)
+
 #: Who may write an ``object/observed`` entry. CLOSED, and closed on purpose: the
 #: value is what lets a reader tell a measured record from anything an agent typed,
 #: so the emitter REFUSES a value outside this tuple rather than coercing it -- a
@@ -529,6 +560,70 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                     "reasons than any site passes here today."
                 ),
             ),
+        ),
+    ),
+    EntryType(
+        "session/adopted",
+        "Another session took this one over, so it now hangs under that session.",
+        (
+            Field(
+                "parent",
+                JSON_OBJECT,
+                required=True,
+                fields=_PARENT_EDGE_FIELDS,
+                note=(
+                    "The session that took this one over, resolved by the gateway from "
+                    "the calling connection rather than named by the caller. Required: "
+                    "an adoption with no adopter records nothing, and the entry that "
+                    "means 'this session has no parent' is session/released."
+                ),
+            ),
+            Field(
+                "previous_parent",
+                JSON_OBJECT,
+                fields=_PARENT_EDGE_FIELDS,
+                note=(
+                    "The parent this adoption replaced, for a reader of the log. "
+                    "Absent when the session was a root. No fold reads it: the tree "
+                    "takes the parent from ``parent`` alone, so a reader reconstructing "
+                    "who held the session and when has this and the tree still has one "
+                    "statement of the current edge."
+                ),
+            ),
+        ),
+        note=(
+            "Recorded on the session that was taken over, which is where "
+            "``session/opened.parent`` already puts a creating edge -- one axis, one "
+            "place to read it, and a takeover that moves a whole subtree writes one "
+            "entry rather than one per descendant, because descendants hang on this "
+            "session's slot and not on a path.\n\n"
+            "The creating edge is not rewritten and cannot be: the log is append-only "
+            "and that entry states who OPENED the session, which stays true. This "
+            "entry states who holds it now, and the fold prefers the newest of the two "
+            "rather than merging them."
+        ),
+    ),
+    EntryType(
+        "session/released",
+        "This session's parent let it go, so it stands on its own again.",
+        (
+            Field(
+                "previous_parent",
+                JSON_OBJECT,
+                fields=_PARENT_EDGE_FIELDS,
+                note=(
+                    "The parent that let this session go. Absent when the gateway could "
+                    "not name it, which is why it is not required: the entry's meaning "
+                    "is that there is no parent NOW, and that does not depend on being "
+                    "able to name the one there was."
+                ),
+            ),
+        ),
+        note=(
+            "The counterpart of session/adopted, and the only entry that takes a parent "
+            "edge away. A session/opened carrying no parent does not: it means the "
+            "entry did not repeat a creator, which a reader must not read as a "
+            "retraction, so the retraction needs a record of its own."
         ),
     ),
     EntryType(

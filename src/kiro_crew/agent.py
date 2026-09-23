@@ -6930,6 +6930,20 @@ handle immediately.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.
+#: * ``session_adopt`` — WITHHELD, on the invariant rather than on a judgement about
+#:   how bad it would be. It MUTATES workspace state that already exists and is not
+#:   the caller's own: where another session hangs in the tree, which is what the
+#:   sidebar shows the person. A takeover moves that session's whole subtree with it,
+#:   so one auto-approved call on an ingested-content cycle rearranges a part of the
+#:   sidebar nobody asked to have rearranged. The verb exists for a person deciding to
+#:   consolidate conductors, and that decision is exactly what an approval prompt
+#:   records.
+#: * ``session_release`` — WITHHELD, for the same reason and with one honest
+#:   asymmetry: releasing ITSELF is the agent's own state and would pass the
+#:   invariant, while releasing a session it holds is not. The tool is one verb, so
+#:   it is judged on its wider reach; an agent that needs to get out from under a
+#:   stopped conductor gets an approval prompt, which a person is present for by
+#:   definition when they are the one consolidating.
 #: * ``session_stop`` — WITHHELD. Ends another session's in-flight turn and
 #:   DISCARDS its work (``stop_target``: "A stop cancels cooperatively", and the
 #:   cancelled turn's work is gone either way — the retry de-duplication that

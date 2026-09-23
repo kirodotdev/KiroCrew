@@ -61,6 +61,11 @@ CANONICAL: dict[str, dict] = {
     },
     "session/class": {"memory": "persistent", "app": "secretary", "channel": True},
     "session/closed": {"reason": "reset"},
+    "session/adopted": {
+        "parent": {"slot": "chat-9", "sid": "acp-sess-adopter"},
+        "previous_parent": {"slot": "chat-3", "sid": "acp-sess-former"},
+    },
+    "session/released": {"previous_parent": {"slot": "chat-9", "sid": "acp-sess-adopter"}},
     "turn/started": {"turn": 3, "actor": "user", "depth": 0, "message_seq": 11, "attempt": 2},
     "turn/refused": {"turn": 4, "actor": "cron", "reason": "gateway_closing", "depth": 1},
     "turn/completed": {
@@ -258,7 +263,14 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # The two past those six are the crew-facing boards' own records: the Issue Radar
     # crew's ``radar/recorded`` and the work ledger's ``work/recorded``. A board's
     # writes are entries in this log rather than a second record beside it.
-    assert len(SESSION_ENTRY_TYPES) == 31
+    #
+    # The two past THOSE are the session tree's: ``session/adopted`` and
+    # ``session/released``, which move a session under a new parent and back to a root.
+    # They are declared for the reason everything here is -- ``KNOWN_TYPES`` is derived
+    # from this registry, so an undeclared type in a log stops every later fold of it --
+    # and not because any fold of ONE log branches on them: the session tree is folded
+    # across logs.
+    assert len(SESSION_ENTRY_TYPES) == 33
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

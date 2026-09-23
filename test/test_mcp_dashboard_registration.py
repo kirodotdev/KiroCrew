@@ -358,6 +358,8 @@ class TestWhatThisSetGrants:
         "session_stop",
         "session_close",
         "session_send",
+        "session_adopt",
+        "session_release",
         "session_read_message",
     }
     GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | SESSION_TOOLS

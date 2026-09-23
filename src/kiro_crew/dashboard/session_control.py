@@ -34,7 +34,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -309,6 +310,15 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
     if slot is None:
         return False
     return bool(getattr(slot, "_created_by", ""))
+
+
+def _created_by_other(slot: Any, caller_key: str) -> bool:
+    """Whether *slot* was not created by *caller_key*.
+
+    Fail-closed on an unowned slot, which is what an ownerless rehydrate looks like:
+    a blank ``_created_by`` matches no caller, so a fenced caller does not reach it.
+    """
+    return getattr(slot, "_created_by", "") != caller_key
 
 
 def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[str, str] | None:
@@ -1869,6 +1879,7 @@ def authorize_target(
     operation: str,
     skip_enabled_check: bool = False,
     precomputed_ownership_fenced: bool | None = None,
+    allow_self: bool = False,
 ) -> "_ChatSlot":
     """Resolve *target* and decide whether *caller* may act on it.
 
@@ -1906,6 +1917,13 @@ def authorize_target(
 
     When ``None`` (an owner or agent-created caller the gate did not admit as a
     member) the fence is evaluated inline as before.
+
+    ``allow_self`` waives the self-target refusal, and with it the ownership fence for
+    that one case. Exactly one verb passes it: a release, where the target itself is a
+    legitimate caller because a session taken over must not depend on its holder still
+    running to get out. It waives nothing else -- an ephemeral, app-scoped or
+    channel-linked caller is still refused, and a target that is not the caller is
+    still judged by every rule above.
     """
 
     def deny(reason: str, code: str, status: int = 403) -> SessionControlError:
@@ -1993,7 +2011,7 @@ def authorize_target(
         # one would resurrect a conversation the user put away.
         raise deny(f"no open session matches {target!r}", "target_not_found", status=404)
 
-    if slot.key == caller_key:
+    if slot.key == caller_key and not allow_self:
         raise deny("a session cannot control itself", "self_target")
     if slot.key.startswith(UNATTENDED_SLOT_PREFIXES):
         raise deny("unattended sessions (scheduled runs) cannot be controlled", "unattended_target")
@@ -2078,7 +2096,13 @@ def authorize_target(
         if precomputed_ownership_fenced is None
         else precomputed_ownership_fenced
     )
-    if ownership_fenced and getattr(slot, "_created_by", "") != caller_key:
+    # A caller addressing ITSELF is not reaching a peer, so the fence has nothing to
+    # protect and is waived -- reachable only under ``allow_self``, since the
+    # self-target refusal above denies this case for every other verb. Without the
+    # waiver an agent-created session could never release itself from a parent,
+    # because its own ``_created_by`` names its creator and not itself.
+    self_addressed = slot.key == caller_key
+    if ownership_fenced and not self_addressed and _created_by_other(slot, caller_key):
         # The fence every exempted caller class is bounded by, plus anything they
         # created. It reaches ONLY the sessions the caller made itself
         # (`created_by` is written at birth and rehydrated on restart). Always
@@ -2110,6 +2134,540 @@ def authorize_target(
         raise deny(fence_reason, "not_creator")
 
     return slot
+
+
+def _slot_tree_parent(slot_key: str) -> "tuple[bool, str, dict[str, Any]]":
+    """Whether the tree is KNOWN right now, *slot_key*'s parent in it, and the tree.
+
+    The first value is the one that must not be collapsed into the others. "This slot
+    has no parent" and "I cannot see the tree" are different answers, and an adoption
+    that treats them alike skips its own cycle guard: an unseeded projection folds to
+    no nodes, and a guard given no nodes admits everything. That state is not exotic --
+    it is every gateway between boot and the first lineage seed, so it recurs on each
+    restart, and the cycle it would admit is not repaired by the fold, which flattens
+    the branch instead.
+
+    ``False`` for an unreadable tree: the crew log is off, the projection is not seeded
+    for the store configured now, the fold is INCOMPLETE, or the read raised. ``True``
+    with an empty parent means the tree was read whole and the slot is a root.
+
+    NO I/O and never blocks, which is what lets it run on the loop: it reads the
+    projection's in-memory fold and asks first whether that fold is seeded for the
+    store configured now. An unseeded projection answers "not known" rather than
+    seeding itself here -- a seed is a disk read, and a verb that blocks the loop is
+    the wrong trade when refusing is honest and the next call succeeds.
+    """
+    try:
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        if not crew_log_emit.enabled():
+            return False, "", {}
+        from kiro_crew.crew_log.session_tree_projection import projection
+
+        proj = projection()
+        if not proj.seeded_for_current_store:
+            return False, "", {}
+        # ``reading`` rather than ``nodes``, because this caller DECIDES on an edge.
+        # ``TreeReading.incomplete`` says a unit's bytes could not be read or the
+        # population was capped, so an edge the guard needs may simply be missing from
+        # an otherwise well-formed fold. Admitting an adoption on that fold is a
+        # confident wrong answer, and the shape it admits is the cycle this guard
+        # exists to refuse -- so an incomplete fold is treated as no tree at all.
+        reading = proj.reading()
+        if reading.incomplete:
+            return False, "", {}
+        nodes = reading.nodes
+    except Exception:
+        logger.debug("session tree parent could not be resolved", exc_info=True)
+        return False, "", {}
+    node = nodes.get(slot_key)
+    parent = getattr(node, "parent_slot", None) if node is not None else None
+    return True, (parent or ""), nodes
+
+
+def _live_sid_of(state: "DashboardState", slot_key: str) -> str:
+    """The ACP session id *slot_key*'s crew log is written under, or ``""``.
+
+    Read from the DURABLE session map rather than from the slot's in-turn ACP client.
+    The client is published when a turn starts and cleared when it ends, so reading it
+    would answer only for a session that happens to be working -- and the sessions a
+    takeover is aimed at are the idle ones.
+
+    ``mapped_sid`` rather than ``get``, which is the difference between two questions.
+    ``get`` asks whether the id can still be RESUMED and prunes the entry when the ACP
+    transcript is gone; this caller is recording history into a crew log, and a crew log
+    unit outlives a truncated transcript. It is also read-only and in-memory, so it is
+    safe on the event loop.
+
+    ``""`` for a slot with no mapping: a session whose log this gateway cannot name.
+    The caller refuses rather than writing into a log it guessed at.
+    """
+    try:
+        sessions = getattr(state, "sessions", None)
+        if sessions is None:
+            return ""
+        sid = sessions._session_map.mapped_sid(f"dashboard:{slot_key}")
+        return sid if isinstance(sid, str) else ""
+    except Exception:
+        logger.debug("session id for %s could not be resolved", slot_key, exc_info=True)
+        return ""
+
+
+async def adopt_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    caller_fenced: bool | None = None,
+) -> "dict[str, Any]":
+    """Take *target* over, so it hangs under the CALLING session in the tree.
+
+    The takeover verb. The adopter is the caller, resolved from the connection rather
+    than named in the arguments: a tool that let a caller nominate the parent would let
+    one session rearrange another's tree, and nothing in the record would show which of
+    them asked.
+
+    Adopting a session that ALREADY has a live parent is allowed, because that is the
+    case the verb exists for -- one conductor taking over the workers another one
+    opened -- and the parent it replaces is recorded on the entry.
+
+    Refused when the target is an ANCESTOR of the caller. The tree would then hold a
+    cycle, and a cycle is not a shape the fold can present: it marks every slot on it
+    and nests none of them, so the visible result of allowing this would be a whole
+    branch silently flattening. The fold guards itself again at fold time for the
+    reordering a checkpoint plus a replayed tail can produce; this is the guard that
+    refuses the caller rather than absorbing it.
+
+    Refused too when the tree cannot be READ, which is a separate refusal and not a
+    special case of the one above. A guard handed no tree admits everything, so an
+    unseeded projection would let exactly the adoption this checks for through.
+
+    Every other refusal is :func:`authorize_target`'s -- an unidentifiable or
+    unattended caller, a target that is not open, the caller itself, an ephemeral,
+    app-scoped, channel-linked or mirrored session on either side, a different
+    workspace, and the ownership fence. They are not re-stated here, which is the
+    point of routing this verb through the same gate as the others: a session that
+    cannot be sent to is not one that can be adopted either.
+    """
+    # Warmed off-loop with NOTHING suspending before the gate, which is this function's
+    # whole reason for existing: ``authorize_target`` is synchronous and its
+    # ``session_control_enabled()`` re-reads and validates the config file on the first
+    # call after an edit, so an unwarmed gate blocks the shared loop for every other
+    # session. The pre-lock gate and the in-lock re-check each get their own warm, since
+    # the lock wait between them is exactly the suspension that invalidates the first.
+    await prewarm_enabled_check()
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="adopt",
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation="adopt", slot_key=slot.key
+    ):
+        caller_key = caller_slot_key(state, caller_session_key)
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        target_sid = _live_sid_of(state, slot.key)
+        if not crew_log_emit.enabled() or not target_sid:
+            # Checked FIRST because it is the PERMANENT one of the two refusals below: with
+            # no recorded tree there is nowhere to write the edge and no later retry helps,
+            # so a caller must not be told to come back. Reported rather than answered with a
+            # success the tree will not show -- the record IS the edge, and a verb whose
+            # record cannot be written has not done anything.
+            raise SessionControlError(
+                "the session tree is not being recorded on this gateway, so sessions "
+                "cannot be adopted",
+                status=409,
+                code="tree_unavailable",
+            )
+        async with _tree_mutation_lock():
+            # RE-AUTHORIZED here, and this is not the same question the pre-lock call
+            # answered. That call decided on a state read before the wait, and the wait is
+            # unbounded: the verb ahead in the queue awaits its own append, and anything the
+            # gate reads can move meanwhile -- the target can be stopped or closed, the
+            # caller's grant can be withdrawn, either side can gain a channel link. Writing
+            # on the earlier answer would record an adoption nobody was entitled to at the
+            # moment it landed. The pre-lock call is kept because it is the cheap refusal: an
+            # unauthorized caller never contends for this lock at all.
+            await prewarm_enabled_check()
+            slot = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=target,
+                operation="adopt",
+                precomputed_ownership_fenced=caller_fenced,
+            )
+            target_sid = _live_sid_of(state, slot.key)
+            if not crew_log_emit.enabled() or not target_sid:
+                raise SessionControlError(
+                    "the session tree is not being recorded on this gateway, so sessions "
+                    "cannot be adopted",
+                    status=409,
+                    code="tree_unavailable",
+                )
+            _refuse_if_append_pending(slot.key, operation="adoption")
+            tree_known, previous_parent, nodes = _slot_tree_parent(slot.key)
+            if not tree_known:
+                # REFUSED rather than adopted past the guard. The cycle check below is the
+                # only thing standing between a takeover and a loop the fold cannot present,
+                # and a guard handed no tree admits everything -- so an unreadable tree has
+                # to stop the write, not wave it through. Reachable on every gateway between
+                # boot and the first lineage seed, which is why it is a refusal a caller can
+                # retry rather than a condition worth blocking on: the seed is already being
+                # requested by the sidebar's own read path.
+                raise SessionControlError(
+                    "the session tree is not readable yet on this gateway, so an adoption "
+                    "cannot be checked for a loop -- retry in a moment",
+                    status=409,
+                    code="tree_not_ready",
+                )
+            # Deferred: ``holders`` reaches the storage package, and this module is on the
+            # dashboard's boot path. The ancestor walk follows exactly the tree's own rules,
+            # which is why it is imported rather than re-implemented -- a second walk with
+            # its own reading of "a cited creator with no log" would refuse or admit cases
+            # the fold does not.
+            from kiro_crew.crew_log.holders import is_ancestor
+
+            if is_ancestor(slot.key, caller_key, nodes):
+                raise SessionControlError(
+                    f"{target!r} is already above this session in the tree, so adopting it "
+                    "would make a loop",
+                    status=409,
+                    code="would_cycle",
+                )
+            settled, landed = _tree_append_waiter(slot.key)
+            crew_log_emit.on_session_adopted(
+                target_sid,
+                slot=slot.key,
+                parent_slot=caller_key,
+                parent_sid=_live_sid_of(state, caller_key),
+                previous_parent_slot=previous_parent,
+                previous_parent_sid=_live_sid_of(state, previous_parent) if previous_parent else "",
+                on_settled=settled,
+            )
+            # Inside the lock, so the next verb through it reads a tree that already carries
+            # this decision -- the append's completion is also what advances the projection.
+            await _tree_append_landed(landed, operation="adoption", target=slot.key)
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="adopt",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"previous_parent": previous_parent or "none"},
+    )
+    # Slot keys only, and deliberately no title. A title is conversation content -- it
+    # is generated from the session's own messages -- so returning one to an LLM caller
+    # is an output boundary that would owe a redaction pass, and nothing here needs it:
+    # the tool reply names the session by the key the caller already used.
+    return {
+        "target": slot.key,
+        "parent": caller_key,
+        "previous_parent": previous_parent,
+    }
+
+
+async def release_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    caller_fenced: bool | None = None,
+) -> "dict[str, Any]":
+    """Let *target* go, so it stands on its own in the tree again.
+
+    Two callers may do it and no others: the target's CURRENT parent, and the target
+    itself. The parent because a holder may put down what it holds, and the target
+    because a session that has been taken over must not need its holder's cooperation
+    to get out -- a conductor that has stopped running would otherwise pin its workers
+    under it for good.
+
+    Refused for a target that is already a root. There is nothing to release, and
+    writing the entry anyway would put a record of a change into a log where nothing
+    changed.
+
+    The self case is the one place this verb departs from
+    :func:`authorize_target`'s rules, and it departs from exactly two of them. The
+    self-target refusal is waived, since reaching yourself is not reaching a peer. So
+    is the ownership fence, for the same reason and no further: that fence bounds a
+    caller to the sessions it created, and the session it is itself was never another
+    session's to protect. Every other refusal on both sides still applies.
+    """
+    caller_key = caller_slot_key(state, caller_session_key)
+    # Warmed off-loop before the gate, for the reason the adoption warms it.
+    await prewarm_enabled_check()
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="release",
+        precomputed_ownership_fenced=caller_fenced,
+        allow_self=True,
+    )
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation="release", slot_key=slot.key
+    ):
+        releasing_self = slot.key == caller_key
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        target_sid = _live_sid_of(state, slot.key)
+        if not crew_log_emit.enabled() or not target_sid:
+            # The permanent refusal first, for the reason the adoption checks it first.
+            raise SessionControlError(
+                "the session tree is not being recorded on this gateway, so sessions "
+                "cannot be released",
+                status=409,
+                code="tree_unavailable",
+            )
+        async with _tree_mutation_lock():
+            # RE-AUTHORIZED inside the lock, for the reason the adoption re-authorizes:
+            # the wait is unbounded and everything the gate reads can move during it.
+            await prewarm_enabled_check()
+            slot = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=target,
+                operation="release",
+                precomputed_ownership_fenced=caller_fenced,
+                allow_self=True,
+            )
+            releasing_self = slot.key == caller_key
+            target_sid = _live_sid_of(state, slot.key)
+            if not crew_log_emit.enabled() or not target_sid:
+                raise SessionControlError(
+                    "the session tree is not being recorded on this gateway, so sessions "
+                    "cannot be released",
+                    status=409,
+                    code="tree_unavailable",
+                )
+            _refuse_if_append_pending(slot.key, operation="release")
+            tree_known, previous_parent, _ = _slot_tree_parent(slot.key)
+            if not tree_known:
+                # The same refusal an adoption makes, for the mirror reason: this verb
+                # decides WHO may call it from the parent the tree reports, so an unreadable
+                # tree cannot tell "you are not the parent" from "I cannot see who is".
+                raise SessionControlError(
+                    "the session tree is not readable yet on this gateway, so a release "
+                    "cannot be authorized -- retry in a moment",
+                    status=409,
+                    code="tree_not_ready",
+                )
+            if not previous_parent:
+                raise SessionControlError(
+                    f"{target!r} has no parent to be released from",
+                    status=409,
+                    code="already_root",
+                )
+            if not releasing_self and previous_parent != caller_key:
+                raise SessionControlError(
+                    f"{target!r} hangs under another session, so only that session or "
+                    f"{target!r} itself can release it",
+                    status=403,
+                    code="not_parent",
+                )
+            settled, landed = _tree_append_waiter(slot.key)
+            crew_log_emit.on_session_released(
+                target_sid,
+                slot=slot.key,
+                previous_parent_slot=previous_parent,
+                previous_parent_sid=_live_sid_of(state, previous_parent),
+                on_settled=settled,
+            )
+            # Inside the lock, for the reason the adoption awaits inside it.
+            await _tree_append_landed(landed, operation="release", target=slot.key)
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="release",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"previous_parent": previous_parent, "self": releasing_self},
+    )
+    # No title, for the reason the adoption returns none.
+    return {
+        "target": slot.key,
+        "previous_parent": previous_parent,
+    }
+
+
+#: How long a tree verb waits for its own append to be on disk before it refuses. The
+#: wait exists because the append IS the operation; the bound exists because the writer
+#: retries a refusing filesystem before giving up, and a caller must get an answer either
+#: way rather than hanging for as long as the disk stays wedged.
+_TREE_APPEND_TIMEOUT = 10.0
+
+#: One mutation lock per EVENT LOOP, not one per process. A lock constructed at import
+#: binds to whichever loop first waits on it, and the test suite runs many loops in one
+#: process -- a single module-level lock would then raise or, worse, serialize against a
+#: loop that has already closed. Keyed by loop identity, created on demand.
+_tree_mutation_locks: "dict[int, asyncio.Lock]" = {}
+
+
+@contextmanager
+def _audit_denials(*, caller_session_key: str, operation: str, slot_key: str) -> Iterator[None]:
+    """Record a verb's OWN refusals as denied, then re-raise them untouched.
+
+    :func:`_audit` is easy to reach on the success path and easy to miss on every other
+    one, because a refusal LEAVES the verb by raising -- so the allowed call at the end
+    is simply not executed and the denial goes unrecorded. That is exactly the shape a
+    caller probing a permission boundary produces: every attempt refused, and none of
+    them appearing anywhere. ``backend-security-controls`` requires a SEL event for each
+    permission decision, and a boundary with no trail is the one most worth a trail.
+
+    One helper rather than a handler written into each verb: two would drift, and the
+    audited fact is the same in both. It wraps the region AFTER the authorization gate
+    has named a target, which is what gives the record a ``slot_key`` to be about -- a
+    refusal with no resolved target has nothing to attribute.
+
+    The exception is re-raised unchanged, so this only ever ADDS the record: the status,
+    code and message the caller receives stay the verb's own.
+    """
+    try:
+        yield
+    except SessionControlError as exc:
+        _audit(
+            caller_session_key=caller_session_key,
+            operation=operation,
+            slot_key=slot_key,
+            outcome="denied",
+            detail={"code": exc.code},
+        )
+        raise
+
+
+def _tree_mutation_lock() -> "asyncio.Lock":
+    """The lock a tree mutation holds across reading the tree and committing to it.
+
+    The two verbs decide from the tree (who the parent is, whether a takeover would
+    close a loop) and then write to it, and between those two steps another verb can
+    land its own decision. Unserialized, a release authorized against the old parent
+    commits after an adoption and puts the session back under a parent that had already
+    handed it over -- both writes valid, the later one the one nobody asked for.
+
+    Held from the tree READ through the awaited append, which together with that await
+    is what makes the pair atomic: the append's completion also advances the projection,
+    so the next verb through this lock reads the state the previous one committed rather
+    than the state it started from.
+
+    Not held across :func:`authorize_target`, which does not read the tree. The
+    serialized region is the one that decides on tree state.
+    """
+    loop = asyncio.get_running_loop()
+    lock = _tree_mutation_locks.get(id(loop))
+    if lock is None:
+        lock = asyncio.Lock()
+        _tree_mutation_locks[id(loop)] = lock
+    return lock
+
+
+#: Slots whose tree append has been handed to the writer and has NOT settled. Keyed by
+#: slot, one entry per in-flight append, cleared when the future resolves either way.
+#:
+#: The mutation lock alone does not cover this. A verb that times out waiting for its own
+#: append raises out of the lock, which releases it -- and the append is still queued, so
+#: the next verb through the lock would decide from a tree the writer is about to change
+#: and commit against it. Holding the lock until settlement instead would pin the loop's
+#: serialized region to a wedged filesystem, which is what the timeout exists to avoid.
+#: Fencing the SLOT is the third option: the loop stays free, and no verb decides on a
+#: slot whose state is about to move.
+_tree_pending_slots: "dict[str, asyncio.Future[bool]]" = {}
+
+
+def _tree_append_waiter(slot: str) -> "tuple[Callable[[bool], None], asyncio.Future[bool]]":
+    """A ``(on_settled, future)`` pair for one tree append, fencing *slot* until it lands.
+
+    The emitter calls ``on_settled`` from the WRITER's thread, so the result is handed
+    back through the loop rather than set directly, and a second call is a no-op.
+
+    Registering the future in :data:`_tree_pending_slots` is what makes the fence
+    self-clearing: the entry is removed by a done callback, so it goes when the append
+    settles and nothing has to remember to release it. The wait below shields the future
+    for the same reason -- a timeout that cancelled it would resolve it, and the fence
+    would clear while the append is still queued.
+    """
+    loop = asyncio.get_running_loop()
+    future: "asyncio.Future[bool]" = loop.create_future()
+
+    def _settled(landed: bool) -> None:
+        def _set() -> None:
+            if not future.done():
+                future.set_result(landed)
+
+        loop.call_soon_threadsafe(_set)
+
+    def _unfence(_f: "asyncio.Future[bool]") -> None:
+        if _tree_pending_slots.get(slot) is future:
+            del _tree_pending_slots[slot]
+
+    _tree_pending_slots[slot] = future
+    future.add_done_callback(_unfence)
+    return _settled, future
+
+
+def _refuse_if_append_pending(slot: str, *, operation: str) -> None:
+    """Refuse when *slot* has a tree append still in flight. Called inside the lock.
+
+    The tree cannot be reasoned about for a slot whose next state is already queued: a
+    decision taken now would be taken against a state the writer is about to replace, and
+    it would commit UNDER the queued one rather than after it.
+
+    ``tree_write_pending`` rather than a failure, for the reason the timeout uses that
+    code: the earlier append may still land, so the caller is told to read the tree and
+    try again rather than that anything went wrong.
+    """
+    pending = _tree_pending_slots.get(slot)
+    if pending is not None and not pending.done():
+        raise SessionControlError(
+            f"an earlier tree write for {slot!r} is still in flight, so the {operation} "
+            "cannot be decided yet -- read the session tree before retrying",
+            status=409,
+            code="tree_write_pending",
+        )
+
+
+async def _tree_append_landed(
+    future: "asyncio.Future[bool]", *, operation: str, target: str
+) -> None:
+    """Wait for a tree append to be durable, and REFUSE when it was not.
+
+    What this stops the verb from doing is reporting a takeover that never reached the
+    disk: the emitter hands the entry to the writer and returns, so without this wait a
+    filesystem that refused the append, or a session with no live log to write to, would
+    still have answered the caller "adopted" and audited it as allowed.
+
+    A timeout is reported as retryable rather than as a failure, because it is neither:
+    the writer may still land the entry. The distinction matters to a caller deciding
+    whether to try again, and both codes say which it is.
+
+    The slot's fence is dropped HERE on both resolved paths, rather than being left to the
+    future's done callback: that callback runs on a later loop iteration, and a verb whose
+    request finishes first would leave the slot fenced for a write that already landed. The
+    callback stays as the backstop for a future resolved somewhere other than this wait.
+    """
+    try:
+        # SHIELDED, so the timeout cancels only this wait. Cancelling the future itself
+        # would resolve it, the fence's done callback would fire, and the slot would be
+        # unfenced at the one moment the fence is needed: the append is still queued and
+        # the next verb must not decide against a tree it is about to move.
+        landed = await asyncio.wait_for(asyncio.shield(future), timeout=_TREE_APPEND_TIMEOUT)
+    except asyncio.TimeoutError:
+        # The fence is deliberately LEFT standing: the append is still queued.
+        raise SessionControlError(
+            f"the {operation} of {target!r} was handed to the crew-log writer but has "
+            "not landed yet, so it is not confirmed -- read the session tree before "
+            "retrying",
+            status=409,
+            code="tree_write_pending",
+        ) from None
+    if _tree_pending_slots.get(target) is future:
+        del _tree_pending_slots[target]
+    if not landed:
+        raise SessionControlError(
+            f"the {operation} of {target!r} could not be written to the crew log, so "
+            "the session tree is unchanged",
+            status=500,
+            code="tree_write_failed",
+        )
 
 
 def _audit(

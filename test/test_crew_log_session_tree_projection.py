@@ -370,7 +370,7 @@ def test_a_second_seed_waits_instead_of_clearing_the_first_ones_removal_record(m
     second_caller: list[threading.Thread] = []
     waited: list[bool] = []
 
-    def scan_then_delete_then_reenter(_self, live_sids=()):
+    def scan_then_delete_then_reenter(_self, live_sids=(), **_asked):
         entered.append("scan")
         if len(entered) == 1:
             proj.forget("s-child")
@@ -559,7 +559,7 @@ def test_a_resume_during_the_scan_does_not_erase_the_scanned_creator_edge(monkey
     parent = _rec("s-parent", "slot-a")
     child = _rec("s-child", "slot-b", created=2, parent="slot-a")
 
-    def scan_then_resume(_self, live_sids=()):
+    def scan_then_resume(_self, live_sids=(), **_asked):
         # The resumed opener commits while the scan runs, naming no creator.
         proj.apply(_rec("s-child", "slot-b", created=3))
         return TreeReading(
@@ -672,7 +672,7 @@ def test_a_removal_during_the_scan_is_not_resurrected_by_the_seed(monkeypatch):
     parent = _rec("s-parent", "slot-a")
     child = _rec("s-child", "slot-b", created=2, parent="slot-a")
 
-    def scan_then_delete(_self, live_sids=()):
+    def scan_then_delete(_self, live_sids=(), **_asked):
         # The deletion lands AFTER this scan listed the unit. That ordering is the whole
         # race: the reading below still carries a record whose unit is already deleted.
         proj.forget("s-child")

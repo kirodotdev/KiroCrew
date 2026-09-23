@@ -1831,6 +1831,8 @@ class TestAdvertisedSet:
             "session_close",
             "session_send",
             "session_read_message",
+            "session_adopt",
+            "session_release",
         }
 
 

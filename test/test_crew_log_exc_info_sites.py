@@ -48,18 +48,20 @@ VETTED: frozenset[tuple[str, str]] = frozenset(
         # committed: the module names no handle at all, opens none, and takes none as a
         # parameter, so no frame OF ITS OWN holds one -- which is why the no-handle check
         # skips the file and each site is listed here. What its own frames cannot say is
-        # who CALLED them: ``record_opened`` and ``_schedule_checkpoint`` (through
-        # ``apply``) run under the emitter's edge recorder, whose ``log`` is a live
-        # handle, and a retained traceback reaches that frame through ``f_back``. Those
-        # two render to text and are NOT here. The six below are reached only from the
-        # dashboard's seed (``ensure_seeded`` and the two it calls), the maintenance
-        # pool's debounced write (``_save_checkpoint``), or ``store.remove_unit`` (the two
-        # retention doors), none of which hold a handle.
+        # who CALLED them: ``record_opened``, ``record_adopted``, ``record_released`` and
+        # ``_schedule_checkpoint`` (through ``apply`` and ``apply_edge``) run under the
+        # emitter's edge recorder, whose ``log`` is a live handle, and a retained
+        # traceback reaches that frame through ``f_back``. Those four render to text and
+        # are NOT here. The five below are reached only from the dashboard's seed
+        # (``ensure_seeded`` and the two it calls), the maintenance pool's debounced write
+        # (``_save_checkpoint``), or ``store.remove_unit`` (the two retention doors), none
+        # of which hold a handle.
         ("session_tree_projection.py", "_load_checkpoint"),
         ("session_tree_projection.py", "_replay_tail"),
         ("session_tree_projection.py", "_save_checkpoint"),
         ("session_tree_projection.py", "ensure_seeded"),
         ("session_tree_projection.py", "forget_unit"),
+        ("session_tree_projection.py", "reconcile_unit_edge"),
         ("session_tree_projection.py", "retract_unit_parent"),
         ("store.py", "remove_unit"),
         ("store.py", "sweep_expired"),

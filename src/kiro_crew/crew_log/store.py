@@ -484,6 +484,7 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
                     from kiro_crew.crew_log.session_tree import opened_record
                     from kiro_crew.crew_log.session_tree_projection import (
                         forget_unit,
+                        reconcile_unit_edge,
                         retract_unit_parent,
                     )
 
@@ -502,13 +503,24 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
                     if surviving is None:
                         # Nothing here still yields a record at all.
                         forget_unit(unit_id)
-                    elif surviving.parent_slot is None:
-                        # The CREATING segment went while later ones survive, so a scan
-                        # now contributes this slot with NO parent. Dropping the whole
-                        # record instead would orphan this unit's CHILDREN, which cite
-                        # its slot: a slot with no record reads as a creator that never
-                        # existed, rather than one whose own creator is unknown.
-                        retract_unit_parent(unit_id)
+                    else:
+                        if surviving.parent_slot is None:
+                            # The CREATING segment went while later ones survive, so a
+                            # scan now contributes this slot with NO parent. Dropping the
+                            # whole record instead would orphan this unit's CHILDREN,
+                            # which cite its slot: a slot with no record reads as a
+                            # creator that never existed, rather than one whose own
+                            # creator is unknown.
+                            retract_unit_parent(unit_id)
+                        # The citation above is only the FIRST segment's contribution. A
+                        # decision is appended later, so it can be in any segment and is
+                        # therefore losable by this same pass whether or not the creating
+                        # one survived -- which is why this is not inside the arm above.
+                        # Re-read from what is left, because nothing else will: a
+                        # decision is otherwise only re-derived by a cold rebuild, and
+                        # until then the tree would assert a takeover with a deleted
+                        # segment behind it and checkpoint that claim.
+                        reconcile_unit_edge(unit_id, surviving.slot)
             else:
                 logger.warning(
                     "crew log retention: %s log %r not removed; its history is intact",
@@ -934,6 +946,34 @@ def oldest_segment(directory: Path) -> Path | None:
         return None
     found.sort(key=lambda pair: pair[0])
     return found[0][1]
+
+
+def newest_segment(directory: Path) -> Path | None:
+    """The surviving segment of *directory* with the HIGHEST first seq, or ``None``.
+
+    Where a unit's history ENDS today, which is the half :func:`oldest_segment`
+    cannot answer: a decision recorded after the session opened lands at the end of
+    the newest segment, not behind the header of the oldest one.
+
+    No name shortcut. ``log.jsonl`` is the oldest segment while it survives, so the
+    newest is only knowable from the listing -- and a unit that has never been
+    rotated has exactly one segment, which the listing finds in the same call.
+
+    Raises what the listing raises. ``None`` therefore means one thing -- no surviving
+    segment -- rather than standing for an unreadable directory as well, which is the
+    distinction the tree-edge caller decides on: a unit whose listing failed has not
+    told anyone it records no decision, and reported as though it had, its stale
+    checkpoint edge survives as the tree's answer.
+    """
+    found = [
+        (first, child)
+        for child in directory.iterdir()
+        if (first := _segment_first_seq(child)) is not None
+    ]
+    if not found:
+        return None
+    found.sort(key=lambda pair: pair[0])
+    return found[-1][1]
 
 
 def read_head(path: Path) -> "tuple[dict[str, Any] | None, Entry | None, bool]":
@@ -1386,11 +1426,208 @@ def _last_lifecycle_entry(tail: _Tail) -> "Entry | None":
     close would call a session that is running right now expired and delete a
     live conversation's log.
 
+    :data:`_LIFECYCLE_TYPES` holds those two types and no others, and nothing that
+    moves a session in the TREE belongs in it: this answer authorizes a DELETION,
+    so a type added here makes a unit whose newest such entry is not a close
+    immortal in retention. The tree's own types are read by
+    :func:`read_last_tree_edge`, which shares the window walk below and keeps its
+    own set.
+    """
+    return _last_entry_of_types(tail, _LIFECYCLE_TYPES)
+
+
+#: The two entry types that move a session in the TREE, read from a unit's tail.
+#: Deliberately NOT in :data:`_LIFECYCLE_TYPES`: that set decides open versus
+#: closed and therefore authorizes retention's delete, so an adoption sitting at
+#: the end of a log would keep that log forever.
+_TREE_EDGE_TYPES = frozenset({"session/adopted", "session/released"})
+
+
+def read_last_tree_edge(segment: Path) -> "Entry | None":
+    """The newest tree-edge entry in *segment*'s tail window, or ``None``.
+
+    An adoption or a release lands after the session opened, so a reader of a
+    unit's HEAD cannot see it. This is the counterpart read, and it is the same
+    bounded window retention already reads -- one open, at most ``_TAIL_WINDOW``
+    bytes, no walk of the file.
+
+    BOUNDED, and that bound is why this is not the whole answer: only entries written
+    AFTER a decision can push it out of the window, and a session that keeps working
+    keeps appending. :func:`find_last_tree_edge` is the complete read a cold rebuild
+    needs; this one is the cheap first look it starts from, and the one a warm scan of a
+    live unit uses because a live unit's decision is at its end.
+
+    Raises whatever the read raises, like :func:`read_head`: a caller distinguishes
+    "this unit has no decision" from "its bytes were not seen", and only the first
+    is something to cache.
+    """
+    tail = _scan_tail(segment)
+    if tail.empty:
+        return None
+    return _last_entry_of_types(tail, _TREE_EDGE_TYPES)
+
+
+def tree_edge_scan_identity(directory: Path) -> "tuple[int, int, int, int] | None":
+    """What must be unchanged for an earlier COMPLETE tree-edge read of this unit to
+    still be its answer, or ``None`` when the unit has no segments.
+
+    :func:`find_last_tree_edge` is the only honest read for a rebuild and it is
+    proportional to the unit's whole log, because a unit that records no decision is
+    only proved to record none by reading all of it. Paying that on every process start
+    for every unit is what this exists to avoid: the verdict is a pure function of the
+    bytes, so it can be cached across boots as long as something can say the bytes are
+    the same ones.
+
+    Four numbers, each closing a different way the answer could go stale:
+
+    * the directory's own mtime, which moves when a segment is ADDED or REMOVED -- a
+      rotation, or retention taking the oldest;
+    * the number of segments, because two changes inside one mtime granularity can leave
+      the directory looking untouched while its contents are not;
+    * the newest segment's size and mtime, which move on an APPEND -- the one change that
+      does not touch the directory at all, and the one that can add a decision.
+
+    Deliberately NOT a content hash: this runs per unit on a boot path, and the whole
+    point is to be cheaper than reading the bytes. It is a staleness check, not proof of
+    identity -- so it is used only to skip re-deriving a NEGATIVE verdict, where being
+    wrong costs a decision that is re-read on the next change, and never to admit an edge
+    that no read produced.
+
+    Raises what the stats raise. A caller that cannot get an identity must do the read.
+    """
+    newest: tuple[int, Path] | None = None
+    count = 0
+    for child in directory.iterdir():
+        first = _segment_first_seq(child)
+        if first is None:
+            continue
+        count += 1
+        if newest is None or first > newest[0]:
+            newest = (first, child)
+    if newest is None:
+        return None
+    stat = newest[1].stat()
+    return (directory.stat().st_mtime_ns, count, stat.st_size, stat.st_mtime_ns)
+
+
+def find_last_tree_edge(directory: Path) -> "Entry | None":
+    """The newest tree-edge entry in the WHOLE of *directory*'s surviving log, or
+    ``None``.
+
+    What a cold rebuild needs, and the reason it cannot use the tail window alone: a
+    decision is silently lost when the log grew past that window after it was written,
+    and the consequence of losing one is not a missing edge but a WRONG one -- the
+    sidebar restores the creating edge and shows a session under a parent that gave it
+    up, with nothing to correct it. A bounded read is the right cost for a live unit and
+    the wrong answer for a rebuild that has no checkpoint to fall back on.
+
+    Segments are searched NEWEST FIRST, and the first one that answers wins: a decision
+    in a newer segment supersedes anything an older one holds, so the walk stops at the
+    first hit rather than reading the rest. A unit that has never rotated therefore
+    costs exactly what the tail read costs, which is the ordinary case; a rotated unit
+    costs one read per segment until its newest decision is found, and a unit that
+    records none costs one read per segment once.
+
+    Inside a segment the search is still the windowed one for the LAST window, then the
+    whole file when the window did not reach its start -- so a decision anywhere in a
+    rotated log is found, and the common case pays the cheap read first.
+
+    Raises what the reads raise, for the reason :func:`read_head` does: "no decision"
+    and "the bytes were not seen" are different answers and only the first may be
+    cached. Narrowed to ``OSError`` and ``ValueError``, which is what every caller here
+    guards -- a reader exception outside those two would escape all of them and reach
+    the projection's boot guard, which seeds no records at all and then refuses lineage
+    for the rest of the process.
+    """
+    # NOT guarded. A listing that fails has not established that this unit records no
+    # decision -- it has established nothing -- and the difference matters because both
+    # callers CACHE the answer: the projection's seed would install the creating edge for
+    # a session that was moved, and the scanner would store that as its verdict for the
+    # segment's whole stat identity, so one moment's fault becomes the tree's standing
+    # answer. Each caller already catches ``OSError`` and marks its scan incomplete,
+    # which is the honest reading and the one the docstring above promises.
+    found = [
+        (first, child)
+        for child in directory.iterdir()
+        if (first := _segment_first_seq(child)) is not None
+    ]
+    if not found:
+        return None
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    for _first, segment in found:
+        entry = read_last_tree_edge(segment)
+        if entry is not None:
+            return entry
+        # The window did not answer. When it did not reach the start of the file there
+        # are earlier lines in THIS segment it never saw, so they are read before moving
+        # on to an older segment -- otherwise a decision in the middle of a busy log is
+        # exactly what goes missing.
+        entry = _scan_whole_for_types(segment, _TREE_EDGE_TYPES)
+        if entry is not None:
+            return entry
+    return None
+
+
+def _scan_whole_for_types(segment: Path, types: "frozenset[str]") -> "Entry | None":
+    """The newest entry of *types* anywhere in *segment*, or ``None``.
+
+    Only reached when the bounded window did not answer and could not prove it saw the
+    whole file. It streams the records rather than holding the file, and keeps the last
+    match instead of stopping at the first: the newest one is the answer, and a forward
+    stream meets it last.
+
+    Raises what the stat and the read raise, as ``OSError`` or ``ValueError`` and nothing
+    else -- byte damage from the framing reader is converted below, because the callers
+    that guard this one guard exactly those two. ``None`` therefore means the file holds
+    no such entry, never that it could not be looked at -- the distinction the tree-edge
+    caller turns into a CACHED verdict, which nothing afterwards re-reads or corrects.
+    The ``open`` below already propagates, so guarding only the stat made one function
+    answer two different ways about the same file.
+    """
+    size = segment.stat().st_size
+    if size == 0:
+        return None
+    if size <= _TAIL_WINDOW:
+        # The window already covered this whole file, so there is nothing new to read.
+        return None
+    newest: Entry | None = None
+    with open(segment, "rb") as handle:
+        try:
+            for raw in strict_raw_records(handle, segment, cap=MAX_ENTRY_BYTES):
+                parsed = _parses_to_object(raw.strip())
+                if parsed is None:
+                    continue
+                entry = Entry.from_dict(parsed)
+                if entry is not None and entry.type in types:
+                    newest = entry
+        except UnreadableRecord as exc:
+            # Byte damage -- an over-cap record is the reachable case, and the framing
+            # reader ABORTS on it, so everything after it in this file is unseen.
+            # Reported as a failed READ rather than returned as ``newest``, because the
+            # unseen part is where a later decision would be: answering with the newest
+            # readable one would be a WRONG edge served as complete, which is the whole
+            # failure this function exists to prevent.
+            #
+            # Converted to ``ValueError`` rather than propagated as-is. Every caller of
+            # this file's tree-edge reads guards ``(OSError, ValueError)`` and turns a
+            # raise into "incomplete"; ``UnreadableRecord`` is neither, so it escaped all
+            # of them into the projection's own boot guard, which marks the projection
+            # seeded with no records at all and refuses lineage for the process lifetime.
+            # One conversion here, rather than a class added to three separate tuples
+            # that would then have to stay in step.
+            raise ValueError(f"crew log segment {segment.name} holds an unreadable record") from exc
+    return newest
+
+
+def _last_entry_of_types(tail: _Tail, types: "frozenset[str]") -> "Entry | None":
+    """The newest entry in *tail*'s window whose type is in *types*.
+
     Searched from the END, so a file with many turns costs one comparison per
-    trailing entry rather than a parse of the whole window. Entries that are
-    neither -- a turn, a tool, an in-flight closer landing after a teardown -- are
-    skipped: they say nothing about which state the unit is in, and the emitter
-    writes them after a close by design.
+    trailing entry rather than a parse of the whole window. Entries outside *types*
+    are skipped, and each caller brings its own set: the question "is this unit
+    closed" and the question "where does this slot hang" are answered from the same
+    bytes and must not share a vocabulary, because the first one authorizes a
+    delete.
 
     Reuses the window the tail scan already read, so this costs no second read.
     """
@@ -1406,7 +1643,7 @@ def _last_lifecycle_entry(tail: _Tail) -> "Entry | None":
         if parsed is None:
             continue
         entry = Entry.from_dict(parsed)
-        if entry is not None and entry.type in _LIFECYCLE_TYPES:
+        if entry is not None and entry.type in types:
             return entry
     return None
 

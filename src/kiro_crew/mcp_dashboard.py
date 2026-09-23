@@ -102,9 +102,11 @@ from kiro_crew.validation import (
     CHAT_TAG_LIST_SCHEMA,
     CHAT_TAG_UPDATE_SCHEMA,
     MCP_DASHBOARD_SCHEMAS,
+    SESSION_ADOPT_SCHEMA,
     SESSION_CLOSE_SCHEMA,
     SESSION_CREATE_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
+    SESSION_RELEASE_SCHEMA,
     SESSION_SEND_SCHEMA,
     SESSION_STOP_SCHEMA,
     validate_tool_args,
@@ -126,6 +128,8 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_stop",
     "session_close",
     "session_send",
+    "session_adopt",
+    "session_release",
     "session_read_message",
 )
 
@@ -550,6 +554,58 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["target", "message"],
+            },
+        },
+        {
+            "name": "session_adopt",
+            "description": (
+                "Take another session UNDER yours, so the sidebar shows it nested "
+                "beneath this one and you are recorded as the session that holds "
+                "it. Use it when you are taking over work someone else started: "
+                "adopt each session you are now running, and the sessions THEY "
+                "opened come with them, because the tree hangs on the session and "
+                "not on a path. A session that already has a parent can be "
+                "adopted — that is the takeover — and the parent it had is kept in "
+                "the record. Refused if the target is already above you in the "
+                "tree, which would make a loop. Nothing about the target's work "
+                "changes: it keeps its own conversation, its turns and its tools. "
+                "session_release undoes it."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_release",
+            "description": (
+                "Let a session out from under its parent, so it stands on its own "
+                "in the sidebar again. The counterpart of session_adopt, and the "
+                "only way to undo one. You may release a session you hold, and you "
+                "may release YOURSELF from whoever holds you — so a session whose "
+                "conductor has stopped running is not stuck under it. Refused for a "
+                "session that has no parent, and for one that hangs under somebody "
+                "else. Sessions the released one holds stay with it: it keeps its "
+                "own subtree and only its own edge upward goes."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Session key from list_sessions, or its exact title. Your "
+                            "own key releases you from your parent."
+                        ),
+                    },
+                },
+                "required": ["target"],
             },
         },
         {
@@ -1588,6 +1644,43 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return (
             f"\U0001f4e8 Queued for `{target}` — it is mid-turn, so your message runs "
             f"when the current turn ends.{queued_note} Poll with session_read_message."
+        )
+
+    if name == "session_adopt":
+        args = validate_tool_args(args, SESSION_ADOPT_SCHEMA)
+        resp = _post(
+            "/api/session-control/adopt",
+            {"target": args["target"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not adopt that session: {resp['error']}"
+        target = resp.get("target", args["target"])
+        previous = resp.get("previous_parent") or ""
+        took_over = (
+            f" It was under `{previous}` before, and that is recorded."
+            if previous
+            else " It was a root before."
+        )
+        return (
+            f"\U0001f91d Adopted `{target}` — the sidebar now nests it under this "
+            f"session, along with anything it opened.{took_over}"
+        )
+
+    if name == "session_release":
+        args = validate_tool_args(args, SESSION_RELEASE_SCHEMA)
+        resp = _post(
+            "/api/session-control/release",
+            {"target": args["target"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not release that session: {resp['error']}"
+        target = resp.get("target", args["target"])
+        previous = resp.get("previous_parent") or ""
+        return (
+            f"\U0001f513 Released `{target}` from `{previous}` — it stands on its own "
+            "in the sidebar again, keeping whatever it opened under itself."
         )
 
     if name == "session_read_message":

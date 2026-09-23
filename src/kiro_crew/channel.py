@@ -68,6 +68,12 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "session_read_message",
     "session_create",
     "session_close",
+    # The tree verbs, blocked on the containment reason the rest share: a channel
+    # agent acts on words from a thread other people are in, and these two rearrange
+    # what the person sees in their sidebar -- an adoption takes a session and its
+    # whole subtree under another one.
+    "session_adopt",
+    "session_release",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is
     # neither a conductor nor a bound worker and has no business holding one.

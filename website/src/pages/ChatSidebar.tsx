@@ -5867,6 +5867,74 @@ function ChatSidebar({
   }, [persistConductorExpanded])
 
   /**
+   * The creator each row cited on the PREVIOUS frame, so a row that MOVED can be told
+   * from a row that is merely new.
+   *
+   * Holds `parent.slot`, the child's own citation, and not the placed parent: the
+   * citation is a fact from that session's crew log, so it does not move when a search
+   * or a folder filter changes which rows are in the payload. The placed parent does,
+   * and diffing it would read a cleared search -- which restores every row's creator at
+   * once -- as a whole sidebar's worth of moves.
+   */
+  const citedCreatorRef = useRef<Map<string, string | null>>(new Map())
+
+  /**
+   * A row whose creator CHANGED opens the row it moved under.
+   *
+   * Collapsed-by-default is right for a session the user opened, and wrong for one that
+   * moves on its own: `session_adopt` re-parents a session that is already on screen, so
+   * under a collapsed new parent the rows the person was watching unmount and leave a
+   * child count behind. They did not collapse anything, so nothing tells them where the
+   * sessions went. The primary flow of the feature would hide its own result.
+   *
+   * A CHANGED citation is what separates the two. A row absent from the last frame is a
+   * creation -- `session_create`, which keeps the collapsed default and is untouched
+   * here -- while a row that was already listed under one creator and now names another
+   * was moved by someone other than the person looking at it. A citation that went to
+   * null is a release: the row returns to the top level, where nothing needs opening.
+   *
+   * Expands the whole ancestor chain, not just the new parent: an adopter nested under a
+   * collapsed conductor of its own would otherwise be as invisible as before. That is
+   * `expandConductorAncestors`, the same walk a reveal uses, applied to the row that
+   * moved.
+   *
+   * Bookkeeping runs on EVERY frame, including while the lane is not rendering, and only
+   * the expansion is gated on it. Dropping the map when the lane is off looked harmless
+   * and was not: a saved conductor view with no lineage yet suppresses the lane, so the
+   * map was cleared every frame and the FIRST adoption's frame found no previous citation
+   * for the row -- read as a creation, which keeps the collapsed default and hides the
+   * very row that moved. The baseline has to predate the move, so it cannot be seeded by
+   * the frame that carries it.
+   *
+   * For the same reason the next frame's map CARRIES the previous one forward rather than
+   * replacing it. `flatSlots` is search- and folder-filtered, so a row the current filter
+   * excludes is absent from this frame without having gone anywhere -- and rebuilding the
+   * map from this frame alone would evict its baseline. An adoption landing while a search
+   * is active would then be read as a creation once the search cleared, which is the same
+   * row-hiding failure by a different route. A row that is genuinely gone is dropped by
+   * the lane unmounting, not by one filtered frame.
+   */
+  useEffect(() => {
+    const previous = citedCreatorRef.current
+    const current = new Map<string, string | null>(previous)
+    const moved: string[] = []
+    for (const slot of flatSlots) {
+      const identity = sessionRowIdentity(slot)
+      const cited = slot.parent?.slot ?? null
+      current.set(identity, cited)
+      if (!previous.has(identity)) continue
+      if (previous.get(identity) === cited || cited == null) continue
+      moved.push(identity)
+    }
+    citedCreatorRef.current = current
+    // Only the expansion is conditional: expanding a lane nobody is looking at changes
+    // nothing a user can see, while recording the citation is what makes the NEXT frame
+    // able to tell a move from a creation.
+    if (!conductorLaneActive || lineage == null) return
+    for (const identity of moved) expandConductorAncestors(identity)
+  }, [conductorLaneActive, lineage, flatSlots, expandConductorAncestors])
+
+  /**
    * The lanes that can actually render something, in cycle order.
    *
    * `tree` always can. `conductor` needs at least one edge -- the crew log can be off,

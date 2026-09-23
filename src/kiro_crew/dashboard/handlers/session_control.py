@@ -337,6 +337,44 @@ async def api_session_control_send(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_adopt(request: web.Request) -> web.Response:
+    """POST /api/session-control/adopt — take another session under this one."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        result = await sc.adopt_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_release(request: web.Request) -> web.Response:
+    """POST /api/session-control/release — let a session out from under its parent."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        result = await sc.release_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_read(request: web.Request) -> web.Response:
     """GET /api/session-control/read — read another session's transcript tail."""
     refused = await _require_internal(request)

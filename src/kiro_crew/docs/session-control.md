@@ -1,16 +1,16 @@
 # Session Control — driving another session
 
-One chat session can open, seed, watch, stop and close another one. The tools
-come from the `kirocrew-dashboard` MCP server, so an agent that does not mount
-that server never has them — exactly like any other MCP server. This page is the
-reference for all 14 of its tools, written for the agent that is about to use
-them.
+One chat session can open, seed, watch, stop and close another one, and take
+another one under itself in the sidebar. The tools come from the
+`kirocrew-dashboard` MCP server, so an agent that does not mount that server
+never has them — exactly like any other MCP server. This page is the reference
+for all 16 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_send`,
-  `session_read_message`, `session_stop`, `session_close`. These reach another
-  session.
+  `session_read_message`, `session_stop`, `session_close`, `session_adopt`,
+  `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`.
@@ -112,6 +112,40 @@ not re-read what it already saw. Two readings matter:
   rows this window did not reach — read again immediately instead of waiting.
 
 `wait`, then read. See [Monitor loops](monitor-loops.md) for the loop shape.
+
+### `session_adopt` and `session_release`
+
+Both take only `target`. They change where a session sits in the sidebar and
+nothing else: the target keeps its conversation, its turns, its tools and its
+agent.
+
+`session_adopt` puts the target under YOU. The adopter is the calling session,
+resolved from the connection — there is no argument for it, so no session can
+rearrange a part of the tree it is not in.
+
+The case it exists for is a takeover. Open one session, adopt each of the
+sessions you are now running, and the workers THEY opened come along with them:
+a session hangs under another session, not under a path, so one call moves a
+whole branch. A target that already has a parent can be adopted, and the parent
+it had is kept in the record.
+
+| Refusal | Why |
+|---|---|
+| `would_cycle` | The target is already above you, so the tree would hold a loop. A loop is a shape the tree cannot show — it marks every session on it and nests none of them — so this would flatten a branch rather than move it. |
+| `already_root` | On release only: the target has no parent, so there is nothing to let go. |
+| `not_parent` | On release only: the target hangs under a third session. Only that session, or the target itself, can release it. |
+| `tree_unavailable` | The session tree is not being recorded on this gateway, so there is nowhere to write the edge. Nothing moved, and the tool says so rather than reporting a success the sidebar will not show. |
+| `tree_not_ready` | The tree cannot be read whole right now — the gateway has not seeded it yet, or a unit's log could not be read. Retryable: a decision taken on a partial tree could admit the loop `would_cycle` exists to refuse, so it is refused instead of guessed. |
+| `tree_write_pending` | An earlier move of this same session is still being written. Retryable: read the tree first, because the earlier write may have landed. |
+
+`session_release` is the only way to undo an adoption. You may release a session
+you hold, and you may release YOURSELF — pass your own key — so a session whose
+holder has stopped running is not stuck under it. Sessions the released one
+holds stay with it: only its own edge upward goes.
+
+Both are recorded in the target's own crew log, on the side the creating edge is
+already written on, which is why the whole subtree follows with no entry of its
+own.
 
 ### `session_stop` vs `session_close`
 

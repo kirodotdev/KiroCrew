@@ -913,14 +913,22 @@ def test_a_partial_removal_keeps_lineage_whose_opening_record_still_reads(monkey
     the opening entry in it -- readable, and dropping the edge then would lose a valid
     citation until the process re-seeds. The disk is asked rather than assumed, so this
     pins the answer for the case where it still yields a record.
+
+    The citation is only the FIRST segment's contribution. A decision is appended later, so
+    the segments this pass did take can be the ones holding it -- which is why a record
+    surviving intact still owes a re-read of the decision.
     """
     from kiro_crew.crew_log import session_tree
     from kiro_crew.crew_log import session_tree_projection as stp
 
     forgotten: list[str] = []
     retracted: list[str] = []
+    reconciled: list[tuple[str, str]] = []
     monkeypatch.setattr(stp, "forget_unit", lambda sid: forgotten.append(sid))
     monkeypatch.setattr(stp, "retract_unit_parent", lambda sid: retracted.append(sid))
+    monkeypatch.setattr(
+        stp, "reconcile_unit_edge", lambda sid, slot: reconciled.append((sid, slot))
+    )
 
     log = _closed_session()
     del log
@@ -947,6 +955,9 @@ def test_a_partial_removal_keeps_lineage_whose_opening_record_still_reads(monkey
     assert _remove() == store.REMOVE_FAILED
     assert forgotten == [], "a still-readable opening record was forgotten"
     assert retracted == [], "a citation the log still carries was retracted"
+    assert reconciled == [
+        (SESSION, "slot-a")
+    ], "a surviving record's DECISION was never re-read from the segments that are left"
 
 
 def test_a_partial_removal_downgrades_to_parentless_when_the_creating_segment_went(
