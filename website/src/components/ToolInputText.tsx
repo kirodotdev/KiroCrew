@@ -43,11 +43,17 @@ function unescapeJsonWhitespace(s: string): string {
  *  (Formatted), JSON string escapes \n/\t/\r render as real line breaks so a
  *  multi-line command is legible; when true (Raw), the text is highlighted but
  *  left byte-for-byte verbatim so the approver can inspect the exact payload,
- *  escaping and all. Both modes keep JSON/diff syntax highlighting. */
-export function ToolInputText({ text, raw = false }: { text: string; raw?: boolean }): ReactNode {
+ *  escaping and all. Both modes keep JSON/diff syntax highlighting.
+ *
+ *  `jsonish` overrides the first-character sniff for a caller that already knows
+ *  the payload's kind. The clamped-payload view needs it: it renders the two
+ *  halves of ONE JSON payload, and the tail begins mid-line, so sniffed on its
+ *  own it would fall to plain text and skip the unescape the Formatted toggle
+ *  above it promises. */
+export function ToolInputText({ text, raw = false, jsonish }: { text: string; raw?: boolean; jsonish?: boolean }): ReactNode {
   const trimmed = text.trimStart()
   // JSON-like highlighting — works on truncated JSON too
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+  if (jsonish ?? (trimmed.startsWith('{') || trimmed.startsWith('['))) {
     if (text.length > 50_000) return <span>{text}</span>
     // Formatted mode unescapes \n / \t so a multi-line command value renders
     // across real lines in the <pre whitespace-pre-wrap> host. Raw
