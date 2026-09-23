@@ -48,7 +48,11 @@ from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_search_path, spec_path_key
-from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+from kiro_crew.mcp_cleanup import (
+    KIROCREW_BIN_MCP_SERVERS,
+    mcp_entry_is_muted,
+    mcp_entry_is_registry_governed,
+)
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import (
     STUB_FLAGS_FLAG,
@@ -126,7 +130,12 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # still collects -- launching, at session level, the very server the marker
 # hands to the administrator's catalog and the mute silences. The output shape
 # for identical inputs is what changed, which is exactly what this knob rejects.
-_FINGERPRINT_SCHEMA = 8
+# 9: a reserved kirocrew-* entry launches the managed invocation, not the
+# spec's command (``_repair_control_plane_entry``). That invocation is an input
+# the spec files cannot see -- it moves on every upgrade and on a relocated
+# install -- so it is fingerprinted as ``managed_control_plane`` below, and the
+# bump regenerates every kept overlay whose stub still hashes the spec's command.
+_FINGERPRINT_SCHEMA = 9
 
 
 @dataclass
@@ -370,6 +379,212 @@ def _resolve_target_command(
     return resolved
 
 
+def _spec_args(entry: Mapping[str, Any]) -> list[str]:
+    """An entry's ``args`` as strings, iterating only a list or tuple.
+
+    Agent JSON is hand-editable, so ``"args": 8080`` or ``"args": "--flag"`` is
+    an easy thing to write; a comprehension over it raises ``TypeError`` out of
+    ``_rewrite_single_spec`` and aborts the rewrite pass for EVERY agent, leaving
+    the broker unstarted (the same class ``_hashable_args`` and ``_normalized_env``
+    guard against). A non-sequence reads as no args.
+    """
+    raw = entry.get("args")
+    return [str(a) for a in raw] if isinstance(raw, (list, tuple)) else []
+
+
+def _managed_invocation(name: str) -> dict[str, Any] | None:
+    """The command/args Kiro Crew itself would launch *name* with, or ``None``.
+
+    ``include_opt_in`` because the question here is what a granted reserved
+    name IS, not whether a rebuild would grant it -- the spec already did.
+    """
+    # Function-local on purpose, not a circular import: ``gatewayd`` imports
+    # this module at boot and deliberately keeps ``kiro_crew.agent`` OFF the
+    # daemon's boot path (see ``CONTROL_PLANE_BACKENDS`` there, read from the
+    # ``mcp_cleanup`` leaf for exactly this reason, and the same lazy import in
+    # ``gatewayd._spawns_own_control_plane``). A top-level import here would
+    # put it back. Runs once per reserved entry per rewrite pass, not per spawn.
+    from kiro_crew.agent import managed_mcp_spec_entry
+
+    try:
+        return managed_mcp_spec_entry(name, include_opt_in=True)
+    except Exception:  # pragma: no cover - defensive; the callee already catches
+        logger.debug("rewriter: managed invocation for %r unavailable", name, exc_info=True)
+        return None
+
+
+def _managed_control_plane_signature(stub_set: Collection[str]) -> dict[str, list[Any]]:
+    """``{name: [command, args]}`` for every stubbed reserved name that resolves.
+
+    The fingerprint input behind schema 9: what ``_repair_control_plane_entry``
+    launches, per name, so a moved managed binary regenerates the overlays.
+    """
+    out: dict[str, list[Any]] = {}
+    for name in sorted(KIROCREW_BIN_MCP_SERVERS):
+        if name not in stub_set:
+            continue
+        managed = _managed_invocation(name)
+        if isinstance(managed, dict) and managed.get("command"):
+            out[name] = [str(managed["command"]), _spec_args(managed)]
+    return out
+
+
+def _repair_control_plane_entry(
+    name: str, entry: dict[str, Any], agent_name: str
+) -> dict[str, Any]:
+    """Re-derive a reserved ``kirocrew-*`` entry's launch from the managed source.
+
+    A spec's ``command`` for one of Kiro Crew's own servers cannot be authored
+    correctly by hand: the managed path embeds the data home and the installed
+    version (Toolbox: ``~/.toolbox/tools/kirocrew/<ver>/bin/kirocrew``; macOS
+    payload: ``.../backend-dist/kirocrew-backend-<arch>/bin/kirocrew``), so the
+    only hand-writable spelling is the bare launcher ``kirocrew``. That
+    resolves through the shared Toolbox dispatcher (``toolbox-exec``), a
+    different file from the versioned binary, and
+    ``gatewayd._spawns_own_control_plane`` -- which compares the spawned
+    binary by realpath against exactly this managed entry -- then denies the
+    session token: every ``kirocrew-core`` / ``kirocrew-cron`` tool answers
+    ``identity_unattested`` while the server LOOKS mounted. A
+    spec pinned to a versioned path fails the same way one upgrade later, when
+    that binary is reaped.
+
+    So a reserved name never launches what the spec says; it launches what the
+    managed source of truth says, the way ``agent._enforce_managed_mcp_ownership``
+    rewrites the disk entry and the codex/opencode projections REPLACE theirs.
+    This weakens nothing downstream: the daemon's gate still runs on the
+    command about to be exec'd, which is now the one it was written to accept,
+    and a spec that named a THIRD-PARTY binary under a reserved name gets our
+    binary, not the token for theirs. The grant itself stays the spec's: an
+    entry the spec does not carry is not conjured here, and the restriction
+    fields it declares (``_RESERVED_ENTRY_SPEC_KEYS``) carry over. The launch is
+    the managed declaration's, a spec ``autoApprove`` is dropped (kiro-cli
+    honours it before Kiro Crew's PreToolUse gate runs), and the declared
+    ``env`` is held to the managed-entry ownership rule
+    (:func:`_owned_control_plane_env`) before the forwarding rules see it,
+    exactly as the disk and ACP consumers of this population do.
+
+    ``None`` from the managed source (name not managed, ``spec_gate`` closed,
+    invocation unresolvable) leaves the entry as declared; the daemon's gate
+    then rules on it as before.
+    """
+    if name not in KIROCREW_BIN_MCP_SERVERS:
+        return entry
+    managed = _managed_invocation(name)
+    if not isinstance(managed, dict) or not managed.get("command"):
+        return entry
+    declared_cmd = str(entry.get("command", ""))
+    declared_args = _spec_args(entry)
+    managed_cmd = str(managed["command"])
+    managed_args = _spec_args(managed)
+    if declared_cmd != managed_cmd or declared_args != managed_args:
+        # The declared ``args`` never reach the log: a spec may carry a token in
+        # them, and this warning persists in the gateway's log. The command and
+        # the argument COUNT are enough to find the entry; the managed
+        # invocation is ours, so it is safe to print in full.
+        logger.warning(
+            "rewriter: agent %r declares reserved server %r as command %s with %d "
+            "argument(s); launching the managed invocation %s instead so the daemon "
+            "can attest it (a hand-authored command for a kirocrew-* server cannot "
+            "match the installed binary across users or upgrades)",
+            agent_name,
+            name,
+            repr(declared_cmd) if declared_cmd else "<none>",
+            len(declared_args),
+            shlex.join([managed_cmd, *managed_args]),
+        )
+    # Composed from the managed source OUTWARD, never by copying the spec and
+    # swapping two keys. Three rounds of review found spec-controlled fields
+    # riding into our binary through that copy (a launcher-choosing ``env``, a
+    # ``KIROCREW_*`` override, an ``autoApprove`` that kiro-cli honours before
+    # Kiro Crew's PreToolUse gate ever runs), one field per round. The class is
+    # the copy, so this is the disk writer's shape instead
+    # (``agent._enforce_managed_mcp_ownership``): the launch is ours; the
+    # restriction fields kiro-cli reads for the spec's grant carry over
+    # (``_RESERVED_ENTRY_SPEC_KEYS``); ``env`` is held to the ownership rule;
+    # ``autoApprove`` is dropped and named -- a hand-written grant on a reserved
+    # name would approve our tools inside kiro-cli and skip the governance gate,
+    # and no managed declaration carries one to apply instead; every other key
+    # is dropped and named.
+    repaired: dict[str, Any] = {"command": managed_cmd, "args": managed_args}
+    for key in _RESERVED_ENTRY_SPEC_KEYS:
+        if key in entry:
+            repaired[key] = entry[key]
+    declared_env = entry.get("env")
+    if isinstance(declared_env, dict) and declared_env:
+        owned_env = _owned_control_plane_env(declared_env, name=name, agent_name=agent_name)
+        if owned_env:
+            repaired["env"] = owned_env
+    for dropped in sorted(set(entry) - set(repaired) - {"env", "autoApprove", "poolable"}):
+        logger.warning(
+            "rewriter: dropping %r from reserved server %r (agent %r): a managed entry"
+            " carries only the launch, the restriction fields and an owned env",
+            dropped,
+            name,
+            agent_name,
+        )
+    if "autoApprove" in entry:
+        logger.warning(
+            "rewriter: reserved server %r (agent %r) declares autoApprove; kiro-cli would"
+            " honour it ahead of the PreToolUse gate, so the spec's is not applied",
+            name,
+            agent_name,
+        )
+    return repaired if repaired != entry else entry
+
+
+#: Spec fields a repaired reserved entry keeps from the SPEC: they narrow the
+#: grant kiro-cli applies (mute, per-tool disable, timeout) and, being the
+#: spec's, cannot widen what our binary does. ``command``/``args`` are the
+#: managed declaration's, ``autoApprove`` is dropped; ``env`` goes through
+#: :func:`_owned_control_plane_env`. Mirrors the allow-list half of
+#: ``agent._MANAGED_MCP_ENTRY_KEYS``; a key absent here is dropped, not carried.
+_RESERVED_ENTRY_SPEC_KEYS: tuple[str, ...] = ("type", "timeout", "disabled", "disabledTools")
+
+
+def _owned_control_plane_env(
+    declared: dict[str, Any], *, name: str, agent_name: str
+) -> dict[str, str]:
+    """A reserved name's declared ``env``, held to the managed-entry ownership rule.
+
+    The launch is ours, so the environment that launch receives answers to the
+    same rule the other two consumers of this population apply --
+    ``agent._enforce_managed_mcp_ownership`` for the disk entry and
+    ``acp.session_mcp._managed_element_env`` for the ACP element -- in the same
+    order: ``sanitize_spec_env`` drops the loader channels and Kiro Crew's own
+    reserved namespace (a spec-declared ``KIROCREW_APPROVAL_MODE=auto`` would
+    otherwise reach a tokened control plane and let its subagents skip
+    approval), then the home-deriving and launcher-exec classes go. What
+    survives is the ordinary variable an operator may legitimately declare;
+    the managed env itself is the daemon's own and needs no pin here.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.env import sanitize_spec_env
+
+    # ``declared.items()`` as-is: ``sanitize_spec_env`` validates key and value
+    # types itself, and stringifying first would turn a malformed value (a dict,
+    # ``None``) into a live variable instead of a dropped one.
+    env = sanitize_spec_env(declared.items())
+    for key in [k for k in env if k.upper() in agent_mod._HOME_DERIVING_ENV_KEYS]:
+        env.pop(key, None)
+        logger.warning(
+            "rewriter: dropping %r from reserved server %r (agent %r): it would move the"
+            " data home this control plane shares with the gateway",
+            key,
+            name,
+            agent_name,
+        )
+    for key in [k for k in env if k.upper() in agent_mod._LAUNCHER_EXEC_ENV_KEYS]:
+        env.pop(key, None)
+        logger.warning(
+            "rewriter: dropping %r from reserved server %r (agent %r): it would choose what"
+            " this control plane executes rather than configure it",
+            key,
+            name,
+            agent_name,
+        )
+    return env
+
+
 def _normalized_env(entry: dict[str, Any], *, context: str = "") -> dict[str, Any]:
     """Return the entry's declared ``env`` as a dict (``{}`` for malformed).
 
@@ -600,7 +815,7 @@ def _build_stub_entry(
     env separately through its flags so the gateway can hash the
     post-substitution env into the PoolKey.
     """
-    target_args: list[str] = [str(a) for a in original.get("args", []) or []]
+    target_args: list[str] = _spec_args(original)
     auto_approve: list[str] = list(original.get("autoApprove", []) or [])
 
     stub_args: list[str] = [
@@ -950,6 +1165,11 @@ def _rewrite_single_spec(
         if name not in stub_servers:
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
+        # A reserved kirocrew-* name launches the managed invocation, whatever
+        # the spec spelled -- before resolution, so the target the stub hashes,
+        # the target env the daemon spawns and the gate's expectation are one
+        # value. See ``_repair_control_plane_entry``.
+        entry = _repair_control_plane_entry(name, entry, agent_name)
         entry_env = _normalized_env(
             entry, context=f"server {name!r} for agent {agent_name!r}"
         )
@@ -1196,6 +1416,11 @@ def _injectable_settings_servers(
             # Not stubbed: leave it to kiro-cli's own merge of the real
             # settings file, so the session launches it directly.
             continue
+        # Same repair as the per-agent site: a reserved kirocrew-* name declared
+        # here launches the managed invocation too, so the settings source and
+        # the agent-spec source of one control plane cannot diverge (the ACP
+        # projection already repairs both).
+        entry = _repair_control_plane_entry(name, entry, "settings/mcp.json")
         entry_env = _normalized_env(entry, context=f"settings server {name!r}")
         if not _resolve_target_command(str(entry.get("command", "")), entry_env, notes):
             # Settings edition of the unresolvable-command guard: an
@@ -1534,6 +1759,11 @@ def _rewrite_inputs_fingerprint(
         "approval_mode": approval_mode,
         "stub_servers": sorted(stub_set),
         "pooling_enabled": bool(pooling_enabled),
+        # The launch a stubbed reserved name is rewritten TO (schema 9). A
+        # kirocrew upgrade moves it while every spec file stays byte-identical;
+        # ``package`` catches the version bump, this catches a same-version
+        # relocation (a reinstall to another prefix, a payload moved) as well.
+        "managed_control_plane": _managed_control_plane_signature(stub_set),
         "sources": sources,
         "settings": _stat_sig(settings_path),
     }

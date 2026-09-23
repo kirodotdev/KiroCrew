@@ -456,7 +456,7 @@ async def test_projected_skill_search_receives_the_shared_sessions_identity(cfg,
 
 @pytest.mark.parametrize(
     "restriction",
-    ["stub", "unreferenced", "disabled", "tool", "global", "project", "registry", "command"],
+    ["stub", "unreferenced", "disabled", "tool", "global", "project", "registry"],
 )
 def test_kiro_identity_projection_preserves_native_restrictions(tmp_path, monkeypatch, restriction):
     import json
@@ -480,8 +480,6 @@ def test_kiro_identity_projection_preserves_native_restrictions(tmp_path, monkey
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps(settings), encoding="utf-8")
             settings = {}
-    elif restriction == "command":
-        entry["command"] = "untrusted-custom-command"
     monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
     monkeypatch.setattr(session_mcp, "_global_settings", lambda **kwargs: settings)
     monkeypatch.setattr(session_mcp, "_registry_mode", lambda: restriction == "registry")
@@ -494,6 +492,89 @@ def test_kiro_identity_projection_preserves_native_restrictions(tmp_path, monkey
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        # The shape no spec author can avoid: the documented Toolbox launcher,
+        # which resolves to the shared dispatcher, not the versioned binary.
+        {"command": "kirocrew", "args": ["mcp-core"]},
+        # A path pinned to a version since reaped by an upgrade.
+        {"command": "/opt/toolbox/tools/kirocrew/0.6.0.9/bin/kirocrew", "args": ["mcp-core"]},
+        # A third-party binary squatting the reserved name.
+        {"command": "untrusted-custom-command", "args": ["mcp"]},
+        # Right command, foreign args.
+        {"command": "test-crew", "args": ["mcp", "--evil"]},
+    ],
+)
+@pytest.mark.parametrize("where", ["spec", "global"])
+def test_kiro_identity_projection_repairs_a_stale_reserved_name_command(
+    tmp_path, monkeypatch, declared, where
+):
+    """Toolbox-shim report: a reserved name launches the MANAGED invocation, whatever the
+    spec (or a settings override of the same name) spelled.
+
+    Skipping the entry, as before, left a session that granted ``@kirocrew-core``
+    with a server that mounted from the spec, carried no identity, and refused
+    every call ``identity_unattested``. Repairing it is also the safe direction:
+    the third-party command under a reserved name never runs -- ours does -- so a
+    squatter gets no token for its own binary. Everything the spec restricts
+    (mute, ``disabledTools``, the grant itself) is still honoured by the
+    parametrized test above; only the invocation is re-derived."""
+    from kiro_crew.acp import session_mcp
+
+    managed = {"command": "test-crew", "args": ["mcp"]}
+    if where == "spec":
+        entry = dict(declared)
+        settings = {}
+    else:
+        entry = dict(managed)
+        settings = {"mcpServers": {"kirocrew-core": dict(declared)}}
+    spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": entry}}
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+    monkeypatch.setattr(session_mcp, "_global_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name, **_kw: dict(managed))
+
+    elements = session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path)
+
+    assert [e["name"] for e in elements] == ["kirocrew-core"]
+    launched = (elements[0]["command"], elements[0]["args"])
+    assert launched == ("test-crew", ["mcp"])
+    # Negative control for the class: the declared launch never reaches the element.
+    assert launched != (declared["command"], declared["args"])
+
+
+@pytest.mark.parametrize("bad_args", [8080, "--flag", {"a": 1}, True])
+@pytest.mark.parametrize("where", ["spec", "global"])
+def test_kiro_identity_projection_survives_a_scalar_args_on_a_reserved_name(
+    tmp_path, monkeypatch, bad_args, where
+):
+    """``"args": 8080`` is the easy hand-edit ``acp_server_element`` refuses to raise
+    on; the repair's comparison must not raise on it either -- a TypeError here
+    leaves ``create_session`` and aborts ``session/new``. It reads as "not the
+    managed launch" and the managed one is mounted."""
+    from kiro_crew.acp import session_mcp
+
+    managed = {"command": "test-crew", "args": ["mcp"]}
+    if where == "spec":
+        entry = {"command": "test-crew", "args": bad_args}
+        settings = {}
+    else:
+        entry = dict(managed)
+        settings = {"mcpServers": {"kirocrew-core": {"args": bad_args}}}
+    spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": entry}}
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+    monkeypatch.setattr(session_mcp, "_global_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name, **_kw: dict(managed))
+
+    elements = session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path)
+
+    assert [(e["name"], e["command"], e["args"]) for e in elements] == [
+        ("kirocrew-core", "test-crew", ["mcp"])
+    ]
 
 
 @pytest.mark.parametrize("server", ["kirocrew-dashboard", "kirocrew-work", "kirocrew-crew-log"])

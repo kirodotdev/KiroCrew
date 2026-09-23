@@ -635,6 +635,12 @@ class Backend:
     # session's bearer token. A server that merely calls itself
     # ``kirocrew-core`` stays False.
     control_plane: bool = False
+    # Why ``control_plane`` is False for a backend spawned under a RESERVED name
+    # (empty for a third-party name, and for an accepted control plane). Carried
+    # to that backend on every forwarded frame as the caller's ``identity_denial``
+    # so its ``identity_unattested`` refusal can say what the daemon saw; the
+    # daemon's own log line is the only other place the reason exists.
+    control_plane_denial: str = ""
     _shutdown_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # --- Sharing boundary state (Milestone 2) -------------------------------
     # Each attached stub appears in ``_stub_inboxes`` keyed by stub_uuid; the

@@ -1500,8 +1500,8 @@ def test_the_token_is_attached_per_backend_never_to_the_base_caller() -> None:
 
     base = CallerContext(session_key=PARENT_KEY)
     conn = SimpleNamespace(stub_session_token=TOKEN_A)
-    ours = SimpleNamespace(control_plane=True)
-    theirs = SimpleNamespace(control_plane=False)
+    ours = SimpleNamespace(control_plane=True, control_plane_denial="")
+    theirs = SimpleNamespace(control_plane=False, control_plane_denial="")
 
     handed = gw._caller_for_backend(ours, base, conn)  # type: ignore[arg-type]
     assert handed is not None and handed.session_token == TOKEN_A
@@ -1929,7 +1929,9 @@ class TestSpawnsOwnControlPlane:
         spawned_env: dict[str, str] = {}
         backend = _fake_backend()
 
-        def classify(server_name: str, command: str, args: Any, *, env: Any, work_dir: Any) -> bool:
+        def classify(
+            server_name: str, command: str, args: Any, *, env: Any, work_dir: Any, denial: Any
+        ) -> bool:
             assert server_name == "kirocrew-cron" and command == "kirocrew" and args == ["mcp-cron"]
             assert "PYTHONSAFEPATH" not in env, "the check sees the env the child would get"
             order.append("verdict")
@@ -1978,7 +1980,9 @@ class TestSpawnsOwnControlPlane:
         spawned_env: dict[str, str] = {}
         backend = _fake_backend()
 
-        def classify(name: str, cmd: str, argv: Any, *, env: Any, work_dir: Any) -> bool:
+        def classify(
+            name: str, cmd: str, argv: Any, *, env: Any, work_dir: Any, denial: Any
+        ) -> bool:
             classifier_env.update(env)
             return name == "kirocrew-cron"
 

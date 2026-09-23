@@ -75,7 +75,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -931,6 +931,19 @@ def _managed_element_env(declared: Any) -> dict[str, str]:
     return env
 
 
+def _declared_launch(source: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """``(command, args)`` as a spec or settings entry declares them, for comparison.
+
+    A non-sequence ``args`` (``8080``, ``"--flag"``) reads as no args rather than
+    being iterated: it cannot equal the managed launch either way, and raising
+    here would abort ``session/new`` over a typo the module's own rules say must
+    not raise (see :func:`acp_server_element`).
+    """
+    raw_args = source.get("args")
+    args = [str(a) for a in raw_args] if isinstance(raw_args, (list, tuple)) else []
+    return str(source.get("command", "") or ""), args
+
+
 def kiro_control_plane_servers(
     agent: str | None,
     *,
@@ -992,12 +1005,45 @@ def kiro_control_plane_servers(
             or source.get("type", "stdio") != "stdio"
             or mcp_entry_is_muted(source)
             or source.get("disabledTools", []) != []
-            or ("command" in source and source["command"] != managed.get("command"))
-            or ("args" in source and source["args"] != managed.get("args", []))
             for source in sources
         ):
             continue
-        owned = {**entry, "env": _managed_element_env(entry.get("env"))}
+        # The launch is the managed source's, never the spec's. A hand-authored
+        # command for a reserved name cannot be right across users or upgrades
+        # (the managed path carries the home and the installed version; the one
+        # writable spelling, bare ``kirocrew``, resolves to the Toolbox
+        # dispatcher), and skipping such an entry cost the session every
+        # control-plane tool while the server looked mounted. The
+        # module docstring already states the rule -- "re-derived from the
+        # managed source of truth on every spawn so a stale hand-edited command
+        # in the spec cannot cost a claude session the tools it needs" -- and the
+        # codex/opencode projections REPLACE the same way; this applies it here.
+        # Restrictions (mute, ``disabledTools``, non-stdio) still withhold above:
+        # they narrow the grant, which stays the spec's; only the invocation is
+        # ours. Only a sequence is iterated, as in ``acp_server_element``: the
+        # spec is hand-editable JSON, so ``"args": 8080`` is an easy thing to
+        # write, and it must read as "not the managed launch", not abort
+        # ``session/new`` with a TypeError from inside a comprehension.
+        declared = [
+            _declared_launch(source)
+            for source in sources
+            if isinstance(source, dict) and ("command" in source or "args" in source)
+        ]
+        managed_launch = _declared_launch(managed)
+        if any(launch != managed_launch for launch in declared):
+            logger.warning(
+                "session MCP: agent %r declares reserved server %r with a command that is"
+                " not the managed invocation; mounting the managed one so the gateway can"
+                " attest it",
+                agent,
+                name,
+            )
+        owned = {
+            **entry,
+            "command": managed_launch[0],
+            "args": list(managed_launch[1]),
+            "env": _managed_element_env(entry.get("env")),
+        }
         element = acp_server_element(name, owned)
         if element is not None:
             out.append(element)

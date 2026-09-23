@@ -1678,6 +1678,31 @@ def _run_stdio_dispatch_loop(
                         f"that session. Refusing the call rather than ignoring an "
                         f"operator's exclusion list."
                     )
+                    # The daemon withheld the token from THIS backend for a reason
+                    # it otherwise logs only to its own stdout; when the frame
+                    # carries it, the refusal says it, because the generic text
+                    # above points at the token and the spec, and the cause is
+                    # neither (in the Toolbox-shim report it was the spawned binary).
+                    # Only the reason and the restart note: the reasons that reach
+                    # here name a filesystem root, the daemon's own spawn env, or
+                    # the managed table, so a clause sending the operator to the
+                    # agent spec would misdirect them the way the sibling
+                    # ``resolution_failed`` text deliberately avoids. The reason
+                    # quotes spec-derived paths and this early refusal does not
+                    # pass through the scrubbers the tool path applies, so it
+                    # gets both here: the directive defang and the credential
+                    # redaction every egress site routes through.
+                    _denial = _caller_ctx.identity_denial if _caller_ctx else ""
+                    if _denial:
+                        from kiro_crew.platform import redact_via_context
+
+                        _safe_denial = redact_via_context(neutralize_markers(_denial))
+                        _refusal += (
+                            f" The gateway spawned this server without a token because: "
+                            f"{_safe_denial}. It decides this once, at "
+                            f"spawn, so a change takes "
+                            f"effect at the gateway's next restart."
+                        )
                 elif _policy.unresolved == "resolution_failed":
                     # A DIFFERENT diagnosis and a different remedy from the branch
                     # below, which is why it cannot share that text: the gateway was

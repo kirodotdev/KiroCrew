@@ -1951,8 +1951,20 @@ and `mcp_core._session_token_header` reads the gateway-injected caller's token
 before falling back to `KIROCREW_STUB_SESSION_TOKEN`. The name alone does not
 earn the token: the server name arrives in the stub's register frame while the
 spawn target resolves separately from the spec-derived
-`KIROCREW_MCP_TARGET_<NAME>` mapping, so a spec could declare a third-party
-command under a reserved name. At spawn, `gatewayd._spawns_own_control_plane`
+`KIROCREW_MCP_TARGET_<NAME>` mapping. That mapping is not the spec's word for a
+reserved name, though. The rewriter re-derives every stubbed `kirocrew-*` entry,
+whether an agent spec declares it or `settings/mcp.json` injects it, from
+`agent.managed_mcp_spec_entry` before it resolves, hashes or bakes anything
+(`rewriter._repair_control_plane_entry`), and holds the entry's
+declared `env` to the managed-entry ownership rule the disk writer
+(`agent._enforce_managed_mcp_ownership`) and the ACP element
+(`session_mcp._managed_element_env`) apply -- reserved `KIROCREW_*` keys, loader
+channels, home-deriving and launcher-exec keys dropped. So a spec that spells the
+launcher the only way a hand can (`"command": "kirocrew"`, which resolves to the
+shared Toolbox dispatcher, not the versioned binary) or pins a path an upgrade
+has since reaped still runs our binary, and a third-party command declared under
+a reserved name runs our binary too, never its own. The gate below is unchanged;
+the repair is what makes an honest spec pass it. At spawn, `gatewayd._spawns_own_control_plane`
 compares the command actually exec'd (by real path) and its args against the
 invocation `agent.managed_mcp_spec_entry` emits for that name and records the
 verdict as `Backend.control_plane`; the handler forwards the token on that flag
@@ -2022,7 +2034,13 @@ spec entry, a different binary, different args, a non-empty `PYTHON*` / `LD_*` /
 or a root that shadows `kiro_crew` (named in the message, so per-user site-packages
 is distinguishable from the local one) — so an
 install that trips the check has more to read than every cron tool answering
-403.
+403. The same reason rides to the denied backend itself: the spawn site records it
+as `Backend.control_plane_denial`, `_caller_for_backend` copies it onto the frames
+it forwards to that backend as `CallerContext.identity_denial` (`identityDenial`
+in the caller block, emitted only when set), and the backend's
+`identity_unattested` refusal quotes it. Without that channel the only record was
+`logs/mcp-gatewayd.stdout`, which no session surfaces, and the refusal's generic
+text pointed at the token and the spec when the cause was neither.
 
 `CONTROL_PLANE_BACKENDS` is named in gatewayd itself (importing
 `acp.session_mcp` would put `kiro_crew.agent` on the daemon's boot path; the

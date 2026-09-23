@@ -186,8 +186,12 @@ def _spawns_own_control_plane(
     *,
     env: Mapping[str, str] | None = None,
     work_dir: str | os.PathLike[str] | None = None,
+    denial: list[str] | None = None,
 ) -> bool:
     """Whether spawning ``command args`` for *server_name* runs Kiro Crew's own control plane.
+
+    ``denial`` collects the reason a reserved name is refused (see
+    :func:`_deny_control_plane`); the verdict itself is the return value.
 
     The server NAME is not proof: it arrives in the stub's register frame and
     the spawn target resolves separately from the spec-derived
@@ -241,24 +245,28 @@ def _spawns_own_control_plane(
     # once per spawn, not per call.
     from kiro_crew.agent import managed_mcp_spec_entry
 
+    def deny(reason: str) -> bool:
+        return _deny_control_plane(server_name, reason, denial)
+
     expected = managed_mcp_spec_entry(server_name, include_opt_in=True)
     if not expected:
-        return _deny_control_plane(server_name, "no managed spec entry resolves for this name")
+        return deny("no managed spec entry resolves for this name")
     expected_command = str(expected.get("command") or "")
     if not expected_command or not command:
-        return _deny_control_plane(server_name, "spec or spawn command is empty")
+        return deny("spec or spawn command is empty")
     try:
         same_binary = os.path.realpath(command) == os.path.realpath(expected_command)
     except (OSError, ValueError):
-        return _deny_control_plane(server_name, f"command {command!r} is unresolvable")
+        return deny(f"command {command!r} is unresolvable")
     if not same_binary:
-        return _deny_control_plane(
-            server_name, f"spawned {command!r} is not the spec's {expected_command!r}"
-        )
+        return deny(f"spawned {command!r} is not the spec's {expected_command!r}")
     argv = [str(a) for a in args]
     expected_argv = [str(a) for a in expected.get("args", [])]
     if argv != expected_argv:
-        return _deny_control_plane(server_name, f"args {argv!r} differ from spec {expected_argv!r}")
+        # The spawned argv is spec-derived and may carry a token; this reason
+        # travels into the identity_unattested refusal, so it names the count
+        # and the managed argv (ours), never the spawned values.
+        return deny(f"args ({len(argv)}) differ from spec {expected_argv!r}")
     child_env = env if env is not None else os.environ
     loader_env = next(
         (
@@ -270,15 +278,22 @@ def _spawns_own_control_plane(
         "",
     )
     if loader_env:
-        return _deny_control_plane(server_name, f"child environment carries non-empty {loader_env}")
+        return deny(f"child environment carries non-empty {loader_env}")
     shadow = _kiro_crew_import_is_shadowed(command, argv, work_dir)
     if shadow:
-        return _deny_control_plane(server_name, f"import root {shadow!r} shadows kiro_crew")
+        return deny(f"import root {shadow!r} shadows kiro_crew")
     return True
 
 
-def _deny_control_plane(server_name: str, reason: str) -> bool:
-    """Record why a reserved-name backend gets no session token; always False."""
+def _deny_control_plane(server_name: str, reason: str, denial: list[str] | None = None) -> bool:
+    """Record why a reserved-name backend gets no session token; always False.
+
+    ``denial``, when given, receives the reason so the spawn site can pin it on
+    the backend and forward it to that backend's frames
+    (``Backend.control_plane_denial`` -> ``CallerContext.identity_denial``): the
+    log line below is otherwise the ONLY record, and it lands in
+    ``logs/mcp-gatewayd.stdout``, which no session ever shows the operator.
+    """
     logger.warning(
         "mcp-gateway: backend %r spawned under a control-plane name but is denied the "
         "session token: %s; its tools that post back to the gateway for the calling "
@@ -286,6 +301,8 @@ def _deny_control_plane(server_name: str, reason: str) -> bool:
         server_name,
         reason,
     )
+    if denial is not None:
+        denial.append(reason)
     return False
 
 
@@ -311,6 +328,11 @@ def _caller_for_backend(
     if caller is None or conn is None or not conn.stub_session_token:
         return caller
     if not backend.control_plane:
+        # No token. A backend under a RESERVED name is told why, so its refusal
+        # can say what the daemon saw instead of "no token arrived"; a
+        # third-party backend has no denial and gets the bare caller.
+        if backend.control_plane_denial:
+            return dataclasses.replace(caller, identity_denial=backend.control_plane_denial)
         return caller
     return dataclasses.replace(caller, session_token=conn.stub_session_token)
 
@@ -4419,6 +4441,7 @@ async def _acquire_backend(
         # run. Off the loop: the check imports ``kiro_crew.agent``, reads config
         # and stats the filesystem, and a cold spawn must not stall gateway
         # traffic or heartbeats.
+        denial: list[str] = []
         control_plane = await asyncio.to_thread(
             _spawns_own_control_plane,
             pool_key.server_name,
@@ -4426,6 +4449,7 @@ async def _acquire_backend(
             list(args),
             env=spawn_env,
             work_dir=work_dir,
+            denial=denial,
         )
         if control_plane:
             # Defense in depth after the verdict: the fence above already
@@ -4477,6 +4501,7 @@ async def _acquire_backend(
         for _sk in _secret_keys:
             spawn_env.pop(_sk, None)
         backend.control_plane = control_plane
+        backend.control_plane_denial = "" if control_plane else (denial[0] if denial else "")
         # Start the stdout pump immediately so replies to the first
         # forwarded message can route back. The task is owned by the
         # Backend and cancelled at shutdown().
