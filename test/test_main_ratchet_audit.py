@@ -376,6 +376,9 @@ class TestGateParityWithCi:
             # Only added lines are enforced; the whole-tree backlog is a report.
             "check_memory_store_seam.py",
             "check_changelog_history.py",
+            # Compares the base ref's ledger entries with the head's, so main's
+            # own tree has nothing to be judged against.
+            "check_decisions_history.py",
             "check_per_file_coverage.py",
         }
     )

@@ -80,6 +80,7 @@ in the **same commit** when you change what it documents.
 | build, install, dev mode | [CONTRIBUTING.md](CONTRIBUTING.md) + [install](docs/guides/install.md) |
 | cutting a release | [release](docs/build/release.md) |
 | `CHANGELOG.md` | [changelog](docs/build/changelog.md) |
+| a user-facing label, wording, placement or behaviour a person may already have decided | [docs/decisions/README.md](docs/decisions/README.md) |
 | errors, retries, user-facing failure text | [error-handling](docs/system-specs/common/error-handling.md) |
 | what this public fork must never re-introduce | [oss-fork-boundaries](docs/system-specs/oss-fork-boundaries.md) |
 | any doc: moving, renaming, indexing it | [docs/README.md](docs/README.md) |
@@ -202,6 +203,9 @@ gate locally with
 - MUST read the owning spec under `docs/system-specs/` before changing the code it
   covers, and MUST update it in the SAME commit.
 - MUST NOT create additional markdown files unless explicitly instructed.
+- MUST grep `docs/decisions/` before changing a recorded label, placement or
+  behaviour; an entry is reversed only by a new superseding entry a maintainer
+  wrote, never by an edit, a friction report or a review finding.
 - Everything else about adding, moving, indexing and linting a doc — including
   `scripts/docs-lint.sh` — is [docs/README.md](docs/README.md). Treat
   `docs/task-specs/` as an archive, never as current context.

@@ -324,7 +324,7 @@ describe('CI supplies a base commit on both paths', () => {
   // tests above would still pass.
   // Both blocking workflows, not just ci.yml. The cheap diff-scoped gates moved
   // into fast-gate.yml, which ci.yml blocks on through `await-fast-gate`; reading
-  // ci.yml alone would have silently dropped seven of the eleven wirings out of this
+  // ci.yml alone would have silently dropped eight of the twelve wirings out of this
   // file's view while every assertion below still passed on the remaining four.
   const workflowSources = ['ci.yml', 'fast-gate.yml'].map((name) => ({
     name,
@@ -343,7 +343,7 @@ describe('CI supplies a base commit on both paths', () => {
     // A count, not a set: the point is that a gate ADDED to either workflow
     // cannot skip this file's `base.sha` assertion below by going unnoticed. Bump
     // it when a diff-scoped gate lands, and check the new wiring is in the loop.
-    expect(wirings).toHaveLength(11)
+    expect(wirings).toHaveLength(12)
   })
 
   it('still sees a wiring in each workflow it reads', () => {

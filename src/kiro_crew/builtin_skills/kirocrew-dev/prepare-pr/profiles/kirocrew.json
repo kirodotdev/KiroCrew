@@ -38,6 +38,8 @@
     "python3 scripts/check_testpaths_coverage.py",
     "python3 scripts/check_changelog_history.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && CHANGELOG_BASE_REF=\"$BASE\" python3 scripts/check_changelog_history.py",
+    "python3 scripts/check_decisions_history.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && DECISIONS_BASE_REF=\"$BASE\" python3 scripts/check_decisions_history.py",
     "python3 scripts/check_focus_cue.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && FOCUS_CUE_BASE_REF=\"$BASE\" python3 scripts/check_focus_cue.py",
     "python3 scripts/docs_lint.py --test",

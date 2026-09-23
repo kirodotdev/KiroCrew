@@ -63,3 +63,11 @@ test/fixtures/acp_frames/**/*.json text eol=lf
 # session there and only there. Pin LF like the vendor manifest above.
 src/kiro_crew/agent_sdk/gate_extensions/**/*.ts text eol=lf
 src/kiro_crew/agent_sdk/gate_extensions/**/*.mjs text eol=lf
+
+# Decision-ledger entries are compared byte-for-byte: the ledger gate reads each
+# working-tree entry as raw bytes and checks it against the base commit's blob,
+# so an entry is only ever ADDED, never edited. A CRLF checkout under
+# core.autocrlf=true would make every untouched entry differ from its blob and
+# the gate would report all of them as edited, there and only there. Entries
+# live flat in one directory, so no `**` is needed.
+docs/decisions/*.md text eol=lf

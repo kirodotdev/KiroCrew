@@ -571,6 +571,68 @@ custom-rules:
       - Porting an already-written section verbatim between main and a release
         branch, where the diff adds a section and removes nothing.
 
+  - id: recorded-decisions-are-not-regressions
+    blocking: true
+    file-patterns:
+      - "docs/decisions/**"
+      - "website/src/**"
+      - "src/kiro_crew/**"
+    rule: |
+      docs/decisions/ is the team's record of product and design decisions a
+      person made: one immutable file per decision, indexed by its README. The
+      rules are in docs/decisions/README.md. This rule exists because a
+      recorded decision was reversed by a pull request that read as an ordinary
+      fix: a single nightly friction row asked for a longer button label, the
+      PR changed it, and nothing in review knew the short label had been chosen
+      on purpose. A decision that has to be re-made every time a report
+      disagrees with it was never recorded at all.
+
+      - FLAG any diff that EDITS, RENAMES or DELETES an existing file under
+        docs/decisions/ other than README.md. An entry is written once. A
+        change of mind is a NEW entry carrying a `Supersedes:` line that names
+        the old one, and the old file stays byte-identical.
+        `scripts/check_decisions_history.py` refuses this mechanically in Fast
+        Gate, so spend your attention on the next three points; report it only
+        if the gate somehow did not.
+      - FLAG a change to a user-facing label, wording, placement or behaviour
+        that an entry under docs/decisions/ records, when the PR adds no
+        superseding entry. Grep the directory for the control, key or
+        behaviour the diff touches. That the change closes an issue, answers a
+        friction report, satisfies a review finding or makes a test read
+        better is not a reason: an entry outranks all of those. A report that
+        collides with an entry is a feature request against a settled
+        decision, linked to the entry by its file path and left to a
+        maintainer; no fix is made from the report itself. Treat the reversal
+        as a regression, whatever the PR title says.
+      - FLAG a PR that carries an entry with a `Supersedes:` line, with or
+        without the code change it authorizes. This flag is by design: the one
+        way a decision changes is a dedicated PR carrying the superseding
+        entry, and a maintainer's override of this flag is what lets it land.
+        The entry is not a license to un-flag the code change beside it; the
+        maintainer's override is the approval, and it covers both.
+      - FLAG a new entry, superseding or not, whose Evidence links no
+        on-record artifact carrying the human decision it records — an issue,
+        a pull-request comment or a commit, checkable by anyone. "Decided in
+        chat" with no link is not evidence; the person restates the decision
+        on the PR and the entry cites that comment. An entry that decides on
+        the agent's own authority is refused.
+      - FLAG a new entry whose linked on-record statement was made by someone
+        not listed in MAINTAINERS.md. A contributor's stated preference, cited
+        by a contributor's own entry, is not a settled decision; a maintainer
+        restates it on the PR and the entry cites that comment instead.
+
+      Allowed (do NOT flag):
+      - Adding a new entry that names the person who decided and links the
+        evidence, with the matching index row in docs/decisions/README.md.
+      - Adding a founding entry (one with no `Supersedes:` line) that records
+        the outcome a person already decided AND links that person's on-record
+        statement of it, in the SAME PR as a change that RESTORES that outcome
+        after an unrecorded reversal. Nothing is being changed; the ledger is
+        catching up with what was decided, and the link is what keeps this
+        path from being a way to write a decision nobody made.
+      - Editing docs/decisions/README.md itself (index rows, rule wording).
+      - A change to a label, placement or behaviour that no entry records.
+
   - id: recurring-defect-patterns
     blocking: false
     file-patterns:

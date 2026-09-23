@@ -251,6 +251,39 @@ jobs:
           python3 scripts/check_changelog_history.py --test
           python3 scripts/check_changelog_history.py
 
+  decision-ledger-history:
+    name: Decision Ledger Gate
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: decision-ledger-history/Check that every recorded decision survived this change runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Check that every recorded decision survived this change
+        # docs/decisions/ holds the team's decisions, one immutable file each.
+        # An edit or a deletion there silently rewrites what was decided, and
+        # it reads as plausible in review because the reviewer looks at what
+        # was added. A change of mind is a NEW entry naming the one it
+        # supersedes, so the only legal ledger diff is additions. The
+        # judgment half (does this PR reverse a recorded decision?) is the
+        # recorded-decisions-are-not-regressions rule in AUTOSDE.yaml; the
+        # mechanical half runs here.
+        env:
+          # base.sha, not origin/<base>: same reasoning as changelog-history.
+          DECISIONS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          DECISIONS_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$DECISIONS_BASE_REF" 'the decision-ledger-history gate')" || exit 1
+          export DECISIONS_BASE_REF
+          # Self-test first, so a weakened rule fails here instead of shipping
+          # green and letting a rewrite through.
+          python3 scripts/check_decisions_history.py --test
+          python3 scripts/check_decisions_history.py
+
   builtin-skill-scope:
     name: Builtin Skill Scope Gate
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}

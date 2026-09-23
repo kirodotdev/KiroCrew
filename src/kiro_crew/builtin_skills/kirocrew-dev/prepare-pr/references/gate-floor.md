@@ -38,14 +38,15 @@ scan. CI runs `check_brand_name.py --test` before the scan and `docs_lint.py
 while the scan stays clean, so a floor carrying only the scan passes locally and
 fails after push. Both self-tests sit ahead of their scans in `gates[]`.
 
-Note that "CI" here means both workflows. The ten cheapest blocking gates —
+Note that "CI" here means both workflows. The eleven cheapest blocking gates —
 `vendor-manifest`, `brand-lint`, `focus-cue-lint`,
-`feature-map-lint`, `changelog-history`, `builtin-skill-scope`,
-`loop-bound-locks`, `testpaths-coverage`, `harness-parity` and `docs-lint` — run
-in `.github/workflows/fast-gate.yml`, not `ci.yml`, so `ci.yml` gaining a
-blocking scan is no longer the only way the floor can fall behind. The commands
-are unchanged, so `gates[]` needs no edit for the move itself; what the split
-costs is described under "Scan by every shape a step can take" below.
+`feature-map-lint`, `changelog-history`, `decision-ledger-history`,
+`builtin-skill-scope`, `loop-bound-locks`, `testpaths-coverage`, `harness-parity`
+and `docs-lint` — run in `.github/workflows/fast-gate.yml`, not `ci.yml`, so
+`ci.yml` gaining a blocking scan is no longer the only way the floor can fall
+behind. The commands are unchanged, so `gates[]` needs no edit for the move
+itself; what the split costs is described under "Scan by every shape a step can
+take" below.
 
 ## Derive a ratchet; never transcribe it
 

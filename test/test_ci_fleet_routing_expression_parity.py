@@ -75,6 +75,7 @@ _EXPECTED_ROUTED_JOBS = {
     ("fast-gate.yml", "focus-cue-lint"),
     ("fast-gate.yml", "feature-map-lint"),
     ("fast-gate.yml", "changelog-history"),
+    ("fast-gate.yml", "decision-ledger-history"),
     ("fast-gate.yml", "builtin-skill-scope"),
     ("fast-gate.yml", "loop-bound-locks"),
     ("fast-gate.yml", "testpaths-coverage"),

@@ -130,6 +130,20 @@ abandon costs a public comment and a label churn on someone else's issue.
   A wrong fix to a misdiagnosed report is worse than a question.
 - **It needs a product, design or naming decision.** Publish the question and move
   on (below).
+- **It asks to change something the team already decided.** Where the repository
+  keeps a decision record (in Kiro Crew, `docs/decisions/`), grep it for the label,
+  control or behaviour the issue names and read the entry, then compare:
+  (a) if the issue asks for what the entry rejects — a different label, placement
+  or behaviour — it is a feature request against a settled decision, not a bug.
+  Comment linking the entry by its file path (the path is its canonical thread),
+  pass with `skip_scope: needs-decision`, and put the entry path in `why`. Only a
+  maintainer changes that decision, and only through a dedicated pull request that
+  carries a superseding entry and a maintainer override; never through a fix PR
+  opened from the issue. (b) If the issue reports that the product does not do
+  what the entry records, it is NOT decided: it is a regression against a recorded
+  decision, the entry is its spec, so investigate and fix it like any bug and cite
+  the entry in the fix. Do not skip it as `needs-decision`. The decision check does
+  not replace the codebase search: that search tells (a) from (b).
 - **It is an architecture change.** Moving a responsibility from one module to
   another, changing how two components talk to each other, adding or removing a
   layer: the code can be perfectly straightforward while the question of whether

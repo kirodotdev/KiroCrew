@@ -53,6 +53,7 @@ _GATE_JOBS = (
     "focus-cue-lint",
     "feature-map-lint",
     "changelog-history",
+    "decision-ledger-history",
     "builtin-skill-scope",
     "loop-bound-locks",
     "testpaths-coverage",
