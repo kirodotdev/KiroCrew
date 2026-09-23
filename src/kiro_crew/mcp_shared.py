@@ -481,6 +481,10 @@ def _policy_session_key() -> str | None:
     * ``None`` — resolution itself broke (an unreadable home, a raising probe). That
       is the ``resolution_failed`` class, kept distinguishable so a broken host is
       not reported as a benign race and does not inherit the race's short window.
+      A raising ``protected_member_session_for_pid`` stays in THIS class: the probe
+      is not caught here, because the same-uid fence means an unreadable binding
+      must never be re-read as identity from token/env. A host override that can
+      tell an expected sandbox deny from an induced one returns ``None`` for it.
 
     Source order. The first three sources and their order match
     :func:`kiro_crew.mcp_core._resolve_session_key_strict`, so the tool policy is

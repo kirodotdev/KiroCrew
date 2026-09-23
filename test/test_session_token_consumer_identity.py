@@ -243,6 +243,39 @@ class TestFromEnvReadsTheToken:
         assert ctx.session_key == protected
         assert ctx.session_type == "protected-pid"
 
+    def test_a_raising_protected_probe_refuses_and_never_reaches_the_env_key(
+        self, cfg, monkeypatch
+    ):
+        """A raising binding probe is a REFUSAL, not absence — the fence holds.
+
+        ``KIROCREW_SESSION_KEY``, the signed token and the pid file are all
+        writable by the same uid the member binding exists to fence, so a failed
+        binding read must never be re-read as identity from any of them:
+        ``chmod`` needs only ownership, so the fenced process could make its OWN
+        binding record unreadable and come back as the ambient session with that
+        session's tool-policy exclusions and ``spawn_run`` identity. The probe
+        therefore maps to ``""`` (hard deny) for EVERY exception class,
+        ``PermissionError`` included. A host override that can tell an expected
+        sandbox deny (Seatbelt) from an induced one returns ``None`` for it —
+        that is the layer the distinction lives in.
+        """
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", STALE_KEY)
+        monkeypatch.setattr(mcp_caller, "_FROM_ENV_CACHE", None)
+
+        for exc in (PermissionError("seatbelt deny"), OSError(5, "EIO"), RuntimeError("bug")):
+
+            def _boom(_pid, _exc=exc, **_kw):
+                raise _exc
+
+            monkeypatch.setattr(mcp_caller, "_FROM_ENV_CACHE", None)
+            with patch(
+                "kiro_crew.member_memory_auth.protected_member_session_for_pid",
+                _boom,
+            ):
+                ctx = CallerContext.from_env()
+            assert ctx.session_key == "", f"{type(exc).__name__} fell through to env"
+            assert ctx.session_type == "protected-pid"
+
 
 # ---------------------------------------------------------------------------
 # _resolve_excluded_tools — the managed-tool-policy lookup
@@ -439,6 +472,32 @@ class TestToolPolicyReadsTheToken:
                 mcp_shared._resolve_tool_policy(ignore_negative_cache=True).unresolved
                 == "resolution_failed"
             )
+
+    def test_an_eperm_probe_is_resolution_failed_not_env_fallthrough(
+        self, cfg, monkeypatch, policy
+    ):
+        """``PermissionError`` from the probe is no different from any other raise.
+
+        A sandbox deny and a deny the fenced process induced on its own binding
+        record are indistinguishable HERE (``chmod`` needs only ownership), so
+        treating EPERM as absence would let the second one walk the resolver down
+        to ``KIROCREW_SESSION_KEY`` and inherit the ambient session's exclusions.
+        The resolver refuses instead; a host override that CAN tell the two apart
+        returns ``None`` for the expected deny.
+        """
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", STALE_KEY)
+        policy.policies[STALE_KEY] = ["stale_tool"]
+
+        def _deny(_pid, **_kw):
+            raise PermissionError(1, "Operation not permitted")
+
+        with patch("kiro_crew.member_memory_auth.protected_member_session_for_pid", _deny):
+            assert policy.resolve() == set()
+            assert (
+                mcp_shared._resolve_tool_policy(ignore_negative_cache=True).unresolved
+                == "resolution_failed"
+            )
+        assert policy.asked_keys() == []
 
     def test_a_failed_fetch_is_attributed_to_the_resolved_session(self, cfg, monkeypatch, policy):
         """The audit trail names the session the request was made for.

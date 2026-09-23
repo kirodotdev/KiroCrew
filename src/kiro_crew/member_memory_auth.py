@@ -149,6 +149,11 @@ def protected_member_session_for_pid(peer_pid: int, *, home: Any | None = None) 
     narrow hook so host integrations can provide a process identity without
     coupling that resolver to memory routing.  The default implementation has
     no member-memory authority and therefore returns no identity.
+
+    Host overrides must return ``None`` when a binding is missing *or*
+    unreadable (for example a Seatbelt deny). Return ``""`` only for an
+    explicit invalid/revoked record — callers treat a blank string as a hard
+    refusal that must not fall through to ``KIROCREW_SESSION_KEY``.
     """
     del peer_pid, home
     return None

@@ -1109,7 +1109,33 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     # would follow the renamed inode through .1 → .2 → .3 → unlink, losing
     # later raw stderr from all retained logs.
     handler_cls = _FdTrackingRotatingFileHandler if detached else RotatingFileHandler
-    fh = handler_cls(log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    # Seatbelt/sandbox children (e.g. ``kirocrew mcp-core`` under a sandboxed
+    # agent profile) inherit a deny on ``gateway.log``. For those, opening the
+    # file handler must not abort the process: the console handler
+    # ``basicConfig`` installed above still carries every record, so the
+    # warning lands somewhere a human reads and the MCP handshake proceeds.
+    #
+    # A DETACHED process is the opposite case and must still fail loudly: no
+    # console handler was installed (the branch above skips ``basicConfig`` to
+    # avoid double-writing into the log stderr already points at), so
+    # soft-failing here would boot a long-lived gateway with no persistent log
+    # AND no destination for the warning saying so. Let the OSError propagate.
+    try:
+        fh = handler_cls(log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    except OSError as exc:
+        if detached:
+            raise
+        logging.getLogger("kiro_crew").warning(
+            "persistent log file %s unavailable (%s); continuing with console logging only",
+            log_file,
+            exc,
+        )
+        # Install redaction BEFORE returning: long-lived commands still emit
+        # Bearer/JWT-bearing records to the console, and the normal
+        # install_log_redaction call below is skipped by this early return.
+        if command in _LONG_LIVED_COMMANDS:
+            install_log_redaction([])
+        return
     # No level on the handler: every record that can reach it is already gated
     # by a logger level -- kiro_crew records by the kiro_crew logger set above,
     # third-party records (root attach, detached mode) by the root logger's

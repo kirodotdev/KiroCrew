@@ -71,6 +71,7 @@ any future KiroCrew-owned MCP server must go through this module.
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 from contextvars import ContextVar
@@ -80,6 +81,8 @@ from typing import Any, Mapping
 
 from kiro_crew import platform_compat
 from kiro_crew.session_token_sig import session_key_from_env_token
+
+logger = logging.getLogger(__name__)
 
 # --- Protocol identifiers ---------------------------------------------------
 
@@ -287,7 +290,23 @@ class CallerContext:
             from kiro_crew.member_memory_auth import protected_member_session_for_pid
 
             protected = protected_member_session_for_pid(os.getpid())
-        except Exception:
+        except Exception as exc:
+            # A raising probe is a REFUSAL, never absence. A blank protected
+            # identity stops the fallthrough below (``protected is not None``),
+            # and that is deliberate: `KIROCREW_SESSION_KEY`, the signed token
+            # and the pid file are all writable by the same uid the member
+            # binding exists to fence, so re-reading identity from them after a
+            # failed binding read would let the fenced process re-identify as
+            # the ambient session by making its OWN binding record unreadable
+            # (chmod needs only ownership). Fail closed here; a host override
+            # that can tell an EXPECTED sandbox deny (Seatbelt) from an induced
+            # one returns ``None`` for it — see the contract on
+            # ``protected_member_session_for_pid``.
+            logger.warning(
+                "protected_member_session_for_pid probe failed (%s); refusing the "
+                "protected identity rather than falling through to token/env",
+                exc,
+            )
             protected = ""
         if protected is not None:
             return cls(session_key=protected, session_type="protected-pid", from_gateway=False)
