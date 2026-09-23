@@ -336,12 +336,24 @@ def schemas() -> list[dict[str, Any]]:
                     "cwd": {
                         "type": "string",
                         "description": (
-                            "Optional absolute path to launch the subagent subprocess in, "
-                            "instead of the default sandbox. Enables cwd-relative resource globs "
-                            "(.kiro/steering, AGENTS.md, CLAUDE.md) to resolve against this directory. "
-                            "Must be under a configured subagent_cwd_allowed_roots entry "
-                            "(default: [~/workspace, ~/workspaces, ~/workplace, "
-                            "~/workplaces]). Applies to all tasks in a batch spawn."
+                            "Optional absolute path on the selected executor. For a remote "
+                            "run this path must already exist on that crew and pass its own "
+                            "subagent_cwd_allowed_roots policy. Applies to all batch tasks."
+                        ),
+                    },
+                    "executor": {
+                        "type": "string",
+                        "enum": ["local", "remote"],
+                        "description": (
+                            "Execution placement. Default 'local'. Use 'remote' to run on a "
+                            "connected remote crew so its CPU and memory carry the agent."
+                        ),
+                    },
+                    "instance_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional registered remote crew id. With executor='remote', omit "
+                            "it to pick the least-loaded connected crew automatically."
                         ),
                     },
                     "model": {
@@ -668,6 +680,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     agents_list = args.get("agents") or []
     max_turns = args.get("max_turns") or 0
     cwd = args.get("cwd") or ""
+    executor = args.get("executor") or "local"
+    instance_id = args.get("instance_id") or ""
     model = args.get("model") or ""
     reasoning_effort = args.get("reasoning_effort") or ""
     keep = bool(args.get("keep"))
@@ -727,6 +741,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # the family settings key a requested effort is delivered under.
     effort_applies: list[tuple[str, str]] = []
     agent_tasks: list[str] = []
+    agent_placements: list[str] = []
     errors: list[str] = []
     transport_errors: list[str] = []
     # Forward this session's own approval_mode (set as an env var at
@@ -794,6 +809,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             body["max_turns"] = max_turns
         if cwd:
             body["cwd"] = cwd
+        if executor != "local":
+            body["executor"] = executor
+        if instance_id:
+            body["instance_id"] = instance_id
         if model:
             body["model"] = model
         if reasoning_effort:
@@ -850,6 +869,11 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         agent_ids.append(d.get("id", "?"))
         agent_names.append(a)
         agent_tasks.append(t)
+        confirmed_executor = str(d.get("executor") or "local")
+        confirmed_instance = str(d.get("instance_id") or "")
+        agent_placements.append(
+            f"remote:{confirmed_instance}" if confirmed_executor == "remote" else "local"
+        )
         if d.get("effort_dropped"):
             effort_drops.append((str(d.get("id", "?")), str(d["effort_dropped"])))
         if d.get("effort_applied"):
@@ -897,8 +921,11 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             spawn_lines.append(
                 f"Spawned {len(agent_ids)} subagent(s). Monitor results via polling:"
             )
-        for aid, a, t in zip(agent_ids, agent_names, agent_tasks):
+        for aid, a, t, placement in zip(
+            agent_ids, agent_names, agent_tasks, agent_placements
+        ):
             label = f"{aid} ({a})" if a else aid
+            label = f"{label} [{placement}]"
             spawn_lines.append(f"  {label}: {t[:80]}")
         if solo:
             # The reason, or a pointer to the gateway's roster-check audit.

@@ -4718,6 +4718,9 @@ class DashboardState:
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
+        # Lazy RemoteSubagentService. It owns only lightweight peer polls and
+        # shadow records; execution remains on connected remote instances.
+        self.remote_subagents: Any = None
         self.channel_manager: Any = None  # lazy-init in server.py
         # A gateway launch defers legacy channel-agent relaunch until memory
         # preparation settles. Standalone dashboard callers keep the immediate

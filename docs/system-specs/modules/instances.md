@@ -49,6 +49,8 @@ mint, diagnostics, injection validation, run-marker) plus
 - [13. The SSM connection method (`connection_method`)](#13-the-ssm-connection-method-connection_method)
 - [14. Session transfer (send a session to another instance)](#14-session-transfer-send-a-session-to-another-instance)
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
+- [16. The Fargate connection method](#16-the-fargate-connection-method-connection_method--fargate)
+- [17. Authenticated peer carriers](#17-authenticated-peer-carriers-link-exchange-and-session-cookie)
 - [16. The Fargate connection method (`connection_method = "fargate"`)](#16-the-fargate-connection-method-connection_method--fargate)
 
 ---
@@ -2191,3 +2193,37 @@ be the defect the field replaces.
 deliberate no-op: a launched task is not added to this registry, so a `fargate`
 record is created by hand (Settings, the API or the CLI) with the task's ECS
 target. Tracked in #12511.
+
+
+## 17. Authenticated peer carriers: link exchange and session cookie
+
+The token minted by `kirocrew token` is a browser **link credential**, not the
+long-lived cookie for repeated server-to-server API calls. Presenting it as
+`GET /api/status?token=<link>` consumes the link exchange and the peer returns a
+distinct `mc_token_<hub-local-port>` session cookie. Replaying the consumed link
+as that cookie is rejected. This distinction is load-bearing for remote
+`spawn_run`, whose workspace upload, spawn POST and status polls are several
+requests over one tunnel.
+
+`SshTunnelManager.token_validates()` performs that exchange against the fixed
+`127.0.0.1:<local_port>` forward, with redirects disabled. On a positive 2xx it
+retains only the exact port-scoped Set-Cookie value. The in-memory
+`_peer_session_tokens` map is keyed by the link mint that produced the session;
+`_peer_cookie_header()` uses that session and falls back to the link only for an
+older peer that sets no cookie or a fresh pre-exchange window. Neither credential
+is persisted or logged.
+
+Generation ownership is explicit. Replacing a link mint drops its cached
+session. Disconnect, reconfiguration teardown and gateway shutdown remove both
+values in place. A probe that finishes after a concurrent mint replacement may
+return its HTTP verdict but cannot reattach the old session to the new tunnel
+generation. Fargate instances mint neither value and do not use these carriers.
+
+All authenticated peer carriers use the same one-shot recovery dance:
+`proxy_request`, session transfer, capability reads and federated session search
+first close a 401/403 response, then call `_refresh_peer_credential()` once. That
+helper re-mints the link and positively exchanges it before retrying with the new
+session cookie. A failed exchange does not retry; a second 401/403 is terminal
+under the carrier's existing typed error contract. This keeps retries bounded and
+prevents a newly minted but unexchanged browser link from being mistaken for a
+reusable peer credential.

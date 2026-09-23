@@ -324,7 +324,10 @@ class CancellationCoordinator(ManagerComponent):
             return ()
         mine = [
             info
-            for info in self._manager._agents.values()
+            for info in (
+                *self._manager._agents.values(),
+                *getattr(self._manager, "_external_agents", {}).values(),
+            )
             if info.parent_session_key == parent_session_key
         ]
 
@@ -515,6 +518,23 @@ class CancellationCoordinator(ManagerComponent):
         for agent_id in agent_ids:
             if not agent_id:
                 continue
+            external = getattr(self._manager, "_external_agents", {}).get(agent_id)
+            if external is not None and not external.done:
+                # Delivery was gated synchronously by the snapshot. Mark the
+                # requested stop before the network await so a terminal poll
+                # racing this call cannot present a successful completion for
+                # work whose parent has already ended.
+                external.user_stopped = True
+                try:
+                    if await self._manager.cancel_external(agent_id):
+                        stopped += 1
+                except Exception:
+                    logger.warning(
+                        "Teardown: cancelling remote subagent %s failed",
+                        agent_id,
+                        exc_info=True,
+                    )
+                continue
             info = self._manager._agents.get(agent_id)
             if info is not None and not info.done:
                 # A LIVE run goes through the ordinary reap, which does no store
@@ -649,8 +669,14 @@ class CancellationCoordinator(ManagerComponent):
             and not info.queued
             and not (info._awaiting_approval and info._exec_started is None)
         ]
+        remote_ids = [
+            info.id
+            for info in getattr(self._manager, "_external_agents", {}).values()
+            if info.parent_session_key == parent_session_key and not info.done
+        ]
         results = await asyncio.gather(
             *(self._manager.cancel(agent_id) for agent_id in running_ids),
+            *(self._manager.cancel_external(agent_id) for agent_id in remote_ids),
             return_exceptions=True,
         )
         running_stopped = sum(result is True for result in results)

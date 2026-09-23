@@ -7,7 +7,13 @@ ships as an MCP tool (not only a CLI command), and it holds no per-caller state.
 The spawn tools share their reason vocabulary with `solo_spawn.py` and validate
 optional `solo_details` through `validation.py`. New reasons require details;
 legacy calls remain compatible. Async receipts declare supported parent-work
-delivery, while the inline tool rejects `parent_parallel`. See the
+delivery, while the inline tool rejects `parent_parallel`. `spawn_run` also
+forwards `executor="remote"` and optional `instance_id` to the gateway; remote
+placement is accepted only after the peer confirms a run id, and the tool result
+includes `[remote:<concrete-instance>]` as executor evidence. Omitting
+`instance_id` delegates least-loaded connected-peer selection to the gateway.
+The MCP process never opens an SSH/SSM connection or transfers source itself.
+See the
 [subagent contract](../system-specs/modules/subagent.md) for the enforced limits
 and model-only value judgments.
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents for parallel task execution. Each subagent gets its own LLM session via `SessionManager`, runs a focused task, and announces the result via callback.
+The subagent module (`kiro_crew/subagent.py`) spawns background agents for parallel task execution. Local agents receive an LLM session via `SessionManager`; explicitly remote agents execute on a connected Kiro Crew instance while a local shadow record owns status and result delivery. Every accepted run announces its result via the same callback path.
 
 Supports `on_tool_approval` callback for interactive tool approval (routed through gateway's approval system in Normal/Trust modes).
 
@@ -2056,3 +2056,63 @@ runs, through the two halves above. The boundary is not re-derived per surface:
 because it rides the release, the dashboard, a channel command and the idle sweep
 all inherit it without a call of their own, and no backend is named anywhere in
 it. `session.md` lists the sites and the two exemptions.
+
+
+## Remote executor placement
+
+`spawn_run` and `POST /api/spawn` accept `executor="local"|"remote"` (default
+`local`) plus an optional `instance_id`. A remote call with no explicit instance
+selects the connected, version-equal instance with the fewest live external
+records; ties rotate. The accepted response carries `executor` and the concrete
+`instance_id`, and the MCP receipt renders `[remote:<instance>]`. A local run is
+never described as remote merely because its parent is attached to an instance.
+
+`dashboard/remote_subagents.py` keeps the originating gateway as control plane:
+it verifies peer version parity, posts a silent spawn through
+`SshTunnelManager.proxy_request`, polls the peer run, stores its full result
+locally, and hands terminal delivery to the ordinary `SubagentManager` reporter.
+The peer owns the agent process, CPU and RSS. Remote records live only in
+`SubagentManager._external_agents`; they participate in inventory, parent
+pending-work checks and wave/digest settlement, but never in `_agents`, local
+`_running_count`, host-memory sizing, the local reaper or the durable local task
+queue.
+
+When `include_project=true` and `cwd` is absent, the hub builds the existing
+filtered tracked-source tarball and uploads it through the authenticated SSM/SSH
+forward to `POST /api/remote-workspaces`. No Git credential is installed on the
+peer. Untracked files are excluded; dirty tracked files use the source builder's
+tracked fallback; credential-shaped tracked paths keep that builder's filtering.
+The peer verifies the full SHA-256 and installs under
+`~/workplace/kirocrew-remote-workspaces/<digest-prefix>`. Compressed size is
+limited to 64 MiB, expanded size to 512 MiB and members to 100,000. Only regular
+files and directories with relative POSIX names are accepted: absolute paths,
+traversal, backslashes, NULs, links, devices and FIFOs are rejected. Ownership is
+scrubbed, modes are normalized while executable bits survive, and reuse requires
+a marker matching the full digest. Valid marked snapshots older than seven days
+are pruned on a later upload; unsafe or unmarked directories are not deleted.
+An explicit `cwd` is already a path on the selected remote executor and suppresses
+snapshot upload.
+
+Remote mappings are owner-only files under
+`<data_home>/remote-subagents/<local-id>/`: `state.json` records local/peer IDs,
+placement and delivery state; `result.txt` holds the full bounded terminal text.
+Startup restores valid non-symlink records, resumes polling unfinished runs and
+re-delivers a terminal result whose `delivered` bit was not committed. Malformed
+or redirected state fails closed. Delivered terminal records follow
+`agent.subagent_result_ttl_secs`; live and undelivered records never expire.
+Content is persisted before parent injection and the delivered bit only after a
+successful report. A process crash in the narrow interval after peer acceptance
+but before the first local mapping write remains an orphan window until the peer
+spawn API has an idempotency key.
+
+Current lifecycle boundaries are intentional:
+
+- remote Crew Member memory bindings and `keep=true` are rejected;
+- `spawn_continue`, `spawn_steer`, `spawn_release` and retry on a remote shadow ID
+  return `409 remote_operation_unsupported` rather than entering local-only code;
+- per-run cancel, dashboard Stop-all and parent teardown route cancellation to
+  the concrete peer run; parent teardown gates delivery before its network await;
+- gateway shutdown stops local pollers but does not cancel peer work, allowing a
+  restarted gateway to restore mappings and continue polling;
+- the authenticated peer carrier must retain the session cookie produced by the
+  one-shot link exchange; see `instances.md` §17.

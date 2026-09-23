@@ -1471,6 +1471,12 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    # Execution placement. Local runs keep the defaults; remote shadow records
+    # name the connected instance and the peer-owned run they represent. These
+    # fields carry no credential and are safe to project to the dashboard.
+    executor: str = "local"
+    instance_id: str = ""
+    remote_id: str = ""
     # Boundary generation captured at admission; paired with
     # ``parent_session_key`` it identifies the exact owning stage boundary.
     # Empty selects legacy-compatible or explicitly unowned routing.
@@ -2420,6 +2426,11 @@ class SubagentManager:
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
+        # Remote shadow records are deliberately separate from ``_agents``.
+        # They participate in inventory, parent pending-work and wave settlement,
+        # but never in this host's process count, memory sizing, reaper or task
+        # queue. Their execution lifecycle is owned by RemoteSubagentService.
+        self._external_agents: dict[str, SubagentInfo] = {}
         # Continuable conversations: session_key ("subagent:<conv-id>") →
         # last-used unix ts. Drives the reaper's idle-TTL sweep. Rebuilt from
         # state.json (keep=True runs) on the reaper's first pass after a
@@ -4132,8 +4143,80 @@ class SubagentManager:
 
     @property
     def running(self) -> list[SubagentInfo]:
-        """Return currently running (not done) subagents."""
+        """Return locally executing (not done) subagents.
+
+        Remote runs are excluded because this property feeds host capacity,
+        process liveness and adaptive-memory accounting. Use ``all_agents`` or
+        ``external_agents`` for placement-neutral inventory.
+        """
         return [a for a in self._agents.values() if not a.done]
+
+    @property
+    def external_agents(self) -> list[SubagentInfo]:
+        """Return remote shadow records without charging local capacity."""
+        return list(self._external_agents.values())
+
+    def register_external(self, info: SubagentInfo) -> None:
+        """Register a peer-owned run in the local inventory.
+
+        The remote execution service has already obtained a peer run id before
+        calling this method. Registration is synchronous so a completion poll
+        cannot race ahead of visibility in ``spawn_list``.
+        """
+        if info.executor != "remote" or not info.instance_id or not info.remote_id:
+            raise ValueError("external subagent record has an incomplete remote binding")
+        if info.id in self._agents or info.id in self._external_agents:
+            raise ValueError(f"subagent id already registered: {info.id}")
+        self._external_agents[info.id] = info
+        if info.batch_id:
+            submitted = self._batch_submitted.setdefault(
+                info.batch_id, [0, max(0, int(info.batch_total))]
+            )
+            submitted[0] += 1
+            self._batch_progress_ts[info.batch_id] = time.time()
+
+    async def report_external(self, info: SubagentInfo) -> bool:
+        """Deliver one peer-owned terminal result through the normal reporter."""
+        if self._external_agents.get(info.id) is not info:
+            return False
+        if not self._claim_finalize(info):
+            return False
+        return await self._run_terminal_report(
+            info,
+            source="Remote subagent",
+            injection_timeout_reason="remote completion delivery timed out",
+            mark_delivered_on_success=False,
+            settle_digest=True,
+        )
+
+    def forget_external(self, agent_id: str) -> SubagentInfo | None:
+        """Remove one terminal remote shadow record from local inventory."""
+        return self._external_agents.pop(agent_id, None)
+
+    def set_external_canceller(
+        self,
+        callback: Callable[[SubagentInfo], Awaitable[bool]] | None,
+    ) -> None:
+        """Bind the placement service that can stop peer-owned runs.
+
+        The callback is deliberately separate from :meth:`cancel`: external
+        records never enter the local task/reaper path, while parent lifecycle
+        cancellation can still use one placement-neutral manager contract.
+        """
+        self._external_canceller = callback
+
+    async def cancel_external(self, agent_id: str) -> bool:
+        """Stop one live peer-owned run through its bound placement service."""
+        info = self._external_agents.get(agent_id)
+        if info is None or info.done:
+            return False
+        callback = getattr(self, "_external_canceller", None)
+        if callback is None:
+            raise RuntimeError("remote subagent cancellation is unavailable")
+        cancelled = await callback(info)
+        if cancelled:
+            info.user_stopped = True
+        return cancelled
 
     def has_live_shared_session(self, session_key: str) -> bool:
         """Recognize a shared child only while its exact runtime handle is live.
@@ -4160,8 +4243,8 @@ class SubagentManager:
 
     @property
     def all_agents(self) -> list[SubagentInfo]:
-        """Return all tracked subagents (running and done)."""
-        return list(self._agents.values())
+        """Return every tracked local and remote subagent."""
+        return [*self._agents.values(), *self._external_agents.values()]
 
     def batch_members_pending(self, batch_id: str) -> bool:
         return self._waves.batch_members_pending_impl(batch_id)

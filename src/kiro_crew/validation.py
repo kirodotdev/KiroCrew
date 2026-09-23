@@ -1115,6 +1115,16 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
         FieldSpec("include_project", bool, default=True),
+        # Placement is explicit and fail-closed. ``remote`` executes through a
+        # connected instance tunnel; an empty instance_id lets the gateway pick
+        # the least-loaded connected peer. Local remains byte-compatible.
+        FieldSpec(
+            "executor",
+            str,
+            allowed=frozenset({"local", "remote"}),
+            default="local",
+        ),
+        FieldSpec("instance_id", str, max_len=MAX_SHORT_STRING),
         # DELEGATE TO A CREW BY NAME. A crew is a crew-member alias in
         # ``cfg.agents``; ``agent`` above is a kiro-cli template id, a disjoint
         # namespace. Naming the crew is what lets the child inherit that crew's

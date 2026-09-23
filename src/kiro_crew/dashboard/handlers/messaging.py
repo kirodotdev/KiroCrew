@@ -200,6 +200,10 @@ async def _spawn_scope_refusal(
         return refusal
     caller = request.headers.get("X-Session-Key", "")
     state = request.app["state"]
+    if state.subagents:
+        from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+        await get_remote_subagent_service(state).ensure_restored()
     run_id = request.match_info["agent_id"]
     info = state.subagents.get(run_id) if state.subagents else None
     record = None if info is not None else await asyncio.to_thread(read_state, run_id)
@@ -316,6 +320,8 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "include_memory": body.get("include_memory", True),
                 "include_lessons": body.get("include_lessons", True),
                 "include_project": body.get("include_project", True),
+                "executor": body.get("executor", "local"),
+                "instance_id": body.get("instance_id", ""),
                 # The dict is CLOSED -- validate_tool_args only sees what is
                 # listed here -- so omitting a schema field silently disables it
                 # rather than failing. That is what made the crew delegation
@@ -341,6 +347,16 @@ async def api_spawn(request: web.Request) -> web.Response:
             {"error": "parent_session must be a string", "code": "invalid_parent_session"},
             status=400,
         )
+    executor = str(cleaned.get("executor") or "local")
+    instance_id = str(cleaned.get("instance_id") or "")
+    if executor == "local" and instance_id:
+        return web.json_response(
+            {
+                "error": "instance_id requires executor='remote'",
+                "code": "remote_instance_without_executor",
+            },
+            status=400,
+        )
     _, refusal = await internal_memory_scope(
         request, "spawn.create", claimed_session=parent_session
     )
@@ -356,6 +372,15 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    requested_memory_mode = body.get("memory_mode", "")
+    if requested_memory_mode:
+        if requested_memory_mode not in ("persistent", "incognito", "temporary"):
+            return web.json_response(
+                {"error": "invalid memory_mode", "code": "invalid_memory_mode"}, status=400
+            )
+        from kiro_crew.messaging.privacy_mode import strictest
+
+        admitted_mode = strictest((admitted_mode, requested_memory_mode)) or "persistent"
     # approval_mode and silent are HTTP API parameters passed by the SDK,
     # NOT MCP tool arguments from the LLM.  The LLM's spawn_run tool
     # (mcp_core.py) does not expose these params — they are added by the
@@ -505,6 +530,65 @@ async def api_spawn(request: web.Request) -> web.Response:
         batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
     except (TypeError, ValueError):
         batch_total = 0
+    if executor == "remote":
+        if request.get("app", ""):
+            return web.json_response(
+                {"error": "app tokens cannot spend a remote crew", "code": "app_token_forbidden"},
+                status=403,
+            )
+        if crew:
+            return web.json_response(
+                {
+                    "error": "remote runs cannot inherit a local Crew Member memory binding",
+                    "code": "remote_crew_binding_unsupported",
+                },
+                status=400,
+            )
+        if keep:
+            return web.json_response(
+                {
+                    "error": "remote continuable conversations are not supported yet",
+                    "code": "remote_keep_unsupported",
+                },
+                status=400,
+            )
+        from kiro_crew.dashboard.remote_subagents import (
+            RemoteSubagentError,
+            get_remote_subagent_service,
+        )
+
+        try:
+            info = await get_remote_subagent_service(state).spawn(
+                task=task,
+                parent_session=parent_session,
+                agent=agent,
+                max_turns=max_turns,
+                cwd=cwd,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                include_memory=cleaned.get("include_memory", True) is not False,
+                include_lessons=cleaned.get("include_lessons", True) is not False,
+                include_project=cleaned.get("include_project", True) is not False,
+                memory_mode=admitted_mode,
+                batch_id=batch_id,
+                batch_total=batch_total,
+                instance_id=instance_id,
+            )
+        except RemoteSubagentError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": exc.code}, status=exc.status
+            )
+        return web.json_response(
+            {
+                "id": info.id,
+                "task": task,
+                "status": "spawned",
+                "parent_work_supported": can_work,
+                "executor": "remote",
+                "instance_id": info.instance_id,
+                "remote_id": info.remote_id,
+            }
+        )
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
@@ -676,6 +760,30 @@ def _native_child_refusal(state: "DashboardState", conversation_id: str) -> str 
     return None
 
 
+async def _remote_run_operation_refusal(
+    state: "DashboardState", run_id: str, operation: str
+) -> web.Response | None:
+    """Refuse local-only lifecycle verbs for a peer-owned run.
+
+    Remote runs intentionally have no continuable conversation yet. A typed
+    conflict is safer than letting their local shadow id reach a local session,
+    steer, or retry path that happens to use the same identifier shape.
+    """
+    from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+    await get_remote_subagent_service(state).ensure_restored()
+    info = state.subagents.get(run_id) if state.subagents is not None else None
+    if info is None or getattr(info, "executor", "local") != "remote":
+        return None
+    return web.json_response(
+        {
+            "error": f"remote subagent runs do not support {operation}",
+            "code": "remote_operation_unsupported",
+        },
+        status=409,
+    )
+
+
 async def api_spawn_continue(request: web.Request) -> web.Response:
     """POST /api/spawn/{agent_id}/continue — follow-up turn on a conversation.
 
@@ -701,6 +809,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     refusal = await _spawn_scope_refusal(request, claimed_session=parent_session)
     if refusal is not None:
         return refusal
+    remote_refusal = await _remote_run_operation_refusal(state, conv_id, "continuation")
+    if remote_refusal is not None:
+        return remote_refusal
     try:
         admitted_mode = await _spawn_request_memory_mode(state, request, parent_session)
     except (OSError, ValueError):
@@ -787,6 +898,9 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
             {"error": "mode must be 'interrupt' or 'follow_up'", "code": "invalid_mode"},
             status=400,
         )
+    remote_refusal = await _remote_run_operation_refusal(state, agent_id, "steering")
+    if remote_refusal is not None:
+        return remote_refusal
     if mode == "follow_up":
         ok, detail = await state.subagents.follow_up_run(agent_id, message)
     else:
@@ -829,6 +943,9 @@ async def api_spawn_release(request: web.Request) -> web.Response:
             status=503,
         )
     conv_id = request.match_info["agent_id"]
+    remote_refusal = await _remote_run_operation_refusal(state, conv_id, "release")
+    if remote_refusal is not None:
+        return remote_refusal
     ok, detail = state.subagents.release_conversation(conv_id)
     if not ok:
         if detail.startswith("conversation_busy"):
@@ -982,6 +1099,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
+    from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+    await get_remote_subagent_service(state).ensure_restored()
     agent_id = request.match_info["agent_id"]
     info = state.subagents.get(agent_id)
     if not info:
@@ -1027,6 +1147,10 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
     data["started"] = info.started
+    if getattr(info, "executor", "local") == "remote":
+        data["executor"] = "remote"
+        data["instance_id"] = info.instance_id
+        data["remote_id"] = info.remote_id
     if info.done:
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
@@ -1044,6 +1168,13 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         if view_meta:
             data["result_meta"] = view_meta
         data["error"] = _redact(info.error) if info.error else ""
+        data["stopped"] = bool(getattr(info, "user_stopped", False))
+        data["outcome"] = getattr(
+            info, "outcome", "failed" if getattr(info, "error", "") else "completed"
+        )
+        data["stop_reason"] = str(getattr(info, "stop_reason", "") or "")
+        data["stop_class"] = str(getattr(info, "stop_class", "") or "")
+        data["partial"] = bool(getattr(info, "partial", False))
     else:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)
@@ -1097,6 +1228,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"agents": []})
+    from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+    await get_remote_subagent_service(state).ensure_restored()
     scope, refusal = await internal_memory_scope(request, "spawn.list")
     if refusal is not None:
         return refusal
@@ -1117,6 +1251,10 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "agent": info.agent or info.crew,
             "started": info.started,
         }
+        if getattr(info, "executor", "local") == "remote":
+            entry["executor"] = "remote"
+            entry["instance_id"] = info.instance_id
+            entry["remote_id"] = info.remote_id
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""
@@ -1170,6 +1308,9 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
             {"error": "native subagents run inside the parent turn and cannot be retried"},
             status=400,
         )
+    remote_refusal = await _remote_run_operation_refusal(state, agent_id, "retry")
+    if remote_refusal is not None:
+        return remote_refusal
     old = state.subagents.get(agent_id)
     if not old:
         return web.json_response({"error": "not found"}, status=404)
@@ -1312,9 +1453,26 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             return web.json_response({"ok": True, "cancelled": True})
         return web.json_response({"error": "not found"}, status=404)
     manager = state.subagents
+    if manager is not None:
+        from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+        await get_remote_subagent_service(state).ensure_restored()
     info = manager.get(agent_id) if manager is not None else None
     if manager is None or info is None:
         return web.json_response({"error": "not found"}, status=404)
+    if getattr(info, "executor", "local") == "remote":
+        from kiro_crew.dashboard.remote_subagents import (
+            RemoteSubagentError,
+            get_remote_subagent_service,
+        )
+
+        try:
+            cancelled = await get_remote_subagent_service(state).cancel(info)
+        except RemoteSubagentError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": exc.code}, status=exc.status
+            )
+        return web.json_response({"ok": True, "cancelled": cancelled})
     cancelled = await manager.cancel(agent_id)
     if not cancelled:
         deleted_owner = stage_boundary_owner_for_run(info)

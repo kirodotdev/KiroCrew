@@ -1964,7 +1964,7 @@ class TestSshTunnelManager:
             async def __aexit__(self, *a):
                 return False
 
-            def get(self, url, params=None):
+            def get(self, url, params=None, allow_redirects=True):
                 return _Resp(_Sess.status)
 
         _reg, mgr = self._mgr(tmp_path)
@@ -7931,18 +7931,19 @@ class TestProxyRequest:
         )
         remints = []
 
-        async def fake_refresh(instance_id):
+        async def fake_refresh_peer(instance_id):
             remints.append(instance_id)
-            mgr._tokens[instance_id] = "FRESH_TOK"
-            return "FRESH_TOK"
+            mgr._store_token(instance_id, "FRESH_LINK", "20h")
+            mgr._peer_session_tokens["FRESH_LINK"] = "FRESH_SESSION"
+            return True
 
-        monkeypatch.setattr(mgr, "refresh_token", fake_refresh)
+        monkeypatch.setattr(mgr, "_refresh_peer_credential", fake_refresh_peer)
 
         async with mgr.proxy_request("cd-1", "GET", "api/chat/slots") as resp:
             assert resp.status == 200
         assert remints == ["cd-1"]
         assert len(calls) == 2
-        assert "FRESH_TOK" in calls[1]["headers"]["Cookie"]
+        assert "FRESH_SESSION" in calls[1]["headers"]["Cookie"]
 
     @pytest.mark.asyncio
     async def test_persistent_401_raises_unauthorized_not_a_loop(self, tmp_path, monkeypatch):
@@ -7955,10 +7956,10 @@ class TestProxyRequest:
         calls: list = []
         monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[401]))
 
-        async def no_refresh(instance_id):
-            return None
+        async def no_refresh_peer(instance_id):
+            return False
 
-        monkeypatch.setattr(mgr, "refresh_token", no_refresh)
+        monkeypatch.setattr(mgr, "_refresh_peer_credential", no_refresh_peer)
         with pytest.raises(ProxyRequestError) as ei:
             async with mgr.proxy_request("cd-1", "GET", "api/chat/slots"):
                 pass
@@ -7985,10 +7986,10 @@ class TestProxyRequest:
             m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[401, 401])
         )
 
-        async def fake_refresh(instance_id):
-            return "FRESH"
+        async def fake_refresh_peer(instance_id):
+            return True
 
-        monkeypatch.setattr(mgr, "refresh_token", fake_refresh)
+        monkeypatch.setattr(mgr, "_refresh_peer_credential", fake_refresh_peer)
         with pytest.raises(ProxyRequestError) as ei:
             async with mgr.proxy_request("cd-1", "GET", "api/chat/slots"):
                 pass
@@ -8506,3 +8507,177 @@ class TestSlugifyHashFallback:
         from kiro_crew.instances.registry import _slugify
 
         assert _slugify("Dev Box 2") == "dev-box-2"
+
+
+class TestPeerSessionCookieRetention:
+    """A one-shot browser link must never be mistaken for its session cookie."""
+
+    @staticmethod
+    def _mgr(tmp_path):
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+
+        registry = InstancesRegistry(path=tmp_path / "instances.json")
+
+        async def mint(_host, **_kwargs):
+            return "LINK_TOKEN"
+
+        return registry, SshTunnelManager(
+            registry,
+            base_port=53900,
+            mint_token=mint,
+            tunnel_factory=_FakeTunnel,
+        )
+
+    @pytest.mark.asyncio
+    async def test_probe_retains_only_fixed_peer_session_cookie(
+        self, tmp_path, monkeypatch
+    ):
+        from http.cookies import SimpleCookie
+
+        from kiro_crew.instances import ssh_tunnel_manager as module
+
+        registry, manager = self._mgr(tmp_path)
+        registry.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        status = await manager.connect("cd-1")
+        link = manager.get_token("cd-1")
+        cookie_name = f"mc_token_{status.local_port}"
+        calls = []
+
+        class Response:
+            status = 200
+            cookies = SimpleCookie()
+            cookies[cookie_name] = "SESSION_TOKEN"
+            cookies["unrelated"] = "ignored"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Session:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def get(self, url, **kwargs):
+                calls.append({"url": url, **kwargs})
+                return Response()
+
+        monkeypatch.setattr(module.aiohttp, "ClientSession", Session)
+
+        assert await manager.token_validates(status.local_port, link) is True
+        assert calls[0]["allow_redirects"] is False
+        assert manager._peer_cookie_header("cd-1", cookie_name) == {
+            "Cookie": f"{cookie_name}=SESSION_TOKEN"
+        }
+        assert "unrelated" not in manager._peer_session_tokens.values()
+
+        manager._store_token("cd-1", "NEW_LINK", "20h")
+        assert await manager.token_validates(status.local_port, link) is True
+        assert link not in manager._peer_session_tokens
+
+    @pytest.mark.asyncio
+    async def test_probe_refuses_redirect_cookie(self, tmp_path, monkeypatch):
+        from http.cookies import SimpleCookie
+
+        from kiro_crew.instances import ssh_tunnel_manager as module
+
+        registry, manager = self._mgr(tmp_path)
+        registry.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        status = await manager.connect("cd-1")
+        link = manager.get_token("cd-1")
+        cookie_name = f"mc_token_{status.local_port}"
+        calls = []
+
+        class Response:
+            status = 302
+            cookies = SimpleCookie()
+            cookies[cookie_name] = "REDIRECT_TOKEN"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Session:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def get(self, _url, **kwargs):
+                calls.append(kwargs)
+                return Response()
+
+        monkeypatch.setattr(module.aiohttp, "ClientSession", Session)
+
+        assert await manager.token_validates(status.local_port, link) is False
+        assert calls == [{"params": {"token": link}, "allow_redirects": False}]
+        assert link not in manager._peer_session_tokens
+
+    @pytest.mark.asyncio
+    async def test_refresh_mints_then_exchanges_before_reuse(
+        self, tmp_path, monkeypatch
+    ):
+        registry, manager = self._mgr(tmp_path)
+        registry.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        status = await manager.connect("cd-1")
+        events = []
+
+        async def refresh(instance_id):
+            events.append(("mint", instance_id))
+            manager._store_token(instance_id, "FRESH_LINK", "20h")
+            return "FRESH_LINK"
+
+        async def validate(local_port, token):
+            events.append(("exchange", (local_port, token)))
+            manager._peer_session_tokens[token] = "FRESH_SESSION"
+            return True
+
+        monkeypatch.setattr(manager, "refresh_token", refresh)
+        monkeypatch.setattr(manager, "token_validates", validate)
+
+        assert await manager._refresh_peer_credential("cd-1") is True
+        assert events == [
+            ("mint", "cd-1"),
+            ("exchange", (status.local_port, "FRESH_LINK")),
+        ]
+        assert manager._peer_cookie_header(
+            "cd-1", f"mc_token_{status.local_port}"
+        )["Cookie"].endswith("=FRESH_SESSION")
+
+    @pytest.mark.asyncio
+    async def test_replacement_disconnect_and_shutdown_drop_session_generation(
+        self, tmp_path
+    ):
+        registry, manager = self._mgr(tmp_path)
+        registry.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await manager.connect("cd-1")
+        old_link = manager.get_token("cd-1")
+        manager._peer_session_tokens[old_link] = "OLD_SESSION"
+
+        manager._store_token("cd-1", "NEW_LINK", "20h")
+        assert old_link not in manager._peer_session_tokens
+        manager._peer_session_tokens["NEW_LINK"] = "NEW_SESSION"
+        cache = manager._peer_session_tokens
+        assert await manager.disconnect("cd-1") is True
+        assert cache == {}
+        assert manager._peer_session_tokens is cache
+
+        await manager.connect("cd-1")
+        link = manager.get_token("cd-1")
+        manager._peer_session_tokens[link] = "SHUTDOWN_SESSION"
+        await manager.shutdown()
+        assert cache == {}
