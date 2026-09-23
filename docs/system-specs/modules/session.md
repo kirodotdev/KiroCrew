@@ -415,7 +415,9 @@ send time.
 - **Empty-response recovery ladder** (dashboard chat runner, depth-0 turns
   only): a completed turn with no visible output, no refusal reasons, and no
   cancellation is treated as a transient provider failure and recovered
-  through a bounded three-rung ladder driven by `slot._empty_response_retries`:
+  through a bounded three-rung ladder driven by `slot._empty_response_retries`,
+  with `slot._empty_episode_productive` carrying one episode-scoped fact the
+  counter cannot (rung 3 below):
   1. **first empty** → the ORIGINAL message is silently re-queued at the
      front of the slot queue (no visible card). Reached ONLY by a turn with no
      activity — see the productive-turn exclusion below;
@@ -432,18 +434,52 @@ send time.
   3. **budget exhausted** (the nudges also produced nothing) → terminal notice card
      asking the user to send a message; the counter resets so the next
      genuine user turn gets a fresh budget. The card's wording is cause-aware,
-     mirroring rung 2's split: a productive turn is told the turn ended
-     without a closing reply and that completed steps will not re-run (never
-     "returned nothing", which is false for it and — read back by the model
-     via the transcript — invites a redo of landed side effects). For
-     non-productive turns the recovery clause appears only when the counter
-     shows budget was spent, and claims only that automatic recovery was
-     attempted — the counter counts budget, not which rungs ran (with the
-     auto-continue gate off, give-up arrives at one with no auto-continue).
-     Give-up with the counter at zero is reachable non-productive only on
-     nested depth>0 turns, where the card reports only the empty turn (the
-     gate-off zero-counter path is productive by construction and takes the
-     productive wording).
+     mirroring rung 2's split, and the split is decided per EPISODE, not per
+     turn: the card says the turn ended without a closing reply and that
+     completed steps will not re-run whenever THIS turn was productive **or**
+     any earlier turn of the same episode was (never "returned nothing", which
+     is false for such an episode and — read back by the model via the
+     transcript — invites a redo of landed side effects). The episode half is
+     what `slot._empty_episode_productive` carries: set at rung 2's productive
+     branch, and cleared BOTH beside the counter on a landed turn AND at the start
+     of any dispatch the drain did not re-queue as recovery. `_synthetic_payload` is
+     true for a CONTINUATION-tagged entry and for an untagged one, which falls through
+     to the entry's kind — so the auth-required and poisoned-conversation requeues
+     count even though they carry the user's own text. It is false for an
+     ORIGINAL-tagged verbatim replay, which only rung 1 queues, and rung 1 requires the
+     counter below 1 while the flag is only set with it at 2 or more, so the flag is
+     already clear on that path. The second clear is what makes
+     the flag independent of the several controls that discard a queued
+     continuation without landing a turn (the hard-kill Stop's queue clear, a plan
+     Cancel's owner-scoped discard, a rewind commit's rebuild). None of those
+     resets the recovery counter, so a spent counter can still route a LATER
+     request into rung 2, and that request's own turns must not inherit this
+     episode's evidence. The counter's own staleness across those controls is
+     pre-existing and not redefined here.
+
+     The episode is deliberately NOT keyed on the two continuation bodies. The
+     runner queues other recoveries of its own and can put one AHEAD of this
+     ladder's — a Stop hook's `decision: block` prepends at index 0 in the same
+     teardown that queued the ladder's continuation there — and those turns are
+     the SAME episode, whose productive first turn has already run its tools, so
+     they keep the no-rerun wording instead of inviting a resend. A body test also
+     could not be identity on its own, since the bodies are fixed runner-authored
+     strings a user can paste. The rest of the split is needed
+     because
+     the counter cannot separate the two paths that both arrive at 2 (a
+     productive turn's `= 2` jump and the plain ladder's two `+= 1` steps), and
+     the per-turn `EmptyTurnActivity` is rebuilt every turn, so a productive
+     turn whose continuation returns nothing would otherwise be described by
+     its empty continuation alone. The predicate is monotone: it can only move
+     a card from the counter wording to the productive wording, never back, so
+     no already-correct card changes. For an episode that was NEVER productive
+     the recovery clause appears only when the counter shows budget was spent,
+     and claims only that automatic recovery was attempted — the counter counts
+     budget, not which rungs ran (with the auto-continue gate off, give-up
+     arrives at one with no auto-continue). Give-up with the counter at zero is
+     reachable non-productive only on nested depth>0 turns, where the card
+     reports only the empty turn (the gate-off zero-counter path is productive
+     by construction and takes the productive wording).
 
   **A PRODUCTIVE turn never reaches rung 1.** "Empty" at this branch means only
   that the FINAL assistant segment is empty, which is not the same as "the turn

@@ -19984,6 +19984,285 @@ class TestEmptyResponseRetry:
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio
+    async def test_productive_episode_giveup_keeps_no_rerun_wording(self, tmp_path: Path) -> None:
+        """A give-up whose EPISODE was productive must keep the productive
+        wording, even though the final continuation turn itself produced
+        nothing.
+
+        The activity snapshot is rebuilt per turn, so the continuation that
+        streams nothing arrives at give-up with `productive=False`. The counter
+        cannot rescue it either: the productive jump (`= 2`) and the plain
+        non-productive ladder (`+= 1` twice) both land on 2. Without
+        episode-scoped state the card takes the counter>0 wording, whose "Just
+        send your message again to continue." is the same redo invitation the
+        continue rung removes one rung up — and the first turn of THIS episode
+        already ran a tool whose side effects landed.
+        """
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        _turns = {"n": 0}
+
+        async def _stream(msg):
+            _turns["n"] += 1
+            if _turns["n"] == 1:
+                # Productive: a tool ran, no closing reply. Takes the CONTINUE
+                # rung and queues the activity continuation.
+                yield LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="send_message")
+                yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", text="sent")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+            else:
+                # The continuation returns nothing at all -> give-up.
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        # Let the real drain task run the queued continuation turn, which is
+        # the turn that reaches give-up.
+        for _bg_task in list(state._background_tasks):
+            try:
+                await _bg_task
+            except Exception:
+                pass
+        await self._cancel_background_tasks(state)
+
+        assert _turns["n"] >= 2, "the queued continuation never ran"
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        giveup = [
+            m
+            for m in notice_msgs
+            if "will not re-run" in m.get("content", "")
+            or "returned nothing this turn" in m.get("content", "")
+        ]
+        assert giveup, "give-up produced no notice card"
+        # The episode ran a tool: no card may invite the user to re-send.
+        assert not any("send your message again" in m.get("content", "") for m in notice_msgs), (
+            "the give-up card invites a resend, but the first turn of this "
+            "episode ran a tool whose side effects already landed"
+        )
+        assert any("will not re-run" in m.get("content", "") for m in notice_msgs)
+        # Terminal rung clears both the counter and the episode flag.
+        assert slot._empty_response_retries == 0
+        assert slot._empty_episode_productive is False
+
+    @pytest.mark.asyncio
+    async def test_discarded_episode_cannot_speak_for_a_later_turn(self, tmp_path: Path) -> None:
+        """An episode whose continuation was thrown away must not lend its
+        productive wording to the user's next, unrelated turn.
+
+        Several controls discard a queued entry -- the hard-kill Stop, a plan
+        Cancel, a rewind commit -- and none of them resets the recovery counter,
+        so the spent counter routes the next empty turn straight to give-up. The
+        flag is therefore read only on the ladder's OWN continuation: a discarded
+        continuation takes that turn with it, so no per-site bookkeeping is
+        needed and a control added later cannot reopen this.
+        """
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        # What a productive CONTINUE rung leaves behind when its continuation
+        # never runs: budget spent, flag set, no landed turn to clear either.
+        slot._empty_response_retries = 2
+        slot._empty_episode_productive = True
+        self._make_empty_stream(client)
+
+        # A genuine user turn, NOT the ladder's continuation.
+        await _run_chat(state, slot, "a different request")
+        await self._cancel_background_tasks(state)
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert notice_msgs, "give-up produced no notice card"
+        assert not any("will not re-run" in m.get("content", "") for m in notice_msgs), (
+            "a discarded episode's flag told an unrelated turn that its "
+            "completed steps will not re-run, but this turn ran nothing"
+        )
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+        assert slot._empty_response_retries == 0
+        assert slot._empty_episode_productive is False
+
+    @pytest.mark.asyncio
+    async def test_user_typed_continuation_text_ends_the_episode(self, tmp_path: Path) -> None:
+        """The continuation bodies are fixed runner-authored strings, so a user
+        can type or paste one. Such a turn is still user speech: it ends the
+        episode rather than continuing it.
+
+        User speech carries no structural payload marker, which is what separates
+        it from the runner's own recovery dispatches. Keying the episode on the
+        bodies instead would hand a user-authored turn the productive wording for
+        work it never ran.
+        """
+        from kiro_crew.dashboard.chat_utils import _ACTIVITY_NO_REPLY_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 2
+        slot._empty_episode_productive = True
+        self._make_empty_stream(client)
+
+        # The exact continuation body, but dispatched as user speech: no
+        # synthetic-recovery marker rides with it.
+        await _run_chat(state, slot, _ACTIVITY_NO_REPLY_CONTINUE_MSG)
+        await self._cancel_background_tasks(state)
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert notice_msgs, "give-up produced no notice card"
+        assert not any("will not re-run" in m.get("content", "") for m in notice_msgs), (
+            "a user-authored turn matching the continuation body was read as "
+            "the ladder's own continuation, so a stale flag spoke for it"
+        )
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+
+    @pytest.mark.asyncio
+    async def test_a_runner_queued_continuation_keeps_the_productive_wording(
+        self, tmp_path: Path
+    ) -> None:
+        """A runner-authored continuation from ANY family, running inside an
+        active productive episode, keeps the no-rerun wording.
+
+        The runner can put another recovery ahead of the ladder's own: a Stop
+        hook answering `decision: block` prepends at index 0 in the same teardown
+        that just queued the ladder's continuation there, so it dispatches first.
+        It is the same episode -- the tools of its productive first turn have
+        already landed -- so if it also returns nothing, its give-up must not
+        invite a resend. Keying the episode on the two continuation bodies would
+        fail exactly here, which is why it is keyed on user origin instead.
+        """
+        from kiro_crew.dashboard.chat_utils import _PROMISE_ONLY_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        # Mid-episode: a productive turn has spent the budget and set the flag.
+        slot._empty_response_retries = 2
+        slot._empty_episode_productive = True
+        self._make_empty_stream(client)
+
+        # Another family's continuation: runner-authored, so it carries the
+        # structural payload marker, and its body is not the ladder's.
+        await _run_chat(
+            state,
+            slot,
+            _PROMISE_ONLY_CONTINUE_MSG,
+            _synthetic_payload=True,
+            _synthetic_recovery_turn=True,
+        )
+        await self._cancel_background_tasks(state)
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert notice_msgs, "give-up produced no notice card"
+        assert not any("send your message again" in m.get("content", "") for m in notice_msgs), (
+            "a runner-queued continuation inside a productive episode was told "
+            "to resend, but that episode's first turn already ran a tool"
+        )
+        assert any("will not re-run" in m.get("content", "") for m in notice_msgs)
+
+    @pytest.mark.asyncio
+    async def test_discarded_episode_cannot_ride_a_later_turns_own_continuation(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """With a continue budget above one, a later turn earns a continuation of
+        its own -- and that turn must not inherit a discarded episode's wording.
+
+        This is the case a guard at the give-up rung cannot catch. A productive
+        turn leaves the counter at 2 and the flag set; its continuation is
+        discarded, so nothing lands and neither resets. With a budget of 2 the
+        next unrelated empty turn still passes rung 2 (`2 < 1 + 2`) and queues its
+        OWN continuation, which genuinely IS one of the ladder's bodies carrying
+        the payload marker. The evidence therefore has to be dropped when the
+        episode ends, not merely disbelieved when it is read.
+        """
+        from kiro_crew.dashboard import chat_runner as cr
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        monkeypatch.setattr(cr, "_empty_max_auto_continues", lambda: 2)
+        # What a productive rung-2 turn leaves behind when its continuation is
+        # thrown away: budget spent, flag set, no landed turn.
+        slot._empty_response_retries = 2
+        slot._empty_episode_productive = True
+        self._make_empty_stream(client)
+
+        # A genuine user turn, which under this budget gets its own continuation.
+        await _run_chat(state, slot, "a different request")
+        for _bg_task in list(state._background_tasks):
+            try:
+                await _bg_task
+            except Exception:
+                pass
+        await self._cancel_background_tasks(state)
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert notice_msgs, "give-up produced no notice card"
+        assert not any("will not re-run" in m.get("content", "") for m in notice_msgs), (
+            "a discarded episode's flag rode a later turn's own ladder "
+            "continuation and claimed its completed steps will not re-run"
+        )
+
+    @pytest.mark.asyncio
+    async def test_productive_episode_survives_a_second_continuation(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A productive episode keeps its wording across EVERY continuation it is
+        budgeted for, not just the first.
+
+        With a budget of 2 the episode runs two continuations: the first carries
+        `_ACTIVITY_NO_REPLY_CONTINUE_MSG`, the second `_EMPTY_AUTO_CONTINUE_MSG`
+        (the non-productive branch queues that body once the continuation itself
+        streams nothing). Both are this ladder's own, so both must preserve the
+        episode's evidence -- if either body is missing from the identity pair,
+        that turn looks like an unrelated one, the episode-end clear fires, and
+        give-up falls back to inviting a resend of tools that already ran.
+        """
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard import chat_runner as cr
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        monkeypatch.setattr(cr, "_empty_max_auto_continues", lambda: 2)
+
+        _turns = {"n": 0}
+
+        async def _stream(msg):
+            _turns["n"] += 1
+            if _turns["n"] == 1:
+                # Productive: a tool ran, no closing reply.
+                yield LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="send_message")
+                yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", text="sent")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+            else:
+                # Both continuations return nothing, walking the ladder to give-up.
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        # Drain repeatedly: each continuation queues the next one.
+        for _round in range(4):
+            for _bg_task in list(state._background_tasks):
+                try:
+                    await _bg_task
+                except Exception:
+                    pass
+        await self._cancel_background_tasks(state)
+
+        assert _turns["n"] >= 3, f"the second continuation never ran (turns={_turns['n']})"
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert not any("send your message again" in m.get("content", "") for m in notice_msgs), (
+            "give-up invited a resend after a productive episode spent its full "
+            "continuation budget, so the episode's evidence was lost partway"
+        )
+        assert any("will not re-run" in m.get("content", "") for m in notice_msgs)
+
+    @pytest.mark.asyncio
     async def test_giveup_without_recoveries_drops_retry_claim(self, tmp_path: Path) -> None:
         """A give-up reached with the recovery counter still at zero (here: a
         nested depth>0 turn) must not assert that a retry and an auto-continue

@@ -9225,6 +9225,18 @@ async def _run_chat(
         slot._refusal_retry_text = ""
         slot._refusal_replay_queue_id = ""
         slot._refusal_fallback_attempted = False
+    # The episode ends on a dispatch the drain did not re-queue as recovery.
+    # `_synthetic_payload` is true for a CONTINUATION-tagged entry and for an untagged
+    # one (`is_synthetic_payload_item` falls through to the kind), which is why the
+    # auth-required and poisoned-conversation requeues count despite carrying the
+    # user's own text. It is false for an ORIGINAL-tagged verbatim replay, which only
+    # rung 1 queues -- and rung 1 needs the counter below 1 while the flag is only set
+    # with it at 2 or more, so the flag is already clear there.
+    # Keyed here, not on the continuation bodies, because three controls discard a
+    # queued continuation WITHOUT resetting the counter (the hard-kill Stop's queue
+    # clear, a plan Cancel's owner-scoped discard, a rewind commit's rebuild).
+    if not _synthetic_payload:
+        slot._empty_episode_productive = False
     # tool_call_id -> DISPLAY TITLE (LLM-authored prose for shell tools; used
     # only for PostToolUse hook name-matching — NOT trustworthy for security).
     _pending_tools: dict[str, str] = {}
@@ -15748,6 +15760,8 @@ async def _run_chat(
                 _max_continues = _empty_max_auto_continues()
                 if _empty_activity.productive:
                     slot._empty_response_retries = max(slot._empty_response_retries + 1, 2)
+                    # This turn's tools landed; later turns of the episode must know.
+                    slot._empty_episode_productive = True
                 else:
                     slot._empty_response_retries += 1
                 # Ordinal of THIS continuation (1-based): the counter minus the
@@ -15815,7 +15829,7 @@ async def _run_chat(
                 # turn's continuation reaches it at two with no verbatim
                 # retry), so the non-zero clause claims only that automatic
                 # recovery was attempted.
-                if _empty_activity.productive:
+                if _empty_activity.productive or slot._empty_episode_productive:
                     _empty_msg = (
                         "ℹ️ The turn ended without a closing reply. Send a "
                         "message to continue from where it stopped — completed "
@@ -16472,6 +16486,7 @@ async def _run_chat(
                 if slot._tool_stall_retries > 0 and not slot._tool_stall_exhausted_emitted:
                     _emit_recovery_outcome("tool_stall", "recovered", slot._tool_stall_retries)
             slot._empty_response_retries = 0
+            slot._empty_episode_productive = False
             slot._prompt_busy_retries = 0
             slot._acp_pipe_death_retries = 0
             slot._stale_recovery_retries = 0
