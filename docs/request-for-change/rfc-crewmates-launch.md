@@ -126,22 +126,41 @@ Decided:
 - After create, the new crewmate's chat opens and shows its first greeting.
   There is no separate confirmation.
 
-### 03 One-time opt-in for existing custom agents
+### 03 Pruning the crewmates an earlier release generated
 
-Why: earlier releases created a teammate from every agent template
-automatically, so an existing install can carry many. The launch lets the
-person choose which of their custom agents become crewmates.
+Why: releases before #12224 called the agent sync on every chat mount, and that
+sync made a crewmate out of every custom agent under `~/.kiro/agents` — a
+`config.agents` row with no `member_id`, on the shared memory store. An
+existing install can therefore carry one crewmate per custom agent, most of
+them never opened. The launch review first decided a user-facing opt-in step
+here; the product owner replaced it on 2026-09-23 with the decision below.
 
 Decided:
 
-- The step shows once, over the Crewmates page, only when the person has
-  custom agents and no crewmates. It lists the existing custom agents,
-  pre-checked, with two actions: **Add N crewmates** and **Not now**. Either
-  action records the step as done; it never shows again.
-- Nothing changes for existing chats.
-- After the add, the roster shows the new crewmates and **the most recently
-  used crewmate's chat opens by default**. There is no "joined your crew"
-  banner and no "Pick a crewmate" landing sentence once crewmates exist.
+- No user-facing step. A one-time migration runs at gateway startup: a
+  crewmate that an earlier sync generated (empty `member_id`, the shared
+  `default` store, bound to a custom agent of the person's own — never the
+  runtime's own, a package's or a private copy) and that was never chatted
+  with is removed from the roster. Only the config row goes; the agent file
+  under `~/.kiro/agents` and any transcript stay.
+- A generated crewmate the person did chat with stays exactly as it is, on its
+  V1 binding. A memory binding is identity and is chosen only at creation; the
+  migration does not provision or rebind.
+- If chat history cannot be read, nothing is removed and the pass runs again
+  next boot. A marker records a completed pass so it runs once.
+- A person with custom agents and no crewmate is served by screen 02's empty
+  state and **New crewmate**; there is no offer to add agents in bulk.
+
+Reasoning: the generated rows are leftover state, not a choice the person
+made, so removing the unused ones needs no confirmation; a binding is identity,
+so the kept ones are not rewritten; there is no screen to maintain, translate
+or review; and the removal drops nothing the person made — every agent file
+stays, and one click re-enrols any of them. A generated row the person edited
+but never chatted with (a model, a picture, triggers) still matches the rule
+and is removed with those edits; that is accepted: the row itself is the
+sync's, not the person's, and the crewmate the edits describe is one click
+away. Member-aware edits that stamp `member_id` or allocate a store take the
+row out of the rule.
 
 ### 04 Crewmate detail page
 
@@ -265,8 +284,9 @@ this document:
   stays; only rendered values change.
 - Removing the Crew summary tab: a stored panel focus naming it falls back to
   the first tab, Notes, by the existing unknown-focus rule.
-- The opt-in step is gated by one new config key with a `false` default; an
-  install that already has crewmates never sees it.
+- The startup prune is gated by a marker file in the config directory, written
+  once a pass completes; it removes only never-chatted rows with no `member_id`
+  on the shared store, and touches no agent file or transcript.
 - Threads and teams add new storage beside the existing transcript and roster;
   nothing existing changes shape.
 
@@ -281,7 +301,10 @@ The launch is complete when, on main:
   Dashboard.
 - A new install reaches a crewmate's first greeting through either the
   four-step flow or New crewmate without seeing a settings form.
-- An install with custom agents and no crewmates is offered the opt-in once.
+- An install carrying crewmates an earlier sync generated loses, on its first
+  start and once, exactly the rows § 03 names: never chatted with, no
+  `member_id`, the shared store, bound to a custom agent of the person's own.
+  Chatted rows, package-sourced rows and every agent file are untouched.
 - A crewmate's chat contains no auto-nudge, cron or sub-agent envelope rows.
 
 ## 8. PRs implementing this
@@ -291,7 +314,7 @@ Open at the time of writing:
 - [#12797](https://github.com/kirodotdev/KiroCrew/pull/12797) — reply threads,
   API half (screen 07).
 - [#12798](https://github.com/kirodotdev/KiroCrew/pull/12798) — one-time
-  opt-in for existing custom agents (screen 03).
+  startup prune of sync-generated crewmates (screen 03).
 - [#12805](https://github.com/kirodotdev/KiroCrew/pull/12805) — crewmate
   panel: Notes, Work log, Dashboard (screen 06).
 - [#12806](https://github.com/kirodotdev/KiroCrew/pull/12806) — Customize
