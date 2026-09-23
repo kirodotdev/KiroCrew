@@ -72,6 +72,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
     resolve_effective_model,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers
 from kiro_crew.constants import (
@@ -141,10 +142,12 @@ from kiro_crew.dashboard.chat_utils import (
     expire_slack_options,
     is_harness_slash_command,
     is_system_injection_item,
+    key_rebind_deferred,
     mirror_is_paused,
     owned_stage_delivery_entry,
     parse_workflow_command,
     remember_slack_options,
+    settling_key,
     slack_mirror_is_paused,
     user_text_span,
 )
@@ -837,6 +840,100 @@ async def _credential_tool_hint_for(reason: str, cause: str, subject: str = "") 
 #: skipping both. Sized to a pipe write with margin, far below the 60s approval
 #: reporting margin, and applied inside the helper so every caller inherits it.
 _STEER_NOTICE_BOUND_SECS = 5.0
+
+
+def _retract_own_arm(state: Any, from_key: str, only_generation: int | None) -> None:
+    """Retract *from_key*'s arm only where this caller is the producer that armed it.
+
+    An unscoped retract spends whichever arm is resident, so a caller that armed nothing
+    erased a project arm another producer owned -- and the next claim stating no directory,
+    which is every channel turn, was then served the superseded project's session with
+    nothing left to retire it. A caller holding no generation therefore leaves the arm
+    where it is: it stays owed to a claim on this key, which is the outcome the arm exists
+    to force, and slot mint or final teardown reclaims it.
+    """
+    if only_generation is None:
+        return
+    state.sessions.supersede_arm_for_new_slot(from_key, only_generation=only_generation)
+
+
+async def _settle_arm_target(
+    state: Any,
+    slot: Any,
+    from_key: str,
+    project: str | None,
+    authorize: Callable[[str], Any] | None = None,
+    *,
+    only_generation: int | None = None,
+) -> Any:
+    """Resolve WHICH key an arm should land on, publishing nothing.
+
+    The awaits live here so a caller that must publish its arm and finalize its binding can
+    do both with no suspension between: a claim landing inside would otherwise follow an arm
+    naming a project a later compare-and-set may not keep.
+
+    The effective key can move while a cleared cwd resolves off-thread, and a cwd resolved
+    for the losing key names a directory no winner's provider binds. Each pass re-resolves
+    for the winner and EVERY resolve is verified, including the last, so a rebind landing
+    after the final pass is detected rather than armed onto the key the slot just left.
+
+    `authorize` gates the key an arm would land on; on denial the source arm is retracted,
+    scoped to the caller's own generation, and the caller publishes nothing. Returns the
+    denial (or ``None``), the winning key, its cwd, and whether the key SETTLED.
+    """
+    with settling_key(slot, state):
+        current_key = effective_session_key(slot)
+        # `== CWD_CLEARED`, never truthiness: an UNSET project is empty too, and resolving the
+        # cleared default for it would arm a directory the stored-cwd resume must override.
+        armed_cwd = (
+            await state.sessions.resolve_arm_cwd(current_key, CWD_CLEARED)
+            if project == CWD_CLEARED
+            else project
+        )
+        # ONE resolve: every writer of the linked key routes through `bind_linked_session_key`,
+        # which PARKS while this region is open, so the key cannot move under the await.
+        settled = effective_session_key(slot) == current_key
+        if settled and key_rebind_deferred(slot):
+            # A rebind reached the slot inside the region and lands as it unwinds, so the
+            # key just settled on is already spent.
+            settled = False
+        if not settled:
+            _retract_own_arm(state, from_key, only_generation)
+            return None, current_key, armed_cwd, False
+        if authorize is not None and current_key != from_key:
+            denied = authorize(current_key)
+            if denied is not None:
+                _retract_own_arm(state, from_key, only_generation)
+                return denied, current_key, armed_cwd, True
+        return None, current_key, armed_cwd, True
+
+
+async def _settle_and_transfer_arm(
+    state: Any,
+    slot: Any,
+    from_key: str,
+    project: str | None,
+    authorize: Callable[[str], Any] | None = None,
+) -> Any:
+    """Re-point *from_key*'s arm onto the key the slot runs on now.
+
+    For a caller whose binding is already final, so the transfer can follow the resolve
+    directly. One that still has to commit calls :func:`_settle_arm_target` and transfers
+    itself, keeping its publish and its commit in one no-suspension window.
+
+    Returns the denial (or ``None``), the key the slot runs on, and whether the transfer
+    SETTLED. An unsettled resolve reports the key it last observed, which can be the one it
+    started from, so key equality alone does not tell a caller its arm landed.
+    """
+    with settling_key(slot, state):
+        denied, current_key, armed_cwd, settled = await _settle_arm_target(
+            state, slot, from_key, project, authorize
+        )
+        if denied is not None:
+            return denied, current_key, settled
+        if settled:
+            state.sessions.transfer_retire_arm(from_key, current_key, armed_cwd)
+        return None, current_key, settled
 
 
 async def _steer_policy_notice(

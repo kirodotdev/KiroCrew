@@ -750,6 +750,10 @@ class TestProjectSetWiring:
         # the re-probe passes and the committed switch proceeds.
         state.sessions = MagicMock()
         state.sessions.get_provider = MagicMock(return_value=None)
+        # Resolve-only helper: async, and must return a real path string for the arm sites.
+        state.sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=lambda key, cwd: cwd or "/w/_default"
+        )
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/chat/slots/{slot}/agent", api_chat_slot_agent)

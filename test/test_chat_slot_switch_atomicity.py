@@ -12,7 +12,9 @@ the mid-turn 409 (clones of the concurrency template in
 
 from __future__ import annotations
 
+import ast
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +22,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
+from kiro_crew.config.sections import ResolvedBindings
+from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard.chat import (
     api_chat_slot_agent,
     api_chat_slot_model,
@@ -29,7 +33,9 @@ from kiro_crew.dashboard.chat import (
     api_chat_slots_model,
 )
 from kiro_crew.dashboard.chat_handlers import _slot_switch_session_lock
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 
 MOD = "kiro_crew.dashboard.chat_handlers"
 
@@ -68,6 +74,14 @@ def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     state.broadcast_context_usage = MagicMock()
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
+    # Async because it resolves a cleared project off-thread; a plain MagicMock returns a
+    # non-awaitable here and the handler answers 500 instead of exercising the switch.
+    state.sessions.note_project_change = AsyncMock()
+    # Resolve-only helper: async, and it must hand back a real path string because the arm
+    # sites record `slot.project or <this>`.
+    state.sessions.resolve_arm_cwd = AsyncMock(
+        side_effect=lambda key, cwd: cwd or "/workspace/_default"
+    )
     # No live AcpProvider by default → the model handler takes the reset path.
     state.sessions.get_provider = MagicMock(return_value=provider)
     return state
@@ -100,6 +114,70 @@ def private_switch_state():
         key, {"agent": slot.agent, "memory_store": slot.memory_store}
     )
     return state, slot, key
+
+
+def _bindings_for(**overrides) -> ResolvedBindings:
+    """A real `ResolvedBindings`, so a field added to it arrives with its default here.
+
+    The handler reads several of these fields inside its own ``try``, where a missing attribute
+    is swallowed -- the commit compare-and-set is then skipped and the arm carries the project
+    the switch was leaving, which reads as a behaviour regression rather than a stale stub.
+    """
+    return ResolvedBindings(
+        **{
+            "workspace_dir": Path("/ws"),
+            "memory_store_name": DEFAULT_MEMORY_STORE,
+            "effective_memory_config": {},
+            "kiro_agent": "ka",
+            **overrides,
+        }
+    )
+
+
+def _boom_cfg():
+    raise RuntimeError("config unreadable")
+
+
+class TestSlotAgentSwitchArmOrdering:
+    @pytest.mark.asyncio
+    async def test_new_agent_is_not_visible_before_the_arm_is_raised(self, monkeypatch):
+        """A claim landing mid-resolve must not see the new agent with no arm.
+
+        The agent switch resolves bindings behind an await. If the slot publishes the new
+        agent before that await, a cwd-less channel claim acquiring in the window reads
+        the new agent off the slot while no retirement arm has been recorded yet, so it
+        reuses the OLD session and runs the turn under the stale agent and project.
+        """
+        slot = _ChatSlot(key="chat-1", agent="old-agent")
+        slot.project = ""
+        state = _mock_state(slot)
+        armed: list = []
+        state.sessions.mark_retire_on_next_claim = MagicMock(
+            side_effect=lambda key, cwd, agent=None: armed.append(agent)
+        )
+
+        observed: dict = {}
+
+        async def _warm_and_observe(project, **kwargs):
+            # This is the suspension point. Whatever a competing claim could read, it
+            # reads HERE.
+            observed["agent"] = str(slot.agent)
+            observed["armed"] = list(armed)
+
+        monkeypatch.setattr(
+            chat_handlers, "warm_project_agent_names", _warm_and_observe, raising=False
+        )
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            await client.post("/api/chat/slots/chat-1/agent", json={"agent": "new-agent"})
+
+        assert observed, "the resolve never ran, so the window was never observed"
+        assert not (observed["agent"] == "new-agent" and not observed["armed"]), (
+            "the switch published the new agent while the arm was still unraised, so a "
+            "claim in this window reuses the old session under the new agent"
+        )
+        await asyncio.sleep(0)
 
 
 class TestPrivateChatMemberSwitch:
@@ -2570,3 +2648,280 @@ class TestBulkModelSwitchAtomicity:
             assert data["switched"] == []
             assert slot.model == _MODEL_A
             state.sessions.reset.assert_not_awaited()
+
+
+class TestTheCommitToArmWindowHoldsByConstruction:
+    """No ``await`` may separate a binding commit from the arm that protects it.
+
+    The window is what makes the arm safe: a claim landing between the published triple and the
+    arm reads the new bindings with nothing raised to retire the session bound to the old ones.
+    Until now that was carried by a comment, so a later edit could open the window silently and
+    every test would still pass. This reads the source instead, so the invariant fails at the
+    seam that breaks it rather than in production.
+    """
+
+    COMMIT = "_CommitToken"
+    ARMS = frozenset({"mark_retire_on_next_claim", "transfer_retire_arm", "note_project_change"})
+
+    @staticmethod
+    def _called_name(node: ast.AST) -> str | None:
+        call = node.value if isinstance(node, ast.Await) else node
+        if isinstance(call, ast.Expr):
+            call = call.value
+        if isinstance(call, ast.Await):
+            call = call.value
+        if isinstance(call, ast.Assign):
+            call = call.value
+        if isinstance(call, ast.Await):
+            call = call.value
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute):
+            return call.func.attr
+        return None
+
+    @classmethod
+    def _commits_a_binding(cls, stmt: ast.stmt) -> bool:
+        return any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == cls.COMMIT
+            for n in ast.walk(stmt)
+        )
+
+    @classmethod
+    def _publishes_an_arm(cls, stmt: ast.stmt) -> bool:
+        return cls._called_name(stmt) in cls.ARMS
+
+    @classmethod
+    def _violations(cls, source: str) -> list[str]:
+        """Every block where an await separates a binding commit from a later arm."""
+        found: list[str] = []
+        for node in ast.walk(ast.parse(source)):
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(node, field, None)
+                if not isinstance(block, list):
+                    continue
+                commits = [i for i, s in enumerate(block) if cls._commits_a_binding(s)]
+                arms = [i for i, s in enumerate(block) if cls._publishes_an_arm(s)]
+                if not commits or not arms or max(arms) < min(commits):
+                    continue
+                for stmt in block[min(commits) : max(arms) + 1]:
+                    if cls._publishes_an_arm(stmt):
+                        continue
+                    for inner in ast.walk(stmt):
+                        if isinstance(inner, ast.Await):
+                            name = cls._called_name(inner) or "<expr>"
+                            found.append(f"line {inner.lineno}: await {name}")
+        return found
+
+    def test_no_await_separates_a_commit_from_its_arm(self):
+        source = Path(chat_handlers.__file__).read_text(encoding="utf-8")
+        assert self._violations(source) == [], (
+            "an await was added between a published binding triple and the arm that protects "
+            "it, so a claim in that window runs the new bindings with the old session resident"
+        )
+
+    def test_the_guard_fails_when_the_window_is_opened(self):
+        """Positive control: the scan must reject the very edit the invariant forbids."""
+        opened = (
+            "async def h(state, slot):\n"
+            "    slot.agent = _CommitToken('a')\n"
+            "    await state.sessions.resolve_arm_cwd('k', '')\n"
+            "    state.sessions.mark_retire_on_next_claim('k', None)\n"
+        )
+        assert self._violations(opened), "the scan cannot see an await inside the window"
+
+        closed = (
+            "async def h(state, slot):\n"
+            "    slot.agent = _CommitToken('a')\n"
+            "    state.sessions.mark_retire_on_next_claim('k', None)\n"
+        )
+        assert self._violations(closed) == [], "the scan flags a window that is actually closed"
+
+    def test_the_scan_reads_utf8_on_every_platform(self):
+        """Control: the module holds bytes cp1252 cannot decode, so the encoding is load-bearing.
+
+        ``read_text()`` with no encoding takes the platform default -- cp1252 on Windows -- so
+        this scan died there on a byte the source legitimately contains while every Linux shard
+        passed. Reading the same file as cp1252 must still raise, otherwise this assertion would
+        hold only because the host happens to be UTF-8 and the Windows break would return.
+        """
+        path = Path(chat_handlers.__file__)
+        with pytest.raises(UnicodeDecodeError):
+            path.read_text(encoding="cp1252")
+        assert path.read_text(encoding="utf-8"), "the utf-8 read must succeed on every platform"
+
+    def test_an_awaited_arm_is_not_itself_a_violation(self):
+        """``note_project_change`` IS awaited, so the arm's own await must not read as the leak."""
+        awaited_arm = (
+            "async def h(state, slot):\n"
+            "    slot.project = _CommitToken('p')\n"
+            "    await state.sessions.note_project_change('k', '/p')\n"
+        )
+        assert self._violations(awaited_arm) == []
+
+
+class TestTheAgentSwitchAuthorizesBeforeItPublishes:
+    """The arm target must be settled and authorized BEFORE the binding triple is published.
+
+    The resolve inside the settle awaits. If the triple is committed first, then for that whole
+    window `slot.agent` names the new agent while the arm still names the key the slot left, so a
+    turn claiming the rebound key runs an agent whose switch may still answer 409 and roll back --
+    and `mark_retire_on_next_claim` states an in-flight turn is never retro-corrected. Rolling back
+    afterwards does not close that window; only ordering the gate first does.
+    """
+
+    def test_the_settle_and_gate_precede_the_commit_triple(self):
+        import inspect
+
+        src = inspect.getsource(chat_handlers.api_chat_slot_agent)
+
+        settle = src.find("await _settle_arm_target(")
+        gate = src.find("if pre_commit_denied is not None:")
+        publish = src.find("slot.agent = _CommitToken(agent_name)")
+
+        assert settle != -1, "the pre-commit settle is gone"
+        assert gate != -1, "the pre-commit refusal is gone"
+        assert publish != -1, "the commit triple moved; re-point this control"
+        assert settle < publish, (
+            "the binding triple is published before the arm target is settled, so a turn on the "
+            "rebound key can run an agent whose switch has not been authorized"
+        )
+        assert gate < publish, (
+            "the rebind refusal runs after the commit, so an unauthorized agent is published "
+            "first and only rolled back afterwards -- an in-flight turn already saw it"
+        )
+
+    def test_the_arm_transfer_follows_the_commit_with_no_await_between(self):
+        """Commit and arm must share one suspension-free window."""
+        import inspect
+
+        src = inspect.getsource(chat_handlers.api_chat_slot_agent)
+        publish = src.find("slot.agent = _CommitToken(agent_name)")
+        transfer = src.find("state.sessions.transfer_retire_arm(")
+        assert publish != -1 and transfer != -1
+        between = src[publish:transfer]
+        assert "await " not in between, (
+            "an await sits between the commit and its arm transfer, so a claim can read the "
+            f"published triple while the arm names the old key: {between[:160]!r}"
+        )
+
+
+class TestAnUnsettledKeyCommitsNoBinding:
+    """The commit and the arm are one unit, so an unsettled key must publish neither.
+
+    `_settle_arm_target` reports `arm_settled` False when the slot kept rebinding through
+    every pass. The arm is then owed to a binding nobody is on, so the transfer is skipped --
+    and committing the agent and project anyway publishes a new binding on the live key with
+    no arm raised to protect it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_unsettled_settle_answers_409_and_leaves_the_agent_alone(self):
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.project = "/workspace/old"
+        state = _mock_state(slot)
+        state.conversation_log = MagicMock()
+
+        armed: list = []
+        state.sessions.mark_retire_on_next_claim = MagicMock(
+            side_effect=lambda *a, **k: armed.append((a, k)) or 1
+        )
+
+        # The settle exhausts its passes: denial None, but the key never settled.
+        async def never_settles(*args, **kwargs):
+            return None, "slack:moved-9999", "/workspace/old", False
+
+        with (
+            patch.object(chat_handlers, "_settle_arm_target", new=never_settles),
+            patch.object(chat_handlers, "warm_project_agent_names", new=AsyncMock()),
+        ):
+            app = _make_app(state)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+
+        assert resp.status == 409, await resp.text()
+        assert str(slot.agent) == "old-agent", (
+            "the switch committed a new agent on a key that never settled, so the binding is "
+            f"published with no arm to protect it; agent={slot.agent!r}"
+        )
+        assert (
+            armed == []
+        ), f"an arm was raised for an unsettled key, which nobody is on; armed={armed!r}"
+
+
+class TestARejectedSwitchLeavesANeverScopedSlotUnscoped:
+    """A rejected switch must not convert an UNSET project into an explicit clear.
+
+    `slot.project or cleared_arm_cwd` collapsed two distinct prior states. A slot that
+    was explicitly CLEARED states `CWD_CLEARED`, whose arm is the per-session default.
+    A slot that was NEVER SCOPED states nothing, which is what keeps the warm pool and
+    its stored-cwd resume override; arming the resolved default there binds the
+    per-session scratch directory instead, so the next turn's relative writes land
+    outside the directory the session was resuming.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_never_scoped_slot_arms_no_directory_but_still_retires_the_agent(self):
+        slot = _ChatSlot(key="chat-1", agent="old-agent")
+        # NEVER SCOPED: no project, and no clear ever asked for either.
+        slot.project = ""
+        slot.project_cleared = False
+        # The concurrent turn starts INSIDE the post-commit settle await, which is the
+        # window the pre-commit guard cannot see and the rollback path exists for.
+        running_task = MagicMock()
+        running_task.done.return_value = False
+
+        async def settle_then_turn_starts(*args, **kwargs):
+            slot.task = running_task
+            # The helper's own shape: denial, key, and whether the transfer settled.
+            return None, None, True
+
+        state = _mock_state(slot)
+        state.conversation_log = MagicMock()
+
+        # The directory a CLEARED slot would arm, and the one an unset slot must not.
+        scratch = "/workspace/_default"
+        armed: list = []
+
+        def record(key, cwd, agent=None):
+            armed.append({"key": key, "cwd": cwd, "agent": agent})
+            return 1
+
+        state.sessions.mark_retire_on_next_claim = MagicMock(side_effect=record)
+
+        with (
+            patch.object(chat_handlers, "warm_project_agent_names", new=AsyncMock()),
+            patch.object(
+                chat_handlers,
+                "_settle_and_transfer_arm",
+                new=AsyncMock(side_effect=settle_then_turn_starts),
+            ),
+        ):
+            app = _make_app(state)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/chat/slots/chat-1/agent", json={"agent": "new-agent"}
+                )
+
+        assert resp.status == 409, await resp.text()
+        assert slot.project == "", "precondition: the rollback did not restore the unset project"
+        assert not getattr(
+            slot, "project_cleared", False
+        ), "precondition: the rollback left the unset project marked as an explicit clear"
+        assert (
+            len(armed) >= 2
+        ), f"precondition: the rejected switch raised no rollback arm; arms={armed!r}"
+
+        arm = armed[-1]
+        assert arm["cwd"] != scratch, (
+            "the rollback armed the per-session scratch directory for a slot that was never "
+            f"scoped, so the next turn writes relative paths there; armed={arm['cwd']!r}"
+        )
+        assert arm["cwd"] is None, (
+            "an unset project states NO directory, so the arm must state none either; "
+            f"armed={arm['cwd']!r}"
+        )
+        # Retirement itself must survive the fix: the agent still has to be retired.
+        assert arm["agent"], (
+            "the rollback lost agent retirement, so the next claim is served a session "
+            "still running the rejected agent"
+        )
