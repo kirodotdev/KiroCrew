@@ -171,6 +171,98 @@ hook that merely records something from looping the session. Write that JSON onl
 when you mean "not done yet", and make the reason the instruction you want the
 agent to act on.
 
+### The six Kiro Agent triggers
+
+A Kiro Agent session has eleven triggers where the gateway has five. The other
+six can be authored and saved here, and a saved one reads back unchanged.
+
+**No event fires any of them.** The gateway has no lifecycle moment for the six,
+so nothing fires one on its own, and no other reader exists. Authoring one records
+the intent; it does not schedule a command.
+
+One thing does still run the command: the **Test** button on the hook's row, the
+same as for any other hook. Test is how you check a command works, and it is the
+only way one of these six runs at all today.
+
+The six do not all sit the same distance from running, and the table says which
+is which. A Kiro Agent asks its client for hooks by trigger name, and the names
+it can ask for are a fixed list — `preTaskExecution` and `postTaskExecution` are
+on it, and the file and manual triggers are not. So two of the six are waiting
+on Kiro Crew answering that request, and the other four are waiting on a Kiro
+Agent learning to ask at all. Save one of those four for the record, not for an
+imminent run.
+
+| Trigger | The agent's moment | Asked for | The row says |
+|---|---|---|---|
+| `PreTaskExecution` | before it starts a task | yes | `not fired yet` |
+| `PostTaskExecution` | after it finishes one | yes | `not fired yet` |
+| `FileCreated` | it created a file | no | `never fires` |
+| `FileEdited` | it saved an edit | no | `never fires` |
+| `FileDeleted` | it deleted a file | no | `never fires` |
+| `UserTriggered` | you ran the hook by hand | no | `never fires` |
+
+Each of the six is the PascalCase form of a trigger name Kiro's own hook schema
+carries, which is why all six are worth storing: the hook you write today is
+written against a documented name rather than a guess at one. The manual trigger
+is the furthest of the six from running — Kiro's current hook-file schema has no
+equivalent for it at all, so `Test` is its whole run path here.
+
+**A hook on one of the six is saved switched off.** Nothing runs it either way
+today, so that costs you nothing now, and it is what keeps a later release honest:
+the change that starts firing these events finds your hook already off, so it
+cannot run a command you wrote months ago and never looked at again. Switch it on
+when you want it live. **Test runs it whether it is on or off**, so you can check
+the command works today — for a trigger nothing fires, Test is not a rehearsal, it is
+the only way the hook runs at all. The form says so before you save, so a row that
+comes back with its switch off does not read as a save that failed.
+
+If you switch one on anyway, the switch itself says what that means — for the two the
+agent asks for, nothing fires them yet; for the other four, nothing ever fires them on
+their own. Both are true at once: the switch is your intent, the mark is what the
+gateway does.
+
+**Editing a working hook onto one of the six switches it off too.** That is the same
+rule, on the other write path: a hook that already runs on `PreToolUse` and is pointed
+at `FileEdited` is stored off, because nothing has reconfirmed that command for the new
+trigger. Switching it on in the same edit is honoured. A hook already on one of the six
+keeps whatever state you gave it, so editing its command does not switch it off again.
+
+**A hook on one of the six takes no matcher.** Saving one is refused. A matcher
+filters something in the event's payload — a tool name on the tool events, your
+message on the message ones — and these events have no payload, because nothing
+fires them. A filter stored now would be written against whatever you had in mind
+(`*.py` meaning a path, say) while the change that defines the payload is free to
+pick a different subject, and your hook would then fire on the wrong things or on
+nothing at all. So the field is refused until there is a payload to point it at,
+and the form says that where the field would have been rather than leaving you to
+guess why two fields disappeared. A matcher you already typed is not destroyed by
+the detour: it is dropped when the hook is SAVED against one of the six, so picking
+one of them and then picking a tool event again gives your filter back.
+
+**You can see this on the row without reading this page.** The Hooks tab marks a
+hook against one of the six in its Status column, and marks the trigger in the
+picker as you choose it — `not fired yet` for the two the agent supports, `never fires`
+for the four it does not. The two marks also LOOK different, because at pill size the
+wording alone was still being mixed up: a trigger the agent asks for gets a solid pill,
+one it does not gets a hollow dashed one. Both stay muted — neither is a fault. Choosing
+one spells the mark out in the form as ordinary text, and either mark also carries the
+same line as a tooltip on the row. The mark is read
+from the same two sets the table above states, so a trigger that gains delivery
+stops being marked without anyone editing the words. Once you Test such a hook the
+run's result appears BESIDE the mark rather than replacing it: whether anything
+fires the trigger and how the last run went are different facts, and a single Test
+should not delete the first one from the table for good.
+
+Two consequences worth knowing before you write one. There is no exit-code vote
+here — the deny contract belongs to `PreToolUse` and to nothing else — and a
+skills-only hook still pairs with `UserPromptSubmit` or `AgentSpawn` alone,
+because the "Load skills:" directive has no reader on any of these.
+
+These six also never travel in a generated kiro-cli agent spec. kiro-cli's hook
+map is a closed set of its own five names, and a spec carrying a sixth key does
+not load at all, so a hook saved against one of these triggers is kept here and
+left out of that file.
+
 ### What a hook runs
 
 A hook's `command` is one shell command line, stored in `~/.kiro/crew/hooks.json`.
@@ -194,7 +286,7 @@ A hook's fields:
 
 | Field | Means |
 |---|---|
-| `event` | one of the five above |
+| `event` | one of the eleven above |
 | `matcher` | what the hook filters on; empty means every call, or every message |
 | `matcher_mode` | `glob` (default), `regex`, or `contains` — read only for the message events, never for a tool matcher |
 | `command` | the shell line |

@@ -2009,6 +2009,29 @@ _VALID_HOOK_EVENTS = frozenset(
     if k not in _INTERNAL_HOOK_KEYS
 )
 
+# Hook triggers a Kiro Agent session owns, in the camelCase spelling that side
+# uses. They are authorable in Kiro Crew (``hooks.HOOK_EVENTS_KAS_ONLY`` carries
+# the PascalCase twin the hook store persists) and they are deliberately NOT in
+# ``_VALID_HOOK_EVENTS``, because kiro-cli's ``hooks`` map is a CLOSED enum: a
+# spec carrying one of these keys does not load at all. Measured against
+# kiro-cli 2.23.1, ``agent validate`` answers "data did not match any variant of
+# untagged enum Repr" and ``agent list`` refuses the same file, while an unknown
+# TOP-LEVEL key and an unknown hook-entry field are both accepted and ignored.
+# So the closed set is the event map specifically, and one of these names
+# reaching a generated spec would cost the user their whole default agent --
+# which is why ``_merge_kiro_hooks`` names them as a distinct refusal below
+# rather than letting them read as a typo.
+_CREW_ONLY_HOOK_EVENTS = frozenset(
+    {
+        "preTaskExecution",
+        "postTaskExecution",
+        "fileCreated",
+        "fileEdited",
+        "fileDeleted",
+        "userTriggered",
+    }
+)
+
 # Repair is subtractive against the runtime-only key Kiro Crew is known to have
 # serialized into its generated specs. Unknown keys may belong to a newer
 # kiro-cli schema or to the user.
@@ -2063,12 +2086,25 @@ _MAX_TOTAL_USER_HOOKS = 20
 # The agent config stores them in camelCase (preToolUse, ...).  Script headers
 # ("# event: PreToolUse") use kiro-cli's PascalCase convention; this map
 # normalizes both casings back to the canonical camelCase form.
+#
+# It spans the WHOLE authorable vocabulary, kiro-cli's five and the six a Kiro
+# Agent session owns, so a recognised name is never reported as unknown. That is
+# safe because recognising a name is not emitting it: every autoimported entry
+# goes through ``_merge_kiro_hooks``, whose ``_VALID_HOOK_EVENTS`` gate is the one
+# place that decides what reaches the generated spec, and it drops the six there
+# with their own reason.
 _HOOK_EVENT_CANONICAL = {
     "pretooluse": "preToolUse",
     "posttooluse": "postToolUse",
     "userpromptsubmit": "userPromptSubmit",
     "agentspawn": "agentSpawn",
     "stop": "stop",
+    "pretaskexecution": "preTaskExecution",
+    "posttaskexecution": "postTaskExecution",
+    "filecreated": "fileCreated",
+    "fileedited": "fileEdited",
+    "filedeleted": "fileDeleted",
+    "usertriggered": "userTriggered",
 }
 
 
@@ -2882,13 +2918,25 @@ def _merge_kiro_hooks(hooks: dict, user_hooks: dict) -> dict:
     total_added = 0
     for event, entries in user_hooks.items():
         if event not in _VALID_HOOK_EVENTS:
-            logger.warning("kiro_hooks: unknown event type %s, skipping", _hook_diagnostic(event))
+            # Two different rejections wearing one message is a support cost: a
+            # Kiro-Agent-only trigger is a name Kiro Crew knows and stores, it
+            # just cannot travel in a kiro-cli spec, and reporting it as
+            # "unknown" sends the reader hunting a typo that is not there.
+            #
+            # Through `_hook_diagnostic`, like every other rejection line here: the
+            # event name is author-supplied, and that helper escapes before it
+            # redacts so a newline inside it cannot forge a second log record.
+            crew_only = event in _CREW_ONLY_HOOK_EVENTS
+            reason = (
+                "Kiro Agent trigger, not emitted to kiro-cli" if crew_only else "unknown event type"
+            )
+            logger.warning("kiro_hooks: %s: %s, skipping", reason, _hook_diagnostic(event))
             # Audit parity with every other rejection branch in this
             # function: per AUTOSDE.yaml security-controls, rejecting an
             # entire event-bucket is a permission decision that must be
             # SEL-audited.  Use the (invalid) event name as the tag so
             # auditors can correlate with the config input.
-            _sel_hook_rejected(str(event), str(entries), "unknown event type")
+            _sel_hook_rejected(str(event), str(entries), reason)
             continue
         if not isinstance(entries, list):
             logger.warning("kiro_hooks[%s] is not a list, skipping", _hook_diagnostic(event))

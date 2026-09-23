@@ -167,9 +167,28 @@ LESSON_LIST_OFFSET_MAX = 100_000_000
 # Allowed cron schedule kinds
 ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
 
-# Allowed hook events
+# Every event a script hook may be authored against: the five the gateway fires,
+# plus the six a Kiro Agent session owns, which are stored and fired by no event
+# (``hooks.HOOK_EVENTS_KAS_ONLY``, whose header says which of the six a Kiro
+# Agent even asks for and why Test still runs one). Spelled
+# out rather than imported from ``kiro_crew.hooks``, which imports this module --
+# ``test_hook_validation_parity`` pins the two sets equal, so a member added
+# there and forgotten here fails a test instead of silently refusing the new
+# event at the create and update schemas.
 ALLOWED_HOOK_EVENTS = frozenset(
-    {"AgentSpawn", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
+    {
+        "AgentSpawn",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+        "PreTaskExecution",
+        "PostTaskExecution",
+        "FileCreated",
+        "FileEdited",
+        "FileDeleted",
+        "UserTriggered",
+    }
 )
 
 # Valid agent name pattern (alphanumeric, hyphens, underscores)
@@ -2867,14 +2886,39 @@ def _validate_hook_has_action(args: dict) -> None:
 
 
 def _validate_hook_create(args: dict) -> None:
-    """Validate a hook at creation time: action + regex syntax."""
+    """Validate a hook at creation time: action + regex syntax + no null enable."""
     _validate_hook_has_action(args)
     _validate_hook_regex(args)
+    _reject_null_enabled(args)
 
 
 def _validate_hook_update(args: dict) -> None:
     """Validate a hook at update time: regex syntax (action already checked by store)."""
     _validate_hook_regex(args)
+    _reject_null_enabled(args)
+
+
+def _reject_null_enabled(args: dict) -> None:
+    """Refuse an explicit ``"enabled": null``, on create and on update alike.
+
+    ``validate_field`` answers ``spec.default`` for a ``None`` value BEFORE the type
+    check, so a field with no default answers ``None`` -- and the KEY's presence puts
+    that ``None`` into the cleaned dict. Downstream, ``data.get("enabled", True)``
+    keeps it and the store's own event-aware default is skipped because the key IS
+    present, so the hook persists with ``enabled`` neither true nor false. Every
+    reader treats it as off: ``fire`` skips the hook and the row renders dimmed.
+
+    Refused rather than coerced, because both coercions lie about what was asked
+    for. Reading it as ``True`` invents a request to enable; reading it as omitted
+    discards a key the caller deliberately sent. A 400 naming the field is the only
+    answer that does not decide for them.
+
+    Both hook validators call this: the same shape is reachable through the update
+    schema, whose ``enabled`` has never carried a default, so fixing only the create
+    path would leave the identical corruption one endpoint away.
+    """
+    if "enabled" in args and args["enabled"] is None:
+        raise ValidationError("enabled", "expected bool, got null")
 
 
 def _validate_hook_regex(args: dict) -> None:
@@ -2904,7 +2948,15 @@ HOOK_CREATE_SCHEMA = ToolSchema(
         ),
         FieldSpec("skills", list, default=[], item_type=str, item_max_len=100),
         FieldSpec("timeout", int, min_val=1, max_val=300, default=30),
-        FieldSpec("enabled", bool, default=True),
+        # NO default, deliberately: `validate_tool_args` INJECTS a non-``None``
+        # default for an omitted field, and the store decides a hook's initial
+        # ``enabled`` from whether the caller named it -- a trigger no event fires
+        # is stored off unless the caller explicitly asked for on. A ``True`` here
+        # fabricates that explicit request on every create, which is the one input
+        # that made the store's rule unreachable on the dashboard's own path.
+        # ``ScriptHook.from_dict`` still defaults an absent value to True, so a
+        # hook on a live event is unaffected.
+        FieldSpec("enabled", bool),
     ],
     custom_validator=_validate_hook_create,
 )

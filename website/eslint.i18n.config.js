@@ -1454,6 +1454,17 @@ export default [
     },
   },
 
+  // HOOK EVENT NAMES ONLY: matched BY VALUE against the backend's event
+  // allowlist, and rendered verbatim on the hook's own row, so a translated one is
+  // rejected on save and disagrees with its row. Extracted so the page keeps its
+  // gate. See the module's own header.
+  {
+    files: ['src/pages/hookEventWireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // SEARCH-KEYWORD SYNONYMS ONLY: a manual overlay of extra query terms merged
   // into the Settings search corpus so a query like "dark mode" finds a setting
   // whose label does not contain those words. Every value is a term matched

@@ -104,6 +104,9 @@ HOOK_EVENT_PRE_TOOL_USE = "PreToolUse"
 HOOK_EVENT_POST_TOOL_USE = "PostToolUse"
 HOOK_EVENT_STOP = "Stop"
 
+#: The events the gateway itself fires. ``ScriptHookStore.fire`` has a call site
+#: for each one, and ``steering-and-hooks.md`` documents their exit-code
+#: contract. Membership here is what makes an event a *lifecycle* event.
 HOOK_EVENTS = (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
@@ -111,6 +114,73 @@ HOOK_EVENTS = (
     HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_STOP,
 )
+
+# Triggers a Kiro Agent session owns that the gateway has no lifecycle call site
+# for. They are authorable and persisted, and NO EVENT FIRES ANY OF THEM: no call
+# site fires one and no other reader consumes this tuple. That is why they are a
+# separate tuple rather than new members of ``HOOK_EVENTS`` -- an event in that
+# tuple carries a promise that something calls ``fire`` for it, and these carry
+# none.
+#
+# "No event fires them" is not "the command cannot run": the dashboard's Test
+# endpoint runs a STORED hook's command on demand and never consults this tuple
+# (``handlers/hooks.py`` ``api_hook_test`` -> ``run_script_hook``), so Test works on
+# one of these exactly as it does on a fired event.
+#
+# They are not equidistant from running, and a reader planning the delivery side
+# needs the difference. A Kiro Agent requests hooks by trigger name over ACP from
+# a fixed set of seven (``acp/kas_wire.py``'s ``ACP_HOOK_TRIGGERS``), and only
+# ``preTaskExecution`` and ``postTaskExecution`` are in it; the file and manual
+# triggers are absent, so a Kiro Agent does not ask for those four at all today.
+#
+# Where the six names come from, since no call site here fires them: each is the
+# PascalCase rendering of a trigger name Kiro's own hook schema carries, so the
+# delivery round maps a documented name rather than inventing one. Kiro documents
+# both spellings of each -- the ``when.type`` name a legacy hook file uses, which
+# is also the ACP spelling for the two above, and the standalone v1 hook-file
+# trigger -- at kiro.dev/docs/ide/whats-new-v1/hooks:
+#
+#   preTaskExecution  -> PreTaskExec        postTaskExecution -> PostTaskExec
+#   fileCreated       -> PostFileCreate     fileEdited        -> PostFileSave
+#   fileDeleted       -> PostFileDelete     userTriggered     -> (none)
+#
+# Two consequences for the delivery round. It has two vocabularies to map, not
+# one, and the names here match the left column. And the manual trigger is the
+# furthest from arriving of the six: it has no v1 equivalent at all, so an
+# existing manual hook stays runnable as a legacy one while a new one cannot be
+# authored in that schema -- the Test button is its whole run path here.
+HOOK_EVENT_PRE_TASK_EXECUTION = "PreTaskExecution"
+HOOK_EVENT_POST_TASK_EXECUTION = "PostTaskExecution"
+HOOK_EVENT_FILE_CREATED = "FileCreated"
+HOOK_EVENT_FILE_EDITED = "FileEdited"
+HOOK_EVENT_FILE_DELETED = "FileDeleted"
+HOOK_EVENT_USER_TRIGGERED = "UserTriggered"
+
+HOOK_EVENTS_KAS_ONLY = (
+    HOOK_EVENT_PRE_TASK_EXECUTION,
+    HOOK_EVENT_POST_TASK_EXECUTION,
+    HOOK_EVENT_FILE_CREATED,
+    HOOK_EVENT_FILE_EDITED,
+    HOOK_EVENT_FILE_DELETED,
+    HOOK_EVENT_USER_TRIGGERED,
+)
+
+#: The subset a Kiro Agent session actually asks its client for. It requests
+#: hooks by trigger name from a fixed set of seven, and only these two of the six
+#: are in it -- so these wait on Kiro Crew answering that request, while the file
+#: and manual triggers are not asked for at all. The dashboard marks the two
+#: groups differently because the distance to running is different, and it reads
+#: the split from here rather than restating it in copy.
+HOOK_EVENTS_AGENT_REQUESTED = (
+    HOOK_EVENT_PRE_TASK_EXECUTION,
+    HOOK_EVENT_POST_TASK_EXECUTION,
+)
+
+#: Every event a hook may be authored against and persisted under. This is the
+#: authoring vocabulary -- the dashboard form's options, the create/update
+#: schemas, and the store's own load and save gates all read this set, so an
+#: event absent from it is refused at authoring time and dropped on reload.
+HOOK_EVENTS_ALL = HOOK_EVENTS + HOOK_EVENTS_KAS_ONLY
 
 
 @dataclass
@@ -4236,15 +4306,19 @@ def validate_hook_fields(
 
     Raises ``ValueError`` (which the dashboard handler maps to HTTP 400) when:
 
-    * ``event`` is not one of ``HOOK_EVENTS``;
+    * ``event`` is not one of ``HOOK_EVENTS_ALL``;
     * ``timeout`` is not an int in ``[1, 300]``;
     * neither ``command`` nor ``skills`` is present (an empty hook);
     * ``skills`` is combined with a ``command`` (the skills would never fire);
     * ``skills`` is paired with an event other than UserPromptSubmit/AgentSpawn
       (the "Load skills:" directive has no consumer there);
+    * ``matcher`` is paired with one of ``HOOK_EVENTS_KAS_ONLY`` -- no event fires
+      those, so no payload exists for a matcher to filter and the field's subject
+      is undefined; storing one now would hand the round that defines the payload
+      a filter written against a different subject than the one it picks;
     * ``matcher_mode`` is ``regex`` with a syntactically invalid ``matcher``.
     """
-    if event not in HOOK_EVENTS:
+    if event not in HOOK_EVENTS_ALL:
         raise ValueError(f"invalid event: {event}")
     if (
         isinstance(timeout, bool)
@@ -4267,6 +4341,11 @@ def validate_hook_fields(
                 f"skills hooks cannot fire on {event} events — "
                 "choose UserPromptSubmit or AgentSpawn"
             )
+    if matcher and event in HOOK_EVENTS_KAS_ONLY:
+        raise ValueError(
+            f"a matcher cannot be set on {event} — no event fires it, so there is "
+            "no payload to filter; leave the matcher empty"
+        )
     if matcher_mode == "regex" and matcher:
         try:
             re.compile(matcher)
@@ -4420,10 +4499,27 @@ class ScriptHook:
         # written so an unknown event is visibly inert rather than silently
         # remapped, matching how `matcher_mode` junk falls through to glob.
         timeout = _normalize_hook_timeout(data.get("timeout", HOOK_TIMEOUT_DEFAULT))
+        event = data.get("event", HOOK_EVENT_USER_PROMPT_SUBMIT)
+        # Drop a matcher stored against an event no event fires, the same way the
+        # timeout above is clamped. ``validate_hook_fields`` refuses that pairing at
+        # the create/update boundary, and a hand-edited file can carry it anyway --
+        # so keeping it would load a hook that cannot be edited or even disabled
+        # without editing the file again, because update re-validates the MERGED
+        # fields and would meet the stored matcher. Normalizing here means the store
+        # never holds the combination and update never sees it. The matcher is the
+        # part with no meaning on these events; the hook itself is kept.
+        if matcher and event in HOOK_EVENTS_KAS_ONLY:
+            logger.warning(
+                "hook %s on %s carried a matcher; dropping it (no event fires this, "
+                "so there is no payload to filter)",
+                data.get("id", "?"),
+                event,
+            )
+            matcher = ""
         return cls(
             id=data.get("id", str(uuid.uuid4())[:8]),
             name=data.get("name", ""),
-            event=data.get("event", HOOK_EVENT_USER_PROMPT_SUBMIT),
+            event=event,
             matcher=matcher,
             matcher_mode=data.get("matcher_mode", "glob"),
             command=data.get("command", ""),
@@ -4907,7 +5003,10 @@ class ScriptHookStore:
             try:
                 if not isinstance(h, dict):
                     raise TypeError("hook entry is not an object")
-                if h.get("event", HOOK_EVENT_USER_PROMPT_SUBMIT) not in HOOK_EVENTS:
+                # The full authoring vocabulary, not the fired subset: a hook
+                # stored against a Kiro Agent trigger must survive a reload,
+                # and the narrower set would quarantine it as unparseable.
+                if h.get("event", HOOK_EVENT_USER_PROMPT_SUBMIT) not in HOOK_EVENTS_ALL:
                     raise ValueError("hook entry has an invalid event")
                 hook = ScriptHook.from_dict(h)
                 # Keep insertion inside the per-entry guard: a hand-edited ID
@@ -5011,6 +5110,17 @@ class ScriptHookStore:
         hook = ScriptHook.from_dict(data)
         if not hook.id:
             hook.id = str(uuid.uuid4())[:8]
+        # A hook on an event no event fires is saved OFF unless the caller said
+        # otherwise. Nothing runs it either way today, so this costs the author
+        # nothing now -- and it is the whole activation contract for later: the
+        # change that starts firing these events inherits hooks that are already
+        # disabled, so it cannot silently run a shell command somebody wrote
+        # months earlier and never reconfirmed. ``fire`` skips a disabled hook;
+        # the Test endpoint does not read ``enabled``, so Test still works, which
+        # is the only way one of these runs at all. An explicit ``enabled: true``
+        # is honoured -- that IS the reconfirmation.
+        if "enabled" not in data and hook.event in HOOK_EVENTS_KAS_ONLY:
+            hook.enabled = False
         # Enforce the SAME invariants `update` does, via the shared validator:
         # checking them only in `update` lets a direct/internal caller of `create`
         # bypass the command+skills invariant, event membership and timeout bounds,
@@ -5019,13 +5129,17 @@ class ScriptHookStore:
         # in, but validate against the ORIGINAL `data` so a caller that passed an
         # out-of-range timeout is told rather than having it silently clamped —
         # matching the API schema's reject-don't-clamp behavior. Raises
-        # ValueError (mapped to HTTP 400 by the dashboard handler).
+        # ValueError (mapped to HTTP 400 by the dashboard handler). The matcher is
+        # read from `data` for the same reason as the timeout: `from_dict` drops one
+        # stored against an event no event fires, which is right for a hand-edited
+        # file and wrong for a caller who asked for it -- a POST carrying a matcher
+        # must be told, not silently saved without the filter it named.
         validate_hook_fields(
             event=hook.event,
             timeout=data.get("timeout", hook.timeout),
             command=hook.command,
             skills=hook.skills,
-            matcher=hook.matcher,
+            matcher=str(data.get("matcher", hook.matcher) or ""),
             matcher_mode=hook.matcher_mode,
         )
         with self._mutex, self._atomic_mutation():
@@ -5038,9 +5152,52 @@ class ScriptHookStore:
             hook = self._hooks.get(hook_id)
             if not hook:
                 return None
+            was_dormant = hook.event in HOOK_EVENTS_KAS_ONLY
             for k in ("name", "event", "matcher", "matcher_mode", "command", "timeout", "enabled"):
                 if k in data:
                     setattr(hook, k, data[k])
+            # The activation contract has to hold on BOTH write paths. `create`
+            # stores a hook on one of the six switched off; without this, an edit
+            # moving an ALREADY-ENABLED hook from a live event onto one of the six
+            # kept it enabled, and the change that starts firing these events would
+            # inherit exactly the pre-authorised command the contract exists to
+            # prevent -- reached by an ordinary edit rather than anything exotic.
+            #
+            # Only on the TRANSITION into the set, and only when the caller did not
+            # name `enabled`. A hook already on one of the six keeps whatever state
+            # it has, so editing the command of one somebody deliberately switched
+            # ON does not silently switch it off again -- the edit form always sends
+            # `event`, so keying on presence rather than on the transition would do
+            # exactly that.
+            if (
+                "event" in data
+                and not was_dormant
+                and hook.event in HOOK_EVENTS_KAS_ONLY
+                and "enabled" not in data
+            ):
+                hook.enabled = False
+            # A move onto one of the six also drops a matcher the caller did not
+            # send. `from_dict` applies the same normalization on load, and its note
+            # says why: `update` validates the MERGED fields, so a stored matcher
+            # meeting the pairing refusal leaves a hook that cannot be edited -- or
+            # even switched off -- without the caller also naming a field it never
+            # touched, and the refusal names that field rather than anything the
+            # request carried. A matcher present IN `data` still refuses, exactly as
+            # `create` refuses one: a caller who asks for a filter these events
+            # cannot use is told, not silently saved without it.
+            if (
+                "event" in data
+                and "matcher" not in data
+                and hook.matcher
+                and hook.event in HOOK_EVENTS_KAS_ONLY
+            ):
+                logger.warning(
+                    "hook %s moved onto %s; dropping its matcher (no event fires "
+                    "this, so there is no payload to filter)",
+                    hook.id,
+                    hook.event,
+                )
+                hook.matcher = ""
             if "skills" in data:
                 skills_raw = data["skills"]
                 hook.skills = (

@@ -4498,9 +4498,12 @@ never reach an LLM/agent surface.
 ### `SessionLaneChanged` — board-lane transitions (`_fire_session_lane_changed`)
 
 **Status: this section specifies a PENDING implementation, not the tree as it
-stands.** `SessionLaneChanged` is not a live hook event yet: `HOOK_EVENTS`,
-`ALLOWED_HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry exactly the five
-turn-lifecycle events, and none of the symbols named below exist in `src/`. Read
+stands.** `SessionLaneChanged` is not a live hook event yet: it is absent from
+`HOOK_EVENTS`, from `ALLOWED_HOOK_EVENTS` and from `_VALID_HOOK_EVENTS`, and none
+of the symbols named below exist in `src/`. The three sets are not the same size:
+`HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry the five turn-lifecycle events, while
+`ALLOWED_HOOK_EVENTS` carries eleven — the five plus the six Kiro Agent triggers
+in `hooks.HOOK_EVENTS_KAS_ONLY`, which are registrable but fired by nothing. Read
 every present-tense sentence here as the contract the implementation must meet.
 Until it lands, `handlers/hooks.py` and the Hooks page behave as the rest of this
 module already describes.
@@ -4693,8 +4696,11 @@ into two tokens or forging the opposite direction.
   `hooks.HOOK_EVENTS` (dispatchable) and `validation.ALLOWED_HOOK_EVENTS`
   (registrable through the hook create/update API), and deliberately **absent**
   from `agent._VALID_HOOK_EVENTS` — kiro-cli rejects a generated agent config
-  naming an event it does not know. A test pins all three memberships together
-  with this rationale, so the divergence cannot be "fixed" by syncing them.
+  naming an event it does not know, refusing to load that agent at all. A test
+  pins all three memberships together with this rationale, so the divergence
+  cannot be "fixed" by syncing them. The Kiro Agent triggers sit one step further
+  out again: registrable, absent from `_VALID_HOOK_EVENTS` for the same reason,
+  and not dispatchable either.
 
 **The SEL rows this event adds, stated so an auditor can find them and a host can
 budget them.** A lane-dispatch decision writes ONE `log_api_access` row under
