@@ -251,9 +251,7 @@ class TestSetupCliLoggingDetached:
         root_qhs = [h for h in logging.getLogger().handlers if isinstance(h, _CliLogQueueHandler)]
         assert len(root_qhs) == 1
         kc_qhs = [
-            h
-            for h in logging.getLogger("kiro_crew").handlers
-            if isinstance(h, _CliLogQueueHandler)
+            h for h in logging.getLogger("kiro_crew").handlers if isinstance(h, _CliLogQueueHandler)
         ]
         assert kc_qhs == []
         # The file handler must never sit on a logger directly — inline emit
@@ -330,15 +328,11 @@ class TestSetupCliLoggingForeground:
     def test_queue_handler_on_kiro_crew_logger(self):
         _setup_cli_logging("gateway", 1)
         kc_qhs = [
-            h
-            for h in logging.getLogger("kiro_crew").handlers
-            if isinstance(h, _CliLogQueueHandler)
+            h for h in logging.getLogger("kiro_crew").handlers if isinstance(h, _CliLogQueueHandler)
         ]
         assert len(kc_qhs) == 1
         assert kc_qhs[0].level == logging.INFO
-        assert not any(
-            isinstance(h, _CliLogQueueHandler) for h in logging.getLogger().handlers
-        )
+        assert not any(isinstance(h, _CliLogQueueHandler) for h in logging.getLogger().handlers)
         # No inline file handler on either logger.
         for logger in (logging.getLogger(), logging.getLogger("kiro_crew")):
             assert not any(isinstance(h, RotatingFileHandler) for h in logger.handlers)
@@ -362,6 +356,38 @@ class TestSetupCliLoggingForeground:
         assert (config_dir() / "gateway.log.prev").exists()
         # … but a foreground console must never be dup2'd into the log file.
         self.redirect.assert_not_called()
+
+    def test_unwritable_gateway_log_soft_fails(self, monkeypatch):
+        """Seatbelt may deny ``gateway.log``; setup must not raise.
+
+        Sandboxed MCP children (e.g. ``kirocrew mcp-core``) inherit a profile
+        that blocks the persistent log path. Console logging stays; the MCP
+        handshake must still start.
+        """
+
+        def _deny(*_a, **_k):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr("kiro_crew.cli.RotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
+        _setup_cli_logging("mcp-core", 0)  # must not raise
+        assert cli_mod._LOG_QUEUE_LISTENER is None
+        assert not any(
+            isinstance(h, RotatingFileHandler) for h in logging.getLogger("kiro_crew").handlers
+        )
+
+    def test_unwritable_gateway_log_still_redacts_for_long_lived(self, monkeypatch):
+        """OSError on gateway.log must not skip Bearer/JWT console redaction."""
+
+        def _deny(*_a, **_k):
+            raise PermissionError(1, "Operation not permitted")
+
+        redaction = MagicMock()
+        monkeypatch.setattr("kiro_crew.cli.RotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli.install_log_redaction", redaction)
+        _setup_cli_logging("gateway", 1)  # must not raise
+        redaction.assert_called_once_with([])
 
 
 class TestQueueOffLoop:
@@ -405,9 +431,7 @@ class TestQueueOffLoop:
         _setup_cli_logging("gateway", 1)
         _setup_cli_logging("gateway", 1)
         kc_qhs = [
-            h
-            for h in logging.getLogger("kiro_crew").handlers
-            if isinstance(h, _CliLogQueueHandler)
+            h for h in logging.getLogger("kiro_crew").handlers if isinstance(h, _CliLogQueueHandler)
         ]
         assert len(kc_qhs) == 1
         assert cli_mod._LOG_QUEUE_LISTENER is not None
@@ -616,9 +640,7 @@ class TestEveryGatewayHardExitDrainsTheQueue:
             ):
                 continue
             cur = parents.get(node)
-            while cur is not None and not isinstance(
-                cur, (ast.FunctionDef, ast.AsyncFunctionDef)
-            ):
+            while cur is not None and not isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 cur = parents.get(cur)
             if cur is not None:
                 found.append((cur, node.lineno))
@@ -628,9 +650,7 @@ class TestEveryGatewayHardExitDrainsTheQueue:
         """A scan that matches nothing would pass vacuously."""
         total = 0
         for path in self._MODULES:
-            total += len(
-                self._hard_exit_functions(ast.parse(path.read_text(encoding="utf-8")))
-            )
+            total += len(self._hard_exit_functions(ast.parse(path.read_text(encoding="utf-8"))))
         assert total >= 3, f"expected the known os._exit sites, found {total}"
 
     def test_no_hard_exit_strands_the_queued_log_tail(self):

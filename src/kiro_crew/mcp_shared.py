@@ -379,9 +379,13 @@ def _policy_session_key() -> str | None:
     * ``""`` — no identity on this install YET (a startup race) or an identity that
       was explicitly REFUSED (an invalid protected member record). That is the
       ``no_session_key`` reason;
-    * ``None`` — resolution itself broke (an unreadable home, a raising probe). That
-      is the ``resolution_failed`` class, kept distinguishable so a broken host is
-      not reported as a benign race and does not inherit the race's short window.
+    * ``None`` — resolution itself broke (an unreadable home, a failed pid walk).
+      That is the ``resolution_failed`` class, kept distinguishable so a broken
+      host is not reported as a benign race and does not inherit the race's short
+      window. A ``PermissionError`` from ``protected_member_session_for_pid``
+      (Seatbelt EPERM/EACCES) is NOT this class — it is absence (see the probe
+      ``try`` below) so token/env can still win; EMFILE/EIO and other ``OSError``
+      subclasses propagate and still fail closed at the same-uid fence.
 
     Source order. The first three sources and their order match
     :func:`kiro_crew.mcp_core._resolve_session_key_strict`, so the tool policy is
@@ -412,7 +416,23 @@ def _policy_session_key() -> str | None:
         # use PID ancestry, namespaces, or proof records to authorize a store.
         from kiro_crew.member_memory_auth import protected_member_session_for_pid
 
-        protected = protected_member_session_for_pid(os.getpid())
+        # PermissionError from the probe is absence (None), not
+        # resolution_failed: collapsing the whole resolver on a Seatbelt deny
+        # would skip token/env fallthrough and hide every tool
+        # (``resolution_failed``). Keep "" as intentional revoke. EMFILE/EIO and
+        # other OSError subclasses propagate (fail closed); host overrides return
+        # None for a missing binding, so FileNotFoundError is not caught here.
+        try:
+            protected = protected_member_session_for_pid(os.getpid())
+        except PermissionError as exc:
+            # Seatbelt deny only (EPERM/EACCES). EMFILE/EIO and other OSError
+            # subclasses propagate rather than identity-downgrade via token/env.
+            logger.warning(
+                "protected_member_session_for_pid probe failed (%s); "
+                "treating as absence so token/env identity can win",
+                exc,
+            )
+            protected = None
         if protected is not None:
             return protected
         from_token = session_key_from_env_token()

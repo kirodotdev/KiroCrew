@@ -71,6 +71,7 @@ any future KiroCrew-owned MCP server must go through this module.
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 from contextvars import ContextVar
@@ -80,6 +81,8 @@ from typing import Any, Mapping
 
 from kiro_crew import platform_compat
 from kiro_crew.session_token_sig import session_key_from_env_token
+
+logger = logging.getLogger(__name__)
 
 # --- Protocol identifiers ---------------------------------------------------
 
@@ -254,8 +257,23 @@ class CallerContext:
             from kiro_crew.member_memory_auth import protected_member_session_for_pid
 
             protected = protected_member_session_for_pid(os.getpid())
-        except Exception:
-            protected = ""
+        except PermissionError as exc:
+            # Seatbelt deny (EPERM/EACCES → PermissionError) is absence, not an
+            # explicit empty refusal. Mapping errors to "" would shadow
+            # KIROCREW_SESSION_KEY / the signed token (``if protected is not None``
+            # treats blank as a hard deny), which is exactly how Seatbelt-denied
+            # binding reads stranded spawn_run without an X-Session-Key.
+            # Narrower than OSError: EMFILE/EIO and other OSError subclasses now
+            # propagate (fail closed at the same-uid fence) rather than falling
+            # through to token/env. Host overrides return None for a missing
+            # binding, so FileNotFoundError is not in this catch. Log so a denied
+            # binding read is not silent.
+            logger.warning(
+                "protected_member_session_for_pid probe failed (%s); "
+                "treating as absence so token/env identity can win",
+                exc,
+            )
+            protected = None
         if protected is not None:
             return cls(session_key=protected, session_type="protected-pid", from_gateway=False)
         # The signed per-session token is a shared execution identity source,

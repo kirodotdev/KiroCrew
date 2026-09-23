@@ -1081,7 +1081,25 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     # would follow the renamed inode through .1 → .2 → .3 → unlink, losing
     # later raw stderr from all retained logs.
     handler_cls = _FdTrackingRotatingFileHandler if detached else RotatingFileHandler
-    fh = handler_cls(log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    # Seatbelt/sandbox children (e.g. ``kirocrew mcp-core`` under a sandboxed
+    # agent profile) inherit a deny on writes to ``gateway.log``. Opening the
+    # file handler must not abort the process — stderr console logging remains,
+    # and MCP handshake can proceed. A real gateway (unsandboxed) still gets
+    # the file log.
+    try:
+        fh = handler_cls(log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    except OSError as exc:
+        logging.getLogger("kiro_crew").warning(
+            "persistent log file %s unavailable (%s); continuing with console logging only",
+            log_file,
+            exc,
+        )
+        # Install redaction BEFORE returning: long-lived commands still emit
+        # Bearer/JWT-bearing records to the console, and the normal
+        # install_log_redaction call below is skipped by this early return.
+        if command in _LONG_LIVED_COMMANDS:
+            install_log_redaction([])
+        return
     # In detached mode the handler also serves the root logger: cap its level
     # at WARNING so third-party WARNINGs keep flowing even when kiro_crew's
     # own configured level is stricter (kiro_crew records below `level` are
