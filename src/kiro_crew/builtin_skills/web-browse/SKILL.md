@@ -126,6 +126,12 @@ The browser 'chrome' is not open, please run open first
 
 That is a wrong session name, not a failed attach; do not re-attach to fix it.
 
+`attach --extension` also gives you ONE tab: the one the extension was activated
+on. `tab-list` is not a view of the browser, so a page the user already has open is
+unreachable until they click the extension icon while on it — ask for that click
+rather than opening your own second copy of the page they are looking at. Tabs you
+create with `tab-new` are drivable, but a later re-attach drops them from the list.
+
 `playwright-cli list` shows every browser on the machine, including other
 sessions'. Only close one you opened. A session named `panel-<owner6>-<slot8>` is the
 user's own — the dashboard's Browser panel opened it from its address bar — so
