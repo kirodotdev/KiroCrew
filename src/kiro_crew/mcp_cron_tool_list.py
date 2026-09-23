@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew.constants import (
+    BACKGROUND_RUN_DEFAULT_TIMEOUT_SECS,
+    BACKGROUND_RUN_MAX_TIMEOUT_SECS,
+)
 from kiro_crew.cron_service.model import (
     _ALERT_AFTER_DEFAULT,
     _AUTO_PAUSE_MAX,
@@ -33,6 +37,9 @@ _ALERT_AFTER_DESCRIPTION = (
     "records every failure; policy denials and the run that auto-pauses the job "
     "always alert."
 )
+
+# The one tool on this server that is not a cron operation; see mcp_cron._background_run.
+BACKGROUND_RUN_TOOL = "background_run"
 
 
 def _list_tools() -> list[dict[str, Any]]:
@@ -466,6 +473,44 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["job_id"],
+            },
+        },
+        {
+            "name": BACKGROUND_RUN_TOOL,
+            "description": (
+                "Run a shell command in the background, then END YOUR TURN: this chat is "
+                "woken automatically with the exit code and the last lines of output when "
+                "it finishes. Use it instead of sleep or poll loops for anything that "
+                "takes longer than a minute: CI (`gh pr checks <n> --watch --fail-fast`), "
+                "builds, test suites, training runs, or a watcher for a job running "
+                "elsewhere (`until grep -qE 'done|Error' train.log; do sleep 30; done` "
+                "-- match failure as well as success, or a crash waits out the timeout). "
+                "The command runs under POSIX `/bin/sh` (dash on Debian and Ubuntu): use "
+                "`.` rather than `source`, or wrap bash-only syntax in `bash -c '...'`. "
+                "Runs at your shell's sandbox tier but never below `standard`, even when "
+                "the sandbox is off, in `cwd` (default: this chat's "
+                "project directory). A gateway restart re-adopts a command that is still "
+                "running, but on some hosts the restart stops it; this chat is then told it "
+                "was interrupted. Returns a run id and the log file receiving the full "
+                "output; check the run with workflow_status and stop it with "
+                f"workflow_cancel. Default timeout {BACKGROUND_RUN_DEFAULT_TIMEOUT_SECS}s, "
+                f"maximum {BACKGROUND_RUN_MAX_TIMEOUT_SECS}s."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "POSIX sh command to run"},
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory; relative paths join the project",
+                    },
+                    "label": {"type": "string", "description": "Short name for the run"},
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Stop the command after this many seconds",
+                    },
+                },
+                "required": ["command"],
             },
         },
     ]

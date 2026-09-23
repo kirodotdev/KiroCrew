@@ -108,6 +108,9 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         # list_sessions(summarize=true) leg goes through the seam (derive_recent).
         ("kiro_crew/dashboard/handlers/sessions_parts/app_scope.py", "read_messages"),
         ("kiro_crew/dashboard/handlers/sessions_parts/history_reads.py", "read_messages"),
+        # A yes/no "are the card and the wake saved" check on the chat's own
+        # transcript before a background command's delivery settles; no rows leave.
+        ("kiro_crew/dashboard/workflow_inject.py", "read_messages"),
         ("kiro_crew/decisions/points/compaction_keep.py", "read_messages"),
         # Thread diagnostics probe `recent`, not a transcript.
         ("kiro_crew/diag/threads.py", "recent"),
