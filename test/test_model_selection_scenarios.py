@@ -255,6 +255,90 @@ class TestPinSpellingResolver:
         assert resolve_pin_spelling("auto", ["claude-opus-4.8"]) == ""
         assert resolve_pin_spelling("auto", self._KIRO) == "auto"
 
+    # codex-acp advertises ``models.availableModels`` as one entry per model x
+    # reasoning effort (``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``); its ``model``
+    # config option takes only the BARE id and the effort travels down the
+    # separate ``reasoning_effort`` option. So the pin Crew stores for that
+    # harness is routinely the bare one, and every advertised row carries a
+    # bracketed effort the pin does not name.
+    _EFFORT_PAIRS = [
+        "gpt-6-astra[low]",
+        "gpt-6-astra[medium]",
+        "gpt-6-astra[high]",
+        "gpt-6-astra[xhigh]",
+        "gpt-6-astra[max]",
+    ]
+
+    def test_a_bare_pin_does_not_fold_onto_an_arbitrary_effort_row(self):
+        # `catalog_key` folds the EFFORT suffix away -- correct for judging
+        # nativeness, wrong for choosing a wire spelling. Folding here makes
+        # the tie-break pick a row by LENGTH, and `_push_model_via_effort_split`
+        # then applies that row's bracket as `reasoning_effort`: an operator
+        # who pinned the bare model and chose no effort would be pinned to
+        # whichever bracket sorts first. The pin names no effort, so no
+        # advertised row is its spelling.
+        assert resolve_pin_spelling("gpt-6-astra", self._EFFORT_PAIRS) == ""
+
+    def test_a_pin_never_folds_onto_a_different_effort(self):
+        # An effort the account does not advertise takes the withhold, the same
+        # answer a model it does not serve takes. Silently serving `[low]` for
+        # a pin that asked for `[xhigh]` is the capacity change
+        # `same_registered_model` refuses for a context window, one dial over.
+        assert resolve_pin_spelling("gpt-6-astra[xhigh]", ["gpt-6-astra[low]"]) == ""
+        assert resolve_pin_spelling("gpt-6-astra[max]", self._EFFORT_PAIRS[:1]) == ""
+        # ...and the reverse direction is refused too: a bracketed pin does not
+        # collapse onto a bare advertised id, which would drop the effort the
+        # operator named.
+        assert resolve_pin_spelling("gpt-6-astra[max]", ["gpt-6-astra"]) == ""
+
+    def test_the_advertised_effort_row_still_resolves_verbatim(self):
+        # The literal match runs first and is untouched: picking an advertised
+        # row keeps working, case-insensitively like every other spelling.
+        assert resolve_pin_spelling("gpt-6-astra[max]", self._EFFORT_PAIRS) == "gpt-6-astra[max]"
+        assert (
+            resolve_pin_spelling("GPT-6-ASTRA[XHIGH]", self._EFFORT_PAIRS) == "gpt-6-astra[xhigh]"
+        )
+
+    def test_the_window_suffix_is_not_an_effort_and_still_folds(self):
+        # Guard for the fold this rule must NOT break: `[1m]` names a context
+        # WINDOW, `split_effort_suffix` reports no effort for it, and #12904's
+        # own case -- a prefixed provider-id spelling meeting kiro's bare id --
+        # still resolves.
+        assert (
+            resolve_pin_spelling("global.anthropic.claude-opus-4-8[1m]", self._KIRO)
+            == "claude-opus-4.8"
+        )
+        both = ["claude-opus-4.8", "claude-opus-4.8-1m"]
+        assert (
+            resolve_pin_spelling("global.anthropic.claude-opus-4-8[1m]", both)
+            == "claude-opus-4.8-1m"
+        )
+
+    def test_the_fold_never_answers_with_another_efforts_spelling(self):
+        # The property, stated once over the whole table rather than per case:
+        # whatever the fold answers, the effort half of the answer is the
+        # effort half of the pin. `_push_model_via_effort_split` writes that
+        # half as a config option, so an answer that changed it would change
+        # the operator's reasoning effort.
+        from kiro_crew.model_registry import split_effort_suffix
+
+        pins = [
+            "gpt-6-astra",
+            "gpt-6-astra[low]",
+            "gpt-6-astra[max]",
+            "gpt-6-astra[xhigh]",
+            "codex::gpt-6-astra[max]",
+            "global.anthropic.claude-opus-4-8[1m]",
+        ]
+        for pin in pins:
+            for advertised in (self._EFFORT_PAIRS, self._KIRO, ["gpt-6-astra"]):
+                got = resolve_pin_spelling(pin, advertised)
+                if not got:
+                    continue
+                assert (
+                    split_effort_suffix(got)[1] == split_effort_suffix(pin)[1]
+                ), f"{pin!r} resolved to {got!r}, changing the effort half"
+
 
 class TestExplicitPickRefusal:
     """An EXPLICIT user pick that the account can't run RAISES — it is never

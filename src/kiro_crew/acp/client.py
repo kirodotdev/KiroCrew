@@ -3691,11 +3691,23 @@ def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str
     naming the 1M ``claude-opus-4.8``) is rejected even though ``catalog_key``
     folds the window marker away -- see
     :func:`model_registry.same_registered_model` -- so a pin never resolves to
-    its neighbour with another context window. Several advertised spellings of
-    the SAME model can remain (a base and a 1M variant the registry lists as one
-    model); the winner is :func:`model_registry.preferred_advertised_spelling`,
-    the tie-break :func:`model_registry.resolve_wire_model_id` applies, so the
-    two folds cannot prefer different spellings.
+    its neighbour with another context window. EFFORT is refused on the same
+    ground and needs its own rule, because ``catalog_key`` folds the effort
+    suffix on purpose -- right for judging nativeness, where the dial is not
+    part of the identity, and wrong for choosing a spelling to SEND. A harness
+    in ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` advertises one row per model x
+    effort while its ``model`` option takes only the bare id, so the pin stored
+    for it names no effort and every advertised row names one: folding across
+    that gap let the tie-break pick a row by LENGTH, and
+    :func:`_push_model_via_effort_split` then applied that row's bracket as
+    ``reasoning_effort``. A candidate whose effort half differs from the pin's
+    (:func:`model_registry.split_effort_suffix`, which reports no effort for a
+    ``[1m]`` WINDOW suffix) is therefore not a spelling of it. Several
+    advertised spellings of the SAME model at the SAME effort can remain (a base
+    and a 1M variant the registry lists as one model); the winner is
+    :func:`model_registry.preferred_advertised_spelling`, the tie-break
+    :func:`model_registry.resolve_wire_model_id` applies, so two candidates this
+    fold admits cannot be ordered differently by the wire fold.
 
     Returns the ADVERTISED spelling of the match, not the caller's: the result
     is meant to be sent on the wire (``session/set_model`` accepts advertised
@@ -3723,10 +3735,12 @@ def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str
     wanted_key = model_registry.catalog_key(wanted)
     if not wanted_key:
         return ""
+    _base, wanted_effort = model_registry.split_effort_suffix(wanted)
     folded = [
         m
         for m in ids
         if model_registry.catalog_key(m) == wanted_key
+        and model_registry.split_effort_suffix(m.strip().lower())[1] == wanted_effort
         and model_registry.same_registered_model(model_id, m)
     ]
     return model_registry.preferred_advertised_spelling(folded)
