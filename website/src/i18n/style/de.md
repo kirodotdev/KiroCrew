@@ -95,6 +95,7 @@ Rules:
 | placeholder parity with English | `catalogParity.test.ts` |
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
 | formal-address pattern debt does not exceed 12 | `deStyle.test.ts` |
+| changed values address the reader as du, never Sie | `deStyle.test.ts` (`I18N_BASE_REF`) |
 | selected foreign-compound spacing debt does not exceed 12 | `deStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |

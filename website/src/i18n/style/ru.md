@@ -93,6 +93,7 @@ For strings addressing the user (unknown gender):
 | correct CLDR plural categories (**4**) | `catalogParity.test.ts` |
 | straight-quote debt around Cyrillic does not exceed 20 | `ruStyle.test.ts` |
 | no formal `Вы` address | `ruStyle.test.ts` |
+| changed values address the reader as ты, never вы | `ruStyle.test.ts` (`I18N_BASE_REF`) |
 | guarded product names are not transliterated | `ruStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |

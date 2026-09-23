@@ -94,9 +94,10 @@ reforms confirmed it). Missing accent on a capital is an error.
 | glued double-punctuation debt does not exceed 50 | `frStyle.test.ts` |
 | changed values use U+202F before double punctuation | `frStyle.test.ts` (`I18N_BASE_REF`) |
 | formal-address debt does not exceed 11 | `frStyle.test.ts` |
+| changed values address the reader as tu, never vous | `frStyle.test.ts` (`I18N_BASE_REF`) |
 | missing-capital-accent debt does not exceed 11 | `frStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
 | no leading/trailing whitespace | `qa.test.ts` |
 
-The U+202F rule is strict for changed values; only inherited catalog debt remains baselined.
+The U+202F and tu/vous rules are strict for changed values; only inherited catalog debt remains baselined.

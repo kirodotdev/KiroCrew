@@ -65,7 +65,7 @@ describe('fr punctuation (style/fr.md §1)', () => {
   })
 })
 
-/* ── §1 spacing, scoped to the values THIS BRANCH wrote ── */
+/* ── §1 spacing and §4 register, scoped to the values THIS BRANCH wrote ── */
 
 const REPO = join(__dirname, '..', '..', '..', '..')
 const CATALOG = 'website/src/i18n/locales/fr.json'
@@ -79,6 +79,18 @@ const CATALOG = 'website/src/i18n/locales/fr.json'
  * writes even though the inherited catalog is mostly U+0020.
  */
 const WRONG_DOUBLE_SPACE = /[a-zA-Zàâéèêëïîôùûüÿçœæ][\u0020]?[;:?!]/
+
+/** The vous pronoun family, any case. In copy that addresses one reader it is always formal. */
+const FORMAL_PRONOUN = /\b[Vv](?:ous|otre|os)\b/
+
+/**
+ * A second-person-plural verb ending: the formal imperative ("réessayez") and
+ * the formal present/subjunctive ("pouvez", "appuyiez") both end in `-ez`, and
+ * `-ez` is otherwise rare in French. The lookahead lists the non-verb words
+ * measured in the catalog (chez, assez, nez) plus `rez` (rez-de-chaussée); the
+ * remaining 223 distinct `-ez` words in the catalog are all verbs.
+ */
+const FORMAL_VERB = /\b(?!(?:chez|assez|nez|rez)\b)[a-zàâéèêëïîôùûüÿçœæ]+ez\b/i
 
 /**
  * The fr values this branch added or edited, or null when there is nothing to
@@ -135,6 +147,22 @@ describe('fr spacing (style/fr.md §1)', () => {
         const withoutDrivePaths = value.replace(/\b[A-Za-z]:[\\/]\S*/g, '')
         return WRONG_DOUBLE_SPACE.test(withoutDrivePaths)
       })
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
+      .toEqual([])
+  })
+})
+
+describe('fr register (style/fr.md §4)', () => {
+  it('[changed-values] addresses the reader as tu, never vous', () => {
+    const changed = changedFrValues()
+    if (changed === null) {
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel: a gate that returns silently is one nobody can tell ran, and this skip is reachable on a bare local run
+      console.log('[changed-values] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
+      return
+    }
+    const bad = Object.entries(changed)
+      .filter(([, value]) => FORMAL_PRONOUN.test(value) || FORMAL_VERB.test(value))
       .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
       .toEqual([])
