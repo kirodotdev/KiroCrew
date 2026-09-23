@@ -5813,7 +5813,10 @@
       "rejected": "Rifiutato",
       "running": "In esecuzione:",
       "tool_approval_requested": "Approvazione dello strumento richiesta:",
-      "trusted_auto_approving_future_calls": "Attendibile — le chiamate future verranno approvate automaticamente"
+      "trusted_auto_approving_future_calls": "Attendibile — le chiamate future verranno approvate automaticamente",
+      "trusted_channel_all": "Attendibile — tutti gli strumenti di questo canale verranno approvati automaticamente, persiste dopo il riavvio",
+      "trusted_channel_base": "Attendibile — i comandi {{base}} verranno approvati automaticamente per @{{role}} fino al riavvio di {{productName}}",
+      "trusted_channel_command": "Attendibile — «{{cmd}}» verrà approvato automaticamente per @{{role}} fino al riavvio di {{productName}}"
     },
     "approvalModePicker": {
       "nudge_body": "Qui puoi regolare il modo in cui {{productName}} chiede l'approvazione. Scegliendo «Fiducia» qui, può lavorare in questa chat senza chiedere prima: puoi tornare indietro in qualsiasi momento.",
@@ -8323,9 +8326,11 @@
     "trustDropdown": {
       "trust": "Considera attendibile",
       "trust_all_base": "Fidati di tutti i comandi <mono>{{base}}</mono>",
+      "trust_all_base_channel": "Fidati di tutti i comandi <mono>{{base}}</mono> per @{{role}} — fino al riavvio di {{productName}}",
       "trust_all_tools": "Considera attendibili tutti gli strumenti di questa sessione",
       "trust_all_tools_channel": "Considera attendibili tutti gli strumenti di questo canale — persiste dopo il riavvio",
-      "trust_this_command": "Fidati di «<mono>{{cmd}}</mono>»"
+      "trust_this_command": "Fidati di «<mono>{{cmd}}</mono>»",
+      "trust_this_command_channel": "Fidati di «<mono>{{cmd}}</mono>» per @{{role}} — fino al riavvio di {{productName}}"
     },
     "tunnelStatus": {
       "connected": "Connesso",

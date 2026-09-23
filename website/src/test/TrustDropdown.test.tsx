@@ -246,7 +246,10 @@ describe('TrustDropdown', () => {
     // the words carry the meaning and a single clipped line costs nothing.
     it('leaves the family and session rows single-line', () => {
       const [exact, base, all] = openWith(overBudget)
-      expect(exact.querySelector('span')?.className).toContain('break-all')
+      // `break-all` on the command span only: the words around the command
+      // wrap at spaces, so the consent sentence never breaks mid-word.
+      expect(exact.querySelector('span')?.className).not.toContain('break-all')
+      expect(exact.querySelector('span.font-mono')?.className).toContain('break-all')
       expect(exact.querySelector('span')?.className).not.toContain('truncate')
       expect(base.querySelector('span')?.className).toContain('truncate')
       expect(all.querySelector('span')?.className).not.toContain('break-all')

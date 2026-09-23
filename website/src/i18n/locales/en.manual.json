@@ -1712,7 +1712,10 @@
     "approvalCard": {
       "approval_no_longer_pending": "This approval has expired or was already decided — the agent is no longer waiting on it.",
       "decision_failed": "This decision may not have been recorded — the request failed.",
-      "decision_not_recorded_error": "This decision wasn't recorded: {{error}}"
+      "decision_not_recorded_error": "This decision wasn't recorded: {{error}}",
+      "trusted_channel_all": "Trusted — all tools in this channel are auto-approved, persists across restarts",
+      "trusted_channel_base": "Trusted — {{base}} commands are auto-approved for @{{role}} until {{productName}} restarts",
+      "trusted_channel_command": "Trusted — “{{cmd}}” is auto-approved for @{{role}} until {{productName}} restarts"
     },
     "approvalModePicker": {
       "approval_mode_aria": "Approval mode: {{mode}}",
@@ -3151,8 +3154,10 @@
     },
     "trustDropdown": {
       "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
+      "trust_all_base_channel": "Trust all <mono>{{base}}</mono> commands for @{{role}} — until {{productName}} restarts",
       "trust_all_tools_channel": "Trust all tools in this channel — persists across restarts",
-      "trust_this_command": "Trust “<mono>{{cmd}}</mono>”"
+      "trust_this_command": "Trust “<mono>{{cmd}}</mono>”",
+      "trust_this_command_channel": "Trust “<mono>{{cmd}}</mono>” for @{{role}} — until {{productName}} restarts"
     },
     "multiSelect": {
       "deselect_all": "Deselect all",

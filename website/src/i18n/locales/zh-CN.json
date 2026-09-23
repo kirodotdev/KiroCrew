@@ -5633,7 +5633,10 @@
       "rejected": "已拒绝",
       "running": "正在运行：",
       "tool_approval_requested": "已请求工具审批：",
-      "trusted_auto_approving_future_calls": "已信任 — 后续调用将自动批准"
+      "trusted_auto_approving_future_calls": "已信任 — 后续调用将自动批准",
+      "trusted_channel_all": "已信任 — 此频道中的所有工具将自动批准，重启后仍然有效",
+      "trusted_channel_base": "已信任 — {{base}} 命令将对 @{{role}} 自动批准，{{productName}} 重启前有效",
+      "trusted_channel_command": "已信任 — “{{cmd}}”将对 @{{role}} 自动批准，{{productName}} 重启前有效"
     },
     "approvalModePicker": {
       "nudge_body": "在这里可以调整 {{productName}} 的审批模式——选择这里的“信任”后，它在此对话中无需先询问即可工作，随时可以改回。",
@@ -8089,9 +8092,11 @@
     "trustDropdown": {
       "trust": "信任",
       "trust_all_base": "信任所有 <mono>{{base}}</mono> 命令",
+      "trust_all_base_channel": "信任所有 <mono>{{base}}</mono> 命令，仅对 @{{role}} — {{productName}} 重启前有效",
       "trust_all_tools": "信任本会话的所有工具",
       "trust_all_tools_channel": "信任此频道中的所有工具 — 重启后仍然有效",
-      "trust_this_command": "信任“<mono>{{cmd}}</mono>”"
+      "trust_this_command": "信任“<mono>{{cmd}}</mono>”",
+      "trust_this_command_channel": "信任“<mono>{{cmd}}</mono>”，仅对 @{{role}} — {{productName}} 重启前有效"
     },
     "tunnelStatus": {
       "connected": "已连接",

@@ -36,16 +36,32 @@ interface TrustDropdownProps {
       server proof that a standing grant can be recorded. Offering it there
       would name a decision the backend refuses (#5400, #5434, #5486). */
   showTrustAll?: boolean
+  /** False withholds the base tier on the server's own word that no base is
+      derivable from the pending command (compound, quoted, env-prefixed): the
+      endpoint would refuse the grant, and a first-token label would describe
+      a scope it never records. Default true keeps every other surface's
+      shell-title derivation. */
+  showTrustBase?: boolean
+  /** Catalog keys for the two per-command tiers, for a surface whose grants
+      are scoped differently from chat's (a channel grant is agent-scoped and
+      lasts until restart). Same contract as `trustAllLabelKey`: the label must
+      name the actual grant. Both keys take `cmd` / `base` plus `labelValues`. */
+  trustCommandLabelKey?: string
+  trustBaseLabelKey?: string
+  /** Extra interpolation values for the tier labels (e.g. `role`). */
+  labelValues?: Record<string, string>
   onAction: (action: string, pattern?: string) => void
 }
 
-export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, onAction }: TrustDropdownProps) {
+export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
   // tiered trust grants an identical scope for the same click.
   const basePattern = trustBasePattern(baseCommand)
   const baseLabel = baseCommandLabel(baseCommand)
+  const commandKey = trustCommandLabelKey ?? 'components.trustDropdown.trust_this_command'
+  const baseKey = trustBaseLabelKey ?? 'components.trustDropdown.trust_all_base'
 
   // One list, built once, so the count below and the items rendered can never
   // disagree. The command label is interpolated INTO a whole sentence rather
@@ -87,12 +103,18 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       // `grep "a  b" f` would render as `grep "a b" f` and ask for consent to a
       // string the user never saw. `break-all` governs where a word may break,
       // not whether spaces survive, so it does not cover this.
+      //
+      // `break-all` sits on the COMMAND span alone. The words around it are
+      // prose in the reader's language, and prose that may break between any
+      // two letters ("until Kiro Crew rest / arts") is prose the reader has to
+      // reassemble on the consent surface; those words wrap at spaces, and
+      // only the command -- which may have none -- breaks anywhere.
       body: (
-        <span className="min-w-0 break-all whitespace-pre-wrap" title={fullCommand}>
+        <span className="min-w-0 whitespace-pre-wrap" title={fullCommand}>
           <Trans
-            i18nKey="components.trustDropdown.trust_this_command"
-            values={{ cmd: fullCommand }}
-            components={{ mono: <span className="font-mono" /> }}
+            i18nKey={commandKey}
+            values={{ cmd: fullCommand, ...labelValues }}
+            components={{ mono: <span className="font-mono break-all" /> }}
           />
         </span>
       ),
@@ -100,10 +122,10 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       // its own content, which is now the whole command, so an added label
       // could only duplicate it -- and would silently stop matching the visible
       // one the day either changes (WCAG 2.5.3).
-      plain: i18nT('components.trustDropdown.trust_this_command', { cmd: fullCommand }),
+      plain: i18nT(commandKey, { cmd: fullCommand, ...labelValues }),
     })
   }
-  if (hasCommand && isShell) {
+  if (hasCommand && isShell && showTrustBase) {
     tiers.push({
       action: 'trust_base',
       fire: () => onAction('trust_base', basePattern),
@@ -111,13 +133,13 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       body: (
         <span className="truncate">
           <Trans
-            i18nKey="components.trustDropdown.trust_all_base"
-            values={{ base: baseLabel }}
+            i18nKey={baseKey}
+            values={{ base: baseLabel, ...labelValues }}
             components={{ mono: <span className="font-mono" /> }}
           />
         </span>
       ),
-      plain: i18nT('components.trustDropdown.trust_all_base', { base: baseLabel }),
+      plain: i18nT(baseKey, { base: baseLabel, ...labelValues }),
     })
   }
   if (trustReadsLabelKey) {

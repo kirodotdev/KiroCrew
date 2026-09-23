@@ -5606,7 +5606,10 @@
       "rejected": "却下済み",
       "running": "実行中:",
       "tool_approval_requested": "ツール承認がリクエストされました:",
-      "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認"
+      "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認",
+      "trusted_channel_all": "信頼済み — このチャネルのすべてのツールを自動承認、再起動後も維持",
+      "trusted_channel_base": "信頼済み — {{base}} コマンドを @{{role}} に対して{{productName}} の再起動まで自動承認",
+      "trusted_channel_command": "信頼済み — 「{{cmd}}」を @{{role}} に対して{{productName}} の再起動まで自動承認"
     },
     "approvalModePicker": {
       "nudge_body": "ここで {{productName}} の承認モードを調整できます。ここで「信頼」を選ぶと、このチャットでは事前に確認せずに作業します。いつでも戻せます。",
@@ -8089,9 +8092,11 @@
     "trustDropdown": {
       "trust": "信頼",
       "trust_all_base": "<mono>{{base}}</mono> コマンドをすべて信頼",
+      "trust_all_base_channel": "<mono>{{base}}</mono> コマンドをすべて @{{role}} に対して信頼 — {{productName}} の再起動まで",
       "trust_all_tools": "このセッションのすべてのツールを信頼",
       "trust_all_tools_channel": "このチャネルのすべてのツールを信頼 — 再起動後も維持",
-      "trust_this_command": "「<mono>{{cmd}}</mono>」を信頼"
+      "trust_this_command": "「<mono>{{cmd}}</mono>」を信頼",
+      "trust_this_command_channel": "「<mono>{{cmd}}</mono>」を @{{role}} に対して信頼 — {{productName}} の再起動まで"
     },
     "tunnelStatus": {
       "connected": "接続されました",
