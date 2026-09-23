@@ -8240,7 +8240,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "গেটওয়ে এই পেজের জন্য ব্রাউজার খুলতে পারেনি।",
       "the_server_at": "এই ঠিকানার সার্ভার:",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "ভিউটি গেটওয়ে হোস্টের লুপব্যাক ঠিকানায় পরিবেশিত হয়, এবং এই ব্রাউজার এতে সংযোগ করতে পারেনি। আপনি যদি SSH টানেলের মাধ্যমে ড্যাশবোর্ডে পৌঁছান, তবে নিচের সেটিং দিয়ে ভিউয়ের পোর্ট নির্দিষ্ট করুন এবং সেই পোর্টটিও ফরওয়ার্ড করুন।",
-      "this_chat_s_browser_session": "এই চ্যাটের ব্রাউজার",
+      "opened_from_this_chat": "এই চ্যাট থেকে খোলা",
       "this_dashboard_is_served_over_https_so_the_brows": "এই ড্যাশবোর্ডটি HTTPS-এর মাধ্যমে পরিবেশিত, তাই ব্রাউজার এখানে এম্বেড করতে দেয় না কোনো",
       "this_url_is_the_dashboard_s_own_server_which_ref": "এই URL ড্যাশবোর্ডের নিজস্ব সার্ভার, যা এম্বেড করা যায় না। বরং একটি dev-server URL দিন।",
       "web_preview": "ওয়েব প্রিভিউ",

@@ -8127,7 +8127,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "网关无法为此页面打开浏览器。",
       "the_server_at": "服务器",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "浏览器视图由网关主机的回环地址提供，此浏览器无法连接到它。如果你通过 SSH 隧道访问仪表板，请用下方设置固定视图端口，并同时转发该端口。",
-      "this_chat_s_browser_session": "此聊天的浏览器",
+      "opened_from_this_chat": "从本聊天打开",
       "this_dashboard_is_served_over_https_so_the_brows": "此仪表板通过 HTTPS 提供服务，因此浏览器会阻止嵌入",
       "this_url_is_the_dashboard_s_own_server_which_ref": "此 URL 是仪表板自身的服务器，不允许被嵌入。请改为输入开发服务器 URL。",
       "web_preview": "网页预览",

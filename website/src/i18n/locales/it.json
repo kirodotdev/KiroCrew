@@ -8353,7 +8353,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "Il gateway non è riuscito ad aprire un browser per questa pagina.",
       "the_server_at": "Il server su",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "La vista è servita sull’indirizzo di loopback dell’host del gateway e questo browser non è riuscito a connettersi. Se raggiungi la dashboard tramite un tunnel SSH, fissa la porta della vista con l’impostazione qui sotto e inoltra anche quella porta.",
-      "this_chat_s_browser_session": "Browser di questa chat",
+      "opened_from_this_chat": "Aperto da questa chat",
       "this_dashboard_is_served_over_https_so_the_brows": "Questa dashboard viene servita tramite HTTPS, quindi il browser blocca l'incorporamento di un",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Questo URL è il server della dashboard stessa, che rifiuta di essere incorporato. Inserisci invece l'URL di un server di sviluppo.",
       "web_preview": "Anteprima web",

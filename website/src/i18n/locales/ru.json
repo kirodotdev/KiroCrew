@@ -8466,7 +8466,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "Шлюз не смог открыть браузер для этой страницы.",
       "the_server_at": "Сервер",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "Представление обслуживается на loopback-адресе хоста шлюза, и этот браузер не смог к нему подключиться. Если ты открываешь панель через SSH-туннель, закрепи порт представления в настройке ниже и пробрось этот порт тоже.",
-      "this_chat_s_browser_session": "Браузер этого чата",
+      "opened_from_this_chat": "Открыто из этого чата",
       "this_dashboard_is_served_over_https_so_the_brows": "Эта панель работает по HTTPS, поэтому браузер блокирует встраивание",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Этот URL — сервер самой панели, который запрещает встраивание. Введите вместо него URL dev-сервера.",
       "web_preview": "Веб-предпросмотр",

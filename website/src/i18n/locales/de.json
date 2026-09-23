@@ -8240,7 +8240,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "Das Gateway konnte für diese Seite keinen Browser öffnen.",
       "the_server_at": "Der Server unter",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "Die Ansicht wird auf der Loopback-Adresse des Gateway-Hosts bereitgestellt, und dieser Browser konnte sich nicht mit ihr verbinden. Wenn du das Dashboard über einen SSH-Tunnel erreichst, lege den Port der Ansicht mit der Einstellung unten fest und leite auch diesen Port weiter.",
-      "this_chat_s_browser_session": "Browser dieses Chats",
+      "opened_from_this_chat": "Aus diesem Chat geöffnet",
       "this_dashboard_is_served_over_https_so_the_brows": "Dieses Dashboard wird über HTTPS bereitgestellt, daher blockiert der Browser das Einbetten eines",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Diese URL ist der Server des Dashboards selbst, der das Einbetten ablehnt. Geben Sie stattdessen die URL eines Dev-Servers ein.",
       "web_preview": "Web-Vorschau",

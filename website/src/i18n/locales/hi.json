@@ -8240,7 +8240,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "गेटवे इस पेज के लिए ब्राउज़र नहीं खोल सका।",
       "the_server_at": "इस पते पर चल रहा सर्वर:",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "यह दृश्य गेटवे होस्ट के लूपबैक पते पर दिया जाता है, और यह ब्राउज़र उससे कनेक्ट नहीं हो सका। अगर तुम डैशबोर्ड तक SSH टनल से पहुँचते हो, तो नीचे दी गई सेटिंग से दृश्य का पोर्ट तय करो और उस पोर्ट को भी फ़ॉरवर्ड करो।",
-      "this_chat_s_browser_session": "इस चैट का ब्राउज़र",
+      "opened_from_this_chat": "इस चैट से खोला गया",
       "this_dashboard_is_served_over_https_so_the_brows": "यह डैशबोर्ड HTTPS पर सर्व होता है, इसलिए ब्राउज़र एम्बेड करने से रोक देता है — एक",
       "this_url_is_the_dashboard_s_own_server_which_ref": "यह URL डैशबोर्ड का ही सर्वर है, जो एम्बेड होने से इनकार करता है। इसके बजाय कोई dev-server URL डालें।",
       "web_preview": "वेब पूर्वावलोकन",

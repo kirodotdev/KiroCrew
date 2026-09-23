@@ -8127,7 +8127,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "게이트웨이가 이 페이지에 대한 브라우저를 열 수 없습니다.",
       "the_server_at": "서버:",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "보기는 게이트웨이 호스트의 루프백 주소에서 제공되며, 이 브라우저는 여기에 연결할 수 없었습니다. SSH 터널을 통해 대시보드에 접속한다면 아래 설정으로 보기의 포트를 고정하고 그 포트도 함께 포워딩하세요.",
-      "this_chat_s_browser_session": "이 채팅의 브라우저",
+      "opened_from_this_chat": "이 채팅에서 연 페이지",
       "this_dashboard_is_served_over_https_so_the_brows": "이 대시보드는 HTTPS로 제공되므로 브라우저가 다음 삽입을 차단합니다:",
       "this_url_is_the_dashboard_s_own_server_which_ref": "이 URL은 대시보드 자체의 서버이며 삽입이 허용되지 않습니다. 대신 개발 서버 URL을 입력하세요.",
       "web_preview": "웹 미리 보기",

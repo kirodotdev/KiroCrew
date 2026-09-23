@@ -8353,7 +8353,7 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "La passerelle n'a pas pu ouvrir de navigateur pour cette page.",
       "the_server_at": "Le serveur à l'adresse",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "La vue est servie sur l'adresse de bouclage de l'hôte de la passerelle, et ce navigateur n'a pas pu s'y connecter. Si tu accèdes au tableau de bord via un tunnel SSH, fixe le port de la vue avec le réglage ci-dessous et transfère aussi ce port.",
-      "this_chat_s_browser_session": "Navigateur de cette discussion",
+      "opened_from_this_chat": "Ouvert depuis cette discussion",
       "this_dashboard_is_served_over_https_so_the_brows": "Ce tableau de bord est servi via HTTPS, donc le navigateur bloque l'intégration d'une page",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Cette URL est le serveur du tableau de bord lui-même, qui refuse d'être intégré. Saisissez plutôt l'URL d'un serveur de développement.",
       "web_preview": "Aperçu web",
