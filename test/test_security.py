@@ -3728,60 +3728,169 @@ class TestSanitizedOAuthEndpoint:
         assert sanitized_oauth_endpoint(url) is None
 
 
+def _long_state_query(*, extra: str = "") -> str:
+    """A standard front-channel query whose opaque ``state`` pushes it past the
+    long-query heuristic: rejected at any endpoint outside the allowlist, clean
+    at an allowlisted one, because every parameter is a known OAuth name."""
+    return (
+        "?client_id=client123&response_type=code"
+        "&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("a1B2c3D4" * 16) + extra
+    )
+
+
+class TestOAuthRejectionIsEndpointExemptible:
+    """``oauth_rejection_is_endpoint_exemptible`` answers "would the allowlist fix it?".
+
+    The counterfactual (``diagnose_oauth_url_credential(url,
+    assume_approved_endpoint=True)``) re-runs the real gate with the endpoint
+    treated as approved and nothing else relaxed. The operator-extension corpus
+    is the positive set by definition: each entry is a URL the field rejected
+    until its operator added the endpoint.
+    """
+
+    @pytest.mark.parametrize(
+        ("url", "endpoint"),
+        [(url, endpoint) for _, url, endpoint in OPERATOR_EXTENSION_OAUTH_URLS],
+        ids=[name for name, _, _ in OPERATOR_EXTENSION_OAUTH_URLS],
+    )
+    def test_corpus_urls_are_rejected_today_and_pass_once_allowlisted(
+        self, url: str, endpoint: tuple[str, str]
+    ) -> None:
+        assert security.diagnose_oauth_url_credential(url) is not None
+        assert security.diagnose_oauth_url_credential(url, assume_approved_endpoint=True) is None
+        assert security.oauth_rejection_is_endpoint_exemptible(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://idp.example.com/authorize?access_token=AKIAIOSFODNN7EXAMPLE",
+            "https://idp.example.com/authorize" + _long_state_query(extra="#frag"),
+            "https://idp.example.com/authorize;v=1" + _long_state_query(),
+            f"https://user:pw@idp.example.com/authorize{_long_state_query()}",
+            "http://idp.example.com/authorize" + _long_state_query(),
+            "https://idp.example.com:8443/authorize" + _long_state_query(),
+            "https://idp.example.com/authorize?state=" + ("%41" * 80),
+        ],
+        ids=[
+            "fixed-credential-in-query",
+            "fragment",
+            "path-params",
+            "userinfo",
+            "http-scheme",
+            "explicit-port",
+            "heavy-percent-encoding",
+        ],
+    )
+    def test_unconditional_rules_still_reject_under_the_assumption(self, url: str) -> None:
+        assert security.diagnose_oauth_url_credential(url) is not None
+        assert (
+            security.diagnose_oauth_url_credential(url, assume_approved_endpoint=True) is not None
+        )
+        assert security.oauth_rejection_is_endpoint_exemptible(url) is False
+
+    def test_a_url_the_gate_accepts_has_nothing_to_exempt(self) -> None:
+        clean = "https://idp.example.com/authorize?state=abc&code_challenge_method=S256"
+        assert security.diagnose_oauth_url_credential(clean) is None
+        assert security.oauth_rejection_is_endpoint_exemptible(clean) is False
+
+    def test_the_assumption_does_not_consult_the_operator_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The counterfactual is a pure re-run of the gate: no allowlist lookup,
+        so no ``oauth_endpoint_extension_used`` audit event can fire for an
+        endpoint nobody actually approved."""
+        looked_up: list[tuple[str, str]] = []
+
+        def spy(host: str, path: str) -> bool:
+            looked_up.append((host, path))
+            return False
+
+        monkeypatch.setattr(security, "_approved_oauth_authorization_endpoint", spy)
+        url = OPERATOR_EXTENSION_OAUTH_URLS[0][1]
+        assert security.diagnose_oauth_url_credential(url, assume_approved_endpoint=True) is None
+        assert looked_up == []
+        assert security.diagnose_oauth_url_credential(url) is not None
+        assert looked_up != []
+
+    def test_the_default_verdict_is_unchanged(self) -> None:
+        """``assume_approved_endpoint`` defaults off, so the boolean gate every
+        caller uses is byte-for-byte the old one."""
+        url = OPERATOR_EXTENSION_OAUTH_URLS[0][1]
+        assert security.oauth_url_contains_credential(url) is True
+
+
 class TestSanitizedOAuthEndpointDisplay:
     """``sanitized_oauth_endpoint_display`` is the COPY-READY contract.
 
     The diagnostic pair may legitimately carry a component that is not
     pasteable (redaction tag, ``…`` cap) or that the ``oauth_endpoints.json``
     loader would refuse (``localhost``, an IP literal, a percent-escape in the
-    path) or that the gate would never honour (``http``, an explicit port). A
-    card that says "add THIS to oauth_endpoints.json" must hand back a string
-    only when adding it would actually work. Every signature the helper judges
-    is enumerated here with its verdict, so a widened or narrowed rule shows up
-    as a specific row rather than a vague failure.
+    path); and a URL may be rejected for a reason the allowlist cannot clear
+    (a fixed credential, a fragment, path parameters, ``http``, a port). A card
+    that says "add THIS to oauth_endpoints.json" must hand back a string only
+    when adding it would actually work. Every signature the helper judges is
+    enumerated here with its verdict, so a widened or narrowed rule shows up as
+    a specific row rather than a vague failure.
     """
 
     GITHUB_TOKEN = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+    Q = _long_state_query()
 
     @pytest.mark.parametrize(
         ("url", "expected"),
         [
+            ("https://idp.example.com/authorize" + Q, "idp.example.com/authorize"),
             (
-                "https://idp.example.com/authorize?state=x&code_challenge=y",
-                "idp.example.com/authorize",
-            ),
-            (
-                "https://idp.example.com/authorize?access_token=AKIAIOSFODNN7EXAMPLE",
-                "idp.example.com/authorize",
-            ),
-            (
-                "https://IdP.Example.COM/Realms/Dev/Authorize",
+                "https://IdP.Example.COM/Realms/Dev/Authorize" + Q,
                 "idp.example.com/Realms/Dev/Authorize",
             ),
-            ("https://idp.example.com", "idp.example.com/"),
-            ("https://idp.example.com/authorize#fragment-secret", "idp.example.com/authorize"),
-            ("https://bücher.example/authorize", "xn--bcher-kva.example/authorize"),
+            ("https://idp.example.com" + Q, "idp.example.com/"),
+            ("https://bücher.example/authorize" + Q, "xn--bcher-kva.example/authorize"),
+            # Operator-extension shapes the loader exists for: an Okta org, an
+            # Auth0 tenant, a Keycloak realm, a tenant-scoped Entra path.
             (
-                "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/authorize",
+                "https://dev-123456.okta.com/oauth2/default/v1/authorize" + Q,
+                "dev-123456.okta.com/oauth2/default/v1/authorize",
+            ),
+            ("https://acme.us.auth0.com/authorize" + Q, "acme.us.auth0.com/authorize"),
+            (
+                "https://idp.example.com/realms/dev/protocol/openid-connect/auth" + Q,
+                "idp.example.com/realms/dev/protocol/openid-connect/auth",
+            ),
+            (
+                "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/authorize" + Q,
                 "login.microsoftonline.com/tenant-id/oauth2/v2.0/authorize",
             ),
-            # urlparse strips ``;params`` from the last segment, and the gate compares
-            # ``parsed.path`` the same way, so "/authorize" IS the entry that matches.
-            ("https://idp.example.com/authorize;v=1", "idp.example.com/authorize"),
         ],
         ids=[
-            "plain-endpoint-query-dropped",
-            "credential-in-query-is-not-echoed",
+            "long-state-query-dropped",
             "host-lowercased-path-case-kept",
             "empty-path-becomes-slash",
-            "fragment-dropped",
             "idn-host-in-a-label-form",
-            "multi-segment-path",
-            "path-params-dropped-like-the-gate",
+            "okta-org",
+            "auth0-tenant",
+            "keycloak-realm",
+            "entra-tenant-path",
         ],
     )
     def test_nameable_endpoints_come_back_as_host_slash_path(self, url: str, expected: str) -> None:
         assert sanitized_oauth_endpoint_display(url) == expected
+
+    @pytest.mark.parametrize(
+        ("name", "url", "endpoint"),
+        OPERATOR_EXTENSION_OAUTH_URLS,
+        ids=[name for name, _, _ in OPERATOR_EXTENSION_OAUTH_URLS],
+    )
+    def test_the_operator_extension_corpus_is_named_verbatim(
+        self, name: str, url: str, endpoint: tuple[str, str]
+    ) -> None:
+        """The URLs the extension file exists for are exactly the ones the card
+        must name, and the string it names is the entry that fixes them."""
+        host, path = endpoint
+        assert sanitized_oauth_endpoint_display(url) == f"{host}{path}"
 
     @pytest.mark.parametrize(
         "url",
@@ -3790,26 +3899,31 @@ class TestSanitizedOAuthEndpointDisplay:
             "",
             "not a url at all",
             "https:///path-without-host",
-            f"https://{GITHUB_TOKEN}@idp.example.com/authorize",
-            "https://user%3Apass%40idp.example.com/authorize",
-            "https://AKIAIOSFODNN7EXAMPLE.example.com/authorize",
+            f"https://{GITHUB_TOKEN}@idp.example.com/authorize" + Q,
+            "https://user%3Apass%40idp.example.com/authorize" + Q,
+            "https://AKIAIOSFODNN7EXAMPLE.example.com/authorize" + Q,
             # -- pair is not pasteable: redaction tag / cap marker --
-            "https://idp.example.com/AKIAIOSFODNN7EXAMPLE/authorize",
-            "https://idp.example.com" + "/seg-ment" * 40,
-            "https://" + ".".join(["a" * 30] * 9) + ".example/authorize",
+            "https://idp.example.com/AKIAIOSFODNN7EXAMPLE/authorize" + Q,
+            "https://idp.example.com" + "/seg-ment" * 40 + Q,
+            "https://" + ".".join(["a" * 30] * 9) + ".example/authorize" + Q,
             # -- the extension loader would refuse the host --
-            "https://localhost/authorize",
-            "https://10.0.0.1/authorize",
-            "https://idp.example.com./authorize",
-            "https://idp/authorize",
+            "https://localhost/authorize" + Q,
+            "https://10.0.0.1/authorize" + Q,
+            "https://idp.example.com./authorize" + Q,
+            "https://idp/authorize" + Q,
             # -- the extension loader would refuse the path --
-            "https://idp.example.com/auth%20orize",
-            "https://idp.example.com/../authorize",
-            "https://idp.example.com/auth\\orize",
-            # -- the gate would never grant the carve-out --
-            "http://idp.example.com/authorize",
-            "https://idp.example.com:8443/authorize",
-            "https://idp.example.com:443/authorize",
+            "https://idp.example.com/auth%20orize" + Q,
+            "https://idp.example.com/../authorize" + Q,
+            "https://idp.example.com/auth\\orize" + Q,
+            # -- the allowlist could not clear the rejection --
+            "https://idp.example.com/authorize?access_token=AKIAIOSFODNN7EXAMPLE",
+            "https://idp.example.com/authorize" + _long_state_query(extra="#frag"),
+            "https://idp.example.com/authorize;v=1" + Q,
+            "http://idp.example.com/authorize" + Q,
+            "https://idp.example.com:8443/authorize" + Q,
+            "https://idp.example.com:443/authorize" + Q,
+            # -- not rejected at all: nothing to name --
+            "https://idp.example.com/authorize?state=x&code_challenge_method=S256",
         ],
         ids=[
             "empty",
@@ -3828,9 +3942,13 @@ class TestSanitizedOAuthEndpointDisplay:
             "percent-escape-in-path",
             "dot-dot-in-path",
             "backslash-in-path",
+            "fixed-credential-in-query",
+            "fragment",
+            "path-params",
             "http-scheme",
             "explicit-port",
             "explicit-default-port",
+            "accepted-url",
         ],
     )
     def test_unnameable_endpoints_return_none(self, url: str) -> None:
@@ -3841,7 +3959,7 @@ class TestSanitizedOAuthEndpointDisplay:
         through the SAME validators the extension loader applies, so the two
         can only drift together."""
         display = sanitized_oauth_endpoint_display(
-            "https://idp.example.com/realms/dev/protocol/openid-connect/auth?state=s"
+            "https://idp.example.com/realms/dev/protocol/openid-connect/auth" + self.Q
         )
         assert display is not None
         host, _, rest = display.partition("/")
@@ -3853,27 +3971,21 @@ class TestSanitizedOAuthEndpointDisplay:
         ) == frozenset({(host, path)})
 
     def test_the_raw_url_and_its_query_never_appear_in_the_display(self) -> None:
-        url = (
-            "https://idp.example.com/authorize"
-            "?client_id=abc&state=TOPSECRETSTATE&code_challenge=PKCEMATERIAL"
-            f"&access_token={self.GITHUB_TOKEN}"
-        )
+        url = "https://idp.example.com/authorize" + self.Q
         display = sanitized_oauth_endpoint_display(url)
         assert display == "idp.example.com/authorize"
-        for secret in ("TOPSECRETSTATE", "PKCEMATERIAL", self.GITHUB_TOKEN, "client_id", "?"):
+        for secret in ("a1B2c3D4", "E9Melhoa2Owv", "client_id", "?", "https://"):
             assert secret not in display
 
     def test_a_redacted_path_is_refused_rather_than_joined(self) -> None:
         # The diagnostic pair is (host, tag): the tag must never be glued onto
         # the host as if it were a path a user could type.
-        pair = sanitized_oauth_endpoint("https://idp.example.com/AKIAIOSFODNN7EXAMPLE/authorize")
-        assert pair == ("idp.example.com", security._REDACTED_CREDENTIAL_TAG)
-        assert (
-            sanitized_oauth_endpoint_display(
-                "https://idp.example.com/AKIAIOSFODNN7EXAMPLE/authorize"
-            )
-            is None
+        url = "https://idp.example.com/AKIAIOSFODNN7EXAMPLE/authorize" + self.Q
+        assert sanitized_oauth_endpoint(url) == (
+            "idp.example.com",
+            security._REDACTED_CREDENTIAL_TAG,
         )
+        assert sanitized_oauth_endpoint_display(url) is None
 
 
 class TestOperatorOAuthEndpointExtension:

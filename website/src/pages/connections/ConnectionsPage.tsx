@@ -44,6 +44,12 @@ const MINT_POLL_MS = 2_000
  *  a grant completed outside the dashboard and keep connected-since fresh. */
 const CONNECTION_STATUS_POLL_MS = 30_000
 
+/** The guide section that shows the oauth_endpoints.json entry a refused
+ *  approval address needs. Linked from the mint_url_rejected feedback via
+ *  `Feedback.help`, so the card's remedy ends in a link rather than a bare path. */
+const OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL =
+  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/connecting-remote-oauth-mcp-server.md#if-the-host-is-not-recognized-the-oauth-endpoint-allowlist'
+
 export type ConnectionCardState =
   | 'not-connected'
   | 'waiting-for-approval'
@@ -1435,6 +1441,8 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         const next = { ...current }
         for (const { slug, reason, endpoint } of mintFailures) {
           let error: string
+          let detail: string | undefined
+          let help: Feedback['help']
           switch (reason) {
             case 'mint_timeouterror':
               error = t('pages.connectionsPage.mint_failure_timed_out')
@@ -1446,12 +1454,19 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               error = t('pages.connectionsPage.mint_failure_server_absent')
               break
             case 'mint_url_rejected':
-              // Name WHICH endpoint was refused when the backend could reduce
-              // it to a copy-ready host/path; otherwise keep the unnamed
-              // message rather than show a remedy that cannot work.
-              error = endpoint
-                ? t('pages.connectionsPage.mint_failure_url_rejected_endpoint', { endpoint })
-                : t('pages.connectionsPage.mint_failure_url_rejected')
+              // Name WHICH endpoint was refused when the backend could reduce it
+              // to a copy-ready host/path. The error line stays one sentence;
+              // the oauth_endpoints.json remedy rides `detail` (its own line)
+              // and the guide rides `help` (a link), so the alarm text does not
+              // swallow the instructions. Without an endpoint the card keeps
+              // its unnamed message rather than show a remedy that cannot work.
+              if (endpoint) {
+                error = t('pages.connectionsPage.mint_failure_url_rejected_endpoint', { endpoint })
+                detail = t('pages.connectionsPage.mint_failure_url_rejected_endpoint_detail', { endpoint })
+                help = { href: OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL }
+              } else {
+                error = t('pages.connectionsPage.mint_failure_url_rejected')
+              }
               break
             default:
               error = t('pages.connectionsPage.mint_failure_unknown')
@@ -1459,6 +1474,8 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           next[slug] = {
             kind: 'error',
             text: t('pages.connectionsPage.action_failed', { error }),
+            ...(detail ? { detail } : {}),
+            ...(help ? { help } : {}),
           }
         }
         return next

@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
 from conftest import requires_symlinks
 from kiro_crew import hooks, mcp_grant
@@ -1003,27 +1004,29 @@ async def test_a_second_credential_bearing_url_surfaces_failure_without_a_third_
     view = mint.pending_mint_for("notion")
     assert view is not None
     assert view["token"] == token
-    # The card learns WHICH endpoint the gate refused (host+path only), so the
-    # user knows what to write into oauth_endpoints.json. The credential lived
-    # in the query, which the display helper never echoes.
-    assert _state_only(view) == {
-        "state": "failed",
-        "reason": "mint_url_rejected",
-        "rejected_endpoint": "auth.example.com/authorize",
-    }
+    # A fixed credential in the query is a rejection the allowlist cannot
+    # clear, so the card is NOT told which endpoint to add: naming it here would
+    # advertise a remedy that leaves the URL rejected. The naming case is the
+    # allowlist-clearable rejection below.
+    assert _state_only(view) == {"state": "failed", "reason": "mint_url_rejected"}
     assert len(_FakeClient.instances) == 2
     assert [client.shutdowns for client in _FakeClient.instances] == [1, 1]
     assert protected_pids == set()
     assert logged == ["error reason=mint_url_rejected"]
     assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
     assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(logged)
-    # The endpoint rides ONLY the card view: neither the warning log nor the
-    # audit line may carry any URL-derived text, or the credential-disclosure
-    # scanners would be right to flag them.
     assert "auth.example.com" not in caplog.text
-    assert "auth.example.com" not in json.dumps(logged)
-    assert tainted not in caplog.text
     assert tainted not in json.dumps(view)
+
+
+# The URL the operator extension exists for: standard front-channel parameters
+# whose opaque state trips the long-query heuristic at any endpoint outside the
+# allowlist, and passes once the endpoint is added. This is the shape the card
+# must NAME, because adding the entry actually fixes it.
+_EXEMPTIBLE_NAME, _EXEMPTIBLE_URL, (_EXEMPTIBLE_HOST, _EXEMPTIBLE_PATH) = (
+    OPERATOR_EXTENSION_OAUTH_URLS[0]
+)
+_EXEMPTIBLE_ENDPOINT = f"{_EXEMPTIBLE_HOST}{_EXEMPTIBLE_PATH}"
 
 
 async def _reject_twice(
@@ -1061,12 +1064,24 @@ async def _reject_twice(
         "https://idp.example.com/AKIAIOSFODNN7EXAMPLE/authorize",
         # Nameable host+path, but the extension loader would refuse the host,
         # so naming it would advertise an entry that gets skipped on load.
-        "https://localhost/authorize?access_token=AKIAIOSFODNN7EXAMPLE",
+        _EXEMPTIBLE_URL.replace(_EXEMPTIBLE_HOST, "localhost", 1),
         # Nameable host+path, but the gate never grants the carve-out to an
         # explicit port, so the entry would be refused again after adding it.
-        "https://auth.example.com:8443/authorize?access_token=AKIAIOSFODNN7EXAMPLE",
+        _EXEMPTIBLE_URL.replace(_EXEMPTIBLE_HOST, _EXEMPTIBLE_HOST + ":8443", 1),
+        # Nameable, loader-valid host+path, but a fixed credential in the query
+        # is refused unconditionally -- the allowlist would not clear it.
+        f"https://{_EXEMPTIBLE_HOST}{_EXEMPTIBLE_PATH}?access_token=AKIAIOSFODNN7EXAMPLE",
+        # Same, for a fragment: providers never emit one, the gate never allows one.
+        _EXEMPTIBLE_URL + "#AKIAIOSFODNN7EXAMPLE",
     ],
-    ids=["credential-in-host", "credential-in-path", "loader-refuses-host", "explicit-port"],
+    ids=[
+        "credential-in-host",
+        "credential-in-path",
+        "loader-refuses-host",
+        "explicit-port",
+        "fixed-credential-in-query",
+        "fragment",
+    ],
 )
 async def test_a_rejection_the_helper_cannot_name_leaves_the_card_unnamed(
     monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], caplog, tainted: str
@@ -1091,22 +1106,19 @@ async def test_the_named_endpoint_is_host_and_path_only(
 ):
     """The card gets the endpoint identity and nothing else from the URL: no
     scheme, query, fragment, or the state/PKCE material that lives in them."""
-    tainted = (
-        "https://IdP.Example.com/realms/dev/authorize"
-        "?client_id=abc&state=TOPSECRETSTATE&code_challenge=PKCEMATERIAL"
-        "&access_token=AKIAIOSFODNN7EXAMPLE#frag"
-    )
+    # Mixed-case host, and every query value is opaque material the card must
+    # never echo (the 128-char state is what trips the gate).
+    tainted = _EXEMPTIBLE_URL.replace(_EXEMPTIBLE_HOST, _EXEMPTIBLE_HOST.title(), 1)
     view, logged = await _reject_twice(monkeypatch, caplog, tainted)
 
     assert view is not None
-    assert view["rejected_endpoint"] == "idp.example.com/realms/dev/authorize"
+    assert view["rejected_endpoint"] == _EXEMPTIBLE_ENDPOINT
     serialized = json.dumps(view)
     for never in (
         "https://",
-        "TOPSECRETSTATE",
-        "PKCEMATERIAL",
-        "AKIAIOSFODNN7EXAMPLE",
-        "#frag",
+        "a1B2c3D4",
+        "E9Melhoa2Owv",
+        "client_id",
         "?",
     ):
         assert never not in serialized
@@ -1121,14 +1133,14 @@ async def test_a_named_endpoint_never_reaches_the_log_or_audit_line(
     """The scanner decision: the endpoint is a CARD field, not log text. If a
     future edit routes it through the logger, this fails before Semgrep or
     CodeQL do."""
-    tainted = "https://auth.example.com/authorize?access_token=AKIAIOSFODNN7EXAMPLE"
-    view, logged = await _reject_twice(monkeypatch, caplog, tainted)
+    view, logged = await _reject_twice(monkeypatch, caplog, _EXEMPTIBLE_URL)
 
     assert view is not None
-    assert view["rejected_endpoint"] == "auth.example.com/authorize"
+    assert view["rejected_endpoint"] == _EXEMPTIBLE_ENDPOINT
     assert caplog.text  # the slug-only warning still fires
     assert "notion" in caplog.text
-    assert "auth.example.com" not in caplog.text
+    assert _EXEMPTIBLE_HOST not in caplog.text
+    assert _EXEMPTIBLE_HOST not in json.dumps(logged)
     assert logged == ["error reason=mint_url_rejected"]
 
 

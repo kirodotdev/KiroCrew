@@ -533,6 +533,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "maintenance_executor",
     "math",
     "normalize_shell_command",
+    "oauth_rejection_is_endpoint_exemptible",
     "oauth_url_contains_credential",
     "os",
     "parse_qs",

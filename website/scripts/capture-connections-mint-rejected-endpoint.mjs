@@ -8,13 +8,16 @@
  * The scene is the Notion card walked through one real connect whose mint ends
  * in `failed` / `mint_url_rejected`. Two frames, each from a fresh page:
  *
- *   1. `rejected_endpoint` present -- the card names the endpoint the gate
- *      refused and points at oauth_endpoints.json;
- *   2. `rejected_endpoint` absent  -- the card keeps its unnamed message.
+ *   1. `rejected_endpoint` present -- the error line names the endpoint the
+ *      gate refused, a second line carries the oauth_endpoints.json remedy,
+ *      and a Documentation link points at the allowlist guide section;
+ *   2. `rejected_endpoint` absent  -- the card keeps its unnamed message, with
+ *      no remedy line and no link.
  *
  * Before each shot the harness asserts the copy it expects is on screen, that
- * no first-run dialog covers the card, and that nothing from the rejected URL
- * beyond host+path (scheme, query, token) ever reached the page text.
+ * the link (when expected) resolves to the guide anchor, that no first-run
+ * dialog covers the card, and that nothing from the rejected URL beyond
+ * host+path (scheme, query, token) ever reached the page text.
  *
  * Usage: node scripts/capture-connections-mint-rejected-endpoint.mjs [outDir]
  */
@@ -26,6 +29,7 @@ import { json, logPageProblems, stubDashboardApi } from './lib/stub-dashboard-ap
 const OUT = process.argv[2] || '../temp-screenshots/connections-mint-rejected-endpoint'
 const SLUG = 'notion'
 const ENDPOINT = 'auth.example-idp.com/realms/dev/authorize'
+const GUIDE_URL = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/connecting-remote-oauth-mcp-server.md#if-the-host-is-not-recognized-the-oauth-endpoint-allowlist'
 /** Strings from the rejected URL that must NEVER appear on the card. */
 const NEVER_ON_SCREEN = ['https://', 'access_token', 'AKIAIOSFODNN7EXAMPLE', 'code_challenge', '?']
 
@@ -43,7 +47,7 @@ const entry = () => ({
   kirocrewManaged: true,
 })
 
-async function frame(browser, base, { name, endpoint, expectText, forbidText }) {
+async function frame(browser, base, { name, endpoint, expectText, expectAlso = [], forbidText, expectLink }) {
   const context = await browser.newContext({ viewport: { width: 1400, height: 880 }, deviceScaleFactor: 1 })
   const page = await context.newPage()
   logPageProblems(page)
@@ -96,7 +100,17 @@ async function frame(browser, base, { name, endpoint, expectText, forbidText }) 
   for (const never of [...NEVER_ON_SCREEN, ...forbidText]) {
     if (text.includes(never)) throw new Error(`${name}: card text carries ${JSON.stringify(never)}`)
   }
-  if (!text.includes(expectText)) throw new Error(`${name}: card text lacks ${JSON.stringify(expectText)}`)
+  for (const want of [expectText, ...expectAlso]) {
+    if (!text.includes(want)) throw new Error(`${name}: card text lacks ${JSON.stringify(want)}`)
+  }
+  const docLinks = card.getByRole('link', { name: /Documentation/ })
+  if (expectLink) {
+    await docLinks.first().waitFor({ state: 'visible', timeout: 20000 })
+    const href = await docLinks.first().getAttribute('href')
+    if (href !== expectLink) throw new Error(`${name}: Documentation link points at ${href}`)
+  } else if (await docLinks.count()) {
+    throw new Error(`${name}: a Documentation link rendered without an endpoint to act on`)
+  }
   await page.waitForTimeout(400)
   await card.screenshot({ path: `${OUT}/${name}.png` })
   console.log('wrote', `${OUT}/${name}.png`)
@@ -110,14 +124,16 @@ async function main() {
     await frame(browser, base, {
       name: '1-card-rejected-endpoint-named',
       endpoint: ENDPOINT,
-      expectText: `The authorization endpoint ${ENDPOINT} looked like it carried a credential`,
-      forbidText: ['so it was not displayed'],
+      expectText: `The approval address from ${ENDPOINT} looked like it carried a credential`,
+      expectAlso: [`If ${ENDPOINT} is a trusted identity provider`, 'oauth_endpoints.json'],
+      forbidText: ['containing credential-like data'],
+      expectLink: GUIDE_URL,
     })
     await frame(browser, base, {
       name: '2-card-rejected-endpoint-unnamed-fallback',
       endpoint: undefined,
       expectText: 'containing credential-like data, so it was not displayed',
-      forbidText: [ENDPOINT, 'oauth_endpoints.json'],
+      forbidText: [ENDPOINT, 'oauth_endpoints.json', 'identity provider'],
     })
   } finally {
     await browser.close()

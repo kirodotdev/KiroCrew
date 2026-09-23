@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 from test_connections_mint import _FS_ATTRS, _FS_NAMES, _called_names
 
 from conftest import requires_symlinks
@@ -1579,7 +1580,10 @@ async def test_a_refused_premint_stays_slug_only_and_hands_naming_to_the_cold_mi
     card's poll reads ``idle`` and asks for a cold mint), the warm-side text carries the
     slug and nothing from the URL, and the display contract the cold mint applies to the
     same URL yields the copy-ready endpoint."""
-    url = "https://linear.example/authorize?state=AKIA" + "IOSFODNN7EXAMPLE1"
+    # The operator-extension corpus: rejected for a long opaque state at an
+    # endpoint outside the allowlist, clean once the endpoint is added -- the
+    # one shape whose cold-mint card must name the endpoint.
+    _, url, (host, path) = OPERATOR_EXTENSION_OAUTH_URLS[0]
     audited: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
         warm, "_log_warm_event", lambda op, res, outcome="ok": audited.append((op, res, outcome))
@@ -1598,13 +1602,15 @@ async def test_a_refused_premint_stays_slug_only_and_hands_naming_to_the_cold_mi
     # Slug-only on every warm-side channel.
     assert audited == [("connections_warm_mint_url", "provider:linear", "refused")]
     assert "linear" in caplog.text
-    for never in ("linear.example", "/authorize", "AKIA", url):
+    for never in (host, path, "a1B2c3D4", url):
         assert never not in caplog.text
         assert never not in json.dumps(audited)
     # The hand-off is coherent: the cold mint the card now starts re-hits this URL,
-    # and its card view names exactly this endpoint (host+path, nothing from the query).
+    # and its card view names exactly this endpoint (host+path, nothing from the query)
+    # -- because this is a rejection the allowlist entry would clear.
     assert security.oauth_url_contains_credential(url)
-    assert security.sanitized_oauth_endpoint_display(url) == "linear.example/authorize"
+    assert security.oauth_rejection_is_endpoint_exemptible(url)
+    assert security.sanitized_oauth_endpoint_display(url) == f"{host}{path}"
 
 
 @pytest.mark.asyncio

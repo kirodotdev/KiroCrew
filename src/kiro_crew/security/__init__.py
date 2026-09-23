@@ -292,6 +292,7 @@ from .exfil import (
     canonicalize_ip,
     diagnose_oauth_url_credential,
     exfil_query_min_len,
+    oauth_rejection_is_endpoint_exemptible,
     oauth_url_contains_credential,
     redact_exfiltration_urls,
     scan_exfiltration_urls,
@@ -775,21 +776,23 @@ def sanitized_oauth_endpoint_display(url: str) -> str | None:
     ``oauth_endpoints.json``" must not join those into text that reads as
     actionable and is not.
 
-    So this helper returns a string only when the pair would also be accepted
-    by the extension file's own loader and honoured by the gate that reads it:
+    So this helper returns a string only when writing the entry would WORK:
 
     * the host matches ``_OAUTH_EXTENSION_HOST_RE`` (lowercase DNS name with a
       letter TLD — so ``localhost``, IP literals and a capped host are refused);
     * the path passes ``_valid_oauth_extension_path`` (leading ``/``, no
       ``; ? # % \\ ..`` or whitespace) and is neither redacted nor capped;
-    * the URL is ``https`` with no explicit port, because the gate grants the
-      endpoint carve-out only under those two conditions and an entry for an
-      ``http`` or ``:8443`` endpoint would be refused again after the user
-      added it.
+    * the rejection is one the allowlist can clear
+      (:func:`oauth_rejection_is_endpoint_exemptible`): the gate is re-run as
+      if the endpoint were approved, and only a URL that then PASSES is named.
+      A URL refused for a fixed credential, userinfo, a fragment, path
+      parameters, heavy percent-encoding, ``http`` or an explicit port would be
+      refused again after the entry is added, so it stays unnamed rather than
+      advertise a remedy that cannot work.
 
-    Callers fall back to their unnamed message on ``None``. The function is a
-    pure parse-and-match: it never re-runs the credential verdict and never
-    touches the operator file, so it is safe to call inline.
+    Callers fall back to their unnamed message on ``None``. Because the
+    counterfactual re-runs the gate, this can stat the operator file (memoized),
+    so callers treat it like the gate itself and run it off the event loop.
     """
     endpoint = sanitized_oauth_endpoint(url)
     if endpoint is None:
@@ -801,12 +804,7 @@ def sanitized_oauth_endpoint_display(url: str) -> str | None:
         return None
     if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host) or not _valid_oauth_extension_path(path):
         return None
-    try:
-        parsed = urlparse(url)
-        port = parsed.port
-    except ValueError:
-        return None
-    if parsed.scheme.lower() != "https" or port is not None:
+    if not oauth_rejection_is_endpoint_exemptible(url):
         return None
     return f"{host}{path}"
 

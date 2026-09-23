@@ -930,12 +930,14 @@ async def start_oauth_mint(
             # Named on the CARD, never in the log: without the host+path the
             # user cannot know what to write into oauth_endpoints.json, so the
             # failure reads as unfixable. The display helper owns the
-            # copy-ready contract (None for a host-borne credential, userinfo,
-            # a redacted or capped component, a non-https or ported URL, or a
-            # shape the extension loader would refuse), so the card falls back
-            # to its unnamed message rather than showing a remedy that cannot
-            # work. Pure parse-and-match, so no thread hop is needed.
-            rejected_endpoint = sanitized_oauth_endpoint_display(oauth_url)
+            # copy-ready contract: None for a host-borne credential, userinfo,
+            # a redacted or capped component, a shape the extension loader would
+            # refuse, or a rejection the allowlist could not clear anyway (fixed
+            # credential, fragment, path params, http, explicit port) -- so the
+            # card falls back to its unnamed message rather than show a remedy
+            # that cannot work. Same thread hop as the gate: the counterfactual
+            # re-runs it, and it can stat the operator's endpoint file.
+            rejected_endpoint = await asyncio.to_thread(sanitized_oauth_endpoint_display, oauth_url)
             async with _mints_lock:
                 if _mints.get(slug, {}).get("token") == my_token:
                     failed: MintState = {
