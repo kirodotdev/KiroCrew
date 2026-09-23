@@ -2411,26 +2411,36 @@ def _conn_index_add(conn: _StubConn) -> None:
 #: binding only costs a re-claim — the identity itself is never invented here.
 _MAX_TOKEN_BINDINGS = 512
 
-#: ``stub_session_token`` -> (caller that owns it, runtime pid the claim named).
+#: ``stub_session_token`` -> (caller, runtime pid the claim named, that pid's
+#: process start token — the recycle guard, since a pid is a reusable NUMBER).
 #: Written ONLY from a ``claim`` frame, which arrives over the uid-gated 0700
 #: socket from the gateway process that minted the token — so a binding is
 #: Crew-authored, never peer-asserted. Read at register time and by
 #: :func:`_apply_claim`, which is what lets one runtime's connections be
 #: re-targeted per SESSION instead of per PID.
-_TOKEN_BINDINGS: "OrderedDict[str, tuple[CallerContext, int]]" = OrderedDict()
+_TOKEN_BINDINGS: "OrderedDict[str, tuple[CallerContext, int, Optional[str]]]" = OrderedDict()
 
 
-def _bind_token(token: str, caller: CallerContext, pid: int) -> None:
-    """Record ``token`` -> *caller* from a claim frame (most recent last)."""
+def _bind_token(
+    token: str, caller: CallerContext, pid: int, pid_start_id: Optional[str] = None
+) -> None:
+    """Record ``token`` -> *caller* from a claim frame (most recent last).
+
+    *pid_start_id* is that pid's start token; ``None`` never denies a resolution.
+    """
     if not token:
         return
     _TOKEN_BINDINGS.pop(token, None)
-    _TOKEN_BINDINGS[token] = (caller, pid)
+    _TOKEN_BINDINGS[token] = (caller, pid, pid_start_id)
     while len(_TOKEN_BINDINGS) > _MAX_TOKEN_BINDINGS:
         _TOKEN_BINDINGS.popitem(last=False)
 
 
-def _token_caller(token: str, attested_pids: Collection[int] = ()) -> Optional[CallerContext]:
+def _token_caller(
+    token: str,
+    attested_pids: Collection[int] = (),
+    pid_start_ids: Optional[dict[int, Optional[str]]] = None,
+) -> Optional[CallerContext]:
     """The session bound to *token*, for a connection the KERNEL places under it.
 
     A claim binds a token TOGETHER WITH the runtime PID it named, and this
@@ -2449,6 +2459,12 @@ def _token_caller(token: str, attested_pids: Collection[int] = ()) -> Optional[C
     the walk from it is gatewayd's own, so the chain cannot be authored by the
     registrant.
 
+    *pid_start_ids* is this connection's register-time snapshot, and supplying it
+    adds the generation term: membership alone lets a binding whose process died
+    be satisfied by whatever inherits its pid NUMBER, which is what the pid factor
+    exists to bound. Only a DEFINITE mismatch denies — an unknown on either side
+    is a match, as on Windows — mirroring the guard in :func:`_apply_claim`.
+
     An empty chain therefore answers ``None`` for a bound token rather than
     trusting it: a connection whose ancestry the kernel did not attest is not
     shown to be under the runtime the claim named. That is not a dead end —
@@ -2462,8 +2478,13 @@ def _token_caller(token: str, attested_pids: Collection[int] = ()) -> Optional[C
     entry = _TOKEN_BINDINGS.get(token)
     if entry is None:
         return None
-    caller, bound_pid = entry
-    return caller if bound_pid in set(attested_pids) else None
+    caller, bound_pid, bound_start_id = entry
+    if bound_pid not in set(attested_pids):
+        return None
+    registered = (pid_start_ids or {}).get(bound_pid)
+    if bound_start_id is not None and registered is not None and registered != bound_start_id:
+        return None
+    return caller
 
 
 def _token_is_unbound(token: str) -> bool:
@@ -2622,7 +2643,9 @@ async def _apply_claim(
         return {"type": "claim-rejected", "reason": reason}
     raw_session_token = frame.get("stub_session_token")
     session_token = raw_session_token if isinstance(raw_session_token, str) else ""
-    _bind_token(session_token, updated_caller, pid)
+    raw_token = frame.get("pid_start_id")
+    claim_token = raw_token if isinstance(raw_token, str) else None
+    _bind_token(session_token, updated_caller, pid, claim_token)
     conns = _CONN_INDEX.get(pid, set())
     if not conns:
         # A claim naming a pid with NO indexed connection is the exact silent
@@ -2653,8 +2676,6 @@ async def _apply_claim(
     # "identity unknown" (Windows, unreadable /proc, legacy claim frames) and
     # MUST count as a match, otherwise every claim on those platforms would
     # be rejected.
-    raw_token = frame.get("pid_start_id")
-    claim_token = raw_token if isinstance(raw_token, str) else None
     # Pass 1: retarget every eligible connection SYNCHRONOUSLY (no awaits)
     # before any eviction runs — see the wrong-principal note below.
     retargeted: list[tuple[Any, str]] = []
@@ -3513,6 +3534,34 @@ async def _handle_connection(
         stub_session_token,
     )
     _conn_index_add(conn)
+    if stub_session_token:
+        # The binding was read before anything could reach this connection, and a
+        # claim landing across the awaits above matches ZERO connections — so the
+        # pre-await reading would stand for life: no identity, or the session the
+        # token was rekeyed away from. Re-ask once the index holds it and take the
+        # answer WHOLE, ``None`` included: a stale name is worse than none, and
+        # nothing revokes one later. Factors unchanged — the attested chain, never
+        # ``indexed_pids``, plus the recycle guard. No eviction is owed: no frame
+        # has been read, so no grant exists under the old name.
+        rebound = _token_caller(stub_session_token, peer_host_pids, conn.pid_start_ids)
+        old_key = caller.session_key if caller is not None else ""
+        new_key = rebound.session_key if rebound is not None else ""
+        caller = rebound
+        conn.caller = rebound
+        if new_key != old_key:
+            _audit_caller_claimed(
+                old_key,
+                new_key,
+                conn.pool_label,
+                "allowed" if rebound is not None else "denied",
+                "" if rebound is not None else "token not claimed from this attested runtime",
+            )
+            logger.info(
+                "stub %s: session binding re-read once indexed — %s (was %s)",
+                stub_uuid,
+                new_key or "<none>",
+                old_key or "<none>",
+            )
 
     # Register this connection for the keepalive probe. Scoped to the handler's
     # own task so a dead transport can cancel exactly the coroutine that is

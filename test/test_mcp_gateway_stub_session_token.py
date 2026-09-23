@@ -2262,3 +2262,153 @@ class TestModuleFormShadowing:
         isolated = {"command": sys.executable, "args": ["-I", "-m", "kiro_crew", self.SUB]}
         monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", lambda name, **_kw: dict(isolated))
         assert not self._ours(isolated, env={"PYTHONPATH": str(tmp_path)}, work_dir=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# The ordering the register loses: a claim that binds while the register runs
+# ---------------------------------------------------------------------------
+
+
+def _claim_during_register(
+    monkeypatch: pytest.MonkeyPatch, frame: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Push *frame* while the register is parked on its start-id snapshot.
+
+    That await is the race. Register-time resolution has already run and read an
+    unbound token, and the connection is not in ``_CONN_INDEX`` yet — so the
+    claim binds the token and reaches nothing, which is the measured
+    ``unclaimed session token`` / ``claim matched ZERO connections`` pair. The
+    snapshot is an executor hop, so driving the claim from that seam makes the
+    ordering deterministic rather than hoping to catch it.
+    """
+    loop = asyncio.get_running_loop()
+    acks: list[dict[str, Any]] = []
+    real = gw._get_process_start_id
+
+    def snapshot(pid: int) -> Any:
+        if not acks:
+            acks.append(asyncio.run_coroutine_threadsafe(gw._apply_claim(frame), loop).result(5))
+        return real(pid)
+
+    monkeypatch.setattr(gw, "_get_process_start_id", snapshot)
+    return acks
+
+
+async def _register_racing_a_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    claim_pid: int,
+    host_chain: list[int],
+    stub_pids: list[int] | None = None,
+    claim_frame: dict[str, Any] | None = None,
+) -> tuple[Any, list[dict[str, Any]], Any, Any]:
+    backend, _sel = _patch_env(monkeypatch)
+    _attest(monkeypatch, host_chain)
+    if claim_frame is None:
+        claim_frame = _claim_with_token(claim_pid, SUB_KEY, TOKEN_B)
+    acks = _claim_during_register(monkeypatch, claim_frame)
+    reader = _QueueReader()
+    reader.feed(_register_with_token("", TOKEN_B, stub_uuid="stub-raced", ancestor_pids=stub_pids))
+    reader.feed(_CALL)
+    task = asyncio.create_task(_handle(reader, _RecordingWriter()))
+    await asyncio.wait_for(backend.forwarded.wait(), timeout=5.0)
+    # The claim really did miss — without that, the test proves nothing.
+    assert acks == [{"type": "claim-noop", "updated": 0, "connections": 0}]
+    return backend, acks, reader, task
+
+
+@pytest.mark.asyncio
+async def test_a_claim_that_binds_while_the_register_runs_still_names_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stranding case. A token-carrying connection is nameable by claim-push
+    alone, so a claim that binds after resolution and before the index leaves
+    nothing able to name it: every in-tree MCP call in that session is refused
+    for the connection's whole life. The register re-asks once the index holds
+    it, so the deferral resolves on the same two factors instead of stranding."""
+    backend, _acks, reader, task = await _register_racing_a_claim(monkeypatch, 9020, [9100, 9020])
+    assert backend.callers[0] is not None
+    assert backend.callers[0].session_key == SUB_KEY
+    await _close(reader, task)
+
+
+@pytest.mark.asyncio
+async def test_the_re_ask_authenticates_on_the_attested_chain_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The factor must stay the one the registrant cannot author. Here the stub
+    self-reports the runtime the claim named while the kernel places it
+    elsewhere, so the re-ask must refuse exactly as the register did: resolving
+    against ``indexed_pids`` (which folds in ``ancestor_pids``) would let one
+    process that read another session's token satisfy both halves itself."""
+    backend, _acks, reader, task = await _register_racing_a_claim(
+        monkeypatch, 9020, [9100], stub_pids=[9020]
+    )
+    assert backend.callers[0] is None
+    await _close(reader, task)
+
+
+@pytest.mark.asyncio
+async def test_a_rekey_during_register_does_not_leave_the_previous_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A surviving token re-bound to the claiming session is the ordinary
+    warm-pool rekey, so the register can read session A and be overtaken by B
+    across the same awaits. Reading only the identity-less half would forward
+    every call in that window as A — wrong-principal execution, the class the
+    claim's own two-pass ordering exists to prevent."""
+    await gw._apply_claim(_claim_with_token(9020, PARENT_KEY, TOKEN_B))
+    backend, _acks, reader, task = await _register_racing_a_claim(monkeypatch, 9020, [9100, 9020])
+    assert backend.callers[0] is not None
+    assert backend.callers[0].session_key == SUB_KEY
+    await _close(reader, task)
+
+
+@pytest.mark.asyncio
+async def test_a_rekey_onto_another_runtime_clears_the_stale_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Take the re-read whole. When the rekey moves the token to a runtime the
+    kernel does not place this peer under, the honest answer is the register's
+    own fail-closed one — no identity — and keeping the previous session's name
+    would be a stale grant nothing later in the connection's life revokes."""
+    await gw._apply_claim(_claim_with_token(9020, PARENT_KEY, TOKEN_B))
+    backend, _acks, reader, task = await _register_racing_a_claim(monkeypatch, 777777, [9100, 9020])
+    assert backend.callers[0] is None
+    await _close(reader, task)
+
+
+@pytest.mark.asyncio
+async def test_a_recycled_pid_cannot_satisfy_a_stale_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pid is a reusable NUMBER, so membership in the attested chain is not on
+    its own evidence that the process the claim named is the one this stub sits
+    under. The binding carries the claimed process's start token and the re-read
+    compares it against this connection's own register-time snapshot, the same
+    guard claim-push applies, so a definite mismatch refuses rather than hand
+    over the session that holds the number's earlier generation."""
+    monkeypatch.setattr(gw, "_get_process_start_id", lambda _pid: "generation-2")
+    frame = _claim_with_token(9020, SUB_KEY, TOKEN_B)
+    frame["pid_start_id"] = "generation-1"
+    backend, _acks, reader, task = await _register_racing_a_claim(
+        monkeypatch, 9020, [9100, 9020], claim_frame=frame
+    )
+    assert backend.callers[0] is None
+    await _close(reader, task)
+
+
+@pytest.mark.asyncio
+async def test_a_matching_generation_still_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control for the guard above: same shape, same snapshot, and the
+    claim names the generation this connection actually registered under."""
+    monkeypatch.setattr(gw, "_get_process_start_id", lambda _pid: "generation-2")
+    frame = _claim_with_token(9020, SUB_KEY, TOKEN_B)
+    frame["pid_start_id"] = "generation-2"
+    backend, _acks, reader, task = await _register_racing_a_claim(
+        monkeypatch, 9020, [9100, 9020], claim_frame=frame
+    )
+    assert backend.callers[0] is not None
+    assert backend.callers[0].session_key == SUB_KEY
+    await _close(reader, task)
