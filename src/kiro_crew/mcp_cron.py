@@ -61,7 +61,7 @@ from kiro_crew.mcp_cron_list_render import (
     _render_cron_list_full,
     _render_cron_list_json,
 )
-from kiro_crew.mcp_cron_tool_list import _list_tools
+from kiro_crew.mcp_cron_tool_list import BACKGROUND_RUN_TOOL, _list_tools
 from kiro_crew.mcp_cron_vet import (
     _log_cron_denial,
     _resolve_cron_folder,
@@ -136,6 +136,15 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     remote_refusal = refuse_local_only_tool(_resolve_session_key(), "kirocrew-cron", name)
     if remote_refusal:
         return f"Error: {remote_refusal}"
+    if name == BACKGROUND_RUN_TOOL:
+        return call_tool_with_logging(
+            name,
+            raw_args,
+            _validate_args,
+            _background_run,
+            session_key=_resolve_session_key() or "mcp_cron",
+            downstream_service="kirocrew-cron",
+        )
     # Managed callers use ordinary authenticated gateway routing, including
     # live restricted sessions whose execution record intentionally is not on disk.
     if current_caller() is not None or _resolve_session_key():
@@ -230,6 +239,51 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
             )
         return result
     return _call_tool_locally(name, raw_args)
+
+
+def _format_timeout(value: Any) -> str:
+    """``2h``, ``1h 30m``, ``5m`` or ``45s`` for a timeout in seconds."""
+    total = value if isinstance(value, int) and not isinstance(value, bool) else 0
+    hours, rest = divmod(max(0, total), 3600)
+    minutes, secs = divmod(rest, 60)
+    parts = [f"{n}{unit}" for n, unit in ((hours, "h"), (minutes, "m"), (secs, "s")) if n]
+    return " ".join(parts) or "0s"
+
+
+def _background_run(_name: str, args: dict[str, Any]) -> str:
+    """Start a gateway-owned background command for the verified calling chat.
+
+    Lives on this server, not ``kirocrew-core``, because ``@kirocrew-core`` is
+    granted as a whole in ``allowedTools``: kiro-cli would approve the call
+    locally and it would never reach the approval ladder ``execute_bash`` and
+    ``cron_add`` walk. The gateway judges the command text itself.
+    """
+    from kiro_crew.mcp_core import _post
+
+    session_key, refusal = require_strict_session_key(
+        "Cannot identify this chat for background_run. Reopen the conversation.",
+        server="kirocrew-cron",
+    )
+    if refusal:
+        return f"Error: {refusal}"
+    response = _post("/api/workflows/background", dict(args), session_key=session_key)
+    if response.get("transport_error"):
+        # The gateway may have started it before the reply was lost.
+        return (
+            f"Error: {response.get('error', 'the gateway reply was lost')}. Outcome unknown: "
+            "the command may be running. Check workflow_list before retrying."
+        )
+    if response.get("error"):
+        return f"Error: {response['error']}"
+    run_id = response.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return "Error: the gateway returned no run id; check workflow_list before retrying."
+    return (
+        f"Started background command {run_id} ({response.get('name', '')}), timeout "
+        f"{_format_timeout(response.get('timeout_secs'))}. Full output: {response.get('log_path', '')}. End your turn now: "
+        "this chat is woken with the exit code and output tail when it finishes. "
+        f"Check it with workflow_status('{run_id}'); stop it with workflow_cancel('{run_id}')."
+    )
 
 
 def _call_tool_locally(name: str, raw_args: dict[str, Any]) -> str:
@@ -1532,6 +1586,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.loader import (  # noqa: F401
         read_local_secret,
+    )
+    from kiro_crew.constants import (  # noqa: F401
+        BACKGROUND_RUN_DEFAULT_TIMEOUT_SECS,
+        BACKGROUND_RUN_MAX_TIMEOUT_SECS,
     )
     from kiro_crew.cron import (  # noqa: F401
         compute_next_run_ts,

@@ -755,7 +755,9 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
 ) -> None:
     """The workflow service's callbacks: a run event is broadcast with its session, a
     finished run's result opens an agent turn whose prompt names the run and its
-    status, and a workflow nudge goes through the shared authorization chokepoint."""
+    status, and a workflow nudge goes through the shared authorization chokepoint.
+    The background command service is published beside it, reconciled, and handed
+    the delivery that wakes a chat when its command ends."""
     created: dict[str, Any] = {}
 
     async def _create(**kwargs: Any) -> Any:
@@ -763,14 +765,37 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
         return types.SimpleNamespace(timeout_secs=kwargs["timeout_secs"], registry=MagicMock())
 
     monkeypatch.setattr("kiro_crew.workflows.service.WorkflowService.create", _create)
+    background = MagicMock()
+    # Reconciled before the service is published, so nothing is admitted first;
+    # a pass that could not list the records hands over to the retry task.
+    at_reconcile: list[Any] = []
+    background.reconcile_before_admission = AsyncMock(
+        side_effect=lambda: at_reconcile.append(
+            (state.workflow_service, state.background_commands, state.workflow_startup_status)
+        )
+        or False
+    )
+    background.reconcile_at_boot = AsyncMock()
+    background_factory = MagicMock(return_value=background)
+    monkeypatch.setattr(
+        "kiro_crew.background_commands.BackgroundCommandService", background_factory
+    )
     slot = MagicMock()
     slot.enqueue_or_run_prompt.return_value = True
 
-    async def _inject(state_: Any, run_id: str, snapshot: dict, *, on_injected: Any) -> None:
+    async def _inject(state_: Any, run_id: str, snapshot: dict, *, on_injected: Any) -> bool:
         on_injected(slot, snapshot)
         on_injected(None, snapshot)
+        return True
 
     monkeypatch.setattr("kiro_crew.dashboard.workflow_inject.inject_bound_workflow_result", _inject)
+
+    async def _deliver(
+        state_: Any, run_id: str, snapshot: dict, *, prompt: str, wake: Any, dispatch: Any
+    ) -> bool:
+        return wake(slot, lambda consumed: None, lambda: None) is not None
+
+    monkeypatch.setattr("kiro_crew.dashboard.workflow_inject.deliver_command_outcome", _deliver)
     loader = MagicMock()
     loader.load.side_effect = OSError("config unreadable")
     monkeypatch.setattr(server, "KiroCrewConfig", loader)
@@ -782,6 +807,7 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     await server._initialize_workflow_service(state)
     assert state.workflow_startup_status == "ready"
     assert created["timeout_secs"] is None and created["concurrency"] == 4
+    assert state.background_commands is background
     state.workflow_service.registry.get.return_value = types.SimpleNamespace(session_key="s1")
     created["on_event"]("run-1", {"kind": "step"})
     state.broadcast_ws.assert_called_once_with(
@@ -798,6 +824,28 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     assert prompt.startswith("[Workflow `nightly` finished: done] Its result was just posted")
     state.push_slots_update.assert_called_once_with()
     assert state._background_tasks == set()
+    background.reconcile_before_admission.assert_awaited_once_with()
+    [(service_then, background_then, status_then)] = at_reconcile
+    assert service_then is not state.workflow_service
+    assert background_then is not background and status_then != "ready"
+    background.reconcile_at_boot.assert_awaited_once_with()
+
+    assert background_factory.call_args.kwargs["context_builder"] is state.context_builder
+    deliver = background_factory.call_args.kwargs["deliver"]
+    assert await deliver("wf_000002", {"name": "make test", "status": "finished"})
+    # Queued with the runner's consumption callback, never run at once.
+    prompt = slot.queue_insert.call_args.args[1]
+    assert prompt.startswith("[Background command `make test` (wf_000002) finished] Its outcome")
+    assert callable(slot.queue_insert.call_args.kwargs["on_consumed"])
+    assert callable(slot.queue_insert.call_args.kwargs["on_irreversibly_consumed"])
+    # Tagged, so the drain writes the gateway's inject row rather than user speech.
+    assert slot.queue_insert.call_args.kwargs["kind"] == "background_command"
+    # Before memory is prepared the gateway declines the wake rather than run it.
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_runner._parked_queue_drain_admitted", lambda: False
+    )
+    assert not await deliver("wf_000003", {"name": "make test", "status": "finished"})
+    assert slot.queue_insert.call_count == 1
 
     authorize = AsyncMock(return_value=(None, "loop refused", 403))
     monkeypatch.setattr(server, "authorize_and_add_nudge", authorize)
