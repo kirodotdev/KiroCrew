@@ -1151,11 +1151,16 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
             error_code="trust_grant_not_removed",
         )
 
+    from kiro_crew.apps.backend import _pinned_ancestors  # deferred: see below
+
     quarantined: list[tuple[Path, Path]] = []
     _data_pin = None
     _deps_lock: contextlib.ExitStack | None = None
     try:
         if keep_data:
+            # ONE string for the pin below and every path-based step after it,
+            # or verify() guards a path the renames and deletes do not use.
+            dest = _pinned_ancestors(dest)
             data = dest / "data"
             # Move data to temp, remove app dir, move data back
             tmp_data = dest.parent / f".{name}-data-tmp"

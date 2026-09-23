@@ -309,9 +309,12 @@ def pin_parent(
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise refusal(
                         f"refusing to write the {what}: the directory {component!r} on "
-                        "the way to it became a symbolic link after the path was "
-                        "checked. A parent swapped for a link redirects the write "
-                        "however carefully the final name is opened, so it is refused."
+                        "the way to it is not usable: it either became a symbolic "
+                        "link after the path was checked, was one all along because "
+                        "this path was handed in unresolved - which the walk cannot "
+                        "tell apart - or is not a directory at all. Each of those "
+                        "redirects or blocks the write however carefully the final "
+                        "name is opened, so it is refused."
                     ) from exc
                 raise
             os.close(dir_fd)

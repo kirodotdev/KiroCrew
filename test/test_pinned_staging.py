@@ -182,6 +182,30 @@ def test_open_dir_pinned_refuses_a_parent_that_became_a_link(tmp_path: Path) -> 
     assert "became a symbolic link" in str(excinfo.value)
 
 
+@pinned_only
+def test_a_refused_link_names_both_causes_rather_than_asserting_a_swap(tmp_path: Path) -> None:
+    """The refusal must not report an attack it cannot see.
+
+    A link met on the walk has two causes: swapped after the caller resolved
+    the path, or there all along because the caller never resolved it. Nothing
+    reachable from here tells them apart - the filesystem is read after the
+    swap either way - so the message names both and asserts neither. Claiming
+    a swap sends a reader hunting an attacker who was never there; claiming a
+    caller error denies one who was.
+    """
+    real = tmp_path / "real"
+    (real / "inside").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    with pytest.raises(pinned_fs.PinnedPathRefusal) as excinfo:
+        pinned_fs.pin_parent(str(link / "inside"), what="staging root")
+    message = str(excinfo.value)
+    assert "became a symbolic link after the path was checked" in message
+    assert "was one all along because this path was handed in unresolved" in message
+    assert "is not a directory at all" in message
+
+
 # ── Hardlink aliases ─────────────────────────────────────────────────────────
 
 

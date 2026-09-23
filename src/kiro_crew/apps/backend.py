@@ -1175,8 +1175,24 @@ def _open_contained_nofollow(base: Path, target: Path) -> int:
     )
 
 
+def _pinned_ancestors(path: Path) -> Path:
+    """Return *path* with its ancestors canonical and its own name literal.
+
+    The form :func:`kiro_crew.pinned_fs.pin_parent` asks its callers for: its
+    O_NOFOLLOW walk refuses an ancestor that has always been a link - a home
+    reached through one - exactly like one swapped mid-transaction. The final
+    name is left alone, or the walk follows a link planted AT the directory it
+    is pinning. ``realpath``, not ``Path.resolve``, which raises RuntimeError
+    on a cycle and escapes the OSError callers refuse with.
+    """
+    return Path(os.path.realpath(path.parent)) / path.name
+
+
 class _PinnedDir:
     """Pin the app data dir against link swaps for one provision transaction.
+
+    The path is pinned exactly as handed in, so the CALLER owns
+    :func:`_pinned_ancestors`: splitting it here would guess this one's depth.
 
     A path-based check-then-use is a TOCTOU window: a RUNNING app can swap
     ``data/`` for a symlink after the validation and have every later rename
@@ -1401,6 +1417,9 @@ def provision_app_deps(app_name: str, root: Path) -> str:
     descriptor), and the stamp check runs inside the lock, so a waiter that
     blocked behind a successful install skips pip on the stamp it left.
     """
+    # Every pinned call below derives its path from root, so one canonical
+    # base reaches all of them: requirements, staging snapshot, tree removals.
+    root = _pinned_ancestors(root)
     _req = root / "requirements.txt"
     if not _req.is_file():
         # is_file() follows a symlink, so it answers False for a DANGLING

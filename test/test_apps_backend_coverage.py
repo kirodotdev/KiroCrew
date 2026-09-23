@@ -2067,6 +2067,80 @@ class TestDependencyInstall:
         assert target.read_text(encoding="utf-8") == "keep this content"
         assert lock.is_symlink()
 
+    def _stub_pip(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Record each --target pip is pointed at, and populate it.
+
+        ``wrap_argv`` is stubbed for the same reason the ``spawn_root`` fixture
+        stubs it: it fail-closes where no OS sandbox backend is available, which
+        is a property of the host rather than of the paths under test.
+        """
+        targets: list[str] = []
+        monkeypatch.setattr(bmod, "wrap_argv", lambda argv, **_kw: (list(argv), None))
+
+        def _fake_pip(argv: Any, **kwargs: Any) -> Any:
+            if "install" in argv:
+                argv = list(argv)
+                target = argv[argv.index("--target") + 1]
+                targets.append(target)
+                (Path(target) / "pkg.py").write_text("x = 1\n", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _fake_pip)
+        return targets
+
+    def test_provisioning_through_a_linked_home_reaches_the_staging_pin(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole transaction has to survive a linked ancestor, not just the data pin.
+
+        Provisioning pins twice - the data directory and, one level deeper, the
+        staging tree pip installs into. Both walks refuse any link they meet, so
+        a home reached through one fails at whichever pin the caller did not
+        canonicalise for. Driving the real transaction is what covers the second.
+        """
+        if not bmod.pinned_fs.supports_pinned_walk():
+            pytest.skip("requires O_NOFOLLOW + dir_fd support; the pinned walk is the subject")
+        real_home = tmp_path / "real-home"
+        app_root = real_home / "crew" / "apps" / "demo"
+        app_root.mkdir(parents=True)
+        (app_root / "requirements.txt").write_bytes(b"requests\n")
+        linked_home = tmp_path / "linked-home"
+        linked_home.symlink_to(real_home)
+        targets = self._stub_pip(monkeypatch)
+
+        error = bmod.provision_app_deps("demo", linked_home / "crew" / "apps" / "demo")
+
+        assert error == "", error
+        assert targets, "pip never ran, so the staging pin was never reached"
+        assert (bmod.app_deps_dir(app_root) / "pkg.py").is_file()
+
+    def test_provisioning_refuses_a_link_at_the_app_directory(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A link at the app's own name must be refused, at every pin in the run.
+
+        ``apps/<name>`` is app-writable, so canonicalising it would let a link
+        planted there redirect the gateway's own staging writes into another
+        app's tree. The refusal has to hold for the staging pin too, which sits
+        a level deeper than the data pin and so splits the path differently.
+        """
+        if not bmod.pinned_fs.supports_pinned_walk():
+            pytest.skip("requires O_NOFOLLOW + dir_fd support; the pinned walk is the subject")
+        apps = tmp_path / "crew" / "apps"
+        victim = apps / "victim"
+        (victim / "data").mkdir(parents=True)
+        (victim / "requirements.txt").write_bytes(b"requests\n")
+        (apps / "attacker").symlink_to(victim)
+        targets = self._stub_pip(monkeypatch)
+
+        error = bmod.provision_app_deps("attacker", apps / "attacker")
+
+        assert error, "provisioning through a linked app directory must be refused"
+        assert not targets, "pip ran, so a write was already aimed through the link"
+        assert not list(
+            (victim / "data").glob(".kirocrew-deps*")
+        ), "the refusal came too late: the victim tree already carries staging"
+
     def test_concurrent_provisioning_is_serialized_by_the_deps_lock(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2147,6 +2221,102 @@ class TestDependencyInstall:
                 pin.verify()
         finally:
             pin.close()
+
+    def test_a_data_dir_under_a_linked_ancestor_is_pinned_not_refused(self, tmp_path: Any) -> None:
+        """A home directory reached through a symlink is ordinary, not an attack.
+
+        pin_parent walks every component with O_NOFOLLOW and refuses a link,
+        which is why its contract makes the CALLER resolve the path once. An
+        ancestor that has always been a link is indistinguishable from a
+        swapped one to that walk, so an unresolved path turns every install
+        and uninstall into a refusal for anyone whose home contains one.
+        """
+        if not bmod.pinned_fs.supports_pinned_walk():
+            pytest.skip("requires O_NOFOLLOW + dir_fd support; the pinned walk is the subject")
+        real_home = tmp_path / "real-home"
+        data = real_home / "crew" / "apps" / "demo" / "data"
+        data.mkdir(parents=True)
+        linked_home = tmp_path / "linked-home"
+        linked_home.symlink_to(real_home)
+        app_root = linked_home / "crew" / "apps" / "demo"
+
+        pin = bmod._PinnedDir(bmod._pinned_ancestors(app_root) / "data")
+        try:
+            assert pin.fd is not None, "POSIX must pin by descriptor"
+            pinned = os.fstat(pin.fd)
+            target = os.stat(str(data))
+            assert (pinned.st_dev, pinned.st_ino) == (target.st_dev, target.st_ino)
+            pin.verify()
+        finally:
+            pin.close()
+
+    def test_a_data_dir_swapped_after_resolution_is_still_refused(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resolving on the caller side must not retire the guard.
+
+        The swap is performed at the pin_parent seam - after the path was
+        resolved, before the walk reads it - which is the check-to-use window
+        made deterministic. O_NOFOLLOW on the final component has to refuse
+        it, and the refusal has to say a swap happened, because here one did.
+        """
+        if not bmod.pinned_fs.supports_pinned_walk():
+            pytest.skip("requires O_NOFOLLOW + dir_fd support; the pinned walk is the subject")
+        holder = tmp_path / "holder"
+        data = holder / "data"
+        data.mkdir(parents=True)
+        victim = tmp_path / "victim"
+        victim.mkdir()
+
+        real_pin_parent = bmod.pinned_fs.pin_parent
+
+        def swap_then_pin(parent: str, **kwargs: Any) -> int:
+            data.rmdir()
+            data.symlink_to(victim)
+            return real_pin_parent(parent, **kwargs)
+
+        monkeypatch.setattr(bmod.pinned_fs, "pin_parent", swap_then_pin)
+        with pytest.raises(OSError, match="became a symbolic link after the path was checked"):
+            bmod._PinnedDir(data)
+
+    def test_a_link_at_the_app_directory_itself_is_still_refused(self, tmp_path: Any) -> None:
+        """The canonical prefix must stop above the app's own directory.
+
+        ``apps/<name>`` is written by the app, so canonicalising that component
+        would hand the walk whatever a link planted there points at - another
+        app's tree - and the O_NOFOLLOW refusal would never fire. Only the
+        operator-controlled part above it may be made canonical.
+        """
+        if not bmod.pinned_fs.supports_pinned_walk():
+            pytest.skip("requires O_NOFOLLOW + dir_fd support; the pinned walk is the subject")
+        apps = tmp_path / "apps"
+        victim = apps / "victim"
+        (victim / "data").mkdir(parents=True)
+        (apps / "attacker").symlink_to(victim)
+
+        with pytest.raises(OSError):
+            bmod._PinnedDir(bmod._pinned_ancestors(apps / "attacker") / "data")
+
+    def test_an_ancestor_cycle_is_refused_as_an_oserror_not_a_runtimeerror(
+        self, tmp_path: Any
+    ) -> None:
+        """Canonicalising the ancestors must not raise past the refusal type.
+
+        Every caller of this class treats OSError as "refused" and lets nothing
+        else through, so a helper that raises another type on a hostile tree
+        turns a refusal into an unhandled crash. ``Path.resolve`` raises
+        RuntimeError on a cycle; realpath hands the unresolved path to the walk,
+        which refuses it as the configured OSError like any other link.
+        """
+        if not bmod.pinned_fs.supports_pinned_walk():
+            pytest.skip("requires O_NOFOLLOW + dir_fd support; the pinned walk is the subject")
+        first = tmp_path / "ring-a"
+        second = tmp_path / "ring-b"
+        first.symlink_to(second)
+        second.symlink_to(first)
+
+        with pytest.raises(OSError):
+            bmod._PinnedDir(bmod._pinned_ancestors(first / "data"))
 
     def test_provisioning_refuses_a_linked_data_directory(
         self, spawn_root: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch

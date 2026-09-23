@@ -380,6 +380,39 @@ class TestUninstall:
         # App files removed
         assert not (app_home / "apps" / "test-app" / APP_MANIFEST_FILENAME).exists()
 
+    def test_uninstall_keeps_data_when_the_app_dir_is_reached_through_a_link(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """Uninstall pins the data directory, and that walk refuses any link it meets.
+
+        Reached through a linked ancestor - a home that is itself a symlink -
+        the pin refuses before the quarantine starts and the uninstall fails
+        with the app still installed. The caller has to hand the walk a path
+        whose ancestors are already canonical, while leaving the app's own name
+        and ``data`` literal so a link at either is still refused.
+        """
+        import os as _os
+
+        from kiro_crew.apps import manager as _mgr
+
+        if not _mgr.platform_compat.IS_WINDOWS:
+            linked_home = tmp_path / "home-link"
+            linked_home.symlink_to(app_home)
+            monkeypatch.setattr(
+                _mgr, "app_dir", lambda name: linked_home / "apps" / name
+            )
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        data_dir = _mgr.app_dir("test-app") / "data"
+        (data_dir / "cache.json").write_text('{"key": "value"}', encoding="utf-8")
+
+        result = uninstall_app("test-app", keep_data=True)
+
+        assert result.ok, result.error
+        assert (data_dir / "cache.json").is_file()
+        assert _os.path.lexists(app_home / "apps" / "test-app" / "data" / "cache.json")
+
     def test_uninstall_purges_generated_deps_from_preserved_data(self, tmp_path, app_home):
         """data/ preservation exists for USER data. The gateway-generated
         dependency trees must not survive an uninstall: a compromised app
