@@ -657,6 +657,7 @@ class ChatSharePlacement:
             harness_pin=getattr(p, "_harness_pin", "") or "",
             agent_env=self._agent_env,
             kas_telemetry=self._kas_telemetry,
+            session_recap=bool(getattr(p, "_session_recap", False)),
             tree_root=self._tree_root,
             member_id=self._member_scope[0],
             memory_store=self._member_scope[1],

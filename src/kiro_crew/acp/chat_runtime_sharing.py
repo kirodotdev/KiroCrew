@@ -589,6 +589,10 @@ class ChatRuntimeKey:
         KAS process (``kas_cli_settings.kiro_cli_telemetry_enabled``). KAS takes the
         opt-out once, in ``initialize``, so a chat whose folder opts out must not
         join a process started with telemetry on. Always True for other backends.
+    ``session_recap``
+        Whether the KAS handshake opts in to the session recap
+        (``agent.session_recap``). KAS takes the opt-in once, in ``initialize``,
+        so a chat with the recap on must not join a process started without it.
     ``tree_root``
         The root of the session tree the session belongs to
         (:func:`share_tree_root_of`): the top of its creator chain, read once at
@@ -642,6 +646,7 @@ class ChatRuntimeKey:
     harness_pin: str
     agent_env: tuple[tuple[str, str], ...]
     kas_telemetry: bool
+    session_recap: bool
     tree_root: str = ""
     member_id: str = ""
     memory_store: str = ""
@@ -669,6 +674,7 @@ class ChatRuntimeKey:
         harness_pin: str | None = None,
         agent_env: dict[str, str] | None = None,
         kas_telemetry: bool = True,
+        session_recap: bool = False,
         tree_root: str | None = None,
         member_id: str | None = None,
         memory_store: str | None = None,
@@ -713,6 +719,7 @@ class ChatRuntimeKey:
             harness_pin=harness_pin or "",
             agent_env=_freeze_env(agent_env),
             kas_telemetry=bool(kas_telemetry),
+            session_recap=bool(session_recap),
             tree_root=tree_root or "",
             member_id=member_id or "",
             memory_store=memory_store or "",

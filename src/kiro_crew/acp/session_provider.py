@@ -26,6 +26,7 @@ from kiro_crew.acp import session_handle_lifecycle as _handle_lifecycle
 from kiro_crew.acp import session_provider_agent_turns as _sp_agent_turns
 from kiro_crew.acp import session_provider_claim as _sp_claim
 from kiro_crew.acp import session_provider_context as _sp_context
+from kiro_crew.acp import session_provider_kas as _sp_kas
 from kiro_crew.acp import session_provider_keepalive as _sp_keepalive
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
 from kiro_crew.acp import session_provider_native_children as _sp_children
@@ -445,16 +446,17 @@ class AcpSessionProvider(LLMProvider):
         except Exception:  # pragma: no cover - handle types without the attr
             logger.debug("set_keep_transcript: handle rejected attribute", exc_info=True)
 
+    # These three read through ``kiro_crew.acp.session_provider_kas``. ``LLMProvider``
+    # declares the first two with their types, so they stay typed properties.
     @property
     def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
-        """See ``AcpSessionHandle.kas_auto_approved``."""
-        return getattr(self._handle, "kas_auto_approved", None)
+        return _sp_kas.kas_auto_approved_capabilities(self)
 
     @property
     def kas_projected_agent(self) -> str:
-        """See ``AcpSessionHandle.kas_projected_agent``."""
-        value = getattr(self._handle, "kas_projected_agent", "")
-        return value if isinstance(value, str) else ""
+        return _sp_kas.kas_projected_agent(self)
+
+    take_session_recap = _sp_kas.take_session_recap
 
     @property
     def kas_registered_agents(self) -> list[dict[str, Any]]:
