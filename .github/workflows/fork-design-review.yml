@@ -49,12 +49,10 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: >-
-    fork-design-review-${{
-      github.event.workflow_run.head_repository.full_name
-    }}-${{ github.event.workflow_run.head_branch }}-${{
-      github.event.workflow_run.head_sha
-    }}
+  # The upstream run id is immutable across attempts and unique per trigger.
+  # Unlike repository/ref text, it cannot collide under GitHub's
+  # case-insensitive concurrency comparison or exceed the group length limit.
+  group: fork-design-review-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
@@ -1694,6 +1692,16 @@ jobs:
           # a genuine BLOCK whose own PATCH lost both attempts must not be
           # swept into a verdict pr-readiness no longer gates on. With no
           # verdict, $conclusion is already neutral/"review incomplete".
+          #
+          # NEWEST-RUN-WINS GUARD. The concurrency group is keyed to
+          # workflow_run.id, so a close/reopen (or any same-sha retrigger) now
+          # yields two lane runs on one head that do NOT cancel each other. The
+          # PR-dim prefix above spans BOTH, so without this guard the run that
+          # finalizes LATER in wall-clock -- which may be the OLDER trigger --
+          # would overwrite the newer run's row with its own stale verdict. The
+          # external_id's run-id dimension (design-pr-$PR-<run>-<attempt>) is the
+          # tiebreaker: a row whose run id is NEWER than this run's is left
+          # alone; rows from this run or an older one are still swept.
           if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
             enc="$(jq -rn '"Design Review" | @uri')"
             stranded="$(gh api --method GET \
@@ -1702,9 +1710,17 @@ jobs:
                     | select(.status != \"completed\")
                     | select(.external_id != null)
                     | select(.external_id | startswith(\"design-pr-$PR-\"))
-                    | .id" 2>/dev/null || true)"
-            for id in $stranded; do
+                    | \"\(.id) \(.external_id)\"" 2>/dev/null || true)"
+            while IFS=' ' read -r id ext; do
+              [ -n "$id" ] || continue
+              rest="${ext#design-pr-$PR-}"
+              row_run="${rest%-*}"
+              if printf '%s' "$row_run" | grep -qE '^[0-9]+$' \
+                 && [ "$row_run" -gt "$WR_RUN_ID" ]; then
+                echo "skipping check-run $id for $HEAD (PR #$PR): row run $row_run is newer than $WR_RUN_ID"
+                continue
+              fi
               echo "completing stranded check-run $id for $HEAD (PR #$PR)"
               complete "$id" "$conclusion" "$title" || true
-            done
+            done <<< "$stranded"
           fi

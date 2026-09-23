@@ -54,14 +54,13 @@ permissions:
   contents: read
 
 concurrency:
+  # Both event ids are immutable trusted metadata. A workflow run id is retained
+  # across attempts; a pull-request id is retained across target-event reruns.
+  # Distinct sibling PRs therefore cannot collide even when refs differ only by
+  # case, and unbounded fork-controlled ref text never enters the group.
   group: >-
-    fork-workflow-guard-${{
-      github.event.workflow_run.head_repository.full_name
-      || github.event.pull_request.head.repo.full_name
-    }}-${{
-      github.event.workflow_run.head_branch || github.event.pull_request.head.ref
-    }}-${{
-      github.event.workflow_run.head_sha || github.event.pull_request.head.sha
+    fork-workflow-guard-${{ github.event_name }}-${{
+      github.event.workflow_run.id || github.event.pull_request.id
     }}
   cancel-in-progress: true
 

@@ -72,19 +72,19 @@ _CONCURRENCY_WORKFLOW_RUN_LANES = (
     "fork-opus-review.yml",
     "fork-design-review.yml",
     "fork-ux-review.yml",
+    "fork-first-principles-review.yml",
+    "fork-security-scope-review.yml",
     "fork-internal-content-scan.yml",
 )
 
 
-def test_affected_fork_lane_concurrency_uses_the_exact_source_identity() -> None:
+def test_fork_stage2_concurrency_uses_the_trusted_trigger_run_identity() -> None:
     for name in _CONCURRENCY_WORKFLOW_RUN_LANES:
         doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
         concurrency = doc["concurrency"]
         group = " ".join(str(concurrency["group"]).split())
 
-        assert "github.event.workflow_run.head_repository.full_name" in group, name
-        assert "github.event.workflow_run.head_branch" in group, name
-        assert "github.event.workflow_run.head_sha" in group, name
+        assert group == f"{name.removesuffix('.yml')}-${{{{ github.event.workflow_run.id }}}}", name
         assert concurrency["cancel-in-progress"] is True, name
 
 
@@ -94,11 +94,9 @@ def test_workflow_guard_concurrency_preserves_both_event_shapes() -> None:
     group = " ".join(str(concurrency["group"]).split())
 
     assert (
-        "github.event.workflow_run.head_repository.full_name"
-        " || github.event.pull_request.head.repo.full_name"
-    ) in group
-    assert ("github.event.workflow_run.head_branch || github.event.pull_request.head.ref") in group
-    assert ("github.event.workflow_run.head_sha || github.event.pull_request.head.sha") in group
+        group
+        == "fork-workflow-guard-${{ github.event_name }}-${{ github.event.workflow_run.id || github.event.pull_request.id }}"
+    )
     assert concurrency["cancel-in-progress"] is True
 
 

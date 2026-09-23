@@ -46,12 +46,10 @@ permissions:
   id-token: write
 
 concurrency:
-  group: >-
-    fork-internal-content-scan-${{
-      github.event.workflow_run.head_repository.full_name
-    }}-${{ github.event.workflow_run.head_branch }}-${{
-      github.event.workflow_run.head_sha
-    }}
+  # The upstream run id is immutable across attempts and unique per trigger.
+  # Unlike repository/ref text, it cannot collide under GitHub's
+  # case-insensitive concurrency comparison or exceed the group length limit.
+  group: fork-internal-content-scan-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:

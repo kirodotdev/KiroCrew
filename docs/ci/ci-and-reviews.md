@@ -2831,13 +2831,26 @@ Nothing the fork controls can influence these reviews:
   so a fork editing these files in its PR has no effect on what runs.
 - `github.event.workflow_run.head_sha`, `head_repository.full_name`, and
   `head_branch` are set by GitHub and form the authoritative trigger identity. The
-  resolver aggregates every open-PR page, matches all three values as jq data, and
-  proceeds only when exactly one candidate remains; empty or ambiguous identity
-  fails closed instead of degrading to a SHA-only first match.
-- Fork-lane concurrency uses that same `(head repository, head branch, head SHA)`
-  identity, so two pull requests sharing a commit cannot cancel one another. The
-  workflow guard preserves equivalent `pull_request_target` fallbacks for all three
-  coordinates.
+  four review resolvers changed in D1 (Design, GPT, Opus, and UX), plus Workflow
+  Guard, aggregate every open-PR page, match all three values as jq data, and
+  proceed only when exactly one candidate remains; empty or ambiguous identity
+  fails closed instead of degrading to a SHA-only first match. First Principles
+  and Security Scope remain outside D1's resolver-conversion boundary: they filter
+  repository and ref when those fields are present, but retain first-match and
+  empty-field compatibility until the dependent D2 change normalizes them.
+- Fork-lane concurrency uses the immutable numeric id of the triggering trusted
+  workflow run. GitHub retains that id across attempts but assigns distinct runs to
+  sibling PR triggers, so reruns collapse while case-only or very long fork refs
+  neither collide nor expand the group. The workflow guard prefixes the trusted
+  event name, then uses the same run id for `workflow_run` and the immutable
+  pull-request id for `pull_request_target`, keeping those numeric ID domains
+  separate; its case-sensitive `(repository, ref, SHA)` resolver remains the
+  authorization check. Because a run-id group no longer cancels a second trigger
+  on the same head (a close/reopen produces a fresh run id), each lane's
+  finalize sweep — which completes a check-run row this PR left stranded, matched
+  by the `<lane>-pr-<PR>-` prefix — now also compares the row's `external_id`
+  run-id dimension and leaves alone any row written by a NEWER run, so an older
+  trigger's run can never overwrite a newer one's verdict on the same head.
 - The base SHA is re-fetched from the PR via the API and the diff is re-derived from
   GitHub's compare endpoint pinned to `(base_sha...head_sha)`. Stage 1's artifact is
   an untrusted **hint** only, so a fork faking it changes nothing.

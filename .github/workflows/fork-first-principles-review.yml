@@ -49,18 +49,11 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # Keyed on (head repository, head branch, head sha), NOT the sha alone: two fork
-  # PRs can share a commit -- the same fork commit pushed under two branch names --
-  # and a sha-only group makes one run cancel the other. The survivor then posts a
-  # check-run keyed to that sha, which BOTH pull requests read, so one of them shows
-  # a verdict computed from the other's diff and intent. Same reason the resolver
-  # below disambiguates on those fields.
-  group: >-
-    fork-first-principles-review-${{
-      github.event.workflow_run.head_repository.full_name
-    }}-${{ github.event.workflow_run.head_branch }}-${{
-      github.event.workflow_run.head_sha
-    }}
+  # A workflow run id is unique per triggering Fast Gate run, including sibling
+  # PRs whose repository/ref/SHA text differs only by case. GitHub retains that
+  # id across run attempts, so reruns still collapse without putting unbounded,
+  # case-sensitive ref text into a case-insensitive concurrency namespace.
+  group: fork-first-principles-review-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
@@ -1625,6 +1618,12 @@ jobs:
           # swept into a verdict pr-readiness no longer gates on. With no
           # verdict, $conclusion is already neutral/"review incomplete".
           if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
+            # NEWEST-RUN-WINS GUARD: the concurrency group is keyed to
+            # workflow_run.id, so a close/reopen yields two uncancelled lane runs
+            # on one head. The PR-dim prefix spans both, so without this guard the
+            # run finalizing later -- which may be the OLDER trigger -- would
+            # overwrite the newer run's row with a stale verdict. A row whose
+            # run-id dimension is NEWER than this run's is left alone.
             enc="$(jq -rn '"First Principles Review" | @uri')"
             stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
@@ -1632,9 +1631,17 @@ jobs:
                     | select(.status != \"completed\")
                     | select(.external_id != null)
                     | select(.external_id | startswith(\"first-principles-pr-$PR-\"))
-                    | .id" 2>/dev/null || true)"
-            for id in $stranded; do
+                    | \"\(.id) \(.external_id)\"" 2>/dev/null || true)"
+            while IFS=' ' read -r id ext; do
+              [ -n "$id" ] || continue
+              rest="${ext#first-principles-pr-$PR-}"
+              row_run="${rest%-*}"
+              if printf '%s' "$row_run" | grep -qE '^[0-9]+$' \
+                 && [ "$row_run" -gt "$WR_RUN_ID" ]; then
+                echo "skipping check-run $id for $HEAD (PR #$PR): row run $row_run is newer than $WR_RUN_ID"
+                continue
+              fi
               echo "completing stranded check-run $id for $HEAD (PR #$PR)"
               complete "$id" "$conclusion" "$title" || true
-            done
+            done <<< "$stranded"
           fi
