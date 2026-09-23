@@ -6120,7 +6120,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "댓글 추가",
       "add_comment": "댓글 추가",
       "add_instruction": "지시 추가",
       "additional_prompt": "추가 프롬프트",
@@ -7690,6 +7689,7 @@
       "ask": "이에 대해 질문",
       "ask_hint": "선택한 부분을 인용해 사이드 채팅을 엽니다 — 보내기 전까지는 아무것도 전송되지 않으며 메인 채팅은 그대로 유지됩니다",
       "comment_input": "선택한 텍스트에 댓글 달기",
+      "comment_post_failed": "댓글을 저장할 수 없습니다. 입력한 텍스트는 그대로 남아 있습니다. 다시 시도하거나 닫아서 임시 저장으로 보관하세요.",
       "copy": "복사",
       "copy_failed": "복사 실패 — 브라우저가 클립보드 접근을 차단했습니다. 텍스트를 선택해 직접 복사하세요.",
       "copy_selection_hint": "댓글이 아닌 선택한 텍스트를 클립보드에 복사합니다",

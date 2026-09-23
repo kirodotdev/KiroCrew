@@ -6312,7 +6312,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Aggiungi un commento",
       "add_comment": "Aggiungi commento",
       "add_instruction": "Aggiungi istruzione",
       "additional_prompt": "Prompt aggiuntivo",
@@ -7922,6 +7921,7 @@
       "ask": "Chiedi di questo",
       "ask_hint": "Apre la Chat laterale con la selezione citata: non viene inviato nulla finché non invii tu, e la chat principale resta intatta",
       "comment_input": "Commenta il testo selezionato",
+      "comment_post_failed": "Impossibile salvare il commento. Il testo è ancora qui: riprova o chiudi per conservarlo come bozza.",
       "copy": "Copia",
       "copy_failed": "Copia non riuscita: il browser ha bloccato l’accesso agli appunti. Seleziona il testo e copialo manualmente.",
       "copy_selection_hint": "Copia il testo selezionato (non il tuo commento) negli appunti",

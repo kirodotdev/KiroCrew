@@ -6216,7 +6216,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Kommentar hinzufügen",
       "add_comment": "Kommentar hinzufügen",
       "add_instruction": "Anweisung hinzufügen",
       "additional_prompt": "Zusätzlicher Prompt",
@@ -7806,6 +7805,7 @@
       "ask": "Hierzu fragen",
       "ask_hint": "Öffnet den Seitenchat mit der Auswahl als Zitat — nichts wird gesendet, bis du sendest, und der Hauptchat bleibt unberührt",
       "comment_input": "Markierten Text kommentieren",
+      "comment_post_failed": "Dein Kommentar konnte nicht gespeichert werden. Dein Text ist noch da – versuch es erneut oder schließe, um ihn als Entwurf zu behalten.",
       "copy": "Kopieren",
       "copy_failed": "Kopieren fehlgeschlagen – dein Browser hat den Zugriff auf die Zwischenablage blockiert. Markiere den Text und kopiere ihn selbst.",
       "copy_selection_hint": "Kopiert den markierten Text – nicht deinen Kommentar – in die Zwischenablage",

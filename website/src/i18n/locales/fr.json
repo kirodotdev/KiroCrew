@@ -6312,7 +6312,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Ajouter un commentaire",
       "add_comment": "Ajouter un commentaire",
       "add_instruction": "Ajouter une instruction",
       "additional_prompt": "Prompt supplémentaire",
@@ -7922,6 +7921,7 @@
       "ask": "Demander à ce sujet",
       "ask_hint": "Ouvre le Chat annexe avec la sélection citée — rien n’est envoyé avant que tu n’envoies, et la discussion principale reste intacte",
       "comment_input": "Commenter le texte sélectionné",
+      "comment_post_failed": "Impossible d’enregistrer le commentaire. Le texte est toujours là : réessaie ou ferme pour le garder en brouillon.",
       "copy": "Copier",
       "copy_failed": "Échec de la copie : le navigateur a bloqué l’accès au presse-papiers. Sélectionnez le texte et copiez-le vous-même.",
       "copy_selection_hint": "Copie le texte sélectionné (pas votre commentaire) dans le presse-papiers",

@@ -86,7 +86,9 @@ describe('side panel mount decision', () => {
     // already names the fullscreen icon.
     expect(panel).toContain('active: visible = true')
     expect(panel).toContain('if (!visible) return')
-    expect(panel).toContain('}, [visible, fullscreen, onClose])')
+    // Close and exit-fullscreen go through the comment-draft guard, so those
+    // guarded callbacks are the deps rather than `onClose` itself.
+    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active])')
   })
 
   describe('find pane claims the dock', () => {

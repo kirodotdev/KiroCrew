@@ -33,7 +33,7 @@ describe('artifact comment auto-reveal at phone widths', () => {
     // `commentCount` change. Revealing after an add IS a user-initiated open.
     expect(s).toMatch(/sidebarUserToggledRef\.current = isMobile/)
     expect(s, 'the callback must depend on the viewport it now reads')
-      .toMatch(/\}, \[popover, postCommentMut, isMobile\]\)/)
+      .toMatch(/\}, \[postCommentMut, isMobile\]\)/)
   })
 
 })
