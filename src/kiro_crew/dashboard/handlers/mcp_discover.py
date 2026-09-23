@@ -281,6 +281,15 @@ async def api_mcp_discover_install(request: web.Request) -> web.Response:
     write it into the KiroCrew scope enabled=true (reusing the mcp.py write
     helpers). provider=capability: delegate to the edition manager.
     """
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "mcp_discover_install")
+    if owner_denied is not None:
+        return owner_denied
     try:
         body = await request.json()
     except Exception:

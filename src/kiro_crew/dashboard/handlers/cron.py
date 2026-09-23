@@ -673,6 +673,23 @@ def _resolve_chat_folder_id(
 
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
+    # Owner identity is a property of a dashboard-user request: ``app == ""`` is
+    # the class ``is_owner_dashboard_request`` can rule on at all. An app token
+    # carries a non-empty name and stays confined to its manifest's declared
+    # paths by ``_enforce_app_scope`` -- ``POST /api/crons`` is one of those
+    # declarable paths (see ``docs/app-kit/api-reference.md``). No
+    # ``internal_auth`` clause: this route has no ``X-Internal-Secret`` caller,
+    # and a clause naming one would exempt a future caller nobody reviewed.
+    if request.get("app") == "":
+        # Body-scope import, like the sibling gates in this package
+        # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+        # reaches back into sibling handler modules, so importing the helper at
+        # module scope from here would close a cycle.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "crons.create")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     # Per-route cap: the body carries the job's full agent message/prompt text,
     # whose field bound (MAX_CRON_MESSAGE chars) can exceed the shared 64 KB

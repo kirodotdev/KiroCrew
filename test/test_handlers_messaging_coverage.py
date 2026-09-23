@@ -33,6 +33,13 @@ import kiro_crew.dashboard.handlers.messaging as mod
 from conftest import forget_env_at_teardown
 from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
 
+#: The subject every request double presents, and the id ``_state`` reports as its
+#: owner. These suites exercise body validation and response shape, not
+#: authorization, so the caller they model is the owner's own dashboard session --
+#: the one the owner gate admits. A test that means to model somebody else passes
+#: its own ``extra={"user": ...}``.
+_OWNER_SUBJECT = "U0OWNER0000"
+
 
 class _Req:
     """Request double: state, JSON body, route/query fields and headers."""
@@ -53,10 +60,15 @@ class _Req:
         self.query = query or {}
         self.headers: dict[str, str] = {}
         self.remote = remote
-        self._extra = {"app": "", **(extra or {})}
+        self._extra = {"app": "", "user": _OWNER_SUBJECT, **(extra or {})}
 
     def __contains__(self, key: str) -> bool:
         return key in self._extra
+
+    def __getitem__(self, key: str) -> Any:
+        # The owner predicate reads ``request["app"]`` directly after testing
+        # membership, so the double needs the read as well as the ``in``.
+        return self._extra[key]
 
     async def json(self) -> Any:
         if isinstance(self._body, BaseException):
@@ -90,6 +102,7 @@ def _payload(resp: web.Response) -> Any:
 def _state(**kw: Any) -> Any:
     """A DashboardState double with the JSON-serializable fields pinned."""
     state = MagicMock()
+    state.owner_id = _OWNER_SUBJECT
     state.subagents = None
     state.slack_client = None
     state._native_cards = {}

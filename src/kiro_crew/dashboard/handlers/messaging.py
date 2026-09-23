@@ -491,6 +491,22 @@ async def api_spawn(request: web.Request) -> web.Response:
     omitting the flag would make ``spawn_run`` reconcile the member again and
     could close a batch wave early.
     """
+    # Owner identity is a property of a dashboard-user request: ``app == ""`` is
+    # the class ``is_owner_dashboard_request`` can rule on at all. The other two
+    # caller classes keep the control that already governs them -- an
+    # ``X-Internal-Secret`` loopback process is admitted by the constant-time
+    # secret match and reaches here with ``app`` ABSENT, and an app token is
+    # confined to its manifest's declared paths by ``_enforce_app_scope``.
+    if request.get("internal_auth") is not True and request.get("app") == "":
+        # Body-scope import, like the sibling gates in this package
+        # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+        # reaches back into sibling handler modules, so importing the helper at
+        # module scope from here would close a cycle.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "spawn.create")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)

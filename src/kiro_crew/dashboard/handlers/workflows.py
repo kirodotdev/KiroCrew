@@ -229,6 +229,15 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
     denied = _require_dashboard_user(request, _OP_DEFINITION_CREATE)
     if denied is not None:
         return denied
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "workflow_definition_create")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
@@ -295,6 +304,15 @@ async def api_workflow_definition_update(request: web.Request) -> web.Response:
     denied = _require_dashboard_user(request, _OP_DEFINITION_UPDATE)
     if denied is not None:
         return denied
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "workflow_definition_update")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
@@ -353,6 +371,22 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
     denied = _reject_app_caller(request, _OP_DEFINITION_RUN)
     if denied is not None:
         return denied
+    # Owner identity is a property of a dashboard-user request: ``app == ""`` is
+    # the class ``is_owner_dashboard_request`` can rule on at all. The other two
+    # caller classes keep the control that already governs them -- an
+    # ``X-Internal-Secret`` loopback process is admitted by the constant-time
+    # secret match and reaches here with ``app`` ABSENT, and an app token is
+    # confined to its manifest's declared paths by ``_enforce_app_scope``.
+    if request.get("internal_auth") is not True and request.get("app") == "":
+        # Body-scope import, like the sibling gates in this package
+        # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+        # reaches back into sibling handler modules, so importing the helper at
+        # module scope from here would close a cycle.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "workflow_definition_run")
+        if owner_denied is not None:
+            return owner_denied
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
@@ -435,6 +469,22 @@ def _opt_int(value: Any) -> Optional[int]:
 
 async def api_workflow_run(request: web.Request) -> web.Response:
     """POST /api/workflows/run — launch a background run, return its run_id."""
+    # Owner identity is a property of a dashboard-user request: ``app == ""`` is
+    # the class ``is_owner_dashboard_request`` can rule on at all. The other two
+    # caller classes keep the control that already governs them -- an
+    # ``X-Internal-Secret`` loopback process is admitted by the constant-time
+    # secret match and reaches here with ``app`` ABSENT, and an app token is
+    # confined to its manifest's declared paths by ``_enforce_app_scope``.
+    if request.get("internal_auth") is not True and request.get("app") == "":
+        # Body-scope import, like the sibling gates in this package
+        # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+        # reaches back into sibling handler modules, so importing the helper at
+        # module scope from here would close a cycle.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "workflow.run")
+        if owner_denied is not None:
+            return owner_denied
     svc = _svc(request)
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)
@@ -472,6 +522,22 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     background run (a visible "Authoring" phase) so the slow model call never
     blocks this request (no 30s synchronous-author timeout).
     """
+    # Owner identity is a property of a dashboard-user request: ``app == ""`` is
+    # the class ``is_owner_dashboard_request`` can rule on at all. The other two
+    # caller classes keep the control that already governs them -- an
+    # ``X-Internal-Secret`` loopback process is admitted by the constant-time
+    # secret match and reaches here with ``app`` ABSENT, and an app token is
+    # confined to its manifest's declared paths by ``_enforce_app_scope``.
+    if request.get("internal_auth") is not True and request.get("app") == "":
+        # Body-scope import, like the sibling gates in this package
+        # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+        # reaches back into sibling handler modules, so importing the helper at
+        # module scope from here would close a cycle.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "workflow.run_intent")
+        if owner_denied is not None:
+            return owner_denied
     svc = _svc(request)
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)
@@ -575,6 +641,15 @@ async def api_workflow_run_promote(request: web.Request) -> web.Response:
     denied = _require_dashboard_user(request, _OP_DEFINITION_PROMOTE)
     if denied is not None:
         return denied
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "workflow_definition_promote")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)

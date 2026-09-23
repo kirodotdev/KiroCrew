@@ -1053,6 +1053,15 @@ async def api_steering_create(request: web.Request) -> web.Response:
     denied = _blocked(request, "steering.create")
     if denied is not None:
         return denied
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "steering.create")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -1248,6 +1257,15 @@ async def api_steering_detail(request: web.Request) -> web.Response:
         denied = _blocked(request, "steering.delete")
         if denied is not None:
             return denied
+        # Body-scope import, like the sibling gates in this package
+        # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+        # reaches back into sibling handler modules, so importing the helper at
+        # module scope from here would close a cycle.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "steering.delete")
+        if owner_denied is not None:
+            return owner_denied
         if workspace_scoped:
             stale = _project_precondition(request, project_dir, "steering.delete")
             if stale is not None:
@@ -1273,6 +1291,15 @@ async def api_steering_detail(request: web.Request) -> web.Response:
     denied = _blocked(request, "steering.update")
     if denied is not None:
         return denied
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "steering.update")
+    if owner_denied is not None:
+        return owner_denied
     if workspace_scoped:
         stale = _project_precondition(request, project_dir, "steering.update")
         if stale is not None:

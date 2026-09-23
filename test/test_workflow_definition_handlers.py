@@ -65,7 +65,11 @@ def _app(service: FakeService, *, app_name: str | None = "") -> web.Application:
         return await handler(request)
 
     app = web.Application(middlewares=[authenticated_identity])
-    app["state"] = SimpleNamespace(workflow_service=service)
+    # ``authenticated_identity`` above presents ``user="test-user"``; naming that
+    # subject as the owner is what makes the dashboard-user rows model the owner's
+    # own session rather than a non-owner the write routes now refuse. The
+    # app-token rows are unaffected -- they are refused on their app claim.
+    app["state"] = SimpleNamespace(workflow_service=service, owner_id="test-user")
     app.router.add_get("/api/workflows/definitions", api_workflow_definitions)
     app.router.add_post("/api/workflows/definitions", api_workflow_definitions_create)
     app.router.add_post(
