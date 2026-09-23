@@ -202,12 +202,12 @@ _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 #
 # ``dashboard/handlers/knowledge.py`` takes the store through a worker for every
 # take of its OWN, endpoints and background tasks alike. It is not the whole
-# story, so the claim is scoped deliberately: the connector branch of
-# ``sync_source`` awaits ``SyncScheduler.sync_source``, which writes the row
-# inline from an async method (``sync.py``'s ``update_source`` after a successful
-# fetch, and ``_record_failure``), so a handler still reaches the store on the
-# loop ONE FRAME DOWN. That path is interprocedural backlog, invisible to the
-# lexical baseline, and stays with the cleanup rather than with this file.
+# story, so the claim is scoped deliberately: ``artifact_ingest.py``'s
+# ``ingest_artifact`` reads a job status through ``IngestionPipeline`` inline
+# from an async method, and ``reconcile_artifacts`` reaches it once per
+# artifact, so a caller still reaches the store on the loop ONE FRAME DOWN.
+# That path is interprocedural backlog, invisible to the lexical baseline, and
+# belongs with the offload of that read rather than with this file.
 #
 # Two takes stay inline, carried as ``# on-loop-io-ok`` markers, and the
 # lexical baseline is empty. The watcher's self-heal rebuild
