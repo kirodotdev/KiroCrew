@@ -341,7 +341,7 @@ class TestFixedAndAutoPortIsolation:
 
         seen: dict[str, int | None] = {}
 
-        def _fake_start(app_name: str):
+        def _fake_start(app_name: str, gateway_port=None):
             if app_name == "auto-app":
                 # What a concurrent auto spawn sees must already exclude `fixed`.
                 seen["reserved"] = bmod._allocated_ports.get("fixed-app")
@@ -784,7 +784,7 @@ class TestBootSpawnLatency:
         names = [f"par-app-{i}" for i in range(4)]
         concurrent = threading.Barrier(len(names), timeout=10)
 
-        def _fake_start(app_name: str):
+        def _fake_start(app_name: str, gateway_port=None):
             # Every spawn must be in flight at the same moment, or this blocks
             # until the barrier times out and raises.
             concurrent.wait()
@@ -803,7 +803,7 @@ class TestBootSpawnLatency:
         # TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
 
-        def _fake_start(app_name: str):
+        def _fake_start(app_name: str, gateway_port=None):
             if app_name == "bad-app":
                 raise RuntimeError("sandbox unavailable")
             if app_name == "none-app":
@@ -1206,7 +1206,7 @@ class TestBackendLifecycle:
         spawn_calls = {"n": 0}
         gate = threading.Event()
 
-        def _fake_body(app_name, manifest):
+        def _fake_body(app_name, manifest, gateway_port=None):
             spawn_calls["n"] += 1
             gate.wait(timeout=5)  # hold the placeholder in-flight while the 2nd call arrives
             ap = AppProcess(app_name=app_name, port=9137, pid=4242, healthy=True,
@@ -1436,7 +1436,7 @@ class TestBootAdmissionRevet:
         monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
         started: list[str] = []
 
-        def _fake_start(name):
+        def _fake_start(name, gateway_port=None):
             started.append(name)
             return None  # no real spawn; skip the health-gate branch
 
@@ -1566,7 +1566,7 @@ class TestBootAdmissionRevet:
         monkeypatch.setattr(bmod, "get_app_manifest", lambda name: None)
         started: list[str] = []
 
-        def _fake_start(name):
+        def _fake_start(name, gateway_port=None):
             if name == "boom-app":
                 raise RuntimeError(
                     "Sandbox backend unavailable and allow_unsandboxed_exec is not set."

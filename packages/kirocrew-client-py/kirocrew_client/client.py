@@ -104,8 +104,13 @@ class KiroCrewClient:
         message_length_limit: int = _DEFAULT_MESSAGE_LIMIT,
         on_auth_expired: Callable[[], Awaitable[str]] | None = None,
     ):
+        # KIROCREW_GATEWAY_URL is what the gateway hands every app backend it
+        # spawns: the loopback base of the instance that started us. It wins
+        # over KIROCREW_PORT because the spawn env is an allowlist that strips
+        # KIROCREW_PORT anyway, and a gateway started with --port N never sets it.
         port = os.environ.get("KIROCREW_PORT", "5476")
-        self.base_url = (base_url or f"http://localhost:{port}").rstrip("/")
+        default_url = os.environ.get("KIROCREW_GATEWAY_URL") or f"http://localhost:{port}"
+        self.base_url = (base_url or default_url).rstrip("/")
         self.token = token
         self.app_name = app_name
         self.timeout = timeout

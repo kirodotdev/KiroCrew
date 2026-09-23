@@ -4637,8 +4637,15 @@ async def start_dashboard(
     # gateway's actually-bound port at spawn (``KIROCREW_BOUND_PORT``) is started
     # after ``_export_bound_port`` below, because that value does not exist yet.
     await cautious_boot.pause_before("app backends")
+    # The declared port is forwarded because the TCP site is not bound yet at
+    # this point (KIROCREW_BOUND_PORT is exported further down), so the spawn
+    # path could not otherwise see a --port override when it advertises
+    # KIROCREW_GATEWAY_URL to the backends. 0 (--port auto) is passed as-is:
+    # it tells the spawn path the number is not known yet, so the variable is
+    # withheld from these boot spawns instead of resolved to a guess.
     started_apps = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), start_enabled_app_backends
+        subprocess_executor(),
+        functools.partial(start_enabled_app_backends, gateway_port=port),
     )
     if started_apps:
         logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))

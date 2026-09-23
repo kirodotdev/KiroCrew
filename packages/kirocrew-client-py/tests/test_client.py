@@ -59,6 +59,24 @@ class TestAuthCheck:
         mc._check_auth()  # should not raise
 
 
+class TestDefaultBaseUrl:
+    def test_falls_back_to_the_port_env(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_GATEWAY_URL", raising=False)
+        monkeypatch.setenv("KIROCREW_PORT", "6777")
+        assert KiroCrewClient().base_url == "http://localhost:6777"
+
+    def test_prefers_the_gateway_url_the_spawning_gateway_handed_us(self, monkeypatch):
+        """An app backend's env carries KIROCREW_GATEWAY_URL (the loopback base of
+        the gateway that spawned it) and NOT KIROCREW_PORT, so the URL must win."""
+        monkeypatch.setenv("KIROCREW_GATEWAY_URL", "http://127.0.0.1:7790/")
+        monkeypatch.setenv("KIROCREW_PORT", "5476")
+        assert KiroCrewClient().base_url == "http://127.0.0.1:7790"
+
+    def test_an_explicit_base_url_still_wins(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_GATEWAY_URL", "http://127.0.0.1:7790")
+        assert KiroCrewClient(base_url="http://localhost:5476").base_url == "http://localhost:5476"
+
+
 class TestMessageValidation:
     @pytest.mark.asyncio
     async def test_rejects_long_message(self):
