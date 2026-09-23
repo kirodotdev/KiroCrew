@@ -2381,7 +2381,10 @@ describe('MembersPage default member, memory and URL', () => {
     expect(api.memberThread).not.toHaveBeenCalled()
     await screen.findByText(/Pick a member/i)
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(currentUrl()).toBe('/members')
+    // The return to `/members` is a navigate() issued from an effect once the
+    // roster has loaded; on a slow runner the notice can render a tick before
+    // that effect has run, so wait for the URL like the other redirect tests do.
+    await waitFor(() => expect(currentUrl()).toBe('/members'))
     // Nothing was opened, so nothing is remembered.
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBeNull()
     // Opening a member retires the notice — and, being a choice, is remembered.
