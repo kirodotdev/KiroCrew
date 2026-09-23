@@ -728,6 +728,55 @@ def redact_text(text: str) -> str:
     return _redact(text)
 
 
+# Display cap for a backend-authored JSON-RPC id in a log line / exception
+# text. Applied AFTER redaction (redact-before-bound): a slice taken before the
+# redactor ran could sever a credential at the cut and leak the fragment.
+_REQUEST_ID_LOG_CAP = 256
+# Cap on the text handed to the redactor. A frame is bounded only by the 10 MB
+# stdout line limit, and the credential scan slides a window byte-by-byte over
+# base64-alphabet runs, so an unbounded id could hold the event loop for a
+# value that is then cut to 256 chars anyway. An id over the cap is NOT
+# truncated -- a cut can sever a credential into a fragment no pattern matches,
+# and an earlier redaction (a collapsed URL) can pull that fragment back inside
+# the display cap -- it is replaced by a fixed marker carrying only its length.
+_REQUEST_ID_REDACT_INPUT_CAP = 16 * _REQUEST_ID_LOG_CAP
+
+
+def _loggable_request_id(request_id: object) -> str:
+    """A JSON-RPC id from the backend, made safe for a log line or error text.
+
+    The id is backend-authored: ``repr`` keeps control characters and newlines
+    out of the line, the shared ``redact_text`` scrub (exfil URLs, then
+    credentials) keeps a URL- or credential-shaped id out of the gateway log,
+    ``/api/logs`` and any session card an exception message rides into, and the
+    result is length-capped after redaction. An id over
+    ``_REQUEST_ID_REDACT_INPUT_CAP`` is replaced by a length-only marker rather
+    than truncated, so a multi-MB id cannot stall the loop and a cut can never
+    hand the redactor a severed secret. ``repr`` also makes a non-string id (a
+    numeric ``toolCallId``) safe for the regexes. Every ACP log line that
+    carries a backend-authored id -- JSON-RPC request ids and tool-call ids, in
+    client, runtime, session handle and dispatch -- goes through it.
+    """
+    return redact_backend_text(repr(request_id))[:_REQUEST_ID_LOG_CAP]
+
+
+def redact_backend_text(text: str) -> str:
+    """Redact one backend-authored string whole, or refuse it by length.
+
+    The single policy behind every retained or logged backend string (ids,
+    session ids, methods): the text is handed to ``redact_text`` UNCUT, so no
+    credential is ever severed at a slice before the redactor sees it. A string
+    over ``_REQUEST_ID_REDACT_INPUT_CAP`` is not truncated -- a cut can leave a
+    fragment no pattern matches -- it is replaced by a marker carrying only its
+    length. Callers apply their own display or retention cap to the RESULT.
+    """
+    if len(text) > _REQUEST_ID_REDACT_INPUT_CAP:
+        # No content survives: a truncation could hand the redactor a severed
+        # secret that matches none of its patterns. Only the size is kept.
+        return f"<id too long: {len(text)} chars>"
+    return redact_text(text)
+
+
 def parse_text_chunk(update: dict[str, Any]) -> tuple[str | None, bool]:
     """Extract text from an ``agent_message_chunk`` / ``agent_thought_chunk`` update.
 
@@ -1514,8 +1563,8 @@ def build_permission_event(
         logger.info(
             "Permission event resolved tool_input but missed is_shell cache "
             "(req=%s tool_call_id=%s)",
-            request_id,
-            tool_call_id,
+            _loggable_request_id(request_id),
+            _loggable_request_id(tool_call_id),
         )
 
     # Resolve the STRUCTURED raw params for governance enforcement. The keystone
@@ -1908,29 +1957,6 @@ def tool_call_content_text(entry: Any) -> str | None:
     return str(text) if text else None
 
 
-def redacted_tool_id(tool_use_id: Any) -> str:
-    """A frame's ``toolCallId``, made safe to put in a log line.
-
-    Three hazards, all from the same fact -- the id is whatever JSON the backend
-    sent, not a validated string:
-
-    * ``str()`` first because it need not BE a string. A numeric ``toolCallId``
-      reaches :func:`redact_text`'s regexes as an int and raises ``TypeError``,
-      which would abort the active turn from inside a diagnostic warning -- a
-      logging path must never be able to kill the thing it is reporting on.
-    * Redact before bounding, never the reverse: a cut taken first can split a
-      credential into fragments no pattern matches. Same ordering as the tool
-      output join below.
-    * Bound it, because the id is unbounded input and this warning is retained in
-      the log ring ``/api/logs`` serves. 200 chars keeps a real id (they are
-      short) while refusing a frame that pads it to megabytes.
-
-    The caller still formats the result with ``%r`` -- bounding does not
-    neutralise a newline, so escaping stays the caller's job.
-    """
-    return redact_text(str(tool_use_id))[:200]
-
-
 def _rendered_shape_type(value: Any) -> str:
     """A frame-supplied ``type`` made safe to put in the shape diagnostic.
 
@@ -2068,12 +2094,12 @@ def log_unrenderable_content(log: logging.Logger, tool_use_id: Any, content: Any
     if not shapes:
         return
     log.warning(
-        "tool_call_update %r: no content entry could be rendered, so this tool "
+        "tool_call_update %s: no content entry could be rendered, so this tool "
         "shows no output at all. Unrecognised entry shapes: %s. ACP expects "
         "{'type': 'content', 'content': {'type': 'text', 'text': ...}}; a bare "
         "{'type': 'text', 'text': ...} block is also read. Shapes only -- entry "
         "VALUES are withheld from this log.",
-        redacted_tool_id(tool_use_id),
+        _loggable_request_id(tool_use_id),
         shapes,
     )
 

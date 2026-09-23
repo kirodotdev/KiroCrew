@@ -63,6 +63,7 @@ from kiro_crew.acp.client import (
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
     _jsonrpc_error_code,
+    _loggable_request_id,
     _push_model_via_effort_split,
     _raise_acp_error,
     advertised_model_ids,
@@ -1540,6 +1541,15 @@ class AcpSessionHandle:
                 for _owed in _stale_owed:
                     self._queue.put_nowait(_owed)
                 _stale_owed.clear()
+                # Audit FIRST (off-loop, so it never delays the answer): the
+                # reject below is a bounded wire write that can fail, and a
+                # permission decision must leave its SEL record either way.
+                self._audit_handle_reject(
+                    stale.id,
+                    str(_stale_title),
+                    "stranded_request_pre_turn_drain",
+                    sub_session_id=(_stale_sid if _stale_sid != self._session_id else ""),
+                )
                 try:
                     await self.reject_tool(stale.id)
                 except asyncio.CancelledError:
@@ -1568,7 +1578,7 @@ class AcpSessionHandle:
                     "rejected permission request id=%s stranded in the "
                     "pre-turn drain (abandoned turn or between-turns child "
                     "frame) — answering so the backend cannot hang",
-                    stale.id,
+                    _loggable_request_id(stale.id),
                 )
                 # Crew-card notice ONLY for a child-origin strand: the card
                 # keys on sub_session_id, so the parent's own session id (an
@@ -1577,12 +1587,6 @@ class AcpSessionHandle:
                 # covered by the WARNING + SEL record.
                 if _stale_sid and _stale_sid != self._session_id:
                     self._pending_reject_notices.append((_stale_sid, str(_stale_title)))
-                self._audit_handle_reject(
-                    stale.id,
-                    str(_stale_title),
-                    "stranded_request_pre_turn_drain",
-                    sub_session_id=(_stale_sid if _stale_sid != self._session_id else ""),
-                )
             else:
                 # Everything that is not a permission request is DISCARDED, which
                 # is correct (it belongs to a turn nobody is reading any more) but
@@ -1937,7 +1941,7 @@ class AcpSessionHandle:
                 "reject_tool: no deny option advertised for req=%s; answering "
                 "'cancelled', which the backend may treat as cancelling the "
                 "remainder of the turn's tool calls",
-                request_id,
+                _loggable_request_id(request_id),
             )
             await self._runtime.send_response(
                 request_id,
@@ -1965,8 +1969,8 @@ class AcpSessionHandle:
         would answer it without a human, and a human offered the choice is being
         asked to re-decide something the spec already settled.
 
-        The reject is sent before the audit, and the audit runs off the loop, so an
-        audit failure cannot undo or delay the refusal.
+        The audit is recorded first and runs off the loop, so it can neither delay
+        the refusal nor be lost when the (bounded) reject write fails.
         """
         if not self.spec_denied_tools:
             return False
@@ -1982,13 +1986,13 @@ class AcpSessionHandle:
             server,
             self._session_id,
         )
-        await self.reject_tool(event.request_id)
         self._audit_handle_reject(
             event.request_id,
             f"mcp__{server}__{tool}",
             "spec_disabled_tool",
             sub_session_id=event.sub_session_id or "",
         )
+        await self.reject_tool(event.request_id)
         return True
 
     def _tripwire_spec_disabled_tool(self, result: AcpEvent, msg: JsonRpcMessage) -> None:
@@ -2074,13 +2078,13 @@ class AcpSessionHandle:
             "checked against that, while a consumer may auto-approve it [session=%s]",
             self._session_id,
         )
-        await self.reject_tool(event.request_id)
         self._audit_handle_reject(
             event.request_id,
             "mcp__unidentified",
             "spec_disabled_tool_unidentified_call",
             sub_session_id=event.sub_session_id or "",
         )
+        await self.reject_tool(event.request_id)
         return True
 
     def _audit_handle_reject(
@@ -2103,10 +2107,13 @@ class AcpSessionHandle:
         that never reach a consumer, so no consumer-side audit fires — every
         permission decision must still leave a SEL record (repo convention;
         the runtime's unregistered-session auto-reject does the same).
-        Off-loop (``asyncio.to_thread``) and AFTER the reject was sent: sel()
-        may do blocking filesystem work on first use, and an audit failure
-        must not undo or delay the already-made decision. Title is
-        backend/LLM-authored: bounded then redacted before it is stored.
+        Off-loop (``asyncio.to_thread``) and BEFORE the reject goes on the
+        wire: sel() may do blocking filesystem work on first use, so the audit
+        never delays the answer, and the reject is a bounded write that can
+        fail -- the decision must leave its SEL record whether or not the wire
+        accepted it (the same audit-first ordering chat_runner's deny paths
+        keep). Title is backend/LLM-authored: bounded then redacted before it
+        is stored.
         """
         safe_title = redact_text(str(title)[:4096])[:120] if title else "<unknown>"
         rid = request_id if isinstance(request_id, (str, int)) else ""
@@ -3941,7 +3948,10 @@ class AcpSessionHandle:
                         self._queue.put_nowait(msg)
                         await asyncio.sleep(0)
                     else:
-                        logger.debug("Dropping stray response frame id=%s (no waiter)", msg.id)
+                        logger.debug(
+                            "Dropping stray response frame id=%s (no waiter)",
+                            _loggable_request_id(msg.id),
+                        )
                     continue
 
                 # The backend's hooks requests, answered here rather
@@ -3984,16 +3994,16 @@ class AcpSessionHandle:
                         logger.warning(
                             "rejecting low-fidelity child permission request "
                             "id=%s for fidelity-unaware consumer (child=%s)",
-                            _perm_event.request_id,
-                            _perm_event.sub_session_id,
+                            _loggable_request_id(_perm_event.request_id),
+                            _loggable_request_id(_perm_event.sub_session_id),
                         )
-                        await self.reject_tool(_perm_event.request_id)
                         self._audit_handle_reject(
                             _perm_event.request_id,
                             _perm_event.title or "",
                             "child_low_fidelity_unaware_consumer",
                             sub_session_id=_perm_event.sub_session_id or "",
                         )
+                        await self.reject_tool(_perm_event.request_id)
                         yield AcpEvent(
                             kind=EVENT_SUBAGENT_ACTIVITY,
                             sub_session_id=_perm_event.sub_session_id,

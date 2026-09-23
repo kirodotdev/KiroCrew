@@ -1,11 +1,13 @@
 """Audit-first ordering on deny paths (SEL write precedes wire I/O).
 
 Every deny path answers the permission request over the ACP stdin pipe and
-records the decision to SEL. The pipe write is unbounded: a backend that stops
-reading stdin blocks ``reject_tool`` -> ``_send_response`` -> ``stdin.drain()``
-until the turn deadline cancels the coroutine. When the SEL write is sequenced
-AFTER that await, cancellation destroys the audit record: the permission
-decision was made, acted on locally, and never audited.
+records the decision to SEL. The pipe write can fail or stall: a backend that
+stops reading stdin parks ``reject_tool`` -> ``_send_response`` ->
+``stdin.drain()`` until either the write bound raises ``AcpProcessDied``
+(test_deny_bounded_write.py) or, on a build without that bound, the turn
+deadline cancels the coroutine. When the SEL write is sequenced AFTER that
+await, cancellation destroys the audit record: the permission decision was
+made, acted on locally, and never audited.
 
 The invariant these tests pin: **the SEL audit write must
 precede any wire I/O for that decision** — record the decision first, then
@@ -37,6 +39,7 @@ from unittest import mock
 import pytest
 
 import kiro_crew.dashboard.chat_runner as chat_runner
+from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.dashboard.chat_runner import (
     _reject_hook_blocked,
     _reject_hook_error,
@@ -198,6 +201,75 @@ class TestAuditSurvivesStalledPipe:
                 "the stall hit the steer (the decision's first wire await) and the "
                 "audit record is missing -- the SEL write must precede ALL wire I/O"
             )
+
+
+class _RaisingRejectClient(_StalledRejectClient):
+    """The bounded write gave up: reject raises instead of parking forever."""
+
+    async def reject_tool(self, request_id) -> None:
+        self.calls.append("reject")
+        raise AcpProcessDied(f"ACP stdin stalled while delivering response to req={request_id!r}")
+
+
+class TestAuditSurvivesBoundedWriteFailure:
+    """With the rejection write bounded, the stall surfaces as AcpProcessDied
+    instead of a hang. The audit record must still exist, and the exception must
+    propagate untouched so the runner's session-reset recovery engages."""
+
+    @pytest.mark.asyncio
+    async def test_hook_blocked_audit_exists_and_the_stall_propagates(self):
+        with mock.patch.object(chat_runner, "sel") as sel_factory:
+            audit = sel_factory.return_value
+            client = _RaisingRejectClient()
+            with pytest.raises(AcpProcessDied, match="stdin stalled"):
+                await _reject_hook_blocked(
+                    client,
+                    _Slot(),
+                    _Event(),
+                    session_key="s",
+                    pre_hook_results=["BLOCKED: unsafe shell pattern"],
+                    refusal_reasons=[],
+                    refusal_notices=None,
+                )
+            assert client.calls == ["reject"]
+            assert audit.log_tool_invocation.called
+            kwargs = audit.log_tool_invocation.call_args.kwargs
+            assert kwargs["outcome"] == "hook_blocked"
+            assert kwargs["request_id"] == "req-1"
+
+    @pytest.mark.asyncio
+    async def test_invalid_tool_audit_exists_and_the_stall_propagates(self):
+        with mock.patch.object(chat_runner, "sel") as sel_factory:
+            audit = sel_factory.return_value
+            with pytest.raises(AcpProcessDied):
+                await _reject_invalid_tool(
+                    _RaisingRejectClient(),
+                    _Slot(),
+                    _Event(),
+                    session_key="s",
+                    error=ValueError("tool name failed validation"),
+                    refusal_reasons=[],
+                    refusal_notices=None,
+                )
+            assert audit.log_tool_invocation.called
+            assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_hook_error_audit_exists_and_the_stall_propagates(self):
+        with mock.patch.object(chat_runner, "sel") as sel_factory:
+            audit = sel_factory.return_value
+            with pytest.raises(AcpProcessDied):
+                await _reject_hook_error(
+                    _RaisingRejectClient(),
+                    _Slot(),
+                    _Event(),
+                    session_key="s",
+                    error="hook raised",
+                    refusal_reasons=[],
+                    refusal_notices=None,
+                )
+            assert audit.log_tool_invocation.called
+            assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "hook_error"
 
 
 class TestHealthyPathUnchanged:

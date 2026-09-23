@@ -8563,7 +8563,8 @@ async def test_unknown_session_drops_aggregate_into_one_counted_record(caplog):
         records = _drop_records(caplog)
         assert len(records) == 1, records
         assert (
-            "Dropped 6 unroutable frame(s) for session ghost (method=session/update)" in records[0]
+            "Dropped 6 unroutable frame(s) for session 'ghost' (method='session/update')"
+            in records[0]
         )
         # The point of the change: SIX dropped frames produce ONE log record,
         # not six. Counts every record naming the session, whatever its wording.
@@ -8592,8 +8593,8 @@ async def test_two_unknown_sessions_are_counted_separately(caplog):
         records = _drop_records(caplog)
         assert len(records) == 2, records
         joined = "\n".join(records)
-        assert "Dropped 3 unroutable frame(s) for session sid-aaa" in joined
-        assert "Dropped 2 unroutable frame(s) for session sid-bbb" in joined
+        assert "Dropped 3 unroutable frame(s) for session 'sid-aaa'" in joined
+        assert "Dropped 2 unroutable frame(s) for session 'sid-bbb'" in joined
     finally:
         await _stop_reader(task)
 
@@ -8634,7 +8635,7 @@ async def test_no_session_broadcast_drops_are_counted(caplog):
         records = _drop_records(caplog)
         assert len(records) == 1, records
         assert "Dropped 4 unroutable frame(s)" in records[0]
-        assert "(method=mcp/status)" in records[0]
+        assert "(method='mcp/status')" in records[0]
     finally:
         await _stop_reader(task)
 
@@ -8657,9 +8658,9 @@ def test_drop_counter_state_does_not_leak_between_intervals(caplog):
 
     records = _drop_records(caplog)
     assert len(records) == 2, records
-    assert "Dropped 2 unroutable frame(s) for session sid-x" in records[0]
+    assert "Dropped 2 unroutable frame(s) for session 'sid-x'" in records[0]
     # Not 3 — the first window's count did not carry over.
-    assert "Dropped 1 unroutable frame(s) for session sid-x" in records[1]
+    assert "Dropped 1 unroutable frame(s) for session 'sid-x'" in records[1]
 
 
 def test_drop_counter_map_is_bounded(caplog):
@@ -8693,6 +8694,52 @@ def test_drop_counter_truncates_backend_controlled_key_text():
     assert count == 1
     assert len(session_id) == limit
     assert len(method) == limit
+
+
+def test_drop_key_is_redacted_before_the_retention_cap(caplog):
+    """A credential straddling the 80-char cut leaves no fragment in key or log.
+
+    Redact-before-bound on the retained key: a slice taken FIRST would sever the
+    token at the cap into a head no credential pattern matches, and the flush
+    would then log that head verbatim.
+    """
+    import logging
+
+    import kiro_crew.acp.runtime as runtime_mod
+
+    rt, _reader, _ = _make_runtime()
+    limit = runtime_mod._DROP_SUMMARY_KEY_MAX_CHARS
+    token = "AKIA" + "STRADDLE0123456A"
+    hostile = "s" * (limit - 9) + token + " tail"
+    assert limit - 9 < limit < limit - 9 + len(token), "premise: the cap cuts the token"
+
+    rt._note_dropped_frame(hostile, hostile)
+    (session_id, method), count = next(iter(rt._dropped_frames.items()))
+    assert count == 1
+    for part in (session_id, method):
+        assert "AKIA" not in part and len(part) <= limit
+
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+        rt._flush_dropped_frames()
+    records = _drop_records(caplog)
+    assert records, "the flush must still report the drop"
+    assert all("AKIA" not in r for r in records)
+
+
+def test_drop_key_over_the_redact_input_cap_keeps_only_its_length():
+    """A multi-KB key half never reaches the redactor and retains no content."""
+    import kiro_crew.acp._dispatch as acp_dispatch
+    import kiro_crew.acp.runtime as runtime_mod
+
+    rt, _reader, _ = _make_runtime()
+    huge = "ghp_" + "A" * (acp_dispatch._REQUEST_ID_REDACT_INPUT_CAP + 40)
+
+    rt._note_dropped_frame(huge, "session/update")
+
+    (session_id, method), count = next(iter(rt._dropped_frames.items()))
+    assert count == 1 and method == "session/update"
+    assert session_id.startswith("<id too long: ") and "ghp_" not in session_id
+    assert len(session_id) <= runtime_mod._DROP_SUMMARY_KEY_MAX_CHARS
 
 
 def test_drop_counter_handles_missing_method():
@@ -8769,7 +8816,7 @@ def test_drop_counter_placeholder_appears_in_flushed_summary(caplog):
 
     records = _drop_records(caplog)
     assert len(records) == 1, records
-    assert "Dropped 1 unroutable frame(s) for session ? (method=?)" in records[0]
+    assert "Dropped 1 unroutable frame(s) for session '?' (method='?')" in records[0]
 
 
 class TestToolPurposeExtraction:
@@ -9438,6 +9485,13 @@ async def _drain_audits(rt) -> None:
     """Await in-flight audit tasks so none outlives the test's event loop."""
     if rt._audit_tasks:
         await asyncio.gather(*list(rt._audit_tasks), return_exceptions=True)
+
+
+async def _drain_answers(rt) -> None:
+    """Await the retained off-loop permission answers (each writes stdin under
+    the transport's write lock, so a burst completes over several turns)."""
+    if rt._answer_tasks:
+        await asyncio.gather(*list(rt._answer_tasks), return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -12388,6 +12442,9 @@ async def test_buffered_burst_with_responsive_backend_does_not_trip_cap():
     task = await _start_reader(rt)
     try:
         await _drain(reader)
+        # The answers are retained tasks that take the stdin write lock in
+        # turn; wait on that observable condition rather than a turn count.
+        await _drain_answers(rt)
         await _drain_audits(rt)
         # Responsive backend (writes complete immediately): every request
         # answered, cap never tripped.
