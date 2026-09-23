@@ -12,15 +12,17 @@ Each agent is identified by its ``modeId`` — the value passed to
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import functools
+import itertools
 import logging
 import os
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar
+from typing import Any, Callable, Generic, Iterable, Iterator, Sequence, TypeVar
 
 from kiro_crew import agent_state, hooks
 from kiro_crew.agent_files import (
@@ -29,6 +31,7 @@ from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_spec_format import (
+    NATIVE_SKILL_ALIAS_PREFIX,
     is_agent_spec_name,
     is_markdown_spec,
     is_native_skill_alias_name,
@@ -36,11 +39,22 @@ from kiro_crew.agent_spec_format import (
     parse_agent_spec_bytes,
     shadowed_markdown_specs,
     spec_stem,
+    split_listed_spec_paths,
 )
 from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed
-from kiro_crew.pinned_fs import open_fenced_for_read
+from kiro_crew.pinned_fs import (
+    PinnedPathRefusal,
+    fd_real_path,
+    open_fenced_for_read,
+    open_in_pinned_parent,
+    supports_pinned_walk,
+)
+from kiro_crew.platform_compat import (
+    is_link_or_junction,
+    iter_linked_ancestors,
+)
 from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.sel import sel as _sel
 
@@ -74,6 +88,97 @@ def _unc_refused(spelling: str) -> bool:
     answers ``False`` here, exactly as the hooks gate does.
     """
     return _WINDOWS and is_unc_shape(spelling) and not unc_probe_allowed(spelling)
+
+
+_LINK_TARGET_MAX_HOPS = 32
+
+
+def _stored_link_target_path(link: str, target: str) -> str:
+    """Return *target* as a lexical path relative to *link*, without resolving it."""
+    drive_absolute = len(target) >= 3 and target[1] == ":" and target[2] in ("/", "\\")
+    if os.path.isabs(target) or drive_absolute:
+        return os.path.normpath(target)
+    return os.path.normpath(os.path.join(os.path.dirname(link), target))
+
+
+def _not_a_link_error(exc: OSError) -> bool:
+    """Whether ``readlink`` proved a local terminal rather than failing to inspect it."""
+    return exc.errno == errno.EINVAL or getattr(exc, "winerror", None) == 4390
+
+
+def _link_reaches_unc(spelling: str | os.PathLike[str], _seen: set[str] | None = None) -> bool:
+    r"""Whether *spelling*'s stored-target chain must be refused before a probe.
+
+    Every hop is inspected with ``os.readlink``, which reads local reparse-point
+    metadata without contacting the target. Only after a hop's stored target is
+    cleared as local does the walk inspect that target as the next possible link.
+    A regular local terminal is allowed; an eventual disallowed UNC target, a
+    cycle, an unreadable hop, or exhaustion of the bounded walk is refused.
+    No resolving or following syscall runs on an uncleared hop, so an ordinary
+    single-hop link into a local dotfiles directory remains supported without
+    opening a path to an attacker-controlled SMB host.
+
+    Hop 0's ancestors are the caller's responsibility (:func:`_linked_ancestor_refused`
+    screens them before this function is ever entered). Every hop after that
+    walks a REWRITTEN target this function invented, whose ancestors nothing
+    outside has seen, so each one is screened root-first with
+    :func:`iter_linked_ancestors` -- judging every yielded ancestor with a
+    recursive call to this same function -- before that hop's own
+    ``os.readlink``. A local-shaped target sitting beneath an untrusted UNC
+    junction is refused at the junction, never traversed to find out what is
+    beneath it. ``_seen`` carries the visited-key set INTO that recursive call
+    so an ancestor chain that loops back into the same walk is caught by the
+    one cycle guard rather than opening a second, unbounded one; the public
+    single-argument call starts a fresh set, exactly as before.
+    """
+    current: str | os.PathLike[str] = spelling
+    seen: set[str] = _seen if _seen is not None else set()
+    for hop in range(_LINK_TARGET_MAX_HOPS):
+        current_str = os.fspath(current)
+        key = os.path.normcase(os.path.normpath(current_str))
+        if key in seen:
+            return True
+        seen.add(key)
+        if hop > 0:
+            for ancestor in iter_linked_ancestors(current):
+                if _link_reaches_unc(ancestor, seen):
+                    return True
+        try:
+            target = os.fspath(os.readlink(current))
+        except OSError as exc:
+            if hop > 0 and _not_a_link_error(exc):
+                return False
+            return True
+        if is_unc_shape(target):
+            return not unc_probe_allowed(target)
+        current = _stored_link_target_path(current_str, target)
+    return True
+
+
+def _linked_ancestor_refused(spelling: str | os.PathLike[str]) -> bool:
+    r"""Whether resolving a Windows-local spelling would touch an SMB share.
+
+    A lexical UNC gate cannot see a local-looking path whose LINK target is a
+    share. :func:`iter_linked_ancestors` walks EVERY linked ancestor root-first
+    -- not merely the first one, which is the SAFETY property here: a benign
+    LOCAL junction sitting above a malicious one must not stop the walk before
+    the deeper junction is examined. Each ancestor is judged by its OWN stored
+    target (:func:`_link_reaches_unc`, a local metadata read) and the walk
+    steps past a link only AFTER it is cleared, refusing at the FIRST one
+    whose target is UNC-shaped and untrusted -- so nothing below an uncleared
+    link is ever touched. The leaf itself is refused under the same rule:
+    ordinary links into local directories are followed only after every stored
+    link target in their chain is cleared; a cycle, unreadable hop, hop-budget
+    exhaustion, or eventual untrusted UNC target is refused before a resolving
+    syscall. A dotfiles-managed checkout therefore still contributes its specs.
+    Callers use this before any resolving or following syscall.
+    """
+    if not _WINDOWS:
+        return False
+    for ancestor in iter_linked_ancestors(spelling):
+        if _link_reaches_unc(ancestor):
+            return True
+    return is_link_or_junction(spelling) and _link_reaches_unc(spelling)
 
 
 class _SpecReadRefused(OSError):
@@ -141,6 +246,33 @@ SCOPE_PROJECT = "project"
 # entry. The signature is the pair of per-directory signatures, so an edit in
 # either scope invalidates.
 _ListAgentsSig = tuple[tuple[str, int], ...]
+
+# Counter behind `_sensitive_dir_sig`, so each refusal gets a signature no cache
+# entry can already hold. `itertools.count` is atomic under CPython, which is what
+# this needs across the executor threads discovery runs on.
+_sensitive_dir_seq = itertools.count()
+
+
+def _sensitive_dir_sig() -> _ListAgentsSig:
+    """A signature for a REFUSED scan dir that never equals any earlier one.
+
+    Two distinct jobs, and a stable sentinel only does the first. It must differ
+    from the empty-dir signature ``()``, so a cache warmed on a legitimately
+    empty ``.kiro/agents`` cannot be served after that dir becomes a symlink into
+    a credential home. It must ALSO differ from its own previous value: the
+    refusal is what makes :func:`project_agent_files` emit the SEL denial, and a
+    stable sentinel matches the cached signature on the very next lookup, so the
+    cached result is served and every repeat attempt goes unaudited -- the first
+    probe is recorded and an attacker's subsequent ones are silent.
+
+    Counting per call makes the sensitive case permanently uncacheable, which is
+    the intent: a refused directory must be re-checked and re-audited every time
+    it is asked for. The ``\\0`` prefix keeps it outside the space of real
+    filenames as well.
+    """
+    return (("\0sensitive", next(_sensitive_dir_seq)),)
+
+
 _LIST_AGENTS_KEY = tuple[str, str]
 _LIST_AGENTS_CACHE: dict[_LIST_AGENTS_KEY, tuple[tuple[_ListAgentsSig, ...], list[AgentInfo]]] = {}
 
@@ -634,12 +766,314 @@ def _warn_on_systematic_scan_failure(directory: Path, candidates: int, parsed: i
         )
 
 
+class ScanUnverifiable(Exception):
+    """Raised when a scan scope could not be pinned and enumerated safely.
+
+    Distinct from the ``None`` sentinel :func:`_pinned_scan_dir_fd` yields for a
+    resolved-sensitive target: that is a POSITIVE verdict (this directory is
+    protected, and the refusal is auditable). This exception means the verdict
+    itself could not be reached at all -- the platform cannot pin
+    (:func:`kiro_crew.pinned_fs.supports_pinned_walk` is False) or the pinned open
+    failed for a reason other than absence. The distinction matters to a caller
+    surfacing state to a human: an unverifiable scan must read as "could not be
+    checked", never silently as "no agents here" -- collapsing the two is the
+    defect several review rounds were about.
+    """
+
+
+_AGENT_DIRECTORY_MAX_ENTRIES = 4096
+# A project spec's declared name feeds kiro-cli dispatch as an agent name, so
+# the retained length must match kiro_crew.validation._AGENT_NAME_RE, the
+# grammar a dispatchable agent name is checked against: one leading character,
+# up to 62 continuation characters, one trailing character (or a single bare
+# character), for a maximum of 64.
+_AGENT_NAME_MAX_CHARS = 64
+
+
+def _oversized_name_sig(count: int) -> _ListAgentsSig:
+    """Mark a name-capped roster so it cannot match a complete scan signature."""
+    return (("\0oversized-name", count),)
+
+
+def _bounded_scan_entries(
+    directory: Path | str | int,
+    entries: Iterable[os.DirEntry[str]],
+    *,
+    refuse_partial: bool,
+) -> tuple[list[os.DirEntry[str]], bool]:
+    """Retain at most one agent directory's shared entry cap.
+
+    One-item lookahead distinguishes a directory exactly at the cap from one
+    whose roster would be partial. Strict request scans refuse that answer;
+    pre-existing session scans consume the bounded prefix and report that
+    imposed narrowing instead of refusing the whole roster.
+    """
+    sampled = list(itertools.islice(entries, _AGENT_DIRECTORY_MAX_ENTRIES + 1))
+    overflow = len(sampled) > _AGENT_DIRECTORY_MAX_ENTRIES
+    if overflow:
+        logger.warning(
+            (
+                "agent directory scan for %s exceeds the %d-entry cap; refusing partial roster"
+                if refuse_partial
+                else "agent directory scan for %s exceeds the %d-entry cap; using bounded roster"
+            ),
+            directory,
+            _AGENT_DIRECTORY_MAX_ENTRIES,
+        )
+    return sampled[:_AGENT_DIRECTORY_MAX_ENTRIES], overflow
+
+
+def _raise_scan_overflow(directory: Path) -> None:
+    raise ScanUnverifiable(
+        f"agent directory {directory!s} exceeds the "
+        f"{_AGENT_DIRECTORY_MAX_ENTRIES}-entry scan cap"
+    )
+
+
+@contextlib.contextmanager
+def _pinned_scan_dir(
+    d: Path, *, unsupported_ok: bool = False
+) -> Iterator[Iterable[os.DirEntry[str]] | None]:
+    """:func:`_pinned_scan_dir_fd` for a caller that needs only the entries.
+
+    Most callers just enumerate. The descriptor exists for the one that must put
+    a further question to the same directory, so it is not in this signature --
+    a caller cannot hold a descriptor it never asked for past the ``with`` block.
+    """
+    with _pinned_scan_dir_fd(d, unsupported_ok=unsupported_ok) as (
+        entries,
+        _dir_fd,
+        overflow,
+    ):
+        if overflow and not unsupported_ok:
+            _raise_scan_overflow(d)
+        yield entries
+
+
+@contextlib.contextmanager
+def _pinned_scan_dir_fd(
+    d: Path, *, unsupported_ok: bool = False
+) -> Iterator[tuple[Iterable[os.DirEntry[str]] | None, int | None, bool]]:
+    """Yield *d*'s entries, descriptor, and overflow signal, or ``None`` entries.
+
+    ``project_agent_files`` sensitivity-checks the project ROOT, but the
+    directories it actually enumerates are the ``<project>/.kiro`` and
+    ``<project>/.kiro/agents`` SUBDIRS. A checkout whose ``.kiro`` or
+    ``.kiro/agents`` is a symlink into a credential home has a non-sensitive
+    root yet a sensitive scan target, so the root check alone lets
+    ``scandir``+``stat`` touch the protected directory (per-file reads are
+    still blocked by :func:`_read_agent_spec`, but the probe itself should not
+    happen). ``None`` means refuse-and-audit; an empty iterator means there is
+    simply nothing to scan, which is the ordinary case for a checkout with no
+    ``.kiro`` yet. :class:`ScanUnverifiable` means neither -- the scan could not
+    be run at all, on this platform or for this target, and must not read as
+    either verdict.
+
+    Built on :mod:`kiro_crew.pinned_fs`, the module this repo already uses for
+    every other descriptor-pinned filesystem access
+    (:func:`kiro_crew.pinned_fs.open_fenced_for_read`, used a few lines below in
+    this same file, is its read-a-file counterpart). Its standing rule --
+    refuse on a platform that cannot pin rather than silently falling back to a
+    by-name walk -- is exactly the rule the NEW request-supplied
+    ``?project_path=`` scan needs, so it is asked for rather than
+    re-implemented:
+
+    * :func:`kiro_crew.pinned_fs.supports_pinned_walk` gates the scan, but ONLY
+      when *unsupported_ok* is ``False``. False capability with *unsupported_ok*
+      also ``False`` REFUSES outright (:class:`ScanUnverifiable`) rather than
+      falling back to a by-name walk an ancestor swap could redirect -- the same
+      fail-closed contract :mod:`kiro_crew.pinned_fs` states for
+      :func:`kiro_crew.pinned_fs.remove_tree_pinned`. This is the ``?project_path=``
+      caller's contract: an HTTP query names a directory the caller does not
+      already trust, so the platform that cannot pin it must say so rather than
+      silently walking it by name.
+
+      *unsupported_ok* is the opt-out for every PRE-EXISTING caller (per-turn
+      resolution, ``spawn_run`` validation, Slack, the config loader): none of
+      those reads a query-supplied path, all of them read the session's
+      already-established project directory, and `upstream/main` has always
+      scanned that directory by plain ``Path.is_dir()`` + ``glob``/
+      ``iter_agent_spec_files`` on every platform with no capability gate at
+      all. Gating them here would be a Windows agent-discovery regression this
+      PR does not otherwise touch -- Slack, spawn validation and per-turn
+      dispatch would each silently lose Windows project agents, riding along
+      inside a folder-picker change with no review of its own. So with
+      *unsupported_ok* set, an unpinnable platform degrades to that exact
+      by-name walk instead of raising, and the residual is real and stated
+      rather than reasoned away: that walk re-resolves ``.kiro``/
+      ``.kiro/agents`` BY NAME, so an ancestor swapped for a link between the
+      ``is_dir()`` check and the read is followed, exactly as it always has been
+      on `upstream/main`. Closing that gap on Windows is future work with its
+      own PR and its own review, not a side effect of this one.
+    * On a platform that DOES support pinning, both callers get the SAME pinned
+      walk regardless of *unsupported_ok* -- the flag only chooses what happens
+      when pinning is unavailable, never a weaker path when it is.
+    * The parent chain is resolved ONCE (:func:`os.path.realpath`) and pinned
+      component by component with :func:`kiro_crew.pinned_fs.open_in_pinned_parent`,
+      exactly as :func:`kiro_crew.pinned_fs.open_dir_pinned` pins a directory's
+      ancestors -- so an ancestor swapped for a link after the resolve is
+      refused rather than traversed. The FINAL component is opened WITHOUT
+      ``O_NOFOLLOW`` (plain ``O_RDONLY | O_DIRECTORY``): a link at the leaf
+      itself -- ``.kiro`` or ``.kiro/agents`` symlinked into an ordinary
+      directory, the dotfiles-managed-checkout case -- is followed rather than
+      refused for being a link, because the descriptor is then judged by its
+      RESOLVED target, not by whether it is a link. Refusing every leaf link
+      outright would deny that ordinary checkout as if it were an attack.
+    * The opened descriptor's real path (:func:`kiro_crew.pinned_fs.fd_real_path`,
+      the kernel's own answer for the inode already held, never a name that
+      could have been swapped since) is what :func:`security.is_sensitive_path`
+      judges. A target the kernel cannot report a real path for fails closed as
+      sensitive-denied, because there is nothing else honest to judge.
+    * Enumeration then runs ``os.scandir(fd)`` on the SAME descriptor --
+      descriptor-relative, so it reads the inode that was judged even if the
+      NAME is swapped afterwards. A name-based ``glob`` would re-resolve and
+      follow the swap.
+
+    The caller MUST consume the entries inside the ``with`` block; nothing after
+    it exits is protected.
+    """
+    if not supports_pinned_walk():
+        if unsupported_ok:
+            # The pre-existing, unpinned behaviour every EXISTING caller has
+            # always had, byte for byte: `upstream/main` never gated this scan
+            # on any capability, so this degrades to the same `is_dir()` +
+            # `os.scandir` by-name walk rather than raising. Before that walk,
+            # reject a Windows-local spelling with a linked ancestor: resolving
+            # or statting it could traverse a junction into an attacker SMB
+            # share, which a lexical UNC check cannot see.
+            if _linked_ancestor_refused(d):
+                yield None, None, False
+                return
+            # Sensitivity is judged against the RESOLVED name here, because
+            # there is no held descriptor to judge instead -- after the linked-
+            # ancestor screen, the remaining residual is the same check-to-use
+            # window `upstream/main` has always had, not a new one.
+            try:
+                if not d.is_dir():
+                    yield (), None, False
+                    return
+                resolved = os.path.realpath(d)
+            except OSError:
+                yield (), None, False
+                return
+            if is_sensitive_path(resolved):
+                yield None, None, False
+                return
+            try:
+                with os.scandir(d) as scan:
+                    entries, overflow = _bounded_scan_entries(
+                        d, scan, refuse_partial=not unsupported_ok
+                    )
+            except OSError:
+                yield (), None, False
+                return
+            yield entries, None, overflow
+            return
+        raise ScanUnverifiable(
+            "cannot pin a directory descriptor on this platform, so the scan "
+            "would have to re-open every component by name and could be "
+            "redirected by an ancestor swapped mid-walk"
+        )
+    d_str = os.fspath(d)
+    as_given = Path(d_str)
+    try:
+        resolved_parent = os.path.realpath(as_given.parent or Path("."))
+    except (OSError, ValueError) as exc:
+        raise ScanUnverifiable(f"could not resolve the parent of {d_str!r}: {exc}") from exc
+    # Judge the resolved parent before any metadata probe or pinned walk touches
+    # it. A symlinked ``.kiro`` may resolve directly into a credential directory;
+    # that is a positive sensitive-path verdict, not ordinary absence.
+    if is_sensitive_path(resolved_parent):
+        yield None, None, False
+        return
+    # A non-directory ANCESTOR (e.g. a plain file sitting where `.kiro` should
+    # be a directory) is an ordinary malformed checkout, not a security event:
+    # there is nothing behind a regular file to protect, and `pin_parent`
+    # cannot tell "ancestor is a non-directory" apart from "ancestor is a
+    # symlink" -- both surface as ENOTDIR/ELOOP and translate to the SAME
+    # refusal. Checked here, by name, before any pin: a swap landing in the
+    # gap between this check and the pin below still gets caught BY the pin
+    # (an ancestor that becomes a link after this check fails `O_NOFOLLOW`
+    # there), so this pre-check only narrows the "absent" case and cannot
+    # widen what the pin still refuses.
+    if not os.path.isdir(resolved_parent):
+        yield (), None, False
+        return
+    try:
+        fd = open_in_pinned_parent(
+            resolved_parent,
+            as_given.name,
+            # No O_NOFOLLOW: the leaf is FOLLOWED if it is a link, so a link to an
+            # ordinary directory is scanned rather than refused for being a link
+            # -- see the docstring. Every ancestor above it is still pinned by
+            # `open_in_pinned_parent` -> `pin_parent`, refusing a swapped one.
+            flags=os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            mode=0,
+            what="agent scan directory",
+            refusal=PinnedPathRefusal,
+        )
+    except FileNotFoundError:
+        # Absent: the ordinary "nothing here" for a checkout with no `.kiro` yet.
+        yield (), None, False
+        return
+    except NotADirectoryError:
+        # A regular file occupies the scan scope -- a malformed checkout, not a
+        # security event: there is nothing here to enumerate.
+        yield (), None, False
+        return
+    except PinnedPathRefusal as exc:
+        # An ancestor became a link after the resolve above (the check-to-use
+        # swap `pin_parent` exists to catch). The target was never shown to be
+        # sensitive, so this is unverifiable rather than an audited denial.
+        raise ScanUnverifiable(f"could not pin {d_str!r} for scanning: {exc}") from exc
+    except OSError as exc:
+        raise ScanUnverifiable(f"could not open {d_str!r} for scanning: {exc}") from exc
+    try:
+        real = fd_real_path(fd)
+        if real is None:
+            # The kernel could not report the opened inode's own path. Nothing
+            # honest is left to judge, so this fails closed as sensitive-denied
+            # rather than scanning a target that was never verified.
+            yield None, None, False
+            return
+        if is_sensitive_path(real):
+            yield None, None, False
+            return
+        try:
+            # Materialized BEFORE the yield, deliberately. A `@contextmanager`
+            # generator may yield exactly once, and a lazy iterator lets an
+            # `OSError` surface DURING the caller's iteration -- that exception
+            # is thrown back in at the yield, and a second yield from the
+            # handler raises `RuntimeError: generator didn't stop after
+            # throw()`, which aborts the caller's whole command rather than
+            # degrading to "no agents". Reading the bounded entries here also
+            # guarantees the enumeration happens against the same fd that was
+            # judged.
+            with os.scandir(fd) as scan:
+                entries, overflow = _bounded_scan_entries(
+                    d, scan, refuse_partial=not unsupported_ok
+                )
+        except OSError:
+            yield (), None, False
+            return
+        # The descriptor travels with the entries so a caller that must ask this
+        # directory one more question -- does `<stem>.json` exist beside this
+        # `<stem>.md` -- asks it relative to the inode already validated, rather
+        # than by a name a swap could redirect. NOT closed here: the caller owns
+        # it for the life of the `with` block and closes it via the `finally`
+        # below.
+        yield entries, fd, overflow
+    finally:
+        os.close(fd)
+
+
 def project_agent_files(
     project_dir: str | Path | None,
     include_legacy: bool = False,
     *,
     operation: str = "project_agent_files",
     source: str = "project_agent_files",
+    raise_unverifiable: bool = False,
 ) -> list[Path]:
     """Agent config files declared by a project checkout, sorted by stem.
 
@@ -661,12 +1095,39 @@ def project_agent_files(
     accepted here and then fail at ``session/set_mode``. Slack passes ``True`` to
     keep its pre-existing listing and resolution behavior.
 
-    Returns ``[]`` for a falsy or sensitive *project_dir*, and never raises: an
-    unreadable checkout yields no agents rather than failing the caller's scan.
+    Returns ``[]`` for a falsy or sensitive *project_dir*, and by default never
+    raises: an unreadable checkout yields no agents rather than failing the
+    caller's turn.
+
+    *raise_unverifiable* switches BOTH what an unpinnable platform does and
+    whether the result can raise, together, because the two describe one
+    surface: caller-supplied vs. session-established.
+
+    * ``False`` (every EXISTING caller -- per-turn resolution, ``spawn_run``
+      validation, Slack, the config loader): none of them names a caller-supplied
+      path, all of them read the session's already-established project
+      directory, and this is the scan `upstream/main` has always run on every
+      platform with no capability gate at all. So on a platform that cannot pin
+      a directory descriptor (:func:`kiro_crew.pinned_fs.supports_pinned_walk`
+      is False), the scan degrades to that SAME by-name ``is_dir()`` + ``glob``/
+      ``iter_agent_spec_files`` walk rather than refusing -- Windows agent
+      discovery keeps working exactly as it does today, with the SAME residual
+      it has always had (a name-based check-to-use window on an unpinnable
+      platform). Widening the fail-closed gate to this scope would be a
+      Windows agent-discovery regression this PR does not otherwise touch.
+    * ``True`` (the dashboard roster endpoint's explicit ``?project_path=``
+      scan, the new surface this PR adds): an HTTP query names a directory the
+      caller does not already trust, so an unpinnable platform REFUSES
+      (:class:`ScanUnverifiable` propagates) rather than walking it by name --
+      the endpoint answers 503 rather than an empty roster, so the picker does
+      not read a scan it could not run as a project with none.
 
     The sensitive-path check is on the project root because that value arrives from
-    a caller-supplied session field; the per-file resolved-target check that
-    catches a planted symlink stays with the reader (:func:`_read_agent_spec`).
+    a caller-supplied session field; the ``.kiro``/``.kiro/agents`` subdirs are
+    additionally resolved and sensitivity-checked (:func:`_pinned_scan_dir`)
+    so a symlinked scope is not even enumerated, and the per-file resolved-target
+    check that catches a planted spec symlink stays with the reader
+    (:func:`_read_agent_spec`).
 
     *operation*/*source* label the SEL denial event emitted on a sensitive
     project directory, exactly as on :func:`_read_agent_spec` and
@@ -695,15 +1156,84 @@ def project_agent_files(
             error="sensitive project dir rejected",
         )
         return []
+    unsupported_ok = not raise_unverifiable
     specs: list[Path] = []
     try:
         if include_legacy:
             kiro_dir = project_kiro_dir(project_dir)
-            if kiro_dir.is_dir():
-                specs.extend(kiro_dir.glob(f"*{AGENT_SPEC_SUFFIX}"))
+            with _pinned_scan_dir(kiro_dir, unsupported_ok=unsupported_ok) as entries:
+                if entries is None:
+                    logger.debug("Skipping sensitive .kiro scan dir: %s", kiro_dir)
+                    _audit_denied(
+                        operation=operation,
+                        source=source,
+                        resources=str(kiro_dir),
+                        error="sensitive scan dir rejected",
+                    )
+                else:
+                    # Consumed inside the `with` block and, on POSIX,
+                    # descriptor-relative: a swap of the NAME after the check
+                    # cannot redirect what is read (see _pinned_scan_dir).
+                    specs.extend(
+                        kiro_dir / e.name for e in entries if e.name.endswith(AGENT_SPEC_SUFFIX)
+                    )
         agents_dir = project_agents_dir(project_dir)
-        if agents_dir.is_dir():
-            specs.extend(iter_agent_spec_files(agents_dir))
+        with _pinned_scan_dir_fd(agents_dir, unsupported_ok=unsupported_ok) as (
+            entries,
+            dir_fd,
+            overflow,
+        ):
+            if overflow and not unsupported_ok:
+                _raise_scan_overflow(agents_dir)
+            if entries is None:
+                logger.debug("Skipping sensitive .kiro/agents scan dir: %s", agents_dir)
+                _audit_denied(
+                    operation=operation,
+                    source=source,
+                    resources=str(agents_dir),
+                    error="sensitive scan dir rejected",
+                )
+            else:
+                # Both spec forms, with a ``<stem>.md`` beside its ``<stem>.json``
+                # twin dropped — the same rule the user-level scan applies through
+                # ``iter_agent_spec_files``, reached here by the listed-paths entry
+                # point so the pinned entries are used as-is. Re-globbing
+                # ``agents_dir`` by name to get that rule would reopen the
+                # check-to-use window the pin closes, and so would probing one
+                # twin's existence by name — hence ``dir_fd``, which puts that
+                # probe through the very descriptor the entries were read from.
+                # ``dir_fd`` is ``None`` on the unpinned fallback branch, which
+                # is fine: that branch is only taken when ``unsupported_ok`` is
+                # True, and ``split_listed_spec_paths`` accepts ``dir_fd=None``
+                # for exactly the by-name-fallback case (see its own doc).
+                live, _shadowed = split_listed_spec_paths(
+                    agents_dir, (agents_dir / e.name for e in entries), dir_fd=dir_fd
+                )
+                # The twin rule is all ``split_listed_spec_paths`` carries;
+                # ``iter_agent_spec_files`` drops the projection's own
+                # ``kirocrew-skill-view-*`` views on top of it, and this scan
+                # needs that half too. Those stems are the MACHINE namespace the
+                # native-skill projection writes (``acp/skill_projection.py``),
+                # so a checkout that plants one must not have it listed as an
+                # agent a person can pick: the projection reads this very roster
+                # to decide what to project, and feeding its own output back in
+                # makes an alias of an alias on each fire. Filtered HERE rather
+                # than in the shared helper because the helper's other caller,
+                # ``shadowed_markdown_specs``, consumes the unfiltered
+                # ``shadowed`` half, and folding a namespace rule into a
+                # twin-splitting primitive would make entries vanish from a
+                # function whose name says it only partitions them.
+                # NOT a security boundary and not load-bearing for one:
+                # ``_require_unshadowed_templates`` walks the same directory
+                # unfiltered, by design, because the native CLI can still load
+                # these files by declared name -- so a spec hiding a protected
+                # template behind an alias stem is still refused there.
+                specs.extend(p for p in live if not p.stem.startswith(NATIVE_SKILL_ALIAS_PREFIX))
+    except ScanUnverifiable:
+        if raise_unverifiable:
+            raise
+        logger.debug("Agent scan for %s could not be verified; treating as no agents", project_dir)
+        return []
     except OSError:
         return []
     return sorted(specs, key=lambda f: f.stem)
@@ -742,17 +1272,92 @@ def project_agent_name(spec: Path) -> str:
     return _declared_project_agent_name(spec) or _project_agent_fallback_name(spec)
 
 
-def _project_signature(project_dir: str | Path) -> tuple[_ListAgentsSig, ...]:
+def _project_signature(
+    project_dir: str | Path, *, unsupported_ok: bool = True
+) -> tuple[_ListAgentsSig, ...]:
     """Stat-only signature of a project's agent scopes.
 
     Covers both ``<project>/.kiro`` (legacy specs) and ``<project>/.kiro/agents``, so
     an add, removal, or in-place edit in either invalidates. Stats only — no file is
-    opened — which is what makes revalidating a warm cache cheap.
+    opened — which is what makes revalidating a warm cache cheap. Each subdir whose
+    RESOLVED target is sensitive contributes :func:`_sensitive_dir_sig` rather than
+    a real ``_dir_signature`` — never ``scandir``+``stat``'d, matching
+    :func:`project_agent_files` so a symlinked ``.kiro``/``.kiro/agents`` scope is
+    never probed even for cache validation. The sentinel must differ from the
+    empty-dir signature ``()`` so a transition from empty-and-cached to
+    sensitive is a cache MISS, not a hit that skips the denial audit — see
+    :func:`_sensitive_dir_sig`.
+
+    *unsupported_ok* forwards to :func:`_pinned_scan_dir` and must agree with the
+    same-named flag :func:`project_agent_files` uses for the scan this signature
+    validates a cache entry for. With the default ``True`` (the pre-existing,
+    ``raise_unverifiable=False`` caller shape), an unpinnable platform's scan
+    degrades to the by-name walk exactly as :func:`_pinned_scan_dir` documents,
+    so this signature never sees :class:`ScanUnverifiable` from THAT cause. But
+    ``unsupported_ok=True`` does not close every raise: an ancestor swap
+    (:class:`kiro_crew.pinned_fs.PinnedPathRefusal`) is still translated to
+    :class:`ScanUnverifiable` by the pinned branch regardless of
+    *unsupported_ok* -- that branch runs whenever pinning IS supported, which
+    is the common case, and the flag only chooses the unpinnable-platform
+    fallback. So this function itself must fold that raise into the SAME
+    sensitive-dir sentinel :func:`project_agent_files` degrades to for its
+    ``raise_unverifiable=False`` callers, or the ``unsupported_ok=True`` shape
+    would raise out of here on every reachable platform, not just an
+    unpinnable one -- exactly the caller-visible crash this fold exists to
+    prevent. Passed ``False`` (the dashboard's ``raise_unverifiable=True``
+    scan), the exception propagates instead: a caller asking for the sharper
+    signal on the scan must get it on the cache-miss signature computation as
+    well, or a project that could not be verified would still get a signature
+    computed and cached as if it had been.
+
+    A sensitive subdir's sentinel is unaffected by this flag either way: that
+    is a real, reached verdict (this directory resolves somewhere protected),
+    never a stand-in for a scan that could not run at all.
     """
-    return (
-        _dir_signature(project_kiro_dir(project_dir)),
-        _dir_signature(project_agents_dir(project_dir)),
-    )
+    kiro_dir = project_kiro_dir(project_dir)
+    agents_dir = project_agents_dir(project_dir)
+    try:
+        with _pinned_scan_dir_fd(kiro_dir, unsupported_ok=unsupported_ok) as (
+            kiro_entries,
+            kiro_dir_fd,
+            kiro_overflow,
+        ):
+            if kiro_overflow and not unsupported_ok:
+                _raise_scan_overflow(kiro_dir)
+            # Computed from the entries the pinned scan yielded, inside the
+            # `with` block -- the same protection the spec scan gets, rather
+            # than a signature-only stat pass reopening the window by name
+            # right after the check released its pin.
+            kiro_sig = (
+                _sensitive_dir_sig()
+                if kiro_entries is None
+                else _entries_signature(kiro_entries, dir_fd=kiro_dir_fd)
+            )
+        with _pinned_scan_dir_fd(agents_dir, unsupported_ok=unsupported_ok) as (
+            agents_entries,
+            agents_dir_fd,
+            agents_overflow,
+        ):
+            if agents_overflow and not unsupported_ok:
+                _raise_scan_overflow(agents_dir)
+            agents_sig = (
+                _sensitive_dir_sig()
+                if agents_entries is None
+                else _entries_signature(agents_entries, dir_fd=agents_dir_fd)
+            )
+    except ScanUnverifiable:
+        if not unsupported_ok:
+            raise
+        # The pinned branch still raises on an ancestor swap regardless of
+        # *unsupported_ok* -- that flag only chooses the unpinnable-platform
+        # fallback, not a weaker outcome on a platform that CAN pin. A
+        # degrading caller must not have that raise reach it as an uncaught
+        # crash; fold it into the same sensitive-dir sentinel
+        # `project_agent_files` uses for its own `raise_unverifiable=False`
+        # degrade, so the signature stays a real, cacheable value rather than
+        # one that could later read as a verified-empty hit.
+        return (_sensitive_dir_sig(), _sensitive_dir_sig())
+    return (kiro_sig, agents_sig)
 
 
 def project_agent_names(
@@ -760,6 +1365,7 @@ def project_agent_names(
     *,
     operation: str = "project_agent_names",
     source: str = "project_agent_names",
+    raise_unverifiable: bool = False,
 ) -> frozenset[str]:
     """Dispatchable agent names declared by a project, cached on a stat signature.
 
@@ -784,7 +1390,23 @@ def project_agent_names(
     byte-for-byte (a forgotten future call site degrades to exactly today's
     trail); they are not for new call sites.
 
-    Never raises; an unreadable checkout yields an empty set.
+    By default never raises: an unreadable checkout, and a scan the platform
+    cannot pin and verify, both yield an empty set -- the SAME by-name scan
+    `upstream/main` has always run on every platform, with no capability gate,
+    for this pre-existing caller shape (per-turn resolution, ``spawn_run``
+    validation, Slack, the config loader). *raise_unverifiable* switches to the
+    dashboard roster endpoint's contract instead: an unpinnable platform
+    REFUSES (:class:`ScanUnverifiable` propagates) rather than falling back to
+    that by-name walk, because the caller supplying a value here is a request
+    query rather than an established session project. This flag fences the
+    cache rather than being bypassed by a warm entry: :func:`_project_signature`
+    is computed with the SAME ``unsupported_ok`` and consulted as the cache
+    key's validity check BEFORE the stored result is read, so under
+    *raise_unverifiable* an unverifiable checkout's :class:`ScanUnverifiable`
+    propagates from that signature computation ahead of the cache lookup and
+    refuses a would-be hit exactly as it refuses a miss. Under the default that
+    same computation folds the unverifiable case into a sensitive-dir sentinel,
+    so a repeat call on an unchanged checkout revalidates to the cached answer.
     """
     if not project_dir:
         return frozenset()
@@ -803,13 +1425,19 @@ def project_agent_names(
             error="sensitive project dir rejected",
         )
         return frozenset()
-    signature = _project_signature(project_dir)
+    signature = _project_signature(project_dir, unsupported_ok=not raise_unverifiable)
     cached = _PROJECT_NAMES_CACHE.get(key)
     if cached is not None and cached[0] == signature:
         return cached[1]
     candidates = 0
+    oversized_names = 0
     declared: list[str] = []
-    for f in project_agent_files(project_dir, operation=operation, source=source):
+    for f in project_agent_files(
+        project_dir,
+        operation=operation,
+        source=source,
+        raise_unverifiable=raise_unverifiable,
+    ):
         # AppleDouble sidecars are rejected by design, not by failure — a
         # directory holding only sidecars is empty of specs, not broken.
         if not f.name.startswith("._"):
@@ -818,7 +1446,42 @@ def project_agent_names(
         # never become a kiro-cli mode, and admitting its filename fallback here
         # would have dispatch accept a name whose session/set_mode then fails.
         if (name := _declared_project_agent_name(f)) is not None:
+            if len(name) > _AGENT_NAME_MAX_CHARS:
+                oversized_names += 1
+                continue
             declared.append(name)
+    if oversized_names:
+        # One bounded row per scan: never copy the attacker-controlled name
+        # into logs, and never emit one warning for each refused spec. Mirror
+        # _bounded_scan_entries: a strict request scan refuses the whole
+        # answer, but a pre-existing session scan consumes the surviving
+        # names and reports the imposed narrowing instead of refusing the
+        # roster outright -- the same split the entry cap already draws.
+        logger.warning(
+            (
+                "agent directory scan for %s found %d spec(s) above the "
+                "%d-character agent-name cap; refusing partial roster"
+                if raise_unverifiable
+                else "agent directory scan for %s found %d spec(s) above the "
+                "%d-character agent-name cap; using bounded roster"
+            ),
+            project_agents_dir(project_dir),
+            oversized_names,
+            _AGENT_NAME_MAX_CHARS,
+        )
+        if raise_unverifiable:
+            raise ScanUnverifiable(
+                f"agent directory {project_agents_dir(project_dir)!s} contains a name above the "
+                f"{_AGENT_NAME_MAX_CHARS}-character agent-name cap"
+            )
+        # cached_project_agent_names() must see the narrowing after an
+        # off-loop warm, but a later verified scan must not hit this as a
+        # complete roster. Appending a synthetic row makes the next real
+        # signature mismatch even though the cached names are non-empty.
+        partial_signature = (*signature, _oversized_name_sig(oversized_names))
+        names: frozenset[str] = frozenset(declared)
+        _PROJECT_NAMES_CACHE[key] = (partial_signature, names)
+        return names
     _warn_on_systematic_scan_failure(project_agents_dir(project_dir), candidates, len(declared))
     names = frozenset(declared)
     _PROJECT_NAMES_CACHE[key] = (signature, names)
@@ -1390,6 +2053,99 @@ def _iter_spec_entries(d: Path) -> Iterator[os.DirEntry[str]]:
                 yield entry
 
 
+def _entries_signature(
+    entries: Iterable[os.DirEntry[str]], *, dir_fd: int | None = None
+) -> _ListAgentsSig:
+    """Signature of an ALREADY-OPENED listing, so the caller can compute it
+    without re-resolving the directory by name.
+
+    Split out of :func:`_dir_signature` so a pinned scan can hand over the
+    entries it already validated (see :func:`_pinned_scan_dir_fd`): re-opening the
+    directory by path to stat it would reintroduce exactly the check-to-use
+    window the pin exists to close. When *dir_fd* is available, link targets are
+    read relative to that same validated directory; platforms without
+    descriptor-relative ``readlink`` retain the by-name behaviour.
+    """
+    out: list[tuple[str, int]] = []
+    try:
+        for entry in entries:
+            # Both spec forms, case-insensitively: a case-insensitive filesystem
+            # serves ``Foo.JSON`` to ``*.json`` consumers, so a case-sensitive
+            # suffix here would omit from the signature a file the scans include
+            # — its edits would never invalidate. A markdown spec that went
+            # unfingerprinted would likewise serve a stale roster forever, so the
+            # predicate is the scans' own (:func:`is_agent_spec_name`), not a
+            # second copy of it.
+            if not is_agent_spec_name(entry.name):
+                continue
+            try:
+                # follow_symlinks=False, i.e. lstat semantics: ``DirEntry.stat()``
+                # follows by DEFAULT, and on Windows statting a name that is a
+                # symlink to ``\\host\share`` IS the outbound SMB/NTLM
+                # authentication -- so fingerprinting a planted link would
+                # authenticate to a caller-chosen host before the reader's
+                # resolved-target guard in ``_read_agent_spec`` ever runs. The
+                # directory-level hold protects the scan DIRECTORY from being
+                # swapped; it says nothing about a child entry inside it, and an
+                # attacker who can write the scanned path is this feature's own
+                # threat model. The LINK's own mtime detects a REPOINT of the
+                # link, which a followed stat would miss.
+                m = entry.stat(follow_symlinks=False).st_mtime_ns
+            except OSError:
+                m = 0
+            out.append((entry.name, m))
+            # The link mtime alone is NOT enough for a symlinked spec: it catches
+            # a repoint but not an edit to the file the link resolves to (the
+            # common ``~/.kiro/agents/mine.json`` -> a dotfiles copy). Without the
+            # target's mtime folded in, such an edit leaves this signature
+            # identical and both ``_LIST_AGENTS_CACHE`` and ``_PARSED_SPECS_CACHE``
+            # serve the pre-edit model/tools/prompt until a write path clears the
+            # cache or the gateway restarts -- the very staleness
+            # :func:`agents_dir_revision` returns ``None`` for on a symlinked spec.
+            # Recorded under a ``\0target`` key: a NUL cannot appear in a real
+            # filename, so this synthetic entry can never collide with another
+            # file's ``(name, mtime)`` pair, exactly as :func:`_sensitive_dir_sig`
+            # keeps its sentinel outside the filename space.
+            #
+            # The FOLLOWED stat carries the SMB/NTLM cost the non-following stat
+            # above exists to avoid, so it takes the SAME UNC gate the readers
+            # apply to a raw spelling (:func:`_unc_refused`, on the link's stored
+            # target read locally by ``os.readlink`` -- which connects to no
+            # host). A link whose target is an untrusted UNC share is therefore
+            # fingerprinted by its link mtime alone and never followed; a repoint
+            # to such a share still changes the link mtime and invalidates.
+            if entry.is_symlink():
+                try:
+                    if dir_fd is not None and os.readlink in os.supports_dir_fd:
+                        _target = os.readlink(entry.name, dir_fd=dir_fd)
+                    else:
+                        _target = os.readlink(entry.path)
+                except OSError:
+                    # A failed descriptor-relative read must not retry by name:
+                    # that would re-resolve a directory the caller pinned.
+                    _target = None
+                if _target is not None:
+                    _target_path = (
+                        _target
+                        if os.path.isabs(_target)
+                        else os.path.join(os.path.dirname(entry.path), _target)
+                    )
+                    target_safe_to_follow = not _unc_refused(
+                        _target
+                    ) and not _linked_ancestor_refused(_target_path)
+                else:
+                    target_safe_to_follow = False
+                if target_safe_to_follow:
+                    try:
+                        fm = entry.stat(follow_symlinks=True).st_mtime_ns
+                    except OSError:
+                        fm = 0
+                    out.append((entry.name + "\0target", fm))
+    except OSError:
+        pass
+    return tuple(sorted(out))
+
+
 def _dir_signature(d: Path) -> _ListAgentsSig:
     """Cheap stat-only signature of the agents dir.
 
@@ -1410,17 +2166,10 @@ def _dir_signature(d: Path) -> _ListAgentsSig:
     for a symlinked or freshly edited directory. :func:`agents_dir_revision`
     is the stricter fingerprint, for answers that must never be served stale.
     """
-    entries: list[tuple[str, int]] = []
     try:
-        for entry in _iter_spec_entries(d):
-            try:
-                m = entry.stat().st_mtime_ns
-            except OSError:
-                m = 0
-            entries.append((entry.name, m))
+        return _entries_signature(_iter_spec_entries(d))
     except OSError:
-        pass
-    return tuple(sorted(entries))
+        return ()
 
 
 _SpecStatRevision = tuple[str, int, int, int, int, int, int]
@@ -1429,7 +2178,9 @@ AgentsDirRevision = tuple[int, tuple[_SpecStatRevision, ...], int]
 # that an in-place rewrite did not happen; the revision is unavailable there.
 AGENTS_DIR_MEMO_ENABLED = not _WINDOWS
 # Above this many spec entries no revision is taken, and a read costs what it costs.
-_AGENTS_DIR_REVISION_MAX_ENTRIES = 4096
+# Bound to the shared entry cap so the agents-dir revision and the project scans
+# it fingerprints alongside cannot drift onto two different populations.
+_AGENTS_DIR_REVISION_MAX_ENTRIES = _AGENT_DIRECTORY_MAX_ENTRIES
 # Follow the racy-git precedent: metadata younger than this window is untrusted.
 _AGENTS_DIR_RACY_WINDOW_NS = 2_000_000_000
 # An answer set that reaches this many keys is cleared whole, so a churn of names cannot grow it.

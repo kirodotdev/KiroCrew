@@ -7042,11 +7042,48 @@ def first_linked_ancestor(path: str | os.PathLike) -> str | None:
 
     The leaf is deliberately excluded -- pair this with
     :func:`is_link_or_junction` on the path itself.
+
+    A caller that must judge EACH linked ancestor by its own target -- a
+    benign local junction above a malicious UNC one must not let the walk
+    stop short of the UNC ancestor beneath it -- needs
+    :func:`iter_linked_ancestors` instead: stopping at the first hit here
+    means only the shallowest link is ever seen.
     """
     for ancestor in reversed(pathlib.Path(os.fspath(path)).parents):
         if is_link_or_junction(ancestor):
             return str(ancestor)
     return None
+
+
+def iter_linked_ancestors(path: str | os.PathLike) -> Iterator[str]:
+    r"""Every ANCESTOR of *path* that is a symlink/junction, root-first.
+
+    Unlike :func:`first_linked_ancestor`, which stops at the first hit, this
+    yields ALL of them in root-to-leaf order. A caller that must clear each
+    linked ancestor by inspecting its own stored target (never a resolved one)
+    needs every hit, not only the shallowest: a benign LOCAL junction near the
+    root does not prove the chain is safe, because a DEEPER junction on the
+    same path can still target ``\\host\share``, and the deeper one is
+    unreachable from ``first_linked_ancestor`` once the shallow one has
+    matched.
+
+    The safety property this exists for: a caller MUST judge each yielded
+    ancestor -- with a local metadata read of its OWN stored target, e.g.
+    :func:`os.readlink`, never a resolving call -- BEFORE looking at anything
+    below it. Stepping past a link only after it is known to be local, and
+    refusing at the first one that is not, is what keeps the probe from ever
+    ``lstat``-ing through an uncleared link. Consuming this generator eagerly
+    (``list(...)``) defeats that property, because building the full list
+    walks every ancestor's ``is_link_or_junction`` check up front but tells
+    the caller nothing about EACH one's target before the next is inspected --
+    the caller must still stop at the first refusal while iterating, not after
+    the whole list is in hand.
+
+    The leaf is deliberately excluded, matching :func:`first_linked_ancestor`.
+    """
+    for ancestor in reversed(pathlib.Path(os.fspath(path)).parents):
+        if is_link_or_junction(ancestor):
+            yield str(ancestor)
 
 
 def unlink_link_or_junction(path: str | os.PathLike) -> None:

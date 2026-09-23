@@ -33,6 +33,7 @@ DECLARED_SITES = frozenset(
         ("acp/skill_projection.py", "_projection_alias_lock"),
         ("acp/skill_projection.py", "_unlink_alias_if_unchanged"),
         ("acp/skill_projection.py", "_unlink_projection_lease_if_unchanged"),
+        ("agent_discovery.py", "_linked_ancestor_refused"),
         ("agent_scratch.py", "_discard_owner_marker"),
         ("agent_scratch.py", "cap_kiro_cli_logs"),
         ("agent_scratch.py", "shared_scratch_window"),
