@@ -14206,7 +14206,16 @@
         "allow_system_notifications": "시스템 알림 허용",
         "system_notifications_blocked": "브라우저에서 차단되었습니다. 사이트 권한 설정에서 다시 켜세요.",
         "show_banner_for_new_notifications": "새 알림을 배너로 표시",
-        "show_banner_for_new_notifications_description": "알림이 오면 카드가 상단 바 아래로 미끄러져 나타난 뒤 벨 안으로 들어갑니다."
+        "show_banner_for_new_notifications_description": "알림이 오면 카드가 상단 바 아래로 미끄러져 나타난 뒤 벨 안으로 들어갑니다.",
+        "push_section": "푸시 알림",
+        "push_toggle_label": "이 기기로 알림 보내기",
+        "push_toggle_description": "앱이 닫혀 있어도 Web Push를 통해 OS 알림을 받습니다.",
+        "push_install_hint": "iOS에서는 푸시 알림을 켜려면 먼저 {{productName}}을(를) 홈 화면에 추가하세요.",
+        "push_unsupported": "이 브라우저는 Web Push 알림을 지원하지 않습니다.",
+        "push_error_blocked": "브라우저에서 알림이 차단되어 있습니다.",
+        "push_error_permission": "권한이 부여되지 않았습니다.",
+        "push_error_subscribe": "구독에 실패했습니다.",
+        "push_error_unsubscribe": "구독 취소에 실패했습니다."
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

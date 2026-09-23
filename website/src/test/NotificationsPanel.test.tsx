@@ -20,6 +20,21 @@ vi.mock('../hooks/useNotificationSound', async (importOriginal) => {
   return { ...actual, playPreset: vi.fn() }
 })
 
+// Mock the push hook so PushSection renders deterministically (supported, not
+// subscribed) without needing serviceWorker/PushManager in the test DOM.
+const mockPush = {
+  supported: true,
+  needsInstall: false,
+  subscribed: false,
+  busy: false,
+  error: null as string | null,
+  subscribe: vi.fn(() => Promise.resolve()),
+  unsubscribe: vi.fn(() => Promise.resolve()),
+}
+vi.mock('../hooks/usePushSubscription', () => ({
+  usePushSubscription: () => mockPush,
+}))
+
 const STORAGE_KEY = 'mc-notification-sound'
 
 // Stub AudioContext to prevent real Web Audio calls during component render.
@@ -322,5 +337,13 @@ describe('NotificationsPanel', () => {
     expect(saved.volume).toBe(0.55)
     expect(saved.perCategory.cron).toBe('ding')
     expect(saved.perCategory.all).toBe('chime')
+  })
+
+  it('renders the push toggle and calls subscribe on enable', () => {
+    render(<NotificationsPanel />)
+    const toggle = screen.getByRole('switch', { name: /Send notifications to this device/i })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(toggle)
+    expect(mockPush.subscribe).toHaveBeenCalledOnce()
   })
 })

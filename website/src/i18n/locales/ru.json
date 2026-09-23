@@ -14791,7 +14791,16 @@
         "allow_system_notifications": "Разрешить системные уведомления",
         "system_notifications_blocked": "Заблокированы в браузере. Включите их снова в разрешениях сайта.",
         "show_banner_for_new_notifications": "Показывать баннер для новых уведомлений",
-        "show_banner_for_new_notifications_description": "Когда приходит уведомление, карточка выезжает под верхней панелью, а затем убирается в колокольчик."
+        "show_banner_for_new_notifications_description": "Когда приходит уведомление, карточка выезжает под верхней панелью, а затем убирается в колокольчик.",
+        "push_section": "Push-уведомления",
+        "push_toggle_label": "Отправлять уведомления на это устройство",
+        "push_toggle_description": "Получайте системные уведомления даже при закрытом приложении через Web Push.",
+        "push_install_hint": "На iOS сначала добавьте {{productName}} на главный экран, чтобы включить push.",
+        "push_unsupported": "Этот браузер не поддерживает уведомления Web Push.",
+        "push_error_blocked": "Уведомления заблокированы в браузере.",
+        "push_error_permission": "Разрешение не предоставлено.",
+        "push_error_subscribe": "Не удалось подписаться.",
+        "push_error_unsubscribe": "Не удалось отписаться."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Записывать метрики",

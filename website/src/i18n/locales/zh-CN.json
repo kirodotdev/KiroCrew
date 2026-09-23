@@ -14194,7 +14194,16 @@
         "allow_system_notifications": "允许系统通知",
         "system_notifications_blocked": "已被浏览器阻止。请在该网站的权限设置中重新开启。",
         "show_banner_for_new_notifications": "新通知显示横幅",
-        "show_banner_for_new_notifications_description": "通知到达时，一张卡片会从顶栏下方滑入，随后收进铃铛。"
+        "show_banner_for_new_notifications_description": "通知到达时，一张卡片会从顶栏下方滑入，随后收进铃铛。",
+        "push_section": "推送通知",
+        "push_toggle_label": "将通知发送到此设备",
+        "push_toggle_description": "即使应用已关闭，也可通过 Web Push 接收系统通知。",
+        "push_install_hint": "在 iOS 上，请先将 {{productName}} 添加到主屏幕以启用推送通知。",
+        "push_unsupported": "此浏览器不支持 Web Push 通知。",
+        "push_error_blocked": "通知已在浏览器中被阻止。",
+        "push_error_permission": "未授予权限。",
+        "push_error_subscribe": "订阅失败。",
+        "push_error_unsubscribe": "取消订阅失败。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",
