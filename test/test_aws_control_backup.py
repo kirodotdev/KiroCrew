@@ -779,6 +779,69 @@ class TestSessionsArchiveLayerBGate:
         assert seen["archive"] is False
         assert record["layer_b"] is True
 
+    def test_a_withheld_upload_does_not_hold_the_setter_lock(self, tmp_path, monkeypatch):
+        """A WITHHELD run uploads without holding the state lock.
+
+        The mirror of the sibling above, and the common case rather than the edge
+        one: withholding is the default, so this is the path most runs take. The
+        lock exists to order this block against the SETTER, and the recheck it
+        orders is ``layer_b and not sessions_layer_b_enabled(account)``. With
+        ``layer_b`` False that short-circuits on its first operand, so the refusal
+        cannot fire and there is no second read for a revocation to interleave with
+        -- an exclusive hold would order nothing.
+
+        What it would cost is measured across accounts. The lock file is
+        ``_state_path()``'s sidecar, one path for every account, so a hold here puts
+        every other account's state write behind this upload for up to
+        ``_STATE_LOCK_TIMEOUT_SECS`` -- including the toggles an operator reaches
+        for, ``set_sessions_layer_b`` and ``set_retention_keep``. Probed the same
+        way as the sibling, from another thread on a fresh descriptor and without
+        blocking, so the answer is exactly the contention a concurrent writer meets.
+        """
+        self._skip_without_pinning()
+        self._both_halves(tmp_path, monkeypatch)
+        self._store(tmp_path, False)
+        seen: dict[str, bool] = {}
+
+        def _file_lock_is_free_to_another_thread() -> bool:
+            answer: dict[str, bool] = {}
+            lock_path = backup._state_path().with_suffix(".lock")
+
+            def probe() -> None:
+                try:
+                    with backup.open_lock_file(lock_path) as fd:
+                        with backup.file_lock(fd, exclusive=True, wait=False):
+                            answer["free"] = True
+                except OSError:
+                    answer["free"] = False
+
+            thread = threading.Thread(target=probe)
+            thread.start()
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "the probe thread blocked instead of answering"
+            return answer["free"]
+
+        def fake_put(
+            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+        ):
+            # Keyed the same way as the sibling: the label is uploaded after the
+            # block, so reading "the last put" would pass with any lock at all.
+            which = "label" if key.endswith(backup.LABEL_OBJECT_NAME) else "archive"
+            seen[which] = _file_lock_is_free_to_another_thread()
+
+        with (
+            mock.patch.object(backup, "_authorize_upload"),
+            mock.patch.object(backup.storage, "put_file", side_effect=fake_put),
+        ):
+            record = backup.run_sessions_backup(
+                ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
+            )
+
+        assert seen["archive"] is True, "the withheld upload held the state lock"
+        # The withheld path, and one that reached the upload: the crew half alone
+        # rode, so this is not a refusal that never got as far as `put_file`.
+        assert record["layer_b"] is False
+
     def test_a_status_read_is_not_blocked_by_an_in_flight_upload(self, tmp_path, monkeypatch):
         """The status surface stays live during a PUT.
 

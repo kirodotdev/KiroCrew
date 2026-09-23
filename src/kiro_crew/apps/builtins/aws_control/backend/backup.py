@@ -365,6 +365,13 @@ def _state_lock():
 def _upload_lock():
     """Hold ONLY the state file's sidecar lock across the Layer B upload gate.
 
+    Taken by that gate on the PERMITTED path alone. The ordering below is ordering
+    against the SETTER, so it is worth an exclusive hold only where a second
+    permission read exists for a revocation to interleave with. A withheld run has
+    none -- its recheck short-circuits -- and takes no lock at all, which leaves
+    its authorization adjacent to its upload. See the gate in
+    :func:`run_sessions_backup`.
+
     Same sidecar file lock as :func:`_state_lock`, and deliberately NOT
     ``_run_lock`` -- the exact shape :func:`_delete_under_the_retention_gate`
     composes for the same reason. ``_run_lock`` also serializes
@@ -3894,13 +3901,26 @@ def run_sessions_backup(
         # without Layer B instead would be the torn state the read-once rule
         # exists to prevent.
         #
-        # Taken BEFORE `_authorize_upload`, so the whole decision-to-upload span is
-        # one critical section. Acquiring it after authorization put a blocking
-        # wait between the consent check and `put_file`: a concurrent account's
-        # backup can hold this lock across its own upload, and consent withdrawn
-        # during that wait was never re-read, because the recheck below covers
-        # Layer B only. `_authorize_upload` states the invariant this restores --
-        # no check is separated from the upload by another blocking call.
+        # Held only on the PERMITTED path, and when held, taken BEFORE
+        # `_authorize_upload` so the whole decision-to-upload span is one critical
+        # section. `_authorize_upload` states the invariant both halves of that
+        # serve -- no check is separated from the upload by another blocking call.
+        # Acquiring the lock after the authorization would put a blocking wait
+        # between the consent check and `put_file`, because a concurrent account's
+        # backup can hold this lock across its own upload and the recheck below
+        # covers Layer B rather than consent.
+        #
+        # `layer_b` False is the withholding DEFAULT, and on that path the recheck
+        # below short-circuits on its first operand, so there is no second read for
+        # a revocation to interleave with and the lock orders nothing. Taking none
+        # satisfies the same invariant directly: `_authorize_upload` and `put_file`
+        # sit adjacent with no blocking call between them. Taking one instead costs
+        # what an exclusive hold costs -- the lock file is `_state_path()`'s
+        # sidecar, one path for every account, so every state writer of every
+        # account (`_record_run`, `set_sessions_layer_b`, `set_retention_keep`, the
+        # nightly loop) waits out this upload up to `_STATE_LOCK_TIMEOUT_SECS` for a
+        # guarantee this path does not need. `contextlib.nullcontext` keeps that as
+        # one expression, so the body below reads the same either way.
         #
         # `_upload_lock`, not `_state_lock`: the sidecar FILE lock alone, without
         # `_run_lock`. The setter (`set_sessions_layer_b` -> `_locked_state_update`
@@ -3929,16 +3949,18 @@ def run_sessions_backup(
         # retention sweep takes the same FILE lock under `_RETENTION_GATE`, but it
         # runs after this block has released, not inside it.
         #
-        # The cost is that a same-account revocation and the nightly loop wait for
-        # the in-flight upload, bounded by `_PUSH_TIMEOUT_SECS`. A revocation that
-        # appears slow is the price of one that cannot be overtaken, and the
-        # exposure it prevents has no recovery. What does NOT wait is every status
-        # read: `last_runs` and `uploaded_objects` take only `_run_lock`, which
-        # neither this block nor a writer parked on the file lock holds.
-        with _upload_lock():
+        # The cost, on the permitted path, is that a same-account revocation and the
+        # nightly loop wait for the in-flight upload, bounded by
+        # `_PUSH_TIMEOUT_SECS`. A revocation that appears slow is the price of one
+        # that cannot be overtaken, and the exposure it prevents has no recovery.
+        # What does NOT wait is every status read: `last_runs` and
+        # `uploaded_objects` take only `_run_lock`, which neither this block nor a
+        # writer parked on the file lock holds.
+        with _upload_lock() if layer_b else contextlib.nullcontext():
             # The live checks: the connection still points at this account, the app
-            # is still enabled, and consent still stands. Inside the lock so none of
-            # them can go stale between here and the upload.
+            # is still enabled, and consent still stands. Immediately before the
+            # upload, and under the lock when one is held, so none of them can go
+            # stale between here and the upload.
             _authorize_upload(account, profile, region, caller=caller, payload_kind=KIND_SESSIONS)
             # Only the withdrawn direction refuses. A grant landing mid-build leaves
             # an archive without Layer B, which is the withholding default and needs

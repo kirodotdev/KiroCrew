@@ -872,15 +872,31 @@ account must not grant it for another.
 A revocation landing while an archive is being built refuses the upload:
 `run_sessions_backup` re-reads the permission immediately before the PUT and
 raises rather than shipping bytes under a permission the operator has withdrawn.
-That re-read, the live authorization checks, and the PUT all run inside one
-acquisition of the state file's sidecar lock, taken before `_authorize_upload`
-through `_upload_lock`. Taking it after authorizing put a blocking wait between
-the consent check and the PUT: a concurrent account's backup can hold this lock
-across its own upload, and consent withdrawn during that wait was never re-read,
-because the Layer B re-read does not cover consent. This is the same rule
-`routes._reauthorize_in_lock` already states for `routes._library_lock` -- a lock
-that makes a caller wait must re-run the authorization inside it, because the wait
-sits between the checks that authorized the call and the call itself.
+On the permitted path that re-read, the live authorization checks, and the PUT all
+run inside one acquisition of the state file's sidecar lock, taken before
+`_authorize_upload` through `_upload_lock`. Taking it after authorizing put a
+blocking wait between the consent check and the PUT: a concurrent account's backup
+can hold this lock across its own upload, and consent withdrawn during that wait
+was never re-read, because the Layer B re-read does not cover consent. This is the
+same rule `routes._reauthorize_in_lock` already states for `routes._library_lock`
+-- a lock that makes a caller wait must re-run the authorization inside it, because
+the wait sits between the checks that authorized the call and the call itself.
+
+A WITHHELD run takes no lock, which is the withholding default and so the common
+path. The lock orders this block against the setter, and that is worth an exclusive
+hold only where a second permission read exists for a revocation to interleave
+with. A withheld run has none: its re-read is `layer_b and not
+sessions_layer_b_enabled(account)`, which short-circuits on its first operand, so
+the refusal it guards cannot fire and the lock would guard nothing. Taking none
+serves the `_authorize_upload` rule above directly rather than by holding
+something -- with no blocking acquisition in the block, the authorization and the
+PUT are adjacent. Taking one would cost what an exclusive hold costs: the lock file
+is `_state_path()`'s sidecar, `backup.json` in the app data directory, one path for
+every account rather than one per account, so every state writer of every account
+-- `_record_run`, the nightly toggle `set_sessions_layer_b`, `set_retention_keep`,
+and the nightly loop -- waits out one account's upload up to
+`_STATE_LOCK_TIMEOUT_SECS`. That is the cross-account stall this module already
+removed from the status read, one layer down.
 
 `_upload_lock` takes ONLY the sidecar file lock, deliberately not `_run_lock` --
 the same shape `_delete_under_the_retention_gate` composes, and for the same
@@ -924,8 +940,9 @@ refuses; a grant arriving mid-build leaves an archive without Layer B, which the
 next run picks up.
 
 `test_aws_control_backup.py::TestSessionsArchiveLayerBGate` pins both directions,
-that no `config.json` key can grant it, that a grant does not cross accounts, and
-that the store stays inside the fenced directory.
+that a permitted upload holds the setter's lock and a withheld one does not, that
+no `config.json` key can grant it, that a grant does not cross accounts, and that
+the store stays inside the fenced directory.
 
 This decision is separate from the file export's
 `dashboard.export_include_layer_b`: a downloaded file can be handed to another
