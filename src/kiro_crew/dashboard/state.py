@@ -2467,6 +2467,8 @@ class _ChatSlot:
         "_memory_assignment_from_history",
         "project",
         "created_at",
+        "incarnation",
+        "_closes_in_flight",
         "messages",
         "total_messages",
         "_task",
@@ -2767,6 +2769,10 @@ class _ChatSlot:
         # transcript silently stopped. Set/cleared in ``remote_relay.relay_remote_turn``.
         self._relay_in_flight: bool = False
         self.created_at: str = datetime.now(timezone.utc).isoformat()
+        # Identity of THIS live object. Four paths restore ``created_at`` from persisted
+        # metadata, so a resumed slot cannot be told apart by it.
+        self.incarnation: str = uuid.uuid4().hex
+        self._closes_in_flight: int = 0
         self.messages: list[dict[str, Any]] = []
         self._buffers = SlotBufferCoordinator()
         self._projection = SlotProjection()
@@ -7808,7 +7814,11 @@ class DashboardState:
         return payload
 
     def serialize_slots(
-        self, *, include_check_status: bool = False, dashboard_user: bool = False
+        self,
+        *,
+        include_check_status: bool = False,
+        dashboard_user: bool = False,
+        rows: "tuple[_ChatSlot, ...] | None" = None,
     ) -> list:
         """Serialize slots, optionally including owner-only provider status.
 
@@ -7833,7 +7843,7 @@ class DashboardState:
         # treat a missing set as empty rather than AttributeError-ing this hot
         # path.
         under_construction = getattr(self, "_slots_under_construction", None) or ()
-        for s in self._slots.values():
+        for s in self._slots.values() if rows is None else rows:
             if s.key in under_construction:
                 continue
             self._drop_orphaned_mcp_report(s)

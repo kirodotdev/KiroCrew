@@ -38,7 +38,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_app, _make_state
+from chat_test_helpers import _make_app, _make_state, _slot_delete_path
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState
@@ -77,9 +77,9 @@ class TestUnattendedApprovalWindow:
         from kiro_crew.dashboard import chat_runner
 
         src = inspect.getsource(chat_runner._run_chat)
-        assert "state.approval_timeout_for(slot)" in src, (
-            "the runner's approval await must take its window from DashboardState"
-        )
+        assert (
+            "state.approval_timeout_for(slot)" in src
+        ), "the runner's approval await must take its window from DashboardState"
         assert "timeout=_approval_window" in src
         assert "timeout=7200.0" not in src, "the hardcoded 2h window is back"
 
@@ -106,9 +106,9 @@ class TestUnattendedApprovalWindow:
         writes = [ln for ln in src.splitlines() if "_human_seen = True" in ln]
         assert len(writes) == 1, "attendance must be recorded in exactly one place"
         gate = src.index("request_app = request.get")
-        assert src.index("_human_seen = True") > gate, (
-            "attendance must be recorded only after the app-ownership gate"
-        )
+        assert (
+            src.index("_human_seen = True") > gate
+        ), "attendance must be recorded only after the app-ownership gate"
 
     def test_trust_is_not_the_detector(self, tmp_path) -> None:
         """Why ``_app`` and not ``_trust``: trust is False wherever this is read.
@@ -518,9 +518,7 @@ class TestIdleCleanupSparesArmedLoops:
         )
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["keys"] == ["worker-2"], "cleanup archived a slot owning an armed loop"
@@ -541,9 +539,9 @@ class TestIdleCleanupSparesArmedLoops:
             patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
         ):
             assert await orch._fire_dashboard_nudge(_Loop("worker-1")) is True
-        assert rehydrate.await_args.kwargs.get("adopt_closed") is True, (
-            "the nudge fire path must reach a session that idle cleanup closed"
-        )
+        assert (
+            rehydrate.await_args.kwargs.get("adopt_closed") is True
+        ), "the nudge fire path must reach a session that idle cleanup closed"
 
     @pytest.mark.asyncio
     async def test_an_inactive_loop_does_not_pin_a_dead_slot_forever(
@@ -563,9 +561,7 @@ class TestIdleCleanupSparesArmedLoops:
         )
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["keys"] == ["worker-1"]
@@ -586,9 +582,7 @@ class TestIdleCleanupSparesArmedLoops:
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", _boom)
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
-            )
+            resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
             data = await resp.json()
 
         assert data["archived"] == 0
@@ -597,7 +591,7 @@ class TestIdleCleanupSparesArmedLoops:
 
     @pytest.mark.asyncio
     async def test_the_users_close_still_retires_the_loop(self, tmp_path, monkeypatch) -> None:
-        """"Respect the close" survives adopt_closed=True.
+        """ "Respect the close" survives adopt_closed=True.
 
         The rule is not an emergent property of the fire path's rehydrate
         miss: since the fire path adopts a closed session, the ✕ handler has
@@ -621,12 +615,12 @@ class TestIdleCleanupSparesArmedLoops:
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: svc)
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/chat-1-1785")
+            resp = await client.delete(_slot_delete_path(state, "chat-1-1785"))
             assert resp.status == 200
 
-        assert removed == ["chat-1-1785"], (
-            "the user's ✕ must retire the slot's current nudge generation"
-        )
+        assert removed == [
+            "chat-1-1785"
+        ], "the user's ✕ must retire the slot's current nudge generation"
 
     @pytest.mark.asyncio
     async def test_the_users_close_tells_the_owning_app(self, tmp_path, monkeypatch) -> None:
@@ -656,7 +650,7 @@ class TestIdleCleanupSparesArmedLoops:
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: None)
         try:
             async with TestClient(TestServer(_make_app(state))) as client:
-                resp = await client.delete("/api/chat/slots/crew-c_1a2b3c4d")
+                resp = await client.delete(_slot_delete_path(state, "crew-c_1a2b3c4d"))
                 assert resp.status == 200
         finally:
             teardown.unregister_slot_close_hook("issue-radar")
@@ -678,7 +672,7 @@ class TestIdleCleanupSparesArmedLoops:
         monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_closed", _notify)
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: None)
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/chat-1-1786")
+            resp = await client.delete(_slot_delete_path(state, "chat-1-1786"))
             assert resp.status == 200
 
         assert calls == []
@@ -717,7 +711,7 @@ class TestIdleCleanupSparesArmedLoops:
                 # The request may well fail — that is not what is under test. What
                 # must hold is that the app was told BEFORE the failing step.
                 with contextlib.suppress(Exception):
-                    await client.delete("/api/chat/slots/crew-c_1a2b3c4d")
+                    await client.delete(_slot_delete_path(state, "crew-c_1a2b3c4d"))
         finally:
             teardown.unregister_slot_close_hook("issue-radar")
 
@@ -761,17 +755,17 @@ class TestIdleCleanupSparesArmedLoops:
                 return super().pop(key, *a)
 
         state._slots = _WatchedSlots(state._slots)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._retire_slot_nudge_loop", _retire
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._retire_slot_nudge_loop", _retire)
         monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: None)
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/crew-c_1a2b3c4d")
+            resp = await client.delete(_slot_delete_path(state, "crew-c_1a2b3c4d"))
             assert resp.status == 200
 
-        assert order == ["retire", "retire", "pop"], (
-            f"the slot left the registry before both retirement passes finished: {order}"
-        )
+        assert order == [
+            "retire",
+            "retire",
+            "pop",
+        ], f"the slot left the registry before both retirement passes finished: {order}"
 
 
 # ── A SCOPED grant is never cached as a session approval policy ───────────────
@@ -887,7 +881,9 @@ class TestScopedGrantIsNeverPersisted:
         state = _crew_state()
         with patch.object(type(safety_override()), "is_scope_active", return_value=True):
             assert chat_runner._slot_is_trusted(slot) is True
-            assert chat_runner._native_crew_should_auto_approve({"s1": {"done": False}}, state, slot)
+            assert chat_runner._native_crew_should_auto_approve(
+                {"s1": {"done": False}}, state, slot
+            )
 
         src = inspect.getsource(chat_runner._run_chat)
         assert "slot_trusted = _slot_is_trusted(slot)" in src
