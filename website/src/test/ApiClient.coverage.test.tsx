@@ -1581,6 +1581,21 @@ describe('uploadFiles', () => {
     expect(out).toMatchObject({ paths: [], error: 'Internal Server Error' })
   })
 
+  it("hands the caller's AbortSignal to the request, so an upload can be cancelled", async () => {
+    const ac = new AbortController()
+    fetchMock.mockResolvedValue(okJson({ paths: ['/up/a.png'] }))
+    await api.uploadFiles([png('a.png')], ac.signal)
+    // Without this the composer's cancel control has nothing to abort: the
+    // request runs to completion whatever the user does.
+    expect(call().init?.signal).toBe(ac.signal)
+  })
+
+  it('omits signal entirely when the caller passes none', async () => {
+    fetchMock.mockResolvedValue(okJson({ paths: ['/up/a.png'] }))
+    await api.uploadFiles([png('a.png')])
+    expect(call().init?.signal).toBeUndefined()
+  })
+
   it('refuses to trust a 200 whose paths field is not an array', async () => {
     fetchMock.mockResolvedValue(okJson({ paths: 'oops' }))
     const out = await api.uploadFiles([png('a.png')])

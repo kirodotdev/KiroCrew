@@ -5865,6 +5865,7 @@
       "approve_all": "모두 승인",
       "approve_sub_agent": "하위 에이전트 승인: {{name}}",
       "attach_files": "파일 첨부",
+      "cancel_upload": "업로드 취소",
       "editor_unavailable_standard_input": "향상된 편집기를 불러올 수 없어 표준 입력이 활성화되었습니다. 초안은 변경되지 않았습니다.",
       "branch": "브랜치: {{branch}}",
       "click_again_to_force_stop": "강제 중지하려면 다시 클릭하세요",

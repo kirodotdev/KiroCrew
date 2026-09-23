@@ -624,6 +624,22 @@ export function useChatPageResourcesController({
     return () => window.removeEventListener(PREVIEW_SNIP_EVENT, onSnip)
   }, [snipSlotRef, activeSlotRef, takeScreenshot, setSnipFrame])
 
+  // EVERY live upload's controller, not one slot. The disabled attach button is
+  // not the only entry point: paste (ChatInput's paste handler), a drop and a
+  // Sketch insert all reach `uploadFiles` with no `uploading` gate, so two
+  // requests genuinely can be in flight and a single slot would leave the
+  // first one running with nothing holding its controller.
+  const uploadAbortsRef = useRef(new Set<AbortController>())
+  // Whether there is an upload to cancel, as STATE rather than a read of
+  // `uploading`. That flag is SHARED with takeScreenshot, so gating the control
+  // on it would offer a cancel during a macOS `screencapture -i` with no
+  // request behind it, and pressing it would abort nothing.
+  const [uploadCancellable, setUploadCancellable] = useState(false)
+  /** Abort every composer upload in flight. */
+  const cancelUpload = useCallback(() => {
+    uploadAbortsRef.current.forEach(controller => controller.abort())
+  }, [])
+
   /** Upload files via browser File API (cross-platform) */
   const uploadFiles = useCallback(async (files: File[], targetSlot?: string | null) => {
     if (!files.length) return
@@ -642,8 +658,11 @@ export function useChatPageResourcesController({
     const big = files.find(f => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
     if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     setUploading(true)
+    const controller = new AbortController()
+    uploadAbortsRef.current.add(controller)
+    setUploadCancellable(true)
     try {
-      const res = await api.uploadFiles(files)
+      const res = await api.uploadFiles(files, controller.signal)
       if (res.error) {
         setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error }))
       } else if (res.paths?.length) {
@@ -659,8 +678,23 @@ export function useChatPageResourcesController({
       if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
         setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
       }
-    } catch { setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')) }
-    setUploading(false)
+    } catch (err) {
+      // A cancel the user asked for is not a failure. Without this branch the
+      // blanket message blames file type and a 50 MB cap for a 150 MB
+      // recording the user deliberately stopped.
+      if ((err as Error | undefined)?.name !== 'AbortError') {
+        setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb'))
+      }
+    } finally {
+      // Drop only THIS request's controller, and keep the control offered while
+      // a sibling upload is still running.
+      uploadAbortsRef.current.delete(controller)
+      setUploadCancellable(uploadAbortsRef.current.size > 0)
+      // Unchanged from main, and still wrong for concurrent uploads: the first
+      // request to settle clears the shared flag while a sibling runs. Left
+      // alone deliberately -- the cancel control reads the set above, not this.
+      setUploading(false)
+    }
   }, [activeSlotRef, setUploadError, setUploadHint, setUploading, setPendingFiles, fileDrafts, saveDrafts, setResizedInfo])
 
   // The Browser panel's element annotations arrive as a DRAFT plus a marker
@@ -760,6 +794,8 @@ export function useChatPageResourcesController({
     handleFileSave,
     handleCapture,
     uploadFiles,
+    cancelUpload,
+    uploadCancellable,
     handleOptimizeResult,
     dragOver,
     dropTargetProps,

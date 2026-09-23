@@ -6053,6 +6053,7 @@
       "approve_all": "Tout approuver",
       "approve_sub_agent": "Approuver le sous-agent : {{name}}",
       "attach_files": "Joindre des fichiers",
+      "cancel_upload": "Annuler l'envoi",
       "editor_unavailable_standard_input": "L'éditeur amélioré n'a pas pu se charger, la saisie standard est donc active. Votre brouillon reste inchangé.",
       "branch": "Branche : {{branch}}",
       "click_again_to_force_stop": "Cliquer à nouveau pour forcer l’arrêt",

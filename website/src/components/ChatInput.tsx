@@ -473,6 +473,8 @@ interface ChatInputProps {
   onUploadFiles?: (files: File[]) => void
   /** Whether file actions are in progress */
   uploading?: boolean
+  /** Abort the upload in flight; turns the upload spinner into a cancel control */
+  onCancelUpload?: () => void
   /** Pending file paths (images + non-images) for preview strip */
   pendingFiles?: string[]
   /** Pending folder references for the preview strip: RELATIVE paths with trailing slash, derived from `@rel/` composer tokens (a path reference handed to the agent, not an upload) */
@@ -932,6 +934,7 @@ function ChatInput({
   onScreenshot,
   onUploadFiles,
   uploading = false,
+  onCancelUpload,
   pendingFiles = [],
   pendingDirs = [],
   resizedInfo,
@@ -2024,6 +2027,43 @@ function ChatInput({
         <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.collapse_composer')}</div>
         <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.collapse_composer_desc')}</div>
       </div>
+    </button>
+  ) : null
+  /**
+   * The exit from an upload in flight, and the reason it REPLACES the attach
+   * control rather than sitting beside it.
+   *
+   * The bottom icon row is already at `max-two-buttons-per-row`: two blocking
+   * findings drove Sketch off it and into an overflow precisely to keep it at
+   * two (see `collapseMenuRow` above), so a third sibling here would regrow the
+   * row the same rule just shrank, on the narrowest viewport, in both layouts.
+   *
+   * Replacing costs nothing, because the attach control is already inert while
+   * `uploading`: its `htmlFor` is dropped and the pointer branch is `disabled`.
+   * So the slot holds no action to displace, and the thing the user is already
+   * looking at while they wait becomes the thing they press to stop.
+   *
+   * The spinner is kept, but BEHIND the glyph rather than as a second icon.
+   * A 9px X inside an 18px spinner read to a blind reviewer as "a 'lines'
+   * icon, the kind that usually means a menu", and they said they would press
+   * it to find out what it was, which discards minutes of a 512 MB upload with
+   * no undo. So the X carries the meaning at a legible size with a destructive
+   * hover tint, and the liveness is a faint ring that cannot be mistaken for
+   * the glyph. The tint matters on the pointer path for a second reason: this
+   * slot was inert mid-upload on main, so a click that used to do nothing now
+   * ends the transfer, and the control has to stop reading as the attach
+   * button's spot doing attach things.
+   */
+  const uploadCancelControl = uploading && onCancelUpload ? (
+    <button
+      type="button"
+      onClick={onCancelUpload}
+      className="relative w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all bg-transparent border-none text-muted hover:text-danger hover:bg-danger/10"
+      aria-label={i18nT('components.chatInput.cancel_upload')}
+      title={i18nT('components.chatInput.cancel_upload')}
+    >
+      <Loader2 size={28} strokeWidth={1.5} className="animate-spin absolute inset-0 m-auto opacity-30" />
+      <X size={16} strokeWidth={2.5} />
     </button>
   ) : null
   /**
@@ -4261,7 +4301,7 @@ function ChatInput({
           <div className="flex items-center gap-0.5 min-w-0">
             {onUploadFiles && (
               <div className="relative shrink-0" ref={plusWrapRef}>
-                {directFilePicker ? (
+                {uploadCancelControl || (directFilePicker ? (
                   /* Association is intentionally absent while uploads disable the control. */
                   <label
                     htmlFor={uploading ? undefined : fileInputId}
@@ -4285,7 +4325,7 @@ function ChatInput({
                   >
                     {uploading ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} className={`transition-transform ${plusOpen ? 'rotate-45' : ''}`} />}
                   </button>
-                )}
+                ))}
                 {!directFilePicker && plusOpen && plusRect && createPortal(
                   <div
                     ref={plusMenuRef}

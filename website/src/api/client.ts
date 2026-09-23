@@ -4917,15 +4917,18 @@ export const api = {
     if (q) p.set('q', q)
     return fetch(`/api/path-complete?${p}`, signal ? { signal } : undefined).then(j) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string; outside?: boolean }>
   },
-  /** Upload files via browser File API (cross-platform) */
-  uploadFiles: async (files: File[]) => {
+  /** Upload files via browser File API (cross-platform).
+   *  `signal` lets the composer abort an upload still in flight: the
+   *  request dies client-side and the server unlinks its partials through
+   *  the disconnect path the upload handler already has. */
+  uploadFiles: async (files: File[], signal?: AbortSignal) => {
     // Downscale oversized images client-side so they fit the model's image
     // limits before they ever reach the server (see resizeImage.ts).
     const prepared = await Promise.all(files.map(f => resizeImageForModel(f)))
     const resized = prepared.map(p => p.info).filter((i): i is ResizeInfo => i !== null)
     const fd = new FormData()
     prepared.forEach(p => fd.append('file', p.file))
-    const res = await fetch('/api/upload/file', { method: 'POST', body: fd })
+    const res = await fetch('/api/upload/file', { method: 'POST', body: fd, ...(signal ? { signal } : {}) })
     checkSessionExpired(res)
     let body: { paths?: unknown; error?: string }
     try { body = await res.json() } catch { body = {} }

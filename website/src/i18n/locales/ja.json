@@ -5865,6 +5865,7 @@
       "approve_all": "すべて承認",
       "approve_sub_agent": "サブエージェントを承認：{{name}}",
       "attach_files": "ファイルを添付",
+      "cancel_upload": "アップロードをキャンセル",
       "editor_unavailable_standard_input": "拡張エディターを読み込めなかったため、標準入力が有効になっています。下書きは変更されていません。",
       "branch": "ブランチ：{{branch}}",
       "click_again_to_force_stop": "もう一度クリックして強制停止",

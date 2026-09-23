@@ -1822,6 +1822,7 @@
       "terminal": "Terminal"
     },
     "chatInput": {
+      "cancel_upload": "Cancel upload",
       "auto_jev": "Auto (Jev)",
       "auto_jev_desc": "Let Jev choose: act now, or run after",
       "auto_jev_enter": "Auto (Jev) — Jev chooses whether to act now or run after (Enter)",

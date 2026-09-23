@@ -5865,6 +5865,7 @@
       "approve_all": "全部批准",
       "approve_sub_agent": "批准子代理：{{name}}",
       "attach_files": "附加文件",
+      "cancel_upload": "取消上传",
       "editor_unavailable_standard_input": "增强编辑器无法加载，已启用标准输入。你的草稿保持不变。",
       "branch": "分支：{{branch}}",
       "click_again_to_force_stop": "再次点击强制停止",

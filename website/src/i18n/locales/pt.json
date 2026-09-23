@@ -6053,6 +6053,7 @@
       "approve_all": "Aprovar tudo",
       "approve_sub_agent": "Aprovar subagente: {{name}}",
       "attach_files": "Anexar arquivos",
+      "cancel_upload": "Cancelar envio",
       "editor_unavailable_standard_input": "O editor aprimorado não pôde ser carregado, então a entrada padrão está ativa. Seu rascunho permanece inalterado.",
       "branch": "Branch: {{branch}}",
       "click_again_to_force_stop": "Clique novamente para forçar a parada",
