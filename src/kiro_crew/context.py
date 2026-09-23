@@ -2093,7 +2093,9 @@ _DIFF_RULE_DASHBOARD = (
     "earlier ones into the collapsed steps pane; this marker exempts the "
     "message so mid-turn deliverables stay visible. The marker is an HTML "
     "comment and renders as nothing in the dashboard -- do not use it on "
-    "routine progress notes, only on content the user must see.\n"
+    "routine progress notes, only on content the user must see. Prefer "
+    "restructuring the turn so the deliverable IS its last message; reach for "
+    "the marker only when that is not possible.\n"
 )
 _DIFF_RULE_CHANNEL = (
     "After ANY file change (create, edit, append, delete), you MUST show a "

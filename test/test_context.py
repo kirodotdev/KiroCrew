@@ -1863,3 +1863,10 @@ class TestKeepVisibleMarkerRule:
 
         assert "<!-- keep-visible -->" in _CRITICAL_RULES
         assert "<!-- keep-visible -->" not in _CRITICAL_RULES_CHANNEL
+
+    def test_prefers_restructuring_over_marker(self):
+        from kiro_crew.context import _CRITICAL_RULES, _CRITICAL_RULES_CHANNEL
+
+        clause = "Prefer restructuring the turn so the deliverable IS its last message"
+        assert clause in _CRITICAL_RULES
+        assert clause not in _CRITICAL_RULES_CHANNEL
