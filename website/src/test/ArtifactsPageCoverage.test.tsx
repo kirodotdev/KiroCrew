@@ -741,6 +741,27 @@ describe('ArtifactsPage — folder tree table', () => {
     expect(screen.getByLabelText('Star document')).toBeInTheDocument()
   })
 
+  it('gives session documents their own labelled lane, not the Unfiled one', async () => {
+    seed({
+      // Filed, so the tree renders a collapsed folder and NOTHING is unfiled:
+      // the lane below reads "Unfiled · 0" while a doc row follows it.
+      artifacts: [mkArtifact('filed-one', { folder_id: 'ops' })],
+      folders: [mkFolder('ops', 'Ops', { item_count: 1 })],
+      docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+    })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+    const unfiledRow = screen.getByText(/Unfiled ·\s*0/).closest('tr')
+    const docsLane = screen.getByText(/From your chats ·\s*1/).closest('tr')
+    const docRow = screen.getByText('FINDINGS.md').closest('tr')
+    // The doc is announced by its own count, and is no longer the row the
+    // Unfiled lane appears to introduce.
+    expect(unfiledRow?.nextElementSibling).toBe(docsLane)
+    expect(unfiledRow?.nextElementSibling).not.toBe(docRow)
+    expect(docsLane?.nextElementSibling).toBe(docRow)
+  })
+
   it('types a .rst session document as text, not markdown', async () => {
     seed({ artifacts: [], folders: [], docs: [mkDoc('/ws/notes/INDEX.rst', 'INDEX.rst')] })
     renderWithProviders(<ArtifactsPage />)

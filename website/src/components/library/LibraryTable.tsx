@@ -681,6 +681,7 @@ export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggl
   // mount at once (library page + a side panel) and a repeated id would point
   // both lanes at the first one's label.
   const unfiledLabelId = useId()
+  const docsLabelId = useId()
   const folderIds = new Set(folders.map(f => f.id))
   const byFolder = new Map<string, Artifact[]>()
   for (const a of items) {
@@ -773,6 +774,18 @@ export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggl
               edgeRight={edges.right}
             />
           ))}
+          {onMaterialize && sessionDocs.length > 0 && (
+            // Its own labelled lane, so the Unfiled count above is not read as
+            // covering these rows (#9910). Not a DndDroppable: a session doc has
+            // no store slug to file, so there is no drop target to offer.
+            <tr aria-labelledby={docsLabelId}>
+              <td colSpan={9} className="px-2.5 border-b border-border" style={{ paddingTop: 6, paddingBottom: 6 }}>
+                <span id={docsLabelId} className="text-[11px] uppercase tracking-[.04em] text-muted font-medium">
+                  {i18nT('pages.artifactsPage.from_your_chats')} · {sessionDocs.length}
+                </span>
+              </td>
+            </tr>
+          )}
           {onMaterialize && sessionDocs.map((d) => (
             <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} onPreview={onPreviewDoc} edgeRight={edges.right} />
           ))}
