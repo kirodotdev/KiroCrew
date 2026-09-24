@@ -2567,6 +2567,7 @@ class _ChatSlot:
         "_dirty_flag",
         "_dirty_gen",
         "_metadata_persist_inflight",
+        "_guarded_history_writes",
         "_orch_tracker",
         "_plan_cancelled",
         "_auto_run",
@@ -2822,8 +2823,10 @@ class _ChatSlot:
         # (content revision, links) cache for the sidebar PR chips scan.
         self._source_links_revision = 0
         self._source_links_cache: tuple[tuple[int, int], list[dict]] | None = None
-        # Admission fence while slot deletion spans monitor retirement and history I/O.
-        self._closing = False
+        # Admission fence while slot deletion spans monitor retirement and history
+        # I/O. A DEPTH: two retractions can overlap on one slot, and each must
+        # release only its own acquisition (see ``begin_close``).
+        self._closing = 0
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self._task: asyncio.Task[Any] | None = None
         # Monotonic publication history for turn ownership. ``task`` returns to
@@ -3072,6 +3075,14 @@ class _ChatSlot:
         # committed.  The periodic writer must not serialize that provisional
         # state to an unpinned transcript while the guarded write waits.
         self._metadata_persist_inflight: int = 0
+        # The executor futures of this slot's guarded history writes, held until
+        # the WORKER finishes. ``_metadata_persist_inflight`` above answers a
+        # different question and cannot answer this one: it is released in the
+        # awaiting coroutine's ``finally``, so a handler cancelled mid-write
+        # drops the count while its worker thread runs on to the rename. A
+        # retraction of this slot's name must order itself after the real write,
+        # so it waits on these futures, which complete with the worker.
+        self._guarded_history_writes: set[Any] = set()
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
         # Plan-cancel latch closing the cancel/Go race: the Cancel
         # handler can only stop a tracker that exists, but _stage_loop creates
@@ -3754,15 +3765,32 @@ class _ChatSlot:
     @property
     def is_closing(self) -> bool:
         """Whether slot teardown currently fences new monitor admission."""
-        return self._closing
+        return self._closing > 0
 
     def begin_close(self) -> None:
-        """Fence new monitor admission before teardown reaches its first await."""
-        self._closing = True
+        """Fence new monitor admission before teardown reaches its first await.
+
+        A DEPTH, not a flag, because more than one retraction can be in flight on
+        the same slot: a close the person asked for suspends inside its wait for
+        guarded history writes, and the bulk stale-slot sweep can reach the same
+        slot while it is suspended. With a shared flag, whichever of them finished
+        first cleared the fence for both, and the other's remaining awaits then ran
+        unfenced -- which is exactly the window the fence exists to close, since
+        the dispatch-seam re-reads that are the last line of defence read this
+        value.
+
+        Counting instead means each holder releases only its own acquisition, so
+        the fence stays up until the last retraction lets go.
+        """
+        self._closing += 1
 
     def cancel_close(self) -> None:
-        """Release the admission fence when teardown leaves this slot live."""
-        self._closing = False
+        """Release THIS holder's admission fence when teardown leaves the slot live.
+
+        Floors at zero so an unmatched release cannot make the count negative and
+        leave a later ``begin_close`` reading as not-closing.
+        """
+        self._closing = max(0, self._closing - 1)
 
     @property
     def _dirty(self) -> bool:

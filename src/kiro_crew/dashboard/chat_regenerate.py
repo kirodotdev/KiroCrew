@@ -45,11 +45,24 @@ _SAVE_DRAIN_ATTEMPTS = 8
 
 
 def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
-    """Refuse history mutation while a turn or admission reservation owns the slot."""
+    """Refuse history mutation while a turn, admission reservation, or teardown owns
+    the slot.
+
+    The teardown arm is what keeps a truncating save from being ADMITTED into a
+    close that is already running. A close fences the slot synchronously before
+    its first await and then waits for a guarded history write to leave its commit
+    window; without this arm a regenerate arriving during that wait would dispatch
+    a fresh truncating write which the close has already stopped waiting for, and
+    it could commit onto the transcript after the replacement has adopted the key.
+    ``cancel_close`` releases the fence on every path that leaves the slot live, so
+    an aborted close re-admits the mutation instead of wedging the tab.
+    """
     if slot.turn_running:
         return web.json_response({"error": "slot is running", "code": "slot_running"}, status=409)
     if slot.running:
         return web.json_response({"error": "slot is busy", "code": "slot_busy"}, status=409)
+    if slot.is_closing:
+        return web.json_response({"error": "slot is closing", "code": "slot_closing"}, status=409)
     return None
 
 

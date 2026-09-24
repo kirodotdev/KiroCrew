@@ -542,7 +542,22 @@ async def fork_slot(
                         # before`` pins that). Stating it here removes the dependence
                         # on that promotion, which is the thing that silently failed.
                         saved = await save_slot_off_loop(
-                            state, slot, rewrite=True, best_effort=False
+                            state,
+                            slot,
+                            rewrite=True,
+                            best_effort=False,
+                            # An authorized transcript key makes this a GUARDED
+                            # write, which is what puts it under the same ordering
+                            # as the other truncating saves: it registers in the
+                            # slot's guarded-write registry, so a retraction of the
+                            # slot's name waits for it instead of popping while its
+                            # worker is on the way to the rename; it is refused
+                            # while a retraction is already past that wait; and it
+                            # engages the in-lock routing re-read. Without the key
+                            # this rewrite was the LEAST ordered truncating save in
+                            # the codebase, not the most, and the fork is the one
+                            # caller that then republishes the file it wrote.
+                            expected_history_key=slot_history_key(slot),
                         )
                     except Exception:
                         logger.warning(
@@ -560,19 +575,27 @@ async def fork_slot(
                             status=503,
                         )
                     if not saved:
-                        # Delete-won: the source session was permanently deleted
-                        # while this flush awaited the lock. Do not fork — the
-                        # copy would republish the destroyed conversation under
-                        # a fresh key (see the identical check at the plain
-                        # flush site below).
+                        # The save declined WITHOUT writing, and the three reasons
+                        # it can decline are indistinguishable from a bool: the
+                        # source session was permanently deleted while this flush
+                        # awaited the lock, the routing moved off the transcript the
+                        # key authorizes, or a retraction of this slot's name is
+                        # already past the point where it can wait for this write.
+                        # Every one of them says the same thing about forking: the
+                        # file on disk still holds the discarded turns, so copying
+                        # it would republish them under a fresh key. The response
+                        # code is kept as it is because clients match on it; the
+                        # message states the class rather than picking one cause.
                         logger.warning(
-                            "chat_fork: source slot=%s was permanently deleted "
-                            "during the pending-rewrite flush; aborting fork",
+                            "chat_fork: the pending rewrite for slot=%s was not "
+                            "persisted (deleted, rerouted, or being closed); "
+                            "aborting fork rather than copying the discarded turns "
+                            "still on disk",
                             slot.key,
                         )
                         return web.json_response(
                             {
-                                "error": "the source session was permanently deleted",
+                                "error": "the source session could not be saved; retry the fork",
                                 "code": "fork_source_deleted",
                             },
                             status=409,

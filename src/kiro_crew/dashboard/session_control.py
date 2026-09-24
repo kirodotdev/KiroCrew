@@ -3215,7 +3215,7 @@ async def close_target(
     Reuses the dashboard's own close path (:func:`chat_handlers.close_slot`), so
     a controlled close and a human ✕ share the identical nudge-retirement and
     app-notification ordering that keeps a dismissed tab from being resurrected.
-    Its three failure modes surface as their own ``SessionControlError`` codes
+    Its four failure modes surface as their own ``SessionControlError`` codes
     rather than a generic 500, so a caller can tell "the app refused the
     dismissal" from "history could not be saved".
     """
@@ -3308,9 +3308,9 @@ async def close_target(
     except SlotCloseError as exc:
         # The close path already rolled back every partial step and logged the
         # cause; re-raise it as the surface's own error so the caller sees the
-        # specific reason (nudge/app/history) rather than a bare failure. Audited
-        # as a denied operation so the trail shows the close was attempted and did
-        # not take.
+        # specific reason (write-in-flight/nudge/app/history) rather than a bare
+        # failure. Audited as a denied operation so the trail shows the close was
+        # attempted and did not take.
         _audit(
             caller_session_key=caller_session_key,
             operation="close",

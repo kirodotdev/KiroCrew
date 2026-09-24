@@ -3902,6 +3902,12 @@ async def _persist_handover_tail(
             best_effort=False,
             expected_history_key=history_key,
             rows_only=True,
+            # This frame IS the retraction's drain, so the close's guarded-write
+            # fence does not apply to it: the close raised that fence, sequenced
+            # this write itself, and nothing in the process can reach these rows
+            # again. Refusing here would drop exactly the rows this function
+            # exists to save.
+            issued_by_the_retraction=True,
         )
     except Exception:
         logger.error(
@@ -5896,7 +5902,7 @@ class SlotCloseError(Exception):
     would have rendered.
 
     Extracted alongside :func:`close_slot` so the DELETE endpoint and
-    session-control's ``close_target`` map the SAME three failures the same way.
+    session-control's ``close_target`` map the SAME four failures the same way.
     ``code`` is the machine-readable contract; ``message`` is advisory prose;
     ``status`` is 500 for every close failure (each leaves the tab open and
     every partial step rolled back — a state the user can see and retry).
@@ -5955,6 +5961,78 @@ def _release_closed_execution(
         release_closed_execution()
 
 
+# Ceiling on how long a close waits for this slot's guarded history writes to
+# finish. The wait is bounded so a genuinely stuck write cannot hang the tab
+# close: on breach the close is REFUSED and rolled back, which returns promptly
+# and leaves the tab the user still has open, rather than retracting the name
+# while a worker thread is still on its way to the rename.
+_GUARDED_WRITE_WAIT_SECS = 5.0
+
+
+def _pending_guarded_history_writes(slot: "_ChatSlot") -> set:
+    """This slot's guarded history writes that have not finished yet.
+
+    Read SYNCHRONOUSLY, which is what lets a caller decide against a fenced slot
+    with no suspension between the read and its decision. Anything that is not a
+    real set is an absent registry, the same rule the writer applies when it
+    registers a future.
+    """
+    writes = getattr(slot, "_guarded_history_writes", None)
+    if type(writes) is not set:
+        return set()
+    return {write for write in writes if not write.done()}
+
+
+async def _await_guarded_history_write(slot: "_ChatSlot", name: str) -> bool:
+    """Wait for this slot's guarded history writes to finish; True when none is left.
+
+    ``save_slot_off_loop`` runs a guarded write (one carrying an authorized
+    transcript key, which is every truncating save) on a worker thread, and that
+    write re-reads the slot map INSIDE the transcript lock to confirm it still
+    owns the key. The map is event-loop state, so a retraction landing between
+    that re-read and the write's rename commits a truncated snapshot onto
+    whatever adopts the key next, and a same-name replacement that resumes the
+    same transcript inherits the truncation durably.
+
+    Waiting here inverts the guard: the retraction waits for the write instead of
+    the write trying to observe the retraction.
+
+    The wait is on the writes' executor FUTURES, which complete with the worker
+    thread. ``_metadata_persist_inflight`` cannot serve here even though it
+    counts the same writes: it is released in the awaiting coroutine's
+    ``finally``, so a handler cancelled mid-write reads as zero while its thread
+    runs on -- precisely the case this wait exists for.
+
+    Callers must fence the slot before calling, or a fresh write can be admitted
+    into the wait. A ``False`` return means writes are still outstanding, and the
+    caller must NOT retract the name.
+    """
+    deadline = time.monotonic() + _GUARDED_WRITE_WAIT_SECS
+    waited = False
+    while True:
+        pending = _pending_guarded_history_writes(slot)
+        if not pending:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "Slot %s close refused: %d guarded history write(s) still running "
+                "after %.1fs, so retracting the name now could commit a truncated "
+                "snapshot onto whatever adopts this key next",
+                name,
+                len(pending),
+                _GUARDED_WRITE_WAIT_SECS,
+            )
+            return False
+        if not waited:
+            waited = True
+            logger.debug("Slot %s close waiting for a guarded history write", name)
+        # Wait on the futures themselves rather than polling a counter: a future
+        # already awaited elsewhere admits further waiters, and this returns the
+        # moment the worker finishes instead of on the next poll tick.
+        await asyncio.wait(pending, timeout=remaining)
+
+
 async def close_slot(
     state: DashboardState,
     slot: "_ChatSlot",
@@ -5987,7 +6065,7 @@ async def _close_slot(
 
     Shared by :func:`api_chat_slot_delete` and ``session_control.close_target``
     so neither can diverge on the ordering invariants that keep a nudge or an
-    app watchdog from resurrecting the very tab being dismissed. The three
+    app watchdog from resurrecting the very tab being dismissed. The four
     failure paths raise :class:`SlotCloseError`, leaving the slot open with every
     partial step rolled back; the caller renders the refusal in its own idiom
     (an HTTP response, or a ``SessionControlError``). The APP-OWNERSHIP check is
@@ -6026,6 +6104,27 @@ async def _close_slot(
     # close observed the already-terminal record, leaving an active orphan.
     slot.begin_close()
     closed_at = note_slot_closed(state, name)
+    # The fence above is what makes this wait sound: it refuses a NEW truncating
+    # save for the duration of the teardown, so the writes this drains cannot be
+    # re-armed behind it. Placed here, after the synchronous tombstone and before
+    # the retirement awaits, it adds no suspension near the pop: the pre-pop
+    # re-check and the retraction stay adjacent, which is what keeps a retired
+    # nudge loop and a late channel mirror from slipping between them.
+    #
+    # A breach REFUSES the close instead of proceeding. Proceeding would retract
+    # the name with a worker thread still short of its rename, which is the
+    # unrecoverable case this whole wait exists to prevent: the replacement
+    # resumes from the file that worker rewrites, and nothing retries or
+    # self-corrects on that path. Refusing is recoverable by contrast -- the tab
+    # stays open with every step so far rolled back, and the person can close it
+    # again -- and it returns within the ceiling, so a stuck write delays the
+    # close rather than hanging it.
+    if not await _await_guarded_history_write(slot, name):
+        raise SlotCloseError(
+            "a history write for this conversation is still running; the tab stays "
+            "open, close it again in a moment",
+            code="history_write_running",
+        )
     from kiro_crew.execution_context import read_live_session_execution
 
     closing_key = effective_session_key(slot)
@@ -6429,11 +6528,12 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     try:
         await close_slot(state, slot, name)
     except SlotCloseError as exc:
-        # Every failure `close_slot` raises is a server-side 500 (nudge retire /
-        # app hook / history save); a literal status keeps the error-code contract
-        # gate able to verify the `code` statically (a `status=<expr>` would read
-        # as an un-verifiable dynamic-status response). The pre-pop re-check that
-        # raises other statuses is session-control's path, not this handler's.
+        # Every failure `close_slot` raises is a server-side 500 (history write
+        # running / nudge retire / app hook / history save); a literal status keeps
+        # the error-code contract gate able to verify the `code` statically (a
+        # `status=<expr>` would read as an un-verifiable dynamic-status response).
+        # The pre-pop re-check that raises other statuses is session-control's
+        # path, not this handler's.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
     return web.json_response({"ok": True})
 
@@ -6561,10 +6661,43 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             continue
         closing_key = effective_session_key(candidate)
         closing_execution = read_live_session_execution(closing_key)
-        if state._slots.get(name) is not candidate:
+        if candidate.is_closing:
+            # Another retraction already owns this slot -- a close the person
+            # asked for, suspended inside its own wait for guarded writes. Leave
+            # it alone: it is being archived anyway, and two retractions racing
+            # one name is what the fence exists to prevent, not something to join.
+            continue
+        # Fence, then decide SYNCHRONOUSLY, then pop -- with no await in
+        # between. A sweep has no obligation to finish this retraction, unlike a
+        # close the person asked for, so it does not wait for a guarded write: it
+        # defers the slot to the next sweep.
+        #
+        # Waiting here would be worse than useless. The handlers that produce a
+        # guarded write publish a task on the same slot in the same breath, so a
+        # pending write and a live turn co-occur by construction; a wait would
+        # hold the sweep open exactly while the tab is being edited, and the pop
+        # after it would cancel that turn. Deferring removes the window rather
+        # than re-checking for it, and a pending guarded write is itself proof the
+        # tab is not idle, whatever its last recorded activity says.
+        #
+        # The fence is what makes the synchronous read sound: with it up, no NEW
+        # guarded write can be dispatched (the saver refuses one, and rewind
+        # refuses at admission and again at its dispatch seam), so an empty
+        # reading stays empty through the pop below.
+        candidate.begin_close()
+        if _pending_guarded_history_writes(candidate) or state._slots.get(name) is not candidate:
+            candidate.cancel_close()
+            if state._slots.get(name) is candidate:
+                logger.info(
+                    "Cleanup: slot %s has a history write in flight, so it is not idle; "
+                    "leaving it for the next sweep",
+                    name,
+                )
+                failed.append(name)
             continue
         removed = state._slots.pop(name, None)
         if not removed:
+            candidate.cancel_close()
             continue
         # Same tombstone as the single-tab close: the archive pass must not
         # race a concurrent channel reconcile into resurrecting the slot. Its
@@ -6649,6 +6782,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # original object we hold.
             if _slot_still_ours(state, name, removed):
                 state._slots[name] = removed
+                # The slot is live under its own name again, so its close is
+                # over: release the admission fence or the restored tab refuses
+                # every regenerate, edit-resend and rewind for good.
+                removed.cancel_close()
             else:
                 # The restore is what this arm's own comment relies on to keep the
                 # flushed notes reachable ("restores the slot with its notes still

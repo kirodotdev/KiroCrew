@@ -204,10 +204,10 @@ def _refusal(exc: sc.SessionControlError) -> web.Response:
     if exc.status == 429:
         return web.json_response({"error": exc.message, "code": exc.code}, status=429)
     if exc.status == 500:
-        # A genuine server-side failure — `close_target` raises this for the three
-        # close-path failures (nudge retire / app hook / history save), each of
-        # which left the tab open with every partial step rolled back. It is not a
-        # client error, so it must not degrade to 400.
+        # A genuine server-side failure: `close_target` raises this for the four
+        # close-path failures (history write running / nudge retire / app hook /
+        # history save), each of which left the tab open with every partial step
+        # rolled back. It is not a client error, so it must not degrade to 400.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
     return web.json_response({"error": exc.message, "code": exc.code}, status=400)
 

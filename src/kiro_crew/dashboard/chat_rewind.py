@@ -26,7 +26,10 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import (
+    _save_slot_to_history,
+    register_guarded_history_write,
+)
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
@@ -52,6 +55,13 @@ logger = logging.getLogger(__name__)
 # undetermined rather than assuming one. ``chat_regenerate`` carries the same
 # reasoning for its history-rewrite drain (``_SAVE_DRAIN_ATTEMPTS``).
 _DISCARD_DRAIN_ATTEMPTS = 8
+
+# The same bound for the history rewrite's own drain, named the way
+# ``chat_regenerate`` names it for the identical drain. A cancelled rewrite task
+# loses both its outcome and its place in the slot's guarded-write registry, and
+# the registry is what a close waits on before it retracts the slot's name, so
+# abandoning the drain can cost the conversation rather than just the answer.
+_SAVE_DRAIN_ATTEMPTS = 8
 
 
 async def _delete_orphan_kiro_session(session_id: str) -> None:
@@ -142,6 +152,15 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     async with slot._lock:
         if slot.running:
             return web.json_response({"error": "slot is running"}, status=409)
+        if slot.is_closing:
+            # A close that is already running has fenced the slot and waits for
+            # the truncating writes registered against it. Admitting a rewind
+            # into that wait dispatches a write the close has stopped waiting
+            # for. ``cancel_close`` releases the fence on every path that leaves
+            # the slot live, so an aborted close re-admits the edit.
+            return web.json_response(
+                {"error": "slot is closing", "code": "slot_closing"}, status=409
+            )
 
         msgs = slot.messages
 
@@ -709,6 +728,36 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # worker's real outcome and complete the matching commit (and let
             # the reserved dispatch task run the edited prompt) before
             # propagating the cancellation.
+            if slot.is_closing:
+                # The admission arm above is read once, and this handler
+                # suspends several times between it and here. By now a close can
+                # already have finished waiting for the registry below and be on
+                # its way to popping the name, so dispatching would put a worker
+                # thread on its way to the rename with nothing left to order
+                # against it, and whatever adopts the name next inherits the
+                # truncated transcript.
+                #
+                # Reading the fence HERE is what makes the pair decidable:
+                # nothing suspends between this read and the registration two
+                # lines below, so there are exactly two interleavings -- the
+                # fence is up and this write refuses, or the write is registered
+                # and the close waits for it.
+                #
+                # The native context is already gone at this point, which is the
+                # same destroyed-without-a-commit outcome as the refusals below.
+                logger.warning(
+                    "rewind: refusing the truncating save for %s; the conversation is closing",
+                    slot.key,
+                )
+                _sel_native_destroyed("slot_closing")
+                state.push_slots_update()
+                return web.json_response(
+                    {
+                        "error": "the conversation is closing; the edit was not saved",
+                        "code": "slot_closing",
+                    },
+                    status=409,
+                )
             save_task = asyncio.ensure_future(
                 asyncio.to_thread(
                     _save_slot_to_history,
@@ -719,14 +768,50 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     expected_disk_older_count=pre_await_disk_older_count,
                 )
             )
+            # This is the one truncating write that does not go through
+            # ``save_slot_off_loop``, so it registers itself. Without this the
+            # close's wait sees an empty registry and pops the name while the
+            # rewrite is in flight. The task is shielded below and nothing else
+            # holds it, so it resolves when the worker thread returns.
+            register_guarded_history_write(slot, save_task)
             try:
                 saved = await asyncio.shield(save_task)
             except asyncio.CancelledError:
+                # Bounded re-shield rather than a bare ``await save_task``. This
+                # await is itself a cancellation point, and ``CancelledError`` is
+                # a BaseException that no ``except Exception`` absorbs, so one
+                # further cancel -- a gateway shutdown reaching a handler already
+                # unwinding from a client disconnect -- would cancel the task
+                # while its worker thread runs on to the rename. That matters
+                # twice over: the rewrite's outcome would be lost, AND the done
+                # callback would drop the task from
+                # ``slot._guarded_history_writes``, so a close would drain an
+                # empty registry and retract the name with the thread still
+                # writing. Shielding each attempt keeps the task alive across
+                # those cancellations and the outcome is read off the settled
+                # task rather than awaited, so it cannot be lost to a cancel
+                # landing between the two. A task that never settles stays
+                # pending and stays registered, which is what the close needs.
                 landed = False
-                try:
-                    landed = bool(await save_task)
-                except Exception:
-                    landed = False
+                for _ in range(_SAVE_DRAIN_ATTEMPTS):
+                    if save_task.done():
+                        break
+                    try:
+                        await asyncio.shield(save_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if save_task.done() and not save_task.cancelled():
+                    save_exc = save_task.exception()
+                    landed = save_exc is None and bool(save_task.result())
+                elif not save_task.done():
+                    logger.warning(
+                        "rewind: the history rewrite for %s did not settle within "
+                        "%d cancellation(s); leaving the live slot untouched",
+                        slot.key,
+                        _SAVE_DRAIN_ATTEMPTS,
+                    )
                 if landed and slot_history_key(slot) == expected_history_key:
                     _commit_live_state()
                     dispatch_commit = True

@@ -1045,9 +1045,10 @@ session before closing it. It reuses the dashboard's own close path
 (`close_slot`), the same sequence the ✕ button runs: a synchronous tombstone,
 auto-nudge-loop retirement BEFORE the awaits so no nudge resurrects the tab, the
 owning app's close hook with rollback, persist-as-closed, and per-tab session
-teardown. Its three failure modes surface as their own codes at HTTP 500
-(`nudge_retire_failed`, `app_close_hook_failed`, `history_save_failed`), which is
-why the routes now forward a 500 rather than degrading it to 400.
+teardown. Its four failure modes surface as their own codes at HTTP 500
+(`history_write_running`, `nudge_retire_failed`, `app_close_hook_failed`,
+`history_save_failed`), which is why the routes now forward a 500 rather than
+degrading it to 400.
 
 **Authorization is re-asserted at the point of no return.** `authorize_target`
 runs before `close_slot`, but `close_slot` then awaits — auto-nudge retirement
