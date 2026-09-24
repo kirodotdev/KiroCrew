@@ -713,21 +713,25 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     expect(api.members).toHaveBeenCalledTimes(1)
   })
 
-  it('docks the chat SidePanel beside the thread on a wide window: permanent, no Details toggle, no close control', async () => {
+  it('docks the chat SidePanel beside the thread on a wide window, and its strip can hide it', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-notes')).toBeInTheDocument()
-    // The panel is part of the page while a member is open, like the roster:
-    // nothing in the header opens or closes it, and its strip renders no
-    // close control (the chat page's panel shows one because ChatPage passes
-    // onClose; this page does not).
+    // Docked and open, the gesture splits across the two halves exactly as the
+    // chat page splits it: the header shows no opener because the panel's own
+    // strip carries the close control.
     expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
-    expect(screen.queryByRole('button', { name: /close panel/i })).toBeNull()
+    const close = screen.getByRole('button', { name: /close panel/i })
     // The strip is the SidePanel's: its own resize splitter (the same shared
     // handle the chat page drags) pins that the page mounted the real
     // component rather than a lookalike. Named precisely: the roster's own
     // grip ("Resize member list") is a second resize separator on the page.
     expect(screen.getByRole('separator', { name: /resize panel/i })).toBeInTheDocument()
+    // Closing hides the docked column and hands the gesture back to the
+    // header, so the panel is reachable again.
+    fireEvent.click(close)
+    await waitFor(() => expect(screen.queryByTestId('member-notes')).toBeNull())
+    expect(screen.getByTestId('member-panel-toggle')).toBeInTheDocument()
   })
 
   it('Notes is the FIRST tab, selected by default, and has no close control', async () => {
@@ -1103,11 +1107,12 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     await screen.findByTestId('chat-pane-stub')
     fireEvent.click(screen.getByTestId('member-panel-toggle'))
     expect(await screen.findByTestId('member-notes')).toBeInTheDocument()
-    // Widen: the panel docks (no toggle, no close control)…
+    // Widen: the panel docks, so the header opener gives way to the strip's
+    // own close control…
     setWindowWidth(WIDE_WINDOW)
     fireEvent(window, new Event('resize'))
     await waitFor(() => expect(screen.queryByTestId('member-panel-toggle')).toBeNull())
-    expect(screen.queryByRole('button', { name: /close panel/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /close panel/i })).toBeInTheDocument()
     // …and narrowing again finds the overlay CLOSED, not popped back over the thread.
     setWindowWidth(NARROW_WINDOW)
     fireEvent(window, new Event('resize'))
@@ -2210,8 +2215,8 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(btn).toHaveAttribute('title', 'Edit member')
     expect(btn.querySelector('svg')).not.toBeNull()
     // It sits INSIDE the title row, right AFTER the name — never a
-    // header-level peer (docked wide, the header carries no panel control at
-    // all; the panel is a permanent column).
+    // header-level peer (docked wide with the panel open, the header carries no
+    // panel control at all; the open column's own strip carries it).
     const titleRow = screen.getByTestId('member-title-row')
     expect(titleRow).toContainElement(btn)
     expect(titleRow.textContent).toContain('oncall')

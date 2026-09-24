@@ -245,6 +245,27 @@ export function panelSitsBeside({ winW, rosterW, isMobile }: { winW: number; ros
   if (isMobile) return false
   return winW - rosterW - PANEL_GAPS_W >= SIDE_PANEL_RESERVED_W + SIDE_PANEL_MIN_W
 }
+/** Whether the panel is on screen, and whether the header shows its opener —
+ *  the two answers the placement and the two visibility flags decide together.
+ *
+ *  Each placement reads its OWN flag: the docked column reads the persisted
+ *  `dockedOpen`, the overlay reads the per-visit `overlayOpen`. The opener
+ *  disappears while the docked column is open, because the open panel's own
+ *  strip carries the close control there — the chat page's split of the gesture
+ *  across the two halves. As an overlay the opener always stays, since a
+ *  dismissed drawer has no strip left to reopen it from.
+ *
+ *  Pure, so both placements and all four flag combinations are tested directly. */
+export function panelChrome({ beside, dockedOpen, overlayOpen }: {
+  beside: boolean
+  dockedOpen: boolean
+  overlayOpen: boolean
+}): { panelVisible: boolean; showOpener: boolean } {
+  return {
+    panelVisible: beside ? dockedOpen : overlayOpen,
+    showOpener: !beside || !dockedOpen,
+  }
+}
 /** Punctuation, not prose: joins an activity label to its project name, and a
  *  driving row's title to its status word in the hover title. */
 const PROJECT_SEPARATOR = ' \u00b7 '
@@ -260,6 +281,11 @@ const STARRED_ONLY_KEY = 'mc-members-starred-only'
 const SOURCE_FILTER_KEY = 'mc-members-source'
 const STATUS_FILTER_KEY = 'mc-members-status'
 const SORT_KEY = 'mc-members-sort'
+/** Whether the DOCKED side panel is shown. Same `mc-` family and the same one
+ *  key per origin as the filters above: the panel is the page's furniture, not
+ *  a per-member state, so the choice follows the user across members and
+ *  reloads exactly as the chat page's own panel flag does. */
+const PANEL_OPEN_KEY = 'mc-members-panel-open'
 /** Static key per menu row — a map, not a template, so `check-i18n-keys` can
  *  resolve every reference (assembled keys are a counted blind spot there). */
 const SOURCE_LABEL_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
@@ -749,11 +775,11 @@ export default function MembersPage() {
   // useColumnResize hook — the same primitive every resizable column uses.
   const roster = useColumnResize(ROSTER_WIDTH_KEY, loadRosterWidth, ROSTER_MIN, ROSTER_MAX)
   // Where the side panel lives. Wide enough (see panelSitsBeside) it is a
-  // permanent column beside the thread with no close control — the chat page's
-  // panel, docked. Narrower, it is an overlay the header button opens and the
-  // panel's own close control dismisses, because a column that cannot be
-  // dismissed would otherwise fold the thread to nothing. The window width is
-  // tracked live (not sampled at mount) so crossing the boundary re-docks.
+  // column beside the thread, hidden and shown by the header toggle and by the
+  // panel's own close control — the chat page's panel, docked. Narrower, it is
+  // an overlay the same toggle opens, because a column that narrow would fold
+  // the thread to nothing. The window width is tracked live (not sampled at
+  // mount) so crossing the boundary re-docks.
   const isMobile = useIsMobile()
   const [winW, setWinW] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 0))
   useEffect(() => {
@@ -777,7 +803,29 @@ export default function MembersPage() {
   // (a widening window, a narrower roster), so an open overlay does not lie in
   // wait and pop back over the thread the moment the window narrows again.
   useEffect(() => { if (beside) setOverlayOpen(false) }, [beside])
-  const panelVisible = beside || overlayOpen
+  // Docked visibility, persisted and cross-window synced, shown by default so
+  // the page opens the way it always has. Kept SEPARATE from `overlayOpen`
+  // because the two placements answer different questions — whether the
+  // permanent column is wanted at all, and whether the drawer is up right now
+  // — so dismissing the drawer must not also hide the column the next time the
+  // window widens.
+  const [dockedOpen, setDockedOpen] = usePersistedBool(PANEL_OPEN_KEY, true)
+  const { panelVisible, showOpener } = panelChrome({ beside, dockedOpen, overlayOpen })
+  const closeDocked = useCallback(() => setDockedOpen(false), [setDockedOpen])
+  // One gesture drives whichever placement is live, so the header button and
+  // the dashboard's side-panel chord share it. The chord reaches this page the
+  // way it reaches the chat page: App dispatches `toggle-activity-panel` on the
+  // window and the page that owns a panel listens, which keeps one binding
+  // across both surfaces instead of each inventing its own.
+  const togglePanel = useCallback(() => {
+    if (beside) setDockedOpen((v) => !v)
+    else setOverlayOpen((v) => !v)
+  }, [beside, setDockedOpen])
+  useEffect(() => {
+    const onToggle = () => togglePanel()
+    window.addEventListener('toggle-activity-panel', onToggle)
+    return () => window.removeEventListener('toggle-activity-panel', onToggle)
+  }, [togglePanel])
   // Live presence rides the already-subscribed WS `slots` frames — the roster
   // endpoint only fills the cold-start gap (its `running` is a snapshot).
   const liveSlots = useAppSelector((s) => s.dashboard.slots)
@@ -1220,24 +1268,28 @@ export default function MembersPage() {
   )
   // The selection toolbar's "Ask about this" on the thread: the Side Chat for
   // this member lives in the panel's Side tab (the chat page's home for it),
-  // so opening it means focusing that tab — and, in overlay mode, revealing
-  // the panel, since a hidden tab is not "on screen". Only the endpoint-
-  // confirmed slot may host it (the pane is keyed on that same slot, so the
-  // two agree); `false` tells the selection seam the Ask did NOT happen, so
-  // it never seeds a quote into a Side Chat that never opened.
+  // so opening it means focusing that tab — and revealing the panel if it is
+  // hidden, in either placement, since a tab behind a hidden panel is not "on
+  // screen". Only the endpoint-confirmed slot may host it (the pane is keyed on
+  // that same slot, so the two agree); `false` tells the selection seam the Ask
+  // did NOT happen, so it never seeds a quote into a Side Chat that never
+  // opened.
   const openMemberSideChat = useCallback((slot: string): boolean => {
     if (!confirmedSlot || slot !== confirmedSlot) return false
     tabsCtl.openView('side')
-    if (!beside) setOverlayOpen(true)
+    if (beside) setDockedOpen(true)
+    else setOverlayOpen(true)
     return true
-  }, [confirmedSlot, tabsCtl, beside])
+  }, [confirmedSlot, tabsCtl, beside, setDockedOpen])
   // The quiet crewmate chat's "where the work went" line focuses the Work log
-  // tab — the same select the strip's own chip performs — and, in overlay
-  // mode, reveals the panel, for the same reason as the Side Chat above.
+  // tab — the same select the strip's own chip performs — and reveals the panel
+  // if it is hidden, in either placement, for the same reason as the Side Chat
+  // above.
   const openCrewWorkLog = useCallback(() => {
     tabsCtl.setActive(CREW_WORK_LOG_TAB_ID)
-    if (!beside) setOverlayOpen(true)
-  }, [tabsCtl, beside])
+    if (beside) setDockedOpen(true)
+    else setOverlayOpen(true)
+  }, [tabsCtl, beside, setDockedOpen])
   // Reply threads (screen 07). The footer data per message is one small read
   // beside the transcript; the open thread takes over the side panel while it
   // is on screen, and closing it hands the panel's tabs back. Keyed on the
@@ -1266,8 +1318,9 @@ export default function MembersPage() {
   const threadSummaries = threadsQuery.data?.threads
   const openReplyThread = useCallback((mid: string) => {
     setOpenThreadMid(mid)
-    if (!beside) setOverlayOpen(true)
-  }, [beside])
+    if (beside) setDockedOpen(true)
+    else setOverlayOpen(true)
+  }, [beside, setDockedOpen])
   const closeReplyThread = useCallback(() => setOpenThreadMid(null), [])
   const threadHooks = useMemo<ThreadHooks | undefined>(
     () => (threadsOn && confirmedSlot
@@ -1300,10 +1353,10 @@ export default function MembersPage() {
   const panelHidden = isSidePanelHidden(mountInput)
   // File / artifact / save for the panel's Files, Artifacts and document tabs —
   // the chat page's own implementation, not a copy. A failed read is reported
-  // above the thread; an open while the panel is an OVERLAY reveals it, since
-  // the tab it focused is otherwise hidden behind a closed panel. Docked, the
-  // open needs nothing — and must not arm `overlayOpen`, or a later narrowing
-  // of the window would find the overlay already open over the thread.
+  // above the thread; an open reveals whichever placement is live, since the
+  // tab it focused is otherwise behind a hidden panel. Each placement arms its
+  // OWN flag: arming `overlayOpen` from the docked column would leave the
+  // overlay already open over the thread the next time the window narrows.
   const activeSlotRef = useRef<string | null>(confirmedSlot || null)
   activeSlotRef.current = confirmedSlot || null
   const besideRef = useRef(beside)
@@ -1317,7 +1370,10 @@ export default function MembersPage() {
     setActionError(message)
     if (!besideRef.current) setOverlayOpen(false)
   }, [])
-  const revealPanelAfterOpen = useCallback(() => { if (!besideRef.current) setOverlayOpen(true) }, [])
+  const revealPanelAfterOpen = useCallback(() => {
+    if (besideRef.current) setDockedOpen(true)
+    else setOverlayOpen(true)
+  }, [setDockedOpen])
   const { openFile, openArtifact, saveFile } = usePanelDocumentActions({
     tabsCtl,
     slotRef: activeSlotRef,
@@ -2256,23 +2312,24 @@ export default function MembersPage() {
                   <Pencil size={13} className="lucide-inline" />
                 </button>
               </div>
-              {/* The header carries NO panel control while the panel sits
-                  beside the thread: that panel is permanent, so a toggle would
-                  promise a close the strip does not offer. Only when the window
-                  is too narrow for a column (see panelSitsBeside) does the
-                  panel become an overlay, and then this is its opener — same
-                  icon and hit-target as the chat page's side-panel toggle, so
-                  the two surfaces teach one gesture. The pin chip was removed:
-                  every member thread is pinned by construction (a server
-                  invariant, not a per-thread state), so announcing it taught
-                  the user a term for a thing that can never be otherwise.
-                  The member's edit entry is not a peer of this toggle: it is
-                  the pencil inside the title row, revealed on hover. */}
-              {!beside && (
+              {/* The panel's opener. Same icon and hit-target as the chat
+                  page's side-panel toggle, so the two surfaces teach one
+                  gesture, and the dashboard's side-panel chord fires it too.
+                  Docked, it appears only while the panel is hidden — the open
+                  panel's own strip carries the close control, which is exactly
+                  how the chat page splits the two halves of the gesture. As an
+                  overlay it stays put and reads pressed while the drawer is up.
+                  The pin chip was removed: every member thread is pinned by
+                  construction (a server invariant, not a per-thread state), so
+                  announcing it taught the user a term for a thing that can
+                  never be otherwise. The member's edit entry is not a peer of
+                  this toggle: it is the pencil inside the title row, revealed
+                  on hover. */}
+              {showOpener && (
                 <button
-                  onClick={() => setOverlayOpen((v) => !v)}
+                  onClick={togglePanel}
                   className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-                  aria-pressed={overlayOpen}
+                  aria-pressed={panelVisible}
                   aria-controls="member-side-panel"
                   aria-label={t('pages.membersPage.details')}
                   title={t('pages.membersPage.details')}
@@ -3080,14 +3137,18 @@ export default function MembersPage() {
                     <SidePanel
                       {...panelProps}
                       panelHidden={panelHidden}
-                      /* Docked: permanent — no onClose, so the strip renders no
-                         close control and Escape inside a view does nothing.
-                         `extraReserveW` keeps the live roster width plus the
-                         page's gaps clear on top of the shell reserve, so a drag
-                         can never fold the thread to nothing (the contract the
-                         old drawer's reserveWidth carried). Overlay: the panel
-                         covers the thread, so nothing to reserve. */
-                      onClose={beside ? undefined : closeOverlay}
+                      /* Both placements are dismissable, so both hand the panel
+                         an onClose: the strip renders its close control and
+                         Escape inside a view answers. Docked it hides the
+                         column and the thread takes the full width; as an
+                         overlay the scrim is a second dismiss, the drawer
+                         convention. `extraReserveW` keeps the live roster width
+                         plus the page's gaps clear on top of the shell reserve,
+                         so a drag can never fold the thread to nothing (the
+                         contract the old drawer's reserveWidth carried).
+                         Overlay: the panel covers the thread, so nothing to
+                         reserve. */
+                      onClose={beside ? closeDocked : closeOverlay}
                       extraReserveW={beside ? roster.width + PANEL_GAPS_W : 0}
                       /* Phone only (see panelFillWidth): the overlay fills the
                          window. Off the phone this is undefined and the panel
