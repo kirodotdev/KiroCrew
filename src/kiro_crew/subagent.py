@@ -923,9 +923,10 @@ def _proc_subtree_sample(pid: Optional[int]) -> platform_compat.SubtreeSample:
 def _subtree_cpu_jiffies(pid: int, *, pids: Optional[list[int]] = None) -> int:
     """Sum utime+stime across ``pid`` and its descendants (clock ticks).
 
-    Asks the shared walker for the CPU reading alone, so the CPU subtree the
-    Sessions session rows read is the same subtree the task rows describe, and
-    the session rows pay no ``status`` read for an RSS figure they do not use.
+    Two routes, and the caller picks one by argument. WITHOUT ``pids`` it asks
+    the shared walker for the CPU reading alone, so the subtree is the one the
+    task rows describe and no ``status`` read is paid for an RSS figure the
+    caller does not use.
 
     ``pids`` is that subtree when the caller has ALREADY walked it, so the tree
     is not enumerated a second time to total the same processes -- the same
@@ -933,7 +934,10 @@ def _subtree_cpu_jiffies(pid: int, *, pids: Optional[list[int]] = None) -> int:
     the cost is the enumeration, not the per-process read. It also makes the CPU
     figure describe exactly the set the caller's other figures describe, where
     two enumerations could disagree (the walker stops at ``_SUBTREE_MAX_PROCS``
-    and a caller's own walk need not).
+    and a caller's own walk need not). This is the route the Sessions session
+    rows take, so their CPU figure spans their whole uncapped tree -- the same
+    set every other figure on those rows spans -- rather than the walker's first
+    ``_SUBTREE_MAX_PROCS`` processes.
     """
     if pids is not None:
         return platform_compat.proc_cpu_jiffies_for_pids(pids)

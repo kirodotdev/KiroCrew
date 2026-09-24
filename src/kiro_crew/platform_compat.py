@@ -8355,6 +8355,13 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
 #: Upper bound on processes walked in one subtree sample. A real tree is tiny
 #: (a launcher plus a handful of workers); the cap only guards against a
 #: pathological or looping ``/proc`` graph.
+#:
+#: It bounds THIS WALK's work; it is not a display ceiling for a count, and a
+#: surface that already enumerates its own tree does not adopt it. Truncating a
+#: displayed count at this number would hand the card a plain integer no
+#: consumer can tell from a complete one, where ``procs``/``matched`` reserve
+#: ``None`` for "unmeasurable". A walk that needs bounding elsewhere wants a
+#: budget that yields ``None``, not a silent truncation.
 _SUBTREE_MAX_PROCS = 256
 
 

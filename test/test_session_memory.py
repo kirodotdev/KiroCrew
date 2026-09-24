@@ -167,7 +167,7 @@ def stub_proc(monkeypatch: pytest.MonkeyPatch) -> None:
         sm, "_get_rss_tree_mb", lambda pid, **kw: {7: 3238.0, 8: 843.0}.get(pid, 0.0)
     )
     monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid, **kw: [pid, pid + 100, pid + 200])
-    monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "python -m kiro_crew.mcp_gateway.stub")
+    monkeypatch.setattr(sm, "process_matches", lambda pid, needles: True)
     monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
     # The poll builds the host's parent map once; keep that off real /proc too.
     monkeypatch.setattr(sm, "proc_child_map", lambda: {})

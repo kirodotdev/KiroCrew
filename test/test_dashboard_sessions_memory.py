@@ -66,7 +66,7 @@ def stub_proc(monkeypatch: pytest.MonkeyPatch) -> None:
     # the real function deliberately: this stub would hide the walk it performs.
     monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 1525.0)
     monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid, **kw: [pid, pid + 1])
-    monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "")
+    monkeypatch.setattr(sm, "process_matches", lambda pid, needles: False)
     monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
     # One host parent map per poll feeds every row's walk; keep it off real /proc.
     monkeypatch.setattr(sm, "proc_child_map", lambda: {})
@@ -280,7 +280,7 @@ def test_one_descendant_walk_per_distinct_pid(monkeypatch: pytest.MonkeyPatch) -
     # that a regression dropping ``pids=`` walks again and gets counted.
     monkeypatch.setattr(sm, "_get_rss_tree_mb", runtime._get_rss_tree_mb)
     monkeypatch.setattr(sm.sys, "platform", "linux")
-    monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "")
+    monkeypatch.setattr(sm, "process_matches", lambda pid, needles: False)
     monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
     monkeypatch.setattr(sm, "proc_child_map", lambda: {})
     monkeypatch.setattr(usage, "slot_spend", lambda: {})
@@ -340,7 +340,7 @@ def test_the_host_parent_map_is_built_once_per_poll(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(sm, "_iter_descendant_pids", recording_walk)
     monkeypatch.setattr(sm.sys, "platform", "linux")
     monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 1.0)
-    monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "")
+    monkeypatch.setattr(sm, "process_matches", lambda pid, needles: False)
     monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
     monkeypatch.setattr(usage, "slot_spend", lambda: {})
 
@@ -397,7 +397,7 @@ def test_the_cpu_total_is_summed_over_the_walked_set(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(sm, "_iter_descendant_pids", runtime._iter_descendant_pids)
     monkeypatch.setattr(sm, "proc_child_map", lambda: {7: [71, 72]})
     monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 1.0)
-    monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "")
+    monkeypatch.setattr(sm, "process_matches", lambda pid, needles: False)
     monkeypatch.setattr(usage, "slot_spend", lambda: {})
 
     sampler = sm.SessionMemorySampler()
@@ -479,3 +479,87 @@ class TestTheWalkReadsItsEdgesFromTheMap:
         monkeypatch.setattr(runtime, "_own_children", fake_children)
         assert runtime._iter_descendant_pids(1) == [1, 2]
         assert asked == [1, 2]
+
+
+def test_the_stub_count_is_matched_through_the_shared_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``mcp`` asks ``platform_compat.process_matches``, the one helper the
+    cross-platform table names for matching a command line.
+
+    A second matcher answering the same question is what this pins out. The
+    needle is asserted too, not just the call: a helper asked about the wrong
+    needle counts the wrong processes while every row still renders.
+    """
+    from kiro_crew.dashboard import session_memory as sm
+    from kiro_crew.dashboard.handlers import usage
+
+    asked: list[tuple[int, tuple[str, ...]]] = []
+
+    def fake_matches(pid: int, needles: tuple[str, ...]) -> bool:
+        asked.append((pid, needles))
+        return pid in (71, 72)
+
+    monkeypatch.setattr(sm.sys, "platform", "linux")
+    monkeypatch.setattr(sm, "process_matches", fake_matches, raising=False)
+    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid, **kw: [pid, 71, 72, 73])
+    monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 1.0)
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
+    monkeypatch.setattr(sm, "proc_child_map", lambda: {})
+    monkeypatch.setattr(usage, "slot_spend", lambda: {})
+
+    sampler = sm.SessionMemorySampler()
+    out = sampler._blocking_sample([_row("dashboard:chat-1", 7)])
+
+    per_pid = out["per_pid"]
+    assert isinstance(per_pid, dict)
+    assert per_pid[7]["mcp"] == 2
+    # Every process in the walked set is offered, and always with the stub needle.
+    assert [pid for pid, _ in asked] == [7, 71, 72, 73]
+    assert {needles for _, needles in asked} == {(sm._STUB_MARKER,)}
+
+
+def test_a_session_tree_wider_than_the_walker_ceiling_is_counted_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The session row's figures are UNCAPPED: a tree larger than
+    ``platform_compat._SUBTREE_MAX_PROCS`` reports its real size, not the ceiling.
+
+    A PIN, not a regression test -- this is already the behaviour. It exists
+    because the opposite is a one-line change that no payload assertion would
+    notice: a capped ``procs`` is a plain integer indistinguishable from a
+    complete one, so the card would present the ceiling as an exact count. Both
+    the count and the CPU total are checked, because they reach the tree by
+    different routes (``len`` of the walk, and the pid hand-over to
+    ``_subtree_cpu_jiffies``) and only the second one can silently fall back to
+    the capped shared walker.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew import subagent as sa
+    from kiro_crew.acp import runtime
+    from kiro_crew.dashboard import session_memory as sm
+    from kiro_crew.dashboard.handlers import usage
+
+    wide = platform_compat._SUBTREE_MAX_PROCS + 45
+    children = {7: list(range(100, 100 + wide - 1))}
+
+    monkeypatch.setattr(sm.sys, "platform", "linux")
+    monkeypatch.setattr(sm, "_iter_descendant_pids", runtime._iter_descendant_pids)
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", sa._subtree_cpu_jiffies)
+    monkeypatch.setattr(sm, "proc_child_map", lambda: children)
+    monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 1.0)
+    monkeypatch.setattr(sm, "process_matches", lambda pid, needles: True)
+    # One jiffy per pid, so the CPU total names how many processes were summed.
+    monkeypatch.setattr(platform_compat, "_proc_cpu_jiffies", lambda pid: 1)
+    monkeypatch.setattr(usage, "slot_spend", lambda: {})
+
+    sampler = sm.SessionMemorySampler()
+    out = sampler._blocking_sample([_row("dashboard:chat-1", 7)])
+
+    per_pid = out["per_pid"]
+    assert isinstance(per_pid, dict)
+    assert wide > platform_compat._SUBTREE_MAX_PROCS
+    assert per_pid[7]["procs"] == wide
+    assert per_pid[7]["mcp"] == wide
+    # The CPU baseline spans the same set, so no figure on the row stops at 256.
+    assert sampler._cpu_prev[7][0] == wide

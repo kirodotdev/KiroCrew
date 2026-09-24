@@ -41,7 +41,7 @@ from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.messaging.link import telemetry_channel_of
-from kiro_crew.platform_compat import proc_child_map
+from kiro_crew.platform_compat import proc_child_map, process_matches
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.subagent import _CLK_TCK, _subtree_cpu_jiffies
@@ -64,15 +64,6 @@ _HISTORY_LEN = 60
 # servers is this session carrying" signal. Imported rather than spelled out so
 # it cannot drift from the launch line the rewriter emits.
 _STUB_MARKER = STUB_MODULE
-
-
-def _read_cmdline(pid: int) -> str:
-    """Return ``/proc/<pid>/cmdline`` as a string, or "" when unreadable."""
-    try:
-        with open(f"/proc/{pid}/cmdline", encoding="utf-8", errors="replace") as fh:
-            return fh.read().replace("\0", " ")
-    except OSError:
-        return ""
 
 
 def _spend_for_session(
@@ -356,6 +347,24 @@ class SessionMemorySampler:
         its meaning. What changes is that they now describe one set of processes
         observed once, which is what the shared walker's own docstring says a
         single frontier is for.
+
+        A command line is matched through ``platform_compat.process_matches``,
+        which is the helper the cross-platform table names for that question, so
+        the stub count asks it the one way this repository asks it.
+
+        **Every figure here is UNCAPPED, and that is the ruling, not an
+        oversight.** The shared walker bounds its own frontier at
+        ``platform_compat._SUBTREE_MAX_PROCS``; that ceiling guards a looping or
+        pathological ``/proc`` graph, which this walk is already immune to for a
+        different reason -- it visits each pid at most once. Adopting the number
+        here would therefore bound the FIGURE rather than the work, and a bounded
+        figure is the worse of the two failures: a truncated count reaches the
+        card as a plain integer no consumer can tell from a complete one, so the
+        surface presents it as exact, while ``None`` is this payload's way of
+        saying UNMEASURABLE. A count that is slow is recoverable; a count that is
+        wrong and looks authoritative is not. Should the walk's cost ever need a
+        bound, the bound that keeps that meaning intact is a work or time budget
+        that yields ``None`` on exhaustion -- never a ceiling that truncates.
         """
         procs: Optional[int] = None
         stubs: Optional[int] = None
@@ -363,7 +372,7 @@ class SessionMemorySampler:
             tree = _iter_descendant_pids(pid, children=children)
             rss_mb = _get_rss_tree_mb(pid, pids=tree)
             procs = len(tree)
-            stubs = sum(1 for p in tree if _STUB_MARKER in _read_cmdline(p))
+            stubs = sum(1 for p in tree if process_matches(p, (_STUB_MARKER,)))
             cpu = self._cpu_cores(pid, now, pids=tree)
         else:
             # No descendant set to reuse: the other platforms reach the total
