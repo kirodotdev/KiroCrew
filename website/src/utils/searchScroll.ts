@@ -290,7 +290,7 @@ function scrollKeyDirection(key: string): 'up' | 'down' | undefined {
  */
 export function attachUserScrollIntent(
   target: EventTarget | undefined,
-  onUser: (dir?: ScrollIntentDirection) => void,
+  onUser: (dir?: ScrollIntentDirection, px?: number) => void,
 ): () => void {
   if (!target) return () => {}
   const onKey = (e: Event) => {
@@ -302,8 +302,16 @@ export function attachUserScrollIntent(
   const onWheel = (e: Event) => {
     // The wheel delta is the input's own direction, available BEFORE any scroll
     // event: negative deltaY scrolls up. A zero/absent delta stays directionless.
-    const dy = (e as WheelEvent).deltaY
-    onUser(dy < 0 ? 'up' : dy > 0 ? 'down' : undefined)
+    // Its magnitude is the input's own travel too -- how far the reader ASKED
+    // to move, before the engine clamps the answer at the scroller's maximum
+    // -- but only in pixel mode; a line or page delta has no pixel size here.
+    const we = e as WheelEvent
+    const dy = we.deltaY
+    if (!(dy < 0 || dy > 0)) {
+      onUser(undefined)
+      return
+    }
+    onUser(dy < 0 ? 'up' : 'down', we.deltaMode === 0 ? Math.abs(dy) : undefined)
   }
   // Track the previous touch Y within ONE gesture: a finger moving DOWN the
   // screen scrolls the content UP.
@@ -355,7 +363,11 @@ export function attachUserScrollIntent(
     }
     const prev = lastTouchY
     lastTouchY = y
-    onUser(Number.isNaN(prev) || y === prev ? undefined : y > prev ? 'up' : 'down')
+    // The finger's path is the reader's own travel, 1:1 with the scroll it asks
+    // for, and it keeps arriving after the scroller has hit its maximum and
+    // stopped answering with scroll events.
+    if (Number.isNaN(prev) || y === prev) onUser(undefined)
+    else onUser(y > prev ? 'up' : 'down', Math.abs(y - prev))
   }
   // A scrollbar grab carries no direction until it actually scrolls -- but it
   // IS a scroll about to happen: the thumb is under the pointer and the first

@@ -402,16 +402,27 @@ export const FOLLOW_REENGAGE_PX = 16
  *          coincided with the reader's own scroll-up, so it belongs to the
  *          user and releases follow. A downward or directionless input keeps
  *          the clamp absorbed.
- *        - follow already RELEASED (`stick === false`) and the reader did not
- *          move DOWN to get here: the content below them collapsed and the
- *          engine clamped them flush. Arriving at the bottom is not asking for
- *          it, and re-arming hands the rest of the turn to the pin.
+ *        - follow already RELEASED (`stick === false`): re-engage only when the
+ *          reader moved DOWN to get here AND their own downward travel across
+ *          the gesture is at least the viewport's growth (the same
+ *          `readerTravel >= viewportGrowth` split as rule 3). A non-downward
+ *          landing is the content below them collapsing (or the box growing)
+ *          and the engine clamping them flush: arriving is not asking, and
+ *          re-arming hands the rest of the turn to the pin. A downward landing
+ *          the growth did most of the work for is a nudge the engine clamped
+ *          flush -- rule 3's refused arrival delivered to distance 0 instead
+ *          of the band -- and stays released too.
  *   2. Any other upward move → release, regardless of distance from the
  *      bottom. The scroll position now belongs to the user; only returning to
  *      the bottom (3) re-engages.
  *   3. A genuine DOWNWARD move that arrives within FOLLOW_REENGAGE_PX of the
  *      bottom → re-engage. A neutral event inside the band does NOT: that is
- *      how content collapsing under a still reader re-armed follow.
+ *      how content collapsing under a still reader re-armed follow. Nor does
+ *      a move the VIEWPORT's own growth did most of the work for: the arrival
+ *      counts as the reader's only when their own downward travel across the
+ *      gesture (`readerTravel`) is at least the growth (`viewportGrowth`) that
+ *      brought the bottom up to meet them. That is how the iOS toolbar
+ *      collapsing under a downward nudge re-armed it.
  *   4. Otherwise (downward/neutral, still away from the bottom) → keep the
  *      previous state.
  *
@@ -426,7 +437,9 @@ export function resolveUserScrollStick(args: {
   scrollTop: number
   prevScrollTop: number
   geom: ScrollGeom
-  /** Change in the scroller's own height since the previous scroll event.
+  /** Change in the scroller's own height across the current GESTURE: the
+   *  caller accumulates the per-event deltas for as long as scroll events keep
+   *  arriving within the settle window, and starts over once the reader rests.
    *
    *  Positive = the viewport GREW (the composer shrank under a deletion, the
    *  keyboard closed). That growth lowers the maximum scrollTop, so the engine
@@ -437,8 +450,76 @@ export function resolveUserScrollStick(args: {
    *  never touched the scroller. The next turn to start then took them to the
    *  end. Rule 1 exists to absorb a CONTENT-shrink clamp mid-stream, and content
    *  shrink moves `scrollHeight`, not `clientHeight` — so the two are
-   *  distinguishable, and this is the delta that tells them apart. */
+   *  distinguishable, and this is the delta that tells them apart.
+   *
+   *  Rule 3 reads it too, as the growth's share of the reader's approach to
+   *  the band (see `readerTravel`). That is why the value is the gesture's
+   *  TOTAL and not one event's delta: Safari spreads the collapse over several
+   *  frames, and a reader nudging down across them was credited only the last
+   *  frame's growth while the earlier frames' growth had already carried the
+   *  band onto them. Growth that landed while the reader RESTED is not in the
+   *  total -- the caller re-baselines when the box changes with no reader
+   *  scroll event in flight -- so a fresh drag toward the bottom is judged
+   *  against the box it began in. Rule 1's released row reads the same total
+   *  for the same split: a nudge the growth clamps FLUSH arrives at distance
+   *  0 rather than inside the band, and is refused there by the same
+   *  `readerTravel >= viewportGrowth` test. Rule 1's follower row and its
+   *  non-downward landings are indifferent to it: a clamp keeps `stick`
+   *  exactly as it was. */
   viewportGrowth?: number
+  /** The reader's own DOWNWARD travel across the current gesture, in px: the
+   *  caller sums the positive scrollTop deltas of the user scroll events that
+   *  arrive within the settle window of one another (a shrink of the box, an
+   *  engine clamp and an upward move all contribute nothing) and starts over
+   *  once the reader rests. Omitted, no travel is credited.
+   *
+   *  The question, in rule 3 and in rule 1's released row alike, is "did the
+   *  reader close the gap themselves?". Write
+   *  the gap they were from the bottom when the gesture began as D0, their
+   *  travel since as T and the box's growth as G; with the content unchanged
+   *  the live distance is `dist = D0 - T - G`, so the approach `D0 - dist`
+   *  splits exactly into the reader's T and the browser's G. An arrival
+   *  (`dist <= FOLLOW_REENGAGE_PX`) is theirs when their share is at least the
+   *  browser's, `T >= G`, and is refused when `T < G`: the growth carried them
+   *  further than they moved, so the band came to them.
+   *
+   *  Judging the band against the pre-growth box instead
+   *  (`dist + G <= FOLLOW_REENGAGE_PX`) asks a different question and is
+   *  UNSATISFIABLE once G exceeds the band: growth lowers the maximum scrollTop
+   *  by G, so every position the reader can reach has `dist + G >= G`. Worked
+   *  at Safari's real G = 50: a reader parked 200px up drags 148px down while
+   *  the bar collapses and lands 2px from the bottom. `dist + G = 52 > 16`
+   *  refuses them; `T = 148 >= G = 50` re-engages -- they closed 148 of the
+   *  198px approach. The nudge the rule exists for still holds: parked 60px
+   *  up, 3px down, G = 50, `dist = 7`; `T = 3 < G = 50` refuses it, since 50 of
+   *  the 53px of approach were the browser's. And a neutral event (T = 0) is
+   *  refused by the direction test before this one is reached. With no growth
+   *  in flight (G = 0) every downward arrival satisfies `T >= 0`, which is rule
+   *  3 exactly as it was before viewport growth was considered at all. */
+  readerTravel?: number
+  /** The reader's own downward INPUT across the same gesture, in px, as the
+   *  intent listeners reported it (a pixel wheel delta, a finger's path) --
+   *  the travel they ASKED for, where `readerTravel` is the travel the engine
+   *  ANSWERED with. The answer is clamped at the scroller's maximum, and a
+   *  growth G lowers that maximum by G, so a reader parked D0 up is answered
+   *  at most D0 - G however far they drag. Measured on the answer alone, any
+   *  deliberate drag to the end from under 2G away has `T = D0 - G < G` and is
+   *  refused as a nudge (at Safari's G = 50 that is everyone within 100px of
+   *  the bottom), and once flush a further drag raises no scroll event to be
+   *  judged at all. The input has neither limit: the larger of the two is the
+   *  reader's travel. An input in the gesture is also the "hand on the
+   *  scroller" a flush landing needs, when the growth outran the drag within
+   *  the frame and the position alone reads as upward. Omitted or zero, the
+   *  decision is the position-only one above. */
+  readerIntent?: number
+  /** How far above the bottom the reader was when the gesture began, in px.
+   *  A second way for an arrival to be the reader's: their own travel covers
+   *  the WHOLE gap (`travel >= gestureStartGap`), so they would have reached
+   *  the bottom with no growth at all, however much the box grew meanwhile.
+   *  The `T >= G` split cannot say that -- a keyboard closing (~300px) under
+   *  a 250px drag from 200px up refuses a return the reader plainly made.
+   *  Omitted, only the split applies. */
+  gestureStartGap?: number
   /** A hardware user input whose own direction was UPWARD (wheel up / upward
    *  key / upward touch drag) landed within the scroll-settle window before
    *  this scroll event.
@@ -466,49 +547,88 @@ export function resolveUserScrollStick(args: {
   const { stick, followOutput, scrollTop, prevScrollTop, geom } = args
   if (!followOutput) return false
   const dist = distanceFromBottom(geom)
-  // A viewport growth large enough to explain the reader's arrival at the bottom
-  // is the engine's clamp, not the reader. Leave `stick` exactly as it was.
-  // A native clamp only ever LOWERS scrollTop, so a downward move concurrent with
-  // the growth is the user's own and must still re-engage follow. Without the
-  // direction term a reader who deliberately scrolls down while the keyboard
-  // closes is refused their re-engagement.
-  const clampedByViewport =
-    (args.viewportGrowth ?? 0) > atBottomEpsilon() && scrollTop <= prevScrollTop + atBottomEpsilon()
+  // The split of the reader's approach between their own hand and the box's
+  // growth (see `readerTravel` for the derivation). Read by BOTH arrival
+  // branches below -- the bottom-epsilon one and rule 3's band -- because a
+  // viewport growth can deliver a nudge to either: growth lowers the maximum
+  // scrollTop, so a reader parked 60px up is only 10px from the new maximum
+  // after Safari's 50px collapse, and any nudge of 10px or more is clamped
+  // FLUSH (distance ~0) rather than landing inside the band. Guarding rule 3
+  // alone left that -- most of the nudge range -- to a branch that decided on
+  // direction, and a clamped nudge moves DOWN.
+  const growth = Math.max(0, args.viewportGrowth ?? 0)
+  const intent = Math.max(0, args.readerIntent ?? 0)
+  const travel = Math.max(0, args.readerTravel ?? 0, intent)
+  const startGap = args.gestureStartGap ?? Number.POSITIVE_INFINITY
+  // The reader's arrival is theirs when their travel is at least the growth
+  // that carried them (the split, see `readerTravel`) OR covers the whole gap
+  // they set out to close (see `gestureStartGap`). The gap term needs a REAL
+  // gap: a gesture that opens at the bottom (a released reader the engine
+  // clamped flush, now at rest) seeds a gap of ~0, and `travel >= 0` would let
+  // a 1px nudge re-arm follow for someone who never asked for the end.
+  const arrivalIsTheirs = travel >= growth || (startGap > atBottomEpsilon() && travel >= startGap)
   if (dist <= atBottomEpsilon()) {
-    // A clamp only ever lowers scrollTop, so a downward move here is the user's
-    // own and re-engages. A non-downward landing at the bottom is ambiguous
-    // between the engine's clamp and a user scroll-up that coincided with a
-    // content shrink -- and an UPWARD hard input within the settle window is
-    // the evidence the reader scrolled up, so the landing belongs to them:
-    // release. Direction-blind or downward input keeps the clamp guard.
-    const movedDown = prevScrollTop >= 0 && scrollTop > prevScrollTop + atBottomEpsilon()
+    // AT THE TRUE BOTTOM. `movedDown` is the discriminator: a clamp only ever
+    // LOWERS scrollTop, so a downward landing here is the reader's own move
+    // (or their move plus a clamp of its tail), never the engine alone.
+    //
+    //   upward input in the window, not moved down  -> release
+    //     A user scroll-UP that coincided with a content shrink terminates at
+    //     the NEW bottom and wears the clamp's signature; the input's own
+    //     direction is the proof it was the reader's.
+    //   follow armed (`stick`)                       -> keep following
+    //     Rule 1 proper: the engine carrying a follower across a content
+    //     shrink, or across a viewport growth -- both lower scrollTop, both
+    //     keep `stick` exactly as it was. Travel and growth are irrelevant to
+    //     a reader who is already following.
+    //   released, not moved down                     -> stay released
+    //     The content below the reader collapsed (or the box grew) far enough
+    //     to drop the maximum under them and the engine clamped them flush
+    //     with no finger near the screen. Arriving is not asking; re-arming
+    //     hands the rest of the turn to the pin.
+    //   released, moved down, travel >= growth        -> re-engage
+    //     They dragged to the end themselves (T >= G, as in rule 3), or their
+    //     drag covered the whole gap they started with (T >= D0) -- the
+    //     keyboard closing under a drag to the end.
+    //   released, moved down, travel <  growth        -> stay released
+    //     The growth did most of the work and clamped the tail of a nudge
+    //     flush: the same arrival rule 3 refuses inside the band, arriving
+    //     at distance 0 instead. With G = 0 this row is unreachable (T >= 0),
+    //     so a caller with no growth signal keeps the direction-only rule.
+    //
+    // The growth-only clamp (growth, no downward move) is the third row: it
+    // is `stick` for a follower and `false` for a released reader, which is
+    // what the rows already return for any non-downward landing, so it needs
+    // no term of its own.
+    //
+    // "Moved down" is the position's answer OR the input's: a growth that
+    // outruns the drag within one frame (the keyboard's ~300px against a
+    // finger's ~20px per frame) lowers scrollTop on every frame of a drag that
+    // is plainly downward, and the position alone would file the whole drag
+    // under "no finger near the screen". The input substitutes ONLY while a
+    // growth is in flight, because that is the one thing that can make a
+    // downward drag read as a fall. With no growth a falling scrollTop at the
+    // bottom is a CONTENT shrink clamping the reader flush -- a tool result
+    // collapsing under a 30px drag from 200px up -- and the position is the
+    // honest read: arriving is not asking, whatever the finger was doing.
+    //
+    // The input also substitutes ONLY with no upward evidence in the window.
+    // Touch sampling outruns the frame rate, so an upward flick can be
+    // followed by a 1px reversal sample before the frame's scroll event:
+    // the reversal re-banks `readerIntent` after the upward sample zeroed
+    // it (the last sample before the event wins), and the clamp's event then
+    // carries BOTH the upward stamp and a positive intent. Letting the input
+    // answer "moved down" there skips the very release the upward stamp
+    // arms, so a follower who flicked up while the keyboard closed stayed
+    // armed and the next pin yanked them back to the end. An upward input in
+    // the window means the position is the honest read; the keyboard-close
+    // returns this substitute exists for carry no upward input.
+    const movedDown =
+      (prevScrollTop >= 0 && scrollTop > prevScrollTop + atBottomEpsilon()) ||
+      (intent > 0 && growth > atBottomEpsilon() && !args.upwardInputWithinSettle)
     if (args.upwardInputWithinSettle && !movedDown) return false
-    if (clampedByViewport) return stick
-    // ARRIVING at the bottom is not the same as ASKING for it. Rule 1 exists to
-    // carry a reader who was ALREADY following across a mid-stream content
-    // shrink, and that reader is `stick === true` by construction: the shrink's
-    // own scroll event is the first thing that could have released them. So a
-    // reader whose follow is already RELEASED reaches this branch for a
-    // different reason -- the content below them collapsed far enough to drop
-    // the maximum scrollTop under where they sat, and the engine clamped them
-    // flush with no finger anywhere near the screen.
-    //
-    // Re-arming there hands the rest of the turn to the pin: every later token
-    // drags the reader along, which is the phone report of scrolling up to read
-    // and being taken to the end seconds later. It is the exact defect rule 3
-    // already refuses inside FOLLOW_REENGAGE_PX ("the band arrives at a STILL
-    // reader"), and a clamp lands at distance ~0 rather than inside that band,
-    // so it slipped past that fix through here. A phone is where it bites: the
-    // narrow column prices unmeasured rows far under their real wrapped height,
-    // so the collapse is large enough to clamp rather than merely nudge.
-    //
-    // The old reading was "at the true bottom there is nothing below to be
-    // yanked to" -- true for that one instant, and false for every token after
-    // it. `movedDown` is the discriminator the same way it is in rule 3: a
-    // clamp only ever LOWERS scrollTop, so a reader who moved DOWN to get here
-    // came on their own and re-engages.
-    if (!stick) return movedDown
-    return true
+    if (stick) return true
+    return movedDown && arrivalIsTheirs
   }
   if (prevScrollTop < 0) return dist <= FOLLOW_REENGAGE_PX
   if (scrollTop < prevScrollTop - 0.5) return false
@@ -523,8 +643,30 @@ export function resolveUserScrollStick(args: {
   // took them to the end -- reported as scrolling along and suddenly landing at
   // the bottom. Distance alone cannot tell those apart; the direction of the
   // reader's own move can.
-  if (scrollTop > prevScrollTop + 0.5 && dist <= FOLLOW_REENGAGE_PX) return true
-  return stick
+  //
+  // The band also has to be reached by the reader's OWN move. A viewport GROWTH
+  // lowers the bottom by exactly the growth with no scroll of theirs, and on
+  // iOS it lands in the SAME frame as a downward move by construction: Safari's
+  // toolbar collapses under the very drag that scrolls toward the bottom, so
+  // for the frames of that animation a reader who nudged down a few px from
+  // well outside the band read as arriving inside it -- the band came up to
+  // meet them, the same class as the neutral-event case above. Follow re-armed
+  // for a reader who never reached the bottom, and the next automatic pin (the
+  // toolbar re-showing, a streaming token) carried them to the end.
+  //
+  // The arrival test stays the live distance, because the live bottom is the
+  // only one the reader can reach: the growth lowers the maximum scrollTop, so
+  // a band judged against the pre-growth box lies past the wall whenever the
+  // growth exceeds the band, and a reader dragging all the way down would be
+  // refused. The discriminator is the split of the approach instead: the
+  // reader's own downward travel this gesture against the box's growth this
+  // gesture. Their arrival is theirs when they moved at least as far as the
+  // growth carried them (see `readerTravel` for the derivation and a worked
+  // example); a nudge the growth did most of the work for is not. A SHRINK is
+  // not credited either way: the live distance already reads the bottom moving
+  // AWAY from the reader.
+  if (!(scrollTop > prevScrollTop + 0.5) || dist > FOLLOW_REENGAGE_PX) return stick
+  return arrivalIsTheirs ? true : stick
 }
 
 /** Result of an automatic (RO / append) pin evaluation. */

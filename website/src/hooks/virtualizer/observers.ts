@@ -203,8 +203,11 @@ export function useScrollListener<T>(ctx: {
     // tick between the two saw a stale "settled" timestamp and pinned against
     // the gesture (fighting a trackpad fling frame by frame). Suppression is
     // harmless when the input does not scroll (a click, a wheel at the bottom):
-    // follow resumes SCROLL_SETTLE_MS later.
-    const detachIntent = attachUserScrollIntent(el, noteHardInput)
+    // follow resumes SCROLL_SETTLE_MS later. The scroller goes along so an
+    // input at the bottom EDGE -- where the engine answers a drag with no
+    // scroll event -- can still be judged as the reader's return (see
+    // noteHardInput in followPolicy.ts).
+    const detachIntent = attachUserScrollIntent(el, (dir, px) => noteHardInput(dir, px, el))
     onScroll()
     return () => {
       el.removeEventListener('scroll', onScroll)
