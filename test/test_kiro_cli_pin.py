@@ -428,12 +428,6 @@ _BARE_NAME_CONSTANTS = {"KIRO_CLI_BIN", "KIRO_CLI_NAME"}
 #: and a new site anywhere is refused outright.
 _KNOWN_INTERACTIVE_SITES = frozenset(
     {
-        # `kirocrew doctor` sign-in row: which(KIRO_CLI_BIN) probe, then
-        # [KIRO_CLI_BIN, "whoami"].
-        "cli_doctor.py::_kiro_cli_signed_in",
-        # `kirocrew doctor` dependency + connectivity rows: which(KIRO_CLI_BIN),
-        # then [KIRO_CLI_BIN, "--version"].
-        "cli_doctor.py::_doctor",
         # `kirocrew setup` prerequisite notice: which(KIRO_CLI_BIN), no spawn.
         "cli_setup.py::_ensure_prerequisites",
     }

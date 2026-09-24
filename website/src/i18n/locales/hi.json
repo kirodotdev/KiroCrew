@@ -6921,6 +6921,7 @@
       "setup": "सेटअप",
       "setup_check_unavailable": "सेटअप जाँच उपलब्ध नहीं",
       "sign_in_again_to_continue": "जारी रखने के लिए फिर से साइन इन करें।",
+      "sign_in_bundled_hint": "दोनों कमांड डेस्कटॉप ऐप का Kiro CLI इस्तेमाल करते हैं।",
       "sign_in_method_note": "दोनों साइन-इन पूरा करने के लिए ब्राउज़र खोलते हैं। वही चुनें जो तुम्हारे प्लान से मेल खाता हो — साइन-इन पेज पर व्यक्तिगत Builder ID संगठन के SSO के साथ ही दिखती है, और Builder ID में कम मॉडल शामिल होते हैं।",
       "sign_in_personal_label": "व्यक्तिगत खाता — Builder ID, Google या GitHub",
       "sign_in_required": "साइन इन आवश्यक",

@@ -1937,11 +1937,14 @@ def _kiro_cli_signed_in() -> bool | None:
     kiro-cli row above already reports the install, and "not signed in" would send
     someone to ``kiro-cli login`` before there is a ``kiro-cli`` to run it.
     """
-    if not shutil.which(KIRO_CLI_BIN):
+    binary = resolve_kiro_cli()
+    if not binary:
         return None
+    # The same binary the gateway spawns: the desktop app's bundled copy ranks
+    # above PATH, so ``shutil.which`` could name a copy no session runs.
     try:
         result = subprocess.run(  # noqa: S603 - argv list, no shell, local binary
-            [KIRO_CLI_BIN, "whoami"],
+            [binary, "whoami"],
             capture_output=True,
             timeout=10,
             **UTF8_TEXT,
@@ -4719,7 +4722,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # reported as a real optional backend -- present or absent -- rather than only
     # when it happens to be installed. The verdict comes from the same owner the
     # dashboard asks, so doctor and the panel cannot disagree.
-    kiro = shutil.which(KIRO_CLI_BIN)
+    # Resolved the way the gateway resolves it -- KIROCREW_KIRO_BIN, then the
+    # desktop app's bundled copy, then the known install dirs, then PATH -- so
+    # this row names the binary a session actually spawns. ``shutil.which`` would
+    # name the user's own install on a bundled app, which is not the one running.
+    kiro = resolve_kiro_cli()
     if kiro:
         print(f"  kiro-cli:    ✅ {kiro}")
         _doctor_headless_auth(issues)
@@ -5439,7 +5446,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     print("\nConnectivity")
     if kiro:
         kiro_result = subprocess.run(
-            [KIRO_CLI_BIN, "--version"],
+            [kiro, "--version"],
             capture_output=True,
             text=True,
             encoding="utf-8",

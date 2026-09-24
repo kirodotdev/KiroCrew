@@ -2411,6 +2411,7 @@
       "run_kirocrew_doctor_on_the_gateway_host_for_a_ful": "Run this on the gateway host for a full prerequisite report, including which sandbox step failed.",
       "sandbox_unavailable": "Sandbox unavailable",
       "sign_in_again_to_continue": "Sign in again to continue.",
+      "sign_in_bundled_hint": "Both commands use Kiro CLI from the desktop app.",
       "sign_in_method_note": "Both open a browser to finish signing in. Pick the one that matches your plan — the sign-in page offers a personal Builder ID alongside organization SSO, and a Builder ID carries a smaller set of models.",
       "sign_in_personal_label": "Personal account — Builder ID, Google, or GitHub",
       "sign_in_required": "Sign in required",

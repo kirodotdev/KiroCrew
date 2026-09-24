@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const {
   buildGatewayEnvironment,
+  bundledKiroCliEnvironment,
   gatewayBytecodeEnvironment,
   GATEWAY_UTF8_ENV,
 } = require("../gateway-env");
@@ -91,6 +92,62 @@ test("the macOS lock is a write ban, not a redirect", () => {
     "",
     "a non-empty prefix on packaged macOS discards the shipped caches",
   );
+});
+
+test("a shipped bundled kiro-cli is exported as its directory with the update check off", () => {
+  // The backend ranks this directory above every system install but below the
+  // KIROCREW_KIRO_BIN operator override, so what the app was built against is
+  // what runs. A DIRECTORY, not the binary: the entry name is the backend's
+  // constant. KIRO_NO_AUTO_UPDATE is set here once so the whole gateway tree
+  // inherits it, rather than at every spawn site.
+  const seen = [];
+  const fakeFs = {
+    statSync(target) {
+      seen.push(target);
+      return { isDirectory: () => true };
+    },
+  };
+
+  const env = bundledKiroCliEnvironment(fakeFs, path.posix, "/Applications/KiroCrew.app/Contents/Resources");
+
+  assert.deepStrictEqual(env, {
+    KIROCREW_BUNDLED_KIRO_DIR: "/Applications/KiroCrew.app/Contents/Resources/backend-dist/kiro-cli",
+    KIRO_NO_AUTO_UPDATE: "1",
+  });
+  assert.deepStrictEqual(seen, ["/Applications/KiroCrew.app/Contents/Resources/backend-dist/kiro-cli"]);
+});
+
+test("a build without the payload exports nothing, so discovery falls through", () => {
+  // BUNDLE_KIRO_CLI=0 ships no directory; the env var must be ABSENT rather
+  // than empty, because the backend treats any set value as a directory
+  // to rank first -- and the update switch must not leak onto a user's own CLI.
+  const missing = {
+    statSync() {
+      const error = new Error("ENOENT");
+      error.code = "ENOENT";
+      throw error;
+    },
+  };
+  assert.deepStrictEqual(bundledKiroCliEnvironment(missing, path.posix, "/res"), {});
+
+  // A file at that path is not a layout the backend can use either.
+  const file = { statSync: () => ({ isDirectory: () => false }) };
+  assert.deepStrictEqual(bundledKiroCliEnvironment(file, path.posix, "/res"), {});
+});
+
+test("a source checkout has no resources path and is never probed", () => {
+  const fakeFs = {
+    statSync() {
+      throw new Error("must not stat without a resources path");
+    },
+  };
+  assert.deepStrictEqual(bundledKiroCliEnvironment(fakeFs, path.posix, undefined), {});
+  assert.deepStrictEqual(bundledKiroCliEnvironment(fakeFs, path.posix, ""), {});
+});
+
+test("the owned gateway spawn exports the bundled kiro-cli directory", () => {
+  const supervisor = fs.readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
+  assert.match(supervisor, /env:\s*buildGatewayEnvironment\(\{[\s\S]*?bundledKiroCliEnvironment\(fs, path, processObj\.resourcesPath\)/);
 });
 
 test("the one desktop gateway spawn uses the hardened environment builder", () => {

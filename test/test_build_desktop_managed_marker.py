@@ -47,11 +47,14 @@ SCRIPT = Path(__file__).parent.parent / "packaging" / "build-desktop.sh"
 def _extract_step() -> str:
     """Pull the marker handling out of the shipped script: the unconditional
     stale-marker cleanup (which sits ahead of the SKIP_ELECTRON early exit),
-    the SKIP_ELECTRON branch itself, and step 3b, up to the step-4 header."""
+    the SKIP_ELECTRON branch itself, and step 3b, up to the header of whatever
+    section follows it. The window ends at the NEXT section header rather than
+    at a named one so a step inserted between 3b and packaging (the bundled
+    kiro-cli staging, which reads ``$OS``) stays out of the extracted fragment,
+    which runs here without the script's preamble."""
     text = SCRIPT.read_text(encoding="utf-8")
     m = re.search(
-        r"(# A leftover staged marker from an earlier interrupted build.*?)"
-        r"\n# --- 4\. Package the desktop app",
+        r"(# A leftover staged marker from an earlier interrupted build.*?)" r"\n# --- (?!3b\. )",
         text,
         re.DOTALL,
     )

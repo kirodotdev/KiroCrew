@@ -7028,6 +7028,7 @@
       "setup": "Configuration",
       "setup_check_unavailable": "Vérification de la configuration indisponible",
       "sign_in_again_to_continue": "Reconnectez-vous pour continuer.",
+      "sign_in_bundled_hint": "Les deux commandes utilisent Kiro CLI depuis l’application de bureau.",
       "sign_in_method_note": "Les deux ouvrent un navigateur pour terminer la connexion. Choisissez celle qui correspond à votre forfait : la page de connexion propose une Builder ID personnelle à côté du SSO de l'organisation, et une Builder ID donne accès à moins de modèles.",
       "sign_in_personal_label": "Compte personnel — Builder ID, Google ou GitHub",
       "sign_in_required": "Connexion requise",

@@ -59,7 +59,7 @@ from kiro_crew.git_divergence import (
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.instances import run_marker
-from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
+from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_kiro_cli
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
 from kiro_crew.memory import MemoryStore
@@ -1857,6 +1857,11 @@ def _update(force: bool = False) -> None:
     kiro_cli_bin, unpinned_kiro_cli = pin_kiro_cli()
     if kiro_cli_bin is None and unpinned_kiro_cli:
         print(f"  ⚠️  kiro-cli update skipped: {PATH_ONLY_INSTALL_NOTE}")
+    if kiro_cli_bin is not None and is_bundled_kiro_cli(kiro_cli_bin, os.environ):
+        # The desktop app's bundled copy lives inside the signed bundle and is
+        # replaced by the app update, never in place.
+        print("  ℹ️  kiro-cli is the desktop app's bundled copy; it updates with the app")
+        kiro_cli_bin = None
     if kiro_cli_bin is not None:
         print("  🔄 kiro-cli update")
         try:

@@ -6921,6 +6921,7 @@
       "setup": "Einrichtung",
       "setup_check_unavailable": "Einrichtungsprüfung nicht verfügbar",
       "sign_in_again_to_continue": "Melden Sie sich erneut an, um fortzufahren.",
+      "sign_in_bundled_hint": "Beide Befehle verwenden Kiro CLI aus der Desktop-App.",
       "sign_in_method_note": "Beide öffnen zum Abschluss der Anmeldung einen Browser. Wählen Sie die Variante, die zu Ihrem Tarif passt — die Anmeldeseite bietet eine persönliche Builder ID neben dem Organisations-SSO an, und eine Builder ID umfasst weniger Modelle.",
       "sign_in_personal_label": "Persönliches Konto — Builder ID, Google oder GitHub",
       "sign_in_required": "Anmeldung erforderlich",

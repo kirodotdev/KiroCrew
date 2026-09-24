@@ -6814,6 +6814,7 @@
       "setup": "설정",
       "setup_check_unavailable": "설정 확인을 사용할 수 없음",
       "sign_in_again_to_continue": "계속하려면 다시 로그인하세요.",
+      "sign_in_bundled_hint": "두 명령 모두 데스크톱 앱의 Kiro CLI를 사용합니다.",
       "sign_in_method_note": "둘 다 브라우저를 열어 로그인을 완료합니다. 플랜에 맞는 방식을 선택하세요 — 로그인 페이지에서는 조직 SSO와 함께 개인용 Builder ID를 제공하며, Builder ID로 사용할 수 있는 모델은 더 적습니다.",
       "sign_in_personal_label": "개인 계정 — Builder ID, Google 또는 GitHub",
       "sign_in_required": "로그인 필요",

@@ -7028,6 +7028,7 @@
       "setup": "Configuração",
       "setup_check_unavailable": "Verificação de configuração indisponível",
       "sign_in_again_to_continue": "Entre novamente para continuar.",
+      "sign_in_bundled_hint": "Os dois comandos usam o Kiro CLI do aplicativo para desktop.",
       "sign_in_method_note": "Ambos abrem um navegador para concluir o início de sessão. Escolha o que corresponde ao seu plano: a página de início de sessão oferece uma Builder ID pessoal a par do SSO da organização, e uma Builder ID inclui menos modelos.",
       "sign_in_personal_label": "Conta pessoal — Builder ID, Google ou GitHub",
       "sign_in_required": "Login necessário",

@@ -11,7 +11,11 @@ const {
 } = require("child_process");
 
 const { findKirocrewBin } = require("./find-bin");
-const { buildGatewayEnvironment, gatewayBytecodeEnvironment } = require("./gateway-env");
+const {
+  buildGatewayEnvironment,
+  bundledKiroCliEnvironment,
+  gatewayBytecodeEnvironment,
+} = require("./gateway-env");
 const { resolveGatewayPath } = require("./mac-env");
 const {
   findMissingBundleParts,
@@ -1153,6 +1157,10 @@ function createGatewaySupervisor({
         KIROCREW_PROJECT_DIR: IS_WIN
           ? resolveProjectDir()
           : path.resolve(dirname, ".."),
+        // The kiro-cli staged into the app's resources at build time; spread
+        // only when it shipped, so an unbundled build keeps the user's own
+        // install (see gateway-env.js).
+        ...bundledKiroCliEnvironment(fs, path, processObj.resourcesPath),
         ...gatewayBytecodeEnvironment(
           processObj.platform,
           path.join(kirocrewDir, "cache", "pycache"),

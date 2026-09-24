@@ -6814,6 +6814,7 @@
       "setup": "安装设置",
       "setup_check_unavailable": "无法检查安装状态",
       "sign_in_again_to_continue": "请重新登录以继续。",
+      "sign_in_bundled_hint": "两条命令都使用桌面应用内置的 Kiro CLI。",
       "sign_in_method_note": "两者都会打开浏览器以完成登录。请选择适合你套餐的方式：登录页面将个人 Builder ID 与组织 SSO 并列显示，而 Builder ID 可用模型更少。",
       "sign_in_personal_label": "个人账户 — Builder ID、Google 或 GitHub",
       "sign_in_required": "需要重新登录",

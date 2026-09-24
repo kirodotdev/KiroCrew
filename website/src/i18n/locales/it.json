@@ -7028,6 +7028,7 @@
       "setup": "Configurazione",
       "setup_check_unavailable": "Controllo della configurazione non disponibile",
       "sign_in_again_to_continue": "Accedi di nuovo per continuare.",
+      "sign_in_bundled_hint": "Entrambi i comandi usano Kiro CLI dall’app desktop.",
       "sign_in_method_note": "Entrambi aprono un browser per completare l'accesso. Scegli quello corrispondente al tuo piano: la pagina di accesso propone una Builder ID personale accanto al SSO dell'organizzazione, e una Builder ID comprende meno modelli.",
       "sign_in_personal_label": "Account personale — Builder ID, Google o GitHub",
       "sign_in_required": "Accesso richiesto",

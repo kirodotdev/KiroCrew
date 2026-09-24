@@ -79,6 +79,94 @@ It needs only
 an Apple-Silicon host with Rosetta 2; the script fails fast with instructions
 otherwise, and `UNIVERSAL=0` is the opt-out.)
 
+### Bundled kiro-cli — the app carries its own agent runtime
+
+By default (`BUNDLE_KIRO_CLI=1`), the build stages a pinned, sha256-verified
+kiro-cli into the app's resources at `backend-dist/kiro-cli/`. On macOS and
+Linux, the staged payload is the single `kiro-cli-chat` binary, not upstream's
+layout: the `kiro-cli` launcher resolves `kiro-cli-chat` through `$HOME/.local/bin` and
+`PATH` and never through its own directory, so a bundle entered through the
+launcher would silently run whatever copy the user has installed (or fail on a
+clean machine) while still answering `--version` and `whoami` itself.
+`kiro-cli-chat` is the process every session is anyway and carries every
+subcommand the app uses. The Windows build administratively extracts the
+upstream MSI without installing it or writing PATH/registry state, then stages
+its one self-contained `kiro-cli.exe`; `kiro_cli.bundled_kiro_cli_entry` owns
+the platform split. The release is pinned in two files that travel together:
+`packaging/kiro-cli-version`
+names the version and `packaging/kiro-cli-sha256` holds the sha256 of each
+artifact the build stages (the universal macOS DMG, the two Linux gnu zips, and
+the Windows x64 MSI) in
+`sha256sum` format keyed by the artifact's release path, `<version>/<file>`.
+Upstream hosts every release under that prefix but publishes a manifest — the
+only document naming sha256s — for `latest` alone, so a pinned build fetches the
+pinned version's own artifact URL and verifies it against the committed sha: it
+never reads the mutable manifest, a hotfix rebuild of an older tag keeps working
+after upstream releases, and a version bump without matching sha lines fails
+closed with the bump procedure in the error. `build-desktop.yml` passes the pin
+explicitly so the lane log names the release it bundled; `KIRO_CLI_VERSION=latest`
+resolves the manifest instead and takes the version and sha it names, for a local
+build that wants the newest release (still sha256-verified). Bumping both files,
+after testing the app against the new release, is the whole procedure for
+shipping a newer kiro-cli ([release](release.md), step 1). On macOS the binary is
+extracted from the universal `Kiro CLI.dmg` (one Mach-O serves both arches; the
+DMG download is ~360 MB for kiro-cli 2.24); Linux uses the matching per-arch zip
+(~160 MB); Windows uses the x64 MSI (~190 MB). Downloads are cached per user
+under `~/.cache/kirocrew-build/kiro-cli`,
+so a rebuild against the same pin fetches nothing. A `BUNDLED-VERSION` file
+beside the payload records provenance; a clean-room smoke — empty `HOME`, minimal
+`PATH`, so no install on the build host can answer for the staged binary — runs
+`--version` and then one ACP `initialize` round trip over stdio, the call every
+Kiro Crew session opens with, so the lane log on each platform proves the lone
+binary is self-contained there before it is sealed into the app; and a layout
+gate refuses a payload that carries a nested `.app`/`.framework` under
+`Resources/`, which the signing manifest cannot seal per file.
+
+At runtime the Electron shell (`gateway-env.js`, `bundledKiroCliEnvironment`)
+exports the directory as `KIROCREW_BUNDLED_KIRO_DIR` when it spawns the
+gateway, and only when the directory shipped; the backend resolver
+(`kiro_cli.known_kiro_cli_dirs`) ranks it **above** any system install (the app
+was built against that exact version) but **below** the `KIROCREW_KIRO_BIN`
+operator override. That override is the escape when the pinned release must be
+swapped without waiting for an app update, and a Finder- or Dock-launched app
+does not read the user's shell profile, so it is set the way
+[macos-troubleshooting](../guides/macos-troubleshooting.md) sets `PATH` for the
+app: `launchctl setenv KIROCREW_KIRO_BIN /absolute/path/to/kiro-cli`, then
+relaunch the app (the Electron shell spawns the gateway with its own
+environment, `main.js`, so a launchd-session variable reaches the resolver); on
+Linux the equivalent is `systemctl --user set-environment` for a
+desktop-session launcher. The same ranking feeds the pinned off-`PATH` spawns
+(`pin_kiro_cli`), so the version check, the readiness probe and every ACP
+session all run the bundled copy. Beside the directory, the shell sets
+`KIRO_NO_AUTO_UPDATE=1` once for the whole gateway process tree, so every child
+that runs the bundled copy — ACP sessions, the model listing, `whoami`, the
+usage scrape, `kirocrew doctor`, the readiness probes — inherits kiro-cli's
+documented switch for its startup update check by construction, rather than
+each spawn site remembering to merge it. Upstream compiles that check for
+Windows (the upstream chat-cli crate's `cli/mod.rs` at v2.24.0 gates the
+whole block on `target_os = "windows"`; upstream's auto-update guide documents
+the variable), so it stops the bundled Windows copy from self-updating. It also
+guards upstream's stated "FUTURE: re-enable for all platforms", which would
+otherwise write into the signed, sealed bundle. Accepted side effect: a system
+kiro-cli an operator forces through `KIROCREW_KIRO_BIN` also skips the check
+while running as a child of the app (its own terminal use is unaffected), and
+the user's `app.disableAutoupdates` setting is never written. The setup gate
+serves the copy's quoted absolute path as the click-to-copy sign-in command (it
+is not on the user's shell `PATH`) with a one-line hint that the path is the
+app's built-in kiro-cli (`bundled_cli` in the status payload), and refuses the
+in-place **Update** (and the gateway auto-update's `kiro-cli update`
+step, and `kirocrew update`'s) because the copy is replaced by the next app
+update. `kiro-cli login` is still the user's own step — bundling covers the
+binary, never the credential.
+
+The payload adds one Mach-O of a few hundred MB to the macOS signing zip (about
+1 GB in total), which is what `packaging/signing/sign.sh`'s poll window is sized
+for.
+
+`BUNDLE_KIRO_CLI=0 make desktop` opts a build out (the payload is large);
+the app then detects a system kiro-cli exactly as before. The Windows installer
+grows by about 190 MB before outer installer compression.
+
 ### macOS opt-out and Linux — host-arch-only builds
 
 `UNIVERSAL=0 make desktop` (and every Linux build) produces an installer for
@@ -468,8 +556,10 @@ so a `node`-less build environment still produces a bundle (unvalidated).
 The gateway-hosted dashboard then checks both prerequisites needed by the ACP
 provider:
 
-1. It discovers `kiro-cli` in the inherited `PATH`, `~/.local/bin`,
-   `~/.cargo/bin`, Homebrew locations, or the macOS `Kiro CLI.app` bundle.
+1. It discovers the app's own bundled copy — `kiro-cli-chat` in
+   `KIROCREW_BUNDLED_KIRO_DIR`, when built with one — then `kiro-cli` on the inherited
+   `PATH`, `~/.local/bin`, `~/.cargo/bin`, Homebrew locations, or the macOS
+   `Kiro CLI.app` bundle.
 2. It verifies the first candidate selected by the shared ACP resolver with
    `kiro-cli --version`. A broken or untrusted higher-priority candidate blocks
    readiness instead of approving a later binary that ACP would not launch.

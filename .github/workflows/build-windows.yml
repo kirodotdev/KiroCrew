@@ -251,9 +251,14 @@ jobs:
       - name: Build desktop app
         # bash (Git Bash): the build script is bash, and `make` is not on the
         # Windows runner image -- the Makefile target only adds a local-dev
-        # node-bin-dir PATH nicety that CI's setup-node already covers.
+        # node-bin-dir PATH nicety that CI's setup-node already covers. Pass the
+        # pin explicitly so the log names the bundled release and the Windows MSI
+        # takes the same two-file version+sha contract as macOS/Linux.
         shell: bash
-        run: bash packaging/build-desktop.sh
+        run: |
+          KIRO_CLI_VERSION="$(tr -d '[:space:]' < packaging/kiro-cli-version)"
+          echo "Bundling kiro-cli ${KIRO_CLI_VERSION} (packaging/kiro-cli-version)"
+          KIRO_CLI_VERSION="${KIRO_CLI_VERSION}" bash packaging/build-desktop.sh
         env:
           # There is no certificate on the runner: the private key lives in the
           # signing service. Signing goes through the custom hook
