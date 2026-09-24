@@ -385,6 +385,19 @@ describe("first-download installer design contract", () => {
     );
   });
 
+  it("bundles the pinned Windows kiro-cli without installing the MSI", () => {
+    const buildScript = fs.readFileSync(
+      path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
+      "utf8"
+    );
+    assert.match(buildScript, /kiro-cli-x86_64-pc-windows-msvc\.msi/);
+    assert.match(buildScript, /msiexec\.exe \/a/);
+    assert.match(buildScript, /cp -a "\$extracted" "\$dest\/\$entry"/);
+    assert.match(buildScript, /threading\.Thread\(target=read_stdout/);
+    assert.doesNotMatch(buildScript, /select\.select/);
+    assert.doesNotMatch(buildScript, /\[ "\$OS" != "windows" \]/);
+  });
+
   it("ships the Windows startup caches generated after the platform prune", () => {
     const backendResource = pkg.build.extraResources.find(
       resource => resource.from === "backend-dist"

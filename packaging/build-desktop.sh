@@ -7,7 +7,8 @@
 #   3. pip-install kiro_crew + deps INTO the bundled interpreter
 #   4. Stage the dashboard into the package's static dir
 #   5. Prune caches/tests/unused stdlib to shrink the bundle
-#   6. Package the desktop app with electron-builder -> DMG (mac) / AppImage (linux)
+#   6. Stage a pinned, sha256-verified kiro-cli into backend-dist/kiro-cli/
+#   7. Package the desktop app with electron-builder -> DMG / AppImage / NSIS
 #
 # The result is a double-clickable app that embeds the whole Python backend +
 # dashboard — no system Python, pip, npm, or node required by the end user.
@@ -31,6 +32,7 @@
 #   UNIVERSAL=0 bash packaging/...             # macOS: host-arch-only DMG
 #   SKIP_FRONTEND=1 bash packaging/...         # reuse an already-staged dist
 #   SKIP_ELECTRON=1 bash packaging/...         # stop after the backend binary
+#   BUNDLE_KIRO_CLI=0 bash packaging/...       # ship without the bundled kiro-cli
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -890,6 +892,325 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
   trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"' EXIT
   cp "$MARKER_SRC" "$ELECTRON_DIR/EXTERNALLY-MANAGED"
   log "Baking EXTERNALLY-MANAGED marker into the app from $MARKER_SRC"
+fi
+
+# --- 3c. Bundle kiro-cli into the app resources -------------------------------
+# Stages a pinned, sha256-verified kiro-cli entry under backend-dist/kiro-cli/ so
+# the installed app carries the agent runtime it was built against: no first-run
+# download, and the KAS backend's `acp --agent-engine v3` spawn works out of the
+# box. Mirrors docker/Dockerfile's fail-closed manifest resolution.
+# On macOS/Linux that is ONE binary, the chat one, not the upstream layout.
+# The `kiro-cli` launcher
+# resolves `kiro-cli-chat` through $HOME/.local/bin and PATH and never through
+# its own directory, so a bundle entered through the launcher would run whatever
+# copy the user has installed (or fail on a clean machine) while answering
+# `--version` and `whoami` itself. `kiro-cli-chat` is the process every session
+# is anyway and carries every subcommand the app uses; the backend's
+# kiro_cli.bundled_kiro_cli_entry names it. Windows ships one self-contained
+# `kiro-cli.exe` inside its MSI, so that platform stages the executable directly.
+# Landing inside backend-dist/ means the electron-builder extraResources entry
+# and the macOS x64ArchFiles glob both cover it with zero config changes; the
+# Electron shell exports the directory as KIROCREW_BUNDLED_KIRO_DIR at gateway
+# spawn (main.js), and the backend ranks it above system installs but below the
+# KIROCREW_KIRO_BIN operator override (kiro_cli.known_kiro_cli_dirs).
+# BUNDLE_KIRO_CLI=0 opts a build out; the app then behaves exactly as an
+# unbundled build does: detect-only, the user installs kiro-cli themselves.
+#
+# Payload budget: the macOS universal DMG download is ~360 MB and each Linux zip
+# ~160 MB. The Windows MSI is ~190 MB and expands to one executable. What is
+# staged is one binary. On macOS that lands the signing zip near 1 GB;
+# packaging/signing/sign.sh's poll window and sign-and-notarize.yml's job timeout
+# are sized for that. A kiro-cli release that grows past it shows up as a signing
+# timeout, not a build error.
+KIRO_CLI_RELEASE_BASE="https://desktop-release.q.us-east-1.amazonaws.com"
+KIRO_CLI_WINDOWS_RELEASE_BASE="https://prod.download.cli.kiro.dev/stable"
+KIRO_CLI_MANIFEST_URL="$KIRO_CLI_RELEASE_BASE/latest/manifest.json"
+# The kiro-cli release this tree is built and tested against is pinned in TWO
+# files that travel together: packaging/kiro-cli-version names the version and
+# packaging/kiro-cli-sha256 holds the sha256 of each artifact the build stages
+# (the universal macOS DMG, the two Linux gnu zips, the Windows x64 MSI) in
+# sha256sum format, keyed
+# by the artifact's release path, <version>/<file> -- the manifest's own
+# download field. Upstream hosts every release under that prefix
+# (<base>/<version>/<file>) but publishes a manifest -- the only
+# document naming sha256s -- for "latest" alone, so a pinned build fetches the
+# pinned version's own artifact URL and verifies it against the committed sha:
+# it never reads the mutable manifest, and a hotfix rebuild of an older tag
+# keeps working after upstream releases. A version bump without the matching
+# sha lines fails the sha check, closed. KIRO_CLI_VERSION overrides the file
+# (the lane passes it explicitly, read from that file); the value "latest"
+# resolves the manifest instead and takes the version and sha256 it names, for
+# a local build that wants the newest release -- the bytes are sha256-verified
+# either way, so "latest" trades reproducibility, never integrity. Bumping both
+# files, after testing the app against the release, is the whole procedure for
+# shipping a newer kiro-cli (docs/build/release.md).
+KIRO_CLI_PIN_FILE="$ROOT/packaging/kiro-cli-version"
+KIRO_CLI_SHA_FILE="$ROOT/packaging/kiro-cli-sha256"
+KIRO_CLI_VERSION="${KIRO_CLI_VERSION:-$(tr -d '[:space:]' < "$KIRO_CLI_PIN_FILE")}"
+
+# Layout gate for the staged copy. packaging/signing/generate-manifest.py signs
+# every loose Mach-O under Contents/Resources per file, but FAILS the sign on a
+# nested bundle there (the suffixes below mirror its _BUNDLE_SUFFIXES): bundles
+# need bundle-level signing that per-file entries cannot express. Catching that
+# here turns a nightly signing failure into a build error the developer sees.
+#   $1 = staged kiro-cli dir
+kiro_cli_layout_gate() {
+  local dest="$1" nested
+  nested="$(find "$dest" -type d \( -name '*.app' -o -name '*.framework' -o -name '*.appex' \
+    -o -name '*.xpc' -o -name '*.bundle' -o -name '*.plugin' \) -print -quit 2>/dev/null)"
+  if [ -n "$nested" ]; then
+    echo "ERROR: bundled kiro-cli carries a nested bundle the signer cannot seal per-file:" >&2
+    echo "       $nested" >&2
+    exit 1
+  fi
+}
+
+# sha256 of one pinned artifact, read from KIRO_CLI_SHA_FILE (sha256sum
+# format, "<sha>  <version>/<file>"; the name may carry a space). Prints
+# nothing when the file has no line for it, which the caller fails closed on.
+pinned_kiro_cli_sha() {
+  awk -v want="$1" '{ name = $0; sub(/^[0-9a-f]+[ \t]+/, "", name)
+    if (name == want) { print $1; exit } }' "$KIRO_CLI_SHA_FILE"
+}
+
+# sha256 check that runs on both build hosts (macOS ships shasum, Linux
+# sha256sum); true when the file hashes to the expected digest.
+kiro_cli_sha_ok() {
+  local want="$1" path="$2" got
+  if command -v sha256sum >/dev/null 2>&1; then
+    got="$(sha256sum "$path" | cut -d' ' -f1)"
+  else
+    got="$(shasum -a 256 "$path" | cut -d' ' -f1)"
+  fi
+  [ "$got" = "$want" ]
+}
+
+fetch_kiro_cli() {
+  local dest="$ELECTRON_DIR/backend-dist/kiro-cli"
+  # Per-user download cache for the archive (and the manifest, when "latest"
+  # resolves it), so a rebuild against the same pin fetches nothing.
+  local cache="$HOME/.cache/kirocrew-build/kiro-cli"
+  local entry="kiro-cli-chat" release_base="$KIRO_CLI_RELEASE_BASE"
+  mkdir -p "$cache"
+
+  # The one artifact this host stages: the universal DMG on macOS (upstream
+  # publishes no per-arch zips there), the per-arch gnu zip on Linux, selected
+  # exactly as docker/Dockerfile does (matching architecture, musl excluded),
+  # or the x64 MSI on Windows.
+  local karch file
+  karch="$HOST_ARCH"
+  [ "$karch" = "arm64" ] && karch="aarch64"
+  if [ "$OS" = "darwin" ]; then
+    file="Kiro CLI.dmg"
+  elif [ "$OS" = "windows" ]; then
+    if [ "$karch" != "x86_64" ]; then
+      echo "ERROR: upstream publishes no Windows kiro-cli MSI for $karch" >&2
+      exit 1
+    fi
+    file="kiro-cli-x86_64-pc-windows-msvc.msi"
+    entry="kiro-cli.exe"
+    release_base="$KIRO_CLI_WINDOWS_RELEASE_BASE"
+  else
+    file="kirocli-$karch-linux.zip"
+  fi
+
+  local version sha
+  if [ "$KIRO_CLI_VERSION" = "latest" ]; then
+    log "Resolving kiro-cli from the release manifest (KIRO_CLI_VERSION=latest)…"
+    curl --proto '=https' --tlsv1.2 -fsSL "$KIRO_CLI_MANIFEST_URL" \
+      -o "$cache/manifest.json"
+    # The manifest's download field is "<version>/<file>", the key the sha
+    # file uses too, so both modes converge on one URL below. Paths reach
+    # Python via argv, never string splicing.
+    local resolved
+    resolved="$(python3 -c 'import json,sys
+m = json.load(open(sys.argv[1]))
+want = sys.argv[2]
+p = next(x for x in m["packages"] if x["download"].split("/", 1)[1] == want)
+print(m["version"])
+print(p["sha256"])' "$cache/manifest.json" "$file")"
+    version="$(printf '%s\n' "$resolved" | sed -n 1p)"
+    sha="$(printf '%s\n' "$resolved" | sed -n 2p)"
+  else
+    version="$KIRO_CLI_VERSION"
+    sha="$(pinned_kiro_cli_sha "$version/$file")"
+    if [ -z "$sha" ]; then
+      echo "ERROR: $KIRO_CLI_SHA_FILE names no sha256 for '$version/$file'" >&2
+      echo "       Pin the release in both files: the version in $KIRO_CLI_PIN_FILE," >&2
+      echo "       each artifact's sha256 from its manifest in $KIRO_CLI_SHA_FILE" >&2
+      echo "       (docs/build/release.md), or build with KIRO_CLI_VERSION=latest." >&2
+      exit 1
+    fi
+  fi
+  echo "    kiro-cli version: $version ($file)"
+
+  # The file name contains a space ("Kiro CLI.dmg"), so the URL path is
+  # percent-encoded. The archive is verified against the sha fail-closed
+  # before anything is extracted; a cached copy that no longer matches is
+  # fetched again.
+  local dl archive
+  dl="$version/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$file")"
+  archive="$cache/$version-$file"
+  if [ ! -f "$archive" ] || ! kiro_cli_sha_ok "$sha" "$archive"; then
+    curl --proto '=https' --tlsv1.2 -fsSL "$release_base/$dl" -o "$archive"
+    kiro_cli_sha_ok "$sha" "$archive" \
+      || { echo "ERROR: kiro-cli sha256 mismatch for $file: refusing to bundle" >&2; exit 1; }
+  fi
+
+  if [ "$OS" = "darwin" ]; then
+    # Extract the chat binary from the mounted app. One copy serves both
+    # backend trees: the Mach-O is already lipo'd universal.
+    local mnt
+    mnt="$(mktemp -d)"
+    hdiutil attach "$archive" -nobrowse -readonly -mountpoint "$mnt" >/dev/null
+    mkdir -p "$dest"
+    # Only the chat binary (see the section comment): the launcher, kiro-cli-term,
+    # q and qchat are never executed by the app and the launcher would resolve to
+    # a user install.
+    cp -a "$mnt/Kiro CLI.app/Contents/MacOS/$entry" "$dest/$entry"
+    hdiutil detach "$mnt" >/dev/null
+    rmdir "$mnt" 2>/dev/null || true
+  elif [ "$OS" = "windows" ]; then
+    # Administrative extraction lays out the MSI payload without installing it:
+    # no PATH or registry writes, and no dependency on a pre-existing kiro-cli.
+    # The verified 2.24.0 MSI has no custom actions and carries one executable.
+    local tmp archive_win tmp_win extracted
+    tmp="$(mktemp -d)"
+    archive_win="$(cygpath -w "$archive")"
+    tmp_win="$(cygpath -w "$tmp")"
+    MSYS2_ARG_CONV_EXCL='*' msiexec.exe /a "$archive_win" /qn "TARGETDIR=$tmp_win"
+    extracted="$(find "$tmp" -type f -iname "$entry" -print -quit)"
+    if [ -z "$extracted" ]; then
+      rm -rf "$tmp"
+      echo "ERROR: Windows kiro-cli MSI contains no $entry" >&2
+      exit 1
+    fi
+    if [ "$(find "$tmp" -type f -iname "$entry" | wc -l | tr -d '[:space:]')" != "1" ]; then
+      rm -rf "$tmp"
+      echo "ERROR: Windows kiro-cli MSI contains more than one $entry" >&2
+      exit 1
+    fi
+    mkdir -p "$dest"
+    cp -a "$extracted" "$dest/$entry"
+    rm -rf "$tmp"
+  else
+    local tmp
+    tmp="$(mktemp -d)"
+    unzip -q "$archive" -d "$tmp"
+    mkdir -p "$dest"
+    # Only the chat binary, for the reason the section comment gives.
+    cp -a "$tmp/kirocli/bin/$entry" "$dest/$entry"
+    rm -rf "$tmp"
+  fi
+
+  kiro_cli_layout_gate "$dest"
+
+  # Record provenance beside the payload, mirroring the Docker image's
+  # /usr/local/share/kirocrew/kiro-cli-version audit file.
+  printf '%s\n' "$version" > "$dest/BUNDLED-VERSION"
+  # Build-time gate: the staged copy must actually run on this host class, in a
+  # clean room -- empty HOME, minimal PATH -- so no user install on the build
+  # machine can answer for it (the launcher used to pass this gate that way).
+  # Two probes: `--version`, then one ACP `initialize` round trip over stdio,
+  # the call every Kiro Crew session opens with. A binary that answers it here,
+  # alone in its directory, is self-contained on THIS platform, which is the
+  # premise the resolver rests on when it hands sessions exactly this file.
+  # Enforced on EVERY platform: the Linux zip is selected by the build host's
+  # own architecture (karch=HOST_ARCH), so the binary is always executable here
+  # and a failure means a broken artifact, not a cross-arch limitation. Windows
+  # keeps the runner's system-tool PATH: ACP startup may invoke Windows helpers
+  # outside System32. The explicit staged executable and empty profile still
+  # prevent an installed kiro-cli from answering either probe.
+  local clean_home clean_path probe_binary
+  clean_home="$(mktemp -d)"
+  clean_path="/usr/bin:/bin"
+  probe_binary="$dest/$entry"
+  if [ "$OS" = "windows" ]; then
+    clean_path="$PATH"
+    # Native Python does not perform Git Bash's MSYS path conversion.
+    probe_binary="$(cygpath -w "$probe_binary")"
+  fi
+  if ! HOME="$clean_home" USERPROFILE="$clean_home" PATH="$clean_path" \
+    "$dest/$entry" --version >/dev/null 2>&1; then
+    rm -rf "$clean_home"
+    echo "ERROR: staged kiro-cli does not execute" >&2; exit 1
+  fi
+  if ! python3 - "$probe_binary" "$clean_home" <<'PY'
+import json, os, queue, subprocess, sys, threading, time
+binary, home = sys.argv[1], sys.argv[2]
+request = json.dumps({
+    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+    "params": {"protocolVersion": 1, "clientCapabilities": {}},
+}).encode() + b"\n"
+# stdin stays open until the reply lands: the agent exits on EOF before
+# answering, so a write-then-close would read as a broken binary.
+proc = subprocess.Popen(
+    [binary, "acp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    env=(
+        {
+            **os.environ,
+            "HOME": home,
+            "USERPROFILE": home,
+            "PATH": os.environ.get("PATH", ""),
+        }
+        if os.name == "nt"
+        else {"HOME": home, "PATH": "/usr/bin:/bin"}
+    ),
+)
+proc.stdin.write(request)
+proc.stdin.flush()
+# Windows select() accepts sockets only, not subprocess pipes. A reader thread
+# gives every host the same bounded wait without closing stdin before the reply.
+lines = queue.Queue()
+def read_stdout():
+    while True:
+        line = proc.stdout.readline()
+        lines.put(line)
+        if not line:
+            return
+threading.Thread(target=read_stdout, daemon=True).start()
+deadline = time.monotonic() + 120
+answered = None
+while answered is None and time.monotonic() < deadline:
+    try:
+        remaining = max(0.0, deadline - time.monotonic())
+        line = lines.get(timeout=min(1.0, remaining))
+    except queue.Empty:
+        if proc.poll() is not None:
+            break
+        continue
+    if not line:
+        break
+    sys.stderr.write(line.decode(errors="replace"))
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(msg, dict) and msg.get("id") == 1 and "result" in msg:
+        answered = msg
+proc.stdin.close()
+try:
+    proc.wait(timeout=10)
+except subprocess.TimeoutExpired:
+    proc.kill()
+if answered is None:
+    sys.exit("ERROR: staged kiro-cli did not answer ACP initialize within 120s")
+print("    acp initialize: answered (protocolVersion "
+      f"{answered['result'].get('protocolVersion')})")
+PY
+  then
+    rm -rf "$clean_home"
+    exit 1
+  fi
+  rm -rf "$clean_home"
+  echo "    staged kiro-cli $version -> backend-dist/kiro-cli/ ($(du -sh "$dest" 2>/dev/null | cut -f1))"
+}
+
+if [ "${BUNDLE_KIRO_CLI:-1}" = "1" ]; then
+  fetch_kiro_cli
+else
+  log "BUNDLE_KIRO_CLI=0: app ships without a bundled kiro-cli"
 fi
 
 # --- 4. Package the desktop app with electron-builder -----------------------

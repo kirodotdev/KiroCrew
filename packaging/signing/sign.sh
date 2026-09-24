@@ -27,7 +27,7 @@
 #   2 — packaging failed
 #   3 — upload failed
 #   4 — signing request failed
-#   5 — signing timed out (>15 min)
+#   5 — signing timed out (>45 min)
 #   6 — verification failed
 set -euo pipefail
 
@@ -157,9 +157,13 @@ SIGN_TASK_ID=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(s
 log "Sign task submitted: ${SIGN_TASK_ID}"
 
 # ── 4. Poll for completion ──────────────────────────────────────────────────
-log "Polling for completion (timeout: 15 min)..."
+log "Polling for completion (timeout: 45 min)..."
 
-MAX_WAIT=900  # 15 minutes
+# Sized for a GB-scale payload: the mac zip carries the bundled kiro-cli on top
+# of the two backend trees, and the signing service's turnaround grows with the
+# payload. The sign job's timeout-minutes in sign-and-notarize.yml leaves room
+# for the upload ahead of this poll.
+MAX_WAIT=2700  # 45 minutes
 POLL_INTERVAL=30
 ELAPSED=0
 SIGNED_OK=0

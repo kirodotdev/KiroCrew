@@ -180,6 +180,22 @@ code.
      `release/X.Y` before the RC is cut. Rebuilt stable bytes already carry the
      bare stamp, but insider, legacy promoted installs, and the byte-reuse escape
      hatch still depend on the display contract.
+   - *Bundled kiro-cli pin*: compare `packaging/kiro-cli-version` with the
+     version the release manifest names today
+     (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
+     and decide whether to bump it — after testing the app against the newer
+     release, never blind. A bump is two files in one commit: the version in
+     `packaging/kiro-cli-version`, and in `packaging/kiro-cli-sha256` the
+     manifest's `sha256` for each staged artifact (`<version>/Kiro CLI.dmg`,
+     `<version>/kirocli-x86_64-linux.zip`, `<version>/kirocli-aarch64-linux.zip`,
+     and `<version>/kiro-cli-x86_64-pc-windows-msvc.msi`) as
+     `<sha>  <version>/<file>` lines, replacing the previous version's. A
+     version bump without its sha lines FAILS the desktop build lane with that
+     procedure in the error, never by shipping unverified bytes. A stale pin is
+     not a build failure: the pinned artifact stays downloadable under its own
+     version prefix, which is also why a hotfix rebuild of an older tag keeps
+     working after upstream releases. See [desktop-app](desktop-app.md) "Bundled
+     kiro-cli".
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
    `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
    non-bare-release `##` headings; no `### Contributors` (the GitHub Release
@@ -483,7 +499,7 @@ version derivation and `uses:` calls.
    `*-mac.zip`, and submits it to CDSigner with a manifest generated at sign
    time from the actual bundle contents by
    `packaging/signing/generate-manifest.py`. `packaging/signing/sign.sh` polls
-   every 30s with a 15-minute ceiling. `awscurl` is installed **before** AWS
+   every 30s with a 45-minute ceiling. `awscurl` is installed **before** AWS
    credentials are configured, so a drifted release of it can never observe the
    signing credentials.
 2. **notarize** (macos-15). `packaging/signing/notarize.sh` submits and polls

@@ -196,7 +196,7 @@ from kiro_crew.heartbeat import (
 )
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, HooksConfig, hooks_config_from_config_dict
-from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
+from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_kiro_cli
 from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
@@ -13314,6 +13314,16 @@ class GatewayOrchestrator:
             # skipped like any absent backend, which this step already treats as
             # non-fatal.
             kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
+            # The desktop app's bundled copy is skipped too: it sits inside the
+            # signed app bundle, where an in-place self-update would break the
+            # codesign seal, and the app update is what replaces it. Checked
+            # against the live environment because that is where the Electron
+            # shell publishes the bundled directory.
+            if kiro_cli_bin is not None and is_bundled_kiro_cli(kiro_cli_bin, os.environ):
+                logger.debug(
+                    "Auto-update: kiro-cli is the app's bundled copy, not updated in place"
+                )
+                kiro_cli_bin = None
             if kiro_cli_bin is not None:
                 kiro_update: asyncio.subprocess.Process | None = None
                 try:

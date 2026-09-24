@@ -264,7 +264,7 @@ generic scan rejection. The known trigger is macOS tar metadata: `bsdtar` embeds
 probe matrix (vary the manifest and the input tarball independently) before
 blaming the manifest.
 
-**Signing times out.** `sign.sh` polls for 15 minutes (`MAX_WAIT`, 30s interval)
+**Signing times out.** `sign.sh` polls for 45 minutes (`MAX_WAIT`, 30s interval)
 and gates on the explicit `success` status flag rather than elapsed time, so a
 success arriving on the final tick is not misread as a timeout. Exit code 5 is a
 genuine timeout and carries the sign-task id.

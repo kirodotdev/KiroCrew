@@ -120,7 +120,9 @@ jobs:
     name: Sign with signing service (${{ inputs.channel }})
     if: ${{ !inputs.promote }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Upload of a ~1 GB zip plus sign.sh's 45-minute poll window (MAX_WAIT)
+    # must both fit; the notarize job keeps its own budget.
+    timeout-minutes: 60
     # OIDC subject alignment: tag-triggered callers (release.yml) present
     # ref:refs/tags/<tag>, which the signing role does not trust. The prod
     # environment switches the subject to environment:prod, which it does.

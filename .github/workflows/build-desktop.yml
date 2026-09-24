@@ -224,7 +224,15 @@ jobs:
         # Makefile target, which only adds a local-dev node-bin-dir PATH
         # nicety that CI's setup-node already covers.
         shell: bash
-        run: bash packaging/build-desktop.sh
+        # KIRO_CLI_VERSION is passed EXPLICITLY, read from the one pin file, so
+        # the lane's log names the kiro-cli release it bundled and a manifest that
+        # moved past the pin fails this step instead of shipping an untested CLI
+        # inside the signed app (the same fail-closed gate publish-docker.yml
+        # drives through docker/Dockerfile's KIRO_CLI_VERSION).
+        run: |
+          KIRO_CLI_VERSION="$(tr -d '[:space:]' < packaging/kiro-cli-version)"
+          echo "Bundling kiro-cli ${KIRO_CLI_VERSION} (packaging/kiro-cli-version)"
+          KIRO_CLI_VERSION="${KIRO_CLI_VERSION}" bash packaging/build-desktop.sh
         env:
           # Unsigned here by design: the signing service signs the .app downstream in
           # sign-and-notarize.yml. Local certificate discovery must stay off.
