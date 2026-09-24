@@ -125,14 +125,145 @@ splitting a surrogate pair or dropping an unspaced CJK prefix just because a
 later Latin word contains a space. Durable meeting transcript storage is unchanged.
 Manual release and an automatic capture stop share the composer's stop protection:
 they freeze the release caret and disarm semantic submission while results drain.
+A slot change also abandons a start still parked on the permission dialog: the engine
+discards that session itself, but the composer's own re-entrancy latch is released by
+the start promise's settle, which nothing delivers while the dialog is open, so the
+latch and the microphone claim it took are dropped on the switch instead of holding
+every later press hostage to a session the user has left.
 The drain keeps a way out of its own: Escape discards the released utterance,
 releases the single-microphone claim and disarms the late result, so a wait behind
-a cold model is a wait and not a locked composer. `useVoiceInput` reports that
-window as `draining`, apart from the transcription flag it is folded into, because
+a cold model is a wait and not a locked composer. A SEND reached during that same
+window disarms it too: the ordinary send refuses while an utterance is in flight,
+but a follow-up chip does not, and the send clears the snapshot the late-write
+guard reads -- so without disarming over the whole window the recogniser's final
+would be spliced into a composer that has already sent, at the offset the release
+froze. That disarm belongs to a send that CONSUMES the composer. An option answer
+carries its own text and leaves the draft, its attachments and the dictation still in
+it untouched -- every other decision in those sends already keys on that -- so ending
+the dictation there would throw away a cold drain's close-time final, which in that
+shape is the only copy of an utterance nobody asked to abandon. It also takes the dictated run
+back out of the draft, identified by the span the write occupied rather than by
+what that text says: a wait this long is typed into, and a phrase that merely
+reads like the dictation is not the dictation. The span is RECORDED when the write
+happens rather than reconstructed at the discard: the insertion point is
+deliberately rebased once the release has happened, so a later derivation would
+read a caret that did not produce the write, report that nothing was displaced, and
+rebuild a value the composer never held. What a dictation displaces it displaces
+once, on its first write, so the consumed selection is carried forward while the
+run's offsets follow each correction. The far-side separator is not carried with it:
+it belongs to whichever write actually put it in the composer, so a write that
+rebuilt the value from the snapshot reports its own -- which a correction between
+scripts that differ on needing one changes -- while a correction spliced ahead of the
+live tail reports the earlier write's, because the tail it kept is where that
+separator already sits.
+`locateDictationSpan` re-derives the offset through whatever the user has edited
+since -- everything between the written value's and the current
+value's common prefix and suffix is that edit, so an edit wholly on either side of
+the span leaves the span itself intact and its new offset follows by arithmetic.
+Which side the edit fell on is not always decidable, and five shapes make it so. Two
+are insertions that touch the span, one on each side, and they are the same doubt read
+twice. The near one ends exactly where the span lands: the user's own characters run
+up against the run, so their typing having continued THROUGH it explains the pair just
+as well -- replacing a dictated `plan` with `new plan` leaves what typing `new ` in
+front of it leaves, and under that reading the `plan` in the composer is theirs, so
+taking it deletes a word they authored. The far one begins exactly where the span ends:
+the typing could have started a character earlier and rewritten the run's own tail, so
+selecting a dictated `plan` and typing `planet` leaves exactly what typing `et` after it
+leaves, and under that second reading those letters are the user's too. A deletion is
+not in doubt the same way,
+having put no characters in, and neither is an insertion with unchanged text between
+it and the span, which would have to be two edits to reach it. Another is that the
+walk finds a single alignment where several explain the same pair:
+a dictated phrase repeating a word the draft goes on to repeat lets the prefix run
+THROUGH the span, so deleting the first copy reads as an edit past the span's end
+while it was made in front of it, and the span reads whole at an offset where only
+part of it survives -- taking it would delete what the user authored. The boundary
+is therefore slid toward the span for as long as the pair still explains itself,
+and the span is called intact only when the furthest reading agrees. An insertion
+repeating the run's own characters makes both readings produce the same string, so
+BOTH candidate offsets are checked and two holding offsets answer no-match. A run written up against an identical copy of itself -- what dictating a
+word the draft already continues with produces -- is worse: deleting the machine's
+copy and deleting the user's own leave the same value, so the neighbour slides into
+the run's offsets and passes the identity check. That one is decided on the written
+value alone, because no reading of the current value can separate them, and the
+copy is looked for past the whitespace after the span rather than at its edge: the
+separator the splice added behind the run sits there, so a window measured from
+`span.end` reads one character off the copy it is looking for. The copy has to END
+where the word does -- a following word that merely starts with the run is not a
+copy of it, and its two deletions differ. Whether an untouched value is spared the
+question depends on what the discard has to REINSERT, not on the edit: the two
+deletions do agree, but the displaced word goes back at the offset the removal came
+from, so once something was displaced the two copies are not interchangeable. A
+value that still reads as written is no proof the run is where it was put either --
+an edit that lands back on the same bytes leaves no trace -- so only a run that
+displaced nothing is spared, on the strength of the two deletions agreeing. Only the far side
+needs a rule. A copy the draft held BEFORE the span is identical to the run, so deleting
+it leaves a value whose common prefix with the written one runs past the deletion
+into the surviving copy, and the arithmetic then places the edit on neither side and
+refuses by itself. An edit
+that reaches into the span, a span whose text no longer sits at the
+offset, and either undecidable shape all leave the composer untouched: a residue is
+a cost the user can see and fix, and deleting authored text is not. The removal
+gives back the selection the write consumed, because dictating over selected words
+deletes them, and the separator the write added on its far side where that
+separator is still there.
+One shape defeats every reading of the values, and it is answered by OBSERVING the
+user's edits rather than inferring them. Delete the dictated run and retype it byte
+for byte at the same offset, and the pair the locator is handed is identical to one
+nobody edited: it places the run and removes characters the user authored, through a
+programmatic write that native undo does not reverse. So each host reports its own
+edits to the composer as it commits them -- in the change handler where it already
+syncs its own composer mirror, which is the one place that sees the value before and
+after -- and `userEditTouchesRun` answers whether that edit reached the run, which
+the write record then remembers. The region between the pair's common prefix and
+suffix is where the change lies under every reading, so no caret is reported and no
+alignment is chosen: a caret read later is gone the first time the user clicks. A
+zero-width insertion at either edge of the run is not a touch -- typing in front of
+it or after it leaves the run's own characters alone, and those two shapes are the
+locator's to judge, which it does by refusing whenever they are ambiguous. An
+insertion strictly inside is. The setter the hook writes through IS that same change
+handler, so the hook's own writes are skipped by depth; otherwise a correction
+replacing the run would report itself as a touch and every corrected dictation would
+lose its discard. The touch is carried across the corrections that follow it, which
+costs a residue where a rebuild had already made those characters the machine's
+again, because the value cannot show which of the two write paths ran and the other
+one keeps what the user typed.
+The removal is also conditioned on a dictation still being in flight. The record
+outlives the utterance that wrote it -- once partials own the region the close-time
+final is suppressed before the clear -- and a discard can arrive with nothing
+running, from a push-to-talk whose start was refused; by then those characters are
+the accepted transcript. A send clears the record for the same reason it bumps the
+composer epoch: the run those offsets describe is no longer in the composer.
+`useVoiceInput` reports that window as `draining`, apart from the transcription
+flag it is folded into, because
 only a streaming drain still holds the audio a discard can throw away. The discard
 is also the only gesture the window accepts: the microphone button picks its action
 from whether capture is live, so during the drain it would open a second dictation
-rather than end the pending one.
+rather than end the pending one. Switching the composer to another session discards
+a streaming dictation outright, whether capture is still live or the utterance is
+already released: the switch drops the streaming final one step earlier, so a
+commit delivers nothing and a session left running holds the microphone and
+refuses dictation in every slot with no surface able to release it -- the drain's
+exit belongs to the composer that owns the capture. The switch also takes the run
+back out of the draft it leaves behind, through the same locator the Escape discard
+uses and before the record describing it is cleared: that draft is persisted, so a
+discard that only ended the session would leave the abandoned speech in it with the
+words the write spoke over still deleted. The locator's own refusal is what makes
+that safe wherever the host has already swapped the composer to the incoming slot's
+draft. For the rolled-back value to be the one PERSISTED, this discard runs in a LAYOUT
+effect and each host's change handler syncs its own mirror as it sets the state. One
+host parks the outgoing slot's draft in a layout effect of its own, and layout effects
+run children first, so that phase is the only one in which the rollback lands before
+the park reads the composer; the other host persists in a passive effect keyed on the
+composer state, which does not re-run in the switch commit. Either way the park reads
+a mirror, so a value still queued as state would be written to the draft store as its
+pre-discard self. A switch landing before the capture has even started is the same state
+reached one step earlier -- ownership is
+assigned only once `start` resolves -- so the startup abort discards too rather than
+stopping into a drain no composer owns. A batch capture is still
+committed by the switch, and a batch transcription already in flight is left to
+finish: one blob reaches the transcriber and its single final is routed back to
+the slot that dictated it.
 Late final corrections preserve text the user types after capture has stopped.
 Every actual capture end, including a fatal server frame, synchronously fires
 the composer's once-only capture-stop protection before deferred socket-close

@@ -2387,8 +2387,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
     // Sending while STREAMING dictation is live ends the dictation (see
     // `useComposerVoice.disarmForSend` for the full rationale — streaming only,
-    // batch keeps capturing and lands its transcript when the user stops).
-    if (!isolated) composerRef.current?.voice()?.disarmForSend()
+    // batch keeps capturing and lands its transcript when the user stops). Gated on
+    // `!optionText` as well, the same predicate every other decision here uses for
+    // "does this send consume the composer": an option answer leaves the draft and
+    // the dictation in it alone, so ending the dictation would discard a cold
+    // drain's close-time final, which is the only copy of that utterance.
+    if (!isolated && !optionText) composerRef.current?.voice()?.disarmForSend()
 
     // The session actually on screen at send time. Read from the ref (fresh
     // every render), not the closure `activeSlot` (stale until send() is
@@ -7557,7 +7561,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 ref={composerRef}
                 slotKey={activeSlot}
                 value={input}
-                onChange={v => { clearFollowUpOwnership(); setInput(v) }}
+                // The mirror is synced HERE, not only in the effect keyed on `input`:
+                // the outgoing-slot persist below reads `inputRef.current` during the
+                // same effect flush in which a child may have just changed the
+                // composer, and a value that is still queued as state would be
+                // persisted as its pre-change self. `voiceDeliverOffScreen` carries the
+                // same guard by hand for the cross-slot case.
+                //
+                // The edit is also reported to the voice atom, which is the only place
+                // that can tell a deletion-then-identical-retyping of a dictated run
+                // from a run nobody touched: both leave the same pair of values, so
+                // provenance has to be observed as it happens. The atom's own writes
+                // come through this same handler -- it is the setter it was given --
+                // and are skipped there.
+                onChange={v => {
+                  clearFollowUpOwnership()
+                  const before = inputRef.current
+                  inputRef.current = v
+                  composerRef.current?.voice()?.noteComposerEdit(before, v)
+                  setInput(v)
+                }}
                 voice={composerVoiceOptions}
               >
               <ChatInput
