@@ -29,12 +29,14 @@
  * treatment `voiceTranscribeActive` already gives a transcription in flight
  * (which is global through the inbox, see voiceTranscriptInbox).
  */
-import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { i18nT } from '../../i18n/t'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { providerLabel } from '../../lib/sttProviders'
-import { dictationSeparator, spliceDictationText } from '../../lib/dictationText'
+import {
+  dictationSeparator, dictationSpliceSpan, locateDictationSpan, spliceDictationText,
+} from '../../lib/dictationText'
 import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../../hooks/useVoiceInput'
 import { usePushToTalk } from '../../hooks/usePushToTalk'
 import { redeliverPending } from '../../hooks/voiceTranscriptInbox'
@@ -174,6 +176,17 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // the final that replaces it) keeps inserting at the same spot. The batch
   // path leaves both null and reads the LIVE composer caret instead.
   const frozenCaretRef = useRef<{ start: number; end: number } | null>(null)
+  // What the live dictated write actually put in the composer, recorded AT the
+  // write. A discard cannot re-derive this afterwards: `rebaseFrozenCaret`
+  // deliberately moves the frozen caret once the endpoint is disarmed, so a
+  // later derivation would read an insertion point that did not produce the
+  // write, lose the selection it consumed, and rebuild a value that was never in
+  // the composer. Written wherever the composer is written, cleared wherever
+  // `frozenInputRef` is.
+  const dictatedWriteRef = useRef<{
+    written: string
+    span: { start: number; end: number; text: string; trail: string; replaced: string }
+  } | null>(null)
   // Live composer caret, kept current by ChatInput (onSelect / click / typing).
   // Dictation splices the transcript in HERE instead of always appending at end.
   const ownCaretRef = useRef<{ start: number; end: number } | null>(null)
@@ -409,6 +422,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       }
     }
     frozenInputRef.current = null
+    dictatedWriteRef.current = null
     lastDictationAnchorRef.current = null
     lastDictationValueRef.current = null
     postStopEditedRef.current = false
@@ -460,7 +474,12 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       frozenCaretRef.current = frozenCaretRef.current ?? voiceCaretRef.current
     }
     rebaseFrozenCaret()
-    const spliced = spliceDictation(frozenInputRef.current ?? '', text)
+    // ONE caret, read once and handed to both derivations, so the value written
+    // and the span recorded for it cannot come from different insertion points.
+    const caretForWrite = frozenCaretRef.current ?? voiceCaretRef.current
+    const base = frozenInputRef.current ?? ''
+    const spliced = spliceDictationText(base, text, caretForWrite)
+    const writeSpan = dictationSpliceSpan(base, text, caretForWrite)
     // Everything up to and including the dictated insertion. What follows it
     // in the composer (an existing tail, and anything typed after release) is
     // carried across untouched rather than rebuilt from the snapshot.
@@ -470,6 +489,10 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // region (the ordinary "we own the composer" case); the post-stop branch
     // overrides it when the text is the user's to steer.
     let caretTarget: number | null = spliced.caret
+    // Whether this write kept the composer's existing tail instead of rebuilding
+    // it from the snapshot. The separator that follows the run belongs to the
+    // write that put it there, and only a rebuild puts its own one in.
+    let keptLiveTail = false
     if (sttEndpointDisarmedRef.current) {
       // POST-STOP DRAIN. The user has let go, so as far as they are concerned
       // dictation is over and they may already be typing — at the restored
@@ -514,6 +537,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       if (prev !== null) {
         if (!cur.startsWith(prev)) return
         next = anchor + cur.slice(prev.length)
+        keptLiveTail = true
         if (postStopEditedRef.current) {
           // Their caret is in their own text, so it must not be dragged to the
           // end of the dictation — but NOT arming it is not "leaving it
@@ -538,7 +562,31 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     }
     lastDictationAnchorRef.current = anchor
     lastDictationValueRef.current = next
-  }, [spliceDictation, rebaseFrozenCaret, inputRef, setInput, voiceCaretRef, voicePendingCaretRef])
+    // The run sits at the same offsets in every branch, because `anchor` is a
+    // prefix of both the plain write and the correction spliced ahead of the live
+    // tail. Recorded against `next`, the value the composer now holds.
+    //
+    // `replaced` always comes from the FIRST write of this dictation: a selection
+    // is consumed once, and by a later partial the insertion point has been
+    // rebased to a point, so re-reading it here would report that nothing was
+    // displaced and the discard would keep the user's overwritten word deleted.
+    //
+    // `trail` follows whichever write actually put the separator in the composer,
+    // which is not the same question. A write that rebuilt the value from the
+    // snapshot carries ITS separator, so a correction from a script that needs
+    // none to one that does changes it. A correction spliced ahead of the live
+    // tail carries none of its own -- the tail it kept already holds the earlier
+    // write's -- so there the first write's answer is still the composer's.
+    const first = dictatedWriteRef.current
+    dictatedWriteRef.current = writeSpan && {
+      written: next,
+      span: {
+        ...writeSpan,
+        ...(first ? { replaced: first.span.replaced } : {}),
+        ...(first && keptLiveTail ? { trail: first.span.trail } : {}),
+      },
+    }
+  }, [rebaseFrozenCaret, inputRef, setInput, voiceCaretRef, voicePendingCaretRef])
   // Semantic endpointing (stt.endpointing) judged the utterance complete:
   // auto-submit. The composer already holds the streamed transcript via
   // onPartial, and the host's send reads its composer + stops the live capture
@@ -643,6 +691,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // finals — otherwise onPartial sees a non-null ref, skips
     // re-snapshotting, and text typed between sessions is dropped.
     frozenInputRef.current = null
+    dictatedWriteRef.current = null
     lastDictationAnchorRef.current = null
     lastDictationValueRef.current = null
     postStopEditedRef.current = false
@@ -675,64 +724,90 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   }, [voice.recording, startVoice, stopVoice])
   // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
   // pending audio (the hook's onstop skips transcription), so nothing lands in
-  // the composer. Streaming additionally disarms the draining final AND removes
-  // the live dictated region from the composer at the frozenInputRef boundary:
-  // the region is recomputed with the same `spliceDictation` call onPartial used
-  // (so it matches a mid-draft caret splice, not just an append), and we drop
-  // exactly that region — preserving the pre-dictation text verbatim (including
-  // its own trailing whitespace) AND any suffix typed after the dictation. When
-  // the region can't be verified (the user replaced/edited it), leave the
-  // composer unchanged rather than restoring the snapshot and losing that edit.
+  // the composer. Streaming additionally disarms the draining final AND takes the
+  // live dictated run back out of the composer: the write is recomputed with the
+  // same `spliceDictation` call onPartial used (so it matches a mid-draft caret
+  // splice, not just an append), and the run is identified by the SPAN that write
+  // occupied — re-derived through the user's own edits so typing on either side
+  // of it still resolves, and abandoned where an edit reached into it. That
+  // preserves the pre-dictation text verbatim, including a selection the write
+  // consumed and its own trailing whitespace, plus anything typed around the run.
+  // Where the span cannot be established, leave the composer unchanged rather
+  // than guess at which characters were spoken.
   // Uses voiceRef.current (not `voice`) so this prop stays referentially stable
   // and does not re-render the composer every render — matching toggleVoice.
+  /** Take the dictated run back out of the composer, leaving everything else --
+   *  the pre-dictation text with its own whitespace, and whatever the user typed
+   *  around the run -- exactly as it is.
+   *
+   *  Both discards need this: Escape in the composer that owns the capture, and a
+   *  session switch, which abandons the utterance just as squarely and persists
+   *  the draft it wrote into. Sharing one implementation is what keeps the two
+   *  from disagreeing about which characters were spoken. */
+  const takeBackDictatedRun = useCallback(() => {
+    // Remove the dictated region at the frozenInputRef boundary, preserving
+    // the pre-dictation text EXACTLY (including its own trailing whitespace)
+    // and any suffix the user typed after the dictation. onPartial rebuilt the
+    // composer as `frozen [+ ' ' separator] + partial`, so reconstruct that
+    // exact region and drop only it — never a blanket trailing-space strip.
+    const cur = inputRef.current ?? ''
+    // Only a LIVE dictation has a run to take back. The record outlives the
+    // utterance that wrote it -- a close-time final is suppressed once partials
+    // own the region, so it returns before the clear -- and a cancel can arrive
+    // with nothing in flight, from a push-to-talk whose start was refused. The
+    // characters are the user's transcript by then, already accepted.
+    const live = voiceRef.current.recording || voiceRef.current.draining
+    const write = live ? dictatedWriteRef.current : null
+    if (!write) return
+    // Identify the run by WHERE it was written, never by what it says. The
+    // user may edit their draft throughout a wait that runs minutes -- the
+    // locator survives typing on either side of the run by re-deriving its
+    // offset -- but a phrase that merely reads like the dictation is not the
+    // dictation, and a match on text alone deletes the user's own words once
+    // they have edited or removed the run themselves. Where the offset cannot
+    // be established UNIQUELY the composer is left exactly as it is: a
+    // residue is a visible cost the user can fix, and deleting authored text
+    // is not. That refusal is also what makes this safe to call from the
+    // session-switch path, where the draft on the way out may already have been
+    // swapped for the one belonging to the slot switched to.
+    const { written, span } = write
+    const at = locateDictationSpan(written, cur, span)
+    if (at === -1) return
+    const runEnd = at + span.text.length
+    // The separator the write added on the far side goes with it, but only
+    // where it is still there: a later correction keeps the live tail
+    // instead of rebuilding it, so that separator belongs to an earlier
+    // write and may already have been typed over.
+    const sep = span.trail && cur.startsWith(span.trail, runEnd) ? span.trail.length : 0
+    // Give back what the write consumed as well as what it added:
+    // dictating over a selection deletes those characters, so dropping the
+    // span alone would leave a draft the user never wrote.
+    setInput(cur.slice(0, at) + span.replaced + cur.slice(runEnd + sep))
+  }, [inputRef, setInput])
+  // Held in a ref so the session-switch effect can reach it without listing it:
+  // the callback's identity follows the host's `setInput`, which a host is free to
+  // recreate every render, and an effect that discards a dictation must fire on a
+  // SESSION change and nothing else.
+  const takeBackRef = useRef(takeBackDictatedRun)
+  useEffect(() => { takeBackRef.current = takeBackDictatedRun }, [takeBackDictatedRun])
   const cancelVoice = useCallback(() => {
     if (streamEnabledRef.current) {
       sttDisarmedRef.current = true
-      // Remove the dictated region at the frozenInputRef boundary, preserving
-      // the pre-dictation text EXACTLY (including its own trailing whitespace)
-      // and any suffix the user typed after the dictation. onPartial rebuilt the
-      // composer as `frozen [+ ' ' separator] + partial`, so reconstruct that
-      // exact region and drop only it — never a blanket trailing-space strip.
-      const cur = inputRef.current ?? ''
-      const frozen = frozenInputRef.current
-      const p = voiceRef.current.partial
-      if (frozen !== null && p) {
-        // Reconstruct the composer value through the SAME pure function that
-        // wrote it. onPartial splices at the snapshotted caret, so for a
-        // mid-draft caret the value is `before + lead + partial + trail + after`
-        // — NOT `frozen + separator + partial`. Re-deriving the region with an
-        // append-only formula failed `startsWith` for every mid-draft dictation
-        // and fell through to the leave-unchanged branch, stranding the partial
-        // in the draft. spliceDictation reads the same frozen caret, so this
-        // reproduces the write exactly for both the append and mid-caret shapes.
-        const written = spliceDictation(frozen, p).value
-        if (cur.startsWith(written)) {
-          // The composer still begins with exactly the region onPartial wrote.
-          // Restore the pre-dictation text verbatim and keep any suffix the user
-          // typed after it.
-          setInput(frozen + cur.slice(written.length))
-        }
-        // else: the dictated region can't be verified exactly — the user edited
-        // or replaced it (e.g. deleted the separator, or typed their own text
-        // that merely ends in the same word as the partial). Leave the composer
-        // UNCHANGED: a suffix-match heuristic here would delete user-authored
-        // text ("say hello" -> "say"). The disarm above still drops the draining
-        // final, so no dictation is committed; at worst the visible partial
-        // lingers for the user to clear.
-      }
+      takeBackDictatedRun()
       // (frozen===null, or no current partial: nothing verifiably removable —
       // leave the composer as-is rather than risk clobbering user text.)
       // Clear BOTH halves of the snapshot: they are written together in
       // onPartial and a surviving caret would aim the next session's first
       // splice at a position from the discarded one.
       frozenInputRef.current = null
+      dictatedWriteRef.current = null
       lastDictationAnchorRef.current = null
       lastDictationValueRef.current = null
       postStopEditedRef.current = false
       frozenCaretRef.current = null
     }
     voiceRef.current.cancel()
-  }, [spliceDictation, inputRef, setInput])
+  }, [takeBackDictatedRun])
 
   // Push-to-talk / tap-to-toggle keyboard binding (default: hold right ⌥ on
   // macOS, ⌥⇧Space elsewhere). Routed through startVoice/stopVoice rather than
@@ -765,8 +840,24 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // Clearing frozenInputRef here means a streaming final that lands after a
   // switch-and-return rebases on the LIVE input, so edits made after returning
   // are preserved rather than clobbered by a stale snapshot.
-  useEffect(() => {
+  // A LAYOUT effect, because one host parks the outgoing slot's draft in a layout
+  // effect of its own: layout effects run children first, so this is the only
+  // phase in which the rollback lands before the park reads the composer. A
+  // passive effect here would run after that park and could not reach the value
+  // already written to the draft store. The hosts' change handlers close the
+  // other half by syncing their mirror as they set the state, since a value
+  // still queued cannot be seen by either park.
+  useLayoutEffect(() => {
+    // Take the run back out of the draft on the way out FIRST, while the record
+    // that describes it is still here. A switch abandons the utterance as
+    // squarely as Escape does, and the draft it wrote into is persisted, so
+    // clearing the record before the rollback leaves the discarded speech in that
+    // draft with the words it spoke over still deleted. Safe in either order of
+    // the host's own draft swap: the locator refuses a value it cannot place the
+    // span in, so a draft already belonging to the slot switched TO is untouched.
+    if (streamEnabledRef.current) takeBackRef.current()
     frozenInputRef.current = null
+    dictatedWriteRef.current = null
     lastDictationAnchorRef.current = null
     lastDictationValueRef.current = null
     postStopEditedRef.current = false
@@ -783,13 +874,52 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // applyVoiceText. (Cross-slot streaming delivery is a follow-up; streaming
     // is opt-in and off by default.)
     if (streamEnabledRef.current) sttDisarmedRef.current = true
-    if (voiceRef.current.recording) voiceRef.current.toggle()
+    // Streaming: end the session by DISCARDING it, whether capture is still live
+    // or the utterance is already released and queued behind the recogniser. The
+    // line above has just dropped the final, so a commit delivers nothing — it
+    // only leaves the session draining with the socket, the audio and the
+    // microphone held, and `transcribing` then refuses dictation in EVERY slot
+    // until the engine's own final timeout. Nothing can release it in the
+    // meantime either: the drain's exit is Escape in the composer that owns the
+    // capture, and that composer is no longer the one on screen. The raw hook
+    // cancel, matching the toggle below: the rollback above and the clears have
+    // already done what `cancelVoice` adds on top of it, and the partial this
+    // composer now shows belongs to the slot switched TO.
+    // A start still parked on the permission dialog is abandoned too. The engine
+    // discards that session on a slot change itself, but THIS hook's re-entrancy
+    // latch is released by the start promise's own settle, and nothing settles it
+    // while the dialog stays open -- so the latch, and the microphone claim it
+    // took, would hold every later press in every composer hostage to a session
+    // the user has left. Bumping the generation is what makes releasing it safe:
+    // the abandoned start's settle can no longer clear a latch a newer press has
+    // taken. Neither flag below is set yet during a startup, which is why this
+    // cannot ride on them.
+    if (startingRef.current) {
+      startGenRef.current++
+      startingRef.current = false
+      if (micOwner === instanceId) setMicOwner(null)
+    }
+    if (streamEnabledRef.current && (voiceRef.current.recording || voiceRef.current.draining)) voiceRef.current.cancel()
+    // Batch keeps the commit: its blob is handed to the transcriber whole and its
+    // single final is routed back to the slot that dictated it, so stopping is a
+    // delivery rather than a wait nobody can end.
+    else if (voiceRef.current.recording) voiceRef.current.toggle()
     // A batch transcript that settled while no composer showed its session is
-    // held by the inbox; this composer may be that session's now. Delivery is
-    // synchronous, so the flag brackets exactly the held delivery.
-    redeliveringRef.current = true
-    try { redeliverPending() } finally { redeliveringRef.current = false }
-  }, [sessionId, voiceCaretRef])
+    // held by the inbox; this composer may be that session's now. Deferred out of
+    // the layout phase on purpose: the rollback above has to beat the host's own
+    // rebind, but this delivery must NOT. A held transcript handed over before
+    // that rebind is claimed by the session this composer is switching to while
+    // the host still believes it shows the one it is leaving, so the speech is
+    // written through the change handler into the OUTGOING slot's draft -- the
+    // mirror sync then persists it there, and it is absent from the slot that
+    // dictated it. The inbox's own subscribe path defers its hand-over for the
+    // same reason. Delivery stays synchronous inside the microtask, so the flag
+    // still brackets exactly the held delivery.
+    queueMicrotask(() => {
+      redeliveringRef.current = true
+      try { redeliverPending() } finally { redeliveringRef.current = false }
+    })
+  }, [sessionId, voiceCaretRef, instanceId])
   // True when the current voice session (owned by the slot where recording
   // actually started — see useVoiceInput's sessionOwner) is the slot on screen.
   // Gates the recording/transcribing UI so a session transcribing in the
@@ -820,13 +950,32 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // delivery already in the composer, including one whose capture finished long ago
     // and whose polish is still in flight.
     composerEpochRef.current += 1
-    if (voiceRef.current.recording && streamEnabledRef.current) {
+    // The write record goes with it, on the same grounds and for the same reason
+    // the epoch does: once the draft is sent, the run those offsets describe is
+    // gone from the composer, and a later cancel reading them would cut into
+    // whatever the user types next. Outside the recording branch because a send
+    // after the release is exactly the case the branch does not cover.
+    frozenInputRef.current = null
+    dictatedWriteRef.current = null
+    lastDictationAnchorRef.current = null
+    lastDictationValueRef.current = null
+    postStopEditedRef.current = false
+    // With the snapshot value gone, the guard that dropped a late streaming write
+    // is gone with it: that guard lives inside `prev !== null`, and a null `prev`
+    // falls through to the plain write instead. The caret must therefore go too,
+    // or the write lands at the offset the release froze -- in a composer whose
+    // draft has since been sent.
+    frozenCaretRef.current = null
+    // Armed over the same window the clears cover, because a send after the
+    // release is exactly the case the recording flag does not see: the main send
+    // refuses while the utterance is in flight, but a follow-up chip does not, so
+    // the drain's final would arrive at a composer that has already sent and be
+    // spliced in as if it were still being dictated. The capture toggle stays on
+    // `recording` alone -- toggling when nothing is being captured would START a
+    // recording, which is the opposite of ending one.
+    if (streamEnabledRef.current && (voiceRef.current.recording || voiceRef.current.draining)) {
       sttDisarmedRef.current = true
-      frozenInputRef.current = null
-      lastDictationAnchorRef.current = null
-      lastDictationValueRef.current = null
-      postStopEditedRef.current = false
-      voiceRef.current.toggle()
+      if (voiceRef.current.recording) voiceRef.current.toggle()
     }
   }, [])
 

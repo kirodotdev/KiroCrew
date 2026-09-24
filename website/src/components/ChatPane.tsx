@@ -480,6 +480,14 @@ export default function ChatPane({
   // setInput directly, not this handler, so they are unaffected.
   const handleUserInput = useCallback((next: string | ((prev: string) => string)) => {
     followUpInsertedRef.current = null
+    // The mirror is synced HERE, not only in render: the slot-rebind layout
+    // effect below parks the outgoing draft from `inputRef.current`, and a CHILD
+    // layout effect of the same commit may have just changed the composer -- the
+    // voice atom takes an abandoned dictation back out of the draft it is
+    // leaving behind. A value still queued as state would be parked as its
+    // pre-change self, so the discarded speech would come back on return with
+    // the words it spoke over still missing.
+    inputRef.current = typeof next === 'function' ? next(inputRef.current) : next
     setInput(next)
   }, [])
   // Orchestrator plan dispatch (#5893) — same mutation ChatPage uses,
@@ -905,8 +913,13 @@ export default function ChatPane({
     const text = (optionText || input).trim()
     if (!text && !pendingFiles.length) return
     // A send while STREAMING dictation is live ends the dictation, before the
-    // composer is read and cleared (see useComposerVoice.disarmForSend).
-    composerRef.current?.voice()?.disarmForSend()
+    // composer is read and cleared (see useComposerVoice.disarmForSend). Gated on
+    // the SAME predicate as the clear below, because that is what decides whether
+    // this send consumes the composer at all: an `optionText` send leaves the
+    // draft, its attachments and the dictation still in it untouched, and ending
+    // the dictation there would throw away a cold drain's close-time final -- the
+    // one copy of an utterance the user never asked to abandon.
+    if (!optionText) composerRef.current?.voice()?.disarmForSend()
     // Capture the stateless card pending at ENTRY (before any state updates
     // or yields): this send consumes the answer channel of the card the user
     // saw when they hit send. Retired only after the server confirms it

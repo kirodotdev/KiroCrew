@@ -444,6 +444,42 @@ describe('ChatPage composerSlotRef effect ordering', () => {
     expect(pasteIdx, order).toBeLessThan(advanceIdx)
   })
 
+  // Same hazard, other end: the outgoing-slot persist reads `inputRef.current`
+  // during an effect flush in which a CHILD may already have changed the composer
+  // — the voice atom's session-switch discard takes the dictated run back out of
+  // the draft it is leaving behind. A value still queued as state is invisible to
+  // that read, so the draft would be persisted as its pre-discard self and the
+  // abandoned speech would come back on return, minus the words it spoke over.
+  // The composer's onChange therefore syncs the mirror itself; the page already
+  // carries the same guard by hand in voiceDeliverOffScreen for the cross-slot
+  // case. Behaviourally unreachable here for the same reason as above: RTL
+  // flushes effects between the child's write and the parent's persist.
+  // Same rule on this host: an option answer leaves the composer, and the dictation in
+  // it, untouched -- every other decision in that send already keys on `!optionText` --
+  // so ending the dictation there would discard a cold drain's close-time final.
+  it('ends the dictation only on a send that consumes the composer', () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+    expect(
+      src.indexOf("if (!isolated && !optionText) composerRef.current?.voice()?.disarmForSend()"),
+      'the send disarm must be gated on !optionText as well as !isolated, or an option '
+      + 'answer during a cold drain throws the utterance away',
+    ).toBeGreaterThan(-1)
+  })
+
+  it('syncs the composer mirror in onChange, before the queued state update', () => {
+    // Deliberately brittle, like its sibling above: UPDATE the substring if the
+    // prop is reformatted, never delete the guard.
+    const here = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+    const eager = src.indexOf('inputRef.current = v; setInput(v)')
+    expect(
+      eager,
+      'the composer onChange must write inputRef.current before setInput, or a child-driven '
+      + 'change is persisted for the outgoing slot as its pre-change value',
+    ).toBeGreaterThan(-1)
+  })
+
   // Symptom B (send routing to the slot the user already left) can't be covered
   // behaviorally: the ref-vs-closure divergence it fixes is a same-tick race
   // between the reducer's activeSlot flip and send()'s re-memoization, and RTL

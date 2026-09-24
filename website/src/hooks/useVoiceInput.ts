@@ -398,9 +398,13 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       try {
         const started = await streamStart()
         if (started === false) return
-        // Aborted by a slot switch during startup — stop the stream rather than
-        // capture invisibly for a slot that is no longer on screen.
-        if (streamSession !== sessionIdRef.current) { streamStop(); return }
+        // Aborted by a slot switch during startup — DISCARD the stream rather
+        // than capture invisibly for a slot that is no longer on screen. Stopping
+        // it instead would open a drain nobody can end: ownership is assigned
+        // below, so at this point no composer owns the session, the drain is
+        // reported to none of them, and the transcribing flag refuses dictation
+        // in every slot until the engine's own timeout.
+        if (streamSession !== sessionIdRef.current) { streamCancel(); return }
         // Cancelled mid-startup: `cancel()` already released the latch and
         // `useStreamingStt.start()` bailed without building a socket, so there is
         // no session to own. Claiming ownership here would advertise a stream
@@ -526,7 +530,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       setError(humanizeMicError(e))
     }
     if (gen === startGenRef.current) startingRef.current = false
-  }, [streamEnabled, streamStart, streamStop, acquireWarm])
+  }, [streamEnabled, streamStart, streamCancel, acquireWarm])
 
   const stop = useCallback(() => {
     if (streamEnabled) { streamStop(); return }
