@@ -83,9 +83,11 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import (
+    DM_SCOPE_UNIFIED,
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
+    channel_namespace_of,
     rebind_conversation_location,
     release_conversation_location,
     seed_generation,
@@ -973,9 +975,16 @@ class DiscordDispatcher:
                 # persisted field: the target is only needed while the session
                 # is live, so no disk I/O and no cross-thread state land on this
                 # turn path.
-                self.sessions.set_origin_link(
-                    session_key, ChannelLink("discord", channel_id=channel_id)
-                )
+                # Skipped for a ``unified:{agent}`` bucket, the same key-based
+                # guard ``bind_origin_mirror`` applies below: ``dm_scope="unified"``
+                # collapses every allowed user's DMs into one session, so "the
+                # conversation this session is read in" has no single answer, and
+                # recording one would aim unattended output at whoever wrote
+                # last. Telegram's dispatcher guards its write the same way.
+                if channel_namespace_of(session_key) != DM_SCOPE_UNIFIED:
+                    self.sessions.set_origin_link(
+                        session_key, ChannelLink("discord", channel_id=channel_id)
+                    )
                 # Bind this conversation as the session's outbound mirror so a
                 # turn the user later takes from the dashboard is delivered back
                 # here. Slack gets this from its own per-turn thread binding;

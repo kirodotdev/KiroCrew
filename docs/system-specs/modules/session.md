@@ -2429,6 +2429,17 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   silences the courtesy note posted into the conversation and keeps the
   disconnect. That note is skipped entirely for an `origin` disconnect, since the
   mirror resolver addresses the EXPLICIT mirror — a different conversation.
+- **Neither `mirror-unlink` nor `mirror-pause` detaches a channel-born slot.** Both
+  act on the outbound mirror binding only (clear it, or mute delivery through it);
+  the slot's `linked_session_key` — the channel session its turns run on — is
+  untouched, inbound keeps routing to it, and nothing about what session control
+  or the work ledger decide for that slot changes. Those gates judge a channel-born
+  slot by `session_control.audience_is_owner`, whose one exemption is a 1:1 DM
+  whose only human is the configured owner (see
+  [session-control](session-control.md)); a thread session is refused before and
+  after either endpoint, and an owner DM is admitted before and after — a paused or
+  cleared origin mirror is still the same audience. There is no "detach from
+  channel" action: a channel conversation stays a channel conversation.
 - **Three persisted pause markers, each keyed differently.** A mute must live and
   die with the binding the user muted, so the key follows what the flag is about:
   - `slack_paused` — the Slack thread. Cleared when the binding is REBOUND

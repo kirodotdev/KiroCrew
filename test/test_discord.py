@@ -3492,9 +3492,13 @@ class TestDispatcher:
         # unified:{agent} bucket — channel and user drop out of the key — so an
         # automatic bind would deliver one user's dashboard replies into another
         # user's chat. `!link` stays available: it names the channel the user is in.
+        # The ORIGIN record is the sibling write and answers to the same rule: an
+        # origin naming whoever wrote last would aim unattended output (the
+        # auto-compact notice) at that person regardless of whose turn produced it.
         d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         await d.handle_message(self._msg("hello", user="u1"))
         assert sess.mirror_links == {}
+        assert sess.origin_links == {}
 
     @pytest.mark.asyncio
     async def test_a_thread_route_is_still_bound_under_a_unified_scope(self) -> None:

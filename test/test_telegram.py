@@ -419,6 +419,7 @@ class FakeSessions:
         self.queued: list = []
         self._gp = FakeProvider()
         self.mirror_links: dict[str, Any] = {}
+        self.origin_links: dict[str, Any] = {}
         self.inbound_keys: set[str] = set()
         self.mirror_opt_outs: set[str] = set()
         self.batch_depth = 0
@@ -498,6 +499,13 @@ class FakeSessions:
 
     def get_mirror_link(self, key: str) -> Any:
         return self.mirror_links.get(key)
+
+    def set_origin_link(self, key: str, link: Any) -> None:
+        """The in-memory origin record the dispatcher writes beside the mirror bind."""
+        self.origin_links[key] = link
+
+    def get_origin_link(self, key: str) -> Any:
+        return self.origin_links.get(key)
 
     def find_mirror_sessions(self, link: Any, *, inbound_only: bool = False) -> list[str]:
         return [
@@ -4072,6 +4080,46 @@ class TestAutomaticOriginMirror:
         self._turn(d)
         link = sess.mirror_links[d._session_key(("direct", "7"))]
         assert link == ChannelLink("telegram", channel_id="7", thread_id=None)
+
+    def test_inbound_turn_records_this_chat_as_the_origin(self) -> None:
+        # The same conversation the mirror is bound to, recorded as the session's
+        # ORIGIN: the in-memory fact unattended output about the session and the
+        # owner-DM check read. A mirror that equals it is the DM itself; one that
+        # does not is a retarget, and only this record can tell the two apart.
+        d, _cli, sess = _dispatcher({7})
+        self._turn(d)
+        key = d._session_key(("direct", "7"))
+        assert sess.origin_links[key] == ChannelLink("telegram", channel_id="7", thread_id=None)
+        assert sess.origin_links[key] == sess.mirror_links[key]
+
+    def test_forum_turn_records_the_topic_as_the_origin(self) -> None:
+        d, _cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
+        asyncio.run(
+            d.handle_message(
+                TelegramInboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="-1001234567890",
+                    text="hi",
+                    chat_type="supergroup",
+                    thread_id="5",
+                    message_id=1,
+                )
+            )
+        )
+        key = d._session_key(("forum", "-1001234567890:5"))
+        assert sess.origin_links[key] == ChannelLink(
+            "telegram", channel_id="-1001234567890", thread_id="5"
+        )
+
+    def test_a_unified_bucket_records_no_origin(self) -> None:
+        # ``dm_scope="unified"`` collapses every allowed user's DMs into one
+        # session, so "the origin conversation" has no single answer and recording
+        # one user's chat would aim unattended output at whoever wrote last.
+        d, _cli, sess = _dispatcher({7})
+        d.cfg.messaging.dm_scope = "unified"
+        self._turn(d)
+        assert sess.origin_links == {}
 
     def test_forum_turn_binds_the_topic_not_the_supergroup_general(self) -> None:
         # The bind shares _origin_mirror_link with /link, so a forum turn must

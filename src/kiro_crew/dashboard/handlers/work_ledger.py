@@ -276,7 +276,7 @@ async def _caller_key(
             "restricted_session",
             "The work ledger is not available in this session mode.",
         )
-    if is_channel_session_key(sk) or _reaches_a_channel(request, sk):
+    if why := _contained_channel_caller(request, sk):
         # Containment for channel agents, held HERE rather than only in
         # ``channel.CHANNEL_AGENT_BLOCKED_TOOLS``. That list is matched against a
         # rendered permission request (``channel.py``'s ``EVENT_PERMISSION_REQUEST``
@@ -287,23 +287,57 @@ async def _caller_key(
         # the block alone is not sufficient for them and the refusal has to be
         # server-side, where no spec and no client can route around it.
         #
-        # Nothing reachable is lost. A conductor cannot be a channel session:
-        # ``session_control._refuse_ineligible_creator`` refuses a channel-bound
-        # caller, so such a session can never dispatch a worker and never owns
-        # items. And a worker is dispatched BY ``session_create``, which mints a
-        # dashboard slot — never a channel key. So a channel caller here is either
-        # a misconfiguration or the containment case. The same holds for a
-        # dashboard-BORN session that was later given an outbound mirror: its key
-        # looks local while every turn is republished to Slack or Telegram, so the
-        # key alone is not the test — see :func:`_reaches_a_channel`.
+        # Nothing reachable is lost. A channel caller that is not the owner's own
+        # DM cannot be a conductor: ``session_control._refuse_ineligible_creator``
+        # refuses it by the same predicate, so such a session can never dispatch
+        # a worker and never owns items. And a worker is dispatched BY
+        # ``session_create``, which mints a dashboard slot — never a channel key.
+        # So a channel caller refused here is either a misconfiguration or the
+        # containment case. The same holds for a dashboard-BORN session that was
+        # later given an outbound mirror: its key looks local while every turn is
+        # republished to Slack or Telegram, so the key alone is not the test — see
+        # :func:`_reaches_a_channel`. The reason rides along so the caller reads
+        # the same clause session control would name for it.
         _audit(sk, operation, "denied", resources="channel_agent_block")
         return None, _refuse_403(
             "channel_session",
             "The work ledger is not reachable from a channel session. A channel "
             "agent has no dispatch relationship: it can neither create the worker "
-            "sessions a conductor binds nor be one.",
+            "sessions a conductor binds nor be one. The owner-DM exemption is "
+            f"withheld because {why}.",
         )
     return session_ledger.ledger_key(sk), None
+
+
+def _contained_channel_caller(request: web.Request, sk: str) -> str:
+    """Why *sk*'s turns reach a channel audience the ledger must stay out of; ``""`` if not.
+
+    Two mechanisms reach a channel -- a channel-BORN key, and a dashboard-born
+    session given an outbound mirror (:func:`_reaches_a_channel`) -- and one
+    exemption applies to both: ``session_control.session_audience_is_owner``, a
+    1:1 DM whose only human is the configured owner and whose mirror (if any) is
+    that same DM. It is the SAME predicate the session-control gates consult, over
+    the slot ``caller_slot_key`` resolves, so a session this gate admits is one
+    ``session_create`` admits as a conductor and vice versa -- the two cannot
+    disagree about a slot. Fails CLOSED with the predicate: an unreadable roster
+    or store, an unknown origin conversation, or a key no open slot answers to all
+    read as contained. The string is the predicate's own reason
+    (``session_control.session_owner_dm_refusal``), so the ledger and session
+    control tell the caller the same thing.
+
+    Consulted on entry AND re-checked after every read the routes await across,
+    because the exemption rests on live state -- a mirror retargeted at a thread
+    while the ledger was being read widens the audience exactly as a mirror gained
+    by a dashboard session does.
+    """
+    if not (is_channel_session_key(sk) or _reaches_a_channel(request, sk)):
+        return ""
+    state: DashboardState = request.app["state"]
+    try:
+        return session_control.session_owner_dm_refusal(state, sk)
+    except Exception:  # pragma: no cover - the predicate fails closed itself
+        logger.debug("owner-DM check failed for %s", sk, exc_info=True)
+        return "the owner-DM check could not be completed"
 
 
 def _reaches_a_channel(request: web.Request, sk: str) -> bool:
@@ -409,13 +443,13 @@ async def api_work_brief(request: web.Request) -> web.Response:
         if dirty is not None:
             return dirty
         brief = await asyncio.to_thread(work_ledger.read_work_brief, conductor_key, item_id)
-    if _reaches_a_channel(request, request.headers.get("X-Session-Key", "")):
+    if why := _contained_channel_caller(request, request.headers.get("X-Session-Key", "")):
         # Re-checked AFTER the await, immediately before the data would be
-        # returned. An outbound mirror can be added at any moment, so containment
-        # decided on entry says nothing about containment now — the same reason
-        # ``session_control`` applies ``_refuse_ineligible_creator`` twice, once on
-        # entry and again just before it allocates. A brief carries a private
-        # dispatch's acceptance bar, and a mirrored reply publishes it.
+        # returned. An outbound mirror can be added or retargeted at any moment,
+        # so containment decided on entry says nothing about containment now — the
+        # same reason ``session_control`` applies ``_refuse_ineligible_creator``
+        # twice, once on entry and again just before it allocates. A brief carries
+        # a private dispatch's acceptance bar, and a mirrored reply publishes it.
         _audit(
             request.headers.get("X-Session-Key", "") or "anonymous",
             "work_brief",
@@ -424,8 +458,8 @@ async def api_work_brief(request: web.Request) -> web.Response:
         )
         return _refuse_403(
             "channel_session",
-            "This session gained a channel mirror while the brief was being read, "
-            "so it is no longer a private surface to return it to.",
+            "This session stopped being a private surface while the brief was being "
+            f"read, so it is no longer one to return it to: {why}.",
         )
     if brief is None:
         # The binding names an item that is gone or unreadable. 404 on the ITEM,
@@ -1080,7 +1114,7 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         row["events"] = [event.to_dict() for event in events]
         rows.append(row)
 
-    if _reaches_a_channel(request, request.headers.get("X-Session-Key", "")):
+    if why := _contained_channel_caller(request, request.headers.get("X-Session-Key", "")):
         # Same post-await re-check as ``work_brief``. This payload is larger: every
         # item's acceptance bar plus worker-authored prose for the whole fleet.
         _audit(
@@ -1091,8 +1125,8 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         )
         return _refuse_403(
             "channel_session",
-            "This session gained a channel mirror while the ledger was being read, "
-            "so it is no longer a private surface to return it to.",
+            "This session stopped being a private surface while the ledger was being "
+            f"read, so it is no longer one to return it to: {why}.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
     return web.json_response(
@@ -1555,8 +1589,18 @@ def _refuse_unowned_worker(
             "That worker session has already been bound to a work item. A session "
             "is dispatched for one item; create a new session for this one.",
         )
+    # ``session_create`` stamps ``_created_by`` with the creator's SLOT key, while
+    # this route addresses the conductor by its SESSION key. For a dashboard
+    # session both fold to one spelling (``chat-X``), but a channel-born conductor
+    # -- an owner's own DM -- is keyed ``discord:…:genN`` while its slot is that key
+    # folded to the filename charset, so a string comparison would refuse every
+    # worker such a conductor ever created. Resolve the conductor's slot the way
+    # session control identifies every caller (``caller_slot_key``), and fall back
+    # to the ledger spelling only when no open slot answers to the key, which is
+    # what a dashboard conductor without a live tab has always compared as.
+    conductor_slot_key = session_control.caller_slot_key(state, conductor_key) or conductor_key
     creator = session_ledger.ledger_key(str(getattr(slot, "_created_by", "") or ""))
-    if creator != conductor_key:
+    if creator != session_ledger.ledger_key(conductor_slot_key):
         _audit(
             conductor_key,
             "work_ledger_record",
@@ -1571,7 +1615,7 @@ def _refuse_unowned_worker(
             "dispatched.",
         )
     conductor_slot = None
-    for candidate in (conductor_key, f"dashboard_{conductor_key}"):
+    for candidate in (conductor_slot_key, conductor_key, f"dashboard_{conductor_key}"):
         try:
             conductor_slot = state.get_slot(candidate)
         except Exception:  # pragma: no cover

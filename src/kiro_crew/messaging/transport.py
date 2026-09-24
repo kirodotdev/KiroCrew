@@ -7,8 +7,16 @@ and cycle-free.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
+
+#: The ``configured_targets()`` prefix every transport gives a DIRECT (1:1)
+#: conversation: ``user:<identity>``. A ``thread:`` or room target is a different
+#: audience and is never the owner's DM. Spelled once, here, because two readers
+#: infer "the owner" from it (:func:`sole_direct_target`'s callers) and a second
+#: spelling would let them disagree about which targets are direct at all.
+DM_TARGET_PREFIX = "user:"
 
 
 @dataclass(frozen=True)
@@ -28,6 +36,33 @@ class ConfiguredChannelTarget:
             "available": self.available,
             "unavailable_reason": self.unavailable_reason,
         }
+
+
+def sole_direct_target(targets: Iterable[Any]) -> str:
+    """The ONE available direct target id among *targets*, or ``""``.
+
+    The single rule by which a channel NAMES its owner. No channel carries an
+    owner field the way Slack's ``owner_id`` does, and an allow-list is a list of
+    people permitted to talk to the agent rather than a claim that any of them is
+    the operator — so an owner can only be inferred, and this refuses to infer one
+    from an ambiguous list: a target is returned only when the channel advertises
+    exactly one available ``user:`` target. Unavailable targets (WeCom may only
+    reply to an inbound message) and thread or room targets (a wider audience than
+    a DM) are not candidates.
+
+    Shared by the proactive owner DM (``send_message``'s channel ``session``) and
+    by session control's owner-DM audience predicate, so the two cannot disagree
+    about who the owner of a channel is. Reads only the neutral target shape, so a
+    caller may hand it a transport's live ``configured_targets()`` list or any
+    duck-typed equivalent.
+    """
+    direct = [
+        str(getattr(target, "target_id", "") or "")
+        for target in targets
+        if str(getattr(target, "target_id", "") or "").startswith(DM_TARGET_PREFIX)
+        and getattr(target, "available", False)
+    ]
+    return direct[0] if len(direct) == 1 else ""
 
 
 @dataclass

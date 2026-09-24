@@ -76,9 +76,11 @@ from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
+    DM_SCOPE_UNIFIED,
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
+    channel_namespace_of,
     parse_session_key,
     rebind_conversation_location,
     release_conversation_location,
@@ -1173,7 +1175,19 @@ class TelegramDispatcher:
                 await self.sessions.set_channel(session_key, channel_id)
             if resumed_key is None:
                 # A resumed dashboard session already owns its surface and binding.
-                # Reassert only Telegram's native conversation mirror.
+                # Reassert only Telegram's native conversation mirror -- and record
+                # that conversation as the session's ORIGIN, the in-memory fact the
+                # dashboard reads for unattended output about the session and for
+                # session control's owner-DM check (a DM whose mirror IS its own
+                # conversation is one audience; a mirror aimed anywhere else is not,
+                # and only the recorded origin can tell the two apart). Discord's
+                # dispatcher writes both on the same turn for the same reasons.
+                # The same key-based unified guard ``bind_origin_mirror`` applies:
+                # a ``unified:{agent}`` bucket collapses every user's DMs into one
+                # session, so it has no single origin to record.
+                setter = getattr(self.sessions, "set_origin_link", None)
+                if setter is not None and channel_namespace_of(session_key) != DM_SCOPE_UNIFIED:
+                    setter(session_key, self._origin_mirror_link(route, chat_id))
                 self._bind_origin_mirror(session_key, route, chat_id)
             # ── Attachment ingestion (mirrors Discord) ──
             if msg.attachments:
