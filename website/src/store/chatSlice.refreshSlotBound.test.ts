@@ -8,9 +8,13 @@
  *  the user had paged back through.
  *
  *  The bound is therefore COUNT-MATCHED — at least as many rows as the view
- *  already holds — and these tests assert the `limit` argument that reaches
- *  `api.chatSlotDetail`, not merely the resulting state: the argument is the fix,
- *  and a state assertion alone would still pass if the bound were dropped.
+ *  already holds, clamped to the handler's ceiling — and a window that does not
+ *  reach the view is extended OLDER one clamp-sized page at a time
+ *  (`walkWindowBackTo`) rather than re-read whole. These tests assert the
+ *  `limit` argument that reaches `api.chatSlotDetail`, not merely the resulting
+ *  state: the argument is the fix, and a state assertion alone would still pass
+ *  if the bound were dropped. `undefined` -- the handler's read-everything
+ *  shape -- must never appear in that list.
  *
  *  The `warmSlotCache` half of #4690 was already bounded by #3240 and is not
  *  touched here; `chatSlice.warmSlotCacheBound.test.ts` owns it.
@@ -104,6 +108,17 @@ function pagedBack(held: number) {
 const limits = () =>
   (api.chatSlotDetail as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(c => c[1])
 
+/** The shape of a window that had to WALK: one count-matched page, then only
+ *  clamp-sized older pages. Never the handler's read-everything shape
+ *  (`undefined`), which is the argument this file exists to keep out. */
+function expectWalkedFrom(first: number) {
+  const sent = limits()
+  expect(sent[0]).toBe(first)
+  expect(sent.length).toBeGreaterThan(1)
+  expect(sent.slice(1)).toEqual(sent.slice(1).map(() => SERVER_CLAMP))
+  expect(sent).not.toContain(undefined)
+}
+
 describe('refreshSlot count-matched bound', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -165,9 +180,11 @@ describe('refreshSlot count-matched bound', () => {
       .toEqual({ limit: TOTAL, hasMore: false, oldest: 0 })
   })
 
-  it('stays unbounded above the handler ceiling rather than come back short', async () => {
+  it('clamps to the handler ceiling and keeps the rows above the page', async () => {
     // The handler clamps `limit` to 500, so a count-matched request above it
-    // would be answered with 500 rows — a shrink of the very view it matched.
+    // would be answered SHORT of the view it matched. Ask for exactly the
+    // ceiling instead: the page's oldest row is in the view, so the reducer
+    // keeps the 120 rows above it and nothing shrinks -- one request, bounded.
     HISTORY = rows(REFRESH_LIMIT_CEILING + 120)
     const store = makeStore({
       messages: HISTORY.slice(),
@@ -175,18 +192,24 @@ describe('refreshSlot count-matched bound', () => {
       slotCursorKey: SLOT,
     })
     await store.dispatch(refreshSlot(SLOT) as never)
-    expect(limits()).toEqual([undefined])
+    expect(limits()).toEqual([REFRESH_LIMIT_CEILING])
     expect(store.getState().chat.messages).toHaveLength(REFRESH_LIMIT_CEILING + 120)
+    expect(store.getState().chat.messages[0].content).toBe('m0')
     expect(REFRESH_LIMIT_CEILING).toBe(SERVER_CLAMP)
   })
 
-  it('stays unbounded when the view holds nothing to count-match against', async () => {
+  it('asks for the floor when the view holds nothing to count-match against', async () => {
     // A refresh on an empty view (reconnect after clearMessages, a refresh
-    // racing slot activation) is the client's only read of that transcript.
+    // racing slot activation) has no scrollback to protect, so it takes one
+    // page and hands `loadOlderMessages` the cursor for the rest.
     const store = makeStore({ messages: [] })
     await store.dispatch(refreshSlot(SLOT) as never)
-    expect(limits()).toEqual([undefined])
-    expect(store.getState().chat.messages).toHaveLength(TOTAL)
+    expect(limits()).toEqual([PANE_HYDRATE_LIMIT])
+    const after = store.getState().chat
+    expect(after.messages).toHaveLength(PANE_HYDRATE_LIMIT)
+    expect(after.messages.at(-1)?.content).toBe(`m${TOTAL - 1}`)
+    expect({ hasMore: after.slotHasMore, oldest: after.slotOldestIndex })
+      .toEqual({ hasMore: true, oldest: TOTAL - PANE_HYDRATE_LIMIT })
   })
 
   it('count-matches a STREAMING view too, since the handler collapses before it slices', async () => {
@@ -249,7 +272,7 @@ describe('refreshSlot count-matched bound', () => {
         .toEqual({ hasMore: false, oldest: 0 })
     })
 
-    it('refetches unbounded when the gap slid the page CLEAR of the view', async () => {
+    it('walks older when the gap slid the page CLEAR of the view', async () => {
       // The server gained more rows than the view holds, so the most-recent-N page
       // and the view are fully disjoint: the page carries no row the reducer can
       // cut at, and a wholesale assignment would drop the entire loaded window.
@@ -260,8 +283,8 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      // First the count-matched request, then the unbounded retry.
-      expect(limits()).toEqual([held, undefined])
+      // First the count-matched request, then the walk older in clamp-sized pages.
+      expectWalkedFrom(held)
       const after = store.getState().chat
       expect(after.messages).toHaveLength(TOTAL + held + 20)
       expect(after.messages[0].content).toBe('m0')
@@ -270,7 +293,7 @@ describe('refreshSlot count-matched bound', () => {
       expect(after.slotHasMore).toBe(false)
     })
 
-    it('does not bound at all when the view carries no server row identity', async () => {
+    it('walks to the start when the view carries no server row identity', async () => {
       // `olderHeadAbovePage` cuts on `meta.mid` only (two rows can share a `ts`, so a
       // ts match can cut at the wrong row) and declines without one. A view of rows
       // carrying none has a server span of zero, so there is no count to match and
@@ -280,7 +303,7 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      expect(limits()).toEqual([undefined])
+      expectWalkedFrom(PANE_HYDRATE_LIMIT)
       expect(store.getState().chat.messages).toHaveLength(TOTAL)
     })
 
@@ -374,10 +397,10 @@ describe('refreshSlot count-matched bound', () => {
         .toEqual({ hasMore: false, oldest: 0 })
     })
 
-    it('retries unbounded when a mixed-history page slides clear of the identified rows', async () => {
+    it('walks older when a mixed-history page slides clear of the identified rows', async () => {
       // The same mixed shape, but the server also gained more rows than the view's
       // identified span — so the page overlaps neither the legacy prefix nor the
-      // identified rows, and only the unbounded refetch can preserve the window.
+      // identified rows, and only walking older can preserve the window.
       const legacy = rows(20).map(({ meta: _meta, ...rest }) => rest) as typeof HISTORY
       const identified = rows(180, 20)
       HISTORY = [...legacy, ...identified]
@@ -390,7 +413,7 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      expect(limits()).toEqual([180, undefined])
+      expectWalkedFrom(180)
       const after = store.getState().chat
       expect(after.messages).toHaveLength(400)
       expect(after.messages[0].content).toBe('m0')
@@ -421,8 +444,8 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      // Declined the ambiguous anchor and refetched unbounded instead of trusting it.
-      expect(limits()).toEqual([held, undefined])
+      // Declined the ambiguous anchor and walked older instead of trusting it.
+      expectWalkedFrom(held)
       const after = store.getState().chat
       expect(after.messages).toHaveLength(TOTAL)
       expect(after.messages[0].content).toBe('m0')
@@ -446,7 +469,7 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      expect(limits()).toEqual([held, undefined])
+      expectWalkedFrom(held)
       expect(store.getState().chat.messages).toHaveLength(TOTAL)
     })
 
@@ -496,17 +519,20 @@ describe('refreshSlot count-matched bound', () => {
       await store.dispatch(refreshSlot(SLOT) as never)
 
       // Declined at the thunk, so the reducer never sees a page it cannot cut.
-      expect(limits()).toEqual([held, undefined])
+      expectWalkedFrom(held)
       const after = store.getState().chat
       expect(after.messages).toHaveLength(TOTAL)
       expect(after.messages[0].content).toBe('m0')
     })
 
-    it('refetches unbounded when no row carries a ts, losing nothing', async () => {
-      // The thunk asks for the STRICT form, so a corpus with no `ts` anywhere cannot
-      // anchor and it refetches unbounded. That is the safe direction here -- the cost
-      // is one round trip. The reducer's own cut uses the lenient form for the opposite
-      // reason, pinned in chatSlice.boundedRefetchShrink.test.ts.
+    it('takes a ts-less anchor at the reducer\'s own rule, without a wider read', async () => {
+      // The thunk's strict check declines a corpus with no `ts` anywhere, and the
+      // walk then judges the SAME page by the rule the reducer will apply -- which
+      // accepts two ts-less rows that do not contradict each other (pinned in
+      // chatSlice.boundedRefetchShrink.test.ts). The page IS the view, so the
+      // reducer's cut keeps everything and no older page is needed: one request,
+      // nothing lost. Walking to the start here would re-read a legacy transcript
+      // on every refresh, which is the cost this file exists to remove.
       const held = 180
       const oldest = TOTAL - held
       const stripTs = (r: Row) => {
@@ -523,10 +549,13 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      expect(limits()).toEqual([held, undefined])
+      expect(limits()).toEqual([held])
       const after = store.getState().chat
-      expect(after.messages).toHaveLength(TOTAL)
-      expect(after.messages[0].content).toBe('m0')
+      expect(after.messages).toHaveLength(held)
+      expect(after.messages[0].content).toBe(`m${oldest}`)
+      expect(after.messages.at(-1)?.content).toBe(`m${TOTAL - 1}`)
+      expect({ hasMore: after.slotHasMore, oldestIndex: after.slotOldestIndex })
+        .toEqual({ hasMore: true, oldestIndex: oldest })
     })
   })
 
@@ -550,7 +579,7 @@ describe('refreshSlot count-matched bound', () => {
         return rest as Row
       })
 
-    it('refreshes unbounded when the floor would reach past the identified rows', async () => {
+    it('walks older when the floor would reach past the identified rows', async () => {
       // 20 identified rows, so the floor asks for 50 -- a page holding all 20 AND 30
       // older legacy rows. The span check passes on the oldest identified row while the
       // page's OWN oldest row carries no id, so the cut keeps nothing and a 300-row
@@ -567,7 +596,7 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      expect(limits()).toEqual([undefined])
+      expectWalkedFrom(PANE_HYDRATE_LIMIT)
       const after = store.getState().chat.messages
       expect(after).toHaveLength(TOTAL)
       expect(after[0].content).toBe('m0')
@@ -590,7 +619,7 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      expect(limits()).toEqual([undefined])
+      expectWalkedFrom(PANE_HYDRATE_LIMIT)
       expect(store.getState().chat.messages).toHaveLength(TOTAL)
     })
 
@@ -698,7 +727,7 @@ describe('refreshSlot count-matched bound', () => {
       await store.dispatch(refreshSlot(SLOT) as never)
 
       // held is 20, so the floor genuinely over-requests and the guard fires.
-      expect(limits()).toEqual([undefined])
+      expectWalkedFrom(PANE_HYDRATE_LIMIT)
       const after = store.getState().chat.messages
       expect(after.filter(m => m.role !== 'permission')).toHaveLength(TOTAL)
     })
@@ -733,7 +762,7 @@ describe('refreshSlot count-matched bound', () => {
       expect(oldest).toBeGreaterThan(0)
     })
 
-    it('refetches unbounded when the arriving rows make the anchor ambiguous', async () => {
+    it('walks older when the arriving rows make the anchor ambiguous', async () => {
       // The page's own oldest row is the anchor. If the rows landing mid-fetch carry a
       // second copy of that id, the anchor no longer names one row and the cut cannot
       // be trusted -- judged on the OLD view it still looks unique.
@@ -750,7 +779,7 @@ describe('refreshSlot count-matched bound', () => {
 
       await store.dispatch(refreshSlot(SLOT) as never)
 
-      expect(limits()).toEqual([held, undefined])
+      expectWalkedFrom(held)
       expect(store.getState().chat.messages).toHaveLength(TOTAL)
     })
 

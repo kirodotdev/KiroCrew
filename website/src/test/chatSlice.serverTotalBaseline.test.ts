@@ -67,25 +67,24 @@ describe('retained server total: which responses may leave a baseline', () => {
     expect(totalFor(store, 'slot-live')).toBe(900)
   })
 
-  it('still refuses a running count from the UNBOUNDED coverage retry', async () => {
+  it('keeps the bounded baseline across the coverage retry, which now walks bounded pages', async () => {
     // The production shape from the device: a slot with rows cached but no baseline
-    // asks a BOUNDED window, the coverage check cannot prove overlap, and the thunk
-    // refetches UNBOUNDED. That second response counts raw rows, so a running one
-    // must not be retained -- the first (bounded) one is what leaves the baseline,
-    // and having it is what stops the retry happening again next time.
+    // asks a BOUNDED window, and the coverage check cannot prove overlap. The retry
+    // used to be an UNBOUNDED read whose raw-row count had to be refused; it is now a
+    // walk of clamp-sized pages, every one collapsed by the handler before slicing,
+    // so the payload the reducer sees carries the first window's settled count.
     const store = makeStore()
     store.dispatch({ type: 'chat/hydrateSlotMessages', payload: { slot: 'slot-retry', messages: msgs(305) } })
     let call = 0
-    detail.mockImplementation((_slot: string, limit?: number) => {
+    detail.mockImplementation((_slot: string, _limit?: number) => {
       call += 1
-      // 1st: bounded window == what the tab holds. 2nd: the unbounded retry.
-      // The bounded window is the newest 120 of 900, so it sits clear of the 305-row
-      // cache and the coverage check OBSERVES the hole. The unbounded retry answers
-      // with raw rows, which is the count that must not be retained.
+      // 1st: bounded window == what the tab holds -- the newest 120 of 900, clear of
+      // the 305-row cache, so the coverage check OBSERVES the hole. Later calls are
+      // the walk's older pages; the inflated total models a mid-stream read.
       return Promise.resolve(reply({
         running: true,
         total: call === 1 ? 900 : 6203,
-        messages: limit === undefined ? msgs(400) : msgsFrom(780, 120),
+        messages: msgsFrom(780, 120),
       }))
     })
     await store.dispatch(switchSlot('slot-retry'))
@@ -93,8 +92,9 @@ describe('retained server total: which responses may leave a baseline', () => {
     // Asserted on the RECORDED calls, never inside the mock: an expect() that throws
     // in there rejects the thunk, and an absent total would then "pass" for the
     // wrong reason -- which is exactly how the first draft of this test went green.
-    expect(limits).toContain(undefined)
-    // The retained count is the BOUNDED read's, not the inflated unbounded one.
+    expect(limits.length).toBeGreaterThan(1)
+    expect(limits).not.toContain(undefined)
+    // The retained count is the first bounded read's, not a later page's.
     expect(totalFor(store, 'slot-retry')).toBe(900)
   })
 

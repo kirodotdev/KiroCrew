@@ -65,6 +65,22 @@ const limitsFor = (slot: string) =>
   (api.chatSlotDetail as unknown as { mock: { calls: unknown[][] } }).mock.calls
     .filter(c => c[0] === slot).map(c => c[1])
 
+/** Paint the WHOLE transcript as the active view the way a reader who paged back
+ *  to the start would hold it: seeded into the slot's cache while another slot
+ *  is active (`hydrateSlotMessages` refuses the active slot), then switched into.
+ *  The switch asks for the cache's own count, so the window covers it and the
+ *  view opens at TOTAL rows without any read having been unbounded. */
+async function paintWholeTranscript(store: ReturnType<typeof makeStore>, slot: string) {
+  store.dispatch(setActiveSlot('other'))
+  store.dispatch(hydrateSlotMessages({
+    slot, messages: HISTORY.slice(), hasMore: false,
+    bounded: false, total: HISTORY.length, running: false,
+  }))
+  await store.dispatch(switchSlot(slot))
+  // `>=`: a RUNNING mock appends the in-flight streaming row to the corpus.
+  expect(visible(store)).toBeGreaterThanOrEqual(HISTORY.length)
+}
+
 describe('a bounded refetch must not shrink what is already loaded', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -74,29 +90,36 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
 
   it('holds the full transcript across refreshSlot -> switchSlot -> refreshSlot', async () => {
     const store = makeStore()
-    store.dispatch(setActiveSlot('active'))
-
-    await store.dispatch(refreshSlot('active'))
+    await paintWholeTranscript(store, 'active')
     const full = visible(store)
     expect(full).toBe(TOTAL)
+
+    await store.dispatch(refreshSlot('active'))
+    const afterRefresh = visible(store)
 
     await store.dispatch(switchSlot('active'))
     const afterSwitch = visible(store)
 
     await store.dispatch(refreshSlot('active'))
-    expect({ afterSwitch, afterRefresh: visible(store) })
-      .toEqual({ afterSwitch: full, afterRefresh: full })
+    expect({ afterRefresh, afterSwitch, afterSecondRefresh: visible(store) })
+      .toEqual({ afterRefresh: full, afterSwitch: full, afterSecondRefresh: full })
+    // Every read stayed on the handler's bounded shape.
+    expect(limitsFor('active')).not.toContain(undefined)
   })
 
   it('holds the transcript when the page carries no row identity', async () => {
     HISTORY = makeHistory(false)
     const store = makeStore()
-    store.dispatch(setActiveSlot('active'))
+    await paintWholeTranscript(store, 'active')
+    const full = visible(store)
 
     await store.dispatch(refreshSlot('active'))
-    const full = visible(store)
+    expect(visible(store)).toBe(full)
     await store.dispatch(switchSlot('active'))
     expect(visible(store)).toBe(full)
+    // Rows without `mid` cannot anchor, so the window walks to the START in
+    // clamp-sized pages instead of reading everything in one request.
+    expect(limitsFor('active')).not.toContain(undefined)
   })
 
   // Correction 1: `slotRun` has only two writers and is never seeded from the slots
@@ -104,9 +127,7 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
   it('does not bound a painted slot the client wrongly believes is idle', async () => {
     RUNNING = true
     const store = makeStore()
-    store.dispatch(setActiveSlot('active'))
-
-    await store.dispatch(refreshSlot('active'))
+    await paintWholeTranscript(store, 'active')
     const full = visible(store)
     expect(store.getState().chat.slotRun?.active).toBeUndefined()
 
@@ -156,7 +177,9 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
 
     const shown = new Set(store.getState().chat.messages.map(m => m.content))
     const dropped = painted.filter(m => !shown.has(m.content)).map(m => m.content)
-    expect({ limit: limitsFor('active').at(-1), dropped }).toEqual({ limit: undefined, dropped: [] })
+    // The walk reaches the start in clamp-sized pages: rows without `mid` cannot
+    // anchor, so nothing short of the whole corpus proves the cache is covered.
+    expect({ unbounded: limitsFor('active').includes(undefined), dropped }).toEqual({ unbounded: false, dropped: [] })
   })
 
   it('does not bound a small background cache the server has grown past', async () => {
@@ -241,8 +264,13 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
     await store.dispatch(refreshSlot('active'))
     await store.dispatch(switchSlot('active'))
 
+    // A bounded open holds a WINDOW, so `hasMore` is true exactly while rows
+    // remain above it -- the cursor describes what is loaded, whichever that is.
     const s = store.getState().chat
+    const loaded = s.messages.length
+    expect(loaded).toBeGreaterThan(0)
     expect({ hasMore: s.slotHasMore, paneHasMore: s.slotPaneHasMore?.active })
-      .toEqual({ hasMore: false, paneHasMore: false })
+      .toEqual({ hasMore: loaded < TOTAL, paneHasMore: loaded < TOTAL })
+    expect(limitsFor('active')).not.toContain(undefined)
   })
 })

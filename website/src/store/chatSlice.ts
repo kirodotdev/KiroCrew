@@ -2129,16 +2129,97 @@ function retainServerTotal(state: ChatState, key: string, total: number | undefi
 }
 
 async function fetchSlotDetail(key: string, limit?: number) {
-  // A limit takes the handler's most-recent-N slice. `undefined` keeps the
-  // unbounded shape, which a STREAMING warm/switch fetch still takes
-  // (deliberate, though the handler collapses before slicing). refreshSlot
-  // replaces the active transcript in place, so it cannot take a FIXED bound
-  // (that would shrink history the user already paged in) — it passes a
-  // COUNT-MATCHED one instead, see REFRESH_LIMIT_CEILING. Omit the arg when
-  // unbounded to keep the one-arg shape.
+  // A limit takes the handler's most-recent-N slice. `undefined` is the
+  // handler's read-everything shape; `refreshSlot` and `switchSlot` no longer
+  // take it -- a window that misses the rows they hold is extended by
+  // `walkWindowBackTo`, one bounded page at a time. `warmSlotCache` and the
+  // pane hydrate still pass it while streaming. Omit the arg when unbounded to
+  // keep the one-arg shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   type QueueItem = string | { content: string; id: string }
   return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+}
+
+type SlotDetailPage = Awaited<ReturnType<typeof fetchSlotDetail>>
+
+/** Most older pages `walkWindowBackTo` fetches before it stops reaching for the
+ *  rows a tab holds. Each page is `SLOT_DETAIL_MAX_LIMIT` rows, so one refresh
+ *  or switch moves at most (1 + this) * 500 rows, however long the transcript --
+ *  the walk only ever covers rows the SERVER gained since the tab last read it,
+ *  plus the one page that overlaps what the tab already has.
+ *
+ *  Reaching the cap means the gap is wider than the cap covers, or the held rows
+ *  carry no `meta.mid` to anchor on (rows written before the backend stamped
+ *  ids). The replacing reducer then finds no anchor and keeps no head, so the
+ *  rows above the walked window leave the tab -- they are one page-back away,
+ *  not gone. That is the cost taken instead of a read whose size is the whole
+ *  transcript. */
+export const WINDOW_WALK_MAX_PAGES = 8
+
+/** The rows a replacing reducer can anchor a kept head on: `olderHeadAbovePage`
+ *  is handed the prior view minus `thinking` (no identity, broadcast-only) and
+ *  `permission` (re-seated from the client's own copies), so the walk must judge
+ *  reach against exactly that set or it stops on an anchor the reducer will not
+ *  see. */
+function headAnchorRows(rows: ChatMessage[]): ChatMessage[] {
+  return rows.filter(m => m.role !== 'thinking' && m.role !== 'permission')
+}
+
+/** Extend a most-recent window OLDER, one bounded page at a time, until its
+ *  oldest row anchors one row of `held` -- the condition under which the
+ *  replacing reducers (`switchSlot`, `refreshSlot`) keep the rows above it
+ *  (`olderHeadAbovePage`) -- or the transcript's start is reached, or the page
+ *  cap is spent.
+ *
+ *  This is what an unbounded re-read used to buy: a page that provably covers
+ *  the view, so replacing the view with it deletes no scrollback. The difference
+ *  is the price -- the walk pays for the rows the server GAINED, the unbounded
+ *  read paid for the whole transcript every time, and on a long session that
+ *  ran on every `chat_done` (measured: 11,134 rows re-read per turn).
+ *
+ *  Same predicate as the reducers, not a looser one. A window is safe to replace
+ *  the held rows with on either of two counts: its oldest row anchors one held
+ *  row (`olderHeadAbovePage` then keeps the rows above it), or the oldest HELD
+ *  row anchors one row of the window (the window is a superset, and replacing
+ *  with a superset loses nothing). Both go through `idAnchorsOneRow` over the
+ *  accumulated window, so a `mid` seen twice (two slices never overlap, so only
+ *  a caller-repeated id does this) declines exactly as the reducer's cut would.
+ *
+ *  Returns the input page untouched when there is nothing to reach (`held`
+ *  empty -- a cold view has no scrollback to protect, and a wider window would
+ *  be one nothing asked for), when the page already reaches the start, or when
+ *  it already anchors. */
+async function walkWindowBackTo(key: string, page: SlotDetailPage, held: ChatMessage[]): Promise<SlotDetailPage> {
+  const anchor = headAnchorRows(held)
+  const anchorCounts = midOccurrences(anchor)
+  const reaches = (rows: ChatMessage[]): boolean => {
+    const rowCounts = midOccurrences(rows)
+    return idAnchorsOneRow(rows[0]?.meta?.mid, anchor, rows, anchorCounts, rowCounts)
+      || idAnchorsOneRow(anchor[0]?.meta?.mid, anchor, rows, anchorCounts, rowCounts)
+  }
+  if (anchor.length === 0 || !page.hasMore || reaches(page.messages)) return page
+  let messages = page.messages
+  let before = page.nextBefore
+  let hasMore = page.hasMore
+  let pages = 0
+  // Two independent stops besides the anchor: the page cap (the whole point of
+  // walking instead of reading unbounded), and a cursor that failed to move
+  // older -- a server answering the same `next_before` twice would otherwise
+  // keep this loop alive for as long as it keeps saying `has_more`.
+  while (hasMore && before > 0 && pages < WINDOW_WALK_MAX_PAGES) {
+    const d = await api.chatSlotDetail(key, SLOT_DETAIL_MAX_LIMIT, before)
+    pages += 1
+    messages = [...filterMessages(d.messages || []), ...messages]
+    const nextBefore = d.next_before || 0
+    hasMore = d.has_more || false
+    const stalled = nextBefore >= before
+    before = nextBefore
+    if (stalled || !hasMore || reaches(messages)) break
+  }
+  if (inspectorOn()) {
+    devLog('WALK', `${key} pages=${pages} rows=${messages.length} reached=${!hasMore || reaches(messages)} held=${anchor.length}`)
+  }
+  return { ...page, messages, nextBefore: before, hasMore }
 }
 
 /** SINGLE hydration path for the slot-detail context-meter fields — the one
@@ -2325,15 +2406,8 @@ export const switchSlot = createAsyncThunk<
     const _newestSlotTs = () => (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.last_ts
     // Bounded to the page size so opening a long session costs one page, not the
     // whole chained transcript; `loadOlderMessages` walks back from the cursor
-    // this fetch returns. Unbounded while the slot is streaming, for the same
-    // reason warmSlotCache and ChatPane's hydrate are -- deliberately, not because a
-    // bound would cut raw rows: the handler collapses chunk runs BEFORE it slices.
-    // `slotRun` and not `selectSlotStreamState`: switchSlot.pending has already
-    // assigned `activeSlot = key` by the time this body runs, so that selector
-    // would always take its active-slot branch and report `slotState`, which
-    // still describes the OUTGOING slot. `slotRun` is keyed per slot, so it
-    // answers for the incoming one. Guarded because a partial preloaded state
-    // can omit `slotRun` entirely, and throwing here would skip the fetch.
+    // this fetch returns, and a window that misses rows this tab already holds
+    // is extended older by `walkWindowBackTo` before it replaces the view.
     try {
       // EVERY switch is bounded, including into a slot mid-turn: ask for what
       // this tab already holds (never fewer than one page) and let the coverage
@@ -2356,19 +2430,17 @@ export const switchSlot = createAsyncThunk<
       // already covered its cache exactly. See slotCoverageShortfall.
       const shortfall = slotCoverageShortfall({ cached: cachedRows, window: first.messages })
       if (shortfall > 0) {
-        // Named in the inspector because this is the one path that can multiply the
-        // loaded transcript in a single step with no paging door involved. Reaching it
-        // now means a hole was OBSERVED between the cache and the window, not merely
-        // assumed for want of an earlier total.
+        // A hole was OBSERVED between the cache and the window, not merely assumed
+        // for want of an earlier total. Close it by extending the window OLDER
+        // until it anchors a cached row -- `switchSlot.fulfilled` then keeps the
+        // cache above that anchor (`olderHeadAbovePage`), so replacing the view
+        // with the walked window deletes nothing. The shortfall count itself
+        // stays the conservative multiset it is: it cannot tell "above the
+        // anchor" from "in a hole", and does not have to -- the walk answers that.
         if (inspectorOn()) {
-          devLog('SWITCH', `unbounded short=${shortfall} lim=${limit ?? '-'} cached=${cached} total=${first.total ?? '?'}`)
+          devLog('SWITCH', `short=${shortfall} lim=${limit ?? '-'} cached=${cached} total=${first.total ?? '?'}`)
         }
-        // Unbounded deliberately: the hole's width is server rows this tab never saw,
-        // so a locally-sized window cannot be proven to reach the cache, and this path
-        // REPLACES rather than merges. Carry the bounded read's count forward -- it is
-        // the only one of the two in settled units, and returning only the retry threw
-        // away the baseline the next switch needs.
-        const wide = await fetchSlotDetail(key)
+        const walked = await walkWindowBackTo(key, first, cachedRows)
         // Emit only while this request still owns the slot switch: a rapid
         // A->B switch leaves A's fetch resolving after B took over, and A's
         // transcript never rendered — relaying its read would clear sibling
@@ -2376,7 +2448,7 @@ export const switchSlot = createAsyncThunk<
         // atomically before this thunk body runs, so a superseded request
         // observes someone else's key here.
         if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
-        return { ...wide, comparableTotal: first.total }
+        return { ...walked, comparableTotal: first.total }
       }
       if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
       return first
@@ -3142,10 +3214,10 @@ function mergePreservedClientTs<M extends { role: string; content: string; ts?: 
 
 /** Upper bound on the count-matched `refreshSlot` limit, matching the ceiling
  *  the slot-detail handler clamps `limit` to. A request above it comes back
- *  SHORT of what was asked for, which for an in-place replacement means the
- *  view SHRINKS — so a transcript paged back past this keeps the unbounded
- *  shape rather than truncate. */
-export const REFRESH_LIMIT_CEILING = 500
+ *  SHORT of what was asked for, which for an in-place replacement would mean the
+ *  view SHRINKS -- so a view paged back past this asks for exactly this many
+ *  and lets `walkWindowBackTo` reach the rest one page at a time. */
+export const REFRESH_LIMIT_CEILING = SLOT_DETAIL_MAX_LIMIT
 
 export const refreshSlot = createAsyncThunk(
   'chat/refreshSlot',
@@ -3153,19 +3225,20 @@ export const refreshSlot = createAsyncThunk(
     const state = (getState() as { chat: ChatState }).chat
     if (state.activeSlot !== key) return null
     // COUNT-MATCHED bound, not a fixed one. The recurring refresh (reconnect,
-    // chat_done, variant switch) no longer pulls the whole chained transcript
-    // every time — but because it REPLACES `messages` wholesale, a fixed
+    // chat_done, variant switch) REPLACES `messages` wholesale, so a fixed
     // bound would delete scrollback the user paged in. Asking for at least as
-    // many rows as the view already HOLDS is bounded and cannot shrink it, since
-    // the handler's slice is the most-recent-N. PANE_HYDRATE_LIMIT is the FLOOR
-    // (a floor cannot truncate) so a near-empty slot still asks for a sensible
-    // page instead of one row.
+    // many rows as the view already HOLDS cannot shrink it, since the handler's
+    // slice is the most-recent-N. PANE_HYDRATE_LIMIT is the FLOOR (a floor cannot
+    // truncate) so a near-empty slot still asks for a sensible page instead of
+    // one row; REFRESH_LIMIT_CEILING is the handler's own clamp, and a view held
+    // past it is reached by `walkWindowBackTo` below, one page at a time, so no
+    // count the view can reach ever turns this into a read of the whole
+    // transcript.
     //
-    // An EMPTY view is the one case that stays unbounded: there is no count to
-    // match, so any number here would be the fixed bound this design rejects,
-    // and this refresh is then the client's only read of a transcript it holds
-    // nothing of (a reconnect after `clearMessages`, a refresh racing slot
-    // activation). Bounding it would install a window nothing asked for.
+    // An EMPTY view asks for the floor: there is no scrollback to protect, and the
+    // page's cursor is what `loadOlderMessages` pages back from (a reconnect after
+    // `clearMessages`, a refresh racing slot activation).
+    //
     // Only rows the SERVER transcript carries can be counted against a limit the
     // HANDLER applies to server rows. `state.messages` also holds client-only rows
     // -- a `thinking` block, a `permission` card, a `queued` bubble -- and counting
@@ -3185,7 +3258,7 @@ export const refreshSlot = createAsyncThunk(
       m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0,
     )
     const held = serverRows.length
-    const want = Math.max(held, PANE_HYDRATE_LIMIT)
+    const want = Math.min(Math.max(held, PANE_HYDRATE_LIMIT), REFRESH_LIMIT_CEILING)
     /* The FLOOR is the one over-request, and mixed history is where it bites.
      *
      * At `want === held` the page cannot strand a durable row: `spansView` only
@@ -3202,15 +3275,14 @@ export const refreshSlot = createAsyncThunk(
      * exists to avoid. Legacy rows written before the backend stamped `mid` are the
      * real case.
      *
-     * So the floor declines on a window it cannot fully identify. Modern transcripts
+     * So `spansView` is not trusted on a window the floor over-requested from a view
+     * it cannot fully identify; that page walks older instead. Modern transcripts
      * -- every live session, which is the recurring cost #4690 is about -- keep the
-     * bound, because their rows all carry a `mid`. */
+     * shortcut, because their rows all carry a `mid`. `overlapsView` needs no such
+     * gate: the head it keeps is a slice ABOVE the anchor, unidentified rows
+     * included. */
     const floorOverRequests = want > held
-    const bounded =
-      held > 0 &&
-      want <= REFRESH_LIMIT_CEILING &&
-      !(floorOverRequests && hasUnidentifiedDurableRow(view))
-    if (!bounded) return fetchSlotDetail(key)
+    const spanIsTrustworthy = !(floorOverRequests && hasUnidentifiedDurableRow(view))
     const page = await fetchSlotDetail(key, want)
     /* Is this page safe to hand a reducer that REPLACES the transcript with it?
      * It is, on any one of three counts -- and each is a different relationship
@@ -3226,10 +3298,11 @@ export const refreshSlot = createAsyncThunk(
      *
      * None of the three: the server gained at least `held` rows during the gap, so
      * page and view are FULLY DISJOINT and the reducer -- correctly declining to
-     * guess a cut it has no identity for -- would drop every loaded row. Refetch
-     * unbounded there. One extra round trip in exactly the case a slice cannot be
-     * stitched, which keeps the alternative off the table: splicing a disjoint
-     * page onto the view publishes a transcript with a silent hole in it.
+     * guess a cut it has no identity for -- would drop every loaded row. Walk the
+     * window older until it anchors (`walkWindowBackTo`): the rows fetched are the
+     * ones the server gained plus one overlapping page, in exactly the case a slice
+     * cannot be stitched. That keeps the alternative off the table: splicing a
+     * disjoint page onto the view publishes a transcript with a silent hole in it.
      */
     /* Counts, not membership. A `Set.has` / `Array.some` answers "SOME row carries
      * this id", and a caller-repeated `meta.mid` makes that true while pointing at
@@ -3244,8 +3317,8 @@ export const refreshSlot = createAsyncThunk(
      * is how it gets accepted and then cut wrong.
      *
      * The limit itself is not re-derived -- the request is already in flight and a
-     * page that is now too small simply fails the checks below and refetches
-     * unbounded, which is the safe direction. Re-reading is only about the DECISION.
+     * page that is now too small simply fails the checks below and walks older,
+     * which is the safe direction. Re-reading is only about the DECISION.
      *
      * A slot switch during the await makes the whole answer moot, so it declines the
      * same way the pre-fetch check does. */
@@ -3262,9 +3335,10 @@ export const refreshSlot = createAsyncThunk(
     /* `serverRowsNow` can be empty even though the pre-fetch `held` was positive --
      * a `clearMessages` landing in the await empties the view -- so the oldest-row
      * anchor is guarded rather than indexed blind. */
-    const spansView = serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
+    const spansView = spanIsTrustworthy && serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
     const overlapsView = anchors(page.messages[0]?.meta?.mid)
-    return !page.hasMore || spansView || overlapsView ? page : fetchSlotDetail(key)
+    if (!page.hasMore || spansView || overlapsView) return page
+    return walkWindowBackTo(key, page, viewNow)
   },
 )
 
