@@ -49,6 +49,12 @@ _TARGET_PATH_MAX_PATHS = 256
 #: orders of magnitude below it.
 _TARGET_PATH_MAX_NODES = 10_000
 
+# A patch is a document, not a path-valued argument. Bound the header walk
+# independently of the number of paths so a large body cannot stall the gate.
+_PATCH_TEXT_MAX_CHARS = 256_000
+_PATCH_HEADERS = ("*** Add File: ", "*** Update File: ", "*** Delete File: ")
+_PATCH_MOVE_HEADER = "*** Move to: "
+
 
 class TargetPaths(list):
     """The collected paths, plus whether collection had to stop early.
@@ -151,6 +157,63 @@ def is_edit_call(tool_kind: str, diff_path: str = "") -> bool:
     return tool_kind == "edit" or bool(diff_path)
 
 
+def _patch_targets(text: str, candidates: TargetPaths) -> None:
+    """Collect the paths a complete apply_patch envelope can write or remove.
+
+    Unknown control lines and incomplete envelopes are unverifiable, even if a
+    separate ``path`` argument names a harmless file. No patch body text is
+    interpreted as a shell command or as a path.
+    """
+    if len(text) > _PATCH_TEXT_MAX_CHARS:
+        candidates.truncated = True
+        return
+    lines = text.splitlines()
+    if not lines or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        candidates.truncated = True
+        return
+    seen = set(candidates)
+    section = ""
+    moved = False
+    count = 0
+    for line in lines[1:-1]:
+        if line.startswith(_PATCH_HEADERS):
+            header = next(prefix for prefix in _PATCH_HEADERS if line.startswith(prefix))
+            section = header
+            moved = False
+            count += 1
+            path = line[len(header) :]
+        elif line.startswith(_PATCH_MOVE_HEADER) and section == "*** Update File: " and not moved:
+            moved = True
+            path = line[len(_PATCH_MOVE_HEADER) :]
+        elif line == "*** End of File" and section == "*** Update File: ":
+            continue
+        elif line.startswith("*** "):
+            candidates.truncated = True
+            return
+        else:
+            # Only patch-body lines are allowed between file headers. A second
+            # unrecognised control form must never be ignored as harmless text.
+            if not section or not line or not line.startswith(("+", "-", " ", "@@")):
+                candidates.truncated = True
+                return
+            continue
+        if not path or path != path.strip() or "\x00" in path:
+            candidates.truncated = True
+            return
+        expanded = os.path.expanduser(os.path.expandvars(path))
+        if not os.path.isabs(expanded):
+            candidates.unanchored = True
+            return
+        if path not in seen:
+            if len(candidates) >= _TARGET_PATH_MAX_PATHS:
+                candidates.truncated = True
+                return
+            candidates.append(path)
+            seen.add(path)
+    if count == 0:
+        candidates.truncated = True
+
+
 def edit_target_candidates(raw_params: Mapping | None, diff_path: str = "") -> TargetPaths:
     """The target set a file-EDIT tool call is judged by: the UNION of every
     accepted path spelling in *raw_params* (via :func:`target_paths`) and
@@ -181,6 +244,14 @@ def edit_target_candidates(raw_params: Mapping | None, diff_path: str = "") -> T
         # on the flag before iterating; appending past it would also break the
         # module contract that the work caps bound the returned set.
         return candidates
+    if isinstance(raw_params, Mapping) and "patchText" in raw_params:
+        patch = raw_params["patchText"]
+        if not isinstance(patch, str):
+            candidates.truncated = True
+            return candidates
+        _patch_targets(patch, candidates)
+        if candidates.truncated or candidates.unanchored:
+            return candidates
     if diff_path:
         expanded = os.path.expanduser(os.path.expandvars(diff_path))
         if not os.path.isabs(expanded):
