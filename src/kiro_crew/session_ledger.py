@@ -109,12 +109,6 @@ _ENTRY_SRC = "gateway"
 #: the entry is still owed and counted by the writer rather than lost.
 _APPEND_FLUSH_SECONDS = 5.0
 
-#: Slots whose ledger fold is kept between reads. Bounded by COUNT: each
-#: checkpoint is a bounded record, so what needs a ceiling is how many are
-#: retained. Insertion-ordered, so the oldest is the one evicted.
-_FOLD_CACHE_SLOTS = 64
-_fold_cache: "dict[tuple[str, str], tuple[tuple[str, ...], tuple[int, ...], Any]]" = {}
-
 #: Whether each slot's LAST append reached disk before its call answered. Read by
 #: the record route so a caller is told, rather than being handed a 200 that
 #: implies a durability the wait did not prove. One entry per slot, replaced.
@@ -638,82 +632,20 @@ def _fold_checkpoint(slot_key: str, units: "tuple[str, ...]") -> Any:
     the record on every wake would re-walk its whole history each time, which is the
     one cost the stored document did not have.
 
-    So the checkpoint is kept in memory per slot and ADVANCED over the entries that
-    arrived since, using the same seq-anchored machinery a cold fold uses -- the
-    resumed answer and the from-scratch answer come out of one implementation, which
-    is the property ``projection`` pins.
+    The incremental fold belongs to the crew log and is shared with every other
+    slot-keyed reader (:func:`kiro_crew.crew_log.projection.fold_slot_warm`): it keeps
+    this fold's cell in memory per slot, continues it over the entries that arrived
+    since, and refolds cold for every shape that cannot be carried -- a different unit
+    list, a unit whose log was removed and recreated, an earlier unit that grew, a seq
+    that went backwards. ONE implementation rather than one per consumer, because each
+    of these readers has to enforce the same rules and a rule missing from one of them
+    is a wrong record rather than a slow one.
 
-    Three things force a cold rebuild, and each would otherwise be a wrong answer
-    rather than a slow one: a different unit list (the slot started another ACP
-    session), a newest unit whose seq went BACKWARDS (its log was removed and
-    recreated, so the seqs describe different bytes), and nothing cached at all.
-    Only the newest unit can grow -- an earlier unit's session is over -- so
-    advancing reads just its tail.
-
-    In memory rather than on disk on purpose: the reader that pays this cost is the
-    gateway's own loop, one process, and a durable checkpoint is a store of its own
-    with its own invalidation rules. A second process simply folds cold.
+    In memory rather than on disk, and per process: the reader that pays this cost is
+    the gateway's own loop, and a durable checkpoint is a store of its own with its own
+    invalidation rules. A second process simply folds cold.
     """
-    projection = _projection()
-    # The DATA HOME is part of the identity, not just the slot. One process serves
-    # more than one home -- a pod, a test, a gateway restarted in place -- and a slot
-    # key plus an ACP session id are not unique across them, so keying on the slot
-    # alone lets one home's checkpoint answer another home's read. The store's own
-    # scan fingerprint takes the same precaution for the same reason.
-    cache_key = (str(data_home()), slot_key)
-    cached = _fold_cache.get(cache_key)
-    # EVERY unit's seq, not only the newest one's. An older unit is not closed to
-    # writes: a forced reset tears a session down while a turn is still running, and
-    # that turn goes on appending through the handle it already holds, so an earlier
-    # unit can still grow. Keying growth on the newest unit alone would leave those
-    # entries permanently outside the record -- the unit list is unchanged and the
-    # newest seq is unchanged, so nothing would ever invalidate the checkpoint.
-    seqs = tuple(_unit_last_seq(unit) for unit in units)
-    if cached is not None and cached[0] == units and cached[1] != seqs:
-        # Only the newest unit grew, and only forward: that is the one shape the
-        # checkpoint can be continued over, because its state was folded through
-        # every earlier unit already. Anything else -- an earlier unit that grew, or
-        # any unit whose seq went BACKWARDS because its log was removed and
-        # recreated -- describes different bytes and folds cold.
-        continuable = (
-            len(seqs) == len(cached[1])
-            and seqs[:-1] == cached[1][:-1]
-            and bool(seqs)
-            and seqs[-1] > cached[1][-1]
-        )
-        if continuable:
-            handle = projection.open_session_log(units[-1])
-            if handle is not None:
-                grown = projection.advance(
-                    cached[2],
-                    handle.iter_from(cached[1][-1] + 1, known=projection.KNOWN_TYPES),
-                )
-                # The SAME guard the cold path applies below, and for the same reason:
-                # ``seqs`` was sampled before ``iter_from`` ran, so an append landing
-                # during it is folded into ``grown`` but not into that sample. Caching
-                # the pair would claim "state through N+1, seqs through N", and the next
-                # read would see the seq move, judge itself continuable, and advance from
-                # an entry already folded -- which ``advance`` refuses as at-or-below the
-                # checkpoint, surfacing as an EMPTY record rather than an error. An active
-                # session appending while its own record is read is the ordinary case
-                # here, not a rare one.
-                if tuple(_unit_last_seq(unit) for unit in units) == seqs:
-                    _remember_fold(cache_key, units, seqs, grown)
-                return grown
-    elif cached is not None and cached[0] == units:
-        return cached[2]
-    checkpoint = projection.fold_slot_checkpoint(_FOLD_NAME, units)
-    # Cache only a snapshot the fold AGREES with. ``seqs`` was sampled before the
-    # fold, and an append landing while it ran is folded into the checkpoint but not
-    # into that sample -- so the pair would say "state through N+1, seqs through N",
-    # and the next read would advance from a seq already folded. ``advance`` refuses
-    # that entry as at-or-below the checkpoint, which surfaces as an empty record
-    # rather than as an error. Re-sampling and comparing is the whole guard: unequal
-    # means this answer is correct but not cacheable, so it is returned uncached and
-    # the next read folds cold.
-    if tuple(_unit_last_seq(unit) for unit in units) == seqs:
-        _remember_fold(cache_key, units, seqs, checkpoint)
-    return checkpoint
+    return _projection().fold_slot_warm(_FOLD_NAME, units, slot=slot_key)
 
 
 def _unit_last_seq(unit_id: str) -> int:
@@ -727,24 +659,6 @@ def _unit_last_seq(unit_id: str) -> int:
     # ``last_seq`` on a freshly opened handle is read off the file's tail, which is
     # what makes it usable as a growth signal for a reader that never appends.
     return int(getattr(handle, "last_seq", 0) or 0)
-
-
-def _remember_fold(
-    cache_key: "tuple[str, str]",
-    units: "tuple[str, ...]",
-    seqs: "tuple[int, ...]",
-    checkpoint: Any,
-) -> None:
-    """Cache *checkpoint* under *cache_key* (data home + slot), keeping it bounded.
-
-    Replaced whole per slot, and capped by count: a gateway sees many slots over its
-    life and each checkpoint is a bounded record, so the ceiling is on how many are
-    retained. The oldest entry goes first; an evicted slot folds cold on its next
-    read, which costs time and never correctness.
-    """
-    _fold_cache[cache_key] = (units, seqs, checkpoint)
-    while len(_fold_cache) > _FOLD_CACHE_SLOTS:
-        _fold_cache.pop(next(iter(_fold_cache)))
 
 
 def read_state(slot_key: str, live_session_id: str = "") -> dict[str, Any]:
@@ -793,10 +707,10 @@ def read_state(slot_key: str, live_session_id: str = "") -> dict[str, Any]:
         value = _projection().projection_of(base).value
     except Exception:
         logger.warning("ledger: folding this slot's crew logs failed", exc_info=True)
-        # The cached checkpoint is not trusted after a failed advance: the failure
-        # may have been a log this build cannot read, and a half-advanced state must
-        # not become the answer to the next read.
-        _fold_cache.pop((str(data_home()), canonical), None)
+        # The warm cell is not trusted after a failed fold: the failure may have been a
+        # log this build cannot read, and a half-folded state must not become the answer
+        # to the next read. Dropping it costs the next read a cold fold.
+        _projection().forget_slot_folds(canonical, _FOLD_NAME)
         # NOT previewed here. A refused fold means a reader older than the writer, so
         # the log may hold entries newer than the document -- answering with the
         # document would assert something about a log this build could not read.

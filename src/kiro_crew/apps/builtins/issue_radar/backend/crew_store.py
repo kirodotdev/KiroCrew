@@ -799,21 +799,6 @@ _ENTRY_SRC = "gateway"
 #: route runs the write on a worker thread, so this costs no event-loop time.
 _APPEND_FLUSH_SECONDS = 5.0
 
-#: Folded checkpoints kept in memory, per (data home, crew). Bounded by count; an
-#: evicted crew folds cold on its next read, which costs time and never correctness.
-#: Reads and writes run on worker threads, so every get, set and eviction holds the
-#: guard: an eviction that picks the oldest key and pops it is two steps, and two
-#: threads taking them unguarded can pop the same key or change the dict under the
-#: other's iterator, which surfaces as a failed read for a crew that did nothing.
-_FOLD_CACHE_SLOTS = 64
-#: A unit's mark: the log file's creation identity and its newest seq, as the file
-#: on disk reports them (:func:`_unit_mark`). Both are in the cache key because a seq
-#: alone cannot tell a log that GREW from a log REMOVED AND RECREATED under the same
-#: id whose seq has already climbed back to or past the cached one.
-_UnitMark = tuple[str | None, int]
-_fold_cache: dict[tuple[str, str], tuple[tuple[str, ...], tuple[_UnitMark, ...], Any]] = {}
-_fold_cache_guard = threading.Lock()
-
 #: One lock per (data home, crew) held across a WRITE's fold, refusals, append and
 #: answer. The refusals are checked against the folded record, so two requests for
 #: one crew validating against the same fold could both pass the one-editor rule and
@@ -1095,94 +1080,26 @@ def _unit_last_seq(unit_id: str) -> int:
     return int(getattr(handle, "last_seq", 0) or 0)
 
 
-def _unit_mark(unit_id: str) -> _UnitMark:
-    """*unit_id*'s log identity and newest seq, read from the file; ``(None, 0)`` if not.
-
-    The identity is :func:`kiro_crew.crew_log.projection.log_origin` -- the value the
-    session fold and the on-disk savepoints compare with -- stamped once when the log
-    file is created, so a log removed and recreated under the same id carries a NEW
-    one however far its seq has climbed. ``None`` is an unknown identity and never
-    matches: a cached checkpoint is neither reused nor continued against it, and the
-    read folds cold, which costs time and never correctness.
-    """
-    projection = _projection()
-    try:
-        handle = projection.open_session_log(unit_id)
-        if handle is None:
-            return (None, 0)
-        return (projection.log_origin(handle), int(getattr(handle, "last_seq", 0) or 0))
-    except Exception:
-        return (None, 0)
-
-
 def _fold_checkpoint(crew_id: str, units: tuple[str, ...]) -> Any:
     """This crew's ledger fold, continued from where the last read left it.
 
-    Folding is O(the log), not O(the record): the reader walks every line of every
-    unit to find the ``radar/recorded`` ones, and a crew's session log carries its
-    message bodies. A crew is read on every cycle it wakes, so the checkpoint is kept
-    in memory and ADVANCED over the entries that arrived since, through the same
-    seq-anchored machinery a cold fold uses -- the resumed answer and the from-scratch
-    answer come out of one implementation.
+    Folding is O(the log), not O(the record): the reader walks every line of every unit
+    to find the ``radar/recorded`` ones, and a crew's session log carries its message
+    bodies. A crew is read on every cycle it wakes, so re-walking its whole history each
+    time is the cost this avoids.
 
-    The cache is keyed by every unit's MARK -- its log file's creation identity and
-    its newest seq (:func:`_unit_mark`) -- and three things force a cold rebuild, each
-    of which would otherwise be a wrong answer rather than a slow one: a different
-    unit list, a unit whose identity changed (its log was removed and recreated under
-    the same id, whether or not the new log's seq has climbed back to the cached one)
-    or is unknown, and nothing cached. An earlier unit can still grow -- a forced
-    reset tears a session down while a turn is still appending through the handle it
-    holds -- so EVERY unit's mark is in the check, and only growth confined to the
-    newest unit of the SAME identity is continued incrementally.
+    The incremental fold belongs to the crew log and is shared with every other
+    slot-keyed reader (:func:`kiro_crew.crew_log.projection.fold_slot_warm`): it keeps
+    this fold's cell in memory per crew, continues it over the entries that arrived
+    since, and refolds cold for every shape that cannot be carried -- a different unit
+    list, a unit whose log was removed and recreated under the same id or whose identity
+    cannot be read, an earlier unit that grew (a forced reset tears a session down while
+    a turn is still appending through the handle it holds), and a seq that went
+    backwards. ONE implementation rather than one per consumer, because each of these
+    readers has to enforce the same rules and a rule missing from one of them is a wrong
+    record rather than a slow one.
     """
-    projection = _projection()
-    cache_key = (str(data_home()), crew_id)
-    with _fold_cache_guard:
-        cached = _fold_cache.get(cache_key)
-    marks = tuple(_unit_mark(unit) for unit in units)
-    known = all(origin is not None for origin, _seq in marks)
-    if cached is not None and cached[0] == units and cached[1] != marks:
-        continuable = (
-            known
-            and len(marks) == len(cached[1])
-            and marks[:-1] == cached[1][:-1]
-            and bool(marks)
-            and marks[-1][0] == cached[1][-1][0]
-            and marks[-1][1] > cached[1][-1][1]
-        )
-        if continuable:
-            handle = projection.open_session_log(units[-1])
-            if handle is not None:
-                grown = projection.advance(
-                    cached[2],
-                    handle.iter_from(cached[1][-1][1] + 1, known=projection.KNOWN_TYPES),
-                )
-                # Cache only a snapshot the fold AGREES with: ``marks`` was sampled
-                # before ``iter_from`` ran, so an append landing during it is folded
-                # into ``grown`` but not into that sample, and caching the pair would
-                # make the next read advance from an entry already folded -- which
-                # ``advance`` refuses, surfacing as an EMPTY record.
-                if tuple(_unit_mark(unit) for unit in units) == marks:
-                    _remember_fold(cache_key, units, marks, grown)
-                return grown
-    elif cached is not None and cached[0] == units and known:
-        return cached[2]
-    checkpoint = projection.fold_slot_checkpoint(FOLD_NAME, units)
-    if known and tuple(_unit_mark(unit) for unit in units) == marks:
-        _remember_fold(cache_key, units, marks, checkpoint)
-    return checkpoint
-
-
-def _remember_fold(
-    cache_key: tuple[str, str],
-    units: tuple[str, ...],
-    marks: tuple[_UnitMark, ...],
-    checkpoint: Any,
-) -> None:
-    with _fold_cache_guard:
-        _fold_cache[cache_key] = (units, marks, checkpoint)
-        while len(_fold_cache) > _FOLD_CACHE_SLOTS:
-            _fold_cache.pop(next(iter(_fold_cache)))
+    return _projection().fold_slot_warm(FOLD_NAME, units, slot=slot_key_for(crew_id))
 
 
 def read_ledger(

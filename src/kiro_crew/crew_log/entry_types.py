@@ -194,6 +194,12 @@ _EVENT_KIND_VALUES: tuple[str, ...] = tuple(sorted(_LEDGER_EVENT_KINDS))
 #: names so its callers and the fold in ``projection`` read one set of values.
 RADAR_ENTRY_TYPE = "radar/recorded"
 
+#: The conductor work board's entry type, named beside the radar one and for the same
+#: reason: the fold in ``projection`` declares which entry types can move it, and a
+#: set that is narrower than the truth drops a real change with nothing raised -- so
+#: the type the fold matches on and the type the registry declares are one value.
+WORK_ENTRY_TYPE = "work/recorded"
+
 #: Work-item phases. Two classifications hang off this enum and do not coincide:
 #: the TTL-active phases age toward the claim TTL, and the editing phases are the
 #: ones a crew may hold at most ONE item in. Neither can be collapsed into a bool
@@ -1504,7 +1510,7 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
     ),
     # -- work --------------------------------------------------------------- #
     EntryType(
-        "work/recorded",
+        WORK_ENTRY_TYPE,
         "One work-board mutation: who acted, on which item, and the fields it set.",
         (
             Field(

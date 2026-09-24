@@ -60,11 +60,13 @@ import copy
 import hashlib
 import json
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import threading
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
+from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
     RADAR_CI_BOUNDS,
     RADAR_CI_KEYS,
@@ -80,6 +82,7 @@ from kiro_crew.crew_log.entry_types import (
     RADAR_SKIP_SCOPES,
     RADAR_TERMINAL_PHASES,
     SESSION_ENTRY_TYPES,
+    WORK_ENTRY_TYPE,
 )
 from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
@@ -2714,7 +2717,7 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
             if unit_id not in known:
                 known.add(unit_id)
                 units.append(unit_id)
-    return fold_slot(require_name(name), units, slot=slot)
+    return projection_of(fold_slot_warm(require_name(name), units, slot=slot))
 
 
 def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":
@@ -2743,6 +2746,495 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
     if name == "work":
         return _work_units(slot, session_ledger.work_crew_log_units(slot))
     return session_units_for_slot(slot)
+
+
+# --------------------------------------------------------------------------- #
+# A slot's folds on the projection kernel
+# --------------------------------------------------------------------------- #
+
+#: Slot folds kept warm between reads, keyed by (data home, slot, fold name). Bounded
+#: by COUNT: each cell is a bounded record, so what needs a ceiling is how many are
+#: retained, and the insertion order makes the oldest the one evicted. An evicted slot
+#: folds cold on its next read, which costs time and never correctness.
+SLOT_FOLD_CACHE_SLOTS: Final[int] = 64
+
+
+class _Ordinal(NamedTuple):
+    """One entry of a slot's concatenated stream, at a seq that grows across units.
+
+    A crew log's ``seq`` restarts at 1 in every unit file, while the kernel holds ONE
+    watermark per cell and drops an event at or below it. So the units' own seqs cannot
+    be handed over as they are: the second unit's entries all sit at or below the
+    first's and would be dropped as a re-fold -- the collision :func:`advance` names,
+    arriving for a legitimate reason. ``ordinal`` is what the kernel orders by instead:
+    the entry's own seq plus the heights of the units already streamed, which grows
+    across the whole concatenation.
+
+    Two properties come out of that, and both are needed. It never goes backwards, so
+    no entry is wrongly dropped. And one entry always maps to the SAME ordinal, so
+    re-driving a range costs the overlap and nothing else -- which a plain running
+    counter would lose, because a re-read entry would take a new number and be counted
+    a second time.
+
+    ``entry`` is the crew log entry untouched, so the fold sees exactly the record the
+    file holds.
+    """
+
+    ordinal: int
+    entry: Entry
+
+
+def _ordinal_seq(event: _Ordinal) -> int:
+    """The kernel's ordering number for one wrapped entry."""
+    return event.ordinal
+
+
+@dataclass(frozen=True)
+class _UnitMark:
+    """One unit's log identity, height and byte fingerprint, as the file reports them.
+
+    ``origin`` is :func:`log_origin`, the same value the session folds and the on-disk
+    savepoints compare with; ``None`` is an unknown identity and never matches, so a
+    unit whose log cannot be read folds cold. It is in the reuse test because a seq
+    alone cannot tell a log that GREW from one REMOVED AND RECREATED under the same id
+    whose seq has already climbed back to or past the remembered one.
+
+    ``size`` and ``mtime_ns`` are the stat-only fingerprint :func:`_log_identity`
+    already computes for the session fold, over exactly the segment set a walk would
+    read. They are here because identity and height together still describe a log only
+    by how FAR it goes, never by what it says: an already-folded entry rewritten in
+    place keeps its seq, so a mark without them compares equal to a log whose bytes
+    have changed underneath a cell, and the stale cell is then served to
+    :func:`rebuild_from_projection`, which writes it back over the record. A changed
+    fingerprint folds cold instead. Both come from the same call that yields
+    ``origin``, so carrying them costs no extra stat.
+
+    The fingerprint settles the units a continuation does not re-read. It cannot settle
+    the newest one, which a continuation exists to let GROW: an append moves size and
+    mtime by itself, so a stat has nothing left to compare there. That unit is settled
+    instead by :class:`_PrefixSeen`, a decode-free digest of the records already folded,
+    which is the only evidence that distinguishes a file that grew from one truncated
+    and regrown to the same reading.
+    """
+
+    origin: str | None
+    last_seq: int
+    size: int | None = None
+    mtime_ns: int | None = None
+
+
+def _unit_mark(unit_id: str) -> _UnitMark:
+    """*unit_id*'s log identity, newest seq and fingerprint, or an unknown mark.
+
+    ``origin`` is ``None`` for an unreadable or header-less log, and every caller
+    treats that as unknown and folds cold -- which is also why the fingerprint needs no
+    separate unknown test: :func:`_log_identity` returns an identity only when the same
+    stat calls that produced the fingerprint succeeded.
+    """
+    try:
+        handle = open_session_log(unit_id)
+        if handle is None:
+            return _UnitMark(None, 0)
+        origin, size, mtime_ns = _log_identity(handle)
+        # ``last_seq`` on a freshly opened handle is read off the file's tail, which
+        # is what makes it usable as a growth signal for a reader that never appends.
+        return _UnitMark(origin, int(getattr(handle, "last_seq", 0) or 0), size, mtime_ns)
+    except Exception:
+        return _UnitMark(None, 0)
+
+
+def _unit_marks(unit_ids: Sequence[str]) -> "tuple[_UnitMark, ...]":
+    """Every unit's mark, in the order they are folded."""
+    return tuple(_unit_mark(unit_id) for unit_id in unit_ids)
+
+
+#: Stands for "every record in the file" when a digest wants no boundary.
+#: :meth:`CrewLog.raw_prefix_digest` stops at end of file and reports the count it
+#: reached, so a boundary above any real log yields the whole-file digest.
+_ALL_RECORDS = 1 << 62
+
+
+class _PrefixSeen(NamedTuple):
+    """A digest of the newest unit's raw records, read at one known moment.
+
+    ``records`` is a RAW record count, not an entry span: a blank or unparseable
+    interior line is a record to the digest walk while the fold skips it, so the two
+    numbers differ and only the walk's own count can bound it.
+    """
+
+    records: int
+    sha: str
+
+
+def _unit_prefix(unit_id: str, records: int = _ALL_RECORDS) -> "_PrefixSeen | None":
+    """*unit_id*'s raw digest through *records*, or the whole file; ``None`` if unread.
+
+    Decode-free: :meth:`CrewLog.raw_prefix_digest` frames and hashes raw records
+    without parsing any of them, which is what makes this affordable on a read path.
+    A short walk reports the count it reached, and the caller compares counts.
+    """
+    try:
+        handle = open_session_log(unit_id)
+        if handle is None:
+            return None
+        sha, hashed = handle.raw_prefix_digest(records)
+        return _PrefixSeen(records=hashed, sha=sha)
+    except Exception:
+        return None
+
+
+def _prefix_holds(unit_id: str, seen: _PrefixSeen) -> bool:
+    """Whether *unit_id*'s first ``seen.records`` raw records still hash to *seen*.
+
+    Growth above them is not a change, because the walk stops at the count *seen*
+    names. This is the question a stat cannot answer: a size and an mtime say a file
+    moved, never whether the bytes a fold already consumed are the same bytes.
+    """
+    again = _unit_prefix(unit_id, seen.records)
+    return again is not None and again.records == seen.records and again.sha == seen.sha
+
+
+class _SlotFold:
+    """One SLOT-keyed crew-log fold as a :mod:`kiro_crew.projection` unit.
+
+    :class:`_SessionFold` with the two differences a concatenation of units brings.
+    The event arriving is an :class:`_Ordinal`, so ``apply`` unwraps before the fold
+    sees it -- the kernel orders by the wrapper's number and the fold reads the entry.
+    And the starting state is BOUND to the slot for a fold that declares ``bind_slot``,
+    so a slot-keyed fold knows which board it answers for before the first entry
+    instead of guessing it from whichever entry comes first.
+
+    The same-reference rule is kept the same way: an entry the fold cannot be moved by
+    returns the state untouched, and any other entry is stepped onto a copy.
+    """
+
+    def __init__(self, fold: _Fold, slot: str) -> None:
+        self._fold = fold
+        self._slot = slot
+        self.key = fold.name
+        self.state_version = FOLD_STATE_VERSION
+
+    def init(self) -> dict[str, Any]:
+        state = self._fold.start()
+        if self._slot and self._fold.bind_slot is not None:
+            self._fold.bind_slot(state, self._slot)
+        return state
+
+    def apply(self, state: dict[str, Any], event: _Ordinal) -> dict[str, Any]:
+        entry = event.entry
+        if not self._fold.touched_by(entry):
+            return state
+        grown = self._fold.copied(state)
+        self._fold.step(grown, entry)
+        return grown
+
+    def view(self, state: dict[str, Any]) -> dict[str, Any]:
+        return self._fold.render(state)
+
+
+class _SlotStream:
+    """A slot's units as one stream the kernel can order, oldest unit first.
+
+    Each unit's base is the total height of the units ALREADY STREAMED, counted as
+    this pass actually saw them rather than taken from a sampled height -- so an
+    append landing in an earlier unit while this runs still cannot push one of its
+    entries onto an ordinal a later unit has already used. A unit with no log
+    contributes nothing and is skipped, the same as the cold fold: a slot whose
+    oldest unit was collected by retention still folds the ones it has.
+
+    Iterating is a GENERATOR, so the kernel folds one entry at a time and a cold
+    fold of a long slot holds no more than that.
+
+    Two numbers the stream cannot return and its caller needs afterwards.
+    :attr:`heights` is the last seq FOLDED from each unit that had a log, which is
+    what lets the memo record what this pass really consumed instead of what was
+    sampled before it. :attr:`reached` is that height for the newest such unit, the
+    only figure a later read of the same slot can compare against and the one
+    :func:`fold_slot_checkpoint` has always answered with; it starts at *since*, so a
+    warm tail that turned out to be empty reports the position it resumed from rather
+    than dropping to zero.
+    """
+
+    def __init__(self, unit_ids: Sequence[str], *, base: int = 0, since: int = 0) -> None:
+        self._unit_ids = tuple(unit_ids)
+        self._base = base
+        self._since = since
+        self.reached = since
+        self.heights: dict[str, int] = {}
+
+    def __iter__(self) -> "Iterator[_Ordinal]":
+        base = self._base
+        for unit_id in self._unit_ids:
+            handle = open_session_log(unit_id)
+            if handle is None:
+                continue
+            top = base
+            reached = self._since
+            for entry in handle.iter_from(self._since + 1, known=KNOWN_TYPES):
+                ordinal = base + entry.seq
+                top = max(top, ordinal)
+                reached = max(reached, entry.seq)
+                yield _Ordinal(ordinal, entry)
+            base = top
+            self.heights[unit_id] = reached
+            self.reached = reached
+
+
+@dataclass
+class _SlotMemo:
+    """One slot fold kept warm: the kernel cell holding it, and what it folded over.
+
+    The registry is per (slot, fold), not one shared instance, and that is a
+    correctness requirement rather than a preference: ``prime`` folds and RESETS every
+    definition registered in it, so a shared registry would make a cold refold of one
+    fold discard another's warm cell -- and the three slot folds are read over
+    different unit lists, so they go stale independently.
+
+    ``marks`` is the per-unit watermark vector the reuse test compares, and the bases
+    the ordinals are built from are derived from it: unit *i*'s base is the total
+    height of the units before it. That derivation is what makes a warm continuation
+    land on the same ordinals the earlier pass used, and it holds because a memo is
+    only kept when every earlier unit's mark is unchanged.
+
+    A memo is never edited once stored. A read that carries one forward stores a NEW
+    memo over the SAME registry, so two reads racing on one slot cannot leave a pair of
+    fields half updated: the registry's cell is the single truth and holds its own lock,
+    and re-driving a range it has already folded is dropped on its watermark rather
+    than counted twice.
+    """
+
+    registry: ProjectionRegistry
+    store: str
+    units: "tuple[str, ...]"
+    marks: "tuple[_UnitMark, ...]"
+    reached: int
+    #: The NEWEST unit's raw digest as of the pass that built this cell, and the one
+    #: thing a continuation must check that a mark cannot. Every earlier unit is held
+    #: to whole-mark equality, so a rewrite there already folds cold; the newest unit is
+    #: admitted precisely because it GREW, and growth moves its size and mtime by
+    #: itself, which leaves a stat with nothing to say about the bytes underneath.
+    #: ``None`` means no digest is vouched for -- the file moved during the pass, or
+    #: could not be read -- and a continuation is refused rather than trusted.
+    prefix: "_PrefixSeen | None" = None
+
+
+_slot_memos: "dict[tuple[str, str, str], _SlotMemo]" = {}
+_slot_memo_guard = threading.Lock()
+
+
+def forget_slot_folds(slot: str = "", name: str = "") -> None:
+    """Drop warm slot folds, so the next read folds cold.
+
+    Everything when called with no argument; one slot's, or one fold of one slot's,
+    when named. The memo is an optimization with no answer of its own, so dropping it
+    costs time and never correctness -- which is what makes this safe as the read
+    path's own response to doubt, and what a test isolating one slot's log from
+    another's needs.
+    """
+    home = str(data_home())
+    with _slot_memo_guard:
+        if not slot and not name:
+            _slot_memos.clear()
+            return
+        for key in [
+            held
+            for held in _slot_memos
+            if held[0] == home and (not slot or held[1] == slot) and (not name or held[2] == name)
+        ]:
+            del _slot_memos[key]
+
+
+def _remember_slot_fold(key: "tuple[str, str, str]", memo: _SlotMemo) -> None:
+    """Keep *memo* under *key*, capped by count; the oldest slot is evicted first."""
+    with _slot_memo_guard:
+        _slot_memos[key] = memo
+        while len(_slot_memos) > SLOT_FOLD_CACHE_SLOTS:
+            _slot_memos.pop(next(iter(_slot_memos)))
+
+
+def _continuable(marks: "tuple[_UnitMark, ...]", held: "tuple[_UnitMark, ...]") -> bool:
+    """Whether *marks* is *held* with the newest unit grown, and nothing else moved.
+
+    The one shape a warm cell can be carried over, because its state was folded
+    through every earlier unit already. Everything else describes different bytes and
+    folds cold: a changed unit list, a unit whose identity changed or is unknown, an
+    EARLIER unit that grew (a forced reset tears a session down while a turn is still
+    appending through the handle it holds, so an earlier unit is not closed to writes),
+    an earlier unit whose bytes changed without its seq moving, and any unit whose seq
+    went backwards.
+
+    "Nothing else moved" is decided by whole-mark equality, so it covers each earlier
+    unit's stat fingerprint as well as its identity and height -- that is what makes an
+    in-place rewrite of an already-folded entry a cold fold rather than an equal
+    comparison. The newest unit is compared on identity and growth alone, because this
+    function exists to admit exactly its growth and an append moves its fingerprint by
+    itself.
+    """
+    return (
+        bool(marks)
+        and len(marks) == len(held)
+        and all(mark.origin is not None for mark in marks)
+        and marks[:-1] == held[:-1]
+        and marks[-1].origin == held[-1].origin
+        and marks[-1].last_seq > held[-1].last_seq
+    )
+
+
+def fold_slot_warm(name: str, unit_ids: Sequence[str], *, slot: str) -> Checkpoint:
+    """*name* folded over *slot*'s units, CONTINUED from where the last read left it.
+
+    :func:`fold_slot_checkpoint`'s answer, reached incrementally. Folding is O(the
+    log), not O(the record): the reader walks every line of every unit to find the few
+    that move this fold, and a slot's logs carry its message bodies. The readers that
+    pay that are loops that wake on a timer, so the fold is kept in memory per slot and
+    advanced over the entries that arrived since -- through the projection kernel,
+    whose watermark drops an entry already folded, so the resumed answer and the
+    from-scratch answer come out of one implementation.
+
+    A warm read reads ONE file: the newest unit, from its remembered position. A cold
+    read streams every unit. Both go through the kernel, so there is no second folding
+    path that could disagree with the first about the same bytes.
+
+    A continuation also HASHES that one file's already-folded records before trusting
+    them (:func:`_prefix_holds`). The store rewrites a committed prefix on two recovery
+    paths -- an unreachable chunk group is truncated away and closers are appended with
+    seqs continuing from the cut, and a failed append is truncated back after its bytes
+    reached the disk -- and a reader holds no append lock while either runs. Both leave
+    a file that has grown since the last read and reuses seqs the fold already consumed,
+    which is a pure append to every stat and to every seq comparison. The digest is
+    decode-free, so it costs a byte walk of one unit against the parse-and-fold walk of
+    every unit that a cold read would pay.
+
+    THE INVARIANT: the heights sampled before a pass reads are its READ PLAN, never the
+    cell's claim about itself. What a memo remembers is what the pass actually FOLDED
+    (:func:`_folded_marks`). Two things follow. An append landing mid-read is folded in
+    and the next read starts above it, so it is neither dropped nor counted twice. And a
+    slot that has not moved compares equal and is answered from the cell -- where a memo
+    holding the sample would sit permanently one entry short of itself and send every
+    later read back to the file for a tail it has already folded.
+
+    In memory rather than on disk, per process, and best-effort by contract: a second
+    process folds cold, and so does the first after an eviction. What must never happen
+    is a WRONG answer, so every condition :func:`_continuable` does not admit refolds
+    from empty rather than carrying state that describes other bytes.
+    """
+    require_name(name)
+    key = (str(data_home()), slot, name)
+    with _slot_memo_guard:
+        memo = _slot_memos.get(key)
+    marks = _unit_marks(unit_ids)
+    units = tuple(unit_ids)
+    known = all(mark.origin is not None for mark in marks)
+    if memo is not None and memo.units == units:
+        if known and memo.marks == marks:
+            return _slot_checkpoint(name, memo)
+        if (
+            _continuable(marks, memo.marks)
+            and memo.prefix is not None
+            and _prefix_holds(units[-1], memo.prefix)
+        ):
+            before = _unit_prefix(units[-1])
+            tail = _SlotStream(
+                units[-1:],
+                base=sum(mark.last_seq for mark in marks[:-1]),
+                since=memo.reached,
+            )
+            for event in tail:
+                memo.registry.drive(memo.store, event)
+            grown = _SlotMemo(
+                registry=memo.registry,
+                store=memo.store,
+                units=units,
+                marks=_folded_marks(units, marks, tail, carried=memo.marks),
+                reached=tail.reached,
+                prefix=_vouched(units[-1], before),
+            )
+            _remember_slot_fold(key, grown)
+            return _slot_checkpoint(name, grown)
+    cold = _SlotStream(units)
+    registry = ProjectionRegistry(seq_of=_ordinal_seq)
+    registry.register(_SlotFold(_FOLDS[name], slot))
+    before = _unit_prefix(units[-1]) if units else None
+    registry.prime(slot, cold)
+    fresh = _SlotMemo(
+        registry=registry,
+        store=slot,
+        units=units,
+        marks=_folded_marks(units, marks, cold),
+        reached=cold.reached,
+        prefix=_vouched(units[-1], before) if units else None,
+    )
+    if known:
+        _remember_slot_fold(key, fresh)
+    return _slot_checkpoint(name, fresh)
+
+
+def _vouched(unit_id: str, before: "_PrefixSeen | None") -> "_PrefixSeen | None":
+    """*before*, but only if *unit_id* is byte-identical now to what it was then.
+
+    A digest read only AFTER a pass would certify bytes the pass never read: an entry
+    rewritten while the fold was running would be hashed together with state folded
+    from its earlier value, every later continuation would recompute that same digest,
+    match, and keep serving the state. So the digest is taken before the pass and
+    confirmed after it, and a file that moved in between vouches for nothing -- which
+    costs the next read a cold fold and never a wrong answer.
+    """
+    if before is None:
+        return None
+    return before if _unit_prefix(unit_id) == before else None
+
+
+def _folded_marks(
+    units: "tuple[str, ...]",
+    sampled: "tuple[_UnitMark, ...]",
+    stream: _SlotStream,
+    *,
+    carried: "tuple[_UnitMark, ...] | None" = None,
+) -> "tuple[_UnitMark, ...]":
+    """*sampled*, with each streamed unit's height replaced by what was FOLDED.
+
+    This is where :func:`fold_slot_warm`'s invariant is applied: the sampled heights are
+    that read's plan, and what a memo remembers is what its pass consumed.
+
+    The FINGERPRINT is carried across as sampled, and deliberately not re-stat'ed after
+    the pass. A fingerprint taken afterwards would cover bytes this pass may not have
+    folded -- an entry appended between the last read and that stat -- and the next read
+    would then compare equal and serve a cell that is missing it. Sampled, the error can
+    only fall the other way: a slot whose bytes moved mid-pass fails the comparison, and
+    the next read folds cold, which costs time and not correctness.
+
+    *carried* is a warm continuation's earlier marks, which this pass did not read and
+    has already found unchanged; only the newest unit is re-stated from the stream.
+    """
+    base = list(carried if carried is not None else sampled)
+    return tuple(
+        _UnitMark(
+            sampled[index].origin,
+            stream.heights.get(unit, base[index].last_seq),
+            sampled[index].size,
+            sampled[index].mtime_ns,
+        )
+        for index, unit in enumerate(units)
+    )
+
+
+def _slot_checkpoint(name: str, memo: _SlotMemo) -> Checkpoint:
+    """*memo*'s kernel cell as the checkpoint this module's callers carry.
+
+    ``last_seq`` is the newest unit's OWN seq, not the kernel's ordinal, and that is
+    the contract rather than an implementation detail: a writer advances this
+    checkpoint over the entry it is appending to answer with the record that entry
+    produces, and that entry's seq comes from its file. An ordinal here would sit far
+    above it and :func:`advance` would refuse the entry as already folded.
+
+    The state comes back AS THE CELL HOLDS IT, not copied, which is what the folds'
+    own discipline makes safe: ``apply`` returns a new object rather than editing this
+    one, so a later read replaces the cell's state instead of moving what a caller
+    kept, and the callers that continue this checkpoint go through :func:`advance`,
+    which copies before its first step.
+    """
+    state, _watermark = memo.registry.cells(memo.store)[name]
+    return Checkpoint(name=name, last_seq=max(memo.reached, 0), state=state)
 
 
 def slot_of_session(session_id: str) -> str:
@@ -2784,7 +3276,7 @@ def _work_units(slot: str, conductor_units: Sequence[str]) -> "tuple[str, ...]":
         if handle is None:
             continue
         for entry in handle.iter_from(1, known=KNOWN_TYPES):
-            if entry.type != "work/recorded":
+            if entry.type != WORK_ENTRY_TYPE:
                 continue
             data = entry.data
             if data.get("action") != "bind" or _as_str(data.get("slot")) != slot:
@@ -2829,7 +3321,7 @@ def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
                 continue
             names_board = False
             for entry in handle.iter_from(1, known=KNOWN_TYPES):
-                if entry.type == "work/recorded" and _as_str(entry.data.get("slot")) == slot:
+                if entry.type == WORK_ENTRY_TYPE and _as_str(entry.data.get("slot")) == slot:
                     names_board = True
                     break
             if names_board:
@@ -2954,7 +3446,7 @@ def _work_bind_slot(state: dict[str, Any], slot: str) -> None:
 
 
 def _work_step(state: dict[str, Any], entry: Entry) -> None:
-    if entry.type != "work/recorded":
+    if entry.type != WORK_ENTRY_TYPE:
         return
     data = entry.data
     if not state["slot"]:
@@ -3480,12 +3972,34 @@ _FOLDS: Final[dict[str, _Fold]] = {
         copy_state=_approvals_copy,
     ),
     "class": _Fold("class", _class_start, _class_step, _class_render, copy_state=_flat_copy),
-    # The SLOT-keyed folds are driven by ``advance`` and ``fold_slot_checkpoint``, not
-    # by the kernel registry, so they declare neither piece and fall back to the deep
-    # copy ``advance`` already makes.
-    "ledger": _Fold("ledger", _ledger_start, _ledger_step, _ledger_render),
-    "radar": _Fold("radar", _radar_start, _radar_step, _radar_render),
-    "work": _Fold("work", _work_start, _work_step, _work_render, bind_slot=_work_bind_slot),
+    # The SLOT-keyed folds each answer to exactly ONE entry type -- their ``step``
+    # returns on its first line for anything else -- so ``affects`` names that type and
+    # the kernel skips both the copy and the step for every other entry. A slot's log
+    # is mostly message bodies and tool rows, so that is nearly all of it. They declare
+    # no ``copy_state`` and fall back to the deep copy, which every fold state here is
+    # bounded by construction for.
+    "ledger": _Fold(
+        "ledger",
+        _ledger_start,
+        _ledger_step,
+        _ledger_render,
+        affects=frozenset({LEDGER_ENTRY_TYPE}),
+    ),
+    "radar": _Fold(
+        "radar",
+        _radar_start,
+        _radar_step,
+        _radar_render,
+        affects=frozenset({RADAR_ENTRY_TYPE}),
+    ),
+    "work": _Fold(
+        "work",
+        _work_start,
+        _work_step,
+        _work_render,
+        bind_slot=_work_bind_slot,
+        affects=frozenset({WORK_ENTRY_TYPE}),
+    ),
 }
 
 if tuple(_FOLDS) != FOLD_NAMES:  # pragma: no cover - import-time consistency

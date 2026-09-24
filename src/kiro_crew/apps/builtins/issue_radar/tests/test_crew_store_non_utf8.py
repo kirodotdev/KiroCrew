@@ -21,6 +21,7 @@ import unittest
 from pathlib import Path
 
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store
+from kiro_crew.crew_log import projection as crew_log_projection
 
 OWNER = "o"
 REPO = "r"
@@ -83,8 +84,8 @@ class TestTheCarrySurvivesNonUtf8PreProjectionFiles(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         crew_log_emit.reset_caches()
-        crew_store._fold_cache.clear()
-        self.addCleanup(crew_store._fold_cache.clear)
+        crew_log_projection.forget_slot_folds()
+        self.addCleanup(crew_log_projection.forget_slot_folds)
         self.addCleanup(crew_log_emit.reset_caches)
         self.addCleanup(crew_log_emit.drain_for_shutdown, 2.0)
 

@@ -72,13 +72,13 @@ def _isolate_crew_log(case: unittest.TestCase) -> None:
     env.start()
     case.addCleanup(env.stop)
     crew_log_emit.reset_caches()
-    crew_store._fold_cache.clear()
+    crew_log.forget_slot_folds()
     _UNITS.clear()
 
     def _teardown() -> None:
         crew_log_emit.drain_for_shutdown(timeout=2.0)
         crew_log_emit.reset_caches()
-        crew_store._fold_cache.clear()
+        crew_log.forget_slot_folds()
         _UNITS.clear()
 
     case.addCleanup(_teardown)

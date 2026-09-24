@@ -47,6 +47,7 @@ from conftest import make_dir_link
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.store import CrewLog
 
@@ -61,12 +62,12 @@ def _isolated_crew_log(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(crew_log_emit.CREW_LOG_ENV, "1")
     crew_log_emit.reset_caches()
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
     cs._undrained.clear()
     yield
     crew_log_emit.drain_for_shutdown(timeout=2.0)
     crew_log_emit.reset_caches()
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
     cs._undrained.clear()
 
 
@@ -828,51 +829,8 @@ def test_a_read_continued_from_its_checkpoint_equals_a_cold_fold(tmp_path):
     for number, phase in ((7, "claimed"), (9, "investigating"), (7, "implementing")):
         _item(tmp_path, cid, sid, number, {"phase": phase}, "claim")
         warm = cs.read_ledger(OWNER, REPO, cid, tmp_path)
-        cs._fold_cache.clear()
+        crew_log_projection.forget_slot_folds()
         assert cs.read_ledger(OWNER, REPO, cid, tmp_path) == warm
-
-
-class _GuardedOnly(dict):
-    """A fold cache that refuses any access while the guard is NOT held.
-
-    Reads and writes run on worker threads, so the cache's get, set and eviction
-    must all happen under ``_fold_cache_guard``; an eviction is two steps (pick the
-    oldest key, pop it) and two threads taking them unguarded can pop the same key
-    or resize the dict under the other's iterator. This dict makes an unguarded
-    access a failure the test sees, not a race a crew sees.
-    """
-
-    def _held(self):
-        assert cs._fold_cache_guard.locked(), "fold cache touched without the guard"
-
-    def get(self, key, default=None):
-        self._held()
-        return super().get(key, default)
-
-    def __setitem__(self, key, value):
-        self._held()
-        super().__setitem__(key, value)
-
-    def pop(self, key, *default):
-        self._held()
-        return super().pop(key, *default)
-
-    def __iter__(self):
-        self._held()
-        return super().__iter__()
-
-
-def test_every_fold_cache_access_holds_the_guard(tmp_path, monkeypatch):
-    monkeypatch.setattr(cs, "_fold_cache", _GuardedOnly())
-    crew, sid = _live_crew(tmp_path)
-    cid = crew["id"]
-    _item(tmp_path, cid, sid, 7, {"phase": "claimed"}, "claim")  # write path: fold + remember
-    read = cs.read_work_item(OWNER, REPO, cid, 7, tmp_path)  # read path: the cached get
-    assert read is not None and read["phase"] == "claimed"
-    # Fill past the slot count so the eviction loop runs under the guard too.
-    for n in range(cs._FOLD_CACHE_SLOTS + 3):
-        cs._remember_fold((str(tmp_path), f"crew-{n}"), ("u",), (1,), None)
-    assert len(cs._fold_cache) == cs._FOLD_CACHE_SLOTS
 
 
 def test_the_clearable_fields_are_one_list_everywhere():
@@ -1377,7 +1335,7 @@ def test_the_carry_marks_its_files_only_after_every_entry_landed(tmp_path, monke
     # The next write carries it again; this time it lands, the marker appears and
     # the write itself goes through.
     monkeypatch.setattr(crew_log_emit, "on_radar_recorded", real_recorded)
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
     _record(tmp_path, cid, sid, 7, {"phase": "claimed"}, "claim", "took #7")
     assert marker.is_file()
     carried = cs.read_work_item(OWNER, REPO, cid, 2251, tmp_path)
@@ -2045,7 +2003,7 @@ def test_reads_apply_units_in_the_order_they_recorded_not_header_order(tmp_path,
         "session_units_for_slot",
         lambda slot, **kw: tuple(reversed(real(slot, **kw))),
     )
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
     assert cs.crew_log_units(OWNER, REPO, cid, tmp_path) == (first, second)
     item = cs.read_work_item(OWNER, REPO, cid, 7, tmp_path)
     assert item is not None and item["phase"] == "implementing"
@@ -2181,7 +2139,7 @@ def test_the_unit_order_write_refuses_a_linked_directory(tmp_path):
     crews.rename(keep)
     make_dir_link(crews, victim_dir)
     try:
-        cs._fold_cache.clear()
+        crew_log_projection.forget_slot_folds()
         _record(tmp_path, cid, sid, 7, {"next": "read it"}, "claim", "progress")
         assert list(victim_dir.iterdir()) == [], "nothing written into the linked directory"
     finally:
@@ -2250,7 +2208,7 @@ def test_a_unit_listing_that_fails_refuses_the_write_and_empties_the_read(tmp_pa
         raise OSError("the store could not be scanned")
 
     monkeypatch.setattr(crew_log_store, "session_units_for_slot", listing_fails)
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
     assert cs.list_work_items(OWNER, REPO, cid, tmp_path) == [], "a read answers the empty record"
     with pytest.raises(cs.CrewLedgerNotRecorded):
         # Issue 8 entering an editing phase would be a SECOND editor beside 7.
@@ -2281,7 +2239,7 @@ def test_a_unit_holding_entries_it_cannot_prove_refuses_the_write(tmp_path, monk
 
     monkeypatch.setattr(crew_log_store, "_read_header_line", header_will_not_read)
     monkeypatch.setattr(crew_log_store, "_slot_index", None)
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
 
     # A READ takes the shorter listing: it says nothing false about what it could read.
     assert crew_log_store.session_units_for_slot(slot) == (live,)
@@ -2309,7 +2267,7 @@ def test_a_unit_directory_with_nothing_in_it_yet_does_not_refuse_the_write(tmp_p
     root = crew_log_store._checked_crew_log_root(KIND_SESSION)
     (root / "acp-mid-create").mkdir()
     crew_log_store._slot_index = None
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
 
     assert crew_log_store.session_units_for_slot(cs.slot_key_for(cid), strict=True) == (sid,)
     item = _item(tmp_path, cid, sid, 11, {"phase": "implementing"})
@@ -2338,7 +2296,7 @@ def test_a_cached_listing_that_is_short_a_unit_still_refuses_the_write(tmp_path,
 
     monkeypatch.setattr(crew_log_store, "_read_header_line", header_will_not_read)
     monkeypatch.setattr(crew_log_store, "_slot_index", None)
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
 
     # The read scans and CACHES the map, naming the child it could not prove.
     assert crew_log_store.session_units_for_slot(slot) == (live,)
@@ -2451,7 +2409,7 @@ def test_a_pass_after_another_crews_decision_defers_to_it_whatever_the_clocks_sa
     }
     crew_log_emit.on_radar_recorded(sid_b, stale_clock)
     assert crew_log_emit.flush(timeout=5)
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
     standing = cs.read_skips(OWNER, REPO, tmp_path)["42"]
     assert (standing["crew_id"], standing["reason"]) == (a["id"], "A saw it first")
     # The control: the same row WITHOUT the token would have stood by its older clock.
@@ -2537,7 +2495,7 @@ def test_a_number_outside_the_tools_range_is_not_retained_from_the_log(tmp_path)
         },
     )
     assert crew_log_emit.flush(timeout=10.0)
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
 
     ledger = cs.read_ledger(OWNER, REPO, cid, tmp_path)
     assert {i["number"] for i in ledger["items"]} == {7}, "the oversized number is not an item"
@@ -2631,9 +2589,9 @@ def test_a_crew_whose_log_cannot_be_folded_reads_as_empty_and_not_as_a_crash(tmp
     def raising(*a, **kw):
         raise OSError("the log cannot be read")
 
-    real_fold = cs._projection().fold_slot_checkpoint
-    cs._fold_cache.clear()
-    monkeypatch.setattr(cs._projection(), "fold_slot_checkpoint", raising)
+    real_fold = cs._projection().fold_slot_warm
+    crew_log_projection.forget_slot_folds()
+    monkeypatch.setattr(cs._projection(), "fold_slot_warm", raising)
 
     assert cs.read_ledger(OWNER, REPO, cid, tmp_path)["items"] == [], "reads as the empty record"
     assert cs.read_skips(OWNER, REPO, tmp_path) == {}, "the repository's read still answers"
@@ -2643,8 +2601,8 @@ def test_a_crew_whose_log_cannot_be_folded_reads_as_empty_and_not_as_a_crash(tmp
     with pytest.raises((OSError, cs.CrewLedgerNotRecorded)):
         _record(tmp_path, cid, sid, 9, {"phase": "claimed"}, "claim", "took #9")
 
-    monkeypatch.setattr(cs._projection(), "fold_slot_checkpoint", real_fold)
-    cs._fold_cache.clear()
+    monkeypatch.setattr(cs._projection(), "fold_slot_warm", real_fold)
+    crew_log_projection.forget_slot_folds()
     assert cs.is_skipped(OWNER, REPO, 41, tmp_path), "nothing was lost while it read as empty"
 
 
@@ -2942,7 +2900,7 @@ def test_a_crew_that_only_swept_is_not_previewed_for_a_file_that_appears_later(t
     assert not cs._carry_pending(OWNER, REPO, cid, tmp_path)
 
     _legacy_item(tmp_path, cid, 4242)
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
 
     assert cs.read_work_item(OWNER, REPO, cid, 4242, tmp_path) is None
     assert cs.list_work_items(OWNER, REPO, cid, tmp_path) == []
@@ -3059,7 +3017,7 @@ def test_an_append_that_landed_after_the_flush_budget_publishes_its_unit_precede
     # no next write of its own to claim precedence.
     monkeypatch.setattr(crew_log_emit, "flush", real_flush)
     assert real_flush(timeout=10.0)
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
     successor = _unit(cid)
     assert successor != sid
     _record(tmp_path, cid, successor, 8, {"phase": "claimed"}, "claim", "took #8")
@@ -3153,7 +3111,7 @@ def test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed(tm
 
     fresh = cs.read_ledger(OWNER, REPO, cid, tmp_path)
     assert {i["number"] for i in fresh["items"]} == {11, 13, 15, 17}, "no item of the retired log"
-    cs._fold_cache.clear()
+    crew_log_projection.forget_slot_folds()
     assert cs.read_ledger(OWNER, REPO, cid, tmp_path) == fresh
 
 

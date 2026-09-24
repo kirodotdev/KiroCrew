@@ -43,6 +43,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import provider
 from kiro_crew.apps.builtins.issue_radar.backend import store as store_mod
 from kiro_crew.apps.builtins.issue_radar.backend import watch as watch_mod
+from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.safety_override import reset_singleton, safety_override
 
@@ -248,12 +249,12 @@ def _isolated_crew_log():
             from kiro_crew.crew_log import emit as crew_log_emit
 
             crew_log_emit.reset_caches()
-            cs._fold_cache.clear()
+            crew_log_projection.forget_slot_folds()
             _UNITS.clear()
             yield
             crew_log_emit.drain_for_shutdown(timeout=2.0)
             crew_log_emit.reset_caches()
-            cs._fold_cache.clear()
+            crew_log_projection.forget_slot_folds()
             _UNITS.clear()
 
 

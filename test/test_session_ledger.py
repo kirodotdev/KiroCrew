@@ -42,6 +42,7 @@ from kiro_crew import crew_log as lg
 from kiro_crew import session_ledger as sl
 from kiro_crew.crew_log import CrewLog
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.platform_compat import IS_POSIX
 
 SESSION = "acp-1"
@@ -59,10 +60,10 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     crew_log_emit.reset_caches()
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     yield
     crew_log_emit.reset_caches()
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
 
 
 def _unit(unit_id: str = SESSION, *, slot: str) -> None:

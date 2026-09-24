@@ -58,6 +58,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     store,
 )
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.store import CrewLog
 
@@ -293,8 +294,8 @@ class _CrewRouteCase(unittest.IsolatedAsyncioTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         crew_log_emit.reset_caches()
-        crew_store._fold_cache.clear()
-        self.addCleanup(crew_store._fold_cache.clear)
+        crew_log_projection.forget_slot_folds()
+        self.addCleanup(crew_log_projection.forget_slot_folds)
         self.addCleanup(crew_log_emit.reset_caches)
         self.addCleanup(crew_log_emit.drain_for_shutdown, 2.0)
         # The app every request carries unless a test builds its own: its state maps

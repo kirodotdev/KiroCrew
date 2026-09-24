@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -37,10 +38,10 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     crew_log_emit.reset_caches()
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     yield
     crew_log_emit.reset_caches()
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
 
 
 def _unit(unit_id: str = SESSION, *, slot: str = SLOT) -> None:
@@ -494,7 +495,7 @@ def test_a_subagent_entry_does_not_stop_the_fold(caplog):
     assert sl.LEDGER_ENTRY_TYPE in types and "subagent/spawned" in types
     assert types.index("subagent/spawned") > types.index(sl.LEDGER_ENTRY_TYPE)
 
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     with caplog.at_level("WARNING", logger="kiro_crew.session_ledger"):
         state = sl.read_state(SLOT)
     assert state.get("goal") == "ship the declared types"
@@ -651,7 +652,7 @@ def test_a_carried_document_is_not_resurrected_after_a_permanent_delete():
     crew_log_emit.reset_caches()
     shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, SESSION))
     crew_log_emit.reset_caches()
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert sl.ledger_dir(SLOT).exists(), "the legacy store is preserved by the funnel"
 
     # A successor on the same recycled slot key starts clean.
@@ -854,7 +855,7 @@ def test_a_carry_whose_append_may_still_be_queued_keeps_its_claim():
 
     # And the state is not lost by holding the claim: the queued append is the one that
     # lands, so the record reads it and exactly one carried entry exists.
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert sl.read_state(SLOT)["goal"] == "owed"
     carried = [
         e
@@ -883,7 +884,7 @@ def test_a_carry_the_queue_drained_without_releases_its_claim():
         crew_log_emit.on_ledger_recorded = real  # type: ignore[assignment]
     assert not (sl.control_dir(SLOT) / sl._CARRIED_FILE).exists()
 
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     sl.record(SLOT, session_id=SESSION, next_step="n")
     assert sl.read_state(SLOT)["goal"] == "owed"
 
@@ -921,7 +922,7 @@ def test_the_recorded_order_beats_a_backward_header_clock():
 
     real = store.session_units_for_slot
     store.session_units_for_slot = lambda slot: tuple(reversed(real(slot)))  # type: ignore[assignment]
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     try:
         # No live session id, so ordering is all the fold has to go on.
         assert sl.read_state(SLOT)["goal"] == "second recorded"
@@ -938,7 +939,7 @@ def test_the_public_slot_fold_applies_the_same_exclusions():
     assert proj.read_slot_projection(SLOT, sl._FOLD_NAME).value["goal"] == ("deleted conversation")
 
     sl.exclude_units(SLOT, sl.crew_log_units(SLOT))
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert proj.read_slot_projection(SLOT, sl._FOLD_NAME).value["goal"] == ""
 
 
@@ -952,13 +953,13 @@ def test_a_unit_evicted_from_the_order_log_applies_before_the_kept_tail(monkeypa
     third = "acp-3"
     _unit(SESSION)
     sl.record(SLOT, session_id=SESSION, goal="oldest")
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     _unit(LATER_SESSION)
     sl.record(SLOT, session_id=LATER_SESSION, next_step="n")
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     _unit(third)
     sl.record(SLOT, session_id=third, goal="newest")
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
 
     assert sl._recorded_unit_order(SLOT) == (LATER_SESSION, third)
     assert sl.crew_log_units(SLOT) == (SESSION, LATER_SESSION, third)
@@ -979,7 +980,7 @@ def test_a_repeated_id_in_the_order_log_folds_its_unit_once():
 
     assert sl._recorded_unit_order(SLOT) == (SESSION,)
     assert sl.crew_log_units(SLOT) == (SESSION,)
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert sl.read_state(SLOT)["goal"] == "once"
 
 
@@ -1018,7 +1019,7 @@ def test_a_caller_whose_key_is_not_the_slot_key_reads_its_own_record():
     _unit(SESSION, slot="chat-real-slot")
     caller = "cron:42"
     sl.record(caller, session_id=SESSION, goal="recorded by a cron session")
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert sl.read_state(caller, SESSION)["goal"] == "recorded by a cron session"
     assert sl.canonical_slot(caller, SESSION) == "chat-real-slot"
 
@@ -1039,7 +1040,7 @@ def test_every_control_file_keys_off_the_canonical_slot():
 
     # The funnel's own spelling, and the cron caller's read must honour it.
     sl.exclude_units("chat-real-slot", (SESSION,))
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert sl.read_state(caller, SESSION)["goal"] == ""
 
 
@@ -1051,7 +1052,7 @@ def test_a_record_written_under_the_caller_key_keeps_reading():
     """
     _unit(SESSION, slot="cron:42")  # a unit whose header names the caller's own key
     sl.record("cron:42", session_id=SESSION, goal="written under the alias")
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     _unit(LATER_SESSION, slot="chat-real-slot")  # the live unit, canonically named
     sl.record("cron:42", session_id=LATER_SESSION, next_step="written canonically")
 
@@ -1088,7 +1089,7 @@ def test_durability_is_answered_from_this_units_own_growth():
         crew_log_emit.on_ledger_recorded = real  # type: ignore[assignment]
     assert durable is False
 
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     _state, durable = sl.record_update(SLOT, session_id=SESSION, goal="g2")
     assert durable is True
 
@@ -1106,7 +1107,7 @@ def test_the_order_file_is_compacted_rather_than_grown_forever(monkeypatch):
         unit = f"acp-{n}"
         _unit(unit)
         sl.record(SLOT, session_id=unit, next_step=f"n{n}")
-        sl._fold_cache.clear()
+        crew_log.forget_slot_folds()
         assert path.stat().st_size <= sl._MAX_ORDER_BYTES + 32, n
 
     kept = sl._recorded_unit_order(SLOT)
@@ -1138,7 +1139,7 @@ def test_an_unreadable_legacy_document_refuses_rather_than_reading_as_empty():
     finally:
         Path.stat = real  # type: ignore[assignment]
 
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     sl.record(SLOT, session_id=SESSION, next_step="n")
     assert sl.read_state(SLOT)["goal"] == "must survive a transient error"
 
@@ -1190,7 +1191,7 @@ def test_a_delete_consumes_the_carry_claim_so_no_later_session_re_carries():
 
     # A successor on the same recycled slot key reads empty rather than the deleted goal.
     _unit(LATER_SESSION)
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     sl.record(SLOT, session_id=LATER_SESSION, next_step="fresh")
     assert sl.read_state(SLOT, LATER_SESSION)["goal"] == ""
 
@@ -1210,7 +1211,7 @@ def test_an_oversized_exclusion_file_is_rejected_rather_than_truncated():
 
     # The fold FAILS CLOSED to the empty record rather than folding units it cannot
     # prove are still included...
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert sl.read_state(SLOT) == sl._empty_state()
     # ...and the write refuses outright rather than rewriting what it could read.
     with pytest.raises(sl.LedgerExclusionError):
@@ -1236,7 +1237,7 @@ def test_an_unreadable_exclusion_list_reads_empty_rather_than_deleted_state():
         return real(path, **kw)
 
     sl._read_lines = _unreadable  # type: ignore[assignment]
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     try:
         assert sl.read_state(SLOT) == sl._empty_state()
     finally:
@@ -1272,7 +1273,7 @@ def test_a_claim_error_refuses_the_update_instead_of_skipping_the_carry():
         sl._control_file = real  # type: ignore[assignment]
 
     # Nothing was appended, so the retry still finds an empty record and carries.
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     sl.record(SLOT, session_id=SESSION, next_step="n")
     assert sl.read_state(SLOT)["goal"] == "must not be lost"
 
@@ -1373,7 +1374,7 @@ def test_an_excluded_unit_is_never_folded_again():
     assert sl.read_state(SLOT)["goal"] == "deleted conversation"
 
     sl.exclude_units(SLOT, sl.crew_log_units(SLOT))
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     state = sl.read_state(SLOT)
     assert state["goal"] == ""
     assert state["next"] == ""
@@ -1384,7 +1385,7 @@ def test_an_exclusion_does_not_reach_a_unit_created_afterwards():
     _unit(SESSION)
     sl.record(SLOT, session_id=SESSION, goal="deleted")
     sl.exclude_units(SLOT, sl.crew_log_units(SLOT))
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
 
     _unit(LATER_SESSION)
     state = sl.record(SLOT, session_id=LATER_SESSION, goal="the successor's own goal")
@@ -1424,7 +1425,7 @@ def test_the_live_unit_applies_last_even_when_the_clock_went_backwards():
         return tuple(reversed(real(slot)))
 
     store.session_units_for_slot = _inverted  # type: ignore[assignment]
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     try:
         # A read that names the live session still applies it last.
         state = sl.record(SLOT, session_id=LATER_SESSION, event="probe", event_kind="progress")
@@ -1444,14 +1445,14 @@ def test_a_fold_racing_an_append_is_not_cached_with_a_stale_seq():
     """
     _unit()
     sl.record(SLOT, session_id=SESSION, goal="before the race")
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
 
-    real_last_seq = sl._unit_last_seq
+    real_mark = crew_log._unit_mark
     calls = {"n": 0}
 
-    def _sampling_that_lands_an_append(unit_id: str) -> int:
+    def _sampling_that_lands_an_append(unit_id: str):
         calls["n"] += 1
-        seq = real_last_seq(unit_id)
+        mark = real_mark(unit_id)
         if calls["n"] == 1:
             # Between the sample and the fold, one more entry lands.
             handle = CrewLog.open(lg.KIND_SESSION, SESSION)
@@ -1461,18 +1462,22 @@ def test_a_fold_racing_an_append_is_not_cached_with_a_stale_seq():
                 src="gateway",
             )
             del handle
-        return seq
+        return mark
 
-    sl._unit_last_seq = _sampling_that_lands_an_append  # type: ignore[assignment]
+    crew_log._unit_mark = _sampling_that_lands_an_append  # type: ignore[assignment]
     try:
         first = sl.read_state(SLOT)
     finally:
-        sl._unit_last_seq = real_last_seq  # type: ignore[assignment]
+        crew_log._unit_mark = real_mark  # type: ignore[assignment]
 
-    # The racing entry is folded in, and the pair was not cached ...
+    # The racing entry is folded in, and the warm cell records the height it REACHED
+    # rather than the height that was sampled before it read ...
     assert first["next"] == "landed during the fold"
-    assert (str(sl.data_home()), SLOT) not in sl._fold_cache
-    # ... so the next read still answers correctly rather than emptily.
+    held = crew_log._slot_memos[(str(sl.data_home()), SLOT, sl._FOLD_NAME)]
+    assert held.reached == crew_log._unit_mark(SESSION).last_seq
+    assert held.marks[-1].last_seq == held.reached
+    # ... so the next read continues from above that entry and still answers with it,
+    # rather than folding it a second time or resuming past the ones before it.
     assert sl.read_state(SLOT)["next"] == "landed during the fold"
     assert sl.read_state(SLOT)["goal"] == "before the race"
 
@@ -1560,7 +1565,7 @@ def test_the_continued_fold_equals_a_cold_one_at_every_update():
             event_kind="progress",
         )
         warm = sl.read_state(SLOT)
-        sl._fold_cache.clear()
+        crew_log.forget_slot_folds()
         assert sl.read_state(SLOT) == warm, f"warm and cold folds disagree after {n + 1} updates"
 
 
@@ -1577,11 +1582,11 @@ def test_a_new_unit_for_the_slot_rebuilds_the_fold():
 
 
 def test_the_fold_cache_is_bounded_by_slot_count():
-    """A gateway sees many slots over its life; the cache cannot grow with them."""
+    """A gateway sees many slots over its life; the warm store cannot grow with them."""
     _unit()
-    for n in range(sl._FOLD_CACHE_SLOTS + 8):
+    for n in range(crew_log.SLOT_FOLD_CACHE_SLOTS + 8):
         sl.read_state(f"chat-{n}")
-    assert len(sl._fold_cache) <= sl._FOLD_CACHE_SLOTS
+    assert len(crew_log._slot_memos) <= crew_log.SLOT_FOLD_CACHE_SLOTS
 
 
 def test_growth_in_an_older_unit_is_not_hidden_by_the_cache():
@@ -1649,7 +1654,7 @@ def test_a_timestamp_outside_the_datetime_range_does_not_crash_the_fold():
     entry["time"] = 10**19
     lines[-1] = json.dumps(entry)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
 
     state = sl.read_state(SLOT)
     assert state["goal"] == "survives"
@@ -1707,7 +1712,7 @@ def test_a_retried_delete_still_consumes_the_carry_claim():
     assert marker.read_text(encoding="utf-8").strip() == sl._CARRY_COMMITTED
 
     _unit(LATER_SESSION)
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     sl.record(SLOT, session_id=LATER_SESSION, next_step="fresh")
     assert sl.read_state(SLOT, LATER_SESSION)["goal"] == ""
 
@@ -1733,14 +1738,14 @@ def test_a_failed_carry_does_not_withdraw_another_call_s_committed_marker():
     assert sl._claim_carry(SLOT) == sl._CLAIM_DONE
 
 
-def test_an_append_during_an_incremental_fold_is_not_cached_as_a_stale_checkpoint():
-    """A checkpoint cached against a pre-read sample breaks the NEXT read.
+def test_an_append_landing_during_a_fold_survives_the_next_read():
+    """An entry the pass read but the pre-read sample missed stays in the record.
 
-    The incremental path samples seqs BEFORE advancing. An append landing during the
-    advance is folded into the result but not into that sample, so caching the pair
-    claims "state through N+1, seqs through N". The next read sees the seq move, judges
-    itself continuable, and advances from an entry the checkpoint already folded --
-    which ``advance`` REFUSES as at-or-below, and the read degrades to the empty record.
+    The heights a read samples are its READ PLAN, never the cell's claim about itself.
+    An append landing during a read is folded in while sitting outside that sample, so a
+    cell that remembered the sample would describe itself as one entry short and send
+    every later read back to the file for a tail it has already folded. Both halves are
+    checked here: the entry is in the answer, and the next read opens no unit.
     """
     _unit(SESSION)
     for goal in ("first", "second", "third"):
@@ -1753,23 +1758,46 @@ def test_an_append_during_an_incremental_fold_is_not_cached_as_a_stale_checkpoin
         crew_log_emit.on_ledger_recorded(SESSION, {"slot": SLOT, "goal": goal})
     assert crew_log_emit.flush(timeout=5.0)
 
-    # Stand in for an append landing DURING the advance: the pre-read sample misses the
-    # newest seq, while ``iter_from`` streams to the end of the file and folds it.
-    real = sl._unit_last_seq
+    # Stand in for an append landing DURING the fold: the pre-read sample misses the
+    # newest seq, while the stream reads to the end of the file and folds it.
+    real = crew_log._unit_mark
     calls = {"n": 0}
 
-    def _sampled_one_short(unit_id: str) -> int:
+    def _sampled_one_short(unit_id: str):
         calls["n"] += 1
-        return real(unit_id) - 1 if calls["n"] == 1 else real(unit_id)
+        mark = real(unit_id)
+        if calls["n"] == 1:
+            # Only the HEIGHT is lowered. A real sample reports the file's identity and
+            # byte fingerprint whatever its height, so dropping either here would stand
+            # in for a log whose bytes changed rather than one that merely grew.
+            return replace(mark, last_seq=mark.last_seq - 1)
+        return mark
 
-    sl._unit_last_seq = _sampled_one_short  # type: ignore[assignment]
+    crew_log._unit_mark = _sampled_one_short  # type: ignore[assignment]
     try:
         assert sl.read_state(SLOT, SESSION)["goal"] == "fifth"
     finally:
-        sl._unit_last_seq = real  # type: ignore[assignment]
+        crew_log._unit_mark = real  # type: ignore[assignment]
 
-    # The read the stale pair would break: it must still answer, not fold from a seq the
-    # cached checkpoint has already consumed and fall back to the empty record.
+    # The read IMMEDIATELY after is where a cell holding the sample shows itself: its
+    # marks would disagree with the file and send it back for a tail already folded. One
+    # read later is too late to ask -- by then the sample has been replaced by a real one
+    # and the cell describes itself again either way.
+    reads: list[int] = []
+    real_iter = CrewLog.iter_from
+
+    def counted(self, start, **kwargs):
+        reads.append(start)
+        return real_iter(self, start, **kwargs)
+
+    CrewLog.iter_from = counted  # type: ignore[assignment]
+    try:
+        assert sl.read_state(SLOT, SESSION)["goal"] == "fifth"
+    finally:
+        CrewLog.iter_from = real_iter  # type: ignore[assignment]
+
+    assert reads == []
+    # And the entry the short sample missed stays in the record.
     assert sl.read_state(SLOT, SESSION)["goal"] == "fifth"
 
 
@@ -1832,7 +1860,7 @@ def test_the_carry_path_tolerates_a_marker_it_could_not_commit(caplog):
 
     # And the uncommitted marker cannot cause a SECOND carry: the record holds content,
     # which is the evidence the take-over rule actually rests on.
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     sl.record(SLOT, session_id=SESSION, next_step="n2")
     assert sl.read_state(SLOT)["goal"] == "carried anyway"
 
@@ -1891,7 +1919,7 @@ def test_the_preview_folds_onto_the_log_rather_than_replacing_it():
     _unit()
     sl.record(SLOT, session_id=SESSION, event="logged before the upgrade", event_kind="note")
     _legacy_document(SLOT, goal="from the document")
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
 
     state = sl.read_state(SLOT)
     assert state["goal"] == "from the document"
@@ -1910,7 +1938,7 @@ def test_a_tombstoned_document_is_not_previewed_on_a_recycled_slot_key():
     _legacy_document(SLOT, goal="deleted conversation", phase="implementing")
     assert sl.exclude_units(SLOT, ()).carry_tombstoned is True
     assert sl.ledger_dir(SLOT).exists(), "the funnel preserves the legacy store"
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
 
     state = sl.read_state(SLOT)
     assert state["goal"] == ""
@@ -1968,7 +1996,7 @@ def test_a_refused_delete_takes_back_the_exclusions_it_already_wrote(caplog):
         sl._rewrite_lines = real  # type: ignore[assignment]
 
     assert sl._excluded_units(SLOT) == frozenset()
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert sl.read_state(SLOT)["goal"] == "a live conversation"
 
 
@@ -2023,7 +2051,7 @@ def test_a_late_first_record_from_a_retired_unit_does_not_freeze_the_order():
     # The live session's NEXT record puts it back at the end, and its state wins again.
     sl.record(SLOT, session_id=LATER_SESSION, next_step="still live")
     assert sl._recorded_unit_order(SLOT) == (SESSION, LATER_SESSION)
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     # No live session id, so the recorded order is all the fold has to go on.
     assert sl.read_state(SLOT)["goal"] == "the live conversation"
 
@@ -2059,7 +2087,7 @@ def test_an_append_that_did_not_land_does_not_publish_the_units_precedence():
 
     # Precedence was NOT published, so the successor keeps it.
     assert sl._recorded_unit_order(SLOT) == (LATER_SESSION,)
-    sl._fold_cache.clear()
+    crew_log.forget_slot_folds()
     assert sl.read_state(SLOT)["goal"] == "the live conversation"
 
 

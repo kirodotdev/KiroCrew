@@ -37,6 +37,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
+from kiro_crew.crew_log import projection as crew_log_projection
 
 OWNER, REPO = "o", "r"
 
@@ -1355,8 +1356,8 @@ class SweepDepUnblockTest(unittest.IsolatedAsyncioTestCase):
         env.start()
         self.addCleanup(env.stop)
         crew_log_emit.reset_caches()
-        cs._fold_cache.clear()
-        self.addCleanup(cs._fold_cache.clear)
+        crew_log_projection.forget_slot_folds()
+        self.addCleanup(crew_log_projection.forget_slot_folds)
         self.addCleanup(crew_log_emit.reset_caches)
         self.addCleanup(crew_log_emit.drain_for_shutdown, 2.0)
 
