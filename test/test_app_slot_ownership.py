@@ -695,6 +695,11 @@ async def test_a_flush_that_fails_does_not_abandon_the_rest_of_the_uninstall(
     sessions = _DurableWriteFails()
     state = MagicMock()
     state.sessions = sessions
+    # No cron service, so the handler's cron step is skipped and this test is
+    # scoped to the step it is about. A bare MagicMock here is not inert: the
+    # handler would drive a fake CronSDK whose removal raises, and an uninstall
+    # whose cron cleanup raises is refused before anything destructive runs.
+    state.crons = None
 
     request = MagicMock()
     request.match_info = {"name": APP}
@@ -817,6 +822,11 @@ async def test_a_teardown_that_raises_still_leaves_the_suppression_durable(tmp_p
     sessions = _ShutdownRaisesAfterTheClear()
     state = MagicMock()
     state.sessions = sessions
+    # No cron service, so the handler's cron step is skipped and this test is
+    # scoped to the step it is about. A bare MagicMock here is not inert: the
+    # handler would drive a fake CronSDK whose removal raises, and an uninstall
+    # whose cron cleanup raises is refused before anything destructive runs.
+    state.crons = None
 
     request = MagicMock()
     request.match_info = {"name": APP}

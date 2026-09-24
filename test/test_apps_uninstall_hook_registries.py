@@ -102,7 +102,13 @@ class TestUninstallDropsTheHooks:
         }
         request = MagicMock()
         request.match_info = {"name": APP}
-        request.app = {"state": MagicMock()}
+        # No cron service, so the handler's cron step is skipped and this test stays
+        # scoped to hook teardown. A bare MagicMock is not inert here: the handler
+        # would drive a fake removal that raises, and an uninstall whose cron
+        # cleanup raises is refused before anything destructive runs.
+        state = MagicMock()
+        state.crons = None
+        request.app = {"state": state}
         request.json = AsyncMock(return_value={})
 
         with (

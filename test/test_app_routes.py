@@ -220,7 +220,7 @@ async def test_uninstall_aborts_409_when_cron_cleanup_busy(tmp_path, monkeypatch
         calls["n"] += 1
         raise CronStoreBusy("store busy")
 
-    monkeypatch.setattr(routes_mod, "deregister_app_crons_from_service", _busy)
+    monkeypatch.setattr(routes_mod, "deregister_app_crons_reporting_failures", _busy)
     monkeypatch.setattr(routes_mod, "_CRON_CLEANUP_BACKOFF_SECS", 0)
 
     app = _make_app()
@@ -270,7 +270,7 @@ async def test_uninstall_aborts_non_retryable_when_cron_store_unreadable(tmp_pat
         calls["n"] += 1
         raise CronStoreUnreadable("refusing to write cron store: Move the unreadable file aside.")
 
-    monkeypatch.setattr(routes_mod, "deregister_app_crons_from_service", _unreadable)
+    monkeypatch.setattr(routes_mod, "deregister_app_crons_reporting_failures", _unreadable)
     monkeypatch.setattr(routes_mod, "_CRON_CLEANUP_BACKOFF_SECS", 0)
 
     app = _make_app()
@@ -313,7 +313,7 @@ async def test_uninstall_retries_then_succeeds_on_transient_cron_busy(
             raise CronStoreBusy("store busy")
         return 2
 
-    monkeypatch.setattr(routes_mod, "deregister_app_crons_from_service", _busy_once)
+    monkeypatch.setattr(routes_mod, "deregister_app_crons_reporting_failures", _busy_once)
     monkeypatch.setattr(routes_mod, "_CRON_CLEANUP_BACKOFF_SECS", 0)
 
     app = _make_app()
@@ -373,7 +373,7 @@ async def test_uninstall_cron_busy_runs_no_destructive_step_before_abort(
     def _spy_stop(name):
         stop_calls["n"] += 1
 
-    monkeypatch.setattr(routes_mod, "deregister_app_crons_from_service", _busy)
+    monkeypatch.setattr(routes_mod, "deregister_app_crons_reporting_failures", _busy)
     monkeypatch.setattr(routes_mod, "_CRON_CLEANUP_BACKOFF_SECS", 0)
     monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _spy_script)
     monkeypatch.setattr(routes_mod, "stop_app_backend", _spy_stop)

@@ -88,7 +88,9 @@ def _deadline_expired(exc: BaseException) -> bool:
     return isinstance(reason, TimeoutError)
 
 
-def toggle_app(app_name: str, action: str) -> dict[str, object] | None:
+def toggle_app(
+    app_name: str, action: str, *, payload: dict[str, object] | None = None
+) -> dict[str, object] | None:
     """Apply an app lifecycle action through the owner-only dashboard socket.
 
     The resolver's port names the per-instance socket; its evidence source does
@@ -96,6 +98,13 @@ def toggle_app(app_name: str, action: str) -> dict[str, object] | None:
     ownership proof. ``None`` means no socket endpoint accepted the request (or no
     local secret exists), so the CLI may safely use its file-only path. Any failure
     after a gateway answers is raised so the CLI never silently edits only files.
+
+    *payload* is sent as the request's JSON body when given, and is how an action
+    whose behavior depends on a flag carries it across. ``uninstall`` needs this:
+    its handler reads ``purge_data`` from the body and treats an absent or
+    malformed body as "preserve data", so a bodyless request would turn a CLI
+    ``--purge-data`` into a silent data-preserving uninstall. Actions with no flag
+    pass ``None`` and send no body at all.
     """
     port, _evidence_backed = resolve_client_port_ex(None)
     secret = read_local_secret(port)
@@ -126,9 +135,12 @@ def toggle_app(app_name: str, action: str) -> dict[str, object] | None:
 
     encoded_name = urllib.parse.quote(app_name, safe="")
     encoded_credential = urllib.parse.quote(credential, safe="")
+    body = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
         f"{base}/api/apps/{encoded_name}/{action}?token={encoded_credential}",
         method="POST",
+        data=body,
+        headers={"Content-Type": "application/json"} if body is not None else {},
     )
     print(
         f"… applying {action} for {app_name} through the running gateway "

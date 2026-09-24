@@ -34,14 +34,16 @@ from kiro_crew.apps import official_catalog
 from kiro_crew.apps.backend import (
     get_app_backend_port,
     list_app_processes,
+    recorded_backend_port,
     start_app_backend,
     stop_app_backend,
+    unstopped_backend_port,
 )
 from kiro_crew.apps.bridges import (
     RegistrationResult,
     app_conversation_keys,
     deregister_app,
-    deregister_app_crons_from_service,
+    deregister_app_crons_reporting_failures,
     register_app,
 )
 from kiro_crew.apps.builtins import BUILTIN_NAMES
@@ -654,6 +656,43 @@ async def _deregister_app_off_loop(name: str) -> RegistrationResult:
     )
 
 
+async def _stop_backend_and_observe(name: str) -> tuple[int | None, bool]:
+    """Stop *name*'s backend and report what the probe could establish.
+
+    Returns the port it is STILL listening on, if any, and whether the probe had
+    gateway-owned evidence of which port to look at. Both halves are needed,
+    because ``None`` from the probe means "nothing observed", NOT "definitely
+    stopped": with no recorded port the probe falls back to the declared one in
+    ``app.json``, which sits inside the app directory and is writable by any app
+    trusted to run code. By the time the stop runs, ``onUninstall`` has already
+    executed app-controlled code in that directory, so a fixed-port backend this
+    gateway never tracked could have relabelled its port -- or dropped its
+    ``entryPoint`` -- and the fallback would then probe the wrong port and answer
+    ``None``. Reporting that as a clean stop is the same mistake as believing the
+    stop's boolean, one level further out.
+
+    ``stop_app_backend``'s own return value cannot answer the first half. It is
+    ``False`` both for "there was nothing to stop" (never started, already dead)
+    and for "something is running that I did not stop" (a fixed-port backend never
+    adopted at boot, an adoption with no usable PIDs), and ``True`` only says the
+    process it was TRACKING is gone -- which is silent about a detached worker the
+    app spawned for itself. Those need opposite handling, so the port is OBSERVED
+    rather than the flag believed. Same contract ``teardown_app_runtime`` applies
+    on disable and on trust withdrawal.
+
+    The hint is captured BEFORE the stop because the stop drops both the live
+    tracking entry and the pidfile record, and those are the only gateway-owned
+    evidence of which port this backend actually used.
+    """
+    loop = asyncio.get_running_loop()
+    port_hint = await loop.run_in_executor(subprocess_executor(), recorded_backend_port, name)
+    await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+    live_port = await loop.run_in_executor(
+        subprocess_executor(), lambda: unstopped_backend_port(name, port_hint=port_hint)
+    )
+    return live_port, port_hint is not None
+
+
 async def _app_may_run_after_install(name: str, *, fresh_install: bool = False) -> bool:
     """Read whether installed app resources may run after an install or update."""
 
@@ -1035,18 +1074,23 @@ _CRON_CLEANUP_BACKOFF_SECS = 0.5
 async def _deregister_crons_with_retry(name: str, cron_service: Any) -> int:
     """Remove an app's cron jobs, retrying a contended store before giving up.
 
-    ``deregister_app_crons_from_service`` already spins on the store lock for a
-    bounded window and raises :class:`CronStoreBusy` if it never wins. On the
-    uninstall path that exception ABORTS the uninstall (a 409), so a single
+    ``deregister_app_crons_reporting_failures`` already spins on the store lock
+    for a bounded window and raises :class:`CronStoreBusy` if it never wins. On
+    the uninstall path that exception ABORTS the uninstall (a 409), so a single
     unlucky collision with a concurrent mutator would surface to the user as a
     failed uninstall. Retry the whole atomic removal a few times with a short
     backoff first: contention is transient, and each attempt is all-or-nothing,
     so a retry can never partially remove jobs. Re-raises ``CronStoreBusy`` if
     every attempt loses.
+
+    The reporting variant is the one called, not the wrapper that answers ``0``:
+    uninstall is irreversible from here, so it needs a store that failed to be
+    told apart from an app that owned nothing. Only contention is retried; a
+    write that could not land is not transient and is raised on the first try.
     """
     for attempt in range(1, _CRON_CLEANUP_ATTEMPTS + 1):
         try:
-            return await deregister_app_crons_from_service(name, cron_service)
+            return await deregister_app_crons_reporting_failures(name, cron_service)
         except CronStoreBusy:
             if attempt == _CRON_CLEANUP_ATTEMPTS:
                 raise
@@ -1138,10 +1182,10 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/uninstall — uninstall an app.
 
     1. Check lifecycle field (locked → 400)
-    2. Cron cleanup precondition (gateway-managed; abort with retryable 409 if
+    2. Cron cleanup precondition (every app; abort with retryable 409 if
        the cron store stays busy — runs FIRST, before anything destructive)
     3. Run onUninstall script (if declared)
-    4. Stop backend + deregister resources (gateway-managed only)
+    4. Stop the backend (every app) + deregister resources (gateway-managed only)
     5. Clean removable dependencies (unless keep_dependencies=true)
     6. Remove app files (preserve data/ unless purge_data=true)
 
@@ -1163,6 +1207,11 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
     uninstall_log: list[str] = []
+    # Serialized as ``warnings``, which ``print_result`` renders per item, so a
+    # delegated uninstall surfaces it too. A still-listening port is also
+    # appended to ``uninstall_log`` above, because that is the field the
+    # dashboard's uninstall reads.
+    backend_warnings: list[str] = []
 
     # Parse body
     # Preserve app data unless the caller supplies the dedicated destructive
@@ -1274,99 +1323,144 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         # destructive teardown. "Durably disable the jobs instead" is not a
         # fallback: disabling is itself a store mutation needing the very lock
         # that is contended.
-        if resources == "gateway":
-            # Clean up app-declared cron jobs from the scheduler before the
-            # per-app cron manifest is removed by deregister_app(). Mirrors the
-            # cleanup that on_app_disable performs on the disable path.
-            state = request.app.get("state")
-            cron_service = getattr(state, "crons", None) if state else None
-            if cron_service is not None:
-                try:
-                    # deregister_app_crons_from_service is async: it awaits the
-                    # CronSDK mutation API (per-job store-lock spin offloaded to
-                    # a worker thread), so the loop is never parked and timer
-                    # arming is owned by CronService (no caller-side drain).
-                    # It removes all owned jobs in ONE atomic transaction, so on
-                    # CronStoreBusy nothing was removed — the abort below leaves
-                    # no partially-cleaned state.
-                    removed = await _deregister_crons_with_retry(name, cron_service)
-                    sel().log_api_access(
-                        caller="dashboard",
-                        operation="app_crons_deregister",
-                        outcome="completed",
-                        resources=f"app={name} removed={removed}",
-                    )
-                except CronStoreBusy as exc:
-                    logger.warning(
-                        "Uninstall of %s ABORTED: cron cleanup could not "
-                        "complete (store busy) and continuing would orphan "
-                        "still-enabled app jobs: %s",
-                        name,
-                        exc,
-                    )
-                    sel().log_api_access(
-                        caller="dashboard",
-                        operation="app_uninstall",
-                        outcome="denied",
-                        resources=f"app={name}",
-                        error=f"cron cleanup failed, uninstall aborted: {exc}",
-                    )
-                    return web.json_response(
-                        {
-                            "error": (
-                                f"cron cleanup for {name!r} could not complete "
-                                "(cron store busy) — uninstall aborted so the "
-                                "app's scheduled jobs are not orphaned. The app is "
-                                "still installed; retry the uninstall."
-                            ),
-                            "retryable": True,
-                            "app": name,
-                            "log": uninstall_log,
-                        },
-                        status=409,
-                    )
-                except CronStoreUnreadable as exc:
-                    # Same abort as CronStoreBusy above, for the same reason: the
-                    # owned-job set came back empty because the store could not be
-                    # READ, not because the app owns nothing, so continuing would
-                    # delete the app and leave its still-ENABLED jobs to resume.
-                    # Reported NON-retryable, matching the contract in
-                    # dashboard/handlers/cron.py: an unreadable file does not heal
-                    # on its own, so a client that retries on busy must not retry
-                    # here. The exception already names the one action that fixes
-                    # it, so its message is surfaced verbatim.
-                    logger.warning(
-                        "Uninstall of %s ABORTED: the cron store could not be read, "
-                        "so cleanup could not prove the app owns no enabled jobs: %s",
-                        name,
-                        exc,
-                    )
-                    sel().log_api_access(
-                        caller="dashboard",
-                        operation="app_uninstall",
-                        outcome="denied",
-                        resources=f"app={name}",
-                        error=f"cron store unreadable, uninstall aborted: {exc}",
-                    )
-                    return web.json_response(
-                        {
-                            "error": str(exc),
-                            "code": "cron_store_unreadable",
-                            "retryable": False,
-                            "app": name,
-                            "log": uninstall_log,
-                        },
-                        status=409,
-                    )
-                except Exception as exc:
-                    logger.warning("Cron cleanup failed for %s on uninstall: %s", name, exc)
-                    sel().log_api_access(
-                        caller="dashboard",
-                        operation="app_crons_deregister",
-                        outcome="failed",
-                        resources=name,
-                        error=str(exc),
-                    )
+        # Clean up app-declared cron jobs from the scheduler before the
+        # per-app cron manifest is removed by deregister_app(). Mirrors the
+        # cleanup that on_app_disable performs on the disable path, which keys
+        # on the app's cron PERMISSION and not on `resources`.
+        #
+        # `resources` does not gate this, for the same reason it does not gate
+        # the backend stop in Step 3: the field is app-written metadata, so
+        # gating teardown on it hands a trusted app a switch for its own
+        # cleanup. It also would not describe who owns these jobs even if it
+        # were trustworthy — an `app:<name>` job is persisted in the GATEWAY's
+        # cron store and fired by the gateway's own CronService, which applies
+        # no app-admission check at fire time. So a job left behind here runs
+        # its command / script / agent payload against a deleted app directory
+        # until the next gateway boot reconciles the store, and uninstall would
+        # otherwise clean up less than the strictly less destructive disable.
+        state = request.app.get("state")
+        cron_service = getattr(state, "crons", None) if state else None
+        if cron_service is not None:
+            try:
+                # deregister_app_crons_reporting_failures is async: it awaits the
+                # CronSDK mutation API (per-job store-lock spin offloaded to
+                # a worker thread), so the loop is never parked and timer
+                # arming is owned by CronService (no caller-side drain).
+                # It removes all owned jobs in ONE atomic transaction, so on any
+                # failure nothing was removed — the aborts below leave no
+                # partially-cleaned state.
+                removed = await _deregister_crons_with_retry(name, cron_service)
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_crons_deregister",
+                    outcome="completed",
+                    resources=f"app={name} removed={removed}",
+                )
+            except CronStoreBusy as exc:
+                logger.warning(
+                    "Uninstall of %s ABORTED: cron cleanup could not "
+                    "complete (store busy) and continuing would orphan "
+                    "still-enabled app jobs: %s",
+                    name,
+                    exc,
+                )
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_uninstall",
+                    outcome="denied",
+                    resources=f"app={name}",
+                    error=f"cron cleanup failed, uninstall aborted: {exc}",
+                )
+                return web.json_response(
+                    {
+                        "error": (
+                            f"cron cleanup for {name!r} could not complete "
+                            "(cron store busy) — uninstall aborted so the "
+                            "app's scheduled jobs are not orphaned. The app is "
+                            "still installed; retry the uninstall."
+                        ),
+                        "retryable": True,
+                        "app": name,
+                        "log": uninstall_log,
+                    },
+                    status=409,
+                )
+            except CronStoreUnreadable as exc:
+                # Same abort as CronStoreBusy above, for the same reason: the
+                # owned-job set came back empty because the store could not be
+                # READ, not because the app owns nothing, so continuing would
+                # delete the app and leave its still-ENABLED jobs to resume.
+                # Reported NON-retryable, matching the contract in
+                # dashboard/handlers/cron.py: an unreadable file does not heal
+                # on its own, so a client that retries on busy must not retry
+                # here. The exception already names the one action that fixes
+                # it, so its message is surfaced verbatim.
+                logger.warning(
+                    "Uninstall of %s ABORTED: the cron store could not be read, "
+                    "so cleanup could not prove the app owns no enabled jobs: %s",
+                    name,
+                    exc,
+                )
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_uninstall",
+                    outcome="denied",
+                    resources=f"app={name}",
+                    error=f"cron store unreadable, uninstall aborted: {exc}",
+                )
+                return web.json_response(
+                    {
+                        "error": str(exc),
+                        "code": "cron_store_unreadable",
+                        "retryable": False,
+                        "app": name,
+                        "log": uninstall_log,
+                    },
+                    status=409,
+                )
+            except Exception as exc:
+                # Same abort as the two named store failures above, for the same
+                # reason. A removal that raised anything else did not persist, and
+                # the count cannot reveal that: the bridge's other entry point
+                # answers 0 for both "owned nothing" and "the write failed", and
+                # re-counting the rows cannot settle it either, because a failing
+                # save leaves them filtered out of the in-memory job list until a
+                # reload. So the exception is the only evidence there is, and
+                # continuing past it would run the non-idempotent onUninstall and
+                # delete the app while its still-ENABLED rows keep firing from
+                # disk until the next gateway boot reconciles them.
+                #
+                # Retryable, unlike the unreadable store: a write that failed on a
+                # full or briefly unavailable disk can succeed on a later attempt,
+                # and nothing destructive has run yet, so the retry is safe.
+                logger.warning(
+                    "Uninstall of %s ABORTED: cron cleanup failed and continuing "
+                    "would orphan still-enabled app jobs: %s",
+                    name,
+                    exc,
+                )
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_uninstall",
+                    outcome="denied",
+                    resources=f"app={name}",
+                    error=f"cron cleanup failed, uninstall aborted: {exc}",
+                )
+                return web.json_response(
+                    {
+                        "error": (
+                            f"cron cleanup for {name!r} could not complete ({exc}) "
+                            "— uninstall aborted so the app's scheduled jobs are "
+                            "not orphaned. The app is still installed; retry the "
+                            "uninstall."
+                        ),
+                        "code": "cron_cleanup_failed",
+                        "retryable": True,
+                        "app": name,
+                        "log": uninstall_log,
+                    },
+                    status=409,
+                )
 
         # Step 2: Run onUninstall script. Reached only once cron cleanup has
         # succeeded (or there were no crons / no cron service), so a
@@ -1393,11 +1487,66 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             if script_output.get("failed"):
                 uninstall_log.append("onUninstall script failed (exit code non-zero)")
 
-        # Step 3: Stop backend + deregister resources (gateway-managed only)
-        if resources == "gateway":
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), stop_app_backend, name
+        # Step 3: Stop the backend, then deregister gateway-managed resources.
+        #
+        # The stop runs for EVERY app; `resources` does not gate it. That field
+        # comes from the app's own installed metadata, so gating the stop on it
+        # hands a trusted app a switch for its own teardown: declare
+        # `resources: "app"` and the uninstall deletes the files while the backend
+        # keeps executing, holding its port, its app secret and its proxied
+        # routes. Deregistration still honors the field — an app that owns its
+        # agents, skills and crons must not have the gateway delete them — but the
+        # PROCESS is not the app's to keep. Same split `teardown_app_runtime`
+        # makes on disable and on trust withdrawal.
+        #
+        # A still-listening port is REPORTED, not made to abort. By here the
+        # non-idempotent onUninstall script has already run, so refusing would
+        # strand a half-removed app that no retry can finish cleanly, and an app
+        # that cannot be uninstalled is a worse outcome than one whose port is
+        # named as still in use. What must not happen is claiming a clean stop.
+        live_port, had_port_evidence = await _stop_backend_and_observe(name)
+        if live_port is not None:
+            logger.warning(
+                "backend for app %r is still listening on port %s after uninstall stop",
+                name,
+                live_port,
             )
+            message = (
+                f"backend still listening on port {live_port} after the stop — the "
+                f"gateway stopped every process it was tracking, so this one is not "
+                f"ours to stop and it is still running"
+            )
+            # Recorded in BOTH fields because their consumers are disjoint, and a
+            # caller that sees neither is told a clean removal happened:
+            # ``print_result`` renders ``warnings`` and never ``uninstall_log``,
+            # while the dashboard's uninstall reads ``uninstall_log`` and never
+            # ``warnings``. Neither consumer shows it twice.
+            backend_warnings.append(message)
+            uninstall_log.append(message)
+        elif not had_port_evidence and bool((manifest.get("backend") or {}).get("entryPoint")):
+            # The probe answered "nothing observed", which is not "stopped". With no
+            # recorded port it had only the declared one to go on, and `onUninstall`
+            # has already run app-controlled code inside the app directory that
+            # declares it, so an untracked fixed-port backend could have relabelled
+            # the port it is holding. Saying nothing here is the false clean removal
+            # this step exists to prevent, and nothing later catches it: the files
+            # are gone and the stop dropped the pidfile record the next start would
+            # have reaped from.
+            #
+            # Gated on a backend being DECLARED, read from the installed record
+            # captured before the hook ran, so an app cannot suppress this by
+            # rewriting its manifest — and an app that never had a backend does not
+            # collect a warning about one.
+            message = (
+                f"could not verify {name}'s backend stopped — the gateway held no "
+                f"recorded port for it, so a listener it never tracked cannot be "
+                f"ruled out. Check for a process still bound to the port this app "
+                f"declared."
+            )
+            logger.warning("stop of app %r could not be verified: no recorded port", name)
+            backend_warnings.append(message)
+            uninstall_log.append(message)
+        if resources == "gateway":
             await _deregister_app_off_loop(name)
 
         # Step 4: Clean dependencies (atomic classify + ledger update)
@@ -1620,6 +1769,8 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     resp = result.to_dict()
     if uninstall_log:
         resp["uninstall_log"] = "\n".join(uninstall_log)
+    if backend_warnings:
+        resp["warnings"] = backend_warnings
     if cleaned_deps:
         resp["cleaned_dependencies"] = cleaned_deps
     return web.json_response(resp)

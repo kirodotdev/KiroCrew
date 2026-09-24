@@ -1692,29 +1692,25 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
     return newly_registered
 
 
-async def deregister_app_crons_from_service(app_name: str, cron_service: Any) -> int:
-    """Remove app-owned cron jobs from the running CronService.
+async def deregister_app_crons_reporting_failures(app_name: str, cron_service: Any) -> int:
+    """Remove app-owned cron jobs, reporting EVERY failure to the caller.
 
-    Mirrors :func:`register_app_crons_with_service`. Uses :class:`CronSDK`,
-    which only removes jobs tagged ``created_by="app:{app_name}"`` — other
-    apps' jobs are unaffected.
+    Same removal as :func:`deregister_app_crons_from_service`, which wraps this
+    and is what most callers want. The difference is the disposition of an
+    unexpected failure, and it exists because ``0`` is otherwise ambiguous: it is
+    the honest answer for an app that owned nothing, and it is also what a write
+    that never reached disk looks like from outside. A caller about to do
+    something irreversible has to tell those apart, because the second case
+    leaves still-ENABLED rows on disk that keep firing against an app directory
+    that is gone.
 
-    ASYNC: awaits ``CronSDK.remove_all_async``, which removes all owned jobs in
-    ONE atomic ``CronService.remove_jobs_by_owner`` transaction (owned set
-    selected against the in-lock reloaded on-disk state, store-lock spin
-    offloaded to a worker thread) — all-or-nothing, never a partial removal that
-    orphans still-ENABLED app jobs, and never a cache-only snapshot that could
-    miss a cross-process creation. Awaitable directly on the gateway loop.
+    The rows cannot be re-counted to settle it either. A failing ``_save()``
+    leaves the removed rows filtered out of the in-memory job list and only a
+    reload restores them, so a post-hoc ``list_jobs`` reports the removal that
+    did not persist.
 
-    Idempotent — safe to call when no jobs are registered (returns ``0``).
-    Returns the number of jobs removed.
-
-    Propagates :class:`CronStoreBusy` and :class:`CronStoreUnreadable`
-    (re-raised) so a cleanup that could not complete is REPORTED to the
-    disable/uninstall caller as a failure rather than masked as a successful ``0``
-    while owned jobs stay enabled and keep executing. The two are siblings, not
-    subclasses, so each needs naming: an unreadable store degrades to an empty job
-    list, which is indistinguishable HERE from an app that owned nothing.
+    Returns the number of jobs removed. ``0`` from this function means the app
+    owned no jobs, and nothing else.
     """
     if cron_service is None:
         return 0
@@ -1750,6 +1746,46 @@ async def deregister_app_crons_from_service(app_name: str, cron_service: Any) ->
             resources=app_name,
             error=str(exc),
         )
+        raise
+
+
+async def deregister_app_crons_from_service(app_name: str, cron_service: Any) -> int:
+    """Remove app-owned cron jobs from the running CronService.
+
+    Mirrors :func:`register_app_crons_with_service`. Uses :class:`CronSDK`,
+    which only removes jobs tagged ``created_by="app:{app_name}"`` — other
+    apps' jobs are unaffected.
+
+    ASYNC: awaits ``CronSDK.remove_all_async``, which removes all owned jobs in
+    ONE atomic ``CronService.remove_jobs_by_owner`` transaction (owned set
+    selected against the in-lock reloaded on-disk state, store-lock spin
+    offloaded to a worker thread) — all-or-nothing, never a partial removal that
+    orphans still-ENABLED app jobs, and never a cache-only snapshot that could
+    miss a cross-process creation. Awaitable directly on the gateway loop.
+
+    Idempotent — safe to call when no jobs are registered (returns ``0``).
+    Returns the number of jobs removed.
+
+    Propagates :class:`CronStoreBusy` and :class:`CronStoreUnreadable`
+    (re-raised) so a cleanup that could not complete is REPORTED to the
+    disable/uninstall caller as a failure rather than masked as a successful ``0``
+    while owned jobs stay enabled and keep executing. The two are siblings, not
+    subclasses, so each needs naming: an unreadable store degrades to an empty job
+    list, which is indistinguishable HERE from an app that owned nothing.
+
+    An UNEXPECTED failure is reported as ``0``, which a caller must not read as
+    "the app owned nothing" — the logging and the audit entry above are where that
+    case is visible. A caller that has to tell the two apart, because what it does
+    next cannot be undone, calls
+    :func:`deregister_app_crons_reporting_failures` instead.
+    """
+    try:
+        return await deregister_app_crons_reporting_failures(app_name, cron_service)
+    except (CronStoreBusy, CronStoreUnreadable):
+        raise
+    except Exception:
+        # Logged and audited by the call above; this frame only chooses the
+        # disposition its own callers are written against.
         return 0
 
 

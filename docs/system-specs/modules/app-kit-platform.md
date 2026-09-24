@@ -917,9 +917,18 @@ sync.
 Uninstall is irreversible, so the whole sequence runs inside the per-app
 lifecycle lock and the one step that can safely refuse runs FIRST:
 
-1. **Cron cleanup** (gateway-managed apps). Owned jobs are removed in one atomic
-   transaction. A contended store aborts the uninstall with a retryable 409
-   having changed nothing. This must precede everything else: past this point
+1. **Cron cleanup** (every app). Owned jobs are removed in one atomic
+   transaction. `resources` does not gate this step: that field is app-written
+   metadata, so gating teardown on it would hand a trusted app a switch for its
+   own cleanup, and it would not describe ownership even if it were trustworthy —
+   an `app:<name>` job is persisted in the GATEWAY's cron store and fired by the
+   gateway's own `CronService`, which applies no app-admission check at fire time.
+   A contended store aborts the uninstall with a retryable 409 having changed
+   nothing, and so does an unexpected write failure: the removal reports that
+   rather than answering with the `0` that also means "this app owned nothing",
+   and the rows cannot be re-counted to tell the two apart because a failing save
+   leaves them filtered out of the in-memory job list until a reload. This must
+   precede everything else: past this point
    deregistration drops the per-app cron manifest and the final step deletes the
    app directory, so still-enabled owned jobs become permanent orphans that the
    scheduler keeps firing with nothing left that knows they belong to a removed
@@ -927,7 +936,19 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
    is itself a store mutation needing the very lock that is contended.
 2. `onUninstall` script, reached only once cron cleanup succeeded, so a
    non-idempotent teardown never runs on an uninstall that will be retried.
-3. Backend stop and resource deregistration (gateway-managed only).
+3. Backend stop (every app), then resource deregistration (gateway-managed only).
+   The stop is ungated for the same reason as step 1, and the port recorded for
+   the app is observed after it: a port still accepting connections is REPORTED,
+   because the stop's own boolean answers `False` both for "there was nothing to
+   stop" and for "something is running that I did not stop", and `True` only for
+   "the process I was tracking is gone", which is silent about a worker the app
+   spawned for itself. The report reaches both `warnings` and the uninstall log,
+   whose consumers are disjoint. Unlike steps 1 and 2 this one does not abort: the
+   non-idempotent `onUninstall` has already run by here, so refusing would strand
+   a half-removed app, and an app that cannot be uninstalled is a worse outcome
+   than one whose port is named as still in use. Deregistration still honors
+   `resources`, because an app that registered its own agents, skills and crons
+   owns their lifecycle and the gateway must not delete them.
 4. Dependency cleanup (see §11).
 5. File removal, preserving `data/` unless the caller asked to purge.
 6. Resume pointers dropped for every conversation the app owned, on success only.
@@ -990,9 +1011,17 @@ merge, each write being a whole-file rewrite of one snapshot:
   map exists. Cost: a gateway starting inside that window is refused as by any other
   holder.
 
-  A running gateway is the common state and `uninstall` is deliberately not routed
-  through it (unlike `enable`/`disable`), so the decline is an ORDINARY outcome, not
-  an extreme one. Two things follow, and both are part of the contract rather than
+  `uninstall` IS routed through a running gateway, the way `enable` and `disable`
+  are, and that SUPERSEDES the earlier contract recorded here, under which it
+  deliberately stayed in the CLI process and the decline was therefore an ORDINARY
+  outcome. With a gateway reachable the uninstall is performed by the in-gateway
+  path above, whose clear runs through the live map and so never has to decline at
+  all. The decline remains reachable, and its text remains correct, on the
+  platforms where delegation cannot happen: `unix_socket_urlopen` raises where
+  AF_UNIX is unavailable, the lifecycle client maps that to "no gateway", and the
+  CLI then takes this path while a gateway may well be running — which is why the
+  file-only backend warning names RESTARTING the gateway rather than starting it.
+  Two things follow, and both are part of the contract rather than
   polish. The clear returns `SessionPointerCleanup(dropped, declined, failed)` because
   `dropped == 0` is otherwise "owned nothing", "did not try", and "could not write",
   which need different messages — `failed` covers an ENOSPC or permission error on the
