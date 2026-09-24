@@ -47,7 +47,7 @@ the transport, not after it.
 - [ ] Resolve open question 3 (which sealing primitive) with a reviewer who has a
       cryptography opinion, before phase 5
 
-## Phase 2 — Extract the transport seam (refactor, with one stated behaviour change)
+## Phase 2 — Extract the transport seam (refactor, with two stated behaviour changes)
 
 - [ ] Create `src/kiro_crew/instances/transports/__init__.py` with the
       `PeerTransport` protocol: `validate`, `open`, `mint`, `describe_target`,
@@ -89,6 +89,21 @@ exist, is what stops phase 3 from shipping a record that renders as SSH.
       `RemoteCrewPanel.tsx` and the inline `=== 'ssm' ? 'ssm' : 'ssh'` in
       `website/src/components/InstancesViewport.tsx`, which does not use the
       shared helper at all
+- [ ] Three further surfaces branch on the method with `ssh` as their last arm and
+      are not reached by the two helpers above, so the claim that this section
+      stops a record from rendering as SSH is false until they route through the
+      mapping too: the row badge and target in
+      `website/src/pages/settings/InstancesPanel.tsx` (prints the literal `'SSH'`),
+      the tab-row target in `website/src/components/InstanceTabBar.tsx` (falls back
+      to `ssh_host`), and the selector hint in
+      `website/src/pages/settings/InstanceFormFields.tsx`
+- [ ] **Second intended behaviour change, and the one with teeth:**
+      `InstanceFormFields.tsx` collapses an unrecognised `connection_method` to
+      `'ssh'` when it loads a record into the form, so opening an unmapped crew for
+      edit and saving it **rewrites its method** — data loss, not a label defect.
+      Make that arm exhaustive and add the regression test of record: loading a
+      record whose method the form does not know leaves the method unchanged on
+      save
 - [ ] **Intended behaviour change, stated rather than absorbed:** this corrects an
       existing defect — a `fargate` crew's failure report says `transport: ssh`
       today. Add it as the regression test of record: a `fargate` instance's
@@ -173,9 +188,15 @@ a row per security control, so the effective posture is registered as one.
 
 Phase 2 makes the mapping exhaustive; this gives the new entry something to print.
 
-- [ ] Add the badge label and the transport hint for `outbound` to every shipped
-      locale catalog (`website/src/i18n/locales/`), following the precedent set
-      when `fargate` landed in all thirteen rather than in English alone
+- [ ] Add all **three** strings for `outbound` to every shipped locale catalog
+      (`website/src/i18n/locales/`, thirteen catalogs), following what `fargate`
+      actually landed rather than the two-key reading: the badge label
+      `pages.settings.remoteCrewPanel.type_outbound`, the card hint
+      `pages.settings.remoteCrewPanel.transport_hint_outbound`, and the form's
+      method hint `pages.settings.instancesPanel.outbound_method_hint` — a
+      different namespace and a different naming scheme, and the one key `fargate`
+      has no `ssh`/`ssm` sibling for, so it is the one this phase will otherwise
+      ship without
 - [ ] Re-snapshot the untranslated-strings baseline if the gate requires it, and
       confirm the i18n tests pass rather than assuming they are unaffected
 
