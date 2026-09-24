@@ -218,7 +218,12 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None) "
         "-> 'bool'",
     ),
-    "flush_deferred_notes": ("function", False, False, "(self) -> 'int'"),
+    "flush_deferred_notes": (
+        "function",
+        False,
+        False,
+        "(self, *, broadcast: 'bool' = True, retain: 'bool | None' = None) -> 'int'",
+    ),
     "forget_session_model_state": ("function", False, False, "(self) -> 'None'"),
     "has_pending_context_seat": ("function", False, False, "(self) -> 'bool'"),
     "invalidate_source_links": ("function", False, False, "(self) -> 'None'"),

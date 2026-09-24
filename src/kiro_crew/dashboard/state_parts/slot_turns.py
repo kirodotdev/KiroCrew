@@ -649,9 +649,13 @@ def deferred_context_count(self: _ChatSlot) -> int:
     return self._buffers.deferred_context_count(self)
 
 
-def flush_deferred_notes(self: _ChatSlot) -> int:
+def flush_deferred_notes(
+    self: _ChatSlot, *, broadcast: bool = True, retain: bool | None = None
+) -> int:
     """Flush held notes in order, restoring the unwritten suffix on failure."""
-    return self._buffers.flush_deferred_notes(self, logger=logger)
+    return self._buffers.flush_deferred_notes(
+        self, logger=logger, broadcast=broadcast, retain=retain
+    )
 
 
 def register_approval(
