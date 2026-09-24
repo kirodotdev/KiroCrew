@@ -793,24 +793,50 @@ Details worth knowing:
     the set pinned in the script as `WATCHED_WORKFLOWS` and tested against the
     workflows whose `runs-on` actually carries the fleet label (the watchdog's
     own workflow is excluded, since that label appears only in its comment). One
-    listing per status covers the whole watched set as a client-side filter and
-    reaches more than a per-workflow loop would. Live statuses read at most eight
-    pages each, and each live classification sweep reads jobs for at most 50
-    runs: 40 to the oldest, which are the only actionable ones, and 10 reserved
+    listing per status covers the whole watched set as a client-side filter, which
+    reaches a fleet-routed workflow nobody registered — breadth a per-workflow loop
+    cannot have, and not the same thing as reaching further back in time. Depth is
+    the page walk: this endpoint returns pages below `per_page` mid-listing (98,
+    then 100, then 100, then 99 while `total_count` stood at 927, measured
+    2026-09-24), so only an EMPTY page ends the walk. Reading a short page as the
+    tail stopped every tick after page one, which left the sweep seeing the newest
+    couple of minutes of runs against a 15-minute orphan threshold and hid two
+    six-hour `main` outages; the six-hour orphan behind the second one sat on page
+    seven. Live statuses read at most ten
+    pages each — the API's reachable window, since a status-filtered runs listing
+    stops at 1000 results — and each live classification sweep reads jobs for at
+    most 50
+    runs: 40 to the classify slice and 10 reserved
     for the newest, whose prompt CodeBuild starts are the dispatch evidence a
     saturation hold is judged by. Spending the whole bound oldest first would
     leave a backlogged sweep unable to tell a dead fleet from a busy one, so it
-    would heal nothing exactly when the watchdog is needed. The log names the
+    would heal nothing exactly when the watchdog is needed. The classify slice is
+    drawn heal-eligible first — a `push` run of a heal-safe workflow, the only
+    shape a heal can act on — and oldest first within each class, because age
+    alone hands those slots to runs no heal will ever touch: 220 watched live runs
+    sat past the orphan threshold on 2026-09-24 and 18 past a day, the oldest 36
+    days, every one of them a pull-request run that stays listed and re-reads the
+    same slot on every tick. The log names the
     bound when other runs wait for the
-    next tick. Cancelled recovery reads at most sixteen pages because GitHub
-    orders that index by creation time while recovery selects by cancellation
-    time. Sixteen pages hold 1600 cancellations, about eight hours at the 200 an
+    next tick. Cancelled recovery reads at most ten pages, the same as the live
+    listings, because GitHub caps a status-filtered runs listing at 1000 results —
+    measured on this repository, page 11 returns an empty `workflow_runs` and
+    `total_count: 0`, not an error — so a deeper cap describes pages the endpoint
+    never serves. Ten pages hold 1000 cancellations, about five hours at the 200 an
     hour this repo was measured at, and the 2026-09-20 orphans were 21 hours old,
     so that reach is BEST-EFFORT and carries no coverage claim. GitHub offers no
     ordering by cancellation time, so nothing readable from the listing can prove
     every run cancelled inside the window was seen; truncation logs a warning, and a
     cancelled run that never got listed needs `gh run rerun` by hand. The reach only
-    changes how often that is true. The three live indexes plus
+    changes how often that is true. Because that 1000-result ceiling also serves an
+    empty page, an empty page is not proof of the tail: every live listing compares
+    the runs it yielded against the first page's `total_count`, and a shortfall on an
+    ACTIONABLE status (`in_progress`, `queued`) records a tick-level failure so the
+    scheduled run goes red. A `pending` shortfall only warns, because those runs are
+    held by their concurrency group, have no jobs, and are never healed — and
+    `pending` is what grows during the saturation the watchdog has to survive. The
+    remedy the failure prints is to NARROW the listing, not to raise the cap, since
+    the cap is already the reachable window. The three live indexes plus
     the cancelled index cost at most 40 calls
     per tick. It
     calls a run *orphaned* when one of its jobs is still `queued`,
@@ -1017,17 +1043,22 @@ Details worth knowing:
     that window while the limit persists. What the abort still buys is the work
     already done: one exhausted listing page leaves the runs already classified
     acted on rather than lost. Every other status (401, 404, 5xx) and every
-    malformed payload still raises. **The schedule ships disarmed**: `WATCHDOG_ARMED` at the top of the
-    workflow is `"false"`, so every scheduled tick is a dry run — it classifies
-    and writes its step summary but touches nothing — until a maintainer, having
-    read a few summaries against real API shapes and seen no healthy run called
-    `orphaned`, flips it to `"true"` in a one-line commit. That decision is tracked
-    in [issue #12717](https://github.com/kirodotdev/KiroCrew/issues/12717), which
-    carries the evidence gathered so far and the gate to clear before flipping, so
-    the repository cannot quietly come to believe a stall is fixed while the
-    watchdog is still only observing. A manual dispatch is
-    governed by its own `dry_run` input regardless, so a stuck run can be healed
-    by hand before arming. A `CI` run in *pending* with no jobs is
+    malformed payload still raises. **The schedule is armed**: `WATCHDOG_ARMED` at the top of the
+    workflow is `"true"`, so a scheduled tick cancels and re-runs what it
+    classifies, within the per-tick caps below. It shipped disarmed — every
+    scheduled tick a dry run that classified and wrote its step summary and
+    touched nothing — and was armed once detection-without-action had been
+    measured to cost two six-hour `main` outages, on 2026-09-23 and 2026-09-24.
+    Both times one stuck `fast-gate.yml` run held `main`'s single concurrency
+    slot, every later push lost its gate to eviction, `ci.yml` failed closed at
+    its 720-second wait, and a human cleared it with one
+    `POST /actions/runs/<id>/cancel` — the call the armed tick now makes itself.
+    The hold that would otherwise have refused those heals is cleared by the
+    supersession check: a run a newer push has replaced holds no result worth
+    protecting, so a busy fleet no longer shields the exact run that is blocking
+    the branch. A manual dispatch is
+    governed by its own `dry_run` input regardless, so a run can still be
+    inspected without acting. A `CI` run in *pending* with no jobs is
     **not** something the watchdog touches — that run is waiting on its
     concurrency group, not on a runner, and healing the run that holds the group
     is what releases it; the step summary names it so the reader knows why it

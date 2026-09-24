@@ -310,7 +310,10 @@ class FakeApi:
             per_page = int(params.get("per_page", "100"))
             jobs = self._jobs_by_run.get(run_id, [])
             start = (page - 1) * per_page
-            return {"jobs": jobs[start : start + per_page]}
+            # ``total_count`` because the real endpoint always sends it and
+            # ``list_jobs`` bounds its paging by it; a fake that omitted it would
+            # exercise only the no-total_count fallback.
+            return {"total_count": len(jobs), "jobs": jobs[start : start + per_page]}
         if "/runs/" in base:
             run_id = int(base.rsplit("/", 1)[1])
             self._reads[run_id] = self._reads.get(run_id, 0) + 1
@@ -501,7 +504,7 @@ def _jobs_change_on_later_reads(api: FakeApi, run_id: int, later: list[dict[str,
             seen["n"] += 1
             if seen["n"] > 1:
                 api.gets.append(path)
-                return {"jobs": later}
+                return {"total_count": len(later), "jobs": later}
         return original_get(path)
 
     api.get = get  # type: ignore[method-assign]
@@ -653,7 +656,15 @@ def test_a_rate_limit_on_the_fresh_evidence_read_has_an_accurate_outcome() -> No
     reads = {"in_progress": 0}
 
     def get(path: str) -> Any:
-        if re.search(r"/actions/runs\?.*status=in_progress", path):
+        # Counted per FIRST page, so the limit lands on the fresh-evidence
+        # RE-READ rather than on a later page of the initial gather: the gather
+        # pages until an empty page, because a short page is not this endpoint's
+        # tail, so "the second listing call" is not the same thing as "the second
+        # listing". Matched with a boundary -- a plain `page=1` substring also
+        # matches `per_page=100`, which is on every one of these calls.
+        if re.search(r"/actions/runs\?.*status=in_progress", path) and re.search(
+            r"[?&]page=1(?![0-9])", path
+        ):
             reads["in_progress"] += 1
             if reads["in_progress"] > 1:
                 raise wd.ApiError(
@@ -1051,13 +1062,215 @@ def test_the_candidate_listing_is_repo_wide_and_paginated() -> None:
         for p in api.gets
         if p.startswith(f"repos/{REPO}/actions/runs?") and "status=in_progress" in p
     ]
-    assert len(in_progress_pages) == 2  # 100 then 30 (< PAGE_SIZE) stops paging
+    # 100, then 30, then the empty page that ends it: a page below `per_page` is
+    # not the tail of this endpoint (see the short-page test below), so only an
+    # empty one stops paging.
+    assert len(in_progress_pages) == 3
     assert "per_page=100" in in_progress_pages[0] and "page=1" in in_progress_pages[0]
     # The second page keeps the page size: `page` is an offset in units of
     # `per_page`, so a 20-run second page would re-read runs 21-40 instead.
     assert "per_page=100" in in_progress_pages[1] and "page=2" in in_progress_pages[1]
+    assert "per_page=100" in in_progress_pages[2] and "page=3" in in_progress_pages[2]
     # Every listing is the repo-wide endpoint, never a per-workflow one.
     assert not any("/actions/workflows/" in p and "/runs?status=" in p for p in api.gets)
+
+
+def test_a_short_page_does_not_end_the_repo_wide_listing() -> None:
+    """The endpoint returns pages below `per_page` mid-listing, so a short page is
+    not the tail.
+
+    Measured against `status=queued` on this repository: 98, then 100, then 100,
+    then 99, while `total_count` stands at 927 and a six-hour-old `fast-gate.yml`
+    orphan holding `main`'s concurrency slot sits on page seven.
+
+    The negative control below is the reverted rule -- stop at the first page
+    shorter than `PAGE_SIZE` -- run over the same pages: it reads page one only and
+    never sees the deep orphan.
+    """
+    pages = [
+        [_run(1000 + i, minutes_ago=5) for i in range(98)],
+        [_run(2000 + i, minutes_ago=30) for i in range(100)],
+        [_run(3000 + i, minutes_ago=200) for i in range(99)] + [_run(7, minutes_ago=370)],
+    ]
+
+    def serve(path: str) -> Any:
+        page = int(dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))["page"])
+        return {"workflow_runs": pages[page - 1] if page <= len(pages) else []}
+
+    api = FakeApi({}, {})
+    api.get = serve  # type: ignore[method-assign]
+    collected = list(
+        wd._iter_repo_runs(api, REPO, status="queued", max_pages=wd.REPO_LISTING_MAX_PAGES)
+    )
+    assert len(collected) == 298
+    assert 7 in {int(run["id"]) for run in collected}
+
+    control: list[dict[str, Any]] = []
+    for index, batch in enumerate(pages, start=1):
+        control.extend(batch)
+        if len(batch) < wd.PAGE_SIZE:  # the reverted rule
+            break
+        assert index  # the loop is exercised, not short-circuited by an empty first page
+    assert len(control) == 98
+    assert 7 not in {int(run["id"]) for run in control}
+
+
+def test_the_workflow_scoped_listing_does_not_end_on_a_short_page_either() -> None:
+    """The same rule, at the second site that reads this index.
+
+    ``list_runs`` is workflow-scoped, but it queries the SAME status-filtered runs
+    index, which returns pages below ``per_page`` mid-listing. A short page there is
+    no more the tail than it is repo-wide, so the cap or an empty page ends it.
+
+    Negative control: the reverted rule -- break at the first page shorter than
+    ``PAGE_SIZE`` -- over the same pages keeps 3 of the 5 runs, so a sample of 5
+    would be drawn from a third of its index.
+    """
+    short_then_more = [
+        [_run(1, minutes_ago=1), _run(2, minutes_ago=2), _run(3, minutes_ago=3)],
+        [_run(4, minutes_ago=4), _run(5, minutes_ago=5)],
+    ]
+
+    def serve(path: str) -> Any:
+        page = int(dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))["page"])
+        return {"workflow_runs": short_then_more[page - 1] if page <= 2 else []}
+
+    api = FakeApi({}, {})
+    api.get = serve  # type: ignore[method-assign]
+    listed = wd.list_runs(api, REPO, "ci.yml", status="completed", cap=5)
+    assert [int(run["id"]) for run in listed] == [5, 4, 3, 2, 1]
+
+    control: list[dict[str, Any]] = []
+    for batch in short_then_more:
+        control.extend(batch)
+        if len(batch) < wd.PAGE_SIZE:  # the reverted rule
+            break
+    assert len(control) == 3
+
+
+def test_the_jobs_listing_does_not_end_on_a_short_page_and_bounds_by_total_count() -> None:
+    """Third site reading a paginated listing, with a cheaper tail than the runs index.
+
+    ``filter=latest`` is the same shape of post-paging filter as ``status=``, so a
+    re-run run's jobs page can come back short mid-listing. A job dropped for that
+    reason is a queued fleet job the tick never sees, and queued fleet jobs ARE the
+    orphan evidence. Unlike the runs index this payload carries ``total_count``, so
+    the tail is known exactly: reading stops there, with no extra empty-page call on
+    top of the one page a normal run needs.
+
+    Negative control: the reverted rule -- stop at the first page below ``PAGE_SIZE``
+    -- over the same pages keeps 2 of the 3 jobs and loses the queued fleet job.
+    """
+    fleet_job = _job(999, status="queued", codebuild=True)
+    pages = [
+        [_job(1), _job(2)],  # short, yet not the tail
+        [fleet_job],
+    ]
+
+    calls: list[str] = []
+
+    def serve(path: str) -> Any:
+        calls.append(path)
+        page = int(dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))["page"])
+        return {"total_count": 3, "jobs": pages[page - 1] if page <= len(pages) else []}
+
+    api = FakeApi({}, {})
+    api.get = serve  # type: ignore[method-assign]
+    listed = wd.list_jobs(api, REPO, 1)
+    assert [int(job["id"]) for job in listed] == [1, 2, 999]
+    # Exactly the pages that held jobs: ``total_count`` ends it, so no empty-page probe.
+    assert len(calls) == 2
+
+    control: list[dict[str, Any]] = []
+    for batch in pages:
+        control.extend(batch)
+        if len(batch) < wd.PAGE_SIZE:  # the reverted rule
+            break
+    assert len(control) == 2
+    assert 999 not in {int(job["id"]) for job in control}
+
+
+def test_a_short_page_does_not_end_the_branch_listing_either() -> None:
+    """Fourth site, and the one where a short page silently refuses a safe re-run.
+
+    ``newest_run_id_for_branch`` pages until it has SEEN the run being judged; that
+    sighting is the proof the listing reached far enough to trust its answer. Reading
+    a short page as the tail raises ``LookupInconclusive`` while the judged run sits
+    on the very next page, which declines a re-run the evidence allows and leaves a
+    cancelled run behind a green tick.
+
+    Negative control: the reverted rule over the same pages ends at page one and the
+    lookup raises.
+    """
+    judged = wd.RunVerdict(
+        run_id=42,
+        run_attempt=1,
+        head_branch="main",
+        head_repo=REPO,
+        event="push",
+        status="in_progress",
+        url="https://example.invalid/runs/42",
+        age=timedelta(minutes=60),
+        verdict=wd.ORPHANED,
+        workflow="ci.yml",
+    )
+    pages = [
+        [_run(90, branch="main", event="push")],  # short page, newest first
+        [_run(42, branch="main", event="push")],  # the judged run
+    ]
+
+    def serve(path: str) -> Any:
+        page = int(dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))["page"])
+        return {"workflow_runs": pages[page - 1] if page <= len(pages) else []}
+
+    api = FakeApi({}, {})
+    api.get = serve  # type: ignore[method-assign]
+    assert wd.newest_run_id_for_branch(api, REPO, judged) == 90
+
+    control_pages = []
+    for batch in pages:
+        control_pages.append(batch)
+        if len(batch) < wd.BRANCH_LISTING_DEPTH:  # the reverted rule
+            break
+    assert len(control_pages) == 1
+    assert 42 not in {int(run["id"]) for batch in control_pages for run in batch}
+
+
+def test_a_truncated_live_listing_fails_the_tick_instead_of_only_warning() -> None:
+    """A tick that could not look as deep as an orphan sits is not a clean tick.
+
+    The depth needed to reach an orphan is the run arrival rate times the orphan's
+    age, so a cap set past the whole measured set today re-truncates short of an
+    orphan under load growth. The paging logs a ``::warning::``, which nobody is
+    required to read, so truncation also carries a tick-level verdict and an outcome
+    inside ``FAILED_OUTCOMES`` -- the same device the rate-limit abort uses.
+
+    Negative control: the ``::warning::`` alone, which is what shipped before, leaves
+    the outcome set empty and the tick exits 0.
+    """
+    full_page = [_run(1000 + i, minutes_ago=5) for i in range(wd.PAGE_SIZE)]
+
+    def serve(path: str) -> Any:
+        # More runs exist than the cap admits, and the listing says so.
+        return {"total_count": 50 * wd.PAGE_SIZE, "workflow_runs": list(full_page)}
+
+    api = FakeApi({}, {})
+    api.get = serve  # type: ignore[method-assign]
+    logged: list[str] = []
+    _runs, aborted, truncated = wd.gather_all_candidate_runs(api, REPO, log=logged.append)
+    assert aborted is None
+    # Two entries, not three: `pending` shares the walk but not the sink.
+    assert [m.split(" run listing")[0] for m in truncated] == ["in_progress", "queued"]
+    assert all("of 5000 run(s)" in m for m in truncated)
+    assert any(line.startswith("::warning::") for line in logged)
+
+    # The reported form: a marker verdict plus an outcome that fails the tick.
+    outcomes = {wd.LISTING_TRUNCATED_MARKER_ID: wd.OUTCOME_LISTING_TRUNCATED}
+    assert wd.FAILED_OUTCOMES & set(outcomes.values())
+
+    # Negative control: warning only, which is what shipped before this change.
+    control_outcomes: dict[int, str] = {}
+    assert not (wd.FAILED_OUTCOMES & set(control_outcomes.values()))
 
 
 def test_the_repo_wide_paging_respects_its_page_cap() -> None:
@@ -1073,13 +1286,17 @@ def test_the_repo_wide_paging_respects_its_page_cap() -> None:
     assert len(collected) == wd.PAGE_SIZE * wd.REPO_LISTING_MAX_PAGES
 
 
-def test_cancelled_recovery_reaches_past_the_shared_listing_cap(
+def test_cancelled_recovery_reaches_a_deep_orphan_inside_the_reachable_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A recently cancelled, old-created run sits on page nine.
+    """A recently cancelled, old-created run sits on page nine and is recovered.
 
-    The negative control gives cancelled recovery the shared live-listing cap;
-    that run is absent and cannot recover. The recovery-specific cap reaches it.
+    The recovery cap equals the live one, because ``REPO_LISTING_RESULT_CEILING``
+    bounds both at the API's reachable window: a deeper cap names pages this
+    endpoint never serves. Two controls: a 2-page cap cannot reach page nine, and a
+    run past the ceiling cannot be reached at ANY cap -- which is why truncation is
+    reported
+    rather than silently tolerated.
     """
 
     def api_with_deep_orphan() -> FakeApi:
@@ -1092,7 +1309,7 @@ def test_cancelled_recovery_reaches_past_the_shared_listing_cap(
                 updated_minutes_ago=200,
                 branch=f"filler-{i}",
             )
-            for i in range(wd.PAGE_SIZE * wd.REPO_LISTING_MAX_PAGES)
+            for i in range(wd.PAGE_SIZE * (wd.REPO_LISTING_MAX_PAGES - 2))
         ]
         orphan = _run(
             1,
@@ -1110,8 +1327,15 @@ def test_cancelled_recovery_reaches_past_the_shared_listing_cap(
         )
 
     recovery_cap = wd.RECOVERY_LISTING_MAX_PAGES
-    assert recovery_cap > wd.REPO_LISTING_MAX_PAGES
-    monkeypatch.setattr(wd, "RECOVERY_LISTING_MAX_PAGES", wd.REPO_LISTING_MAX_PAGES)
+    # This cap equals the live-listing one: REPO_LISTING_RESULT_CEILING bounds BOTH
+    # at the API's reachable window, so a deeper recovery cap would name pages this
+    # endpoint never serves. What this test pins is that a recently cancelled run
+    # whose CREATION is old sits deep in the index and is recovered from inside that
+    # window.
+    assert (
+        recovery_cap == wd.REPO_LISTING_MAX_PAGES <= wd.REPO_LISTING_RESULT_CEILING // wd.PAGE_SIZE
+    )
+    monkeypatch.setattr(wd, "RECOVERY_LISTING_MAX_PAGES", 2)
     control = api_with_deep_orphan()
     _, control_outcomes = _sweep(control)
     assert 1 not in control_outcomes
@@ -1123,11 +1347,31 @@ def test_cancelled_recovery_reaches_past_the_shared_listing_cap(
     assert _posts(api, "/rerun") == [f"repos/{REPO}/actions/runs/1/rerun"]
     assert any("status=cancelled" in path and "page=9" in path for path in api.gets)
 
+    # Second control, and the honest bound: a run past REPO_LISTING_RESULT_CEILING
+    # cannot be reached at any cap, because the endpoint serves an empty page there
+    # rather than the next result. Raising the cap does nothing, which is why the
+    # operator-facing remedy says to narrow the listing.
+    reachable = wd.REPO_LISTING_RESULT_CEILING // wd.PAGE_SIZE
+    assert wd.REPO_LISTING_MAX_PAGES == reachable
+    assert wd.RECOVERY_LISTING_MAX_PAGES == reachable
 
-def test_repo_listing_warns_only_when_the_page_cap_truncates() -> None:
+
+def test_repo_listing_warns_only_when_its_own_total_count_is_not_reached() -> None:
+    """Reach is judged against ``total_count``, not against the page cap.
+
+    The cap cannot be the signal, because at ``REPO_LISTING_RESULT_CEILING`` the
+    endpoint serves an EMPTY page: measured on this repository, page 11 of
+    `status=queued&per_page=100` returns no runs and `total_count: 0`, not a 422. A
+    walk that ended on that page looks exactly like one that reached the tail, so
+    only the count says which happened.
+    """
     full_page = [{"id": i, "path": ".github/workflows/ci.yml"} for i in range(wd.PAGE_SIZE)]
     saturated = FakeApi({}, {})
-    saturated.get = lambda _path: {"workflow_runs": full_page}  # type: ignore[method-assign]
+    # 500 exist, the cap admits 200: a shortfall the cap alone would also have caught.
+    saturated.get = lambda _path: {  # type: ignore[method-assign]
+        "total_count": 5 * wd.PAGE_SIZE,
+        "workflow_runs": full_page,
+    }
     saturated_log: list[str] = []
     saturated_runs = list(
         wd._iter_repo_runs(
@@ -1139,7 +1383,33 @@ def test_repo_listing_warns_only_when_the_page_cap_truncates() -> None:
         )
     )
     assert len(saturated_runs) == 2 * wd.PAGE_SIZE
-    assert any("truncated" in line and "in_progress" in line for line in saturated_log)
+    assert any("200 of 500" in line and "in_progress" in line for line in saturated_log)
+
+    # The ceiling case the page cap CANNOT catch: the walk ends on an empty page
+    # well inside its cap, and only `total_count` shows the tail went unread.
+    def at_ceiling(path: str) -> Any:
+        page = int(dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))["page"])
+        if page <= 2:
+            return {"total_count": 9 * wd.PAGE_SIZE, "workflow_runs": full_page}
+        return {"total_count": 0, "workflow_runs": []}
+
+    ceiling = FakeApi({}, {})
+    ceiling.get = at_ceiling  # type: ignore[method-assign]
+    ceiling_log: list[str] = []
+    ceiling_runs = list(
+        wd._iter_repo_runs(
+            ceiling,
+            REPO,
+            status="queued",
+            max_pages=wd.REPO_LISTING_MAX_PAGES,
+            log=ceiling_log.append,
+        )
+    )
+    assert len(ceiling_runs) == 2 * wd.PAGE_SIZE
+    assert any("200 of 900" in line for line in ceiling_log)
+    # Negative control: the reverted rule fired on `page == max_pages`, which this
+    # walk never reaches, so it said nothing at all about an unread tail.
+    assert len(ceiling_runs) // wd.PAGE_SIZE < wd.REPO_LISTING_MAX_PAGES
 
     short = FakeApi({"in_progress": [_run(1)]}, {})
     short_log: list[str] = []
@@ -1154,6 +1424,59 @@ def test_repo_listing_warns_only_when_the_page_cap_truncates() -> None:
     )
     assert [run["id"] for run in short_runs] == [1]
     assert not short_log
+
+
+def test_a_shortfall_from_churn_warns_but_does_not_fail_the_tick() -> None:
+    """``total_count`` is a page-one snapshot of a set that MUTATES mid-walk.
+
+    A run that leaves ``queued`` between two page reads lands as ``yielded < total``
+    with every page delivered, so treating any shortfall as an unread tail fails the
+    tick on churn -- which on a busy repository is most ticks, and a signal that
+    fires for a non-reason is the one nobody reads. The tick fails only where the
+    shortfall has a nameable cause: the page cap was spent, or an empty page came
+    back at the result ceiling.
+
+    Negative control: the rule that recorded EVERY shortfall records this one, so
+    the sink is non-empty and the tick goes red for a set that merely moved.
+    """
+    ceiling_pages = wd.REPO_LISTING_RESULT_CEILING // wd.PAGE_SIZE
+
+    def churned(path: str) -> Any:
+        page = int(dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))["page"])
+        # Page one says 250 exist; by page three the set has drained to 150.
+        if page == 1:
+            return {"total_count": 250, "workflow_runs": [_run(i) for i in range(wd.PAGE_SIZE)]}
+        if page == 2:
+            return {"total_count": 150, "workflow_runs": [_run(500 + i) for i in range(50)]}
+        return {"total_count": 150, "workflow_runs": []}
+
+    api = FakeApi({}, {})
+    api.get = churned  # type: ignore[method-assign]
+    log: list[str] = []
+    sink: list[str] = []
+    runs = list(
+        wd._iter_repo_runs(
+            api,
+            REPO,
+            status="queued",
+            max_pages=ceiling_pages,
+            truncated=sink,
+            log=log.append,
+        )
+    )
+    assert len(runs) == wd.PAGE_SIZE + 50
+    # Warned, so the reading is still visible, and NOT recorded, so no failed outcome.
+    assert any("the set moved during the walk" in line for line in log)
+    assert sink == []
+    # The walk neither spent its cap nor reached the ceiling, which is what makes
+    # this churn rather than an unread tail.
+    assert len(runs) < wd.REPO_LISTING_RESULT_CEILING
+
+    # Negative control: the reverted rule recorded every shortfall.
+    control: list[str] = []
+    if len(runs) < 250:
+        control.append("recorded")
+    assert control == ["recorded"]
 
 
 def test_a_pathless_run_is_not_classified_or_changed() -> None:
@@ -1225,7 +1548,7 @@ def test_a_run_whose_job_got_a_runner_before_the_heal_is_not_cancelled() -> None
         if "/runs/1/jobs" in path:
             reads["n"] += 1
             if reads["n"] >= 2:
-                payload = {"jobs": [_job(11, status="in_progress")]}
+                payload = {"total_count": 1, "jobs": [_job(11, status="in_progress")]}
         return payload
 
     api.get = flipping_get  # type: ignore[method-assign]
@@ -3932,6 +4255,75 @@ def test_live_job_read_bound_keeps_the_oldest_and_the_newest(
     assert any("live job-read cap of 3" in line for line in logged)
 
 
+def test_the_classify_bound_prefers_a_healable_run_over_older_unhealable_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Age alone hands the bound to runs no heal can ever act on.
+
+    Measured on this repository: 220 watched live runs sit past the orphan
+    threshold and 18 past a day, the oldest 36 days, and every one of those is a
+    pull-request run -- listed forever, so oldest-first re-reads the same slots on
+    every tick. The run that actually blocks a branch is a `push` run of a
+    heal-safe workflow, and one six hours old ranks 30th of 40 slots.
+
+    Negative control: the reverted rule (`runs[:oldest]`, pure oldest-first) over
+    the same candidates drops the healable run.
+    """
+    zombies = [
+        _run(100 + i, minutes_ago=50_000 - i, status="queued", event="pull_request", branch="pr")
+        for i in range(4)
+    ]
+    healable = _run(7, minutes_ago=360, status="queued", event="push", workflow="fast-gate.yml")
+    young = [_run(200 + i, minutes_ago=2 - i * 0.1, status="queued") for i in range(2)]
+    candidates = zombies + [healable] + young  # oldest first, as the gather returns them
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 4)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    logged: list[str] = []
+    bounded, partial = wd.live_runs_within_read_bound(candidates, logged.append)
+    assert partial is True
+    assert 7 in {int(run["id"]) for run in bounded}
+    # Still oldest first, so the sweep's log stays chronological.
+    assert [run["created_at"] for run in bounded] == sorted(run["created_at"] for run in bounded)
+    # The newest run keeps its reserved slot: dispatch evidence is not sacrificed
+    # to make room for the healable one.
+    assert int(bounded[-1]["id"]) == int(candidates[-1]["id"])
+    assert any("heal-eligible first" in line for line in logged)
+
+    oldest = wd.LIVE_CLASSIFY_READS - wd.LIVE_EVIDENCE_RESERVE
+    control = candidates[:oldest] + candidates[-wd.LIVE_EVIDENCE_RESERVE :]  # the reverted rule
+    assert 7 not in {int(run["id"]) for run in control}
+
+
+def test_heal_eligible_shape_reads_only_what_the_later_gates_cannot_reverse() -> None:
+    """A `push` run of a declared heal-safe workflow, and nothing else.
+
+    It is a priority signal, so it must not admit what the real gates refuse: a
+    pull-request run is never healed (the successor check filters by branch NAME),
+    and a workflow outside the declared heal-safe set is never healed either.
+    """
+    assert wd._heal_eligible_shape(_run(1, event="push", workflow="fast-gate.yml"))
+    assert not wd._heal_eligible_shape(_run(2, event="pull_request", workflow="fast-gate.yml"))
+    assert not wd._heal_eligible_shape(_run(3, event="push", workflow="macos-on-demand.yml"))
+    assert not wd._heal_eligible_shape(_run(4, event="schedule", workflow="ci.yml"))
+    # A run whose payload carries no event at all is not promoted on a guess.
+    pathless = _run(5, event="push", workflow="ci.yml")
+    del pathless["event"]
+    assert not wd._heal_eligible_shape(pathless)
+
+
+def test_the_scheduled_tick_is_armed() -> None:
+    """Detection without action cost two six-hour `main` outages, so the schedule acts.
+
+    A manual dispatch stays governed by its own `dry_run` input, which is what
+    lets a maintainer inspect without cancelling; that coupling is asserted here
+    too, because arming is only safe while it holds.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert 'WATCHDOG_ARMED: "true"' in text
+    assert "WATCHDOG_ARMED != 'true'" in text
+    assert "github.event_name == 'workflow_dispatch' && inputs.dry_run" in text
+
+
 def test_a_live_tick_under_the_read_bound_reads_every_run() -> None:
     runs = [_run(i, minutes_ago=100 - i, status="queued") for i in range(1, 4)]
     api = FakeApi({"queued": list(reversed(runs))}, {i: [] for i in range(1, 4)}, evidence=False)
@@ -4350,9 +4742,10 @@ def test_the_supersession_question_is_asked_when_a_hold_applies() -> None:
 def test_the_cleared_hold_is_logged_as_a_decision_not_as_a_cancel() -> None:
     """The line is emitted from the hold loop, before anything has decided to cancel.
 
-    The scheduled tick runs with `dry_run` today (`WATCHDOG_ARMED` is false), so a line
-    asserting the run WAS cancelled would be false on every real tick, and a reader
-    debugging from the log would look for a cancel that never happened.
+    A line asserting the run WAS cancelled would be false whether or not the tick
+    acts: the hold loop runs before any cancel decision, and a manual dispatch can
+    still be a dry run. A reader debugging from such a log would look for a cancel
+    that never happened.
     """
     verdict = wd.RunVerdict(
         run_id=1,
