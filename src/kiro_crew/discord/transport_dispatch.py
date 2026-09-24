@@ -1228,6 +1228,11 @@ class DiscordDispatcher:
             if _acquired:
                 await self.sessions.record_failure(session_key)
         finally:
+            # An approval window the driver never awaited -- the prompt went out
+            # and the turn then ended before the decider -- has no wait of its own
+            # to close it, so it would outlive this turn with its nonce still
+            # armed and authorizing a press.
+            DiscordApprovalDecider.discard_session(session_key)
             # A turn that consumed the post-compaction flag but never landed
             # discarded the prompt carrying the re-injected context; put the
             # flag back so the next turn re-injects it.

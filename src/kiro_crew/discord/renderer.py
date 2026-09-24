@@ -396,6 +396,17 @@ class DiscordApprovalDecider:
     per-prompt nonce (``register_nonce``), and ``resolve_global`` only resolves
     when the pressed button's nonce matches the one registered for that key —
     a press from any earlier prompt (or earlier process) fails closed.
+
+    The decision window opens when the nonce is armed, not when the wait starts:
+    ``register_nonce`` reserves the future and ``__call__`` adopts it. So a press
+    lands inside the window from the moment the prompt is built, including across
+    the suspension points between posting it and awaiting the decision.
+
+    It closes at the decision, at the wait's timeout, or at a ``retire`` /
+    ``refuse_undelivered`` for a prompt that never went out -- NOT when the prompt
+    stops being visible. Nothing here strips a timed-out prompt's buttons, so they
+    stay clickable in the channel indefinitely; a press on them finds no nonce and
+    is told the approval expired, which by then it has.
     """
 
     _REGISTRY: dict[str, "asyncio.Future[bool]"] = {}
@@ -413,15 +424,113 @@ class DiscordApprovalDecider:
 
     @classmethod
     def register_nonce(cls, key: str) -> str:
-        """Mint + register the per-prompt nonce for *key* (renderer-side)."""
+        """Mint the per-prompt nonce for *key* and OPEN its decision window.
+
+        Called by whatever is about to post the prompt, so it runs on the event
+        loop the wait will run on.
+
+        Reserving the future here, rather than in ``__call__``, is what keeps a
+        press inside the window while the prompt is being posted. ``TurnDriver``
+        dispatches ``PROMPT_CHOICE`` to the renderer and only then awaits the
+        decider, and the renderer suspends in between -- a thread hop for the
+        display-safety scan, then the send. A press landing in that gap found the
+        nonce armed but no future, so ``resolve_global`` judged it a stale button
+        and failed closed: the user was told the approval had expired, and the
+        request denied itself when the window elapsed.
+
+        Never replaces a LIVE future. A second arm for one key, or an arm that
+        follows the wait, keeps the object the waiter is blocked on; replacing it
+        would leave that waiter on a future nobody resolves. A DONE future IS
+        replaced, and that is the isolation bound: a decision left unawaited must
+        not be adoptable by the next request to reuse this key.
+        """
         nonce = new_approval_nonce()
         cls._NONCES[key] = nonce
+        reserved = cls._REGISTRY.get(key)
+        if reserved is None or reserved.done():
+            cls._REGISTRY[key] = asyncio.get_running_loop().create_future()
         return nonce
+
+    @classmethod
+    def retire(cls, key: str) -> None:
+        """Close a decision window whose prompt never went out (idempotent).
+
+        ``__call__`` retires the nonce and the reservation together with the wait
+        it ran, but a caller that arms and then fails to post has no wait to run
+        that ``finally``. Without this, both would outlive a prompt nobody ever
+        saw, and the nonce is what authorizes a press.
+
+        For a caller with somewhere else to fall through to, so no wait of its own
+        runs on this key. A caller whose driver WILL await the decider wants
+        :meth:`refuse_undelivered` instead: dropping the reservation there only
+        means the wait opens a fresh window and spends the whole timeout on a
+        prompt nobody can see.
+        """
+        cls._NONCES.pop(key, None)
+        cls._REGISTRY.pop(key, None)
+
+    @classmethod
+    def refuse_undelivered(cls, key: str) -> None:
+        """Record a denial for a prompt that never reached the channel.
+
+        The prompt is unanswerable, so the only safe verdict is a refusal -- and
+        recording it on the reservation the driver is about to adopt is what makes
+        that refusal immediate. The alternative, dropping the reservation, reaches
+        the same verdict only after the wait has spent the full decision window on
+        a prompt nobody can see, and reports that elapsed wait as an expiry.
+
+        Leaves the maps alone: the adopting ``__call__`` clears both when it
+        consumes the decision, which keeps one owner for that cleanup. A key with
+        no live reservation is left untouched, so this cannot overwrite a decision
+        the user actually made.
+        """
+        reserved = cls._REGISTRY.get(key)
+        if reserved is not None and not reserved.done():
+            reserved.set_result(False)
+
+    @classmethod
+    def discard_session(cls, session_key: str) -> None:
+        """Drop *session_key*'s unawaited reservations at the end of its turn.
+
+        ``__call__`` clears its own entry in a ``finally``, and the failed-post
+        paths above clear theirs, so this covers the one case neither can: the
+        prompt went out and the turn then ended before the driver reached the
+        decider -- a cancellation, or a failure between the two. No wait ever ran,
+        so nothing else closes that window, and the nonce left behind is what
+        authorizes a press.
+
+        Drops only PENDING reservations. A resolved one holds a decision that was
+        already delivered, and the prefix carries its own ``:`` so one session key
+        cannot match another that merely starts the same way.
+        """
+        prefix = f"{session_key}:"
+        for k in [k for k, fut in cls._REGISTRY.items() if k.startswith(prefix) and not fut.done()]:
+            cls._REGISTRY.pop(k, None)
+            cls._NONCES.pop(k, None)
 
     async def __call__(self, event: Any) -> bool:
         self.last_deny_cause = ""
         k = self.key(self._session_key, getattr(event, "request_id", ""))
-        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        # Adopt the reservation opened when this prompt's nonce was armed. The
+        # press may ALREADY have landed, in the gap between the prompt going out
+        # and this wait starting, in which case the reservation holds the user's
+        # decision and there is nothing left to await. Minting a fresh future
+        # here would discard that decision and deny when the window elapsed.
+        reserved = DiscordApprovalDecider._REGISTRY.get(k)
+        if reserved is not None and reserved.done():
+            if reserved.cancelled() or reserved.exception() is not None:
+                # A torn-down reservation, not a decision. Open a fresh window
+                # rather than read it as consent or as a refusal.
+                reserved = None
+            else:
+                try:
+                    return bool(reserved.result())
+                finally:
+                    DiscordApprovalDecider._REGISTRY.pop(k, None)
+                    DiscordApprovalDecider._NONCES.pop(k, None)
+        fut: "asyncio.Future[bool]" = (
+            reserved if reserved is not None else asyncio.get_running_loop().create_future()
+        )
         DiscordApprovalDecider._REGISTRY[k] = fut
         try:
             return bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
@@ -1190,9 +1299,8 @@ class DiscordRenderer(Renderer):
         # resolve a later prompt; the interaction handler validates it via
         # ``resolve_global``.
         rid = str(request_id)
-        nonce = DiscordApprovalDecider.register_nonce(
-            DiscordApprovalDecider.key(self._session_key, rid)
-        )
+        key = DiscordApprovalDecider.key(self._session_key, rid)
+        nonce = DiscordApprovalDecider.register_nonce(key)
         components = [
             {
                 "type": 1,
@@ -1220,18 +1328,43 @@ class DiscordRenderer(Renderer):
         # and is never cleared, so it names the previous tool for any permission
         # that arrives without one of its own. Either source is LLM-authored, so
         # the display-form scan above applies to both.
-        tool = await asyncio.to_thread(
-            _redact_transformed, tool_title or self._last_tool or "this tool"
-        )
-        # A turn parked on a human is not a stalled turn: hold the watchdog until
-        # the next real activity (``_note_progress``) resumes it, so waiting for
-        # an approval never earns the "gone quiet" mark.
-        if self._ladder is not None and not self._ladder_paused:
-            self._ladder_paused = True
-            self._ladder.pause_stall_watchdog()
-        await self._client.send_message(
-            self._channel_id, f"🔐 Approve `{tool}`?", components=components
-        )
+        try:
+            tool = await asyncio.to_thread(
+                _redact_transformed, tool_title or self._last_tool or "this tool"
+            )
+            # A turn parked on a human is not a stalled turn: hold the watchdog until
+            # the next real activity (``_note_progress``) resumes it, so waiting for
+            # an approval never earns the "gone quiet" mark.
+            if self._ladder is not None and not self._ladder_paused:
+                self._ladder_paused = True
+                self._ladder.pause_stall_watchdog()
+            posted = await self._client.send_message(
+                self._channel_id, f"🔐 Approve `{tool}`?", components=components
+            )
+            if not posted:
+                # This client reports a failed send by RETURNING no message id
+                # rather than by raising -- a revoked token, a channel it cannot
+                # write to, a deleted thread, a rate limit or 5xx past its
+                # retries -- so the ``except`` below does not cover it. Nothing is
+                # on screen to press, and the driver awaits the decision next, so
+                # record the refusal on the reservation it is about to adopt: it
+                # denies at once instead of spending the whole window on a prompt
+                # nobody can see and reporting that as an expiry.
+                DiscordApprovalDecider.refuse_undelivered(key)
+                logger.warning(
+                    "Discord: the approval prompt for %s was not accepted by the "
+                    "channel; refusing the request rather than waiting it out",
+                    rid,
+                )
+        except BaseException:
+            # The prompt never reached the channel, so nothing can be pressed and
+            # no wait will run the ``finally`` that normally closes this window.
+            # Retire it here instead of leaving a live nonce and reservation for a
+            # prompt nobody saw. Raised on, because a caller that swallowed this
+            # would leave the driver waiting out the whole window on an invisible
+            # prompt and then call that elapsed wait a decision.
+            DiscordApprovalDecider.retire(key)
+            raise
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         try:
