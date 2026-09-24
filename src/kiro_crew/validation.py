@@ -62,7 +62,6 @@ from kiro_crew.monitoring.registry import (
     publicly_armable_objectives,
 )
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
-from kiro_crew.solo_spawn import SOLO_SPAWN_REASONS
 from kiro_crew.work_vocab import WORK_ITEM_STATES, WORK_VERDICTS, WORK_WORKER_STATUSES
 
 # ── Constants ──
@@ -1120,11 +1119,10 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
-        # Why ONE task is being spawned alone. Closed vocabulary from
-        # ``solo_spawn.SOLO_SPAWN_REASONS``; ``""`` is "not given". The gate
-        # that requires it lives in ``mcp_tools.spawn`` (task count) and
-        # ``handlers.messaging.api_spawn`` (roster check); this only bounds it.
-        FieldSpec("solo_reason", str, allowed=SOLO_SPAWN_REASONS),
+        # Legacy solo-spawn fields: unadvertised and ignored, but accepted
+        # so a skill or workflow that still sends them is not refused as
+        # "unknown field".
+        FieldSpec("solo_reason", str, max_len=MAX_SHORT_STRING),
         FieldSpec("solo_details", str, max_len=MAX_MEDIUM_STRING),
         # Switchable context groups the sub-agent inherits. Explicit
         # ``default=True`` rather than the implicit ``None``: the semantic
@@ -1192,9 +1190,8 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
         FieldSpec("include_project", bool, default=True),
-        # Same solo-spawn reason as spawn_run: required when ``agents`` holds
-        # exactly one entry that names no agent_or_mode.
-        FieldSpec("solo_reason", str, allowed=SOLO_SPAWN_REASONS),
+        # Retired solo-spawn gate fields, accepted and ignored as on spawn_run.
+        FieldSpec("solo_reason", str, max_len=MAX_SHORT_STRING),
         FieldSpec("solo_details", str, max_len=MAX_MEDIUM_STRING),
     ],
 )

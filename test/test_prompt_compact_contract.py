@@ -76,12 +76,12 @@ def test_each_prompt_keeps_its_own_output_and_host_boundaries(name: str) -> None
         assert command in rules
 
 
-def test_solo_spawn_prohibition_survives_prompt_compaction() -> None:
-    """A compaction once dropped the explicit prohibition and left only a weak
-    "unless context isolation is needed", which made context isolation the
-    universal excuse for handing a whole task to one sub-agent. The licensing
-    vocabulary here must stay the closed one ``solo_spawn.py`` enforces, or the
-    prompt invites a spawn the gate refuses."""
+def test_single_task_default_survives_prompt_compaction() -> None:
+    """A compaction once dropped the explicit "one task stays in the parent"
+    rule and left abstract value language plus a five-reason vocabulary. The
+    model read the vocabulary as a menu of passing tokens and spawned one child
+    per task. The concrete default, the fan-out threshold and the yield rule
+    must survive every rewrite, and no reason vocabulary may come back."""
     for name in ("prompt.md", "prompt-orchestrator.md"):
         text = _read(name)
         section = (
@@ -91,19 +91,38 @@ def test_solo_spawn_prohibition_survives_prompt_compaction() -> None:
         )
         _require(
             section,
-            r"Never forward the entire request to one equivalent worker merely to wait and relay",
-            r"Do focused work directly by default",
-            r"Do not invent tasks or switch models",
-            r"parent_parallel",
-            r"solo_details",
-            r"Only when its receipt confirms support.*one minute.*END YOUR TURN",
-            r"Blocking.*cannot support.*parent_parallel",
-            r"Yielding is not completion",
-            r"Await all batch outcomes",
-            r"bulk_data",
-            r"fresh_context",
+            r"END YOUR TURN",
+            r"still-running result",
+            r"receipt says parent work is supported.*at most one minute",
         )
-        assert "context isolation" not in section.lower(), (name, "retired licence returned")
+        if name == "prompt.md":
+            _require(
+                section,
+                r"Do the task yourself by default",
+                r"TWO OR MORE independent tasks",
+                r"flood your context with bulk output",
+                r"Never hand the whole request to one worker just to wait",
+                r"ONE `spawn_run\(tasks=\[…\]\)` batch",
+                r"Wait for the whole batch before spawning again",
+            )
+        else:
+            _require(
+                section,
+                r"single indivisible unit stays in the parent",
+                r"at least two independent tasks",
+                r"Wait for all .*results before synthesizing",
+            )
+        for retired in (
+            "solo_reason",
+            "solo_details",
+            "parent_parallel",
+            "Solo reasons",
+            "two workstreams",
+            "Parent + one child",
+            "Parent+child",
+            "context isolation",
+        ):
+            assert retired.lower() not in section.lower(), (name, retired)
 
 
 def test_cron_modes_and_session_ownership_remain_explicit() -> None:
@@ -274,8 +293,7 @@ def test_orchestrator_keeps_approval_scope_budgets_and_direct_work_exceptions() 
         r"Cancel.*abort the plan",
         r"once approved.*do not re-plan",
         r"END YOUR TURN immediately.*no tools.*until the user's Go / Go All",
-        r"Do focused work directly by default",
-        r"Solo reasons:.*parent_parallel.*bulk_data.*fresh_context.*specialist.*user_requested",
+        r"single indivisible unit stays in the parent",
         r"never dispatch work needing a still-running result",
         r"stage_timeout_seconds.*turn may START.*rather than hard-bounding",
         r"HALF that budget, capped at fifteen minutes",

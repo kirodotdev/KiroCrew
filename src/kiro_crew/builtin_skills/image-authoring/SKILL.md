@@ -135,5 +135,4 @@ reader the picture but never the content.
 
 Author sequentially, or -- for 2+ images -- fan out with `spawn_run(tasks=[...])`
 (one task per image; each task gets the full brief + exact output path). A
-single image is authored inline: a one-task `spawn_run` is refused without a
-`solo_reason`, and "one image" is not one.
+single image is authored inline, not through a one-task `spawn_run`.

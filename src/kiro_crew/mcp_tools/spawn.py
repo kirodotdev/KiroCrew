@@ -33,15 +33,6 @@ from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.solo_spawn import (
-    SOLO_SPAWN_REASON_GLOSS,
-    SOLO_SPAWN_REASONS,
-    SOLO_SPAWN_REFUSED_CODE,
-    delegation_refusal,
-    solo_spawn_note,
-    solo_spawn_question,
-    solo_spawn_refusal,
-)
 from kiro_crew.subagent import (
     AGENT_NOT_FOUND_CODE,
     resolve_max_subagents,
@@ -231,39 +222,13 @@ def schemas() -> list[dict[str, Any]]:
             ),
         },
     }
-    # The solo-spawn reason, shared by both spawn tools. The vocabulary and the
-    # gloss come from ``solo_spawn`` so the enforced gate and this
-    # advertisement cannot drift apart.
-    _solo_reason_prop = {
-        "type": "string",
-        "enum": sorted(r for r in SOLO_SPAWN_REASONS if r),
-        "description": (
-            "REQUIRED for one task without a different model/agent/crew. "
-            + "; ".join(f"'{reason}': {gloss}" for reason, gloss in SOLO_SPAWN_REASON_GLOSS.items())
-            + ". Reasons are model claims, not proof of value or authorization. "
-            "Do not invent work or change models to pass this gate."
-        ),
-    }
-    _solo_details_prop = {
-        "type": "string",
-        "description": (
-            "Concrete benefit and task contract: ready inputs, ownership, verifiable output "
-            "and stop conditions. Required for parent_parallel (describe your separate work), "
-            "specialist (needed capability), and user_requested (quote the user's request). "
-            "Optional for legacy reasons; recorded as model-declared evidence."
-        ),
-    }
     return [
         {
             "name": "spawn_run",
             "description": (
-                "Do focused work directly. Delegate bounded, ready assignments only for "
-                "concrete parallel, bulk-data, independent-verification or specialist value, "
-                "or an explicit user request. Parent plus one child can be parallel work. "
-                "Complexity, task count, idle slots and a different model alone prove no benefit. "
-                "ENFORCED: an unexplained equivalent solo spawn is refused; do it yourself "
-                "or supply a genuine solo_reason and its required solo_details. "
                 "Spawn subagent(s) to run tasks in the background. "
+                "One task is almost always faster done yourself: spawn for two or more "
+                "independent tasks, or when a step would flood your context with bulk output. "
                 "Returns immediately — results arrive as [Subagent completion event] "
                 "messages in your conversation. For parallel work, use 'tasks' array. "
                 "Tasks are automatically batched if they exceed the concurrency limit."
@@ -285,8 +250,6 @@ def schemas() -> list[dict[str, Any]]:
                             "request to an equivalent worker merely to wait and relay."
                         ),
                     },
-                    "solo_reason": _solo_reason_prop,
-                    "solo_details": _solo_details_prop,
                     "tasks": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -534,10 +497,6 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "spawn_sub_agents",
             "description": (
-                "Do focused work directly; delegate only for concrete value or an explicit "
-                "user request. ENFORCED: an unexplained equivalent solo spawn is refused. "
-                "Supply a genuine solo_reason and required solo_details. This BLOCKING tool "
-                "cannot support parent_parallel; use asynchronous spawn_run for that. "
                 "Spawn one or more sub-agents to run tasks in parallel. Each sub-agent "
                 "gets its own session with full tool access. BLOCKS until all sub-agents "
                 "complete, then returns their collected results. Use for delegating "
@@ -566,8 +525,6 @@ def schemas() -> list[dict[str, Any]]:
                         },
                         "description": "Array of sub-agents to spawn in parallel",
                     },
-                    "solo_reason": _solo_reason_prop,
-                    "solo_details": _solo_details_prop,
                     "cwd": {
                         "type": "string",
                         "description": (
@@ -658,6 +615,18 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
 
     # Read parent session key so completions inject back into this session.
     parent_session = mcp_core._resolve_session_key()
+    if len(task_list) == 1:
+        # One-line allowed-only audit: the task count is already known here,
+        # and this is the only place a one-task spawn_run call is visible at
+        # all now that the solo gate is gone. Kept so a one-task rate can
+        # still be measured/re-audited without reviving the removed gate.
+        mcp_core.sel().log_api_access(
+            caller="internal",
+            operation="spawn.solo",
+            outcome="allowed",
+            source="spawn_run",
+            resources=parent_session or "",
+        )
 
     # Fire-and-forget — gateway's SubagentManager queues excess tasks
     # and auto-spawns them as slots free up.
@@ -684,42 +653,6 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         return (
             f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
         )
-    # THE SOLO GATE. One task, no reason, nothing named that could differ from
-    # this session: refuse with the question instead of spawning. This is the
-    # only place the task COUNT is known -- the gateway sees one POST per task
-    # -- so the count half lives here; the "is that model/agent/crew really
-    # not your own" half lives in api_spawn, which knows the parent.
-    solo_reason = args.get("solo_reason") or ""
-    solo_details = args.get("solo_details") or ""
-    reason_error = delegation_refusal(solo_reason, solo_details)
-    if solo_reason == "parent_parallel" and not parent_session:
-        reason_error = "Error: parent_parallel requires a parent session with completion delivery."
-    solo = len(task_list) == 1
-    refusal = reason_error or solo_spawn_refusal(
-        len(task_list),
-        solo_reason,
-        model=model,
-        agent=agent or (agents_list[0] if agents_list else ""),
-        crew=crew,
-    )
-    if refusal:
-        mcp_core.sel().log_tool_invocation(
-            session_key=_audit_owner(parent_session),
-            source="mcp_core",
-            tool_name="spawn_run",
-            outcome="refused",
-            error=reason_error or "solo spawn without a reason",
-        )
-        mcp_core.sel().log_api_access(
-            caller="internal",
-            operation="spawn.solo",
-            outcome="denied",
-            source="solo_gate",
-            resources=parent_session or "",
-            error=reason_error or "one task, no reason, nothing named",
-        )
-        return refusal
-
     agent_ids: list[str] = []
     can_work = True
     agent_names: list[str] = []
@@ -807,15 +740,6 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             body["reasoning_effort"] = reasoning_effort
         if keep:
             body["keep"] = True
-        if solo:
-            # Marks a one-task call so api_spawn runs the roster check; the
-            # SDK and apps never send it and are never gated.
-            body["solo"] = True
-            if solo_reason:
-                body["solo_reason"] = solo_reason
-        if solo_reason or solo_details:
-            body["solo_reason"] = solo_reason
-            body["solo_details"] = solo_details
         if not inc_memory:
             body["include_memory"] = False
         if not inc_lessons:
@@ -826,10 +750,6 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             body["approval_mode"] = approval_mode
         d = mcp_core._post("/api/spawn", body)
         can_work = can_work and d.get("parent_work_supported") is True
-        if solo and d.get("code") == SOLO_SPAWN_REFUSED_CODE:
-            # The roster check refused the one task there was: the question IS
-            # the result. No batch to reconcile (a solo call has no batch_id).
-            return str(d.get("error") or solo_spawn_question())
         if d.get("error"):
             error_line = f"{t[:60]}: {d['error']}"
             if d.get("transport_error"):
@@ -940,9 +860,6 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
                 label = f"{aid} ({a})" if a else aid
                 note = "" if queued_reasons[aid] == head_reason else f" [{queued_reasons[aid]}]"
                 spawn_lines.append(f"  {label}: {t[:80]}{note}")
-        if solo:
-            # The reason, or a pointer to the gateway's roster-check audit.
-            spawn_lines.append(solo_spawn_note(solo_reason))
         if keep:
             spawn_lines.append(
                 "These conversations have GUARANTEED continuability: after "
@@ -1292,36 +1209,6 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
         if len(a) > MAX_SHORT_STRING:
             entry["agent_or_mode"] = a[:MAX_SHORT_STRING]
 
-    # THE SOLO GATE, as on spawn_run: one entry, no reason, no agent named.
-    live_entries = [e for e in agents_input if str(e.get("prompt", "")).strip()]
-    solo_reason = args.get("solo_reason") or ""
-    solo_details = args.get("solo_details") or ""
-    reason_error = delegation_refusal(solo_reason, solo_details, blocking=True)
-    solo = len(live_entries) == 1
-    refusal = reason_error or solo_spawn_refusal(
-        len(live_entries),
-        solo_reason,
-        agent=str(live_entries[0].get("agent_or_mode") or "") if solo else "",
-        tool="spawn_sub_agents",
-    )
-    if refusal:
-        mcp_core.sel().log_tool_invocation(
-            session_key=_audit_owner(parent_session),
-            source="mcp_core",
-            tool_name="spawn_sub_agents",
-            outcome="refused",
-            error=reason_error or "solo spawn without a reason",
-        )
-        mcp_core.sel().log_api_access(
-            caller="internal",
-            operation="spawn.solo",
-            outcome="denied",
-            source="solo_gate",
-            resources=parent_session or "",
-            error=reason_error or "one task, no reason, nothing named",
-        )
-        return refusal
-
     mcp_core.sel().log_tool_invocation(
         session_key=_audit_owner(parent_session),
         source="mcp_core",
@@ -1347,16 +1234,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
         }
         if cwd:
             sa_body["cwd"] = cwd
-        if solo:
-            sa_body["solo"] = True
-            if solo_reason:
-                sa_body["solo_reason"] = solo_reason
-        if solo_reason or solo_details:
-            sa_body["solo_reason"] = solo_reason
-            sa_body["solo_details"] = solo_details
         d = mcp_core._post("/api/spawn", sa_body)
-        if solo and d.get("code") == SOLO_SPAWN_REFUSED_CODE:
-            return str(d.get("error") or solo_spawn_question(tool="spawn_sub_agents"))
         if d.get("error"):
             sa_errors.append(f"{_redact_sa(prompt)[:60]}: {_redact_sa(d['error'])}")
         else:
