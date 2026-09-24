@@ -46,6 +46,7 @@ from typing import Any, Iterator, Literal, Mapping, MutableMapping, NamedTuple
 
 from kiro_crew import agent_state, platform_compat
 from kiro_crew.agent_discovery import (
+    AmbiguousAgentSpecError,
     _declared_project_agent_name,
     _read_agent_spec,
     project_agent_files,
@@ -3732,7 +3733,8 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     clears the wrong agent's pin while the requested one stays pinned. The
     filename is accepted only when no spec declares this name -- see below.
 
-    Raises ``ValueError`` when TWO safe specs declare the same name. The runtime
+    Raises :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError` (a
+    ``ValueError``) when TWO safe specs declare the same name. The runtime
     iterates the directory unordered, so which of them is live is undefined, and
     a writer cannot pick without risking clearing the pin nothing is reading.
     """
@@ -3770,7 +3772,11 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     if len(declared_matches) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
         # directory is untrusted input, and this message is printed to a terminal.
-        raise ValueError(
+        # The typed subclass lets a caller that can answer its own question
+        # despite the ambiguity (the spawn gate, see require_fork_governance)
+        # tell it apart from every other ValueError; ``except ValueError``
+        # callers are unaffected.
+        raise AmbiguousAgentSpecError(
             f"{len(declared_matches)} specs declare the name {name!r}: "
             f"{', '.join(repr(str(p)) for p in declared_matches)}. The runtime iterates the "
             f"directory unordered, so which one is live is undefined -- remove or rename "
@@ -6496,6 +6502,79 @@ class ForkGovernanceUnresolved(RuntimeError):
     """A fork-backed agent may not start: fork governance is not projected."""
 
 
+def _lineage_unreadable_refusal(agent: str, exc: BaseException) -> str:
+    """The refusal for a sidecar the gate could not read.
+
+    Names the file and carries the parse error, so the operator repairs the
+    sidecar rather than searching the agents directory. The error text is
+    the reader's own (a JSON position, an OSError), never file contents. The
+    only remedy offered is restoring the file: deleting it would make every
+    recorded private copy read as a shared template and lose its governance,
+    which is the state this gate exists to refuse.
+    """
+    try:
+        where = str(agent_state._state_path())
+    except Exception:
+        where = agent_state._STATE_FILENAME
+    return (
+        f"cannot verify whether agent {agent!r} is a private template copy: "
+        f"the lineage sidecar {where} could not be read "
+        f"({type(exc).__name__}: {exc}); refusing to start a session on "
+        "unverifiable permissions. Restore that file to valid JSON (the gateway "
+        "log carries the same error), then retry."
+    )
+
+
+def _spec_unresolvable_refusal(agent: str, exc: BaseException) -> str:
+    """The refusal for a spec the gate could not resolve or read.
+
+    The other failure class: the sidecar answered, but the agents directory
+    did not. Distinct wording so the two are never confused again.
+    """
+    return (
+        f"cannot verify whether agent {agent!r} is a private template copy: "
+        f"its spec could not be resolved under the agents directory "
+        f"({type(exc).__name__}: {exc}); refusing to start a session on "
+        "unverifiable permissions."
+    )
+
+
+def _stem_claimant_fork(agent: str) -> str | None:
+    """The fork-backed name a direct-filename spec for *agent* declares, else None.
+
+    Consulted only when two or more specs declare *agent*, which is when
+    :func:`agent_spec_path` raises before its stem fallback is ever considered.
+    The backend's own resolver accepts ``path.stem == agent`` as well as the
+    declared name over an unordered directory listing, so ``<agent>.json``
+    declaring a DIFFERENT name can still be the file it runs. When that name is
+    a recorded private copy, the session may execute a fork's grants, and the
+    gate must take the fork path for it rather than admit the ambiguity as a
+    non-fork. A candidate that is unsafe or unreadable propagates: the gate
+    cannot rule it out, so it fails closed like any other resolution error.
+    """
+    agents_dir = kiro_agents_dir_path()
+    for candidate in agent_spec_candidates(agents_dir, agent):
+        if not candidate.exists():
+            continue
+        if not _spec_path_is_safe(candidate, agents_dir):
+            raise ValueError(f"direct spec candidate {str(candidate)!r} is not a safe file")
+        data = _read_spec_capped(candidate)
+        if not isinstance(data, dict):
+            # The capped reader answers None for a spec it refused (not JSON,
+            # too large, not an object). Unread, the file cannot be ruled out
+            # as a fork claimant, so it is reported rather than skipped.
+            raise ValueError(f"direct spec candidate {str(candidate)!r} could not be parsed")
+        declared = data.get("name")
+        if (
+            isinstance(declared, str)
+            and declared
+            and declared != agent
+            and agent_state.get_fork_info(declared, strict=True) is not None
+        ):
+            return declared
+    return None
+
+
 def require_fork_governance(agent: str | None, project_dir: str | Path | None = None) -> None:
     """Fail closed: block a fork-backed session start until fork governance is
     re-projected, and ABORT it when the projection failed or timed out.
@@ -6515,35 +6594,78 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
     """
     if not agent:
         return
+    # Each failure class gets its own refusal, because each is repaired
+    # differently: a corrupt sidecar is fixed by restoring THAT file, an
+    # unresolvable spec by looking at the agents directory. One message for
+    # both left every operator hunting a duplicate spec that was not there.
     try:
         # strict: an unreadable sidecar must SURFACE here, not degrade to
         # "not a fork" — the lenient default would make the except branch
         # below unreachable and the guard a dead letter.
         is_fork = agent_state.get_fork_info(agent, strict=True) is not None
-        effective = agent
-        if not is_fork:
-            # Lineage is keyed by the DECLARED name, but a binding can carry
-            # the file STEM where the two differ — and the backend resolves
-            # that binding to the same file. Resolve before concluding "not a
-            # fork"; resolution errors and ambiguity land in
-            # the except below and fail CLOSED like an unreadable sidecar.
-            spec_path = agent_spec_path(agent)
-            if spec_path is not None:
-                data = _read_spec_capped(spec_path)
-                declared = data.get("name") if isinstance(data, dict) else None
-                if isinstance(declared, str) and declared and declared != agent:
-                    effective = declared
-                    is_fork = agent_state.get_fork_info(declared, strict=True) is not None
     except Exception as exc:
         # Unreadable lineage fails CLOSED: treating a missing/corrupt sidecar
         # read as "not a fork" would start a session whose grants predate the
         # tightened ceiling. A VERIFIED non-fork is a successful read that
         # returned no lineage — only that may pass without waiting.
-        raise ForkGovernanceUnresolved(
-            f"cannot verify whether agent {agent!r} is a private template "
-            "copy (lineage or spec resolution failed); refusing to start a "
-            "session on unverifiable permissions"
-        ) from exc
+        raise ForkGovernanceUnresolved(_lineage_unreadable_refusal(agent, exc)) from exc
+    effective = agent
+    if not is_fork:
+        # Lineage is keyed by the DECLARED name, but a binding can carry
+        # the file STEM where the two differ — and the backend resolves
+        # that binding to the same file. Resolve before concluding "not a
+        # fork"; a resolution error fails CLOSED like an unreadable sidecar.
+        try:
+            spec_path = agent_spec_path(agent)
+        except AmbiguousAgentSpecError as exc:
+            # Two or more specs declare this name. That is NOT an unverifiable
+            # lineage: every one of them DECLARES `agent` (that is what the
+            # ambiguity is), so the declared name is `agent` itself, whose
+            # lineage was read above and found empty. Whichever of THOSE files
+            # the backend runs, the verdict "not a private copy" is the same,
+            # and a non-fork was never this gate's to govern. Refusing here made
+            # every agent that a package installer vends twice — one upstream
+            # agent reached through two dependency chains — unstartable, with
+            # the duplicate regenerated on the next install. One file is not
+            # among "those": the backend also matches the STEM, so a
+            # `<agent>.json` declaring a fork-backed name (the resolver's stem
+            # fallback, which the ambiguity discarded unread) can be the live
+            # spec; it is checked here and sends the gate down the fork path.
+            # Otherwise still surfaced, so the operator can tidy the directory;
+            # a private copy with a same-named twin takes the fork path below,
+            # where the refresh cannot pick a file to re-filter and records the
+            # failure.
+            spec_path = None
+            try:
+                stem_fork = _stem_claimant_fork(agent)
+            except Exception as stem_exc:
+                raise ForkGovernanceUnresolved(
+                    _spec_unresolvable_refusal(agent, stem_exc)
+                ) from stem_exc
+            if stem_fork is not None:
+                effective = stem_fork
+                is_fork = True
+            else:
+                logger.warning(
+                    "fork governance: %s; every duplicate declares the binding name, "
+                    "so the non-fork verdict for %r holds for all of them",
+                    exc,
+                    agent,
+                )
+        except Exception as exc:
+            raise ForkGovernanceUnresolved(_spec_unresolvable_refusal(agent, exc)) from exc
+        if spec_path is not None:
+            try:
+                data = _read_spec_capped(spec_path)
+            except Exception as exc:
+                raise ForkGovernanceUnresolved(_spec_unresolvable_refusal(agent, exc)) from exc
+            declared = data.get("name") if isinstance(data, dict) else None
+            if isinstance(declared, str) and declared and declared != agent:
+                effective = declared
+                try:
+                    is_fork = agent_state.get_fork_info(declared, strict=True) is not None
+                except Exception as exc:
+                    raise ForkGovernanceUnresolved(_lineage_unreadable_refusal(agent, exc)) from exc
     if not is_fork:
         return
     # Checked before the refresh wait: a shadowed fork is refused no matter

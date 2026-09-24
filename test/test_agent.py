@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -8311,6 +8312,172 @@ class TestRefreshForkedTemplates:
         monkeypatch.setattr(agent_mod.agent_state, "get_fork_info", _broken_read)
         with pytest.raises(agent_mod.ForkGovernanceUnresolved):
             agent_mod.require_fork_governance("any-agent")
+
+    def test_unreadable_sidecar_refusal_names_the_sidecar(self, tmp_path: Path, monkeypatch):
+        """The two failure classes the gate refuses on are repaired differently,
+        so the refusal must say which one fired. A corrupt lineage sidecar names
+        the sidecar file and the parse error, not the spec directory."""
+        import kiro_crew.agent as agent_mod
+
+        sidecar = tmp_path / "agent_model_state.json"
+        sidecar.write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(agent_state, "_state_path", lambda: sidecar)
+
+        with pytest.raises(agent_mod.ForkGovernanceUnresolved) as exc:
+            agent_mod.require_fork_governance("plain-agent")
+        message = str(exc.value)
+        assert "agent_model_state.json" in message
+        assert "Expecting property name" in message
+        assert "spec" not in message.split("refusing")[0]
+        # Deleting the sidecar would read every private copy as shared and drop
+        # its governance, so the remedy offered is restoring it, never removing it.
+        assert "move it aside" not in message and "delete" not in message
+
+    def test_spec_resolution_failure_refusal_names_the_spec(self, tmp_path: Path, monkeypatch):
+        """The other class: the sidecar read fine (no lineage) but the spec
+        scan itself failed. The refusal names the spec resolution and the
+        error, not the sidecar."""
+        import kiro_crew.agent as agent_mod
+
+        def _broken_scan(name: str, **_kw):
+            raise OSError("agents dir vanished")
+
+        monkeypatch.setattr(agent_mod, "agent_spec_path", _broken_scan)
+        with pytest.raises(agent_mod.ForkGovernanceUnresolved) as exc:
+            agent_mod.require_fork_governance("plain-agent")
+        message = str(exc.value)
+        assert "spec" in message and "agents dir vanished" in message
+        assert "agent_model_state.json" not in message
+
+    def test_spawn_gate_admits_duplicate_specs_that_all_declare_a_non_fork_name(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """Two package-installed files declaring one ``name`` (what a
+        dependency-flattening installer writes for an agent two packages vend)
+        is not an unverifiable lineage: every duplicate DECLARES the binding
+        name, so the declared name is the binding name, whose lineage was read
+        and found empty. The gate admits the verified non-fork and warns with
+        both paths so the operator can still tidy up."""
+        import kiro_crew.agent as agent_mod
+
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        spec = {"name": "gpu-reviewer", "tools": ["@builder-mcp"], "mcpServers": {}}
+        (agents / "PkgA-gpu-reviewer.json").write_text(json.dumps(spec), encoding="utf-8")
+        (agents / "PkgB-gpu-reviewer.json").write_text(json.dumps(spec), encoding="utf-8")
+        monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
+        monkeypatch.setattr(agent_state, "_state_path", lambda: tmp_path / "sidecar.json")
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
+            agent_mod.require_fork_governance("gpu-reviewer")
+
+        warned = "\n".join(r.getMessage() for r in caplog.records)
+        assert "PkgA-gpu-reviewer.json" in warned and "PkgB-gpu-reviewer.json" in warned
+
+    def test_kiro_harness_spawn_plan_reaches_argv_for_a_same_name_non_fork_pair(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """End to end on the default backend's spawn path: ``KiroHarness.resolve_spawn``
+        runs the gate and, past it, builds ``kiro-cli acp --agent <name>``. kiro-cli
+        resolves the agent itself from there, so with the pair admitted the plan
+        is the proof the session start proceeds. Before the admission, this
+        call raised ``AcpRuntimeError`` carrying the gate's refusal."""
+        import asyncio
+
+        import kiro_crew.acp.client as client_mod
+        import kiro_crew.agent as agent_mod
+        from kiro_crew.acp.harness.base import SpawnContext
+        from kiro_crew.acp.harness.kiro import KiroHarness
+
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        spec = {"name": "gpu-reviewer", "tools": ["@builder-mcp"], "mcpServers": {}}
+        (agents / "PkgA-gpu-reviewer.json").write_text(json.dumps(spec), encoding="utf-8")
+        (agents / "PkgB-gpu-reviewer.json").write_text(json.dumps(spec), encoding="utf-8")
+        monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
+        monkeypatch.setattr(agent_state, "_state_path", lambda: tmp_path / "sidecar.json")
+        monkeypatch.setattr(
+            client_mod,
+            "_resolve_kiro_bin_for_spawn",
+            unittest.mock.AsyncMock(return_value="/opt/kiro/bin/kiro-cli"),
+        )
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda name: None)
+        import kiro_crew.sandbox as sandbox_mod
+
+        monkeypatch.setattr(
+            sandbox_mod, "delegated_workspace_exposes_sealed_target", lambda work_dir: None
+        )
+        ctx = SpawnContext(
+            agent="gpu-reviewer",
+            work_dir=str(tmp_path),
+            model=None,
+            environ={},
+            home=tmp_path,
+            member_context=False,
+        )
+        plan = asyncio.run(KiroHarness().resolve_spawn(ctx))
+        assert plan.argv[:1] == ["/opt/kiro/bin/kiro-cli"]
+        assert plan.argv[-2:] == ["--agent", "gpu-reviewer"]
+
+    def test_spawn_gate_refuses_ambiguity_when_the_stem_file_claims_a_fork(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The backend also matches ``path.stem == agent``, so with two specs
+        declaring ``foo`` AND a ``foo.json`` declaring the private copy ``bar``,
+        the session may run the fork's file. The ambiguity must not be admitted
+        as a non-fork: the gate takes the fork path for ``bar`` and refuses on
+        its recorded refresh failure."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            (kiro_dir / "foo.json").write_text(
+                json.dumps({"name": "bar", "mcpServers": {}}), encoding="utf-8"
+            )
+            for stem in ("PkgA-foo", "PkgB-foo"):
+                (kiro_dir / f"{stem}.json").write_text(
+                    json.dumps({"name": "foo", "mcpServers": {}}), encoding="utf-8"
+                )
+            agent_state.set_fork_info("bar", forked_from="kirocrew", private_to="bar")
+            monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset({"bar"}))
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved, match="refresh failed"):
+                agent_mod.require_fork_governance("foo")
+
+    def test_spawn_gate_fails_closed_on_an_unreadable_stem_claimant(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A stem candidate the gate cannot read cannot be ruled out as a fork
+        claimant, so the ambiguity is refused rather than admitted."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            (kiro_dir / "foo.json").write_text("{not json", encoding="utf-8")
+            for stem in ("PkgA-foo", "PkgB-foo"):
+                (kiro_dir / f"{stem}.json").write_text(
+                    json.dumps({"name": "foo", "mcpServers": {}}), encoding="utf-8"
+                )
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved, match="spec could not be"):
+                agent_mod.require_fork_governance("foo")
+
+    def test_spawn_gate_still_refuses_a_fork_whose_name_two_specs_declare(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The duplicate tolerance is for VERIFIED non-forks only. A name the
+        sidecar records as a private copy takes the fork path unchanged: the
+        refresh cannot pick which of two files to re-filter, records the
+        failure, and the gate refuses on it."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            self._write_fork(kiro_dir, "my-crew")
+            (kiro_dir / "Pkg-my-crew.json").write_text(
+                json.dumps({"name": "my-crew", "mcpServers": {}}), encoding="utf-8"
+            )
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+            assert "my-crew" in agent_mod._fork_refresh_failed
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved, match="refresh failed"):
+                agent_mod.require_fork_governance("my-crew")
 
     def test_reset_agent_model_reads_and_writes_under_the_spec_lock(
         self, tmp_path: Path, monkeypatch
