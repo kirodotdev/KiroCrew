@@ -1681,7 +1681,14 @@ describe('onCycleAgent keyboard shortcut', () => {
     const noticeText = await screen.findByText(
       REAL_FAILURE,
     )
-    expect(noticeText.closest('[role="status"]')).not.toBeNull()
+    // An invalid agent name BROKE the switch, so it takes the assertive `role="alert"`. `warn`
+    // (`role="status"`) is reserved for the two refusals that withheld it without breaking
+    // anything -- covered in AgentSwitchNotice.test.tsx, which owns that axis.
+    // Exactly one region -- one nested inside the notice would double-announce.
+    const live = noticeText.closest('[role="alert"]')
+    expect(live).not.toBeNull()
+    // Scoped to the notice, not the document: the page legitimately hosts other live regions.
+    expect(live!.querySelectorAll('[role="alert"], [role="status"]').length).toBe(0)
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByText(
       REAL_FAILURE,

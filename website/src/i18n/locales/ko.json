@@ -15997,7 +15997,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "턴이 진행 중입니다 — 완료된 후 다시 시도하세요."
+      "turn_in_flight": "턴이 진행 중입니다 — 완료된 후 다시 시도하세요.",
+      "workspace_unavailable": "설정된 프로젝트 폴더를 사용할 수 없습니다. 폴더가 있는지 확인한 후 다시 시도하세요."
     },
     "channelOrigin": {
       "direct_message": "다이렉트 메시지"
