@@ -413,6 +413,19 @@ jobs:
           model = "openai.gpt-5.6-sol"
           model_reasoning_effort = "medium"
 
+          # Pin the sandbox mode HERE rather than on the `codex exec` command
+          # line. A `--sandbox` flag wins over this file and also suppresses a
+          # `default_permissions` profile completely, so any filesystem rule
+          # declared here is inert while that flag is passed. Carrying the mode in
+          # this file is what allows a read restriction to be attached to it.
+          #
+          # The key is written explicitly because `codex exec` falls back to the
+          # config default when no flag is given, and `workspace-write` and
+          # `danger-full-access` are also valid values for it -- an absent key
+          # would leave the lane's blast radius to a default this repository does
+          # not pin.
+          sandbox_mode = "read-only"
+
           # Keep the inherited AWS credentials OUT of the environment the model's
           # own shell tool inherits. `codex exec` gives the model a shell (the
           # Opus lane instead runs with `--allowedTools "Read,Grep,Glob"`, so it
@@ -698,7 +711,6 @@ jobs:
           # BASE commit, not from this checkout -- see "Install review CLI".
           timeout "$PASS_WALL" \
             "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
-            --sandbox read-only \
             --output-last-message "codex-pass-1.md" \
             "$PROMPT" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-1.md ]; then
@@ -789,7 +801,6 @@ jobs:
           rc=0
           timeout "$PASS_WALL" \
             "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
-            --sandbox read-only \
             --output-last-message "codex-pass-2.md" \
             "$PROMPT" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-2.md ]; then
