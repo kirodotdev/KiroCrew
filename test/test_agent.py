@@ -7947,7 +7947,8 @@ def _fork_env(tmp_path: Path):
 class TestForkModeRefresh:
     """`_refresh_dynamic_fields(..., fork=True)` protects a crew's private copy:
     an inline prompt and the deniedCommands guardrails are the human's, so they
-    are left alone; a still-machine-shaped `file://` prompt is refreshed."""
+    are left alone; a still-machine-shaped managed `file://` prompt is healed to
+    the native-prompt stub."""
 
     def test_inline_prompt_preserved_in_fork_mode(self, tmp_path: Path):
         import kiro_crew.agent as agent_mod
@@ -7961,11 +7962,20 @@ class TestForkModeRefresh:
     def test_file_uri_prompt_refreshed_in_fork_mode(self, tmp_path: Path):
         import kiro_crew.agent as agent_mod
 
-        # Managed-shaped stale pointer (old data home): healed.
+        # Managed-shaped stale pointer (old data home): healed to the stub, so
+        # the fork stops delivering the persona natively on top of the injection.
         config = {"prompt": "file:///old-home/.kiro/crew/prompt.md", "mcpServers": {}}
         with _fork_env(tmp_path) as (_kiro, prompt):
             agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=True)
-            assert config["prompt"] == f"file://{prompt}"
+            assert config["prompt"] == agent_mod._NATIVE_PROMPT_STUB
+            # The current machine-shaped pointer (a fork made before the stub
+            # shipped) heals the same way.
+            current = {"prompt": f"file://{prompt}", "mcpServers": {}}
+            agent_mod._refresh_dynamic_fields(current, gated_off=frozenset(), fork=True)
+            assert current["prompt"] == agent_mod._NATIVE_PROMPT_STUB
+            # Already healed: idempotent.
+            agent_mod._refresh_dynamic_fields(current, gated_off=frozenset(), fork=True)
+            assert current["prompt"] == agent_mod._NATIVE_PROMPT_STUB
             # Same BASENAME at a non-managed location: a real user reference,
             # preserved (name identity alone destroyed these).
             custom = {"prompt": "file:///Users/someone/Documents/prompt.md", "mcpServers": {}}
@@ -7976,10 +7986,37 @@ class TestForkModeRefresh:
         import kiro_crew.agent as agent_mod
 
         config = {"prompt": "human words that would be clobbered", "mcpServers": {}}
-        with _fork_env(tmp_path) as (_kiro, prompt):
+        with _fork_env(tmp_path) as (_kiro, _prompt):
             agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=False)
 
-        assert config["prompt"] == f"file://{prompt}"
+        # The main agent's spec prompt is the native-prompt stub: the resolved
+        # persona is delivered by context.py injection, not the spec (see
+        # agent-spec-fields.md → Prompt).
+        assert config["prompt"] == agent_mod._NATIVE_PROMPT_STUB
+
+    def test_is_managed_prompt_recognizes_stub_and_pointer(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (_kiro, prompt):
+            assert agent_mod.is_managed_prompt(agent_mod._NATIVE_PROMPT_STUB)
+            assert agent_mod.is_managed_prompt(f"file://{prompt}")
+            assert not agent_mod.is_managed_prompt("file:///Users/someone/persona.md")
+            assert not agent_mod.is_managed_prompt("You are a bespoke reviewer.")
+            assert not agent_mod.is_managed_prompt("")
+
+    def test_native_prompt_stub_is_frozen(self):
+        """Pin the stub's exact text. Forks and template copies carry it verbatim
+        on disk and `is_managed_prompt` matches by equality, so a respelled stub
+        would leave every existing fork with the OLD text as a custom persona.
+        A new spelling must be added to `is_managed_prompt` as a superseded
+        spelling, and this pin updated alongside, never silently replaced."""
+        import kiro_crew.agent as agent_mod
+
+        assert agent_mod._NATIVE_PROMPT_STUB == (
+            "Your operating instructions are provided at the top of the session context, "
+            "wrapped in [AGENT SYSTEM PROMPT] ... [END AGENT SYSTEM PROMPT]. Treat that "
+            "block as your system prompt and follow it as your authoritative contract."
+        )
 
     def test_denied_commands_kept_in_fork_mode(self, tmp_path: Path):
         import kiro_crew.agent as agent_mod
@@ -8034,14 +8071,14 @@ class TestRefreshForkedTemplates:
     def test_kirocrew_origin_fork_is_refreshed(self, tmp_path: Path):
         import kiro_crew.agent as agent_mod
 
-        with _fork_env(tmp_path) as (kiro_dir, prompt):
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
             path = self._write_fork(kiro_dir, "my-crew", hooks={"old": "hook"})
             agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
             self._seed_binding(("my-crew", "my-crew"))
             agent_mod._refresh_forked_templates(gated_off=frozenset())
 
         result = json.loads(path.read_text(encoding="utf-8"))
-        assert result["prompt"] == f"file://{prompt}"
+        assert result["prompt"] == agent_mod._NATIVE_PROMPT_STUB
         assert result["hooks"] == {"preToolUse": "audit"}
         # Managed MCP servers seeded from defaults.
         assert "kirocrew-cron" in result["mcpServers"]
@@ -8245,7 +8282,7 @@ class TestRefreshForkedTemplates:
             result_a = json.loads(path_a.read_text(encoding="utf-8"))
 
         # The later fork was still refreshed despite a-crew's write error…
-        assert result_b["prompt"] == f"file://{prompt}"
+        assert result_b["prompt"] == agent_mod._NATIVE_PROMPT_STUB
         # …the failed fork's file kept its old contents…
         assert result_a["prompt"] == "file:///old-home/.kiro/crew/prompt.md"
         # …and only the failed fork is blocked from spawning.
@@ -8271,7 +8308,7 @@ class TestRefreshForkedTemplates:
 
             result = json.loads(path.read_text(encoding="utf-8"))
 
-        assert result["prompt"] == f"file://{prompt}"
+        assert result["prompt"] == agent_mod._NATIVE_PROMPT_STUB
         assert agent_mod._fork_refresh_failed == frozenset()
 
     def test_sync_refresh_holds_the_spawn_gate_for_its_whole_pass(
@@ -8670,7 +8707,7 @@ class TestRefreshForkedTemplates:
         # The checkout path is a user's custom prompt: preserved verbatim.
         assert got_a["prompt"] == checkout
         # The stale wheel path is a place the managed prompt really lived: healed.
-        assert got_b["prompt"] == f"file://{prompt}"
+        assert got_b["prompt"] == agent_mod._NATIVE_PROMPT_STUB
 
     def test_fork_of_fork_chain_reaching_owned_is_refreshed(self, tmp_path: Path):
         import kiro_crew.agent as agent_mod
@@ -8684,7 +8721,9 @@ class TestRefreshForkedTemplates:
             agent_mod._refresh_forked_templates(gated_off=frozenset())
 
         # The leaf's chain (leaf -> mid -> kirocrew) reaches an owned root.
-        assert json.loads(leaf.read_text(encoding="utf-8"))["prompt"] == f"file://{prompt}"
+        assert (
+            json.loads(leaf.read_text(encoding="utf-8"))["prompt"] == agent_mod._NATIVE_PROMPT_STUB
+        )
 
     def test_forged_lineage_without_binding_never_writes(self, tmp_path: Path):
         """A sidecar entry whose crew is NOT bound to the spec drives no write:
@@ -8756,9 +8795,10 @@ class TestRefreshForkedTemplates:
 
 
 class TestForkPromptRefreshGuard:
-    """On a fork, only the MANAGED prompt pointer is refreshed: a live custom
-    file:// prompt is user content and must survive, exactly like an inline
-    prompt — dropping it is a security-class defect."""
+    """On a fork, only the MANAGED prompt pointer is refreshed (to the
+    native-prompt stub): a live custom file:// prompt is user content and must
+    survive, exactly like an inline prompt — dropping it is a security-class
+    defect."""
 
     def test_custom_live_file_prompt_preserved_on_fork(self, tmp_path):
         from kiro_crew.agent import _refresh_dynamic_fields
@@ -8770,7 +8810,7 @@ class TestForkPromptRefreshGuard:
         assert config["prompt"] == f"file://{custom}"
 
     def test_dangling_file_prompt_repaired_on_fork(self, tmp_path):
-        from kiro_crew.agent import _prompt_path, _refresh_dynamic_fields
+        from kiro_crew.agent import _NATIVE_PROMPT_STUB, _refresh_dynamic_fields
 
         # A MANAGED-shaped pointer at a gone location (moved data home) is the
         # repair case. Identity comes from the location spelling, not from
@@ -8778,18 +8818,18 @@ class TestForkPromptRefreshGuard:
         # drive and must be preserved (GPT rounds 18/26).
         config = {"prompt": f"file://{tmp_path / 'gone' / '.kirocrew' / 'prompt.md'}"}
         _refresh_dynamic_fields(config, fork=True)
-        assert config["prompt"] == f"file://{_prompt_path()}"
+        assert config["prompt"] == _NATIVE_PROMPT_STUB
 
         custom = {"prompt": f"file://{tmp_path / 'gone' / 'my-notes.md'}"}
         _refresh_dynamic_fields(custom, fork=True)
         assert custom["prompt"] == f"file://{tmp_path / 'gone' / 'my-notes.md'}"
 
     def test_managed_pointer_still_refreshed_and_inline_preserved_on_fork(self):
-        from kiro_crew.agent import _prompt_path, _refresh_dynamic_fields
+        from kiro_crew.agent import _NATIVE_PROMPT_STUB, _prompt_path, _refresh_dynamic_fields
 
         managed = {"prompt": f"file://{_prompt_path()}"}
         _refresh_dynamic_fields(managed, fork=True)
-        assert managed["prompt"] == f"file://{_prompt_path()}"
+        assert managed["prompt"] == _NATIVE_PROMPT_STUB
 
         inline = {"prompt": "You are a helpful crew."}
         _refresh_dynamic_fields(inline, fork=True)

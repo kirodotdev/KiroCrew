@@ -2715,6 +2715,34 @@ def _enforce_managed_mcp_ownership(
         entry["autoApprove"] = list(spec["autoApprove"])
 
 
+# kiro-cli reads the spec ``prompt`` off disk and KAS inlines it onto the wire,
+# so a real prompt here delivers the persona a second time, raw and unresolved —
+# ``context.py``'s session-start injection already delivers it resolved on every
+# backend. The stub is non-empty because KAS treats an empty prompt as absent and
+# substitutes its lightweight-worker persona, and it points at the injected block
+# so a model that privileges the system role still defers to that contract.
+# The text is FROZEN: forks and template copies carry it verbatim on disk and
+# ``is_managed_prompt`` matches by equality, so a respelled stub would turn every
+# existing fork's prompt into a custom persona (the old stub text) — a new
+# spelling must join a superseded-spellings list there, never replace this one.
+_NATIVE_PROMPT_STUB = (
+    "Your operating instructions are provided at the top of the session context, "
+    "wrapped in [AGENT SYSTEM PROMPT] ... [END AGENT SYSTEM PROMPT]. Treat that "
+    "block as your system prompt and follow it as your authoritative contract."
+)
+
+
+def is_managed_prompt(prompt: str) -> bool:
+    """Whether a spec ``prompt`` is the managed operating contract.
+
+    context.py injects that contract at session start, so the readers that must
+    not deliver it twice recognise it here. It has two spellings: the ``file://``
+    pointer a not-yet-healed fork or an older spec carries, and
+    ``_NATIVE_PROMPT_STUB``.
+    """
+    return prompt == _NATIVE_PROMPT_STUB or prompt == f"file://{_prompt_path()}"
+
+
 def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     """Return the final agent config (shipped defaults + user overrides + dynamic fields).
 
@@ -2759,7 +2787,7 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     _apply_user_kiro_hooks(config, mc_cfg)
 
     # Dynamic fields — always resolved at install time
-    config["prompt"] = f"file://{_prompt_path()}"
+    config["prompt"] = _NATIVE_PROMPT_STUB
     mcp = config.setdefault("mcpServers", {})
     registry_mode = _mcp_registry_mode()
     if gated_off is None:
@@ -2845,7 +2873,8 @@ def _refresh_dynamic_fields(
             human edits stop landing on the shared file, so three writes that
             are correct for ``kirocrew.json`` are wrong here and are skipped:
             the unconditional prompt overwrite (only refreshed while the value
-            is still the machine-shaped ``file://`` pointer), the legacy
+            is still the machine-shaped managed ``file://`` pointer, and then
+            to ``_NATIVE_PROMPT_STUB``), the legacy
             ``deniedCommands`` strip (on a fork that field IS the user's
             guardrails, not an old build's injection), and the global
             ``agent.model`` propagation (a main-agent setting; stamping it on
@@ -2853,21 +2882,24 @@ def _refresh_dynamic_fields(
             managed MCP commands, security hooks, the data-home pin — applies
             identically, which is the whole reason forks are refreshed at all.
     """
-    # Prompt URI — always resolve at install time. On a fork, only while the
-    # value is positively the MANAGED pointer: it equals the current
+    # Prompt field — always refreshed at install time. On the main agent it is
+    # ``_NATIVE_PROMPT_STUB`` (see its definition for why the spec prompt is a
+    # stub). On a fork the heal rewrites the value to that same stub, but only
+    # while the value is positively the MANAGED pointer: it equals the current
     # machine-shaped URI, or it is a stale spelling of a place the managed
     # prompt has actually LIVED — under a crew data home or inside the
     # installed package (a moved data home / upgraded wheel, the repairs this
-    # branch exists for). Identity comes from those locations, never from the
-    # basename alone: the managed file is called ``prompt.md``, the single
-    # most natural name for a CUSTOM prompt too, so name matching would
-    # silently and irrecoverably rewrite real user references.
-    # A custom pointer that goes stale is left alone — not healing preserves
-    # the user's path; healing destroys it.
+    # branch exists for). A fork left on the pointer would deliver the persona
+    # twice — natively from the file and again via injection. Identity comes
+    # from those locations, never from the basename alone: the managed file is
+    # called ``prompt.md``, the single most natural name for a CUSTOM prompt
+    # too, so name matching would silently and irrecoverably rewrite real user
+    # references. A custom pointer that goes stale is left alone — not healing
+    # preserves the user's path; healing destroys it.
     managed_prompt = _prompt_path()
     managed_uri = f"file://{managed_prompt}"
     if not fork:
-        config["prompt"] = managed_uri
+        config["prompt"] = _NATIVE_PROMPT_STUB
     else:
         current = str(config.get("prompt") or "")
         if current.startswith("file://"):
@@ -2885,7 +2917,7 @@ def _refresh_dynamic_fields(
                 norm.rsplit("/", 1)[-1] == managed_prompt.name
                 and any(spelling in norm for spelling in managed_homes)
             ):
-                config["prompt"] = managed_uri
+                config["prompt"] = _NATIVE_PROMPT_STUB
 
     # Managed MCP servers — ensure present and up-to-date.
     # Only refresh command/args; preserve user customizations (e.g. autoApprove).

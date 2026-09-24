@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, resource_status
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.agent import _prompt_path
+from kiro_crew.agent import _prompt_path, is_managed_prompt
 from kiro_crew.agent_discovery import agent_skill_globs
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
@@ -3171,9 +3171,14 @@ class ContextBuilder:
             prompt = data.get("prompt") or ""
             if not isinstance(prompt, str):
                 return ""
-            # The product prompt is deliberately omitted from V2 essentials;
-            # even a fork referring to it still needs its session-start copy.
-            if agent == owner_template and prompt != f"file://{_prompt_path()}":
+            # The managed contract resolves to the contract file for EVERY spec
+            # carrying it, owner template or not: a fork or template copy
+            # inherits _NATIVE_PROMPT_STUB verbatim, and returned literally the
+            # stub text would be that agent's whole persona. An owner template's
+            # own prompt is delivered via essentials, so it is omitted here.
+            if is_managed_prompt(prompt):
+                prompt = f"file://{_prompt_path()}"
+            elif agent == owner_template:
                 return ""
             if prompt.startswith("file://"):
                 source = Path(prompt[7:]).expanduser()
@@ -4294,6 +4299,53 @@ class ContextBuilder:
         )
         return context
 
+    def _resolve_agent_prompt(
+        self,
+        agent: str | None,
+        *,
+        project: str | None,
+        mode: str,
+        session_key: str | None,
+        is_cc: bool,
+        private_owner: bool,
+    ) -> str:
+        """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
+
+        Session start and post-compaction reinjection both call this, so the
+        contract a compacted session gets back is the one it started with.
+        """
+        is_custom = bool(agent) and agent != "kirocrew"
+        agent_prompt: str
+        if is_cc and (not is_custom or not private_owner):
+            # CC gets the same Kiro Crew persona prompt as kiro — including
+            # the Output Format rules (diff blocks, image embeds, OPTIONS)
+            # which are dashboard UI contracts, not kiro-specific. Only the
+            # kiro-cli *branding* references are rewritten to claude code.
+            try:
+                pp = _prompt_path(mode=mode)
+                agent_prompt = pp.read_text(encoding="utf-8")
+                agent_prompt = agent_prompt.replace("kiro-cli", "claude code")
+                agent_prompt = re.sub(r"\bKiro\b", "Claude", agent_prompt)
+                agent_prompt = re.sub(r"\bkiro\b", "claude", agent_prompt)
+                agent_prompt = agent_prompt.strip()
+            except Exception:
+                agent_prompt = ""
+        elif is_custom:
+            agent_prompt = self._load_agent_prompt(
+                agent or "", project, owner_template=(agent or "") if private_owner else ""
+            )
+        else:
+            try:
+                pp = _prompt_path(mode=mode)
+                logger.debug("Prompt selection: mode=%r → %s", mode, pp)
+                agent_prompt = pp.read_text(encoding="utf-8")
+            except OSError:
+                agent_prompt = ""
+        if not agent_prompt:
+            return ""
+        agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "")
+        return self._substitute_bot_name(agent_prompt)
+
     def build_message(
         self,
         text: str,
@@ -4504,38 +4556,19 @@ class ContextBuilder:
             slim_resume = _member_turn.lifecycle is MemberLifecycle.SLIM_RESUME
             # Agent prompt goes BEFORE session context wrapper
             # so the LLM treats it as its identity, not background info.
-            if slim_resume:
-                agent_prompt = ""
-            elif is_cc and (not is_custom or not _private_owner):
-                # CC gets the SAME KiroCrew persona prompt as kiro — including
-                # the Output Format rules (diff blocks, image embeds, OPTIONS)
-                # which are dashboard UI contracts, not kiro-specific. Only the
-                # kiro-cli *branding* references are rewritten to claude code.
-                try:
-                    pp = _prompt_path(mode=mode)
-                    agent_prompt = pp.read_text(encoding="utf-8")
-                    # Replace kiro-cli references with claude code equivalents
-                    agent_prompt = agent_prompt.replace("kiro-cli", "claude code")
-                    agent_prompt = re.sub(r"\bKiro\b", "Claude", agent_prompt)
-                    agent_prompt = re.sub(r"\bkiro\b", "claude", agent_prompt)
-                    agent_prompt = agent_prompt.strip()
-                except Exception:
-                    agent_prompt = ""
-            elif is_custom:
-                agent_prompt = self._load_agent_prompt(
-                    agent or "", project, owner_template=(agent or "") if _private_owner else ""
+            agent_prompt = (
+                ""
+                if slim_resume
+                else self._resolve_agent_prompt(
+                    agent,
+                    project=project,
+                    mode=mode,
+                    session_key=session_key,
+                    is_cc=is_cc,
+                    private_owner=bool(_private_owner),
                 )
-            else:
-
-                try:
-                    pp = _prompt_path(mode=mode)
-                    logger.debug("Prompt selection: mode=%r → %s", mode, pp)
-                    agent_prompt = pp.read_text(encoding="utf-8")
-                except OSError:
-                    agent_prompt = ""
+            )
             if agent_prompt:
-                agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "")
-                agent_prompt = self._substitute_bot_name(agent_prompt)
                 parts.append(
                     f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n"
                 )
@@ -4694,6 +4727,22 @@ class ContextBuilder:
         # mapping excludes and an unmapped custom agent cannot receive a block
         # its session-start context never contained.
         if not is_new_session and needs_reinjection:
+            # The managed spec prompt is a stub pointing at this block, so a
+            # compaction that drops it leaves the session with no contract.
+            # Trusted content (managed contract or the user's own persona),
+            # so no marker scrub — the session-start path applies none either.
+            _agent_prompt = self._resolve_agent_prompt(
+                agent,
+                project=project,
+                mode=mode,
+                session_key=session_key,
+                is_cc=is_cc,
+                private_owner=bool(_private_owner),
+            )
+            if _agent_prompt:
+                parts.append(
+                    f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n"
+                )
             # The stored-memory half routes through the same config intersection
             # as the session-start build: this path restores a block that build
             # withheld, so reading the caller scope alone would hand back the

@@ -341,7 +341,7 @@ def documents_for_member(
     documents are deliberately left to their native trigger. Generic product
     prompts keep their existing provider/session-start path.
     """
-    from kiro_crew.agent import _prompt_path
+    from kiro_crew.agent import is_managed_prompt
     from kiro_crew.agent_discovery import _read_agent_spec
 
     documents: list[tuple[str, str]] = []
@@ -454,9 +454,10 @@ def documents_for_member(
     prompt = spec.get("prompt", "")
     if not isinstance(prompt, str):
         raise MemberEssentialContextError(f"Essential template {spec_path}: prompt must be text")
-    # Forks inherit the product prompt URI too. Its provider/session-start
-    # injection is independent of the template name and the install directory.
-    if prompt and prompt != f"file://{_prompt_path()}":
+    # A fork inherits the managed contract; essentials omit it because the
+    # session-start injection delivers it once, regardless of template name or
+    # install directory (see is_managed_prompt).
+    if prompt and not is_managed_prompt(prompt):
         if prompt.startswith("file://"):
             path = Path(prompt[7:]).expanduser()
             if path.is_absolute():

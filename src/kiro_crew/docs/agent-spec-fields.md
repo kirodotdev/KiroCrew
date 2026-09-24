@@ -333,6 +333,35 @@ itself:
   requires a non-empty prompt where kiro-cli tolerates an empty one. Crew's own
   `kirocrew-lite` ships `"prompt": ""` for exactly this reason.
 
+The managed default (`kirocrew`) spec does NOT point `prompt` at the
+operating-contract template. `build_agent_config` and `_refresh_dynamic_fields`
+set it to `_NATIVE_PROMPT_STUB` (`agent.py`), a short authority-delegating line.
+The kiro-family backends deliver the spec prompt NATIVELY — kiro-cli reads the
+file, KAS inlines it over the wire — while `context.py` injects the RESOLVED
+operating contract on session start for EVERY backend. A `file://` template here
+would deliver the persona twice — once natively (raw, with `{{…}}` placeholders
+unresolved) and once through the resolved injection. The stub keeps the injection as the
+single source, and being non-empty it satisfies KAS without hitting the
+`_KAS_FALLBACK_PROMPT` fallback above. Custom and forked agents that set their
+own `prompt` keep it — the stub is the managed default's value only. A fork or
+template copy inherits the stub verbatim, and the fork heal in
+`_refresh_dynamic_fields` rewrites a fork still carrying the managed `file://`
+pointer to the stub. A capability-materialized owned member is the exception:
+`agent_capabilities._maintain_owned` snapshots and restores its `prompt` around
+that heal, so one still carrying the `file://` pointer keeps delivering the
+persona natively — the same double delivery tracked in #13305. The two readers
+that must not deliver the managed contract twice (member essentials and the
+session-start load in `context.py`) recognise both spellings through
+`is_managed_prompt`: essentials omit the contract, and the session-start load
+resolves it to the contract file for ANY spec carrying it — owner template,
+fork or template copy alike — so a fork inheriting the managed contract is
+delivered exactly once, resolved, via the injection. The stub text is frozen
+once shipped: forks carry it verbatim on disk and `is_managed_prompt` matches
+by equality, so a respelled stub would leave every existing fork with the old
+stub text as a custom persona. An agent whose `prompt` names its OWN persona
+file is out of scope: it still receives that persona both natively and through
+the injection.
+
 `systemPrompt` is not a field Kiro Crew reads. Use `prompt`.
 
 *Unverified:* kiro-cli v3's own on-disk loader is sometimes described as
