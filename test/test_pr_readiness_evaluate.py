@@ -108,6 +108,16 @@ case "$url" in
     ' "$FIXTURES/ci_runs.json" "$FIXTURES/green_runs.json"
     exit 0 ;;
   *"/actions/runs?event=dynamic"*)         cat "$FIXTURES/codeql_runs.json"; exit 0 ;;
+  *"/issues/"*"/comments"*)
+    # The advisory lanes' comment slots. Served RAW (no --jq applied) because
+    # the evaluate step filters these locally, so the fixture exercises the
+    # step's own slot/stamp filter rather than standing in for it.
+    if [ -f "$FIXTURES/comments.json" ]; then
+      cat "$FIXTURES/comments.json"
+    else
+      echo '[]'
+    fi
+    exit 0 ;;
 esac
 echo "gh stub: unhandled: $*" >&2
 exit 90
@@ -303,6 +313,9 @@ class Runner:
                 }
             )
         )
+        # No bot comments: the advisory slots are empty, so no lane's
+        # classification is touched by the slot read.
+        (self.fixtures / "comments.json").write_text("[]")
 
     def evaluate(
         self,
@@ -1702,3 +1715,164 @@ class TestTheTickReportsItsRemainingBudget:
         last = _steps()[-1]
         assert last["if"] == "always()"
         assert "gh api rate_limit" in last["run"]
+
+
+# The three whole-design lanes, each with the comment slot it publishes into and
+# the stamp bound to that slot. A same-repo lane and its fork counterpart share
+# one slot, so one row answers for both readers.
+_ADVISORY_SLOTS = (
+    ("Design Review", "<!-- design-review -->", "DESIGN-REVIEWED"),
+    ("UX Review", "<!-- ux-review -->", "UX-REVIEWED"),
+    (
+        "First Principles Review",
+        "<!-- first-principles-review -->",
+        "FIRST-PRINCIPLES-REVIEWED",
+    ),
+)
+
+_UNPUBLISHED = "(verdict not published, re-run this lane)"
+
+
+def _slot_comment(marker: str, body: str) -> dict:
+    """One bot comment holding a lane's slot. The marker leads the body, which
+    is what binds the slot -- the lanes' upsert selects on ``startswith``."""
+    return {"user": {"login": "github-actions[bot]"}, "body": f"{marker}\n{body}"}
+
+
+def _write_comments(runner: Runner, *comments: dict) -> None:
+    (runner.fixtures / "comments.json").write_text(json.dumps(list(comments)))
+
+
+def _bucket(log: str, name: str) -> str:
+    return log.split(f"{name}=[", 1)[1].split("]", 1)[0]
+
+
+class TestAnAdvisoryLaneThatPublishedNoVerdictIsNotPassed:
+    """An advisory lane that computed a verdict it could not publish completes
+    `success`, because every publish-failure arm of the lanes' shared upsert
+    emits an `::error::` and then returns 0. Scoring that as `passed` states the
+    design was reviewed for a head carrying no published review, and the client
+    gate reads the same slot and answers BLOCKED -- a green board with no lane to
+    point at.
+
+    The slot answers the question the conclusion cannot. A slot holding the
+    lane's OWN stamp for a DIFFERENT head is a verdict that did not land, and it
+    is scored as a third outcome: a named pending that re-running that lane
+    clears. Not `failed`, which would publish a BLOCK verdict no reviewer
+    reached.
+    """
+
+    OLD = "1111111111222222222233333333334444444444"
+
+    @pytest.mark.parametrize("label,marker,stamp", _ADVISORY_SLOTS)
+    def test_a_slot_stamped_for_another_head_is_not_a_pass(
+        self, runner: Runner, label: str, marker: str, stamp: str
+    ):
+        _write_comments(
+            runner, _slot_comment(marker, f"Verdict: PASS\n\n[{stamp}] {self.OLD}\n")
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        log = _lane_log(proc)
+        assert f"{label} {_UNPUBLISHED}" in _bucket(log, "pending")
+        assert label not in _bucket(log, "passed")
+        assert label not in _bucket(log, "failed")
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+
+    @pytest.mark.parametrize("label,marker,stamp", _ADVISORY_SLOTS)
+    def test_a_slot_stamped_for_this_head_still_passes(
+        self, runner: Runner, label: str, marker: str, stamp: str
+    ):
+        _write_comments(
+            runner,
+            _slot_comment(
+                marker, f"Verdict: PASS\n\n[{stamp}] {runner.env['SHA']}\n"
+            ),
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert label in _bucket(_lane_log(proc), "passed")
+        assert outputs["status_state"] == "success"
+
+    def test_an_abbreviated_stamp_counts_as_fresh(self, runner: Runner):
+        """A stamp names the head with at least 7 hex, and an elided stamp is a
+        published verdict -- reading it as unpublished would sit a fully
+        reviewed head at pending with nothing able to clear it."""
+        label, marker, stamp = _ADVISORY_SLOTS[0]
+        _write_comments(
+            runner,
+            _slot_comment(marker, f"[{stamp}] {runner.env['SHA'][:10]}\n"),
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert label in _bucket(_lane_log(proc), "passed")
+        assert outputs["status_state"] == "success"
+
+    def test_a_slot_carrying_no_stamp_of_its_own_is_left_alone(self, runner: Runner):
+        """These lanes rewrite their slot to a stampless "skipped" / "could not
+        complete" notice by design, so a slot with no stamp of its own is not
+        evidence of a lost verdict -- it is a lane answered by its own
+        conclusion. Same enrolment rule the client gate applies, which is what
+        keeps an errored or throttled run scored exactly as before."""
+        label, marker, _ = _ADVISORY_SLOTS[0]
+        _write_comments(
+            runner, _slot_comment(marker, "could not complete this review\n")
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert label in _bucket(_lane_log(proc), "passed")
+        assert outputs["status_state"] == "success"
+
+    def test_another_lanes_stamp_in_the_body_does_not_answer_for_this_slot(
+        self, runner: Runner
+    ):
+        """Stamp identity is bound to the slot. A stamp for a different lane's
+        name inside this body is model output, so it can neither prove nor deny
+        this lane's freshness -- the same binding rule the client gate uses."""
+        label, marker, _ = _ADVISORY_SLOTS[0]
+        _write_comments(
+            runner, _slot_comment(marker, f"[UX-REVIEWED] {self.OLD}\n")
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert label in _bucket(_lane_log(proc), "passed")
+        assert outputs["status_state"] == "success"
+
+    def test_a_comment_from_another_author_cannot_hold_the_slot(self, runner: Runner):
+        """Only the bot's own comment is a slot. A contributor who pastes the
+        marker and an old stamp would otherwise park every PR at pending."""
+        label, marker, stamp = _ADVISORY_SLOTS[0]
+        _write_comments(
+            runner,
+            {
+                "user": {"login": "someone"},
+                "body": f"{marker}\n[{stamp}] {self.OLD}\n",
+            },
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert label in _bucket(_lane_log(proc), "passed")
+        assert outputs["status_state"] == "success"
+
+    def test_both_lane_readers_consult_the_slot(self):
+        """Two readers score these lanes -- the fork one from the head SHA's
+        check-runs, the same-repo one from the workflow run -- and each has its
+        own `passed` arm. Fixing one leaves the other folding an unpublished
+        verdict into `passed`, which is the whole defect."""
+        script = _evaluate_script()
+
+        assert script.count('advisory_slot_unpublished "$label"') == 2
+        assert script.count(f'$label {_UNPUBLISHED}"') == 2

@@ -771,6 +771,94 @@ jobs:
           # one that would otherwise drop the lane posted last.
           sha_check_runs=""
 
+          # The three whole-design lanes' comment slots, read ONCE here beside
+          # the runs read: both readers below score those lanes, and the
+          # same-repo lane and its fork counterpart share one slot each, so six
+          # lanes are answered by three rows.
+          #
+          # Why the slot is read at all: a lane that computed a verdict it could
+          # not publish still completes `success`. Every publish-failure arm of
+          # the lanes' shared upsert emits an `::error::` and then returns 0, so
+          # the run reports success while the slot still holds the PREVIOUS
+          # head's verdict. Counting that lane as passed states the design was
+          # reviewed for a head that carries no published review, and reporting
+          # it `failed` would publish a BLOCK verdict no reviewer reached. It is
+          # scored as a third outcome instead: a named pending that a re-run of
+          # that lane clears.
+          #
+          # Bound stamp names, never any `*-REVIEWED` match. A stamp for another
+          # lane's name inside this lane's body is model output, so only the
+          # slot's OWN name answers for it -- the same binding rule
+          # `evaluate_reviewer_markers` applies on the client side, which is why
+          # the two gates cannot disagree about a head.
+          #
+          # A slot carrying NO stamp of its own is left alone. The advisory
+          # lanes rewrite their slot to a stampless "skipped" / "could not
+          # complete" notice by design, and a lane that published no verdict at
+          # all is answered by its own conclusion, not by this check -- the same
+          # enrolment rule the client gate uses, so an errored or throttled run
+          # is scored exactly as it is today.
+          #
+          # Abbreviated stamps count: a stamp names the head with at least 7
+          # hex, so freshness is prefix agreement in either direction.
+          advisory_slots=""
+          if [ "${#workflow_specs[@]}" -gt 0 ]; then
+            advisory_slots="$(gh_retry gh api --method GET --paginate \
+              "repos/$REPO/issues/$PR/comments?per_page=100" \
+              | jq -rs --arg sha "$SHA" '
+                  {"<!-- design-review -->": "DESIGN",
+                   "<!-- ux-review -->": "UX",
+                   "<!-- first-principles-review -->": "FIRST-PRINCIPLES"} as $bound
+                  | [.[][]]
+                  | map(select((.user.login // "") == "github-actions[bot]"))
+                  | map(. + {slot: (.body // "" | split("\n") | .[0])})
+                  | map(select($bound[.slot] != null))
+                  | map(. as $c
+                        | $bound[$c.slot] as $name
+                        | [ $c.body
+                            | scan("\\[" + $name + "-REVIEWED\\] ([0-9a-fA-F]{7,40})")
+                            | .[0] ] as $shas
+                        | [ $c.slot,
+                            (if ($shas | length) > 0 then "1" else "0" end),
+                            (if ([ $shas[]
+                                   | . as $s
+                                   | select(($sha | startswith($s))
+                                            or ($s | startswith($sha))) ]
+                                 | length) > 0
+                             then "1" else "0" end) ]
+                        | @tsv)
+                  | .[]
+                ')" || {
+              rc=$?
+              if [ "$rc" -eq 22 ]; then exit 1; fi
+              transport_failed=true
+              workflow_specs=()
+            }
+          fi
+
+          # 1 when this advisory lane's slot carries its OWN stamp naming a head
+          # that is not this one, which is the state a `success` conclusion
+          # cannot express. First row wins, matching the upsert's own first-match
+          # slot lookup.
+          advisory_slot_unpublished() {
+            local want row own fresh
+            case "$1" in
+              "Design Review") want="<!-- design-review -->" ;;
+              "UX Review") want="<!-- ux-review -->" ;;
+              "First Principles Review") want="<!-- first-principles-review -->" ;;
+              *) printf '0'; return 0 ;;
+            esac
+            row="$(printf '%s\n' "$advisory_slots" \
+              | awk -F'\t' -v k="$want" '$1 == k { print; exit }')"
+            own="$(printf '%s' "$row" | cut -d'	' -f2)"
+            fresh="$(printf '%s' "$row" | cut -d'	' -f3)"
+            if [ "$own" = "1" ] && [ "$fresh" != "1" ]; then
+              printf '1'
+            else
+              printf '0'
+            fi
+          }
+
           # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
           # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
           # 3.2) treats expanding an empty array under `set -u` as an unbound
@@ -946,7 +1034,11 @@ jobs:
                 if [ "$fail" -gt 0 ]; then
                   failed+=("$label (BLOCK)")
                 elif [ "$pass" -gt 0 ]; then
-                  passed+=("$label")
+                  if [ "$(advisory_slot_unpublished "$label")" = "1" ]; then
+                    pending+=("$label (verdict not published, re-run this lane)")
+                  else
+                    passed+=("$label")
+                  fi
                 else
                   pending+=("$label (not started)")
                 fi
@@ -1102,7 +1194,17 @@ jobs:
                 # attachment download failed for a transport reason; every
                 # other fork hard error maps to NEUTRAL.)
                 case "$conclusion" in
-                  success|neutral|skipped) passed+=("$label") ;;
+                  # A workflow-level `skipped` is left alone: nothing ran, so no
+                  # verdict is owed for this head and there is no lane to
+                  # re-run. Only a lane that reports having reviewed the head
+                  # is held to having published that review.
+                  skipped) passed+=("$label") ;;
+                  success|neutral)
+                    if [ "$(advisory_slot_unpublished "$label")" = "1" ]; then
+                      pending+=("$label (verdict not published, re-run this lane)")
+                    else
+                      passed+=("$label")
+                    fi ;;
                   *) failed+=("$label (BLOCK)") ;;
                 esac
               # Security Scope Review is deliberately absent here too, for the
