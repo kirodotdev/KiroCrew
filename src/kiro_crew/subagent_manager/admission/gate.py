@@ -25,7 +25,6 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         sel,
         time,
-        uuid,
         validate_cwd,
     )
 
@@ -244,7 +243,7 @@ class _GateMixin(ManagerComponent):
         # ``_preassigned_id``, so a member that waits behind the stagger /
         # concurrency gate keeps its identity across the round-trip instead of
         # being announced under one id and starting under another.
-        agent_id: str = _preassigned_id or uuid.uuid4().hex[:8]
+        agent_id: str = _preassigned_id or self._manager._mint_agent_id()
         # Submission accounting: count this member as
         # submitted BEFORE any rejection or queue/registration branching. A
         # member refused below (empty task, low memory, bad cwd, governance)

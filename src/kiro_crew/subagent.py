@@ -14,7 +14,6 @@ import logging
 import math
 import os
 import time
-import uuid
 from collections.abc import Awaitable, Callable, Container, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -477,6 +476,16 @@ def _describe_exception(exc: BaseException) -> str:
 
 
 _MAX_DONE_RESULT_LEN = 50_000  # cap subagent_done payload to avoid bloating WS frames
+
+# Width of a run id, in hex characters. 16 characters is 8 bytes, and every one
+# of those 64 bits is random, which is what makes a uniqueness CHECK
+# unnecessary: 2000 draws on one host collide with probability about
+# 2000**2 / (2 * 2**64), roughly 1 in 10**13, against 1 in 2,100 at the 8
+# characters this replaces. Nothing in the product pins the width -- the only
+# consumers print or pass the id through -- so widening is cheaper than any
+# mechanism that would have to remember which ids are taken, and a durable row
+# outlives the process that wrote it, so remembering means reading the store.
+_RUN_ID_HEX_CHARS = 16
 
 
 def _done_result(text: str) -> str:
@@ -3381,6 +3390,33 @@ class SubagentManager:
         self._tasks.pop(agent_id, None)
         return "delivered"
 
+    def _mint_agent_id(self) -> str:
+        """Draw a run id: :data:`_RUN_ID_HEX_CHARS` hex characters of random bytes.
+
+        Every spawn identity comes from here, which is the point -- one draw site
+        is what lets the width be a single number.
+
+        The width carries the uniqueness on its own, with nothing to remember and
+        nothing to read. At 8 characters the id was 32 bits, so 2000 spawns on
+        one host collided about once in 2,100 times, and the collision did not
+        read as one: identity is assigned before registration, so the caller was
+        handed the id and the accept then failed on the duplicate primary key,
+        reaching the user as ``task store write failed`` -- naming a subsystem
+        that was working correctly. 64 bits puts that at about 1 in 10**13.
+
+        Drawn from ``os.urandom`` rather than a ``uuid4`` prefix. A v4 UUID spends
+        its 13th hex character on the fixed version digit ``4``, so the first 16
+        characters of one carry 60 random bits, not 64 -- a 16-fold worse bound
+        than the width advertises, from a detail no reader of the slice can see.
+
+        A checked narrow draw would need to know which ids are taken, and a
+        durable task row outlives the process that wrote it, so it would have to
+        ask the store -- which the spawn path cannot do, because taking a
+        task-store connection on the event loop stalls every session's turn
+        (:mod:`kiro_crew.on_loop_db` refuses it). Widening removes the question.
+        """
+        return os.urandom(_RUN_ID_HEX_CHARS // 2).hex()
+
     async def _redeliver_boundary_report_payloads(self, parent: str, owner: str) -> bool:
         """Retry retained terminal payloads for one live stage boundary."""
         retained = self._report_failure_payloads_for_boundary(parent, owner)
@@ -3840,7 +3876,7 @@ class SubagentManager:
                     self._batch_progress_ts[batch_id] = time.time()
                 return self._announce_rejection(
                     SubagentInfo(
-                        id=kwargs.get("_preassigned_id") or uuid.uuid4().hex[:8],
+                        id=kwargs.get("_preassigned_id") or self._mint_agent_id(),
                         task=_redact(task),
                         parent_session_key=parent,
                         agent=str(kwargs.get("agent") or ""),
@@ -4660,7 +4696,6 @@ _COMPONENT_GLOBAL_BINDINGS = (
     time,
     transient_retry_delay,
     update_state,
-    uuid,
     window_for_provider_client,
     write_result_chunk,
     write_tombstone,

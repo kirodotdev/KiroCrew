@@ -15,7 +15,6 @@ if TYPE_CHECKING:
         mark_delivered,
         sel,
         time,
-        uuid,
     )
 
 
@@ -153,7 +152,7 @@ class WaveDigestCoordinator(ManagerComponent):
         except Exception:
             logger.debug("SEL audit failed for lost submission", exc_info=True)
         info = SubagentInfo(
-            id=uuid.uuid4().hex[:8],
+            id=self._manager._mint_agent_id(),
             task="(submission lost before spawn)",
             agent="",
             parent_session_key=parent_session_key,
@@ -360,7 +359,7 @@ class WaveDigestCoordinator(ManagerComponent):
         if not batch_id or self._manager._on_done is None:
             return
         info = SubagentInfo(
-            id=uuid.uuid4().hex[:8],
+            id=self._manager._mint_agent_id(),
             task=f"(wave digest flush — results held {int(held_secs)}s)",
             parent_session_key=parent_session_key,
             done=True,

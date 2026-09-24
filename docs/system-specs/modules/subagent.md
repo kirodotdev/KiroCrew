@@ -689,7 +689,7 @@ Two delivery modes for `spawn_steer` (REST `POST /api/spawn/{id}/steer`, body `m
 ```python
 @dataclass
 class SubagentInfo:
-    id: str               # 8-char hex UUID
+    id: str               # 16-char hex run id (see _RUN_ID_HEX_CHARS)
     task: str             # original task text
     started: float        # time.time() at spawn
     done: bool            # True when finished (success or error)
@@ -1057,6 +1057,23 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   drains a row that still holds the grant and asserts the approval callback ran).
   The value stays recorded in `scope_ref`, which the schema defines as references
   rather than grants and which no start path reads.
+- **A run id is 16 hex characters, minted at one site**
+  (`SubagentManager._mint_agent_id`, `_RUN_ID_HEX_CHARS`; the gate, the
+  continuation coordinator and the wave digest all call it and none of them
+  draws). The width IS the uniqueness argument: 16 hex characters are 64 bits, so
+  2000 spawns on one host collide with probability about 1 in 10**13. At the 8
+  characters this replaces it was 32 bits and about 1 in 2,100, and the collision
+  did not read as one -- identity is assigned before registration, so the caller
+  was handed the id and the accept then failed on the duplicate primary key,
+  reaching the user as `task store write failed`, naming a subsystem that was
+  working correctly. A narrow id plus a uniqueness check is the alternative, and
+  it is more mechanism for less: the check would have to know which ids are
+  taken, a durable task row outlives the process that wrote it, and the spawn
+  path cannot ask the store because taking a task-store connection on the event
+  loop is refused (`kiro_crew.on_loop_db`). Nothing pins the width -- every
+  consumer prints the id or passes it through -- so ids written before this are
+  8 characters and stay valid; `spawn_status`, `spawn_continue` and the dashboard
+  wave roster read both.
 - **Wakes.** Only `resume_grant` writes `running` (`wake_wait(to=running)`,
   slot reserved, runtime resident) — and the landed wake is the PRECONDITION
   for the publish: the pump reserves the lane slot on the loop
@@ -1369,7 +1386,7 @@ Three optional fields are passed to `ScriptHookStore.fire()` and the
 
 | Field | Source | Description |
 |-------|--------|-------------|
-| `subagent_id` | `SubagentInfo.id` | 8-char hex ID of the firing subagent (None for parent) |
+| `subagent_id` | `SubagentInfo.id` | 16-char hex id of the firing subagent (None for parent) |
 | `parent_session_key` | `SubagentInfo.parent_session_key` | Session key of the parent that spawned this subagent |
 | `agent_role` | `SubagentInfo.agent` | Agent role name configured for the subagent |
 

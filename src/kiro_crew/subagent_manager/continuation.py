@@ -29,7 +29,6 @@ if TYPE_CHECKING:
         stage_boundary_owner_for_run,
         time,
         update_state,
-        uuid,
     )
 
 
@@ -469,7 +468,7 @@ class ContinuationCoordinator(ManagerComponent):
                 )
         except (OSError, ValueError) as exc:
             return SubagentInfo(
-                id=_preassigned_id or uuid.uuid4().hex[:8],
+                id=_preassigned_id or self._manager._mint_agent_id(),
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
@@ -538,7 +537,7 @@ class ContinuationCoordinator(ManagerComponent):
         busy = self._manager._conversation_busy(conv_key)
         if busy is not None:
             info = SubagentInfo(
-                id=uuid.uuid4().hex[:8],
+                id=self._manager._mint_agent_id(),
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
@@ -577,7 +576,7 @@ class ContinuationCoordinator(ManagerComponent):
             native_refusal = self.native_child_resume_refusal(conv_id)
             if native_refusal is not None:
                 return SubagentInfo(
-                    id=uuid.uuid4().hex[:8],
+                    id=self._manager._mint_agent_id(),
                     task=_redact(task),
                     done=True,
                     parent_session_key=parent_session_key,
@@ -594,7 +593,7 @@ class ContinuationCoordinator(ManagerComponent):
             except Exception:
                 pass
             info = SubagentInfo(
-                id=uuid.uuid4().hex[:8],
+                id=self._manager._mint_agent_id(),
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
@@ -616,7 +615,7 @@ class ContinuationCoordinator(ManagerComponent):
                 memory_store = self._manager._inherited_memory_store(conv_id)
         except (OSError, ValueError) as exc:
             return SubagentInfo(
-                id=_preassigned_id or uuid.uuid4().hex[:8],
+                id=_preassigned_id or self._manager._mint_agent_id(),
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
@@ -639,7 +638,7 @@ class ContinuationCoordinator(ManagerComponent):
                 raise ValueError("protected app ownership unavailable; start a new conversation")
         except (OSError, ValueError) as exc:
             return SubagentInfo(
-                id=_preassigned_id or uuid.uuid4().hex[:8],
+                id=_preassigned_id or self._manager._mint_agent_id(),
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
@@ -669,7 +668,7 @@ class ContinuationCoordinator(ManagerComponent):
             else:
                 self._manager._conversations[conv_key] = previous_last_used
             return SubagentInfo(
-                id=uuid.uuid4().hex[:8],
+                id=self._manager._mint_agent_id(),
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
@@ -1120,7 +1119,7 @@ class ContinuationCoordinator(ManagerComponent):
         # matching the former 120-chars-per-message cap.
         followup_label = _redact("; ".join(label_msgs))[: 120 * len(label_msgs)]
         synthetic = failure_info or SubagentInfo(
-            id=uuid.uuid4().hex[:8],
+            id=self._manager._mint_agent_id(),
             task=f"[follow_up of run {info.id}] " + (followup_label or "queued follow-up"),
             done=True,
             parent_session_key=info.parent_session_key,

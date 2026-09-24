@@ -597,7 +597,7 @@ class TestQueuedIdentityRoundTrip:
         info = m.spawn(task="x", parent_session_key="dashboard:s1")
 
         assert info is not None and info.queued is True
-        assert re.fullmatch(r"[0-9a-f]{8}", info.id), "queued id must be a real agent id"
+        assert re.fullmatch(r"[0-9a-f]{16}", info.id), "queued id must be a real agent id"
 
         # Drain: the gate is open now (stagger elapsed, slot free), so the
         # popped entry must be re-spawned under the SAME id.

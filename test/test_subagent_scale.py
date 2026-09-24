@@ -17,12 +17,19 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import pathlib
+import re
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew import subagent as subagent_module
+from kiro_crew.subagent import (
+    _RUN_ID_HEX_CHARS,
+    SubagentInfo,
+    SubagentManager,
+)
 from kiro_crew.subagent_scale import SubagentEventCoalescer
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -2685,3 +2692,82 @@ class TestDurableQueueScale:
         assert store.count(state=model.DONE) == 199
         assert len(mgr_queue := second._queue) == 0, mgr_queue
         assert second._running_count == 0
+
+
+# ── 7. Run-id minting ────────────────────────────────────────────────
+
+
+class TestRunIdMinting:
+    """The width of a run id is what keeps it unique, and one draw site owns it.
+
+    At 8 hex characters an id was 32 bits, so 2000 spawns on one host collided
+    about once in 2,100 times, and the collision did not read as one: identity
+    is assigned before registration, so the caller was handed the id and the
+    accept then failed on the duplicate primary key, reaching the user as
+    ``task store write failed``. 16 characters is 64 bits, which puts the same
+    2000 draws at about 1 in 10**13 -- no registry to seed, nothing to read, and
+    no place for a spawn path to forget the check.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_minted_id_is_sixteen_hex_characters(self):
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=4)
+        await mgr.wait_taskq_ready()
+        assert _RUN_ID_HEX_CHARS == 16
+        for _ in range(50):
+            assert re.fullmatch(r"[0-9a-f]{16}", mgr._mint_agent_id())
+
+    @pytest.mark.asyncio
+    async def test_every_spawned_id_carries_the_full_width(self):
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=1)
+        await mgr.wait_taskq_ready()
+        mgr._spawn_stagger_secs = 0.0
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+        ):
+            ids = [mgr.spawn(f"t{i}", parent_session_key="dashboard:s1").id for i in range(40)]
+        # Running and queued alike: the gate assigns one identity and every exit
+        # path carries it, so a queued row must not be narrower than a started one.
+        assert len(set(ids)) == 40
+        assert [i for i in ids if not re.fullmatch(r"[0-9a-f]{16}", i)] == []
+
+    def test_the_width_is_the_uniqueness_argument(self):
+        # 2000 draws, birthday bound n**2 / (2 * space). The 8-character id this
+        # replaces sat at ~1/2100, which CI hit as a red 2000-spawn shard.
+        space = 2 ** (4 * _RUN_ID_HEX_CHARS)
+        assert 2000**2 / (2 * space) < 1e-12
+        assert 2000**2 / (2 * 2**32) > 1e-4
+
+    @pytest.mark.asyncio
+    async def test_every_character_of_the_id_is_random(self):
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=4)
+        await mgr.wait_taskq_ready()
+        drawn = [mgr._mint_agent_id() for _ in range(200)]
+        # A v4 UUID spends its 13th hex character on the fixed version digit, so
+        # the first 16 characters of one carry 60 bits, not the 64 the width
+        # advertises. Every position has to vary or the bound above is wrong.
+        for pos in range(_RUN_ID_HEX_CHARS):
+            assert len({d[pos] for d in drawn}) > 1, pos
+
+    def test_one_draw_site_owns_the_width(self):
+        import kiro_crew.subagent_manager as manager_pkg
+
+        package = pathlib.Path(manager_pkg.__file__).parent
+        component_draws = [
+            f"{path.relative_to(package)}:{lineno}"
+            for path in sorted(package.rglob("*.py"))
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if "urandom" in line or "uuid4()" in line
+        ]
+        # The gate, the continuation coordinator and the wave digest all ask the
+        # manager for an id. A new spawn path that draws its own would reopen the
+        # collision at whatever width it picked, so none of them may draw.
+        assert component_draws == []
+
+        source = pathlib.Path(subagent_module.__file__).read_text(encoding="utf-8")
+        assert source.count("os.urandom(") == 1
+        assert "uuid4()" not in source
+        mint = source.split("def _mint_agent_id", 1)[1].split("\n    def ", 1)[0]
+        assert "os.urandom(_RUN_ID_HEX_CHARS // 2).hex()" in mint

@@ -243,7 +243,7 @@ class TestSpawnWithoutApprovalCallback:
         # The queued member carries the REAL id it will run under, not a
         # throwaway sentinel — spawn_run prints this id and the UI resolves the
         # wave by it, so it must match the agent that eventually starts.
-        assert re.fullmatch(r"[0-9a-f]{8}", second.id)
+        assert re.fullmatch(r"[0-9a-f]{16}", second.id)
         assert manager._queue[0]["_preassigned_id"] == second.id
         assert first.queued is False
 
