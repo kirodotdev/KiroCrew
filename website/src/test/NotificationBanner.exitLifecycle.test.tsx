@@ -182,6 +182,23 @@ describe('NotificationBanner: holds across a real exit animation', () => {
     outside.remove()
   })
 
+  it('releases focus left on the "+N" control that expanding the deck removed', async () => {
+    // Expanding changes what is rendered, not what is pending, so the focused
+    // expand control disappears without the deck changing.
+    renderBanner()
+    arrive(mkN({ title: 'Older' }))
+    arrive(mkN({ title: 'Newest' }))
+    const more = screen.getByTestId('notification-banner-count')
+    act(() => { more.focus() })
+    expect(document.activeElement).toBe(more)
+    fireEvent.click(more)
+    expect(more.isConnected).toBe(false)
+    expect(pendingCount()).toBe(2)
+    expect(screen.getAllByTestId('notification-banner-dismiss')).toHaveLength(2)
+    await settle(BANNER_AUTO_HIDE_MS + 1)
+    expect(cards()).toHaveLength(0)
+  })
+
   it('keeps the pointer hold while the pointer is still over the banner', async () => {
     const { x, stack } = focusedDeck()
     fireEvent.pointerEnter(stack)

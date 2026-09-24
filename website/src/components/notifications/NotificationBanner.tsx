@@ -220,11 +220,16 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   // Runs as an effect, not inside `removeNotes`: the handler fires BEFORE React
   // commits the removal, so `document.activeElement` there is still the button
   // that is about to disappear.
+  //
+  // Keyed on everything `visible` is derived from, not on `pending` alone:
+  // expanding the deck, or crossing the mobile breakpoint, changes what is
+  // rendered with no note arriving or leaving, and unmounts controls the user
+  // may be focused on -- the "+N" pill and the deck shells both expand it.
   useEffect(() => {
     focusedWithin.current = holdsFocus(document.activeElement)
     if (pendingRef.current.length === 0) hovering.current = false
     syncPaused()
-  }, [pending, holdsFocus, syncPaused])
+  }, [pending, expanded, isMobile, holdsFocus, syncPaused])
 
   // ---- arrival -----------------------------------------------------------------
   useEffect(() => {
