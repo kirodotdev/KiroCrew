@@ -44,7 +44,7 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.memory_stores import UnknownMemoryStore
-from kiro_crew.messaging import auto_title, privacy_mode
+from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
@@ -104,6 +104,7 @@ from kiro_crew.messaging.session_resume import (
 )
 from kiro_crew.messaging.session_trust import add_trusted_session, is_session_trusted
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.messaging.upload_gate import (
     session_blocks_reads,
     session_is_restricted,
@@ -1251,7 +1252,9 @@ class TelegramDispatcher:
                 ),
                 audit_session_key=session_key,
                 audit_agent=agent or "kirocrew",
-                closing_gate=lambda: self.sessions.begin_turn(session_key),
+                closing_gate=turn_ceiling.gate(
+                    session_key, lambda: self.sessions.begin_turn(session_key)
+                ),
             )
             accumulated = await driver.run(full_message)
 
@@ -1416,6 +1419,23 @@ class TelegramDispatcher:
                 )
             except Exception:
                 logger.debug("Telegram: success audit failed", exc_info=True)
+        except TurnCeilingExceeded as exc:
+            # At the conversation's turn ceiling, so no turn opened. Unlike the
+            # shutdown branch below this is NOT spooled -- the spool replays a
+            # message our restart dropped, and this one was refused on purpose --
+            # and it is not charged to the circuit breaker. The notice is
+            # rendered so the placeholder finalizes as the pause message rather
+            # than a perma-"thinking".
+            #
+            # Through ``out_renderer``, the same one the driver streams to, NOT
+            # the concrete one: a muted conversation substitutes ``SilentRenderer``
+            # because the dashboard disconnected it, and posting there would put a
+            # message into a chat that is supposed to hear nothing -- once per
+            # inbound message, since the latch does not clear on its own.
+            logger.warning(
+                "Telegram turn ceiling reached for %s -- conversation paused", session_key
+            )
+            await turn_ceiling.render_refusal(out_renderer, exc)
         except SessionClosingError:
             # Shutdown began between the claim and the dispatch, so no turn ever
             # opened. Caught ahead of the generic handler so a restart is not

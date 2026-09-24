@@ -45,6 +45,7 @@ from kiro_crew.hooks import (
     hook_gate_kwargs,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import (
@@ -71,6 +72,7 @@ from kiro_crew.messaging.renderer import (
     Renderer,
     SilentRenderer,
 )
+from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.security import (
     redact,
     redact_credentials,
@@ -1180,7 +1182,9 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 directive_consumer=turn.directive_consumer,
                 audit_session_key=session_key,
                 audit_agent=turn.agent or "kirocrew",
-                closing_gate=lambda: sessions.begin_turn(session_key),
+                closing_gate=turn_ceiling.gate(
+                    session_key, lambda: sessions.begin_turn(session_key)
+                ),
             )
             if replaying:
                 # Last look before the replay opens a prompt: a Stop issued at any
@@ -1332,6 +1336,24 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             )
         except Exception:
             logger.debug("%s: success audit failed", turn.channel_type, exc_info=True)
+    except TurnCeilingExceeded as exc:
+        # The conversation is at its turn ceiling, so this turn never opened.
+        # Ahead of the shutdown branch below and deliberately unlike it in two
+        # ways. It is NOT spooled: the spool exists so a message our own restart
+        # dropped is answered later, and replaying a message we refused on
+        # purpose would answer it after all. And it does not `record_failure`:
+        # the session did not misbehave, the conversation reached a bound.
+        #
+        # The notice IS the point. A refusal the user cannot see is the same
+        # silence the per-message echo guards already leave, so the text goes
+        # into this channel's own renderer, which also ends the stream: the
+        # `finally` below only tears the renderer down and flushes nothing.
+        logger.warning(
+            "%s: turn ceiling reached for %s -- conversation paused",
+            turn.channel_type,
+            session_key,
+        )
+        await turn_ceiling.render_refusal(renderer, exc)
     except SessionClosingError:
         # The gateway began shutting down between the claim and the dispatch, so
         # this turn never opened. Terminal for the message, but NOT a fault of

@@ -69,6 +69,7 @@ from kiro_crew.history import (
 )
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
     UNBIND_REASON_DASHBOARD_UNLINK,
@@ -4953,6 +4954,22 @@ class DashboardState:
         # system.resources. State-owned like the bus/limiter/settings so its
         # lifecycle matches the gateway instance.
         self.resource_pressure_notifier = ResourcePressureNotifier(self.notification_bus)
+        # Channel turn-ceiling producer. Registered HERE, once, beside the bus it
+        # delivers through, rather than injected per channel: a channel that
+        # forgot the wire would be a channel whose pauses are invisible to the
+        # operator, and invisibility is the defect the ceiling exists to remove.
+        # `notify` is synchronous and never raises, which is what the ceiling
+        # needs -- it runs inside a pre-stream gate whose only job is to refuse
+        # the turn.
+        turn_ceiling.set_notification_sink(
+            lambda session_key, surface: self.notify(
+                "agent",
+                "Conversation paused: turn limit",
+                f"A {surface} conversation reached its turn ceiling and is paused. "
+                "Reset it from the dashboard to continue.",
+                meta={"session_key": session_key, "surface": surface},
+            )
+        )
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
         # Process-local Spec Builder outbox claims, keyed by directory + delivery.

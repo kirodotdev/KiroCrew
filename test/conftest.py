@@ -808,6 +808,33 @@ def _reset_degraded_config_observations():
 
 
 @pytest.fixture(autouse=True)
+def _reset_channel_turn_ceiling():
+    """Forget the channel turn ceiling's process-global per-conversation counts.
+
+    ``kiro_crew.messaging.turn_ceiling`` keeps ONE counter for the whole process
+    (``_SHARED``), keyed by session key, so a counted turn outlives the test that
+    drove it. Tests share one interpreter and the Slack, Telegram and Discord
+    inbound routes all drive the same handful of session keys, so a worker that
+    runs more gated channel turns under one key than the ceiling allows latches
+    that conversation for the rest of the worker: every LATER test on the same key
+    gets a refused turn instead of the behaviour it asserts, in files that never
+    mention the ceiling. A wide shard reaches the default of 90 and reds
+    ``test_slack_success_after_delivery_10050.py``, whose native-route tests then
+    book neither success nor failure because the handler returns at the gate.
+
+    The notification sink is module-global for the same reason and is cleared with
+    it, so a test that registers an observer cannot be heard by the next one.
+    """
+    from kiro_crew.messaging.turn_ceiling import set_notification_sink, shared_ceiling
+
+    shared_ceiling().clear()
+    set_notification_sink(None)
+    yield
+    shared_ceiling().clear()
+    set_notification_sink(None)
+
+
+@pytest.fixture(autouse=True)
 def _restore_autonudge_singleton():
     """Floor under ``autonudge._INSTANCE`` — the process-global service reference.
 

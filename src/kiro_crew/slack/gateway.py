@@ -224,7 +224,13 @@ from kiro_crew.mcp_gateway.rewriter import (
 )
 from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
 from kiro_crew.memory import MemoryStore
-from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver, inbound_spool, registry
+from kiro_crew.messaging import (
+    APPROVAL_INTERACTIVE,
+    TurnDriver,
+    inbound_spool,
+    registry,
+    turn_ceiling,
+)
 from kiro_crew.messaging.dispatch import (
     build_directive_consumer,
     build_tool_gate,
@@ -6978,10 +6984,18 @@ class GatewayOrchestrator:
                 if completion_hook is not None:
                     dispatch_kwargs["monitor_completion"] = completion_hook
                     dispatch_kwargs["monitor_session_key"] = key
-            dispatch_result = await asyncio.wait_for(
-                dispatcher.handle_message(synthetic, **dispatch_kwargs),
-                timeout=_NUDGE_TURN_TIMEOUT,
-            )
+            # This turn is GENERATED, not received, so it does not count against
+            # the conversation's turn ceiling: the loop already carries its own
+            # cycle cap and runtime budget, and spending the conversation's budget
+            # on it would latch the conversation and then refuse the human's next
+            # message. Marked here rather than passed down because this is the one
+            # place that knows, and the channels' dispatch signatures in between
+            # have no business carrying it.
+            with turn_ceiling.generated_turn():
+                dispatch_result = await asyncio.wait_for(
+                    dispatcher.handle_message(synthetic, **dispatch_kwargs),
+                    timeout=_NUDGE_TURN_TIMEOUT,
+                )
             if wake_message is not None:
                 return (
                     dispatch_result
