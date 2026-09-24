@@ -8419,7 +8419,14 @@
       "ask_agent_history": "기록에 대해 에이전트에게 질문"
     },
     "workspaceTree": {
-      "status_failed": "리포지토리 상태를 읽을 수 없습니다."
+      "status_failed": "리포지토리 상태를 읽을 수 없습니다.",
+      "row_empty": "빈 폴더",
+      "row_hidden_only": "숨김 항목만 포함되어 있음(닷파일·캐시)",
+      "row_truncated": "파일이 표시되지 않음: 파일 수 제한 10,000개에 도달했습니다",
+      "row_unreadable_marker": "읽을 수 없음 — 위의 알림 참조",
+      "root_unreadable": "워크스페이스 폴더를 읽을 권한이 없습니다",
+      "root_hidden_only": "이 워크스페이스에는 숨김 항목만 포함되어 있습니다(닷파일·캐시)",
+      "unreadable_folders": "읽을 수 없는 폴더: {{paths}}"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -9717,8 +9724,8 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 대기열에 있습니다",
         "workflows": "워크플로",
         "workspace_empty": "이 워크스페이스에는 아직 파일이 없습니다",
-        "workspace_truncated": "큰 워크스페이스: 최대 10,000개 파일을 표시합니다. 모든 폴더는 계속 사용할 수 있습니다",
-        "workspace_directory_truncated": "일부 파일 숨김",
+        "workspace_truncated": "큰 워크스페이스: 파일 수 제한 10,000개에 도달하여 일부 파일이 표시되지 않습니다. 모든 폴더는 계속 사용할 수 있습니다",
+        "workspace_directory_truncated": "일부 파일 표시되지 않음",
         "output_load_failed": "출력을 불러올 수 없습니다",
         "retry": "다시 시도",
         "cancel_failed": "서브에이전트를 취소할 수 없습니다",

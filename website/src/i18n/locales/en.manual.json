@@ -3215,7 +3215,14 @@
       "ask_agent_history": "Ask the agent about the history"
     },
     "workspaceTree": {
-      "status_failed": "Couldn’t read the repository status."
+      "status_failed": "Couldn’t read the repository status.",
+      "row_empty": "Empty folder",
+      "row_hidden_only": "Contains only hidden items (dotfiles, caches)",
+      "row_truncated": "Files not shown: file limit of 10,000 reached",
+      "row_unreadable_marker": "Not readable — see the notice above",
+      "root_unreadable": "No permission to read the workspace folder",
+      "root_hidden_only": "This workspace contains only hidden items (dotfiles, caches)",
+      "unreadable_folders": "Folders not readable: {{paths}}"
     },
     "logEntry": {
       "trace_load_failed": "Couldn’t load this run’s trace."
@@ -3920,8 +3927,8 @@
         "model_effective": "Running on {{model}} (backend selects the model)",
         "workflows": "Workflows",
         "workspace_empty": "No files in this workspace yet",
-        "workspace_truncated": "Large workspace: showing up to 10,000 files; all folders remain available",
-        "workspace_directory_truncated": "files hidden",
+        "workspace_truncated": "Large workspace: file limit of 10,000 reached, some files not shown; all folders remain available",
+        "workspace_directory_truncated": "files not shown",
         "output_load_failed": "Couldn't load the output",
         "retry": "Retry",
         "cancel_failed": "Couldn't cancel the subagent",

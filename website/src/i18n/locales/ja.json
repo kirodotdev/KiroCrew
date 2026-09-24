@@ -8419,7 +8419,14 @@
       "ask_agent_history": "履歴についてエージェントに質問"
     },
     "workspaceTree": {
-      "status_failed": "リポジトリの状態を読み取れませんでした。"
+      "status_failed": "リポジトリの状態を読み取れませんでした。",
+      "row_empty": "空のフォルダー",
+      "row_hidden_only": "非表示の項目のみが含まれています（ドットファイル、キャッシュ）",
+      "row_truncated": "ファイルは表示されていません：ファイル数の上限 10,000 に達しました",
+      "row_unreadable_marker": "読み取れません — 上の通知を参照",
+      "root_unreadable": "ワークスペースのフォルダーを読み取る権限がありません",
+      "root_hidden_only": "このワークスペースには非表示の項目のみが含まれています（ドットファイル、キャッシュ）",
+      "unreadable_folders": "読み取れないフォルダー：{{paths}}"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -9717,8 +9724,8 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "開始を待機中 — 同時実行制限の後ろのキューに入っています",
         "workflows": "ワークフロー",
         "workspace_empty": "このワークスペースにはまだファイルがありません",
-        "workspace_truncated": "大規模なワークスペース：最大10,000ファイルを表示しています。すべてのフォルダーを参照できます",
-        "workspace_directory_truncated": "一部のファイルは非表示",
+        "workspace_truncated": "大規模なワークスペース：ファイル数の上限 10,000 に達したため、一部のファイルは表示されていません。すべてのフォルダーを参照できます",
+        "workspace_directory_truncated": "一部のファイルは未表示",
         "output_load_failed": "出力を読み込めませんでした",
         "retry": "再試行",
         "cancel_failed": "サブエージェントをキャンセルできませんでした",

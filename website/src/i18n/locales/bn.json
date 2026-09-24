@@ -8537,7 +8537,14 @@
       "ask_agent_history": "ইতিহাস সম্পর্কে এজেন্টকে জিজ্ঞাসা করো"
     },
     "workspaceTree": {
-      "status_failed": "রিপোজিটরির অবস্থা পড়া যায়নি।"
+      "status_failed": "রিপোজিটরির অবস্থা পড়া যায়নি।",
+      "row_empty": "খালি ফোল্ডার",
+      "row_hidden_only": "শুধুমাত্র লুকানো আইটেম রয়েছে (ডটফাইল, ক্যাশ)",
+      "row_truncated": "ফাইল দেখানো হয়নি: 10,000 ফাইলের সীমা পূর্ণ হয়েছে",
+      "row_unreadable_marker": "পড়া যায়নি — উপরের বিজ্ঞপ্তি দেখো",
+      "root_unreadable": "ওয়ার্কস্পেস ফোল্ডার পড়ার অনুমতি নেই",
+      "root_hidden_only": "এই ওয়ার্কস্পেসে শুধুমাত্র লুকানো আইটেম রয়েছে (ডটফাইল, ক্যাশ)",
+      "unreadable_folders": "ফোল্ডার পড়া যায়নি: {{paths}}"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -9854,8 +9861,8 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে",
         "workflows": "ওয়ার্কফ্লো",
         "workspace_empty": "এই ওয়ার্কস্পেসে এখনও কোনো ফাইল নেই",
-        "workspace_truncated": "বড় ওয়ার্কস্পেস: সর্বাধিক ১০,০০০টি ফাইল দেখানো হচ্ছে; সব ফোল্ডার উপলভ্য রয়েছে",
-        "workspace_directory_truncated": "কিছু ফাইল লুকানো আছে",
+        "workspace_truncated": "বড় ওয়ার্কস্পেস: 10,000 ফাইলের সীমা পূর্ণ হয়েছে, কিছু ফাইল দেখানো হয়নি; সব ফোল্ডার উপলভ্য রয়েছে",
+        "workspace_directory_truncated": "ফাইল দেখানো হয়নি",
         "output_load_failed": "আউটপুট লোড করা যায়নি",
         "retry": "আবার চেষ্টা করুন",
         "cancel_failed": "সাবএজেন্ট বাতিল করা যায়নি",

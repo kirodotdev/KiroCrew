@@ -8215,6 +8215,8 @@ async def api_project_tree(request: web.Request) -> web.Response:
                 "directories": [],
                 "repo": False,
                 "truncatedDirectories": [],
+                "hiddenOnlyDirectories": [],
+                "unreadableDirectories": [],
             }
         )
 
@@ -8258,14 +8260,81 @@ async def api_project_tree(request: web.Request) -> web.Response:
                     "repo": True,
                     "truncated": bool(truncated_directories),
                     "truncatedDirectories": truncated_directories,
+                    # A directory row exists here only as the parent of a listed
+                    # file, so an ignored-only folder is absent rather than
+                    # childless; the only childless directory this branch can
+                    # produce is a truncated one, reported above. The same holds
+                    # for a directory git cannot read: `--others` cannot scan it,
+                    # so it contributes no untracked file, and with no indexed
+                    # file beneath it it is absent, never childless -- while an
+                    # indexed path beneath it still comes from the index
+                    # (`--cached` reads no directory) and makes it an ordinary
+                    # populated row.
+                    "hiddenOnlyDirectories": [],
+                    "unreadableDirectories": [],
                 }
 
         # Fallback: walk twice so the first pass can compute fair per-directory
         # quotas without retaining every filename in memory. The complete walk
         # is required to return the directory skeleton past the file cap.
         directories: list[str] = []
+        # Directories the walk leaves CHILDLESS although they are not empty on
+        # disk: every entry is a directory this filter drops (a dot-directory
+        # or a tooling cache) or a symlink to a directory the walk does not
+        # follow, and there is no file. The dashboard renders a childless folder
+        # with a state row beneath it, and the row must not call such a folder
+        # empty -- `_bg/` holding only `.kiro/` is the reported case. Reported
+        # separately from `directories` so the tree can tell the two apart; a
+        # directory with a listed file or a kept subfolder is never in this list
+        # even when it also holds hidden entries. The root itself, when its top
+        # level holds only such entries, is named as ``.`` (it is no row).
+        hidden_only_directories: list[str] = []
+        # Directories the walk KEPT but could not read. ``os.walk`` reports a
+        # failed ``scandir`` on a subdirectory through ``onerror`` and then
+        # skips it WITHOUT yielding it (its default ``onerror=None`` swallows
+        # the failure), so a kept, non-symlink child the process may not read
+        # (permission denied is the usual cause) would otherwise leave no trace:
+        # its parent has no row beneath it, is not hidden-only (the child is no
+        # symlink), and the dashboard would call the parent empty -- a lie,
+        # ``ls`` shows the child. Such a directory is therefore listed as a row
+        # AND named here: the tree shows the folder, with nothing beneath it and
+        # no status line (a failed read is an error, and the dashboard reports
+        # an error only through its ``ErrorNotice`` above the tree, which names
+        # every directory in this list; the folder's own row carries a lock
+        # marker pointing at that notice), and its parent is not childless at
+        # all. Any failure
+        # counts, not only EACCES: the parent listed the entry, so a row that
+        # makes no claim about its contents is the honest rendering whatever
+        # stopped the read (a directory removed mid-walk is stale for exactly
+        # one refresh either way). The file pass below needs no hook: an
+        # unreadable directory has no files to list and is already a row. The
+        # root itself failing is recorded as ``.`` (see ``_record_unreadable``).
+        unreadable_directories: list[str] = []
+
+        def _record_unreadable(error: OSError) -> None:
+            failed = error.filename
+            # ``scandir`` names the directory on every error it raises; the
+            # guard keeps a bare OSError from aborting the whole listing.
+            if not isinstance(failed, str):
+                return
+            rel_failed = os.path.relpath(failed, base)
+            if rel_failed == ".":
+                # The root itself could not be read: the walk yields nothing,
+                # so the payload would be indistinguishable from a workspace
+                # with no files in it and the dashboard would say so -- the
+                # same "empty" claim this listing refuses to make one level
+                # down. The root is no directory row (rows are relative to
+                # it), so it is named only here, as ``.``; the dashboard shows
+                # its not-readable state in place of the empty-workspace one.
+                unreadable_directories.append(".")
+                return
+            directory = rel_failed.replace(os.sep, "/")
+            directories.append(directory)
+            unreadable_directories.append(directory)
+
         file_counts: dict[str, int] = {}
-        for dirpath, dirnames, filenames in os.walk(base):
+        for dirpath, dirnames, filenames in os.walk(base, onerror=_record_unreadable):
+            had_subdirectories = bool(dirnames)
             dirnames[:] = sorted(
                 d for d in dirnames if d not in _PROJECT_TREE_SKIP_DIRS and not d.startswith(".")
             )
@@ -8273,6 +8342,22 @@ async def api_project_tree(request: web.Request) -> web.Response:
             directory = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
             if directory:
                 directories.append(directory)
+            # A symlink to a directory stays in ``dirnames`` but the walk
+            # never descends it (``followlinks`` is off), so it becomes
+            # neither a row nor a parent: one more entry the listing hides.
+            # The root is judged by the same rule, OUTSIDE the ``if directory``
+            # above: a project directory whose top level holds only skipped or
+            # hidden entries yields no file and no kept subdirectory, so the
+            # payload would be the empty-workspace shape and the dashboard
+            # would call the workspace empty -- the claim this listing refuses
+            # to make one level down. The root is no directory row of its own,
+            # so it is named as ``.``, exactly as an unreadable root is.
+            if (
+                had_subdirectories
+                and not filenames
+                and all(os.path.islink(os.path.join(dirpath, d)) for d in dirnames)
+            ):
+                hidden_only_directories.append(directory or ".")
             file_counts[directory] = len(filenames)
 
         quotas = _project_tree_file_quotas(file_counts, _PROJECT_TREE_MAX_ENTRIES)
@@ -8296,6 +8381,8 @@ async def api_project_tree(request: web.Request) -> web.Response:
             "repo": False,
             "truncated": bool(truncated_directories),
             "truncatedDirectories": truncated_directories,
+            "hiddenOnlyDirectories": hidden_only_directories,
+            "unreadableDirectories": unreadable_directories,
         }
 
     result = await asyncio.to_thread(_run)
@@ -8318,7 +8405,13 @@ async def api_project_tree(request: web.Request) -> web.Response:
     # "Duplicate path" on adjacent identical entries. dict.fromkeys keeps first
     # occurrence. This does not affect "truncated": the cap is applied to the
     # raw listing above.
-    for key in ("paths", "directories", "truncatedDirectories"):
+    for key in (
+        "paths",
+        "directories",
+        "truncatedDirectories",
+        "hiddenOnlyDirectories",
+        "unreadableDirectories",
+    ):
         result[key] = list(
             dict.fromkeys(redact_path_segments(p, redact) for p in result[key])
         )

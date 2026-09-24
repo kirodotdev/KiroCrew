@@ -8655,7 +8655,14 @@
       "ask_agent_history": "Perguntar ao agente sobre o histórico"
     },
     "workspaceTree": {
-      "status_failed": "Não foi possível ler o estado do repositório."
+      "status_failed": "Não foi possível ler o estado do repositório.",
+      "row_empty": "Pasta vazia",
+      "row_hidden_only": "Contém apenas itens ocultos (dotfiles, caches)",
+      "row_truncated": "Arquivos não exibidos: limite de 10.000 arquivos atingido",
+      "row_unreadable_marker": "Não legível — veja o aviso acima",
+      "root_unreadable": "Sem permissão para ler a pasta do espaço de trabalho",
+      "root_hidden_only": "Este espaço de trabalho contém apenas itens ocultos (dotfiles, caches)",
+      "unreadable_folders": "Pastas não legíveis: {{paths}}"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
@@ -9991,8 +9998,8 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "aguardando para iniciar — na fila devido ao limite de simultaneidade",
         "workflows": "Workflows",
         "workspace_empty": "Este espaço de trabalho ainda não tem arquivos",
-        "workspace_truncated": "Espaço de trabalho grande: mostrando até 10.000 arquivos; todas as pastas continuam disponíveis",
-        "workspace_directory_truncated": "arquivos ocultos",
+        "workspace_truncated": "Espaço de trabalho grande: limite de 10.000 arquivos atingido, alguns arquivos não são exibidos; todas as pastas continuam disponíveis",
+        "workspace_directory_truncated": "arquivos não exibidos",
         "output_load_failed": "Não foi possível carregar a saída",
         "retry": "Tentar novamente",
         "cancel_failed": "Não foi possível cancelar o subagente",

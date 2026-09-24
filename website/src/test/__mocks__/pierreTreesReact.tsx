@@ -29,12 +29,14 @@ type Handle = {
   select: () => void
   deselect: () => void
   expand?: () => void
+  isExpanded?: () => boolean
 }
 
 export function createFakeModel(options: Record<string, unknown>) {
   const files: string[] = []
   const dirs = new Set<string>()
   const selected = new Set<string>()
+  const expanded = new Set<string>()
   const listeners = new Set<() => void>()
   let focused: string | null = null
   let visibleRows: VisibleRow[] = []
@@ -69,8 +71,8 @@ export function createFakeModel(options: Record<string, unknown>) {
         selected.delete(path)
       },
     }
-    // Only directory handles carry `expand`; the wrapper feature-detects it.
-    return isDir ? { ...base, expand: () => calls.expand.push(path) } : base
+    // Only directory handles carry `expand`/`isExpanded`; the wrapper feature-detects them.
+    return isDir ? { ...base, expand: () => calls.expand.push(path), isExpanded: () => expanded.has(path) } : base
   }
 
   return {
@@ -127,6 +129,11 @@ export function createFakeModel(options: Record<string, unknown>) {
       selected.clear()
       for (const p of selection) selected.add(p)
       for (const listener of listeners) listener()
+    },
+    /** Install the directories whose handles answer `isExpanded()` with true. */
+    simulateExpanded(paths: readonly string[]) {
+      expanded.clear()
+      for (const p of paths) expanded.add(p)
     },
     subscriberCount: () => listeners.size,
   }
