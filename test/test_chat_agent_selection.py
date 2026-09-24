@@ -15,6 +15,7 @@ from dashboard_owner_helpers import as_owner
 from test_members_dm_thread import _make_members_app
 
 from kiro_crew.agent_discovery import AgentInfo
+from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard import chat_handlers, chat_runner
@@ -741,6 +742,11 @@ async def test_cancelled_prewarm_cannot_overwrite_owner_pick(tmp_path, monkeypat
         # provider work is outside this cancelled-publication assertion.
         monkeypatch.setattr(chat_runner, "_eager_spawn", AsyncMock())
         monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", chat_runner.schedule_eager_spawn)
+        # The real scheduler reads the flag from the config watcher's snapshot,
+        # which the suite leaves unbuilt; adopt one carrying the default.
+        _snapshot_cfg = KiroCrewConfig()
+        _snapshot_cfg.session.eager_spawn = True
+        live.watch().prime(_snapshot_cfg)
         async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             response = await client.post(
                 "/api/chat/slots/template-chat/agent", json={"agent": later_agent}

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.config import live
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
@@ -66,6 +67,22 @@ def _cfg(enabled: bool) -> MagicMock:
     cfg.session.eager_spawn = enabled
     cfg_loader = MagicMock(return_value=cfg)
     return cfg_loader
+
+
+def _prime(enabled: bool) -> None:
+    """Adopt a config carrying *enabled* on the process config watcher.
+
+    ``schedule_eager_spawn`` reads ``session.eager_spawn`` from the watcher's
+    snapshot, because it runs on the event loop and a snapshot read touches no
+    file. ``_eager_spawn`` still loads from disk, so the two are stubbed
+    differently and :func:`_cfg` stays the helper for the latter.
+
+    The autouse ``_drop_live_config_snapshot`` fixture in ``test/conftest.py``
+    resets the watcher around every test, so this leaves nothing behind.
+    """
+    cfg = KiroCrewConfig(agents={"default": KiroCrewAgentConfig()})
+    cfg.session.eager_spawn = enabled
+    live.watch().prime(cfg)
 
 
 def _bindings(
@@ -167,19 +184,15 @@ class TestScheduleEagerSpawn:
 
     @pytest.mark.asyncio
     async def test_noop_when_flag_disabled(self):
-        slot = _ChatSlot("t1")
-        state = _mock_state(slot)
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(False)):
-            schedule_eager_spawn(state, slot)
-        assert slot._eager_spawn_task is None
+        """The snapshot carries OFF and the disk copy is pinned to ON.
 
-    @pytest.mark.asyncio
-    async def test_noop_when_config_unreadable(self):
+        A gate reading the wrong source would arm a task here, so the opposing
+        values are what make this assertion discriminate.
+        """
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
-        with patch.object(
-            chat_runner.KiroCrewConfig, "load", MagicMock(side_effect=OSError("boom"))
-        ):
+        _prime(False)
+        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             schedule_eager_spawn(state, slot)
         assert slot._eager_spawn_task is None
 
@@ -187,12 +200,12 @@ class TestScheduleEagerSpawn:
     async def test_newer_signal_cancels_older_task(self):
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
-            schedule_eager_spawn(state, slot)
-            first = slot._eager_spawn_task
-            assert first is not None
-            schedule_eager_spawn(state, slot)
-            second = slot._eager_spawn_task
+        _prime(True)
+        schedule_eager_spawn(state, slot)
+        first = slot._eager_spawn_task
+        assert first is not None
+        schedule_eager_spawn(state, slot)
+        second = slot._eager_spawn_task
         assert second is not first
         # The older task must be cancelled — it holds the stale slot state.
         with pytest.raises(asyncio.CancelledError):
@@ -1600,10 +1613,8 @@ class TestPrewarmAdmission:
         state = _mock_state(slot)
         sessions = MagicMock()
         sessions.remove_if_unclaimed = AsyncMock(return_value=True)
-        with (
-            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
-            patch.object(chat_runner, "resolve_agent_bindings", return_value=self._bindings()),
-        ):
+        _prime(True)
+        with patch.object(chat_runner, "resolve_agent_bindings", return_value=self._bindings()):
             task = chat_runner.schedule_eager_spawn(state, slot)
             assert task is not None
             # A concurrent signal's handshake registers BEFORE the queued
@@ -1781,8 +1792,8 @@ class TestSlotFocusedFrame:
 
         slot = _ChatSlot("t1")
         state = self._state(slot)
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
-            task = _handle_slot_focused(state, "t1", None, owner=True)
+        _prime(True)
+        task = _handle_slot_focused(state, "t1", None, owner=True)
         assert task is not None
         assert slot._eager_spawn_task is task
         task.cancel()
@@ -1795,9 +1806,9 @@ class TestSlotFocusedFrame:
 
         slot = _ChatSlot("t1")
         state = self._state(slot)
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
-            first = _handle_slot_focused(state, "t1", None, owner=True)
-            second = _handle_slot_focused(state, "t1", first, owner=True)
+        _prime(True)
+        first = _handle_slot_focused(state, "t1", None, owner=True)
+        second = _handle_slot_focused(state, "t1", first, owner=True)
         assert first is not None and second is not None
         with pytest.raises(asyncio.CancelledError):
             await first
@@ -1811,9 +1822,9 @@ class TestSlotFocusedFrame:
 
         slot = _ChatSlot("t1")
         state = self._state(slot)
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
-            pending = _handle_slot_focused(state, "t1", None, owner=True)
-            result = _handle_slot_focused(state, None, pending, owner=True)
+        _prime(True)
+        pending = _handle_slot_focused(state, "t1", None, owner=True)
+        result = _handle_slot_focused(state, None, pending, owner=True)
         assert result is None
         assert pending is not None
         with pytest.raises(asyncio.CancelledError):
@@ -1891,9 +1902,9 @@ class TestSlotFocusedFrame:
 
         slot = _ChatSlot("t1")
         state = self._state(slot)
-        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
-            pending = _handle_slot_focused(state, "t1", None, owner=True)
-            result = _handle_slot_focused(state, "t1", pending, owner=False)
+        _prime(True)
+        pending = _handle_slot_focused(state, "t1", None, owner=True)
+        result = _handle_slot_focused(state, "t1", pending, owner=False)
         assert result is pending  # passed through untouched
         assert pending is not None and not pending.cancelled()
         pending.cancel()

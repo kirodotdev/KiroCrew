@@ -5993,10 +5993,23 @@ def schedule_eager_spawn(
     first real turn and a TTL teardown if no turn ever claims it. The other
     intent signals keep the refusal — slot create has no mapping, and the
     agent/project switch handlers reset the session themselves.
+
+    The flag is read from the live-config watcher's adopted snapshot, a plain
+    attribute read, and there is deliberately no disk fallback behind it: this
+    function runs ON the event loop, and the watcher is primed only after the
+    listener binds, so a load here would stall the loop for exactly the requests
+    that arrive in that window (no-blocking-call-on-event-loop). An unprimed
+    watcher therefore skips the spawn, which costs a cold start on the slot's
+    first turn and nothing else. An armed snapshot is trusted whatever its
+    ``degraded_sections`` reports: the marker is sticky for the life of the
+    process, and while a document does not parse the snapshot is the copy
+    holding the operator's real setting.
     """
     try:
-        cfg = KiroCrewConfig.load()
-        if not cfg.session.eager_spawn:
+        from kiro_crew.config import live
+
+        cfg = live.snapshot()
+        if cfg is None or not cfg.session.eager_spawn:
             return None
     except Exception:
         return None

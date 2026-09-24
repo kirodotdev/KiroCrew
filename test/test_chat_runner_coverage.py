@@ -44,6 +44,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.config import live
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -2381,30 +2382,38 @@ class TestConsumePendingDiscardWaitsForSubagents:
 
 
 class TestScheduleEagerSpawn:
+    @staticmethod
+    def _prime(enabled: bool) -> None:
+        """Adopt a config carrying *enabled* on the process config watcher.
+
+        The gate reads ``session.eager_spawn`` from the watcher's snapshot, a
+        plain attribute read, because it runs on the event loop. The autouse
+        watcher reset in ``test/conftest.py`` clears this after every test.
+        """
+        cfg = chat_runner.KiroCrewConfig()
+        cfg.session.eager_spawn = enabled
+        live.watch().prime(cfg)
+
     def test_disabled_config_returns_no_task(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
-        cfg = MagicMock()
-        cfg.session.eager_spawn = False
+        self._prime(False)
 
-        with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
-            assert chat_runner.schedule_eager_spawn(state, slot) is None
+        assert chat_runner.schedule_eager_spawn(state, slot) is None
 
-    def test_config_load_failure_returns_no_task(self, tmp_path):
+    def test_config_read_failure_returns_no_task(self, monkeypatch, tmp_path):
+        """A failed read is swallowed: a speculative pre-warm must not raise
+        into a slot-signal handler, which has a frame to answer."""
         state, slot = _state(tmp_path), _slot()
+        monkeypatch.setattr(live, "snapshot", MagicMock(side_effect=RuntimeError("bad toml")))
 
-        with patch.object(chat_runner.KiroCrewConfig, "load", side_effect=RuntimeError("bad toml")):
-            assert chat_runner.schedule_eager_spawn(state, slot) is None
+        assert chat_runner.schedule_eager_spawn(state, slot) is None
 
     @pytest.mark.asyncio
     async def test_a_newer_signal_cancels_the_pending_task(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
-        cfg = MagicMock()
-        cfg.session.eager_spawn = True
+        self._prime(True)
 
-        with (
-            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
-            patch.object(chat_runner, "_eager_spawn", new=AsyncMock()),
-        ):
+        with patch.object(chat_runner, "_eager_spawn", new=AsyncMock()):
             first = chat_runner.schedule_eager_spawn(state, slot)
             second = chat_runner.schedule_eager_spawn(state, slot)
             await asyncio.sleep(0)
