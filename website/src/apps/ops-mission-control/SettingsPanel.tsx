@@ -99,6 +99,9 @@ function settingsRefusalMessage(error: unknown, subject: 'identity' | 'change'):
     if (error.code === 'value_too_long') {
       return i18nT('apps.opsMissionControl.settingsPanel.value_too_long_refused')
     }
+    if (error.code === 'unknown_incidentio_user') {
+      return i18nT('apps.opsMissionControl.settingsPanel.unknown_incidentio_user_refused')
+    }
   }
   return (error as Error).message
 }
@@ -1627,9 +1630,18 @@ export default function SettingsPanel() {
 
       {/* Immediately after, because the schedule lives INSIDE that repo and only reads
           correctly as a consequence of it. */}
+      {/* Only a schedule-file roster, or the source-less `{}` a no-schedule install gets
+          (this card's handling of that predates `source`). The card seeds its GitHub-login
+          field from `roster.me`, and any other rotation's roster carries its own vendor's
+          user id there, which saving would store as the GitHub login. Admitted by name so
+          a roster source added later is kept out without anyone editing this line. */}
       <OnCallScheduleCard
         provider={providers.find((p) => p.id === 'schedule-file')}
-        roster={rotationQuery.data?.roster}
+        roster={
+          !rotationQuery.data?.roster?.source || rotationQuery.data.roster.source === 'schedule-file'
+            ? rotationQuery.data?.roster
+            : undefined
+        }
         syncReady={Boolean(stateQuery.data?.ledger_sync?.ready)}
       />
 
