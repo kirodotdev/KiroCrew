@@ -61,8 +61,8 @@ async def test_stop_hook_test_supplies_full_assistant_text(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_non_stop_hook_test_uses_default_payload(tmp_path):
-    # A non-Stop hook keeps the default (None) payload — run_script_hook builds it.
+async def test_non_stop_hook_test_carries_the_dashboard_session_key(tmp_path):
+    """An absent key resolves to a non-dashboard surface, so that profile's denial never ran."""
     store = ScriptHookStore(tmp_path)
     hook = store.create({"name": "ups-hook", "event": HOOK_EVENT_USER_PROMPT_SUBMIT, "matcher": "", "command": "cat"})
 
@@ -76,7 +76,8 @@ async def test_non_stop_hook_test_uses_default_payload(tmp_path):
     assert resp.status == 200
     _args, _kwargs = mock_run.call_args
     hook_event = _args[2] if len(_args) > 2 else _kwargs.get("hook_event")
-    assert hook_event is None
+    assert hook_event["parent_session_key"] == "dashboard:hook_test"
+    assert set(hook_event) == {"hook_event_name", "cwd", "parent_session_key"}
 
 
 @pytest.mark.asyncio

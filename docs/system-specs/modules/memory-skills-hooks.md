@@ -4497,13 +4497,18 @@ never reach an LLM/agent surface.
 
 ### `SessionLaneChanged` — board-lane transitions (`_fire_session_lane_changed`)
 
-**Status: this section specifies a PENDING implementation, not the tree as it
-stands.** `SessionLaneChanged` is not a live hook event yet: `HOOK_EVENTS`,
-`ALLOWED_HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry exactly the five
-turn-lifecycle events, and none of the symbols named below exist in `src/`. Read
-every present-tense sentence here as the contract the implementation must meet.
-Until it lands, `handlers/hooks.py` and the Hooks page behave as the rest of this
-module already describes.
+**Status: the event and its dispatch layer are live; the EMISSION is not.**
+`HOOK_EVENTS` and `ALLOWED_HOOK_EVENTS` carry `SessionLaneChanged`, and every
+symbol named below ships in `src/kiro_crew/hooks.py` -- the queue, the worker, the
+delta type and the matcher grammar. `agent._VALID_HOOK_EVENTS` deliberately does
+NOT: it is the camelCase kiro-cli agent-spec registry, and kiro-cli rejects an
+event name it does not know, so the divergence is intentional and is recorded as
+such beside `ALLOWED_HOOK_EVENTS` in `validation.py`. What is absent is
+the dashboard tag-writer call into `dispatch_session_lane_changed_bulk`: it lands in
+a follow-up, because carrying it here puts the change over the reviewable size cap.
+So a hook registered on this event is accepted and documented but does not yet fire,
+and the present-tense sentences below describe the dispatch contract a writer will
+meet rather than a path a user can currently trigger.
 
 The implementation is PR #7669, and this section stands or falls with it: it is
 owned by that PR, is asserted against the code by a spec-pinning test that ships
@@ -4698,8 +4703,11 @@ into two tokens or forging the opposite direction.
 
 **The SEL rows this event adds, stated so an auditor can find them and a host can
 budget them.** A lane-dispatch decision writes ONE `log_api_access` row under
-`operation="hooks.session_lane_changed"`, on either outcome, so the count does not
-depend on whether the dispatch was permitted. The rate is per DECISION, not per
+`operation="hooks.session_lane_changed"` with `outcome="rejected"` on the paths that
+drop work -- a slot rebound between enqueue and dispatch, and a delta shed by the
+queue's bound. The permitted path writes no row of its own: a run that proceeds is
+recorded by the hook-invocation rows `run_script_hook` already writes, so the
+dispatch row exists to make a DROP findable rather than to count decisions. The rate is per DECISION, not per
 session and not per tag: deleting a status tag strips it from every session holding
 it and still records one row for that whole batch. The floor is zero and zero is the
 default shipping state — the row is written only once an enabled `SessionLaneChanged`

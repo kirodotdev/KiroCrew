@@ -44,6 +44,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_PRE_TOOL_USE,
+    HOOK_EVENT_SESSION_LANE_CHANGED,
     HOOK_EVENT_STOP,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     _tool_matches,
@@ -172,6 +173,11 @@ ACP_HOOK_TRIGGERS: tuple[str, ...] = (
 #: Two of the seven request triggers therefore have no Crew event:
 #: ``preTaskExecution`` and ``postTaskExecution`` are not in ``HOOK_EVENTS``, and
 #: a request naming either is answered with an empty list rather than an error.
+#:
+#: The mirror case exists too, and is named in
+#: ``_CREW_EVENTS_WITHOUT_ACP_TRIGGER`` below: a Crew event this protocol has no
+#: spelling for. Together the two sets PARTITION ``HOOK_EVENTS`` -- every store
+#: event is either mapped here or listed there, never both and never neither.
 _CREW_EVENT_TO_ACP_TRIGGER: dict[str, str] = {
     HOOK_EVENT_AGENT_SPAWN: ACP_TRIGGER_SESSION_START,
     HOOK_EVENT_USER_PROMPT_SUBMIT: ACP_TRIGGER_PROMPT_SUBMIT,
@@ -179,6 +185,20 @@ _CREW_EVENT_TO_ACP_TRIGGER: dict[str, str] = {
     HOOK_EVENT_POST_TOOL_USE: ACP_TRIGGER_POST_TOOL_USE,
     HOOK_EVENT_STOP: ACP_TRIGGER_AGENT_STOP,
 }
+
+#: Crew events this protocol has no trigger for, listed rather than left to fall
+#: out of the map by omission.
+#:
+#: ``SessionLaneChanged`` fires when a chat session's board **status** tags change.
+#: ACP's trigger vocabulary is turn and tool lifecycle within a session; a board
+#: lane is a dashboard concept the protocol does not model, so there is no honest
+#: spelling to map it to. A hook on it is therefore WITHHELD from this surface --
+#: ``acp_trigger`` answers ``None`` and the wire builder drops it -- which is the
+#: behaviour both consumers already had for an unmapped event.
+#:
+#: Naming it keeps the paired assertion in ``test_kas_hooks_acp.py`` strict: an
+#: event that is merely FORGOTTEN still fails, because it appears in neither set.
+_CREW_EVENTS_WITHOUT_ACP_TRIGGER: frozenset[str] = frozenset({HOOK_EVENT_SESSION_LANE_CHANGED})
 
 #: The two triggers whose request carries a tool identity, so they are the two
 #: where a hook's matcher is a TOOL matcher rather than a context one.

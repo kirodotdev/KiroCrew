@@ -112,7 +112,19 @@ class TestTriggerSpellings:
     def test_the_map_holds_exactly_the_stores_event_vocabulary(self):
         # The store refuses any other event on create and skips it on load, so a
         # key for another spelling could not be reached by a stored hook.
-        assert set(kas_wire._CREW_EVENT_TO_ACP_TRIGGER) == set(HOOK_EVENTS)
+        #
+        # Exact-set against the PARTITION, not a subset: a store event this
+        # protocol cannot spell must be named in the exclusion set, so an event
+        # that is merely forgotten appears in neither and still fails here.
+        mapped = set(kas_wire._CREW_EVENT_TO_ACP_TRIGGER)
+        unmappable = set(kas_wire._CREW_EVENTS_WITHOUT_ACP_TRIGGER)
+        assert mapped & unmappable == set()
+        assert mapped | unmappable == set(HOOK_EVENTS)
+
+    def test_an_unmappable_store_event_is_withheld_from_this_surface(self):
+        """The exclusion is the behaviour, not just bookkeeping."""
+        for event in kas_wire._CREW_EVENTS_WITHOUT_ACP_TRIGGER:
+            assert _hook(event=event).acp_trigger is None
 
     @pytest.mark.parametrize("trigger", ["preTaskExecution", "postTaskExecution"])
     def test_a_trigger_with_no_crew_event_answers_empty(self, trigger: str):
