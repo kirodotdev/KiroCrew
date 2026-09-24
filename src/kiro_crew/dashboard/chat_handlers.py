@@ -3857,8 +3857,11 @@ async def _persist_handover_tail(
     a change to what a durable metadata line MEANS for a key two slots share;
     the write stays as it is, and the loss is reported rather than silent.
     """
+    notes_lost = False
     try:
-        slot.flush_deferred_notes()
+        # Past the pop, so a promoted context half would die with this frame and a
+        # residual already in the hold would be drained back out of it.
+        slot.flush_deferred_notes(retain_context_owing=True)
     except Exception:
         # The flush puts the unwritten suffix back before raising, so this count is
         # what is still held. The hold also has a durable copy in the slot's
@@ -3874,6 +3877,9 @@ async def _persist_handover_tail(
             len(slot._deferred_notes),
             exc_info=True,
         )
+        # A held note IS a row owed that did not reach disk, which the contract above
+        # answers False. Logging alone let both callers report the close as clean.
+        notes_lost = True
     # ``_disk_window_len`` is how much of the current window the last committed save
     # covered, so the difference is exactly what has never reached disk. ``_dirty``
     # covers the other shape of unsaved state: an in-place edit to a row already
@@ -3893,7 +3899,7 @@ async def _persist_handover_tail(
         lost = await _owed_prompts_lost_on_line(state, name, slot, history_key)
         if lost:
             _report_lost_queued_prompts(state, name, lost, history_key)
-        return _HandoverDrainResult(rows_committed=True, prompts_lost=lost)
+        return _HandoverDrainResult(rows_committed=not notes_lost, prompts_lost=lost)
     try:
         committed = await save_slot_off_loop(
             state,
@@ -3957,7 +3963,7 @@ async def _persist_handover_tail(
     lost = await _owed_prompts_lost_on_line(state, name, slot, history_key)
     if lost:
         _report_lost_queued_prompts(state, name, lost, history_key)
-    return _HandoverDrainResult(rows_committed=True, prompts_lost=lost)
+    return _HandoverDrainResult(rows_committed=not notes_lost, prompts_lost=lost)
 
 
 def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
@@ -6185,6 +6191,19 @@ async def _close_slot(
     # was claimed), while a cancel landing mid-removal would interrupt
     # provider.shutdown() after the registry entry was already popped and
     # leak the process holding kiro-cli's native session lock.
+    # BEFORE the cancel: the cancelled task's own teardown flush drains the hold
+    # into `_pending_context`, and a retention flush after it retains nothing.
+    if slot._deferred_notes:
+        try:
+            slot.flush_deferred_notes(retain_context_owing=True)
+        except Exception:
+            # The flush puts its unwritten suffix back, and the retry below runs
+            # inside the arm that restores the slot, so this one only logs.
+            logger.warning(
+                "Slot %s: could not retain held notes before cancelling its turn",
+                name,
+                exc_info=True,
+            )
     _teardown_tasks = {
         task
         for task in (slot.task, slot._stage_controller_task)
@@ -6279,6 +6298,9 @@ async def _close_slot(
         # handler and session-control's close_target — must read this as success.
         return
     try:
+        # A context half promoted here dies with the popped frame -- `_pending_context`
+        # is never serialized -- so it is kept in the durable hold instead of queued.
+        slot.flush_deferred_notes(retain_context_owing=True)
         await save_slot_off_loop(state, slot, closed=True, closed_at=closed_at, best_effort=False)
     except Exception:
         # Save failed — restore slot so data isn't lost
@@ -6578,6 +6600,9 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         # nobody. Bounded and shielded; a task outliving the timeout still leaves
         # ``running`` true, so the collect branch below hands it to the one
         # batched wait rather than serialising a hung turn's full teardown here.
+        # Before the cancel, so the cancelled turn's own teardown flush retains the
+        # context half rather than queueing it into this popped frame.
+        removed.begin_close()
         _turn_killed = False
         if removed.running and removed.task is not None:
             removed.task.cancel()
@@ -6633,7 +6658,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # restart and reported as success. Sharing the arm restores the
             # slot with its notes still held and reports the key in ``failed``
             # instead.
-            removed.flush_deferred_notes()
+            removed.flush_deferred_notes(retain_context_owing=True)
             await save_slot_off_loop(
                 state, removed, closed=True, closed_at=closed_at, best_effort=False
             )
@@ -6649,6 +6674,9 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # original object we hold.
             if _slot_still_ours(state, name, removed):
                 state._slots[name] = removed
+                # The tab is live again, so the admission fence set before the cancel
+                # has to come off or nothing may be scheduled on it.
+                removed.cancel_close()
             else:
                 # The restore is what this arm's own comment relies on to keep the
                 # flushed notes reachable ("restores the slot with its notes still

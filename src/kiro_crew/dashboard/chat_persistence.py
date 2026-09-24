@@ -4259,12 +4259,8 @@ def _save_slot_to_history(
                     _queue_shortfall,
                     len(_durable_queue),
                 )
-            # The drop records this write retires are CONSUMED only after the
-            # atomic_write below commits (and never on the rows-only path,
-            # which defers the key to the on-disk value): a dropped note's row
-            # never exists, so the recorded id is its ONLY retirement path —
-            # consuming it before the write commits would leak the entry into
-            # the durable hold forever if the write fails.
+            # A dropped note has no row, so its id is the only retirement path:
+            # consuming it before the write commits strands the entry forever.
             retired_drop_ids = dropped_note_ids if not rows_only else set()
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
@@ -4357,6 +4353,12 @@ def _save_slot_to_history(
                 for meta_key in ROWS_ONLY_DEFERRED_META_KEYS:
                     meta_line.pop(meta_key, None)
                 carry_unowned_metadata(meta_line, existing_meta, ROWS_ONLY_OWNED_META_KEYS)
+                # The hold belongs to the rows THIS write commits, and the union
+                # above already carries the other holder's own entries.
+                if surviving_hold:
+                    meta_line["deferred_notes"] = surviving_hold
+                else:
+                    meta_line.pop("deferred_notes", None)
             else:
                 carry_unowned_metadata(meta_line, existing_meta, SLOT_OWNED_META_KEYS)
             meta_str = json.dumps(meta_line) + "\n"
