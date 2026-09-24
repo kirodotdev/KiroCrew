@@ -2102,15 +2102,27 @@ def _program_refusal(
             return association
     system = platform_compat.trusted_system_bin(name)
     if system is not None:
-        if not _is_trusted_system_file(name, real):
-            return Refusal(
-                SHADOWED,
-                f"{name} resolves to {found}, which shadows the system program at {system}",
-            )
-        # The system program itself. The name identifies it by construction, so
-        # no witness is needed -- this is what keeps coreutils and the read-only
-        # allowlist working with no approval history at all.
-        return _interpreter_refusal(name, real, witness, depth)
+        if _is_trusted_system_file(name, real):
+            # The system program itself, identified by realpath equality with the
+            # trusted-directory copy. The name IS the file by construction, so no
+            # witness is needed -- this keeps coreutils and the read-only allowlist
+            # working with no approval history at all.
+            return _interpreter_refusal(name, real, witness, depth)
+        # The name resolves to a file that is NOT the trusted-directory copy, so it
+        # shadows the system program. That stays a hard refusal even when the file
+        # lives in `/nix/store` and the account cannot write it: on a multi-user Nix
+        # install with the default `allowed-users = *`, any user can place bytes in the
+        # store (`nix-store --add`), and the entry is then owned by the build user and
+        # read-only to this account. Unwritability proves the bytes cannot change in
+        # PLACE; it does not prove WHO produced them, and the account still controls the
+        # name->store mapping through the profile / PATH symlink the resolved path never
+        # walks. So a store copy is never silently vouched for and never offered for a
+        # pin -- the refusal names the resolved store path so the person reading the
+        # approval card sees exactly which file is shadowing the system program.
+        return Refusal(
+            SHADOWED,
+            f"{name} resolves to {real}, which shadows the system program at {system}",
+        )
     dispatched = _dispatcher_target_refusal(name, real, as_interpreter)
     if dispatched is not None:
         return dispatched

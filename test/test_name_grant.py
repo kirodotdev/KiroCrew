@@ -290,6 +290,63 @@ class TestShadowedResolution:
         assert shim in refusal.detail
         assert str(system_dir / "head") in refusal.detail
 
+    def test_nix_store_shadow_is_hard_refused_and_names_the_store_path(self, world):
+        # A gateway PATH that leads with `~/.nix-profile/bin` resolves a coreutils
+        # name into an immutable /nix/store copy. Reaching the REAL shadow decision
+        # through `_program_refusal` (no monkeypatched predicate): the store copy is
+        # NOT the trusted-directory file, so it shadows the system program and is hard
+        # SHADOWED. On a multi-user Nix any user can `nix-store --add` a payload, so an
+        # unwritable store file is not an identity -- it is never auto-approved and
+        # never offered for a pin. The refusal names the resolved STORE path so the
+        # person at the approval card sees which file shadows the system program.
+        system_dir, user_dir = world
+        _program(system_dir, "head")
+        store = user_dir.parent / "nix" / "store" / "abcd-coreutils-9.11" / "bin"
+        store.mkdir(parents=True)
+        store_file = _program(store, "coreutils")
+        # The profile symlink Nix puts on PATH: `~/.nix-profile/bin/head` -> store.
+        (user_dir / "head").symlink_to(store_file)
+        refusal = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert refusal is not None
+        assert refusal.code == name_grant.SHADOWED
+        # Point 2: the store path (the realpath target), not just the profile
+        # symlink, is in the detail, and it says it shadows the system program.
+        assert store_file in refusal.detail
+        assert str(system_dir / "head") in refusal.detail
+        # A human approval does not turn the store shadow into an auto-approve: it
+        # stays SHADOWED on every later use, so the read-only allowlist cannot pin it.
+        name_grant.pin_human_approval("head -5 /etc/hosts")
+        again = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert again is not None and again.code == name_grant.SHADOWED
+
+    def test_nix_store_name_repointed_at_a_different_store_path_stays_refused(self, world):
+        # The repoint case point 3 asks for, with NO earlier pin: a name pointed at
+        # one store binary and then at a DIFFERENT unpinned store path. Because a
+        # store shadow never pins, repointing it is still a plain SHADOWED refusal --
+        # "unwritable store" never establishes identity, so a swapped target is not
+        # silently honoured.
+        system_dir, user_dir = world
+        _program(system_dir, "head")
+        store = user_dir.parent / "nix" / "store"
+        first_dir = store / "aaaa-coreutils-9.11" / "bin"
+        second_dir = store / "bbbb-perl-5.40" / "bin"
+        first_dir.mkdir(parents=True)
+        second_dir.mkdir(parents=True)
+        first = _program(first_dir, "coreutils")
+        second = _program(second_dir, "perl")
+        link = user_dir / "head"
+        link.symlink_to(first)
+        first_refusal = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert first_refusal is not None and first_refusal.code == name_grant.SHADOWED
+        # Repoint the same name at a different store binary: still SHADOWED, now
+        # naming the new store path.
+        link.unlink()
+        link.symlink_to(second)
+        second_refusal = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert second_refusal is not None
+        assert second_refusal.code == name_grant.SHADOWED
+        assert second in second_refusal.detail
+
     def test_shim_in_a_later_pipeline_stage_is_refused(self, world):
         system_dir, user_dir = world
         _program(system_dir, "cat")
