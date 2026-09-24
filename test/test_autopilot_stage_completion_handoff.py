@@ -543,7 +543,10 @@ async def test_closing_slot_cancels_controller_before_next_stage(tmp_path, monke
         return None
 
     async def _save_slot(*_args, **_kwargs):
-        return None
+        # True: this double models the durable write itself; a bare None reads
+        # as the save's own refusal, which the close now answers instead of
+        # ignoring.
+        return True
 
     class _PlanRequest:
         app = {"state": state}

@@ -2412,6 +2412,7 @@ class ConversationLog:
         tab_id: str | None = None,
         cls: str = "",
         mid: str | None = None,
+        entry: dict | None = None,
     ) -> None:
         """Append a message with optional provenance to the session log.
 
@@ -2432,6 +2433,18 @@ class ConversationLog:
         no ``meta`` at all, which is what pre-id transcripts hold — readers keep
         their id-less fallback for exactly those rows.
 
+        *entry* is a FULLY BUILT persisted message dict — the exact line shape
+        the dashboard slot save writes (``_build_message_entry``: redacted
+        content, the row's own ``ts``, provenance, ``variants``, ``meta``).
+        When supplied it is written verbatim in place of the minimal row this
+        method would otherwise build, so an append-safe fallback for a save
+        that could not run persists the SAME bytes that save would have — a
+        (role, content) reconstruction drops every other field the row
+        carries. The caller passes *role*/*content*/*cls*/*mid* consistent
+        with the entry (they drive locking, dedup and rotation); redaction,
+        attachment rewriting and ``ts`` minting are skipped because the
+        builder already applied them.
+
         If the session file does not yet exist, it will be created with an
         initial metadata line.  When *agent* is supplied, the agent name is
         recorded in that metadata so the session can be resumed under the
@@ -2448,7 +2461,10 @@ class ConversationLog:
             # Inside the lock, so a concurrent ``delete_session`` cannot reclaim
             # the attachment between the copy and this row naming it. Idempotent,
             # so the re-entrant call from ``append_if_absent`` is a no-op.
-            content = self._persist_inline_attachments(key, role, content)
+            # Skipped for a prebuilt *entry*, whose builder already rewrote its
+            # attachments against the owning session.
+            if entry is None:
+                content = self._persist_inline_attachments(key, role, content)
             path = self._path(key)
             created_with_tab_id = False
             created_now = False
@@ -2467,42 +2483,50 @@ class ConversationLog:
                     created_with_tab_id = True
                 path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
 
-            msg: dict = {
-                "role": role,
-                "content": _redact_at_write_boundary(role, content),
-                **({"cls": cls} if cls else {}),
-                # Strictly after the row already on disk, so the pair written by
-                # one turn stays ordered on a host whose clock cannot separate
-                # them (see monotonic_transcript_ts). Consulting the file here is
-                # authoritative because ``_locked`` also holds the cross-process
-                # flock: no writer, in this process or another, can append
-                # between this look and the write below. A file this call just
-                # created provably holds no rows yet, so it is not consulted.
-                #
-                # ``astimezone()`` resolves the clock to an absolute instant
-                # before it is stored. A bare local wall
-                # clock, which repeats for an hour when daylight saving ends and
-                # cannot be ordered against the offset-aware rows the dashboard
-                # writes into this same file.
-                "ts": monotonic_transcript_ts(
-                    None if created_now else self._last_row_ts(key),
-                    datetime.now().astimezone(),
-                ),
-            }
-            if tools:
-                msg["tools"] = tools
-            if source_thread:
-                msg["source_thread"] = source_thread
-            if source_user:
-                msg["source_user"] = source_user
-            if isinstance(mid, str) and mid:
-                # ``meta`` holding ``mid`` is the identity shape every reader of
-                # this file already matches on (the slot save writes it, the
-                # bounded-read walk consumes it); a second spelling would be
-                # invisible to both. Only a non-empty ``str`` counts, matching
-                # the read side — persisting any other shape would store an id
-                # the reader is structurally unable to honour.
-                msg["meta"] = {"mid": mid}
+            if entry is not None:
+                # The builder's exact durable shape: content already redacted,
+                # attachments already rewritten, the row's own ``ts``,
+                # provenance, ``variants`` and ``meta`` all carried. Rebuilding
+                # from (role, content) here would silently drop every one of
+                # those fields from the only durable copy this row gets.
+                msg: dict = dict(entry)
+            else:
+                msg = {
+                    "role": role,
+                    "content": _redact_at_write_boundary(role, content),
+                    **({"cls": cls} if cls else {}),
+                    # Strictly after the row already on disk, so the pair written by
+                    # one turn stays ordered on a host whose clock cannot separate
+                    # them (see monotonic_transcript_ts). Consulting the file here is
+                    # authoritative because ``_locked`` also holds the cross-process
+                    # flock: no writer, in this process or another, can append
+                    # between this look and the write below. A file this call just
+                    # created provably holds no rows yet, so it is not consulted.
+                    #
+                    # ``astimezone()`` resolves the clock to an absolute instant
+                    # before it is stored. A bare local wall
+                    # clock, which repeats for an hour when daylight saving ends and
+                    # cannot be ordered against the offset-aware rows the dashboard
+                    # writes into this same file.
+                    "ts": monotonic_transcript_ts(
+                        None if created_now else self._last_row_ts(key),
+                        datetime.now().astimezone(),
+                    ),
+                }
+                if tools:
+                    msg["tools"] = tools
+                if source_thread:
+                    msg["source_thread"] = source_thread
+                if source_user:
+                    msg["source_user"] = source_user
+                if isinstance(mid, str) and mid:
+                    # ``meta`` holding ``mid`` is the identity shape every reader of
+                    # this file already matches on (the slot save writes it, the
+                    # bounded-read walk consumes it); a second spelling would be
+                    # invisible to both. Only a non-empty ``str`` counts, matching
+                    # the read side — persisting any other shape would store an id
+                    # the reader is structurally unable to honour.
+                    msg["meta"] = {"mid": mid}
 
             # Session transcripts are intentionally local plaintext JSONL (the
             # documented storage format), not a credential/secret store.
@@ -2534,6 +2558,7 @@ class ConversationLog:
         tab_id: str | None = None,
         cls: str = "",
         mid: str | None = None,
+        entry: dict | None = None,
     ) -> bool:
         """Append a message only if an identical one is not already persisted.
 
@@ -2541,6 +2566,12 @@ class ConversationLog:
         on disk — judged by ``(role, content)`` when the caller supplies no
         *mid*, and by ``(role, content)`` plus the SAME ``meta.mid`` when it
         does (see below).
+
+        *entry*, when supplied, is the fully built persisted dict written on
+        the absent branch in place of the minimal reconstruction — see
+        :meth:`append`. The dedup scan above it is unchanged and runs on the
+        *role*/*content*/*mid* the caller passes, which must therefore be the
+        entry's own fields.
 
         The disk check and the append run together under ``_locked`` so they
         are ATOMIC against a concurrent writer of the same session file — in
@@ -2616,7 +2647,9 @@ class ConversationLog:
             # the critical section we already hold. The skip paths above leave
             # the persisted rows untouched — an id is never retrofitted onto a
             # row already on disk.
-            self.append(key, role, content, agent=agent, tab_id=tab_id, cls=cls, mid=mid)
+            self.append(
+                key, role, content, agent=agent, tab_id=tab_id, cls=cls, mid=mid, entry=entry
+            )
             return True
 
     def recent(

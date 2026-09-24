@@ -15,9 +15,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis
+
 AtomicWriter = Callable[..., None]
 JsonCodecProvider = Callable[[], Any]
-SlotSaver = Callable[[Any, Any], Any]
+SlotSaver = Callable[..., Any]
 
 
 def _current_shutdown_event() -> Any:
@@ -88,8 +90,20 @@ class DashboardPersistenceCoordinator:
             flush_dirty = self._owner_method(owner, "_flush_dirty_slots", self._flush_dirty_slots)
             await asyncio.get_running_loop().run_in_executor(None, flush_dirty)
 
-    def flush_slot_now(self, owner: Any, slot: Any) -> None:
-        """Write one dirty slot and clear only the generation that was saved."""
+    def flush_slot_now(
+        self, owner: Any, slot: Any, takeover_basis: TakeoverBasis | None = None
+    ) -> None:
+        """Write one dirty slot and clear only the generation that was saved.
+
+        ``takeover_basis`` is the slot key's open takeover watch, opened and
+        closed by the caller around this call (``_flush_dirty_slots`` opens it
+        while it can still vouch the slot came out of the live table). A
+        truncating retry (``_pending_rewrite``) carries it into the save's
+        publication-ordering claim, so a same-key takeover landing between
+        that instant and the claim registration still refuses the write.
+        ``None`` means the caller anchored to no earlier instant and the claim
+        observes takeovers from its registration on.
+        """
         # Endpoint metadata is applied to the live slot before its guarded
         # history write.  Do not let this unpinned periodic writer make that
         # provisional value durable while the guarded writer is still waiting.
@@ -110,7 +124,7 @@ class DashboardPersistenceCoordinator:
         # erasing a new dirty mark set concurrently by the event loop.
         generation = slot._dirty_gen
         try:
-            save_slot_to_history(owner, slot)
+            save_slot_to_history(owner, slot, takeover_basis=takeover_basis)
         except Exception:
             # A failed write remains owed to the next periodic pass.
             self._logger_provider().warning("Flush failed for slot %s", slot.key, exc_info=True)
@@ -133,8 +147,30 @@ class DashboardPersistenceCoordinator:
             # constructor until construction ends.
             if slot.key in getattr(owner, "_slots_under_construction", ()):
                 continue
-            flush_slot_now = self._owner_method(owner, "flush_slot_now", self.flush_slot_now)
-            flush_slot_now(slot)
+            # The takeover watch opens HERE, while this pass can still vouch
+            # that ``slot`` came out of the live table: the per-slot saves
+            # below take real disk time each, so a same-key close-and-recreate
+            # can replace a later slot long before its turn comes. The re-read
+            # below is the vouch itself, checked AFTER the open: a takeover
+            # before the open changes the occupant (skip), one after it moves
+            # the watch count past the basis (a truncating retry's claim is
+            # born overtaken), so no arrival instant lands the popped slot's
+            # window on the replacement's transcript. A skipped slot is not
+            # flushed by anyone again — the close flow that popped it owns its
+            # tail, exactly as it does for every slot it pops.
+            basis = SlotRegistry.open_takeover_basis(owner, slot.key)
+            try:
+                if owner._slots.get(slot.key) is not slot:
+                    self._logger_provider().debug(
+                        "Flush skipped for slot %s: the key changed owner after this "
+                        "pass snapshotted the slot table",
+                        slot.key,
+                    )
+                    continue
+                flush_slot_now = self._owner_method(owner, "flush_slot_now", self.flush_slot_now)
+                flush_slot_now(slot, takeover_basis=basis)
+            finally:
+                SlotRegistry.close_takeover_basis(owner, basis)
 
         # Preserve the original ordering. Open tabs are the authoritative set
         # used to prune context snapshots, and both disk writes stay off-loop.

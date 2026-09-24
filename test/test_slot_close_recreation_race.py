@@ -329,10 +329,14 @@ async def test_delete_recreate_during_save_preserves_replacement(tmp_path, monke
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def _persist(*_a, **_kw) -> None:
-        # Park so the recreate can interleave INSIDE the teardown window.
+    async def _persist(*_a, **_kw) -> bool:
+        # Park so the recreate can interleave INSIDE the teardown window. Answer
+        # True: this double models the durable write itself, and the guards
+        # under test are the post-save identity re-checks, not the save's own
+        # refusal arbitration.
         entered.set()
         await release.wait()
+        return True
 
     removed_keys: list[str] = []
 
@@ -487,8 +491,9 @@ async def test_delete_recreate_between_save_and_remove_skips_remove(tmp_path, mo
     # The second identity re-check, immediately before the remove on the same
     # frame, is what must catch it. Recreating as the save's final act reproduces
     # exactly that interleaving deterministically.
-    async def _persist_then_recreate(*_a, **_kw) -> None:
+    async def _persist_then_recreate(*_a, **_kw) -> bool:
         state.get_or_create_slot(NAME)
+        return True
 
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist_then_recreate)
     state.sessions.remove = _remove  # type: ignore[assignment]
@@ -662,8 +667,9 @@ async def test_delete_ordinary_close_still_saves_and_removes(tmp_path, monkeypat
     saved_closed: list[bool] = []
     removed_keys: list[str] = []
 
-    async def _persist(_state, _slot, *_a, **kw) -> None:
+    async def _persist(_state, _slot, *_a, **kw) -> bool:
         saved_closed.append(bool(kw.get("closed")))
+        return True
 
     async def _remove(key) -> None:
         removed_keys.append(key)
@@ -832,8 +838,9 @@ async def test_cleanup_ordinary_archive_still_saves_and_removes(tmp_path, monkey
     saved_closed: list[bool] = []
     removed_keys: list[str] = []
 
-    async def _persist(_state, _slot, *_a, **kw) -> None:
+    async def _persist(_state, _slot, *_a, **kw) -> bool:
         saved_closed.append(bool(kw.get("closed")))
+        return True
 
     async def _remove(key) -> None:
         removed_keys.append(key)
@@ -2174,3 +2181,459 @@ async def test_cleanup_divergent_transcript_still_archives_the_original(tmp_path
     ], "archiving the original's own transcript dropped its tail"
     assert state._slots.get(NAME) is replacement, "the replacement was clobbered by cleanup"
     assert state.sessions.remove.await_count == 0, "the replacement's session was torn down"
+
+
+@pytest.mark.asyncio
+async def test_close_archive_loses_to_a_resume_that_begins_mid_teardown(tmp_path, monkeypatch):
+    """A resume beginning inside the teardown refuses the archive's truncation.
+
+    The close pops the key and then awaits (task cancel, executor hops) before
+    its archive save runs, and a resume that begins in that gap fires its
+    takeover note before the archive has any claim to mark — with its own
+    publication still pending behind its transcript read, so the pre-save
+    replacement check sees nothing either. The teardown watch, opened before
+    the pop, is what carries the observation: the archive's rewrite-shaped
+    write (``_pending_rewrite``) is born overtaken and refuses, the hand-over
+    drain disarms the lost truncation and lands the window append-safely, the
+    close completes as a hand-over, and the resume reads the transcript the
+    truncation never touched.
+    """
+    import threading
+
+    from kiro_crew.dashboard import chat_persistence
+    from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+    from kiro_crew.dashboard.chat_utils import slot_transcript_key
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot(NAME)
+    for row in ("first question", "first answer", "second question", "second answer"):
+        slot.append("user" if "question" in row else "assistant", row)
+    slot.drain()
+    assert await chat_persistence.save_slot_off_loop(state, slot, force=True)
+    # A rewind that never committed: the live window is truncated and the
+    # archive save will take the rewrite path.
+    slot.messages = list(slot.messages)[:2]
+    slot._pending_rewrite = True
+    slot._dirty = True
+
+    # Park the resume's transcript read so its publication stays pending while
+    # the close runs its archive: its takeover note has fired, its replacement
+    # is not yet in the map — the exact state no map read can see.
+    read_parked = threading.Event()
+    read_release = threading.Event()
+    real_prefetch = chat_persistence._prefetch_rehydrate_inputs
+
+    def _parked_prefetch(*args, **kwargs):
+        read_parked.set()
+        read_release.wait(5.0)
+        return real_prefetch(*args, **kwargs)
+
+    monkeypatch.setattr(chat_persistence, "_prefetch_rehydrate_inputs", _parked_prefetch)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    _arm_running_turn(slot, entered, release)
+
+    close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
+    await _reached(entered, close, seam="the shielded task-cancel wait")
+    # The key is already popped; the resume begins inside the teardown window.
+    # Rewind the close tombstone deterministically past the resume's start
+    # instant: the tombstone predates the resume in this staging, but two
+    # consecutive clock reads can land inside one timestamp tick (~15.6 ms on
+    # Windows), and ``slot_closed_since`` reads a tie as "closed since", which
+    # would abandon the rehydration and test the tombstone rather than the
+    # ordering contract (testing-conventions.md § Determinism, the same rule
+    # ``move_transcript_past`` applies to mtimes).
+    from kiro_crew.dashboard import channel_slots
+
+    _closes = channel_slots._RECENT_CLOSES.get(state)
+    assert _closes is not None and NAME in _closes
+    _closes[NAME] -= 1.0
+    resume = asyncio.create_task(rehydrate_slot_from_history_async(state, NAME))
+    assert await asyncio.to_thread(read_parked.wait, 5.0)
+    release.set()
+
+    resp = await close
+    # The archive's truncation lost the arbitration, and the hand-over drain
+    # then writes the popped slot's window APPEND-SAFELY (truncation disarmed,
+    # on-disk rows carried through the foreign merge) — so the close completes
+    # as a hand-over rather than failing, with nothing truncated underneath
+    # the resume.
+    assert resp.status == 200
+
+    read_release.set()
+    replacement = await resume
+    assert replacement is not None
+    assert [m["content"] for m in replacement.messages] == [
+        "first question",
+        "first answer",
+        "second question",
+        "second answer",
+    ]
+    on_disk = state.conversation_log.read_messages_chained(slot_transcript_key(NAME))
+    assert len(on_disk) == 4, "the refused archive must leave the transcript untouched"
+    assert state._takeover_watches == {}
+
+
+@pytest.mark.asyncio
+async def test_close_reports_failure_for_a_retryable_archive_refusal(tmp_path, monkeypatch):
+    """A refusal that is neither a takeover nor a deletion is a failed close.
+
+    The archive save can refuse for retryable reasons — the stale-queue guard
+    refuses when another writer committed a newer queued-prompt value while
+    this save held an older snapshot — and the popped slot holds the only copy
+    of its unsaved tail. Reading that ``False`` as delete-won would discard
+    acknowledged rows while answering 200; the close must instead verify the
+    deletion positively, and otherwise restore the tab and report the failure
+    so the periodic flush retries the write.
+    """
+    state = _state_with_slot(tmp_path)
+    slot = state._slots[NAME]
+    # The session exists on disk, so the delete verification answers False.
+    await handlers.save_slot_off_loop(state, slot, force=True)
+
+    async def _refused(*_a, **_kw) -> bool:
+        return False
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _refused)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+    assert resp.status == 500
+    assert json.loads(resp.text)["code"] == "history_save_failed"
+    assert state._slots.get(NAME) is slot, "the tab must come back for the flush to retry"
+
+
+@pytest.mark.asyncio
+async def test_deletion_is_only_confirmed_on_definitive_evidence(tmp_path):
+    """An unverifiable probe is not a deletion for the destructive close arm.
+
+    ``session_was_deleted`` fails CLOSED (True on an unreadable line) because
+    its callers refuse a COPY on True — the protective direction. The close and
+    cleanup arms DISCARD a popped slot's tail on True, so they consult
+    ``session_deletion_confirmed``, which answers True only for a missing file
+    or a readable identity contradiction and routes everything unverifiable to
+    the retry/restore handling instead.
+    """
+    from kiro_crew.dashboard.chat_persistence import (
+        save_slot_off_loop,
+        session_deletion_confirmed,
+        session_was_deleted,
+    )
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot(NAME)
+    slot.append("user", "hello")
+    slot.drain()
+    assert await save_slot_off_loop(state, slot, force=True)
+
+    # File present, identity matching: no deletion by either probe.
+    assert session_deletion_confirmed(state, slot) is False
+
+    # An unreadable metadata line: the protective probe refuses the copy, the
+    # destructive probe declines to call it a deletion.
+    real_status = state.conversation_log.get_metadata_status
+    state.conversation_log.get_metadata_status = lambda _key: ({}, False)
+    try:
+        assert session_was_deleted(state, slot) is True
+        assert session_deletion_confirmed(state, slot) is False
+    finally:
+        state.conversation_log.get_metadata_status = real_status
+
+    # A readable-but-empty pair with the file STILL PRESENT stays ambiguous:
+    # the transcript demonstrably exists, so the retryable False.
+    real_status = state.conversation_log.get_metadata_status
+    state.conversation_log.get_metadata_status = lambda _key: ({}, True)
+    try:
+        assert session_deletion_confirmed(state, slot) is False
+    finally:
+        state.conversation_log.get_metadata_status = real_status
+
+    # A delete landing BETWEEN the stat and the metadata read leaves the same
+    # readable-but-empty pair; the probe re-stats and the now-missing file is
+    # the definitive witness. Answering False here restores a ghost slot over
+    # a deleted session — turns accepted, every save refused, lost on restart.
+    path = state.conversation_log._path(slot_history_key(slot))
+
+    def _delete_then_empty(_key):
+        path.unlink(missing_ok=True)
+        return {}, True
+
+    state.conversation_log.get_metadata_status = _delete_then_empty
+    try:
+        assert session_deletion_confirmed(state, slot) is True
+    finally:
+        state.conversation_log.get_metadata_status = real_status
+
+    # A missing file is the definitive witness for both.
+    assert session_deletion_confirmed(state, slot) is True
+
+
+def test_teardown_drain_basis_follows_the_transcript_not_the_key(tmp_path):
+    """The teardown watch reaches a drain only where its key names the drain's file.
+
+    An unbound original writes the key's own transcript — what a same-key
+    takeover resumes — so its drain keeps the watch. A linked original writes
+    elsewhere: an unbound replacement on the key touches nothing that drain
+    writes, and a moved watch handed to it would refuse a safe write and leave
+    the popped slot's rows unreachable. A published replacement that provably
+    shares the linked transcript is the one linked case that keeps it.
+    """
+    from kiro_crew.dashboard.slot_registry import TakeoverBasis
+
+    state = _state_with_slot(tmp_path)
+    slot = state._slots.pop(NAME)
+    basis = TakeoverBasis(NAME, 0)
+
+    # Unbound original: the key's transcript is the drain's file.
+    assert handlers._teardown_drain_basis(state, NAME, slot, basis) is basis
+
+    # Linked original, key free or divergently replaced: the watch stays home.
+    slot.linked_session_key = "slack:C123:456.789"
+    assert handlers._teardown_drain_basis(state, NAME, slot, basis) is None
+    divergent = state.get_or_create_slot(NAME)
+    assert divergent.linked_session_key == ""
+    assert handlers._teardown_drain_basis(state, NAME, slot, basis) is None
+
+    # A published replacement sharing the linked transcript keeps the ordering.
+    divergent.linked_session_key = "slack:C123:456.789"
+    assert handlers._teardown_drain_basis(state, NAME, slot, basis) is basis
+
+    # An UNPUBLISHED resume that declared the linked transcript as its read
+    # target keeps it too: the map cannot see a resume whose read is still
+    # pending, but its takeover note named the file this drain writes.
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+    from kiro_crew.dashboard.slot_registry import SlotRegistry
+
+    state._slots.pop(NAME)
+    open_basis = SlotRegistry.open_takeover_basis(state, NAME)
+    try:
+        SlotRegistry.note_same_key_takeover(state, NAME, transcript=slot_history_key(slot))
+        assert handlers._teardown_drain_basis(state, NAME, slot, open_basis) is open_basis
+    finally:
+        SlotRegistry.close_takeover_basis(state, open_basis)
+
+
+@pytest.mark.asyncio
+async def test_handover_drain_saves_the_tail_a_lost_truncation_rode_with(tmp_path):
+    """Rows appended after a failed inline rewrite survive a takeover hand-over.
+
+    A ``_pending_rewrite`` retry riding the hand-over drain makes the whole
+    write rewrite-shaped, so a takeover that moved the teardown watch would
+    refuse it — and the window's NEW rows would die with the popped object for
+    an arbitration only the truncation deserved to lose. The drain disarms the
+    lost truncation instead: the save runs default-shaped, the foreign-append
+    merge carries the on-disk rows the abandoned truncation would have
+    dropped, and the appended tail lands.
+    """
+    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+    from kiro_crew.dashboard.chat_utils import slot_transcript_key
+    from kiro_crew.dashboard.slot_registry import SlotRegistry
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot(NAME)
+    for i in range(4):
+        slot.append("user" if i % 2 == 0 else "assistant", f"ROW-{i}")
+    slot.drain()
+    assert await save_slot_off_loop(state, slot, force=True)
+
+    # A rewind that never committed, then more conversation on top of it.
+    slot.messages = list(slot.messages)[:2]
+    slot._pending_rewrite = True
+    slot.append("user", "TAIL-after-failed-rewrite")
+    slot.drain()
+    slot._dirty = True
+
+    # The teardown's watch, moved by a takeover before the drain runs.
+    basis = SlotRegistry.open_takeover_basis(state, NAME)
+    state._slots.pop(NAME)
+    state.get_or_create_slot(NAME)
+    try:
+        drained = await handlers._persist_handover_tail(state, NAME, slot, takeover_basis=basis)
+    finally:
+        SlotRegistry.close_takeover_basis(state, basis)
+
+    assert drained.rows_committed is True
+    contents = [
+        m["content"]
+        for m in state.conversation_log.read_messages_chained(slot_transcript_key(NAME))
+    ]
+    assert "TAIL-after-failed-rewrite" in contents, "the appended tail must land"
+    for i in range(4):
+        assert f"ROW-{i}" in contents, "the lost truncation must not drop on-disk rows"
+
+
+@pytest.mark.asyncio
+async def test_divergent_takeover_does_not_relabel_an_unrelated_archive_refusal(
+    tmp_path, monkeypatch
+) -> None:
+    """A non-takeover refusal beside a divergent takeover stays a failed close.
+
+    Two independent events coincide: the archive save refuses for its own
+    retryable reason (the stale-queue shape — the watch relevant to this
+    slot's transcript never moved), and an unbound recreate takes the key,
+    moving the RAW teardown watch. Testing the raw basis at the refusal
+    branch relabels that refusal a settled takeover and reports the close as
+    a success whose ``closed`` flag never landed — the dismissal silently
+    lost. The branch tests the DISCRIMINATED basis (``None`` for a divergent
+    takeover that never touched this slot's routed transcript), so the
+    refusal routes to the retry/failure arm and the close reports honestly.
+    """
+    state = _make_state(tmp_path)
+    linked = "cron:job7"
+    original = await _linked_slot_with_a_tail(state, linked)
+
+    real_save = handlers.save_slot_off_loop
+
+    async def _refusing_archive(st, slot, *a, **kw) -> bool:
+        if kw.get("closed"):
+            # A refusal that is NOT a takeover of this slot's transcript:
+            # nothing written, the watch this write answers to untouched.
+            return False
+        return await real_save(st, slot, *a, **kw)
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _refusing_archive)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    _arm_running_turn(original, entered, release)
+
+    close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
+    await _reached(entered, close, seam="the shielded task-cancel wait")
+    # The divergent takeover: an unbound recreate over the linked original.
+    # Publication moves the RAW teardown watch, while the original's routed
+    # transcript — the file the refused archive answers to — is untouched.
+    replacement = state.get_or_create_slot(NAME)
+    assert replacement is not original
+    assert not replacement.linked_session_key, "the replacement must be unbound for this case"
+    release.set()
+    resp = await close
+
+    assert resp.status == 500, (
+        "an unrelated archive refusal coinciding with a divergent takeover was "
+        "relabeled a settled takeover: the close reported success while the "
+        "dismissal never landed"
+    )
+    assert _json(resp)["code"] == "history_save_failed"
+    # The dismissal did NOT land, and the close said so — nothing claims it did.
+    meta = state.conversation_log.get_metadata(linked)
+    assert not meta.get("closed"), "a refused archive must not leave a closed flag"
+    # The hand-over arm still preserved the original's rows on its own transcript.
+    assert [m.get("content", "") for m in state.conversation_log.read_messages(linked)] == [
+        "PERSISTED-1",
+        "TAIL-2",
+    ], "the failed close dropped the original's tail"
+    assert state._slots.get(NAME) is replacement, "the replacement was clobbered by the close"
+
+
+@pytest.mark.asyncio
+async def test_a_delete_won_refusal_beside_a_takeover_does_not_resurrect_the_transcript(
+    tmp_path, monkeypatch
+) -> None:
+    """A permanent delete outranks a coinciding takeover at the archive refusal.
+
+    Two events land while the close's archive is in flight: a same-key
+    takeover moves the teardown watch, and the session is permanently
+    deleted. Testing the takeover branch first routes the refusal into the
+    hand-over drain, whose append-safe arm writes through
+    ``append_if_absent`` with no deletion guard — ``append`` recreates the
+    missing file with a fresh metadata line, silently un-deleting what the
+    user permanently removed. The deletion probe runs first: definitive
+    delete evidence takes the archive-skipped exit, nothing is written, and
+    the deleted transcript stays deleted.
+    """
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot(NAME)
+    for i in range(4):
+        slot.append("user" if i % 2 == 0 else "assistant", f"ROW-{i}")
+    slot.drain()
+    assert await handlers.save_slot_off_loop(state, slot, force=True)
+    # The hand-over shape whose drain takes the unguarded append-safe arm.
+    slot.messages = list(slot.messages)[:2]
+    slot._pending_rewrite = True
+    slot.append("user", "TAIL-after-failed-rewrite")
+    slot.drain()
+    slot._dirty = True
+
+    path = state.conversation_log._path(slot_history_key(slot))
+    assert path.exists()
+    real_save = handlers.save_slot_off_loop
+
+    async def _delete_and_takeover_then_refuse(st, target, *a, **kw) -> bool:
+        if kw.get("closed"):
+            # Both events land while the archive holds dispatch: the delete
+            # disposes of the transcript, and a same-key recreate publishes —
+            # its takeover note moves the open teardown watch.
+            st.conversation_log.delete_session(slot_history_key(target))
+            st._slots.pop(NAME, None)
+            st.get_or_create_slot(NAME)
+            return False
+        return await real_save(st, target, *a, **kw)
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _delete_and_takeover_then_refuse)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+    assert resp.status == 200, "a delete-won archive refusal is a completed close"
+    assert not path.exists(), (
+        "the close resurrected a permanently deleted transcript: the takeover "
+        "drain's append recreated the file the delete removed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_handover_append_arm_does_not_resurrect_a_deleted_transcript(tmp_path) -> None:
+    """The drain's append-safe arm carries its own delete witness, in-lock.
+
+    The archive path's deletion probe runs before the drain dispatches, but
+    two drain routes carry no probe at all (the shared-transcript pre-save
+    exit among them), and the append-safe arm writes outside
+    ``save_slot_off_loop`` — bypassing the save's delete-won guard — where
+    ``append`` recreates a missing transcript with a fresh metadata line. A
+    permanent delete landing before that arm's append must win: the witness
+    inside ``atomic_appends`` sees the missing file against the slot's
+    recorded identity, writes nothing, and reports the hand-over complete
+    (the delete disposed of the rows; nothing is owed).
+    """
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+    from kiro_crew.dashboard.slot_registry import SlotRegistry
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot(NAME)
+    for i in range(4):
+        slot.append("user" if i % 2 == 0 else "assistant", f"ROW-{i}")
+    slot.drain()
+    assert await handlers.save_slot_off_loop(state, slot, force=True)
+    # The hand-over shape whose drain takes the append-safe arm.
+    slot.messages = list(slot.messages)[:2]
+    slot._pending_rewrite = True
+    slot.append("user", "TAIL-after-failed-rewrite")
+    slot.drain()
+    slot._dirty = True
+
+    history_key = slot_history_key(slot)
+    path = state.conversation_log._path(history_key)
+
+    # The probe-less route: a takeover moved the watch, and the permanent
+    # delete landed after any caller-side probe could have run.
+    basis = SlotRegistry.open_takeover_basis(state, NAME)
+    state._slots.pop(NAME)
+    state.get_or_create_slot(NAME)
+    state.conversation_log.delete_session(history_key)
+    assert not path.exists()
+    try:
+        drained = await handlers._persist_handover_tail(state, NAME, slot, takeover_basis=basis)
+    finally:
+        SlotRegistry.close_takeover_basis(state, basis)
+
+    assert not path.exists(), (
+        "the append-safe arm resurrected a permanently deleted transcript: "
+        "its append recreated the file the delete removed"
+    )
+    assert drained.rows_committed is True, (
+        "a delete-won hand-over owes nothing and must not be reported as a "
+        "lost tail: the delete disposed of the transcript, rows included"
+    )

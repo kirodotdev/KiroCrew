@@ -356,6 +356,39 @@ async def test_destructive_history_endpoints_refuse_a_paused_boundary(state, pat
 
 
 @pytest.mark.asyncio
+async def test_switch_variant_restores_the_row_when_the_save_is_refused(state) -> None:
+    """A refused switch puts the pre-switch row back before answering 409.
+
+    The switch mutates the live row before its durable write, and a refusal
+    leaves that window unpersisted but not inert: a popped slot's teardown
+    drain re-serializes it onto the transcript a takeover holds, and a live
+    slot's periodic flush persists it unguarded — either would land a variant
+    the 409 reported withdrawn.
+    """
+    slot = state.get_or_create_slot("s1")
+    slot.append("assistant", "the original answer")
+    row = slot.messages[-1]
+    row["ts"] = "2026-09-21T10:00:00Z"
+    row["variants"] = [
+        {"content": "the original answer", "ts": "2026-09-21T10:00:00Z"},
+        {"content": "a different take", "ts": "2026-09-21T10:00:05Z"},
+    ]
+
+    with patch(
+        "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+        AsyncMock(return_value=False),
+    ):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 1})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "switch_variant_save_refused"
+    assert row["content"] == "the original answer"
+    assert row["ts"] == "2026-09-21T10:00:00Z"
+    assert "variant_idx" not in row, "an absent pre-switch index is restored as absence"
+    assert row["variants"][1]["content"] == "a different take", "variants stay selectable"
+
+
+@pytest.mark.asyncio
 async def test_switch_variant_broadcasts_redacted_content(state) -> None:
     """The broadcast leaves the process, so the chosen variant is redacted."""
     slot = state.get_or_create_slot("s1")
@@ -1880,19 +1913,26 @@ async def test_edit_resend_refuses_the_commit_when_the_slot_is_replaced(state) -
     slot.append("assistant", "answer")
     slot.drain()
     original_messages = list(slot.messages)
+    # Same name, different object -- as a close-and-recreate produces. Built
+    # up front on the loop; the save stub below only swaps the map entry, so
+    # no slot construction runs on the executor thread.
+    replacement = state.get_or_create_slot("s2")
 
-    async def _replacing_discard(key, **kwargs):
-        # Same name, different object -- as a close-and-recreate produces.
-        state._slots["s1"] = state.get_or_create_slot("s2")
+    def _replacing_save(*args, **kwargs):
+        # The swap lands while the durable write is in flight: after the
+        # helper's dispatch verify (which would refuse a replacement that is
+        # already published) and before the commit adoption, which is exactly
+        # the window the commit-target re-check owns.
+        state._slots["s1"] = replacement
         return True
 
-    state.sessions.discard_conversation = AsyncMock(side_effect=_replacing_discard)
+    state.sessions.discard_conversation = AsyncMock(return_value=True)
     run = AsyncMock()
 
     with (
         patch(
             "kiro_crew.dashboard.chat_persistence._save_slot_to_history",
-            MagicMock(return_value=True),
+            MagicMock(side_effect=_replacing_save),
         ),
         patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=run),
     ):

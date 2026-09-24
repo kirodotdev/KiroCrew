@@ -108,9 +108,10 @@ async def test_nudge_expiring_during_the_persist_cannot_resurrect(tmp_path, monk
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def _persist(*_a, **_kw) -> None:
+    async def _persist(*_a, **_kw) -> bool:
         entered.set()
         await release.wait()
+        return True
 
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
@@ -156,9 +157,10 @@ async def test_loop_is_retired_before_the_persist_begins(tmp_path, monkeypatch) 
         assert slot.is_closing is True
         return await original_retire(slot_key)
 
-    async def _persist(*_a, **_kw) -> None:
+    async def _persist(*_a, **_kw) -> bool:
         order.append("persist")
         assert slot.is_closing is True
+        return True
 
     monkeypatch.setattr(handlers, "_retire_slot_nudge_loop", _retire)
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
@@ -394,8 +396,9 @@ async def test_an_app_that_cannot_be_told_aborts_the_close(tmp_path, monkeypatch
 
     saved: list[bool] = []
 
-    async def _persist(*_a, **kw) -> None:
+    async def _persist(*_a, **kw) -> bool:
         saved.append(bool(kw.get("closed")))
+        return True
 
     async def _hook_fails(_app: str, _slot_key: str) -> bool:
         return False

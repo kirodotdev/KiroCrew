@@ -66,7 +66,12 @@ from kiro_crew.dashboard.slot_queue_repository import (
     durable_queue_view,
     queue_persist_signature,
 )
-from kiro_crew.dashboard.slot_registry import SlotRegistry
+from kiro_crew.dashboard.slot_registry import (
+    SlotRegistry,
+    TakeoverBasis,
+    TakeoverWatch,
+    TruncationClaim,
+)
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
 from kiro_crew.deny_guidance import remediation_for
@@ -4887,6 +4892,27 @@ class DashboardState:
         # ``len(_slots)`` alone undercounts by however many imports are in flight,
         # and each concurrent import would then be waved past a full-slot cap.
         self._slots_under_construction: set[str] = set()
+        # Truncating-save claims, keyed by slot map key (see
+        # ``TruncationClaim``). Written from the save's worker thread and from
+        # the event loop's publication/resume paths, so transitions go through
+        # ``_truncation_claim_mutex`` — the GIL does not make the
+        # check-then-set arbitration atomic. The mutex guards in-memory
+        # transitions only and is never held across I/O, so neither side ever
+        # waits on it for more than a dict operation.
+        self._truncation_claims: dict[str, list[TruncationClaim]] = {}
+        # Refcounted takeover watches, keyed by slot map key (see
+        # ``TakeoverBasis``). An entry exists only while a truncating save is
+        # in dispatch or in flight for its key — the dispatcher opens it at
+        # its last synchronous instant and closes it once the save's outcome
+        # is in hand — so the table is bounded by in-flight saves, not by the
+        # keys the process has published. Written from save worker threads and
+        # from the event loop's publication/resume paths, so every transition
+        # goes through ``_truncation_claim_mutex`` — the GIL does not make the
+        # check-then-set arbitration atomic. The mutex guards in-memory
+        # transitions only and is never held across I/O, so neither side ever
+        # waits on it for more than a dict operation.
+        self._takeover_watches: dict[str, TakeoverWatch] = {}
+        self._truncation_claim_mutex = threading.Lock()
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
         #
@@ -6143,8 +6169,8 @@ class DashboardState:
     async def _flush_loop(self) -> None:
         await _persistence_for(self)._flush_loop(self)
 
-    def flush_slot_now(self, slot: _ChatSlot) -> None:
-        _persistence_for(self).flush_slot_now(self, slot)
+    def flush_slot_now(self, slot: _ChatSlot, takeover_basis: TakeoverBasis | None = None) -> None:
+        _persistence_for(self).flush_slot_now(self, slot, takeover_basis=takeover_basis)
 
     def _flush_dirty_slots(self) -> None:
         _persistence_for(self)._flush_dirty_slots(self)

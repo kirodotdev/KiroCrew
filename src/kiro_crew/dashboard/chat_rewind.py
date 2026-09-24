@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
+from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -709,61 +710,84 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # worker's real outcome and complete the matching commit (and let
             # the reserved dispatch task run the edited prompt) before
             # propagating the cancellation.
-            save_task = asyncio.ensure_future(
-                asyncio.to_thread(
-                    _save_slot_to_history,
-                    state,
-                    slot,
-                    msgs_snapshot,
-                    expected_history_key=expected_history_key,
-                    expected_disk_older_count=pre_await_disk_older_count,
-                )
-            )
+            # ── Dispatch verify + takeover watch ────────────────────────
+            # The awaits above (nudge retirement, turn cancellation) free the
+            # event loop between this rewind's authorization and its durable
+            # write, so a same-key close-and-recreate can fully land in the
+            # gap — including a resume whose takeover note fires before this
+            # save has any claim or watch to observe it. Its pop IS
+            # observable: the slot not being the live occupant of its key at
+            # dispatch means the key changed hands, and the truncation has no
+            # future — the same recreate-won refusal the commit-boundary
+            # recheck delivers, one hop earlier. The watch opens first, so a
+            # takeover arriving after this verify moves the count past the
+            # basis and the claim is born overtaken; the map recheck inside
+            # the save (``expected_slot_name``) covers replacements published
+            # while the write waits on the lock.
+            takeover_basis = SlotRegistry.open_takeover_basis(state, slot.key)
             try:
-                saved = await asyncio.shield(save_task)
-            except asyncio.CancelledError:
-                landed = False
-                try:
-                    landed = bool(await save_task)
-                except Exception:
-                    landed = False
-                if landed and slot_history_key(slot) == expected_history_key:
-                    _commit_live_state()
-                    dispatch_commit = True
-                    logger.info(
-                        "rewind: request cancelled after the rewrite landed for %s; "
-                        "committed live state and dispatching the edited prompt",
-                        slot.key,
-                    )
+                if state._slots.get(slot.key) is not slot:
+                    saved = False
                 else:
-                    # The native context is already gone and nothing was
-                    # committed against it: either the rewrite did not land, or
-                    # it landed on a slot that moved. This is the same
-                    # destroyed-without-a-commit outcome as the 503 paths below,
-                    # and it is the one exit where the client is not even told --
-                    # the cancellation propagates instead of a response, so the
-                    # SEL record is the ONLY place it can be attributed from.
-                    _sel_native_destroyed("request_cancelled")
-                raise
-            except Exception:
-                logger.warning("rewind: failed to persist truncated history", exc_info=True)
-                _sel_native_destroyed("history_save_exception")
-                state.push_slots_update()
-                return web.json_response(
-                    {
-                        "error": "could not save edited conversation; retry the edit",
-                        "code": "rewind_save_failed",
-                    },
-                    status=503,
-                )
+                    save_task = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            _save_slot_to_history,
+                            state,
+                            slot,
+                            msgs_snapshot,
+                            expected_history_key=expected_history_key,
+                            expected_disk_older_count=pre_await_disk_older_count,
+                            expected_slot_name=slot.key,
+                            takeover_basis=takeover_basis,
+                        )
+                    )
+                try:
+                    saved = await asyncio.shield(save_task)
+                except asyncio.CancelledError:
+                    landed = False
+                    try:
+                        landed = bool(await save_task)
+                    except Exception:
+                        landed = False
+                    if landed and slot_history_key(slot) == expected_history_key:
+                        _commit_live_state()
+                        dispatch_commit = True
+                        logger.info(
+                            "rewind: request cancelled after the rewrite landed for %s; "
+                            "committed live state and dispatching the edited prompt",
+                            slot.key,
+                        )
+                    else:
+                        # The native context is already gone and nothing was
+                        # committed against it: either the rewrite did not land, or
+                        # it landed on a slot that moved. This is the same
+                        # destroyed-without-a-commit outcome as the 503 paths below,
+                        # and it is the one exit where the client is not even told --
+                        # the cancellation propagates instead of a response, so the
+                        # SEL record is the ONLY place it can be attributed from.
+                        _sel_native_destroyed("request_cancelled")
+                    raise
+                except Exception:
+                    logger.warning("rewind: failed to persist truncated history", exc_info=True)
+                    _sel_native_destroyed("history_save_exception")
+                    state.push_slots_update()
+                    return web.json_response(
+                        {
+                            "error": "could not save edited conversation; retry the edit",
+                            "code": "rewind_save_failed",
+                        },
+                        status=503,
+                    )
+            finally:
+                SlotRegistry.close_takeover_basis(state, takeover_basis)
             if not saved:
                 # The save's own guards refused the write (the session was
-                # permanently deleted, or the slot was rebound to another
-                # transcript, while the write awaited its lock). Nothing was
-                # persisted, so reporting success here would dispatch a turn
-                # from state that exists only in memory.
+                # permanently deleted, the slot was rebound to another
+                # transcript, or a same-name replacement took over the key).
+                # Nothing was persisted, so reporting success here would
+                # dispatch a turn from state that exists only in memory.
                 logger.warning(
-                    "rewind: history save refused for %s (concurrent delete or rebind)",
+                    "rewind: history save refused for %s (concurrent delete, rebind, or recreate)",
                     slot.key,
                 )
                 _sel_native_destroyed("history_save_refused")
