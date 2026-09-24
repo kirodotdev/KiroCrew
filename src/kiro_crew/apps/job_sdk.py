@@ -10,9 +10,10 @@ kept going, and the UI then reported the task as stopped. See
 Five design points are load-bearing rather than incidental.
 
 **P1 records that a run EXISTS, how it ended, and whether work was OBSERVED --
-nothing it produced.** There is no ``params`` a caller passes in, and no
-``result`` payload a runner reports out. A run's record holds its identity, its
-lifecycle, whether the runner reached a checkpoint, and, if it failed, one error
+nothing it produced.** A caller may NAME the work with ``params``, a flat map of
+bounded strings the runner reads back off its handle, but no ``result`` payload a
+runner reports out. A run's record holds its identity, its lifecycle, its
+parameters, whether the runner reached a checkpoint, and, if it failed, one error
 string. The checkpoint is a progress OBSERVATION, not a progress PAYLOAD: it
 records the boolean fact "this runner reached a point of work" (see
 ``JobHandle.checkpoint``), which is SDK-minted and needs no sanitizing, and it is
@@ -107,7 +108,8 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -222,12 +224,23 @@ _RUN_ID_LEN = 32
 _CLEANUP_JOIN_SECS = 5.0
 
 #: Upper bound on a record file the disable scan will open. A ``JobRun`` is a
-#: small flat JSON document (its one free-text field is clipped at ingest), so
+#: small flat JSON document (its free-text fields are bounded at ingest), so
 #: a megabyte is generous headroom; anything larger in the runs directory is
 #: not a record this SDK wrote and is refused unopened -- the scan's reads walk
 #: agent-writable filenames, and the bound is what keeps a planted giant file
 #: (or a device node reached some other way) from stalling disable.
 _MAX_RECORD_BYTES = 1 << 20
+
+#: Bounds on one run's parameter map, applied where the caller's map enters.
+#: Parameters NAME the work -- an account, a target, a mode -- so the map is
+#: small by construction: at most this many entries, and a key or value longer
+#: than the lengths below is REFUSED rather than shortened to fit. The whole map
+#: therefore cannot exceed roughly nine kilobytes, well inside
+#: ``_MAX_RECORD_BYTES``, so no caller can grow a record past the size the
+#: disable scan refuses to open.
+_MAX_PARAMS = 16
+_MAX_PARAM_KEY = 64
+_MAX_PARAM_VALUE = 512
 
 _RUNS_DIRNAME = "jobs"
 
@@ -269,7 +282,12 @@ def _now() -> str:
 
 
 def _redact(text: str) -> str:
-    """Scrub the ONE runner-produced string a record carries: its error.
+    """Scrub a string a record will carry, and answer what a clean one looks like.
+
+    Two callers, two uses. A runner's error is scrubbed with it, because the error
+    still has to be readable afterwards. A caller's param is only COMPARED against
+    it: a value it would change is refused instead, so nothing the caller wrote is
+    quietly replaced.
 
     A failing runner's exception text can quote back a command line carrying a
     credential, so the same chain the app route boundaries apply runs here, at
@@ -283,6 +301,66 @@ def _redact(text: str) -> str:
     except Exception:  # noqa: BLE001 - redaction must never mask the error itself
         logger.debug("job text redaction failed", exc_info=True)
         return text
+
+
+def _validated_params(params: Mapping[str, str] | None) -> dict[str, str]:
+    """A caller's run parameters as a flat, bounded map of strings.
+
+    THE ONE PLACE a caller's parameters enter. Everything the rest of the module
+    assumes about them is established here, which is what keeps the record's
+    "JSON-safe by construction" promise a property of the type rather than a rule
+    the writer has to re-check: depth one, string keys, string values, a bounded
+    count and bounded lengths.
+
+    It REFUSES a wrong shape instead of coercing one, because each coercion it
+    could perform is a wrong answer somewhere later. A key that is not a string
+    round-trips through JSON as a DIFFERENT key, so a runner reading ``5`` back
+    would miss the value stored under ``"5"``. A value that is not a string has no
+    single right spelling -- ``True`` and ``"True"`` and ``"true"`` are three
+    answers -- so the caller picks it, not this function. And a map that is merely
+    clipped to the bound would hand the runner a silently incomplete set of
+    parameters, which is worse than the call failing at the site that wrote it.
+
+    Nothing here is rewritten, values included. A key is a name the app author
+    writes in two places -- the ``start`` call and the runner reading it back --
+    so rewriting it would break that lookup while looking like nothing happened.
+    A value is data, and this channel is NOT a way to hand a runner a secret: the
+    record is durable, so a credential-shaped value is REFUSED here, before
+    either the handle or the record holds it. Refusing rather than scrubbing is
+    what keeps this function's one rule whole -- every wrong input fails at the
+    site that wrote it -- and it keeps the value the runner reads, the value on
+    disk and the value the caller passed the same string. Scrubbing instead would
+    carve out values as the single thing quietly changed, and hand the runner a
+    string its caller never wrote with nothing raised anywhere.
+    """
+    if params is None:
+        return {}
+    if not isinstance(params, Mapping):
+        raise TypeError(f"job params must be a mapping, not {type(params).__name__}")
+    if len(params) > _MAX_PARAMS:
+        raise ValueError(f"a job takes at most {_MAX_PARAMS} params, got {len(params)}")
+    out: dict[str, str] = {}
+    for key, value in params.items():
+        if not isinstance(key, str):
+            raise TypeError(f"job param names must be strings, not {type(key).__name__}")
+        if not key:
+            raise ValueError("a job param name must not be empty")
+        if len(key) > _MAX_PARAM_KEY:
+            raise ValueError(
+                f"job param name {key[:_MAX_PARAM_KEY]!r} is longer than "
+                f"{_MAX_PARAM_KEY} characters"
+            )
+        if not isinstance(value, str):
+            raise TypeError(f"job param {key!r} must be a string, not {type(value).__name__}")
+        if len(value) > _MAX_PARAM_VALUE:
+            raise ValueError(f"job param {key!r} is longer than {_MAX_PARAM_VALUE} characters")
+        if _redact(value) != value:
+            raise ValueError(
+                f"job param {key!r} looks like a credential, and params are not a way "
+                "to hand a runner a secret"
+            )
+        out[key] = value
+    return out
 
 
 def _interrupt_error(cause: str, interrupted_from: str, kind: str) -> str:
@@ -657,9 +735,15 @@ def _lazy_call_shape(fn: Any) -> str:
 class JobRun:
     """One run's durable record. Serialized whole; never partially updated.
 
-    ``error`` is the ONLY field a runner supplies. Everything else is minted by
-    the SDK, which is what makes the sanitize rule one line rather than a list
-    somebody has to remember to extend.
+    ``error`` is the ONLY field a RUNNER supplies, which is what makes the
+    writer's sanitize rule one line rather than a list somebody has to remember
+    to extend. Two fields come from the CALLER instead, ``dedupe_key`` and
+    ``params``. ``params`` is the one that carries a runtime check:
+    ``_validated_params`` admits only string keys and string values, within
+    bounds, so the map is JSON-safe by construction. ``dedupe_key`` rests on its
+    type annotation alone -- it reaches the record as the caller passed it.
+    Everything else the SDK mints itself, and ``from_dict`` is what holds the
+    line on a record read back off disk.
     """
 
     run_id: str
@@ -669,6 +753,17 @@ class JobRun:
     origin: str = ""
     pid: int = 0
     dedupe_key: str = ""
+    #: What the caller named this run's work with: a flat map of strings, at most
+    #: ``_MAX_PARAMS`` of them, bounded and checked by ``_validated_params``
+    #: where the caller's map enters. A runner reads it back off its handle, so
+    #: the record is also what a resume reads: the two are the same strings.
+    #:
+    #: Caller-supplied, and still JSON-safe by construction -- which is the whole
+    #: reason the shape is a depth-one map of strings rather than anything a
+    #: caller hands over. Withheld from the served view for the same reason
+    #: ``dedupe_key`` is: a caller chooses these strings, and the browser is not
+    #: the party that chose them.
+    params: dict[str, str] = field(default_factory=dict)
     cancellable: bool = False
     created_at: str = ""
     updated_at: str = ""
@@ -729,6 +824,14 @@ class JobRun:
         foreign data enters, and a value that cannot be coerced falls back to the
         field's default. Every consumer downstream then gets the type it is
         written against, instead of each one needing its own defence.
+
+        ``params`` is the one field holding a map, and it is read back the same
+        way: entries that are not string-to-string, or that break the bounds
+        ``_validated_params`` writes them under, are DROPPED and the rest of the
+        record survives -- one unusable entry costing the whole app's run history
+        is exactly what this method exists to prevent. Dropped rather than
+        clipped: a clipped name is a DIFFERENT name, so two long names sharing a
+        prefix would land on one entry and a runner would read the wrong value.
         """
         if not isinstance(data, dict):
             raise ValueError(f"job record is {type(data).__name__}, not an object")
@@ -746,6 +849,43 @@ class JobRun:
             elif want == "int":
                 if isinstance(value, int) and not isinstance(value, bool):
                     kwargs[name] = value
+            elif want == "dict[str, str]":
+                if isinstance(value, dict):
+                    # Filter, THEN cut to the bound: cutting first lets a broken
+                    # entry near the front spend a slot, so a record carrying the
+                    # bound's worth of valid entries behind it comes back one
+                    # short -- and the reconciliation rewrite makes that loss
+                    # durable. The bound is a limit on what SURVIVES.
+                    kept = [
+                        (k, v)
+                        for k, v in value.items()
+                        if isinstance(k, str)
+                        and isinstance(v, str)
+                        and 0 < len(k) <= _MAX_PARAM_KEY
+                        and len(v) <= _MAX_PARAM_VALUE
+                    ]
+                    # The cut below drops the tail of an over-count record, and
+                    # the reconciliation rewrite makes that loss permanent, so
+                    # the overflow is counted out loud rather than dropped in
+                    # silence. ``_validated_params`` refuses a map this large, so
+                    # reaching this branch means something other than this SDK
+                    # wrote the file -- which is the fact worth a line in the log.
+                    #
+                    # That same fact is why the id naming the record is redacted,
+                    # clamped and repr-quoted the way the kill trace does it: the
+                    # writer is foreign, the value is straight off disk, and this
+                    # line is durable and served to an operator, so a raw value
+                    # could carry a newline and forge whole log lines after it.
+                    if len(kept) > _MAX_PARAMS:
+                        logger.warning(
+                            "job record %r: %s holds %d entries over the bound of %d; "
+                            "dropping the excess",
+                            _redact(str(data.get("run_id", "?")))[:_RUN_ID_LEN],
+                            name,
+                            len(kept) - _MAX_PARAMS,
+                            _MAX_PARAMS,
+                        )
+                    kwargs[name] = dict(kept[:_MAX_PARAMS])
             elif isinstance(value, str):
                 kwargs[name] = value
         kwargs.setdefault("run_id", "")
@@ -817,6 +957,23 @@ class JobHandle:
     def status(self) -> str:
         return self._run.status
 
+    @property
+    def params(self) -> dict[str, str]:
+        """What the caller named this run's work with, already checked at the start
+        call and carried through unchanged.
+
+        A fresh COPY on each read, not the record's own map. The record has a
+        single writer, and handing the runner the live mapping would let it change
+        a field that writer is about to serialize -- a second writer through the
+        back door. The copy also makes "the runner edited its parameters" a purely
+        local act, which is the honest answer: parameters are what the run was
+        STARTED with, and nothing later moves them.
+
+        Empty when the caller named none, so a runner that needs one asks for it
+        and handles absence like any other mapping.
+        """
+        return dict(self._run.params)
+
     def checkpoint(self) -> None:
         """Report that the runner reached a point of real progress, and stop here
         if a cancel is pending.
@@ -866,9 +1023,10 @@ class JobHandle:
         return self._reached_checkpoint
 
 
-#: A runner receives its handle and nothing else. P1 has no parameter channel:
-#: caller-supplied ``params`` was the other half of what made a record hold
-#: arbitrary nested data, and it returns in P2 with the payload channels.
+#: A runner receives its handle and nothing else -- its parameters included, read
+#: off ``JobHandle.params`` rather than through a second argument. One argument
+#: keeps every registered runner's signature identical whether or not its caller
+#: names any parameters, so a caller that starts passing them re-types nothing.
 JobFn = Callable[["JobHandle"], Any]
 
 
@@ -1108,6 +1266,12 @@ class JobSDK:
         # that is the point: the earlier backstop scrubbed a hand-written LIST
         # (step, error, lines, params, result), and four rounds each found a
         # different member missing. A funnel with one input cannot.
+        #
+        # A caller's ``params`` is not a second input here: ``_validated_params``
+        # refuses anything else at the single call that accepts it, so a record
+        # reaching this writer already carries strings within bounds that the
+        # scrub would not change, and re-running it here would only be a second
+        # place to keep one rule.
         run.error = _redact(run.error)[:2000]
         with self._lock:
             if handle is not None and handle.discarded.is_set():
@@ -1186,7 +1350,13 @@ class JobSDK:
 
     # ── Start ──
 
-    def start(self, kind: str, *, dedupe_key: str = "") -> str:
+    def start(
+        self,
+        kind: str,
+        *,
+        dedupe_key: str = "",
+        params: Mapping[str, str] | None = None,
+    ) -> str:
         """Start a run of ``kind`` and return its run id.
 
         With a ``dedupe_key``, a second start while a run of the same kind and
@@ -1194,10 +1364,19 @@ class JobSDK:
         which is what stops a double click, or two tabs, from doing the paid
         work twice.
 
-        There is no ``params`` in P1: a runner takes its handle and nothing
-        else. Caller-supplied arguments are structured data that has to be
-        sanitized before it can be written or served, and that channel returns
-        in P2 together with the progress and result channels.
+        ``params`` NAMES the work for the runner, which reads it back off
+        ``handle.params``: a flat map of strings, a handful at most, each one
+        bounded. It is checked HERE, at the one place a caller's map enters, so
+        the strings the runner reads and the strings the record holds are the
+        same. A wrong shape is REFUSED rather than trimmed to fit, because a
+        runner handed a silently incomplete set of parameters does the wrong work
+        confidently. It is not a way to pass a runner a secret: the record is
+        durable, so a credential-shaped value is refused too.
+
+        Parameters do NOT merge on adoption. A second start that adopts an
+        in-flight run gets that run back untouched, so the parameters in force
+        stay the FIRST caller's -- the adopted run is already executing with them,
+        and rewriting a running run's record would need a second writer.
 
         Synchronous, and safe on the event loop: the only blocking work is one
         small ``atomic_write``. Unlike ``CronSDK``'s mutators there is no
@@ -1205,6 +1384,7 @@ class JobSDK:
         on-loop caller. :meth:`start_async` exists for callers who would rather
         not touch the disk from the loop thread at all.
         """
+        checked_params = _validated_params(params)
         with self._lock:
             runner = self._runners.get(kind)
         if runner is None:
@@ -1224,6 +1404,7 @@ class JobSDK:
             origin=_ORIGIN,
             pid=os.getpid(),
             dedupe_key=dedupe_key,
+            params=checked_params,
             cancellable=runner.cancellable,
             created_at=_now(),
         )
@@ -1334,10 +1515,16 @@ class JobSDK:
         self._audit("job_start", run.run_id, "ok")
         return run.run_id
 
-    async def start_async(self, kind: str, *, dedupe_key: str = "") -> str:
+    async def start_async(
+        self,
+        kind: str,
+        *,
+        dedupe_key: str = "",
+        params: Mapping[str, str] | None = None,
+    ) -> str:
         """Loop-native :meth:`start` — the initial record write is offloaded so
         an on-loop caller never touches the disk on the loop thread."""
-        return await asyncio.to_thread(self.start, kind, dedupe_key=dedupe_key)
+        return await asyncio.to_thread(self.start, kind, dedupe_key=dedupe_key, params=params)
 
     def _execute(self, run: JobRun, runner: _Runner, handle: JobHandle) -> None:
         """The worker body. Sole writer of this run's record from here on.

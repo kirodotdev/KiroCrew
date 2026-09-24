@@ -333,6 +333,46 @@ async def test_work_observed_reaches_the_client(
 
 
 @pytest.mark.asyncio
+async def test_the_callers_own_strings_are_withheld_from_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``dedupe_key`` and ``params`` are the app's business, not the run's state.
+
+    An app names a run's work for its own runner, and the browser is not the
+    party that chose those strings. Serving them would publish an account id, a
+    target or a scope the client never supplied and cannot act on, so the view
+    withholds them the way it withholds the host facts -- and it is served over
+    an endpoint a client reaches, which is why a test pins it rather than a
+    docstring claiming it.
+    """
+    from kiro_crew.apps.job_sdk import DONE, JobRun
+
+    _setup_guards(tmp_path, monkeypatch)
+    run_id = "8e" * 16
+    run = JobRun(
+        run_id=run_id,
+        app=sdk.app_name,
+        kind="named",
+        status=DONE,
+        dedupe_key="123456789012",
+    )
+    run.params = {"account": "123456789012", "mode": "full"}
+    sdk.store.write(run)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"{_base()}/{run_id}")
+        assert resp.status == 200
+        served = (await resp.json())["run"]
+    assert "params" not in served
+    assert "dedupe_key" not in served
+    assert "origin" not in served
+    assert "pid" not in served
+    # Nothing the app chose is reachable by value either, under any key.
+    assert "123456789012" not in json.dumps(served)
+    assert served["status"] == DONE
+
+
+@pytest.mark.asyncio
 async def test_unknown_kind_error_is_scrubbed_before_it_is_reflected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
 ) -> None:
