@@ -22,11 +22,18 @@ The public names are re-exported LAZILY (:pep:`562`): importing the package, or
 one of its submodules such as ``emit``, does not pull in ``store``, ``schema`` or
 ``lease``. Those load on first attribute access -- when a call actually reaches
 storage -- so the flag-off gateway boot path pays for none of it.
+
+A re-exported name lives in exactly one place, the submodule that defines it.
+Reading it through this package reads that submodule, and writing it through this
+package writes that submodule, so the two spellings of a name cannot hold
+different values.
 """
 
 from __future__ import annotations
 
 import importlib
+import sys
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 #: Public name -> submodule that defines it. Attribute access loads the submodule
@@ -103,20 +110,63 @@ _EXPORTS: dict[str, str] = {
 
 __all__ = sorted(_EXPORTS)
 
+#: Submodule name -> the imported module, filled on first use. This caches the
+#: IMPORT and never the value: a re-exported name is read from its owner on every
+#: access, which is what keeps the owner the only place the value lives.
+_OWNERS: dict[str, ModuleType] = {}
+
+
+def _owner(name: str) -> ModuleType:
+    """Return the submodule that defines ``name``, importing it on first use."""
+    module = _EXPORTS[name]
+    owner = _OWNERS.get(module)
+    if owner is None:
+        owner = _OWNERS[module] = importlib.import_module(f"{__name__}.{module}")
+    return owner
+
 
 def __getattr__(name: str) -> Any:
-    """Resolve a public name by importing its submodule on first access (:pep:`562`)."""
-    module = _EXPORTS.get(name)
-    if module is None:
+    """Read a public name from the submodule that owns it (:pep:`562`)."""
+    if name not in _EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    submodule = importlib.import_module(f"{__name__}.{module}")
-    value = getattr(submodule, name)
-    globals()[name] = value  # cache so the next access skips the lookup
-    return value
+    return getattr(_owner(name), name)
 
 
 def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_EXPORTS))
+
+
+class _ReExportModule(ModuleType):
+    """Send a write to a re-exported name to the submodule that owns it.
+
+    Binding the name in this package's own namespace instead would shadow the
+    owner permanently, because ``__getattr__`` runs only for a name the package
+    does not already hold: the shadow would win every later read, and the owner's
+    value would become unreachable through this package.
+
+    That makes such a write undoable, which matters for the restore-by-reassign
+    protocol a test harness uses (``pytest``'s ``monkeypatch`` reads the attribute
+    to remember it, then assigns the remembered value back). Against a shadowing
+    write, the value it reads is whatever the owner holds AT THAT MOMENT -- so a
+    harness that patches the owner first remembers the patched value, and its
+    restore installs that value in the package for the life of the process.
+    Forwarding the write leaves one value to remember and one to put back.
+    """
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _EXPORTS:
+            setattr(_owner(name), name, value)
+        else:
+            super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _EXPORTS:
+            delattr(_owner(name), name)
+        else:
+            super().__delattr__(name)
+
+
+sys.modules[__name__].__class__ = _ReExportModule
 
 
 if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
