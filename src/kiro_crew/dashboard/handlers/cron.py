@@ -2060,7 +2060,10 @@ def _read_script_source_sync(
         # resolver would crash on it. Refuse, same code as any bad path.
         return None, ("script path refused", "script_path_refused")
     try:
-        file_path, func_name = resolve_script_path(script_spec)
+        # A PERSISTED spec off crons.json, so an app cron's bundle path must
+        # resolve here; the nolink read below stays pinned to crons/, so a
+        # bundle script yields a typed refusal rather than bundle bytes.
+        file_path, func_name = resolve_script_path(script_spec, allow_bundle_roots=True)
     except FileNotFoundError:
         return None, ("script file not found", "script_not_found")
     except Exception:

@@ -298,6 +298,38 @@ class TestLoopSafetyGuard:
         assert sdk.list_jobs()[0].message == "m"
 
     @pytest.mark.asyncio
+    async def test_the_on_loop_refusal_precedes_the_blocking_vet(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The refusal must be the CHEAP answer, so no disk work may precede it.
+
+        The sibling test above passes whether the refusal lands before or after
+        vetting, because it only observes the exception -- so it cannot see this.
+        `_vet_command_script` is blocking: it stats the script, reads its body for
+        the content scan, and on an SDK instance's first call walks the builtin
+        manifest sources for the bundle root. Doing any of that on the loop before
+        producing a refusal defeats the point of failing fast, which is why the
+        refusal is asserted at the sync entry point rather than only at the
+        mutator it eventually reaches.
+        """
+        svc = await CronService.create(base_dir=tmp_path)
+        sdk = CronSDK("app1", svc)
+
+        reached = {"vet": False}
+
+        def _vet(*_a, **_k):
+            reached["vet"] = True
+            raise AssertionError("the vet must not run on the event loop")
+
+        monkeypatch.setattr(sdk, "_vet_command_script", _vet)
+
+        with pytest.raises(CronSyncOnLoopError) as ei:
+            sdk.add_job("j2", "m", every_secs=3600, script="whatever.py:run")
+
+        assert reached["vet"] is False
+        assert "add_job_async" in str(ei.value)
+
+    @pytest.mark.asyncio
     async def test_sync_remove_all_refuses_on_running_loop_without_mutating(
         self, tmp_path: Path
     ) -> None:

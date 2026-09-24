@@ -22,7 +22,7 @@ import zipfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urlparse, urlunparse
 
 from kiro_crew import platform_compat
@@ -1505,6 +1505,34 @@ def load_app_cron_defs(app_name: str) -> list[dict[str, Any]]:
     return defs
 
 
+def _resolve_and_vet_app_script(
+    script: str,
+    app_root: Path,
+    vet_script_file: Callable[[str], str | None],
+) -> tuple[str, str, str | None]:
+    """Resolve an app cron's script against its bundle and scan its body.
+
+    One function so ``register_app_crons_with_service`` can hand BOTH filesystem
+    steps to a single ``asyncio.to_thread`` call: resolution stats the script and
+    may walk the builtin manifest sources, and the body scan reads up to
+    ``_MAX_SCRIPT_SCAN_BYTES``. Splitting them across two offloads would pay two
+    thread hops per job for one logically atomic check.
+
+    Returns ``(file_path, func_name, error)``. ``error`` is the body scan's
+    refusal string, or ``None`` when the script passes. Resolution failures
+    propagate as ``PermissionError``/``FileNotFoundError``/``ValueError`` for the
+    caller's existing handler, which audits them as a path rejection -- a
+    distinction the caller keeps, so the SEL trail still separates "path refused"
+    from "body refused".
+
+    ``vet_script_file`` is injected rather than imported here because the import
+    is deferred at the call site to break the ``mcp_cron`` -> ... -> ``bridges``
+    cycle, and re-importing it inside a worker thread would reopen that.
+    """
+    file_path, func_name = resolve_script_path(script, app_root=app_root)
+    return file_path, func_name, vet_script_file(file_path)
+
+
 async def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[str]:
     """Promote admitted app cron definitions into the running CronService.
 
@@ -1574,8 +1602,24 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
             )
         if script:
             try:
-                file_path, _ = resolve_script_path(script)
-                err = _vet_script_file(file_path)
+                # Off-loop, for the same reason as the folder lookup below: this
+                # coroutine is awaited on the gateway loop (app enable, gateway
+                # start), and this step stats the script, may walk the builtin
+                # manifest sources for the bundle, and reads up to
+                # _MAX_SCRIPT_SCAN_BYTES (256 KiB) for the body scan. Inline that
+                # parks every request and the heartbeat for its duration.
+                #
+                # `app_root` is bundle context the generic resolver cannot infer:
+                # an app's manifest names its script RELATIVE to its own tree
+                # ("job.py:run"), and this is that tree -- the immutable package
+                # dir for a shipped builtin, the installed snapshot for a third
+                # party, exactly as `_registration_source` chose it. Without it a
+                # relative spec resolved against the gateway process's CWD, so
+                # vetting looked for the file wherever the process happened to
+                # start and denied the cron on every pass.
+                file_path, func_name, err = await asyncio.to_thread(
+                    _resolve_and_vet_app_script, script, app_root, _vet_script_file
+                )
                 if err:
                     logger.warning("App %s: cron %r script rejected: %s", app_name, name, err)
                     sel().log_api_access(
@@ -1586,6 +1630,13 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                         error=err,
                     )
                     continue
+                # Persist the RESOLVED spec, not the manifest's relative one.
+                # Every later consumer re-resolves `job.script` with no app
+                # context -- the fire-time governance gate, the launcher, the
+                # dashboard's source endpoint -- so a relative spec on the
+                # record would be re-resolved against their CWD and reproduce
+                # this very bug after registration had already passed.
+                script = f"{file_path}:{func_name}"
                 sel().log_api_access(
                     caller="app_bridge",
                     operation="app_cron_script_vetted",
