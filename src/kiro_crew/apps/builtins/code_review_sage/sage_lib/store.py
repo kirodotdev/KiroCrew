@@ -562,15 +562,19 @@ def _refuse_unsafe_leaf(target: Path) -> None:
     inode is itself a regular file and is not a link, so it satisfies both tests
     here and ``O_NOFOLLOW`` as well. :func:`_refuse_unsafe_fd` is the leg that
     catches that one, on the descriptor rather than the name.
+
+    The message names no verb, because both callers open a leaf for a different
+    purpose -- an append and a lock -- and the refusal is about the name, not
+    about what was going to be done with it.
     """
     try:
         existing = os.stat(str(target), follow_symlinks=False)
     except FileNotFoundError:
         return
     if stat.S_ISLNK(existing.st_mode):
-        raise LinkedAncestorRefusal(f"refusing to append to {target}: it is a symbolic link")
+        raise LinkedAncestorRefusal(f"refusing to open {target}: it is a symbolic link")
     if not stat.S_ISREG(existing.st_mode):
-        raise LinkedAncestorRefusal(f"refusing to append to {target}: it is not a regular file")
+        raise LinkedAncestorRefusal(f"refusing to open {target}: it is not a regular file")
 
 
 def _refuse_unsafe_fd(fd: int, target: Path) -> None:
@@ -585,14 +589,15 @@ def _refuse_unsafe_fd(fd: int, target: Path) -> None:
     On the descriptor, so it cannot be raced: the bytes checked are the bytes
     written to, whatever the name was made to mean in between. It runs on every
     platform for the same reason -- it is the check that does not depend on a
-    flag the platform may not have. The app's staging lock makes the same two
-    tests on its own descriptor, so this is that rule applied to the one other
-    path that opens a leaf by name.
+    flag the platform may not have. Both paths in this module that open a leaf by
+    name go through it, :func:`open_append_nolink` and :func:`layout_lock`, and
+    the message names no verb because the two want the descriptor for different
+    things.
     """
     st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
         raise LinkedAncestorRefusal(
-            f"refusing to append to {target}: not a lone regular file"
+            f"refusing to open {target}: not a lone regular file"
         )
 
 
@@ -868,27 +873,54 @@ def layout_lock(root: Path | None = None) -> Iterator[None]:
     across ``_seed_config``'s read too is what keeps a reader's handle off a
     destination another entrant is replacing.
 
-    The lock file is opened the way every other lock file in this app is: no
-    ``O_TRUNC`` because a lock's contents are irrelevant, ``O_NOFOLLOW`` where
-    the platform has it so a link planted at this name is refused rather than
-    written through, an ``lstat`` carrying that refusal where the flag is
-    missing, and an ``fstat`` on the open descriptor -- which cannot be raced --
-    rejecting anything that is not a lone regular file, since a hardlink to a
-    sensitive inode passes ``O_NOFOLLOW`` but not ``st_nlink == 1``. Mode
-    ``0o600`` keeps it owner-only from creation, matching the data it guards.
+    The lock file is opened the way every other leaf this module opens by name
+    is, through the same four legs and the same helpers rather than a second
+    spelling of them. :func:`refuse_linked_parents` refuses a link ALREADY sitting
+    on the chain above it. :func:`pin_record_dir` then walks that chain one
+    ``O_NOFOLLOW`` ``openat`` per component and the leaf is opened relative to the
+    resulting descriptor, so a component swapped AFTER the refusal fails its own
+    open rather than redirecting this one: ``O_NOFOLLOW`` on a by-name open guards
+    the FINAL component only, so without the pin a ``data`` directory swapped for
+    a link would place this file wherever the link points, and the review worker
+    that can plant the link is exactly who the sandbox is meant to confine.
+    :func:`_refuse_unsafe_leaf` refuses a link or a non-regular file already at
+    the name, on every platform, since that needs no race at all; and
+    :func:`_refuse_unsafe_fd` rejects a hardlink to another inode on the open
+    descriptor -- which cannot be raced -- since that passes ``O_NOFOLLOW`` and
+    the name checks alike. No ``O_TRUNC``, because a lock's contents are
+    irrelevant. Mode ``0o600`` keeps it owner-only from creation, matching the
+    data it guards.
+
+    RESIDUAL, Windows only, and it is the same one :func:`open_append_nolink`
+    carries: the dir_fd verbs do not exist there, so the leaf is opened by name
+    and the chain above it rests on the ``lstat`` refusal alone, which an
+    attacker can outrun by planting a link after it. ``getattr(os, "O_NOFOLLOW",
+    0)`` is also 0 there, so the leaf refusal becomes a check-to-open window and
+    a reparse point planted inside it sends this open to whatever it names; the
+    ``fstat`` cannot carry that one, because a followed reparse point yields a
+    descriptor on a target that is itself a lone regular file. What the platform
+    does get is the whole of the exclusion this function exists for -- the
+    advisory lock is ``msvcrt.locking`` there and serializes the seeding exactly
+    as ``flock`` does -- so the concurrency gap closes on Windows while the chain
+    story stays at the module's existing Windows floor rather than improving.
     """
     if _runtime_file_lock is None:  # pragma: no cover - standalone fallback
         yield
         return
     lock_path = data_dir(root) / _LAYOUT_LOCK_NAME
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if not nofollow and lock_path.is_symlink():
-        raise OSError(f"refusing to lock {lock_path}: symlink")
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | nofollow, 0o600)
+    refuse_linked_parents(lock_path)
+    _refuse_unsafe_leaf(lock_path)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    if not _CAN_PIN_WALK:  # pragma: no cover - exercised on Windows
+        fd = os.open(str(lock_path), flags, 0o600)
+    else:
+        dir_fd = pin_record_dir(lock_path.parent)
+        try:
+            fd = os.open(lock_path.name, flags, 0o600, dir_fd=dir_fd)
+        finally:
+            os.close(dir_fd)
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-            raise OSError(f"refusing to lock {lock_path}: not a lone regular file")
+        _refuse_unsafe_fd(fd, lock_path)
         with _runtime_file_lock(fd, exclusive=True):
             yield
     finally:
