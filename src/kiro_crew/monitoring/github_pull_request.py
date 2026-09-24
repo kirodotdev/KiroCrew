@@ -25,6 +25,8 @@ from kiro_crew.monitoring.github_provider_errors import (
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET,
     MAX_MONITOR_CHECK_IDENTITY_CHARS,
+    PULL_REQUEST_CHECK_FIELDS,
+    PULL_REQUEST_SUPERSEDED_CHECK_FIELD,
     MonitorObservation,
     MonitorObservationStatus,
     ProviderErrorKind,
@@ -70,6 +72,17 @@ _MAX_PULL_REQUEST_NUMBER = 2_147_483_647
 _ROLLUP_PAGE_SIZE = 100
 _ROLLUP_MAX_PAGES = 4
 _MAX_CHECK_ROWS = MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET * 4
+# How one group's rows fold to a single state: the most blocking wins. The terminal
+# non-blocking state ranks LAST, so a group holding one displaced row beside a live
+# one reports the live row's state, and a group of only displaced rows reports that
+# it was displaced.
+_CHECK_STATE_PRECEDENCE = (
+    "failed",
+    "pending",
+    "unknown",
+    "passed",
+    PULL_REQUEST_SUPERSEDED_CHECK_FIELD,
+)
 # One document holds many subjects, and a document that grows without a bound is
 # a request that times out rather than a batch. A call with more subjects than
 # this is spent as consecutive queries, the same way a paginated read is.
@@ -740,7 +753,7 @@ class GitHubPullRequestProvider:
                 resolved[member.raw] = ((), False, error)
                 continue
             try:
-                normalized = _normalize_checks(rows[member.raw][:_MAX_CHECK_ROWS])
+                normalized = _normalize_checks(rows[member.raw])
             except (KeyError, TypeError, ValueError):
                 resolved[member.raw] = ((), False, ProviderErrorKind.TRANSIENT)
                 continue
@@ -1131,8 +1144,8 @@ def _run_was_cancelled(raw: object) -> bool:
     return raw.get("status") == "COMPLETED" and raw.get("conclusion") == "CANCELLED"
 
 
-def _collapse_superseded_rows(rows: list[object]) -> list[object]:
-    """Drop check rows a newer run of the same check has already replaced.
+def _mark_superseded_rows(rows: list[object]) -> list[tuple[object, bool]]:
+    """Pair every check row with whether a newer run of the same check replaced it.
 
     A host keeps a replaced round's completed rows in the rollup beside the round
     that replaced them. Counting every row then reports a failure that is not live,
@@ -1140,22 +1153,29 @@ def _collapse_superseded_rows(rows: list[object]) -> list[object]:
     supersession is the RUN a row belongs to and whether that run was cancelled --
     never the row's own conclusion, which reaches ``CANCELLED`` inside live runs too.
 
+    EVERY row is returned. A displaced row is flagged, not removed, so the state fold
+    can declassify it while the report still shows it: the rollup carries no lineage
+    edge, so a row deleted here leaves nothing behind to explain why a wake did not
+    happen, and because the fold re-runs identically on every poll that silence never
+    self-corrects. The flag is what stops the row counting; the row is what makes the
+    decision auditable.
+
     Newest is the greatest RUN ID, which increases monotonically. Not a timestamp:
     ``WorkflowRun.createdAt`` resolves only to the second, and two runs of one
     workflow on one head routinely share it -- a workflow firing on both
     ``synchronize`` and ``edited`` produces exactly that, both under the
-    ``pull_request`` event. Ordering on it leaves such a pair tied, both rows survive,
-    and the state fold then reports the replaced one, so a lane whose newest run
-    succeeded reads as a blocking failure. The run id orders them on its own.
+    ``pull_request`` event. Ordering on it leaves such a pair tied, neither row is
+    flagged, and the state fold then reports the replaced one, so a lane whose newest
+    run succeeded reads as a blocking failure. The run id orders them on its own.
 
-    Two rows of ONE run do not replace each other and both survive, because they share
-    one id: a workflow can publish a check run through the Checks API under its own
-    job's display name, so both are live at the same time and dropping either would
-    hide a live failure. No filter on conclusion either -- discarding a cancelled
-    newest run would revive the verdict of the run it superseded.
+    Two rows of ONE run do not replace each other and neither is flagged, because they
+    share one id: a workflow can publish a check run through the Checks API under its
+    own job's display name, so both are live at the same time and declassifying either
+    would hide a live failure. No filter on conclusion either -- declassifying a
+    cancelled newest run would revive the verdict of the run it superseded.
 
-    A row whose run the response did not identify is kept and takes no part in
-    choosing the winner, since it may BE the run that would supersede the others.
+    A row whose run the response did not identify is left unflagged and takes no part
+    in choosing the winner, since it may BE the run that would supersede the others.
     Over-report rather than hide a live failure.
     """
     winner: dict[tuple[object, ...], int] = {}
@@ -1168,33 +1188,41 @@ def _collapse_superseded_rows(rows: list[object]) -> list[object]:
             continue
         if key not in winner or run > winner[key]:
             winner[key] = run
-    kept: list[object] = []
+    marked: list[tuple[object, bool]] = []
     for raw in rows:
         key = _superseded_key(raw)
         if key is None or key not in winner:
-            kept.append(raw)
+            marked.append((raw, False))
             continue
         run = _check_run_of(raw)
-        if not isinstance(run, int) or run == winner[key] or not _run_was_cancelled(raw):
-            kept.append(raw)
-    return kept
+        superseded = isinstance(run, int) and run != winner[key] and _run_was_cancelled(raw)
+        marked.append((raw, superseded))
+    return marked
 
 
 def _normalize_checks(raw: object) -> tuple[GitHubCheck, ...]:
     if not isinstance(raw, list):
         raise ValueError("GitHub check rollup is malformed")
     grouped: dict[tuple[str, ...], tuple[str, list[str]]] = {}
-    for row_index, item in enumerate(_collapse_superseded_rows(raw)):
+    # The row cap is spent AFTER the mark, because the mark needs every FETCHED row to
+    # find each check's newest run -- the paged read has its own cap, so a successor
+    # beyond it is unseen here either way, and this ordering is what stops the cap from
+    # cutting a successor whose predecessor it keeps. That kept row would win its own
+    # key and be reported live, which is the phantom failure the mark exists to remove.
+    marked = _mark_superseded_rows(raw)[:_MAX_CHECK_ROWS]
+    for row_index, (item, superseded) in enumerate(marked):
         if not isinstance(item, Mapping):
             raise ValueError("GitHub check rollup is malformed")
         identity, state, group_key = _normalize_check(item)
+        if superseded:
+            state = PULL_REQUEST_SUPERSEDED_CHECK_FIELD
         if group_key is None:
             group_key = ("independent_check_run", str(row_index))
         _, candidates = grouped.setdefault(group_key, (identity, []))
         candidates.append(state)
     normalized: list[GitHubCheck] = []
     for identity, candidates in grouped.values():
-        state = min(candidates, key=("failed", "pending", "unknown", "passed").index)
+        state = min(candidates, key=_CHECK_STATE_PRECEDENCE.index)
         try:
             check = GitHubCheck(_sanitize_check_identity(identity), state)
         except ValueError:
@@ -1207,14 +1235,21 @@ def _normalize_checks(raw: object) -> tuple[GitHubCheck, ...]:
 
 
 def _bounded_checks(checks: tuple[GitHubCheck, ...]) -> tuple[tuple[GitHubCheck, ...], bool]:
-    """Bound each durable state bucket without letting one state consume the others."""
+    """Bound each live state bucket without letting one state consume the others."""
     bounded: list[GitHubCheck] = []
     complete = True
-    for state in ("failed", "passed", "pending", "unknown"):
+    for state in PULL_REQUEST_CHECK_FIELDS:
         matching = [check for check in checks if check.state == state]
         if len(matching) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET:
             complete = False
         bounded.extend(matching[:MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET])
+    # The displaced bucket does NOT report the board incomplete when it grows: a
+    # displaced row carries no verdict, so a head that accumulates many of them still
+    # has every live row measured, and calling it unmeasured would hold a green board
+    # pending on nothing. It is also not cut here. The total row cap already bounds it,
+    # and cutting it twice would spend the bound before the projection can announce the
+    # cut, leaving a saturated list that reads like a whole one.
+    bounded.extend(check for check in checks if check.state == PULL_REQUEST_SUPERSEDED_CHECK_FIELD)
     return tuple(sorted(bounded, key=lambda item: (item.identity, item.state))), complete
 
 

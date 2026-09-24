@@ -48,6 +48,7 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_TOKENS,
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
     MIN_MONITOR_CADENCE_SECS,
+    PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY,
     retained_outcome_blocks_rearm,
 )
 from kiro_crew.monitoring.registry import (
@@ -1703,6 +1704,20 @@ def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
             passed = checks.get("passed")
             if isinstance(passed, list):
                 check_summary["passed_count"] = len(passed)
+            # Displaced rows are counted, not listed: the count is what tells a reader
+            # that rows were declassified, and the identities are in the full
+            # observation for whoever needs them. A cut bucket spends its last slot on
+            # a sentinel the compact reader never sees, so the count is taken off the
+            # sentinel and the cut is said out loud beside it -- a bare length would
+            # read as an exact total at exactly the bound, which is where a cut is
+            # likeliest. The live buckets need neither, because they are listed and
+            # their own sentinel travels with them.
+            superseded = checks.get("superseded")
+            if isinstance(superseded, list):
+                cut = PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY in superseded
+                check_summary["superseded_count"] = len(superseded) - (1 if cut else 0)
+                if cut:
+                    check_summary["superseded_incomplete"] = True
             summary["checks"] = check_summary
         monitor["observation"] = summary
     compact["monitor"] = monitor

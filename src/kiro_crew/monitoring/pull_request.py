@@ -14,10 +14,13 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_CHECK_IDENTITY_CHARS,
     MAX_MONITOR_CONDITION_KEY_CHARS,
     MAX_MONITOR_CONDITIONS,
+    PULL_REQUEST_CHECK_FIELDS,
     PULL_REQUEST_MERGEABILITY,
     PULL_REQUEST_MONITOR_KINDS,
     PULL_REQUEST_REVIEW_DECISIONS,
     PULL_REQUEST_STATES,
+    PULL_REQUEST_SUPERSEDED_CHECK_FIELD,
+    PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY,
     MonitorCondition,
     MonitorObservation,
     MonitorObservationStatus,
@@ -28,7 +31,12 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.security import redact
 
-PULL_REQUEST_CHECK_STATES = frozenset({"failed", "passed", "pending", "unknown"})
+# Every state a provider may report, which is exactly the set of canonical check
+# buckets: the bucket names and the states are one vocabulary, so a state added to
+# one of them cannot go missing from the other.
+PULL_REQUEST_CHECK_STATES = frozenset(
+    (*PULL_REQUEST_CHECK_FIELDS, PULL_REQUEST_SUPERSEDED_CHECK_FIELD)
+)
 MAX_PULL_REQUEST_HEAD_REVISION_CHARS = 128
 
 _URL_IN_CHECK_IDENTITY_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -260,7 +268,7 @@ def canonical_pull_request_facts(facts: PullRequestFacts) -> dict[str, object]:
     """Project one exact bounded canonical fact object."""
     buckets = {
         state: sorted(check.identity for check in facts.checks if check.state == state)
-        for state in ("failed", "passed", "pending", "unknown")
+        for state in PULL_REQUEST_CHECK_FIELDS
     }
     overflow = not facts.checks_complete or any(
         len(values) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET for values in buckets.values()
@@ -273,6 +281,29 @@ def canonical_pull_request_facts(facts: PullRequestFacts) -> dict[str, object]:
             *checks["unknown"][: MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET - 1],
             "checks:incomplete",
         ]
+    # Displaced rows are reported rather than discarded, so the report can show which
+    # rows a suppressed wake was suppressed FOR. They are kept out of the overflow
+    # test above on purpose: they carry no verdict, so however many of them a head
+    # accumulates, every live row is still measured and the board is still complete.
+    # The bucket is written only when it holds something, which is what keeps the
+    # canonical shape -- and so the fingerprint -- unchanged for every other subject.
+    # This is the one place the bucket is cut, and the cut says so: a reader that sees
+    # a saturated list without a sentinel would take it for the whole list, and the
+    # count derived from it for the whole count. The sentinel is spent inside the
+    # bucket instead of on ``checks_complete`` on purpose -- these rows carry no
+    # verdict, so losing some of them leaves the board fully measured.
+    superseded = sorted(
+        check.identity
+        for check in facts.checks
+        if check.state == PULL_REQUEST_SUPERSEDED_CHECK_FIELD
+    )
+    if len(superseded) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET:
+        superseded = [
+            *superseded[: MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET - 1],
+            PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY,
+        ]
+    if superseded:
+        checks[PULL_REQUEST_SUPERSEDED_CHECK_FIELD] = superseded
     if facts.review_decision == "changes_requested":
         blocking_review = "changes_requested"
     elif facts.unresolved_review_threads:
@@ -485,6 +516,9 @@ def classify_pull_request_facts(
         return MonitorObservationStatus.PENDING, "pull_request_state_unknown"
     if facts.draft:
         return MonitorObservationStatus.PENDING, "pull_request_draft"
+    # Every branch below names the state it reads, so a state none of them names --
+    # a terminal, non-blocking one -- is excluded from actionable AND from pending by
+    # construction: displaced rows neither wake the session nor hold it open.
     check_states = {check.state for check in facts.checks}
     if "failed" in check_states:
         return MonitorObservationStatus.ACTIONABLE, "checks_failed"

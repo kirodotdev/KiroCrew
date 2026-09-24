@@ -624,7 +624,7 @@ def test_the_rollup_selection_asks_for_every_field_the_collapse_reads() -> None:
 
 
 def test_an_attempt_a_newer_run_replaced_is_not_reported_as_a_live_failure() -> None:
-    """The phantom wake this collapse exists to stop.
+    """The phantom wake this mark exists to stop.
 
     ``cancel-in-progress`` leaves the cancelled attempt in the rollup beside the
     run that replaced it, and ``CANCELLED`` maps to ``failed``, so counting every
@@ -632,7 +632,10 @@ def test_an_attempt_a_newer_run_replaced_is_not_reported_as_a_live_failure() -> 
     nothing can fix. Supersession is decided by the workflow RUN: these two rows
     are one dispatch retried, and only the newer run is live. Order must not
     matter either -- the rollup is not returned in start-time order, so a reader
-    that leaned on position would collapse the wrong way on the same board.
+    that leaned on position would mark the wrong way on the same board.
+
+    The displaced row is declassified, not deleted: it appears under ``superseded``,
+    which is what lets the report name the row a suppressed wake was suppressed for.
     """
     superseded = {
         "__typename": "CheckRun",
@@ -670,13 +673,80 @@ def test_an_attempt_a_newer_run_replaced_is_not_reported_as_a_live_failure() -> 
         "passed": ["CI / test"],
         "pending": [],
         "unknown": [],
+        "superseded": ["CI / test"],
     }
     assert first.observation.status is MonitorObservationStatus.SUCCESS
     assert first.observation.reason_code == "review_ready"
     assert first.observation.fingerprint == second.observation.fingerprint
 
 
-def test_two_rows_of_one_workflow_run_are_both_live_and_neither_is_collapsed() -> None:
+def test_the_row_cap_is_spent_after_the_mark_so_a_cut_successor_revives_no_phantom() -> None:
+    """A successor beyond the row cap still declassifies the row it replaced.
+
+    The cap bounds how many rows are reported, not how many are read to decide which
+    run is newest. Spending it first can cut the successor while keeping the attempt
+    it replaced, and that kept attempt then wins its own key and is reported as a live
+    ``failed`` row -- the phantom wake the mark exists to remove, reappearing on
+    exactly the boards big enough to hit the cap.
+    """
+    superseded = {
+        "__typename": "CheckRun",
+        "name": "test",
+        "workflowName": "CI",
+        "workflowDefinitionId": 7,
+        "workflowRunEvent": "pull_request",
+        "workflowRunId": 100,
+        "workflowRunConclusion": "CANCELLED",
+        "status": "COMPLETED",
+        "conclusion": "CANCELLED",
+    }
+    replacement = {
+        **superseded,
+        "workflowRunId": 200,
+        "workflowRunConclusion": "SUCCESS",
+        "conclusion": "SUCCESS",
+    }
+    filler = [
+        {"__typename": "StatusContext", "context": f"filler-{index:03d}", "state": "SUCCESS"}
+        for index in range(github_pull_request._MAX_CHECK_ROWS - 1)
+    ]
+    provider, _ = _provider(
+        _primary(statusCheckRollup=[superseded, *filler, replacement]),
+        _threads(),
+    )
+
+    result = _probe_one(provider)
+
+    checks = result.canonical["checks"]
+    assert isinstance(checks, dict)
+    assert checks["failed"] == []
+    assert checks["superseded"] == ["CI / test"]
+    assert result.observation.status is MonitorObservationStatus.PENDING
+    assert result.observation.reason_code == "checks_incomplete"
+
+
+def test_an_oversized_displaced_bucket_does_not_report_the_board_unmeasured() -> None:
+    """Displaced rows carry no verdict, so their own size is not a completeness claim.
+
+    Every live row is still measured when a head accumulates more displaced rows than
+    one bucket holds, and reporting the board incomplete there would hold a green
+    board pending on rows that decide nothing. They are also all handed on, so the one
+    cut happens where the projection can announce it.
+    """
+    live = github_pull_request.GitHubCheck("CI / test", "passed")
+    displaced = tuple(
+        github_pull_request.GitHubCheck(f"CI / old-{index:03d}", "superseded")
+        for index in range(101)
+    )
+
+    bounded, complete = github_pull_request._bounded_checks((live, *displaced))
+
+    assert complete is True
+    assert sum(1 for check in bounded if check.state == "superseded") == 101
+    assert live in bounded
+
+
+def test_two_rows_of_one_workflow_run_are_both_live_and_neither_is_marked() -> None:
     """Two rows of ONE run are concurrent, so start time must not collapse them.
 
     A workflow can publish a check run through the Checks API under the same
@@ -1216,8 +1286,8 @@ def test_two_runs_created_in_the_same_second_are_ordered_by_run_id() -> None:
     ``WorkflowRun.createdAt`` resolves to the second, and two runs of one workflow on
     one head routinely share it -- a workflow firing on both ``synchronize`` and
     ``edited`` produces exactly that, both under the ``pull_request`` event, so they
-    share this collapse's identity. Ordering on that timestamp leaves them tied, both
-    rows survive, and the bucket resolves to the cancelled one: a lane whose newest
+    share this mark's identity. Ordering on that timestamp leaves them tied, neither
+    row is marked, and the bucket resolves to the cancelled one: a lane whose newest
     run succeeded reads as a blocking failure. Run ids increase monotonically, so
     they order the pair on their own. This repository's readiness aggregate reached
     the same conclusion and records it at `.github/workflows/pr-readiness.yml`.
@@ -1255,6 +1325,7 @@ def test_two_runs_created_in_the_same_second_are_ordered_by_run_id() -> None:
         "passed": ["CI / test"],
         "pending": [],
         "unknown": [],
+        "superseded": ["CI / test"],
     }
     assert result.observation.reason_code == "review_ready"
 

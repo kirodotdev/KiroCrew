@@ -377,6 +377,48 @@ def test_public_projection_exposes_only_safe_latest_classification_fields() -> N
     assert "mutated public copy" not in repr(state.last_observation)
 
 
+def test_public_projection_carries_the_displaced_check_bucket_when_present() -> None:
+    """A retained displaced row has to reach the surface a human actually reads.
+
+    Keeping the row out of the verdict and then dropping it from the projection loses
+    it exactly where it is needed: the inspect payload is where an operator looks to
+    see which row a suppressed wake was suppressed for.
+    """
+    observation: dict[str, object] = {
+        "blocking_review": "none",
+        "checks": {
+            "failed": [],
+            "passed": ["CI / test"],
+            "pending": [],
+            "unknown": [],
+            "superseded": ["CI / test"],
+        },
+        "checks_complete": True,
+        "draft": False,
+        "head_revision": "0123456789abcdef0123456789abcdef01234567",
+        "kind": "github_pull_request",
+        "mergeability": "mergeable",
+        "review_decision": "approved",
+        "review_threads_complete": True,
+        "state": "open",
+        "target": "github.com/owner/repo#123",
+        "unresolved_review_threads": 0,
+    }
+    state = MonitorState(
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        created_ts=1_000.0,
+        last_observation=observation,
+        last_observation_status=MonitorObservationStatus.SUCCESS,
+        last_observation_reason_code="review_ready",
+    )
+
+    public = monitor_state_public_dict(state)
+
+    assert public["last_observation"] == observation
+
+
 def test_public_projection_backfills_legacy_check_completeness() -> None:
     """Pre-field terminal observations remain inspectable after an upgrade."""
     observation: dict[str, object] = {

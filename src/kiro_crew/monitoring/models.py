@@ -119,6 +119,23 @@ PULL_REQUEST_OBSERVATION_FIELDS = (
     "unresolved_review_threads",
 )
 PULL_REQUEST_CHECK_FIELDS = ("failed", "passed", "pending", "unknown")
+#: The one canonical check bucket that is OPTIONAL. A row lands here when a newer
+#: run of its own identity displaced it, so the row is retained and reported while
+#: carrying no verdict: it is terminal and non-blocking, which means the readiness
+#: classifier must leave it out of BOTH actionable and pending, and the overflow
+#: marker must not count it -- a board whose live rows are all measured stays
+#: complete however many displaced rows sit beside them. The bucket is written only
+#: when it holds something, so a subject without displaced rows keeps the exact
+#: canonical shape every provider shares, which full-dict equality tests pin and
+#: the fingerprint hashes. Every other bucket name is required and always present.
+PULL_REQUEST_SUPERSEDED_CHECK_FIELD = "superseded"
+#: The identity that replaces the last entry when the displaced bucket is cut. It is
+#: spent inside the bucket rather than on ``checks_complete`` because a displaced row
+#: carries no verdict, so a cut there leaves the board fully measured. It is named here
+#: because two readers depend on the same spelling: the projection writes it, and the
+#: compact inspection reads it to keep its count off the sentinel and to say the cut
+#: out loud -- a compact reader never sees the list itself.
+PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY = f"{PULL_REQUEST_SUPERSEDED_CHECK_FIELD}:incomplete"
 PULL_REQUEST_BLOCKING_REVIEWS = {
     "unknown",
     "changes_requested",
@@ -1290,6 +1307,18 @@ def monitor_state_to_dict(state: MonitorState) -> dict[str, object]:
     return payload
 
 
+def _bounded_check_identities(values: object) -> bool:
+    """Whether one canonical check bucket is a bounded list of bounded identities."""
+    return (
+        isinstance(values, list)
+        and len(values) <= MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
+        and all(
+            isinstance(value, str) and value and len(value) <= MAX_MONITOR_CHECK_IDENTITY_CHARS
+            for value in values
+        )
+    )
+
+
 def _public_pull_request_observation(
     raw: dict[str, object],
     *,
@@ -1310,18 +1339,15 @@ def _public_pull_request_observation(
         if field_name not in projected:
             return {}
     for field_name in PULL_REQUEST_CHECK_FIELDS:
-        values = checks.get(field_name)
-        if (
-            not isinstance(values, list)
-            or any(
-                not isinstance(value, str)
-                or not value
-                or len(value) > MAX_MONITOR_CHECK_IDENTITY_CHARS
-                for value in values
-            )
-            or len(values) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
-        ):
+        if not _bounded_check_identities(checks.get(field_name)):
             return {}
+    # The superseded bucket is the only projected one that may be absent, so it is
+    # validated exactly when it is there. A key outside the projected names is not
+    # copied at all, which is how provider diagnostics stay on the private side.
+    if PULL_REQUEST_SUPERSEDED_CHECK_FIELD in checks and not _bounded_check_identities(
+        checks[PULL_REQUEST_SUPERSEDED_CHECK_FIELD]
+    ):
+        return {}
     unresolved = projected.get("unresolved_review_threads")
     blocking_review = projected.get("blocking_review")
     mergeability = projected.get("mergeability")
@@ -1350,7 +1376,11 @@ def _public_pull_request_observation(
     ):
         return {}
     public = {key: deepcopy(projected[key]) for key in PULL_REQUEST_OBSERVATION_FIELDS}
-    public["checks"] = {key: deepcopy(checks[key]) for key in PULL_REQUEST_CHECK_FIELDS}
+    public["checks"] = {
+        key: deepcopy(checks[key])
+        for key in (*PULL_REQUEST_CHECK_FIELDS, PULL_REQUEST_SUPERSEDED_CHECK_FIELD)
+        if key in checks
+    }
     return public
 
 

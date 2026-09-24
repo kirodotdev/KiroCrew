@@ -647,10 +647,32 @@ These are code, or say in their own text where an implementation still diverges
 enforced nowhere:
 
 - An unclassified provider state is `unknown` and counts as **not passing**.
-- Superseded attempts collapse to the newest per check identity. A host leaves a
-  replaced round's completed rows in its rollup, and counting them reports a failure
-  that is not live. The structured provider collapses in
-  `_collapse_superseded_rows`, which runs before `_normalize_checks` groups rows; the
+- Superseded attempts are DECLASSIFIED, not deleted. A host leaves a replaced round's
+  completed rows in its rollup, and counting them reports a failure that is not live.
+  A row a newer run of its own identity replaced is marked with the terminal,
+  non-blocking `superseded` state: it is excluded from BOTH actionable and pending, so
+  it neither wakes the session nor holds it open, and it is still listed -- under the
+  canonical `superseded` bucket -- so the report names the row a suppressed wake was
+  suppressed for. Deleting it instead leaves nothing behind to explain the silence, and
+  because the fold re-runs identically on every poll that silence never self-corrects.
+  The bucket is written only when it holds something, so a subject with no displaced
+  rows keeps the exact canonical shape every provider shares. Its size is not a
+  completeness claim: exceeding the per-bucket bound does NOT set `checks_complete`
+  false, because a displaced row carries no verdict and every live row is still
+  measured. The bound is spent in exactly ONE place, the canonical projection, and the
+  cut announces itself there: the last entry becomes `superseded:incomplete`, the same
+  sentinel idiom the live buckets use. Cutting the bucket twice would spend the bound
+  before the projection could announce anything, leaving a saturated list -- and the
+  count derived from its length -- reading like the whole list. The compact inspection
+  carries the announcement through as a field, `superseded_incomplete`, and takes its
+  `superseded_count` off the sentinel: a compact reader gets the count and not the
+  list, so a bare length there would report one entry that is not a check and would
+  still read as an exact total at exactly the bound. The live buckets need no such
+  field, because they are listed and their own sentinel travels with them.
+  The structured provider marks in
+  `_mark_superseded_rows`, which runs before `_normalize_checks` groups rows and before
+  the row cap is spent -- capping first can cut a successor while keeping the row it
+  replaced, and that kept row then wins its own key and is reported live. The
   skill's status tool collapses in `collapse_superseded`, and the two **diverge on both
   halves of the rule**. On identity, that one keys CheckRuns on
   `("run", workflowName, name)`, so it groups two workflow files sharing a single
@@ -672,35 +694,35 @@ enforced nowhere:
   a pair shares this identity, and a tie leaves both rows live so the fold reports the
   replaced one. `pr-readiness.yml` reached the same conclusion for the required
   aggregate and records the reasoning there. Two rules about `cancelled` point in opposite directions and must not be
-  conflated. A row is dropped ONLY when its own RUN concluded `CANCELLED` AND that row
+  conflated. A row is marked ONLY when its own RUN concluded `CANCELLED` AND that row
   itself is `COMPLETED`+`CANCELLED` AND a newer run of its identity exists: the rollup
   carries no lineage edge, so recency alone does not
-  license removing a row, while a cancellation by the concurrency group does establish
+  license declassifying a row, while a cancellation by the concurrency group does establish
   displacement. Displacement is a property of the RUN and is read from the run, never
   inferred from the row: a row reaches `CANCELLED` inside runs that were never
   displaced -- `fail-fast` cancelling a matrix job's siblings, a job cancelled because
   something in its `needs` failed, an operator cancelling one job -- and in each the
   run concluded `FAILURE` and is live, so reading the row's own cancellation as
-  displacement drops a row out of a live run and reports it ready. The row's own
+  displacement declassifies a row out of a live run and reports it ready. The row's own
   cancellation is required in addition, because a cancelled run can still hold a row
   that reached a real verdict before the cancel landed. The run's conclusion is read
   from `CheckSuite.conclusion`, the run's own status container, because `WorkflowRun`
   exposes no `conclusion` and `CheckSuite.workflowRun` is the inverse of the edge the
   selection follows. Separately, the NEWEST run being
-  cancelled is never a reason to drop it, because that would revive the verdict of the
+  cancelled is never a reason to mark it, because that would revive the verdict of the
   run it superseded. Consequence, stated rather than hidden: a replaced round that
-  COMPLETED keeps its rows, so a phantom survives that case. Two rows of ONE run are **not** a retry
-  and both survive: a workflow can publish a check run through the Checks API under
+  COMPLETED is not marked, so a phantom survives that case. Two rows of ONE run are **not** a retry
+  and both stay live: a workflow can publish a check run through the Checks API under
   its own job's display name, so both are live at once and collapsing them by start
   time would let the later row erase the earlier row's failure.
   `CANCELLED` is one instance rather than the mechanism -- any completed row of a
   replaced round reads as live, and keying on the run instead of on the row's
   conclusion is
-  what covers all of them. A row is never collapsed on an id the response withheld:
+  what covers all of them. A row is never marked on an id the response withheld:
   both ids are nullable `Int` on the wire even though the objects carrying them are
   not, so either absence exempts the row, which also leaves it out of the
   comparison that picks the newest run. An absent run conclusion exempts the row from
-  removal too, but not from that comparison: such a row can still be the newest run,
+  the mark too, but not from that comparison: such a row can still be the newest run,
   and so still drop an older cancelled row. `CheckSuite.conclusion` is null while a
   run is still going, and evidence the host withheld is not evidence a row was
   replaced. Over-reporting costs a turn; hiding a

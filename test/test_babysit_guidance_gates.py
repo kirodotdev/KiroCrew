@@ -81,8 +81,8 @@ def test_the_monitor_spec_names_the_function_that_enforces_the_collapse() -> Non
     """
     spec = " ".join(MONITOR_SPEC.read_text(encoding="utf-8").split())
 
-    assert "_collapse_superseded_rows" in spec
-    assert callable(github_pull_request._collapse_superseded_rows)
+    assert "_mark_superseded_rows" in spec
+    assert callable(github_pull_request._mark_superseded_rows)
     assert "diverge on both halves of the rule" in spec, (
         "a divergence declared for one half sends a reader to reconcile the wrong one; "
         "the sibling differs on identity AND on ordering"
@@ -145,9 +145,11 @@ def test_the_skill_states_the_collapse_rule_the_typed_provider_implements() -> N
     within_one_run = _normalize_checks([superseded, same_run_publisher])
     live_run = _normalize_checks([live_run_cancelled_row, replacement])
 
-    assert sorted(check.state for check in across_runs) == ["passed"], (
+    assert sorted(check.state for check in across_runs) == ["passed", "superseded"], (
         "a newer run displaces the CANCELLED attempt it replaced, so that row must "
-        "not survive to wake the session; a row that reached a verdict is kept"
+        "carry no verdict and never wake the session; it is retained under the "
+        "terminal superseded state rather than deleted, and a row that reached a "
+        "verdict is kept live"
     )
     assert sorted(check.state for check in within_one_run) == ["failed", "passed"], (
         "two rows of ONE run are concurrent, so collapsing them by start time "

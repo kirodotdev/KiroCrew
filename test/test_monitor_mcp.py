@@ -274,6 +274,56 @@ def test_monitor_inspect_passes_strict_identity_without_fallback():
     assert "check-0" not in result
 
 
+def test_the_compact_inspection_counts_displaced_rows_off_the_sentinel_and_says_it_cut():
+    """A compact reader never sees the list, so the cut has to reach it as a field.
+
+    The bucket spends its last slot on a sentinel, so a bare length reports one row
+    that is not a check and reads as an exact total at exactly the bound -- which is
+    where a cut is likeliest. The live buckets need no such field: they are listed, so
+    their own sentinel travels with them.
+    """
+    identities = [f"check-{index}" for index in range(99)]
+    record = {
+        "enabled": True,
+        "active": True,
+        "monitor": {
+            "kind": "github_pull_request",
+            "last_observation": {
+                "head_revision": "abc123",
+                "checks": {
+                    "passed": ["CI / test"],
+                    "superseded": [*identities, "superseded:incomplete"],
+                },
+            },
+        },
+    }
+
+    checks = control._compact_monitor_inspection(record)["monitor"]["observation"]["checks"]
+
+    assert checks["superseded_count"] == 99
+    assert checks["superseded_incomplete"] is True
+
+
+def test_the_compact_inspection_does_not_claim_a_cut_on_a_bucket_at_the_bound():
+    """The field is spent only when an identity was actually dropped."""
+    record = {
+        "enabled": True,
+        "active": True,
+        "monitor": {
+            "kind": "github_pull_request",
+            "last_observation": {
+                "head_revision": "abc123",
+                "checks": {"superseded": [f"check-{index}" for index in range(100)]},
+            },
+        },
+    }
+
+    checks = control._compact_monitor_inspection(record)["monitor"]["observation"]["checks"]
+
+    assert checks["superseded_count"] == 100
+    assert "superseded_incomplete" not in checks
+
+
 def test_monitor_inspect_never_uses_ancestor_fallback_without_strict_identity():
     with (
         patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
