@@ -254,8 +254,8 @@ class Instance:
                     f"invalid ssh_host {self.ssh_host!r}: must match {_SSH_HOST_RE.pattern}"
                 )
         elif self.connection_method == "fargate":
-            # The same splitter connect_fargate reads the target with, so a
-            # target this arm stores is one that lane can open.
+            # The same splitter the ``fargate`` transport reads the target with,
+            # so a target this arm stores is one that lane can open.
             #
             # Checked UNSTRIPPED, and what reaches here is user input, not a
             # stored record: handlers_instances passes

@@ -345,9 +345,14 @@ def open_port_forward(
 ) -> subprocess.Popen:
     """Spawn a background SSM port-forward. Returns the live child process.
 
-    *target* is an EC2/SSM-managed instance id or an ECS task target; both lanes
-    route through THIS function rather than a per-lane opener, so the human-action
-    guard below and every process guard here apply to both without being restated.
+    *target* is an EC2/SSM-managed instance id, which is what both callers here
+    pass: the dashboard tunnel and the device-code callback tunnel. The Fargate
+    lane shares :func:`build_port_forward_argv` but not this function -- the
+    instances layer spawns and supervises its own child, whose stdio and teardown
+    are documented where that child lives rather than described from here. Only
+    one thing is claimed about the pair, and a test pins it: the human-action gate
+    below is reached from this function alone, so it covers these two tunnels and
+    no Fargate forward.
 
     The caller owns the process (terminate it to close the tunnel). Not routed
     through :func:`cloud.aws.run_aws` because the session streams for its whole
@@ -601,10 +606,10 @@ def task_exec_readiness(
         region,
     )
     if rc != 0:
-        # !r-quoted and capped, matching connect_fargate's sibling error and unlike
-        # instance_is_managed, which discards stderr entirely. AWS names the full
-        # caller ARN on an AccessDenied, and the repr turns an ESC or a newline in
-        # the tail into a literal rather than something a terminal acts on.
+        # !r-quoted and capped, unlike instance_is_managed, which discards stderr
+        # entirely. AWS names the full caller ARN on an AccessDenied, and the repr
+        # turns an ESC or a newline in the tail into a literal rather than
+        # something a terminal acts on.
         return TaskExecReadiness(
             ready=False,
             reason=(

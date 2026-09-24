@@ -808,26 +808,6 @@ _TASK = "0123456789abcdef0123456789abcdef"
 _ECS_TARGET = f"ecs:crews_{_TASK}_{_TASK}-1234567890"
 
 
-class _LiveProc:
-    def poll(self):
-        return None
-
-
-class _ExitedProc:
-    returncode = 1
-
-    def poll(self):
-        return 1
-
-    def terminate(self):
-        pass
-
-
-def _ready(monkeypatch):
-    """Make the preflight pass, so a test can exercise what comes after it."""
-    monkeypatch.setattr(ssm, "task_exec_readiness", lambda *a, **k: ssm.TaskExecReadiness(True))
-
-
 class TestEcsTargetSplit:
     def test_returns_the_three_parts(self):
         from kiro_crew.instances.validation import split_ecs_target
@@ -939,104 +919,6 @@ class TestTaskExecReadiness:
         assert "AccessDenied" in reason
         assert "A" * ssm._MAX_AWS_ERROR_CHARS not in reason, "the tail was not capped"
         assert len(reason) < 400, f"unbounded stderr tail: {len(reason)} chars"
-
-
-class TestConnectFargate:
-    def test_the_preflight_runs_before_any_tunnel_is_opened(self, monkeypatch):
-        """A failed prerequisite must not leave a child process behind."""
-        monkeypatch.setattr(
-            ssm,
-            "task_exec_readiness",
-            lambda *a, **k: ssm.TaskExecReadiness(False, "no channel"),
-        )
-        opened = []
-        monkeypatch.setattr(ssm, "open_port_forward", lambda *a, **k: opened.append(1))
-        conn = connect.connect_fargate(_ECS_TARGET, local_port=5599, remote_port=8080)
-        assert conn.ready is False
-        assert conn.error == "no channel"
-        assert opened == [], "the tunnel was opened despite a failed preflight"
-
-    def test_the_forward_goes_through_the_shared_opener(self, monkeypatch):
-        """R8/R9: the shared opener carries assert_human_action and every guard.
-
-        Asserted by observing that THIS function is what the lane calls, because a
-        Fargate-specific child would silently drop the human-action gate, the
-        free-port check, the process-group teardown, the resolved ``aws`` head and
-        the withheld PATH -- none of which a passing happy-path test would notice.
-        """
-        _ready(monkeypatch)
-        seen = {}
-
-        def fake_open(target, remote, local, profile, region):
-            seen.update(target=target, remote=remote, local=local)
-            return _LiveProc()
-
-        monkeypatch.setattr(ssm, "open_port_forward", fake_open)
-        monkeypatch.setattr(ssm, "port_is_free", lambda *a, **k: True)
-        monkeypatch.setattr(ssm, "wait_for_local_port", lambda *a, **k: True)
-        conn = connect.connect_fargate(_ECS_TARGET, local_port=5599, remote_port=8080)
-        assert conn.ready is True
-        assert seen == {"target": _ECS_TARGET, "remote": 8080, "local": 5599}
-
-    def test_a_ready_connection_names_the_local_turn_endpoint(self, monkeypatch):
-        _ready(monkeypatch)
-        monkeypatch.setattr(ssm, "open_port_forward", lambda *a, **k: _LiveProc())
-        monkeypatch.setattr(ssm, "port_is_free", lambda *a, **k: True)
-        monkeypatch.setattr(ssm, "wait_for_local_port", lambda *a, **k: True)
-        conn = connect.connect_fargate(_ECS_TARGET, local_port=5599, remote_port=8080)
-        assert conn.url == "http://127.0.0.1:5599"
-        assert conn.turn_url == "http://127.0.0.1:5599/v1/chat/completions"
-
-    def test_nothing_is_minted_and_no_browser_is_opened(self, monkeypatch):
-        """This lane has no dashboard, so a token or a browser would be a bug.
-
-        Asserted as ABSENT: the connection carries no token field at all, and
-        webbrowser.open is never reached. A later change that routes this lane back
-        through the gateway flow fails here rather than opening a window onto a
-        JSON API.
-        """
-        _ready(monkeypatch)
-        monkeypatch.setattr(ssm, "open_port_forward", lambda *a, **k: _LiveProc())
-        monkeypatch.setattr(ssm, "port_is_free", lambda *a, **k: True)
-        monkeypatch.setattr(ssm, "wait_for_local_port", lambda *a, **k: True)
-        minted = []
-        monkeypatch.setattr(connect, "mint_token", lambda *a, **k: minted.append(1) or "tok")
-        opened = []
-        monkeypatch.setattr(connect.webbrowser, "open", lambda *a, **k: opened.append(1))
-
-        conn = connect.connect_fargate(_ECS_TARGET, local_port=5599, remote_port=8080)
-        assert minted == [] and opened == []
-        assert not hasattr(conn, "token")
-        assert not hasattr(conn, "browser_opened")
-
-    def test_a_foreign_listener_winning_the_bind_is_refused(self, monkeypatch):
-        """A listener answering while our child is dead is not the crew.
-
-        This lane sends no dashboard token, so the stake is lower than the gateway
-        lane's -- but reporting a stranger's listener as ready would point the
-        user's turn requests, which carry their prompts, at that process.
-        """
-        _ready(monkeypatch)
-        monkeypatch.setattr(ssm, "open_port_forward", lambda *a, **k: _ExitedProc())
-        monkeypatch.setattr(ssm, "port_is_free", lambda *a, **k: True)
-        monkeypatch.setattr(ssm, "wait_for_local_port", lambda *a, **k: True)
-        conn = connect.connect_fargate(_ECS_TARGET, local_port=5599, remote_port=8080)
-        assert conn.ready is False
-        assert conn.process is None
-
-    def test_an_occupied_local_port_is_refused_before_the_tunnel(self, monkeypatch):
-        _ready(monkeypatch)
-        opened = []
-        monkeypatch.setattr(ssm, "port_is_free", lambda *a, **k: False)
-        monkeypatch.setattr(ssm, "open_port_forward", lambda *a, **k: opened.append(1))
-        conn = connect.connect_fargate(_ECS_TARGET, local_port=5599, remote_port=8080)
-        assert conn.ready is False and opened == []
-
-    def test_a_target_that_is_not_an_ecs_task_is_refused(self, monkeypatch):
-        opened = []
-        monkeypatch.setattr(ssm, "open_port_forward", lambda *a, **k: opened.append(1))
-        conn = connect.connect_fargate("i-0123456789abcdef0", local_port=5599, remote_port=8080)
-        assert conn.ready is False and opened == []
 
 
 def test_the_printed_paths_match_the_containers_own_constants():

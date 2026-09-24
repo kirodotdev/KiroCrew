@@ -534,14 +534,27 @@ def _port_forward_error(proc: Optional[subprocess.Popen], local_port: int) -> st
 
 # ── The Fargate lane ──────────────────────────────────────────────────────────
 #
-# Deliberately NOT routed through :func:`connect` above. That function mints a
-# dashboard JWT and opens a browser, which is what a remote Kiro Crew GATEWAY
-# needs. A Fargate crew task serves something else: its only network listener is
-# the crew container's front process, a JSON turn API, and the Kiro Crew backend
-# inside the container is loopback-only and never bound. So there is no dashboard
-# to open and no dashboard token to mint, and forcing this lane through
-# :func:`connect` would fail on first real use -- it tears the tunnel down when
-# the mint fails, which for a task with no mint route is always.
+# A Fargate crew is reached by the instances layer's ``fargate`` connection
+# method, which forwards SSM to the task and mints nothing. This module holds no
+# forward of its own. What it does hold for that lane is ``FARGATE_TURN_PATH``,
+# the path the forward dials; ``FARGATE_HEALTH_PATH`` beside it is not dialled
+# from here at all and exists for parity with the container's own constants, so
+# the contract test can assert the pair.
+#
+# The lane is deliberately NOT routed through :func:`connect` above. That
+# function mints a dashboard JWT and opens a browser, which is what a remote Kiro
+# Crew GATEWAY needs. A Fargate crew task serves something else: its only network
+# listener is the crew container's front process, a JSON turn API, and the Kiro
+# Crew backend inside the container is loopback-only and never bound. So there is
+# no dashboard to open and no dashboard token to mint, and forcing this lane
+# through :func:`connect` would fail on first real use -- it tears the tunnel down
+# when the mint fails, which for a task with no mint route is always.
+#
+# There is no CLI counterpart either, and the asymmetry is the reason: ``cloud
+# connect`` addresses a crew by EC2 tag, and ``cloud launch`` cannot create a
+# Fargate crew at all, because that engine is reachable only through the
+# dashboard's provisioner API. A CLI verb here would dial a crew the CLI cannot
+# make.
 #
 # Reaching a DASHBOARD on a Fargate crew would mean adding a control-route handler
 # to the crew container's authenticated surface. That surface answers every
@@ -559,127 +572,3 @@ def _port_forward_error(proc: Optional[subprocess.Popen], local_port: int) -> st
 #: rename there fails the suite instead of silently printing a dead path.
 FARGATE_TURN_PATH = "/v1/chat/completions"
 FARGATE_HEALTH_PATH = "/health"
-
-
-@dataclass
-class FargateConnection:
-    """A live local forward onto a Fargate crew's turn API.
-
-    Carries no token and no browser state, because this lane has neither. ``url``
-    is the local BASE the caller dials; the turn and health paths hang off it.
-    """
-
-    ssm_target: str
-    local_port: int
-    remote_port: int
-    url: str = ""
-    turn_url: str = ""
-    ready: bool = False
-    error: str = ""
-    process: Optional[subprocess.Popen] = None
-
-    def close(self) -> None:
-        """Tear down the SSM port-forward child AND its plugin child."""
-        _kill_process_tree(self.process)
-
-
-def connect_fargate(
-    ssm_target: str,
-    *,
-    local_port: int,
-    remote_port: int,
-    profile: str = "",
-    region: str = "",
-) -> FargateConnection:
-    """Open a local forward onto a Fargate crew's turn API. Mints nothing.
-
-    Four steps, in this order for reasons each step names: preflight the task's
-    execute-command channel, open the forward, prove the local port is ours, and
-    return the base URL the caller dials.
-
-    The forward goes through :func:`ssm.open_port_forward`, not a child spawned
-    here. That is the single most important line in this function: the shared
-    opener carries ``assert_human_action("ssm:StartSession")``, the
-    free-port check, ``wait_for_local_port``'s process-aware bail, process-group
-    teardown, an absolutely-resolved ``aws`` head, a withheld PATH, DEVNULL stdio
-    and a fixed argv. A Fargate-specific child would have dropped all of it and
-    needed the human-action gate restored by hand.
-    """
-    parts = split_ecs_target(ssm_target)
-    if parts is None:
-        return FargateConnection(
-            ssm_target=ssm_target,
-            local_port=local_port,
-            remote_port=remote_port,
-            error=(
-                f"{ssm_target!r} is not an ECS task target "
-                f"(expected ecs:<cluster>_<task-id>_<runtime-id>)"
-            ),
-        )
-    cluster, task_id, _runtime_id = parts
-
-    # Preflight BEFORE opening anything. Both prerequisites are invisible in a
-    # failed tunnel: without this the user sees a forward that does not come up
-    # and nothing saying whether the channel was never enabled (unrecoverable) or
-    # the agent cannot reach ssmmessages.
-    readiness = ssm.task_exec_readiness(cluster, task_id, profile, region)
-    if not readiness.ready:
-        return FargateConnection(
-            ssm_target=ssm_target,
-            local_port=local_port,
-            remote_port=remote_port,
-            error=readiness.reason,
-        )
-
-    if not ssm.port_is_free(local_port):
-        return FargateConnection(
-            ssm_target=ssm_target,
-            local_port=local_port,
-            remote_port=remote_port,
-            error=(
-                f"local port {local_port} is already in use — close whatever is using it, "
-                f"or pass --local-port <n>, then retry."
-            ),
-        )
-
-    proc: Optional[subprocess.Popen] = ssm.open_port_forward(
-        ssm_target, remote_port, local_port, profile, region
-    )
-    # proc is passed so the wait bails when the SSM child dies, rather than
-    # latching onto an unrelated listener that appears on the same port.
-    ready = ssm.wait_for_local_port(local_port, proc=proc)
-    # The same foreign-listener recheck the gateway lane does. Only one process can
-    # bind the port: if a foreign one won the race our child failed to bind and
-    # exited, so a listener answering while proc is dead is NOT our tunnel. This
-    # lane sends no token, so the stake is lower than the gateway lane's -- but
-    # reporting success for a stranger's listener would point the user's turn
-    # requests, which carry their prompts, at that process.
-    if ready and proc is not None and proc.poll() is not None:
-        logger.warning(
-            "local port %d answered but the SSM child exited — a foreign listener won the "
-            "bind race; refusing to report it as the crew",
-            local_port,
-        )
-        ready = False
-
-    if not ready:
-        error = _port_forward_error(proc, local_port)
-        _terminate(proc)
-        return FargateConnection(
-            ssm_target=ssm_target,
-            local_port=local_port,
-            remote_port=remote_port,
-            error=error,
-            process=None,
-        )
-
-    base = f"http://127.0.0.1:{local_port}"
-    return FargateConnection(
-        ssm_target=ssm_target,
-        local_port=local_port,
-        remote_port=remote_port,
-        url=base,
-        turn_url=f"{base}{FARGATE_TURN_PATH}",
-        ready=True,
-        process=proc,
-    )
