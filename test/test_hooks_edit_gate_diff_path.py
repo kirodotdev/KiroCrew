@@ -266,6 +266,63 @@ class TestTheTwoGatesJudgeTheSameSet:
         assert list(edit_target_candidates({"command": "create"}, "")) == []
         assert edit_target_candidates(None, "") == []
 
+    def test_patch_text_targets_are_in_the_same_union(self) -> None:
+        from kiro_crew.platform.tool_paths import edit_target_candidates
+
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/a\n*** Move to: /tmp/b\n@@\n-old\n+new\n"
+            "*** Delete File: /tmp/c\n*** End Patch"
+        )
+        assert list(edit_target_candidates({"patchText": patch}, "/tmp/d")) == [
+            "/tmp/a",
+            "/tmp/b",
+            "/tmp/c",
+            "/tmp/d",
+        ]
+
+    def test_patch_target_is_classified_for_governance(self) -> None:
+        from kiro_crew.platform.governance import classify_tool_args
+
+        patch = "*** Begin Patch\n*** Add File: /tmp/proj/notes.md\n+notes\n*** End Patch"
+        assert ("filesystem.write", "/tmp/proj/notes.md") in classify_tool_args(
+            "edit", {"patchText": patch}
+        )
+
+    def test_patch_text_protected_target_reaches_the_hook(self) -> None:
+        patch = "*** Begin Patch\n*** Add File: ~/.kiro/crew/config.json\n+x\n*** End Patch"
+        decision = _call(raw_params={"patchText": patch})
+        assert decision.action == TOOL_DENY
+        assert "config.json" in decision.reason
+
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            "*** Begin Patch\n*** Delete File: ~/.kiro/crew/config.json\n*** End Patch",
+            "*** Begin Patch\n*** Update File: /tmp/ok.md\n*** Move to: ~/.kiro/crew/config.json\n@@\n-old\n+new\n*** End Patch",
+        ],
+    )
+    def test_delete_and_move_destination_reach_the_hook(self, patch: str) -> None:
+        decision = _call(raw_params={"patchText": patch})
+        assert decision.action == TOOL_DENY
+        assert "config.json" in decision.reason
+
+    def test_oversized_patch_is_unverifiable(self) -> None:
+        from kiro_crew.platform.tool_paths import _PATCH_TEXT_MAX_CHARS, edit_target_candidates
+
+        patch = (
+            "*** Begin Patch\n*** Add File: /tmp/ok.md\n+"
+            + "x" * _PATCH_TEXT_MAX_CHARS
+            + "\n*** End Patch"
+        )
+        assert edit_target_candidates({"patchText": patch}).truncated is True
+
+    def test_update_end_of_file_marker_is_valid(self) -> None:
+        from kiro_crew.platform.tool_paths import edit_target_candidates
+
+        patch = "*** Begin Patch\n*** Update File: /tmp/ok.md\n@@\n-old\n+new\n*** End of File\n*** End Patch"
+        assert list(edit_target_candidates({"patchText": patch})) == ["/tmp/ok.md"]
+
     def test_truncated_flag_survives_the_union(self) -> None:
         from kiro_crew.platform.tool_paths import (
             _TARGET_PATH_MAX_PATHS,
