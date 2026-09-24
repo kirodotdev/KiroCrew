@@ -2613,6 +2613,15 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         #
         # `done` is already excluded upstream (`_UNOWED_WINDOW_ROLES`), so on
         # this path the reduction's remaining job is folding the chunk runs.
+        #
+        # CLIENT DEPENDENCY on this collapse shape: while a slot streams, the
+        # in-flight chunk run folds into ONE trailing row that carries no durable
+        # `meta.mid`, and the bounded window ends in it. The dashboard's
+        # `warmSlotCache` (website/src/store/chatSlice.ts) sizes its count-matched
+        # request to the durable rows a pane holds and asks for ONE EXTRA row on a
+        # running slot so the folded row does not displace a durable one out of
+        # the window. A change here that folds the run into more than one row, or
+        # stops folding, moves that `+1` out of step with the response.
         all_msgs = await asyncio.to_thread(_collapse_wire_rows, all_msgs)
         total = len(all_msgs)
         if before is not None:

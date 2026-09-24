@@ -12,11 +12,14 @@ import hmac
 import json
 import logging
 import re
+import secrets
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -49,6 +52,7 @@ from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS, safe_read_file
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
+    _exempt_exact_hosts,
     oauth_url_contains_credential,
     redact_credentials,
     redact_exfiltration_urls,
@@ -1710,9 +1714,7 @@ def _sync_dashboard_slots(state: "DashboardState") -> None:
 def _redact_value(v):  # type: ignore[no-untyped-def]
     """Recursively redact any value (str, dict, list/tuple, or passthrough)."""
     if isinstance(v, str):
-        v, _ = redact_exfiltration_urls(v)
-        v, _ = redact_credentials(v)
-        return v
+        return _redact_for_display(v)
     if isinstance(v, dict):
         return _redact_meta(v)
     if isinstance(v, (list, tuple)):
@@ -1780,11 +1782,109 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
     return _redact_meta(meta)
 
 
+# One process-local LRU shared by HTTP snapshot renders and live WS emission.
+# It retains at most _DISPLAY_REDACTION_CACHE_MAX_ENTRIES entries and 16 MiB of
+# key-input plus output payload; least-recently-used entries leave first, and an
+# individually oversized value bypasses the cache. Each entry retains exactly a
+# fixed-size key -- the 32-byte SHA-256 digest and the input byte length -- plus
+# the redacted output, and every one of those is counted against the byte cap;
+# nothing else, and never the raw credential-bearing key material.
+#
+# The digest covers every input the battery's OUTPUT depends on, not just the
+# text: ``redact_exfiltration_urls`` also reads the active PlatformContext's
+# exempt-host set, which changes mid-process (a companion loads after boot, a
+# policy tightens). Keyed on content alone, a hot entry computed under the old set
+# kept being served -- a tenant link stayed ``[REDACTED]`` after its host was
+# exempted, or a URL the tightened policy now redacts kept displaying in plaintext
+# until eviction. The host set is folded INTO the digest rather than carried as a
+# key component: a container per entry would sit outside the byte cap, and with
+# a large tenant list it would dwarf the payload the cap is declared to bound.
+#
+# The entry cap counts individual STRINGS, and a rendered row costs several --
+# ``_prepare_messages`` redacts the content plus every meta string (a row's
+# unique ``meta.mid`` alone takes a slot) plus each variant. The backend page
+# ceiling is 500 rows, so the cap must hold one full page with headroom:
+# below that, a page's oldest-to-newest pass evicts its own head before the
+# next render reaches it, and the hit rate on exactly the multi-MB sessions this
+# cache exists for collapses to near zero. The 16 MiB byte cap is the real bound.
+_DISPLAY_REDACTION_PAGE_ROW_CEILING = 500
+_DISPLAY_REDACTION_STRINGS_PER_ROW = 8
+_DISPLAY_REDACTION_CACHE_MAX_ENTRIES = (
+    _DISPLAY_REDACTION_PAGE_ROW_CEILING * _DISPLAY_REDACTION_STRINGS_PER_ROW * 2
+)
+_DISPLAY_REDACTION_CACHE_MAX_BYTES = 16 * 1024 * 1024
+_DisplayRedactionKey = tuple[bytes, int]
+# Per-process HMAC key for the cache digest. The digested text is credential-bearing
+# (the battery exists to redact it), so the key is a keyed MAC rather than a bare
+# hash: a retained digest cannot be checked offline against a guessed plaintext.
+# Random at import, never persisted, never logged; a fresh key per process only
+# means the cache starts cold, which it does anyway.
+_DISPLAY_REDACTION_SALT: bytes = secrets.token_bytes(32)
+_display_redaction_cache: OrderedDict[_DisplayRedactionKey, tuple[str, int]] = OrderedDict()
+_display_redaction_cache_bytes = 0
+_display_redaction_cache_lock = RLock()
+
+
+def _display_redaction_cache_key(text: str) -> tuple[_DisplayRedactionKey, int]:
+    """Digest the exact string entering the battery together with the exempt-host set it reads.
+
+    The key is fixed-size: a 32-byte digest and the input byte length. The host set
+    is sorted and folded into the MAC input behind a NUL separator (a host never
+    contains NUL), so a changed set yields a different key while no per-entry
+    container is retained. The length component constrains a digest collision.
+    The digest is an HMAC under the per-process ``_DISPLAY_REDACTION_SALT``: one
+    hash per lookup, so the cache stays cheaper than the battery it fronts.
+    """
+    raw = text.encode("utf-8", errors="surrogatepass")
+    hosts = "\0".join(sorted(_exempt_exact_hosts())).encode("utf-8", errors="surrogatepass")
+    digest = hmac.new(_DISPLAY_REDACTION_SALT, raw + b"\0" + hosts, hashlib.sha256).digest()
+    return (digest, len(raw)), len(raw)
+
+
+def _clear_display_redaction_cache() -> None:
+    """Reset the process-local cache for deterministic tests."""
+    global _display_redaction_cache_bytes
+    with _display_redaction_cache_lock:
+        _display_redaction_cache.clear()
+        _display_redaction_cache_bytes = 0
+
+
+def _display_redaction_cache_info() -> tuple[int, int]:
+    """Return ``(entries, accounted_bytes)`` for invariant tests."""
+    with _display_redaction_cache_lock:
+        return len(_display_redaction_cache), _display_redaction_cache_bytes
+
+
 def _redact_for_display(text: str) -> str:
-    """Apply all redaction passes for dashboard/WS display."""
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text
+    """Apply all display redactors, reusing only an exact content-hash match."""
+    global _display_redaction_cache_bytes
+    key, input_bytes = _display_redaction_cache_key(text)
+    with _display_redaction_cache_lock:
+        cached = _display_redaction_cache.get(key)
+        if cached is not None:
+            _display_redaction_cache.move_to_end(key)
+            return cached[0]
+
+    redacted, _ = redact_exfiltration_urls(text)
+    redacted, _ = redact_credentials(redacted)
+    entry_bytes = len(key[0]) + input_bytes + len(redacted.encode("utf-8", errors="surrogatepass"))
+    if entry_bytes > _DISPLAY_REDACTION_CACHE_MAX_BYTES:
+        return redacted
+
+    with _display_redaction_cache_lock:
+        cached = _display_redaction_cache.get(key)
+        if cached is not None:
+            _display_redaction_cache.move_to_end(key)
+            return cached[0]
+        _display_redaction_cache[key] = (redacted, entry_bytes)
+        _display_redaction_cache_bytes += entry_bytes
+        while (
+            len(_display_redaction_cache) > _DISPLAY_REDACTION_CACHE_MAX_ENTRIES
+            or _display_redaction_cache_bytes > _DISPLAY_REDACTION_CACHE_MAX_BYTES
+        ):
+            _, (_, evicted_bytes) = _display_redaction_cache.popitem(last=False)
+            _display_redaction_cache_bytes -= evicted_bytes
+    return redacted
 
 
 def redact_display_content(content: Any) -> str:
@@ -1816,9 +1916,7 @@ def redact_display_content(content: Any) -> str:
     if isinstance(redacted, str):
         return redacted
     wire = serialize_wire_content(redacted)
-    wire, _ = redact_exfiltration_urls(wire)
-    wire, _ = redact_credentials(wire)
-    return wire
+    return _redact_for_display(wire)
 
 
 def serialize_wire_content(content: Any) -> str:

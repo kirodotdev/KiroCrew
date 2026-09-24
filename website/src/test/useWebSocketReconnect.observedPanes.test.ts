@@ -308,8 +308,10 @@ describe('useWebSocket reconnect hydrates every mounted ChatPane (observed hydra
     mountPane(MEMBER)
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
     connectDropReconnect()
-    // A cached (non-empty) slot warms whole by the thunk's own design.
-    expect(api.chatSlotDetail).toHaveBeenCalledWith(MEMBER)
+    // A populated cache warms COUNT-MATCHED (2 held rows floored to
+    // PANE_HYDRATE_LIMIT), plus one row for the folded streaming row a running
+    // slot carries on disk without a durable identity.
+    expect(api.chatSlotDetail).toHaveBeenCalledWith(MEMBER, PANE_HYDRATE_LIMIT + 1)
 
     await settle()
     const chat = testStore.getState().chat

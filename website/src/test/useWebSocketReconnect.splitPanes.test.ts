@@ -245,8 +245,9 @@ describe('useWebSocket reconnect hydrates background split panes', () => {
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
     connectDropReconnect()
 
-    // A streaming slot warms unbounded by the thunk's own design.
-    expect(api.chatSlotDetail).toHaveBeenCalledWith('chat-bg')
+    // An EMPTY cache warms with the plain floor even while streaming: the
+    // extra streaming row is only added when there are held rows to match.
+    expect(api.chatSlotDetail).toHaveBeenCalledWith('chat-bg', PANE_HYDRATE_LIMIT)
 
     // Let the warm resolve and its fulfilled reducer run.
     vi.useRealTimers()
