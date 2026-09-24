@@ -1938,6 +1938,8 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # supplied. It is also not model-reachable: no MCP tool routes to it,
         # because the deletion it performs is irreversible.
         "ledger_sweep.py",
+        "ledger_wake.py",
+        "probes/work_ledger.py",
     }
 )
 

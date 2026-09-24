@@ -20,11 +20,17 @@ import json
 import re
 from dataclasses import dataclass
 
-from kiro_crew.probes import GH_PR
+from kiro_crew.probes import GH_PR, WORK_LEDGER
 
 #: The host a public GitHub URL names, and the ONLY value this module ever pins.
 #: A shorthand subject deliberately gets no host at all -- see :func:`infer`.
 _PUBLIC_HOST = "github.com"
+
+#: ``host_key`` for a subject that has no remote host: a conductor's own work
+#: ledger is on this machine's disk. A distinct token rather than ``"default"``,
+#: which means "whatever the operator's gh is configured for" and would read as a
+#: remote this subject does not have.
+_LOCAL_HOST = "local"
 
 #: ``https://github.com/owner/name/pull/123`` (any host path prefix is refused
 #: by the anchor -- an enterprise host is a different API and a different probe).
@@ -97,7 +103,33 @@ class Target:
     host_key: str = "default"
 
 
-def infer(text: str) -> Target | None:
+def work_ledger_target(slot_key: str) -> Target | None:
+    """The watch subject for *slot_key*'s OWN work ledger, or ``None``.
+
+    Public because the arming surface and the driver both need the same answer,
+    and because this is the one subject :func:`infer` cannot reach from text.
+
+    A session's own identity is not in its prose. An instruction says "dispatch
+    the queue and verify what comes back" -- the session key is nowhere in it, and
+    no pattern can recover it, so the inference asymmetry the rest of this module
+    relies on does not apply: there is nothing to guess wrong, only nothing to
+    guess. That is why the work-ledger watch is asked for by an explicit field
+    while the pull-request watch is inferred, and it is not an inconsistency to
+    fix by adding a field to the other one: a PR watch has a nameable subject and
+    an opt-in field for it would see the adoption this module's header describes.
+    """
+    key = str(slot_key or "").strip()
+    if not key:
+        return None
+    return Target(
+        kind=WORK_LEDGER,
+        subject=key,
+        host_key=_LOCAL_HOST,
+        message=json.dumps({"conductor": key}),
+    )
+
+
+def infer(text: str, *, watch: str = "", slot_key: str = "") -> Target | None:
     """Return the single subject *text* is about, or ``None``.
 
     ``None`` on every doubtful case, and specifically when the text names more
@@ -106,7 +138,20 @@ def infer(text: str) -> Target | None:
     a PR it is blocked on ("gated on #7 merging first"), and a watch armed on
     the blocker would report the blocker's progress while staying silent about
     the PR the loop actually owns.
+
+    *watch* names a subject kind EXPLICITLY and wins over the text when it is a
+    kind that cannot be inferred. Today that is ``work-ledger`` alone, whose
+    subject is the caller's own session (*slot_key*) -- see
+    :func:`work_ledger_target`. A watch instruction is free to mention a pull
+    request as well, so the explicit field has to take precedence rather than
+    merge: a conductor's instruction that cites the PR its worker is driving
+    still means "watch my ledger", and inferring the PR from it would arm the
+    wrong subject with full confidence. Any other value FALLS THROUGH to the text
+    -- including ``gh-pr``, which is inferrable, so passing a loop's own stored
+    kind back in is always safe and never turns a working watch into ``None``.
     """
+    if str(watch or "").strip() == WORK_LEDGER:
+        return work_ledger_target(slot_key)
     if not isinstance(text, str) or not text:
         return None
 

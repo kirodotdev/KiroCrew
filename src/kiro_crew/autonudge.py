@@ -950,6 +950,8 @@ def infer_monitor(
     now: float,
     *,
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.UNKNOWN,
+    watch: str = "",
+    slot_key: str = "",
 ) -> MonitorState | None:
     """Build a monitor for *message*'s subject, or ``None`` to stay ungated.
 
@@ -972,7 +974,7 @@ def infer_monitor(
     decision controller that owns the rest of the budget vocabulary, and is
     deliberately not smuggled in behind a token saving.
     """
-    target = targets.infer(message)
+    target = targets.infer(message, watch=watch, slot_key=slot_key)
     if target is None:
         return None
     try:
@@ -998,12 +1000,20 @@ class AutoNudgeService:
         base_dir: Path | None = None,
         on_fire: Callable[[NudgeLoop], Awaitable[bool]] | None = None,
         on_monitor_tick: Callable[[NudgeLoop], Awaitable[None]] | None = None,
+        worker_running: Callable[[str], bool] | None = None,
     ) -> None:
         self._base_dir = base_dir or config_dir()
         self._path = self._base_dir / _NUDGES_FILE
         self._quarantine_path = self._base_dir / _QUARANTINE_FILE
         self._on_fire = on_fire
         self._on_monitor_tick = on_monitor_tick
+        #: ``session_key -> that slot has a turn in flight``. Injected because the
+        #: slot table is the dashboard's, and this service is constructed with
+        #: callbacks rather than a handle on it. Only the work-ledger probe reads
+        #: it, to answer the "not running" half of the staleness conjunction; when
+        #: it is absent every worker reads as idle, which can only make that probe
+        #: louder, never quieter. See :mod:`kiro_crew.probes.work_ledger`.
+        self._worker_running_resolver = worker_running
         self._loops: dict[str, NudgeLoop] = {}
         # Rows withheld from the live map but preserved on disk for repair. Kept off
         # every egress path because ADDRESSING_FIELDS are exempt from the scrub.
@@ -1953,6 +1963,7 @@ class AutoNudgeService:
         # any message that merely MENTIONED one PR, which throttles such a loop and,
         # if that PR is already merged, deactivates it before its first turn.
         gate: bool = False,
+        watch: str = "",
         replace_existing: bool = True,
         replace_stopped: bool = False,
         self_armed: bool = False,
@@ -1982,6 +1993,7 @@ class AutoNudgeService:
                 banner=banner,
                 admission_check=admission_check,
                 gate=gate,
+                watch=watch,
                 replace_existing=replace_existing,
                 replace_stopped=replace_stopped,
                 self_armed=self_armed,
@@ -2302,6 +2314,7 @@ class AutoNudgeService:
         banner: str = "",
         admission_check: Callable[[], bool] | None = None,
         gate: bool = False,
+        watch: str = "",
         replace_existing: bool = True,
         replace_stopped: bool = False,
         self_armed: bool = False,
@@ -2319,6 +2332,7 @@ class AutoNudgeService:
                 banner=banner,
                 admission_check=admission_check,
                 gate=gate,
+                watch=watch,
                 replace_existing=replace_existing,
                 replace_stopped=replace_stopped,
                 self_armed=self_armed,
@@ -2338,6 +2352,7 @@ class AutoNudgeService:
         banner: str = "",
         admission_check: Callable[[], bool] | None = None,
         gate: bool = False,
+        watch: str = "",
         replace_existing: bool = True,
         replace_stopped: bool = False,
         self_armed: bool = False,
@@ -2455,9 +2470,28 @@ class AutoNudgeService:
                 # subject; keying that only on the wording of the instruction made a
                 # cadence contract depend on prose.
                 monitor=(
-                    infer_monitor(message, now, creation_surface=creation_surface) if gate else None
+                    infer_monitor(
+                        message,
+                        now,
+                        creation_surface=creation_surface,
+                        watch=watch,
+                        slot_key=slot_key,
+                    )
+                    # An explicit ``watch`` gates on its own, without ``gate``. This
+                    # path defaults to UNGATED for the reason above, so requiring
+                    # both would make the field work from monitor_start and do
+                    # nothing here -- and no caller means "observe this subject, and
+                    # ignore it". ``slot_key`` is what makes a work-ledger watch
+                    # possible at all: its subject is the session being armed, which
+                    # no amount of reading the message can recover.
+                    if (gate or watch)
+                    else None
                 ),
-                gate=gate,
+                # ``watch`` is folded in here as well as above, because the tick path
+                # reads the STORED flag and refuses to poll a loop whose ``gate`` is
+                # False even when it carries a monitor. Leaving the two to disagree is
+                # what makes a watch that looks armed and never observes anything.
+                gate=bool(gate or watch),
                 banner=banner,
                 self_armed=self_armed,
             )
@@ -2727,16 +2761,36 @@ class AutoNudgeService:
                     # wording changed would revoke that through the documented way
                     # to revise a loop -- silently, since an ungated loop and a
                     # re-gated one look identical until the turns stop arriving.
-                    inferred = infer_monitor(message, time.time()) if loop.gate else None
                     current = loop.monitor
+                    # The loop's OWN kind, fed back into every derivation below. A
+                    # work-ledger watch's subject is this session, which no message
+                    # names, so re-inferring from text alone would answer "this
+                    # instruction names nothing observable" and CLEAR the monitor --
+                    # turning the documented way to reword an instruction into a
+                    # silent way to disarm the watch. For gh-pr it changes nothing.
+                    watch_kind = current.kind if current is not None else ""
+                    inferred = (
+                        infer_monitor(
+                            message,
+                            time.time(),
+                            watch=watch_kind,
+                            slot_key=loop.slot_key,
+                        )
+                        if loop.gate
+                        else None
+                    )
                     # The stored spelling is a canonical shorthand and cannot
                     # express a HOST, so kind and target alone would call an edit
                     # from an enterprise shorthand to the same public slug
                     # "unchanged" and keep polling the wrong server. This is the
                     # third of the three places that comparison had to reach; the
                     # other two are the post-poll binding and the dedupe identity.
-                    old_probe = targets.infer(str(previous.get("message") or ""))
-                    new_probe = targets.infer(message)
+                    old_probe = targets.infer(
+                        str(previous.get("message") or ""),
+                        watch=watch_kind,
+                        slot_key=loop.slot_key,
+                    )
+                    new_probe = targets.infer(message, watch=watch_kind, slot_key=loop.slot_key)
                     same_host = (old_probe.host_key if old_probe else None) == (
                         new_probe.host_key if new_probe else None
                     )
@@ -4904,6 +4958,25 @@ class AutoNudgeService:
             self._arm_from_deadline(loop)
         self._reconcile_candidates = eligible
 
+    def _worker_running(self, session_key: str) -> bool:
+        """Whether *session_key*'s slot has a turn in flight.
+
+        False when no resolver was injected, which is the direction that cannot
+        lose a signal: the work-ledger probe uses this for the "not running" half
+        of the staleness conjunction, so an unknown liveness produces a stall wake
+        the conductor may not have needed (one turn) rather than silence about a
+        worker that stopped without reporting (the task). A resolver that raises is
+        treated the same way -- a slot-table read must not kill a tick.
+        """
+        resolver = self._worker_running_resolver
+        if resolver is None or not session_key:
+            return False
+        try:
+            return bool(resolver(session_key))
+        except Exception:  # pragma: no cover - a liveness read must not fail a tick
+            logger.debug("AutoNudge: worker liveness read failed for %s", session_key)
+            return False
+
     async def _monitor_tick_is_quiet(self, loop: NudgeLoop) -> bool:
         """Observe this loop's subject cheaply; say whether to skip the turn.
 
@@ -4960,7 +5033,10 @@ class AutoNudgeService:
             self._persist_soon()
             logger.debug("AutoNudge: loop %s spending a post-wake follow-up tick", loop.id)
             return False
-        probe = probes.build(monitor.kind)
+        probe = probes.build(
+            monitor.kind,
+            worker_running=self._worker_running,
+        )
         if probe is None:
             return False
         # Derive the probe's config from the LOOP'S OWN INSTRUCTION, then check
@@ -4980,7 +5056,10 @@ class AutoNudgeService:
         # subject the monitor is bound to; a mismatch means the two have drifted
         # apart, which is not something to resolve by guessing -- fire instead, the
         # same direction every other uncertain path takes.
-        target = targets.infer(loop.message)
+        # ``watch`` is the loop's OWN stored kind, fed back in. For gh-pr it changes
+        # nothing (that kind is inferred from the text); for work-ledger it is the
+        # only way the subject can be named at all, since it is this very session.
+        target = targets.infer(loop.message, watch=monitor.kind, slot_key=loop.slot_key)
         if target is None or (target.kind, target.subject) != (monitor.kind, monitor.target):
             if target is not None:
                 logger.info(
@@ -5079,7 +5158,7 @@ class AutoNudgeService:
         # the OLD subject to the new one, and the terminal branch would deactivate
         # a watch that had just been pointed at a live pull request. Compare the
         # binding, not the object: a retarget mutates the same MonitorState.
-        fresh = targets.infer(loop.message)
+        fresh = targets.infer(loop.message, watch=monitor.kind, slot_key=loop.slot_key)
         current_binding = (
             (monitor.kind, monitor.target, fresh.message) if fresh is not None else None
         )
@@ -5135,7 +5214,7 @@ class AutoNudgeService:
             # probe distinguishes the two, so this reads its KEYS rather than its
             # prose, which would break the first time that wording is edited. No
             # key at all (an unusable target) is also not a success.
-            merged = "merged" in verdict.keys
+            succeeded = probes.terminal_succeeded(verdict.keys)
             # EVERY field this transition writes has to be in here. The loop's own
             # ``stopped_reason`` is written alongside the monitor's, and leaving it
             # out of the rollback left a live loop tagged as terminated -- which the
@@ -5175,7 +5254,7 @@ class AutoNudgeService:
             # as finished and refused revival.
             if is_channel_key(loop.slot_key):
                 if not monitor.terminal_pending:
-                    monitor.terminal_pending = "success" if merged else "blocked"
+                    monitor.terminal_pending = "success" if succeeded else "blocked"
                     try:
                         # Same writer as the settlements, for the same reason: a
                         # cancelled ``_persist_locked`` releases ``_lock`` mid-write.
@@ -5196,7 +5275,9 @@ class AutoNudgeService:
             try:
                 # Re-read under the lock. The checks before it were made while a
                 # retarget could still land.
-                fresh_under_lock = targets.infer(loop.message)
+                fresh_under_lock = targets.infer(
+                    loop.message, watch=monitor.kind, slot_key=loop.slot_key
+                )
                 if (
                     loop.monitor is not monitor
                     or loop.id not in self._loops
@@ -5212,7 +5293,7 @@ class AutoNudgeService:
                         loop.id,
                     )
                     return False
-                monitor.outcome = MonitorOutcome.SUCCESS if merged else MonitorOutcome.BLOCKED
+                monitor.outcome = MonitorOutcome.SUCCESS if succeeded else MonitorOutcome.BLOCKED
                 monitor.stopped_reason = MONITOR_TERMINAL_REASON
                 monitor.stopped_at = time.time()
                 loop.stopped_reason = MONITOR_TERMINAL_REASON
@@ -5643,13 +5724,16 @@ class AutoNudgeService:
         owed terminal is simply gone: this returns False, the debt is dropped, and the
         next tick records the real one with the right classification.
 
-        Reuses the tick's probe machinery, and the same ``"merged" in keys`` rule the
+        Reuses the tick's probe machinery, and the same ``probes.terminal_succeeded`` rule the
         tick's own terminal branch applies, instead of adding a marker to remember what
         was already delivered. This review has paid for a defect at an existing site for
         each new piece of per-loop state, so re-asking is the cheaper way to answer.
         """
-        target = targets.infer(loop.message)
-        probe = probes.build(monitor.kind)
+        target = targets.infer(loop.message, watch=monitor.kind, slot_key=loop.slot_key)
+        probe = probes.build(
+            monitor.kind,
+            worker_running=self._worker_running,
+        )
         if target is None or probe is None:
             # Cannot re-check, so cannot confirm. Keep the loop alive.
             return False
@@ -5677,7 +5761,7 @@ class AutoNudgeService:
             return False
         if verdict.outcome is not irq.Outcome.TERMINAL:
             return False
-        fresh = "success" if "merged" in verdict.keys else "blocked"
+        fresh = "success" if probes.terminal_succeeded(verdict.keys) else "blocked"
         if fresh != monitor.terminal_pending:
             logger.info(
                 "AutoNudge: loop %s owed a %s settlement but now observes %s -- dropping "

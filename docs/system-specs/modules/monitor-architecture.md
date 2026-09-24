@@ -29,7 +29,7 @@ this spec states the target and that one states the present.
 
 | Layer | Status | Where it lives today |
 |---|---|---|
-| Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`; `probes/__init__.py` still has its separate dispatch branch |
+| Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`; `probes/__init__.py` still has its separate dispatch branch, now for two cron-path kinds (`gh-pr`, `work-ledger`), and `work-ledger` has no registry row at all |
 | Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; the other adapters loop internally and no driver assembles a batch, and the `irq.Probe` path remains separate |
 | Observation | `partial` | the `MonitorCondition` type and the `MonitorSeverity` / `MonitorResetsOn` vocabulary live in `monitoring/models.py`, all four pull-request kinds derive their named conditions in `monitoring/pull_request.py`, and `monitoring/decision.py` masks, ages and resets per condition; `irq.py` keeps its own copy of the vocabulary while the cron driver lives, and a subject's fingerprint is still derived from the canonical facts rather than from the conditions |
 | Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the cron path |
@@ -112,6 +112,16 @@ raise `NotImplementedError`, and `tuning()` and `wake_suffix()` are optional
 overrides. `PrWatchProbe` in `probes/gh_pr.py` conforms, and a second cron-path
 kind still subclasses `irq.Probe` and adds its branch to `build` in
 `probes/__init__.py`.
+
+That second cron-path kind now exists: `WorkLedgerProbe` in
+`probes/work_ledger.py`, kind `work-ledger`, whose subject is a conductor's own
+work ledger rather than a pull request. It conforms as described -- the two
+required hooks plus both optional overrides, and one branch in `build`. It is
+deliberately cron-path only: it has no `monitoring/registry.py` row and therefore
+no objective of its own, which is the integration the paragraph below calls
+paying for two contracts. Until that row lands, `infer_monitor` stamps it with
+the pull-request `review_ready` objective, which is wrong and is why the kind is
+not reachable from an arming surface yet.
 
 The `monitoring/` package now has a different extension point:
 `models.MonitorProbe`, a structural Protocol with no behaviour inheritance, plus
@@ -771,6 +781,29 @@ tree.
 
 A kind that cannot be added without editing layer 4 is a design defect in this
 spec, and should be reported as one rather than worked around with a branch.
+
+#### Reported: the second cron-path kind could not be added without a shared edit
+
+`work-ledger` was added under the current-tree procedure above and did NOT satisfy
+criterion 1 of the acceptance test, so it is reported here rather than worked
+around. The shared rule that had to change is how a terminal watch records its
+outcome. It read success as `"merged" in verdict.keys` -- the pull-request
+probe's own vocabulary -- so any kind that finishes some other way was persisted
+as blocked. That is not a work-ledger quirk: it is layer 4 holding one kind's
+terminal word as though it were every kind's.
+
+The fix keeps the decision engine free of kind names by moving the vocabulary to
+the probes: `probes.terminal_succeeded` tests a verdict's keys against the set of
+terminal keys that mean "finished well", and each probe contributes its own. The
+engine still asks one question and no kind appears in it.
+
+Two lessons for the consolidation target. A terminal key is part of a kind's
+vocabulary and belongs in the registry row beside its objective, not in a shared
+set that every new kind must be added to by hand. And membership is per OUTCOME,
+not per kind: this kind reports `all-accepted` when every work item's bar was met
+and `all-closed` when at least one was rejected or abandoned, and only the first
+counts as finishing well -- so a kind may own several terminal keys that do not
+agree with each other.
 
 ### The acceptance test
 

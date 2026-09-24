@@ -7951,10 +7951,31 @@ class GatewayOrchestrator:
                     # closes exactly that with an explicitly terminal `interrupted`.
                     _publish()
 
+        def _worker_slot_running(session_key: str) -> bool:
+            """Bind the wake gate's liveness question to this gateway's slot table.
+
+            The logic is ``ledger_wake.worker_running``, not a copy of it here: a
+            closure inside this constructor is unreachable from a test, and the one
+            hop the probe cannot make for itself is exactly the hop that should not
+            be the untested one. This keeps only the binding, which is what a
+            gateway is for.
+
+            Imported HERE rather than at module scope, matching
+            ``_monitor_owner_session_id`` below. ``ledger_wake`` reaches the
+            work-ledger store, and every gateway boots whether or not any conductor
+            has ever opened a ledger, so a module-level import would put an optional
+            subsystem on the startup path of every install to serve a callable that
+            only runs once a work-ledger watch ticks.
+            """
+            from kiro_crew import ledger_wake
+
+            return ledger_wake.worker_running(self.dashboard_state, session_key)
+
         self.autonudge_svc = AutoNudgeService(
             base_dir=data_home(),
             on_fire=_fire,
             on_monitor_tick=_monitor_tick,
+            worker_running=_worker_slot_running,
         )
 
         def _monitor_owner_session_id(loop: NudgeLoop) -> str:
