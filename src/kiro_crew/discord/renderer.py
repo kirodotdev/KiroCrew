@@ -1276,22 +1276,63 @@ class DiscordRenderer(Renderer):
             else None
         )
         # No-rotation fallback: steers were injected but no marker rotated —
-        # prepend one summary chip so they're still shown.
+        # prepend one summary chip so they're still shown. The chip is the USER's
+        # words, so it is kept apart from the body test below: a turn whose only
+        # content is the chip produced no reply, and must take the placeholder
+        # path (with the chip riding on it) rather than close on the chip alone
+        # under a "Finished in" footer.
+        steer_summary = ""
         if self._seal_count == 0 and self._steer_texts:
             quoted = [q for q in (_neutralize_md(t) for t in self._steer_texts) if q]
             if quoted:
+                steer_summary = "> " + " · ".join(quoted)
                 body = self._segment_text().strip()
-                summary = "> " + " · ".join(quoted)
-                self._delivery_text = summary + ("\n\n" + body if body else "")
+                if body:
+                    self._delivery_text = steer_summary + "\n\n" + body
         await self._rotate_on_length()
         if not self._segment_text().strip():
             # Nothing to post. Earlier rotated segments carried the turn ->
             # stay silent; otherwise show a placeholder. An extracted button
-            # row (options-only body) must ALWAYS reach the user.
-            if self._seal_count > 0 and components is None:
+            # row (options-only body) must ALWAYS reach the user. A seal count
+            # alone does not prove a segment carried anything: an acked steer
+            # rotates the pre-steer segment even when it was empty, and
+            # `_seal_current` posts nothing for it. The driver's verdict is the
+            # authority on "the whole turn had no text" -- when it holds one,
+            # this is the only chance to say so, and the dispatcher is about to
+            # record the notice as posted.
+            if self._seal_count > 0 and components is None and not self.empty_turn_notice:
                 await self._maybe_send_redaction_notice()
                 return
-            placeholder = "…" if ok else "⚠️ Error — please try again"
+            # The driver's verdict first: a turn that CLOSED with no text is
+            # told so in words, never handed the same "…" the live frame showed
+            # while it was running -- under a "Finished in" footer that glyph
+            # reads as a finished reply. The bare ellipsis remains only for a
+            # close the driver did not judge (a cancel); a close after an
+            # exception keeps the explicit error placeholder.
+            placeholder = self.empty_turn_notice or ("…" if ok else "⚠️ Error — please try again")
+            if steer_summary:
+                # The chip is the USER's typed words, and this path hands them to
+                # the client directly rather than through `_seal_current`, so the
+                # display-form redaction every other route to the sink applies is
+                # applied HERE: under a shared DM scope the steer can be another
+                # person's, and a credential in it must not land in this thread.
+                # Redacted before the bound below, since a placeholder tag can be
+                # longer than the bytes it replaces.
+                steer_summary = _redact_transformed(steer_summary)
+                # The chip rides on the placeholder instead of going through the
+                # length rotation, and the client cuts one payload at the platform
+                # cap, so the chip is bounded HERE: each steer is already capped by
+                # ``_neutralize_md``, but a burst of them can outgrow one message,
+                # and a cut that ate the notice would hand the user their own
+                # quoted words as the whole reply -- the exact unexplained close
+                # this path exists to end. ``_limit`` holds back the footer's room.
+                room = self._limit() - len(placeholder) - 2
+                if room <= 1:
+                    steer_summary = ""
+                elif len(steer_summary) > room:
+                    steer_summary = steer_summary[: room - 1].rstrip() + "…"
+                if steer_summary:
+                    placeholder = f"{steer_summary}\n\n{placeholder}"
             placeholder = self._with_turn_footer(placeholder)
             # Counted, because when no earlier segment sealed, this placeholder
             # (or an options-only button row, which IS the payload) is the turn's
@@ -1307,10 +1348,12 @@ class DiscordRenderer(Renderer):
                     components=components,
                 ):
                     self._seals_landed += 1
+                    self._tally_redactions(placeholder)
             elif await self._client.send_message(
                 self._channel_id, placeholder, components=components
             ):
                 self._seals_landed += 1
+                self._tally_redactions(placeholder)
             await self._maybe_send_redaction_notice()
             return
         # The footer rides on the final segment rather than as its own message:

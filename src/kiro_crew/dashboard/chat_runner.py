@@ -274,6 +274,11 @@ from kiro_crew.members import member_lifecycle, record_activity
 from kiro_crew.messaging.commands import compact_unsupported_reply
 from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
 from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.empty_turn_copy import (
+    EMPTY_TURN_NOTICE,
+    EMPTY_TURN_NOTICE_AFTER_RECOVERY,
+    EMPTY_TURN_NOTICE_AFTER_WORK,
+)
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
@@ -16215,24 +16220,15 @@ async def _run_chat(
                 # reaches give-up at one with no auto-continue; a productive
                 # turn's continuation reaches it at two with no verbatim
                 # retry), so the non-zero clause claims only that automatic
-                # recovery was attempted.
+                # recovery was attempted. The sentences are the channel driver's
+                # empty-turn verdict too (``messaging.empty_turn_copy``), so a
+                # channel thread mirrored into this transcript reads one story.
                 if _empty_activity.productive or slot._empty_episode_productive:
-                    _empty_msg = (
-                        "ℹ️ The turn ended without a closing reply. Send a "
-                        "message to continue from where it stopped — completed "
-                        "steps will not re-run."
-                    )
+                    _empty_msg = EMPTY_TURN_NOTICE_AFTER_WORK
                 elif slot._empty_response_retries > 0:
-                    _empty_msg = (
-                        "ℹ️ The model returned nothing this turn (automatic "
-                        "recovery was attempted). Just send your message "
-                        "again to continue."
-                    )
+                    _empty_msg = EMPTY_TURN_NOTICE_AFTER_RECOVERY
                 else:
-                    _empty_msg = (
-                        "ℹ️ The model returned nothing this turn. Just send "
-                        "your message again to continue."
-                    )
+                    _empty_msg = EMPTY_TURN_NOTICE
                 slot.append("notice", _empty_msg, "msg msg-info")
             # ONE warning per empty verdict, emitted AFTER the rung is chosen so
             # the log line carries the decision rather than only the symptom. The

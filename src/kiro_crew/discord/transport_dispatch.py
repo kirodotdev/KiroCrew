@@ -99,7 +99,7 @@ from kiro_crew.messaging.queue_drain import (
     register_drain,
     tag_entry,
 )
-from kiro_crew.messaging.renderer import Renderer, SilentRenderer
+from kiro_crew.messaging.renderer import DONE, OutputEvent, Renderer, SilentRenderer
 from kiro_crew.messaging.session_resume import (
     persisted_session_agent,
     refused_resume_is_restricted,
@@ -898,6 +898,9 @@ class DiscordDispatcher:
         # turn consumed the one-shot flag, and whether it landed (recorded success).
         _needs_reinjection = False
         _turn_landed = False
+        # Bound before the try so the except branch can read what the driver had
+        # accumulated when run() raised; None until the turn reaches the driver.
+        driver: TurnDriver | None = None
 
         # Everything acquire-dependent runs INSIDE the try so the finally
         # always finalizes the renderer; release() is gated on _acquired.
@@ -1096,21 +1099,51 @@ class DiscordDispatcher:
                 monitor_result = MonitorDispatchResult.DISPATCHED
 
             # ── Post-turn bookkeeping (each guarded — see Telegram). ──
+            # The reply as the transcript will carry it, decided ONCE for every
+            # writer below: whitespace alone (the steer-boundary separator) is no
+            # reply, and the live projection and the durable write must agree on
+            # that or a phantom assistant row lands in one and not the other. The
+            # driver's empty-turn verdict is read once here for the same reason.
+            reply_text = accumulated if accumulated.strip() else ""
+            empty_notice = getattr(driver, "empty_turn_notice", "") or ""
+            if not getattr(driver, "completion_observed", True):
+                # The stream ended without a terminal, so the driver dispatched no
+                # DONE and the renderer has not finalized: nothing has tried to
+                # reach Discord yet. Judged now, ``delivery_failed`` below would
+                # read zero attempts and file a success for a turn the user may
+                # never hear, and the ``finally``'s close() would then post its
+                # bare error placeholder against a transcript row carrying the
+                # driver's verdict. Hand the renderer the DONE it never got -- the
+                # verdict rides it, so the bubble and the row say one thing -- and
+                # judge delivery after it. close() in the finally stays idempotent.
+                try:
+                    await out_renderer.dispatch(
+                        OutputEvent(kind=DONE, stop_reason="error", notice=empty_notice)
+                    )
+                except Exception:
+                    logger.warning(
+                        "Discord: finalizing the unclosed turn failed session=%s",
+                        session_key,
+                        exc_info=True,
+                    )
             # A turn that produced text but delivered NONE of it is not a
             # success: the provider answered, the user did not hear it. Recording
             # it as one hides the outage behind a healthy success rate and leaves
             # the transcript claiming a reply the channel never carried. The
             # renderer owns the observable because it owns the sends; a muted
             # conversation runs a SilentRenderer, which never attempts a send and
-            # therefore never reports a failure here.
-            undelivered = bool(accumulated.strip()) and getattr(
+            # therefore never reports a failure here. An empty-turn notice is
+            # that turn's ENTIRE delivery, so a notice that never reached Discord
+            # is the same undelivered turn.
+            undelivered = bool(reply_text or empty_notice) and getattr(
                 out_renderer, "delivery_failed", False
             )
             if undelivered:
                 logger.warning(
-                    "discord: the turn for %s produced output but no message reached "
+                    "discord: the turn for %s produced %s but no message reached "
                     "Discord; recording it as a failure",
                     session_key,
+                    "output" if reply_text else "an empty-turn notice",
                 )
                 await self.sessions.record_failure(session_key)
             else:
@@ -1122,7 +1155,10 @@ class DiscordDispatcher:
                 #
                 # Circular import: the dashboard package imports the channel
                 # transports on its boot path, so this edge only exists at call time.
-                from kiro_crew.dashboard.channel_slots import project_channel_turn_live
+                from kiro_crew.dashboard.channel_slots import (
+                    project_channel_row_live,
+                    project_channel_turn_live,
+                )
 
                 # A resumed ``dashboard:`` key carries the dashboard slot's privacy
                 # mode, not a Discord-local one. Decide on the loop before either
@@ -1131,20 +1167,39 @@ class DiscordDispatcher:
                 # the restricted rows.
                 dashboard_restricted = await self._session_restricted(session_key)
                 if not dashboard_restricted:
+                    # The driver's verdict on a turn that closed with no assistant
+                    # text -- the sentence the renderer posted in place of a reply --
+                    # is recorded beside the user's row, the way the dashboard
+                    # runner records its own empty-turn card, so the transcript
+                    # never ends on a question the model silently declined to
+                    # answer with nothing to say why.
+                    dashboard_state = getattr(self._session_resume, "dashboard_state", None)
                     mirror_mids = project_channel_turn_live(
-                        getattr(self._session_resume, "dashboard_state", None),
+                        dashboard_state,
                         session_key,
                         text,
-                        accumulated,
+                        reply_text,
+                    )
+                    notice_mid = (
+                        project_channel_row_live(
+                            dashboard_state, session_key, "notice", empty_notice, "msg msg-info"
+                        )
+                        if empty_notice and mirror_mids is not None
+                        else None
                     )
                     await asyncio.to_thread(
                         self._persist_turn,
                         session_key,
                         text,
-                        accumulated,
+                        reply_text,
                         is_new_own_session,
                         agent=agent,
                         mirror_mids=mirror_mids,
+                        extra_row=(
+                            ("notice", empty_notice, "msg msg-info", notice_mid)
+                            if empty_notice
+                            else None
+                        ),
                     )
             except Exception:
                 logger.warning(
@@ -1226,7 +1281,7 @@ class DiscordDispatcher:
                 return MonitorDispatchResult.UNAVAILABLE
             await out_renderer.on_text_chunk(redact_local_paths(redact(str(exc)))[0][:1000])
             await out_renderer.on_done()
-        except Exception:
+        except Exception as exc:
             logger.exception("Discord transport_dispatch: error handling message")
             if monitor_completion is not None:
                 monitor_result = (
@@ -1236,6 +1291,60 @@ class DiscordDispatcher:
                 )
             if _acquired:
                 await self.sessions.record_failure(session_key)
+                # The turn raised ahead of the post-turn persist, so nothing above
+                # recorded it: without this the transcript holds neither the
+                # message nor the failure, while the renderer's close posts an
+                # error placeholder the record cannot account for. Same redaction
+                # and cap as the memory-store refusal the renderer is handed, same
+                # role and class as the dashboard runner's own terminal-error row,
+                # same dual-writer shape as the completed turn above. The reply is
+                # what the driver had accumulated when it raised -- text the
+                # renderer was already handed and the user already saw -- so a
+                # backend that streamed half an answer and then died is recorded
+                # as [user, assistant, error], not as a turn that produced
+                # nothing; normalized exactly as the completed turn above (the
+                # steer-boundary whitespace alone is ""). Guarded like every
+                # other bookkeeping step: a persist failure must not mask the
+                # turn's error or reach the finally below un-released.
+                try:
+                    if not await self._session_restricted(session_key):
+                        from kiro_crew.dashboard.channel_slots import (
+                            project_channel_row_live,
+                            project_channel_turn_live,
+                        )
+
+                        partial = getattr(driver, "partial_text", "") or ""
+                        partial = partial if partial.strip() else ""
+                        failure = "❌ " + (
+                            redact_local_paths(redact(str(exc) or exc.__class__.__name__))[0][:1000]
+                        )
+                        dashboard_state = getattr(self._session_resume, "dashboard_state", None)
+                        mirror_mids = project_channel_turn_live(
+                            dashboard_state, session_key, text, partial
+                        )
+                        error_mid = (
+                            project_channel_row_live(
+                                dashboard_state, session_key, "error", failure, "msg msg-err"
+                            )
+                            if mirror_mids is not None
+                            else None
+                        )
+                        await asyncio.to_thread(
+                            self._persist_turn,
+                            session_key,
+                            text,
+                            partial,
+                            False,
+                            agent=agent,
+                            mirror_mids=mirror_mids,
+                            extra_row=("error", failure, "msg msg-err", error_mid),
+                        )
+                except Exception:
+                    logger.warning(
+                        "Discord: persist of the failed turn failed session=%s",
+                        session_key,
+                        exc_info=True,
+                    )
         finally:
             # A turn that consumed the post-compaction flag but never landed
             # discarded the prompt carrying the re-injected context; put the
@@ -2124,6 +2233,7 @@ class DiscordDispatcher:
         is_new: bool,
         agent: str | None = None,
         mirror_mids: tuple[str, str] | None = None,
+        extra_row: tuple[str, str, str, str | None] | None = None,
     ) -> None:
         """Record the turn to conversation_log (dashboard visibility + restart).
 
@@ -2142,6 +2252,19 @@ class DiscordDispatcher:
 
         With no live slot nothing has the row yet, so it is a plain append under a
         newly minted id.
+
+        *extra_row* is the turn's OUTCOME row when it produced no assistant text:
+        ``(role, text, cls, mid)`` -- the driver's empty-turn ``notice`` on a
+        completed turn, or the ``error`` a raised turn died with -- written after
+        the user's row so the transcript never ends on an unanswered message. Its
+        ``mid`` is the id ``project_channel_row_live`` minted for the live window
+        (the same idempotency rule as *mirror_mids*), or ``None`` for a plain
+        append.
+
+        *reply_text* arrives already normalized by the caller (whitespace alone
+        is ``""``), and is tested for truth here exactly as
+        ``project_channel_turn_live`` tests it, so the live window and the disk
+        can never disagree about whether an assistant row exists.
         """
         if self.conv_log is None:
             return
@@ -2159,6 +2282,16 @@ class DiscordDispatcher:
             if reply_text:
                 self.conv_log.append(
                     session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
+                )
+        if extra_row is not None:
+            role, row_text, cls, mid = extra_row
+            if mid:
+                self.conv_log.append_if_absent(
+                    session_key, role, row_text, agent=agent, cls=cls, mid=mid
+                )
+            else:
+                self.conv_log.append(
+                    session_key, role, row_text, agent=agent, cls=cls, mid=mint_row_mid()
                 )
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "Discord"

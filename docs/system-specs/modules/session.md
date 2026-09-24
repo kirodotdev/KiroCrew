@@ -494,7 +494,10 @@ against sweep completeness, and are torn down at `close_all`.
      and suppressed while a Stop is active;
   3. **budget exhausted** (the nudges also produced nothing) → terminal notice card
      asking the user to send a message; the counter resets so the next
-     genuine user turn gets a fresh budget. The card's wording is cause-aware,
+     genuine user turn gets a fresh budget. The card's sentences are the
+     constants in `messaging/empty_turn_copy.py`, shared with the channel
+     driver's empty-turn verdict so a channel thread mirrored into the dashboard
+     reads one story. The card's wording is cause-aware,
      mirroring rung 2's split, and the split is decided per EPISODE, not per
      turn: the card says the turn ended without a closing reply and that
      completed steps will not re-run whenever THIS turn was productive **or**

@@ -101,6 +101,10 @@ class OutputEvent:
     tool_input: str = ""
     context_usage_pct: float = 0.0  # compaction
     stop_reason: str = ""  # done
+    # done: the driver's empty-turn verdict (``driver.empty_turn_notice``) --
+    # the sentence to post in place of a bare placeholder when the turn closed
+    # with no assistant text, ``""`` when it produced text or was cancelled.
+    notice: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +119,7 @@ class OutputEvent:
             "request_id": self.request_id,
             "context_usage_pct": self.context_usage_pct,
             "stop_reason": self.stop_reason,
+            "notice": self.notice,
         }
 
 
@@ -653,6 +658,15 @@ class Renderer(ABC):
     #: reads this instead of matching the title. ``""`` when the transport sent
     #: no identity.
     current_tool_name: str = ""
+    #: The driver's empty-turn verdict for the turn being finalized
+    #: (``OutputEvent.notice`` on ``DONE``), set by :meth:`dispatch` before
+    #: ``on_done`` runs. Non-empty means the turn closed with no assistant text
+    #: and this is the sentence the user is owed; a renderer whose body is empty
+    #: at ``on_done`` posts it where its bare placeholder would otherwise go, so
+    #: a turn that produced nothing never reads as a finished reply. ``""`` for a
+    #: turn that produced text, a cancelled turn, and every turn on a renderer
+    #: that never received a ``DONE`` (a close after an exception).
+    empty_turn_notice: str = ""
 
     def __init__(self, capabilities: TransportCapabilities) -> None:
         self.capabilities = capabilities
@@ -848,6 +862,7 @@ class Renderer(ABC):
         elif event.kind == COMPACTION:
             await self.on_compaction(event.context_usage_pct)
         elif event.kind == DONE:
+            self.empty_turn_notice = event.notice or ""
             await self.on_done(event.stop_reason)
         elif event.kind == STEER_CONSUMED:
             await self.on_steer_consumed(event.text)
