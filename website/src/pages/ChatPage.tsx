@@ -13,14 +13,9 @@ import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
-import { isBrowseCommand } from '../utils/browseCommand'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import { mergeRenderers, resolveRenderer, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from './chat/transcriptRenderers'
-// Re-exported so the symbol `ChatPage` exported before this extraction stays
-// importable from here; the implementation lives in `utils/browseCommand` so a
-// pure test need not pull ChatPage's module graph.
-export { isBrowseCommand }
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../store'
@@ -3478,32 +3473,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setSessionPreviewPending(slot, norm)      // heuristic offer: card only, no open, no load
     }
   }, [messages, activeSlot, dispatch])
-  // Auto-open the Browser panel when the agent starts browsing. The signal is the
-  // agent's own shell call: browsing is `playwright-cli` commands, so a shell
-  // tool_call whose preview invokes it is the start of a browse. Open/focus the tab
-  // only at the START (new slot, or after a >90s gap), NOT on every command, so it
-  // cannot steal focus from a tab the user switched to mid-browse.
-  const browseOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
-  useEffect(() => {
-    const onTool = (e: Event) => {
-      const d = (e as CustomEvent<{ slot?: string; is_shell?: boolean; input_preview?: string }>).detail
-      if (!d?.is_shell) return
-      if (!isBrowseCommand(d.input_preview)) return
-      const key = d.slot ?? null
-      // Only auto-open when the browsing session IS the one on screen. A background
-      // session's commands must not open another session's panel.
-      if (!key || key !== activeSlotRef.current) return
-      const now = Date.now()
-      const prev = browseOpenedRef.current
-      if (prev.key !== key || now - prev.ts > 90_000) {
-        dispatch(openActivityPanel())
-        tabsCtlRef.current.openView('browser')
-      }
-      browseOpenedRef.current = { key, ts: now }
-    }
-    window.addEventListener('kirocrew-tool-call', onTool)
-    return () => window.removeEventListener('kirocrew-tool-call', onTool)
-  }, [dispatch])
   // Reachability: declare open chat slots to the Electron main process so the
   // agent command channel polls for them (see listPanelIds) even before the Browser
   // tab is ever opened — this is what makes the built-in browser the default for a

@@ -14,8 +14,8 @@
  *     rendering is covered by AssistantMessage.test.tsx.
  *
  *  2. The window-event listeners: `mc-config-changed` (chat-settings reload),
- *     `toggle-pin-chat-sidebar`, `kirocrew-tool-call` (foreground browser
- *     auto-open), and `mc:run-in-terminal` (both the non-string guard and the
+ *     `toggle-pin-chat-sidebar`, `kirocrew-tool-call` (a shell browse must NOT
+ *     auto-open the panel), and `mc:run-in-terminal` (both the non-string guard and the
  *     PTY-never-connects timeout that reports failure back to the code block).
  *
  *  3. The welcome-state "Continue a previous chat?" suggestion list and
@@ -691,7 +691,13 @@ describe('ChatPage window-event listeners', () => {
     await waitFor(() => expect(localStorage.getItem('mc-sidebar-pinned')).not.toBe(first))
   })
 
-  it('opens the Browser panel when the foreground session starts a playwright-cli command', async () => {
+  it('leaves the activity panel alone when the agent runs a playwright-cli shell command', async () => {
+    // A shell `playwright-cli` call drives an agent-owned headless Chromium that
+    // the Browser panel has no way to frame: the native view is reached only by
+    // `browser` MCP ops (surfaced by `browser:agent-opened`), and the gateway's
+    // framed `show` server lives in its own session namespace. Opening the
+    // panel here could only land on the "not running" card, so it must not.
+    delete (window as unknown as { browserAPI?: unknown }).browserAPI
     const { store } = await renderTurn()
     expect(store.getState().chat.activityOpen).toBe(false)
 
@@ -705,7 +711,34 @@ describe('ChatPage window-event listeners', () => {
       }))
     })
 
-    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('leaves the activity panel alone on a playwright-cli shell command even when the native bridge is present', async () => {
+    // Bridge presence is not evidence the shell browse landed in the native
+    // view — it never does. The desktop path opens the panel from the main
+    // process's `browser:agent-opened` signal, not from the tool-call preview.
+    ;(window as unknown as { browserAPI?: unknown }).browserAPI = {
+      trackSession: vi.fn(async () => ({ ok: true })),
+      onAgentOpened: vi.fn(() => () => {}),
+    }
+    try {
+      const { store } = await renderTurn()
+      act(() => {
+        window.dispatchEvent(new CustomEvent('kirocrew-tool-call', {
+          detail: {
+            slot: 'chat-1',
+            is_shell: true,
+            input_preview: 'playwright-cli snapshot',
+          },
+        }))
+      })
+      await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+      expect(store.getState().chat.activityOpen).toBe(false)
+    } finally {
+      delete (window as unknown as { browserAPI?: unknown }).browserAPI
+    }
   })
 
   it('ignores a run-in-terminal request that carries no command', async () => {
