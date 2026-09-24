@@ -31,6 +31,7 @@ from collections import Counter
 from collections.abc import Callable
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.security.redaction_switch import credential_pass_bypassed
 
 # ── Credential Output Redaction ──
 # Catches raw credential patterns in LLM output / tool results,
@@ -1385,6 +1386,14 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
 
     Returns (cleaned_text, list_of_warnings).
 
+    Unconditional on every surface EXCEPT inside an explicit
+    ``redaction_switch.owner_view()`` scope: there, and only there, the owner's
+    switch is consulted, and ``enabled: false`` returns ``text`` unchanged with
+    no warnings. A caller that has not opened the scope -- every channel egress,
+    every admission gate, every log -- gets the full pass whatever the owner
+    chose (see the ``redaction_switch`` module docstring for the seams that do
+    open it).
+
     Every pass positions its redactions as spans against the IMMUTABLE input,
     and the string is rewritten exactly once at the end. Redacting by matched
     VALUE (``result.replace(matched, tag, 1)``) rewrites the first textual
@@ -1399,6 +1408,9 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     redacts only the part of its span still standing in plaintext, so no
     character is redacted twice and no character a pass flagged is left behind.
     """
+    if credential_pass_bypassed():
+        return text, []
+
     warnings: list[str] = []
 
     # 1. Plaintext credential patterns.

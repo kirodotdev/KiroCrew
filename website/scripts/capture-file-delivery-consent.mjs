@@ -24,6 +24,7 @@ import { mkdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { serveDist } from './lib/serve-dist.mjs'
 import { installApiFixtures, logPageFailures } from './lib/api-fixtures.mjs'
+import { SECURITY_RAIL_FIXTURES } from './lib/security-fixtures.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/file-delivery-consent'
 const PREFIX = process.argv[3] || 'after'
@@ -53,19 +54,8 @@ const armedView = {
   expires_in: 600, approve_command: 'kirocrew file-delivery approve',
 }
 
-const FIXTURES = {
-  '/api/security/posture': { controls: [], counts: {} },
-  '/api/security/denied-commands': {
-    builtins: [], user_added: [], disable_all: false, effective_count: 0, governance_locked: false,
-  },
-  '/api/governance/policy': {
-    version: null, has_policy: false, profile: null, unavailable: false, scopes: [],
-  },
-  '/api/config/kirocrew': { agent: { yolo_duration: '6h', apps_allow_third_party: false } },
-  '/api/tailnet/status': {
-    enabled: false, governance_pinned: false, host: '', origin: '', resolved_at: 0, state: 'off',
-  },
-}
+// The rail's mount-time reads, shared with the sibling security harnesses.
+const FIXTURES = SECURITY_RAIL_FIXTURES
 
 async function main() {
   if (!process.env.SKIP_BUILD) {

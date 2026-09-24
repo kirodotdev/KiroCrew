@@ -574,6 +574,14 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # gate matches no paths, so the read-only mount is what holds regardless of how
     # a command spells the way there.
     "ssh_auth_sock_consent.json",
+    # The owner's credential-redaction switch. Same class as the consent
+    # records above: a writable record lets a prompt-injected agent switch off
+    # the credential pass in the owner's dashboard file viewer, the one surface
+    # the switch governs.
+    # A missing or unreadable file reads as ON, so this kernel write-denial is
+    # what keeps the switch the owner's regardless of how a command spells the
+    # way there.
+    "credential_redaction.json",
     # The browser launcher and its vendored Node package tree. Agent browser
     # commands must read and execute this directory, while a write would choose
     # the binary the unsandboxed gateway executes during startup reclamation or
@@ -821,6 +829,7 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "decisions_consent.json",
     "file_delivery_consent.json",
     "ssh_auth_sock_consent.json",
+    "credential_redaction.json",
     # The paid-AWS consent grant. Unlike its sibling consent records this one stores
     # IDENTIFIERS as well as a decision -- ``Grant.to_dict`` writes ``account`` and
     # ``arn`` -- so a read tells a foreign child which AWS account and caller identity
@@ -1495,6 +1504,14 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # -- the DEFAULT before any grant -- leaving it creatable from inside the
     # namespace sandbox.
     "ssh_auth_sock_consent.json",
+    # The credential-redaction switch satisfies both criteria the way
+    # ``file_delivery_consent.json`` does: ``redaction_switch.read_state`` reads
+    # absent, empty and unreadable alike as ENABLED, so a pre-created ``{}``
+    # means exactly what an absent file means (criterion 1); the writer
+    # publishes through ``atomic_write`` (new inode), so a sandboxed reader
+    # frozen at ``{}`` keeps redacting after the owner switches off, which is
+    # narrower than the truth (criterion 2).
+    "credential_redaction.json",
     "settings_seeds.json",
     # The cloud launcher's config, and the leaf where an ABSENT file is the more
     # dangerous case: with no file there is no seal, so an agent could CREATE the

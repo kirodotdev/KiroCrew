@@ -1266,6 +1266,13 @@
       "route": "/settings/security/posture?highlight=security.live-security-posture"
     },
     {
+      "id": "security.redact-credentials-in-files-the-dashboard-opens-for-you",
+      "label": "Redact credentials in files the dashboard opens for you",
+      "tab": "security",
+      "route": "/settings/security/redaction?highlight=security.redact-credentials-in-files-the-dashboard-opens-for-you",
+      "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
+    },
+    {
       "id": "security.trust-every-third-party-app",
       "label": "Trust every third-party app",
       "tab": "security",

@@ -659,6 +659,16 @@ _CREW_SECRET_LEAVES: list[str] = [
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
     "ssh_auth_sock_consent.json",
+    # The owner's credential-redaction switch. Same class of control as the
+    # consent records above: the record is what AUTHORIZES the credential scrubber
+    # to stand down in the owner's dashboard file viewer (the one surface it
+    # governs), so an agent that could write it would switch off the pass that
+    # keeps the secrets it can read out of that view. A missing or unreadable
+    # file reads as ENABLED, so fencing the
+    # write is what keeps the switch the owner's. The owner-gated dashboard
+    # ``/api/security/credential-redaction`` handler is the only writer and opens
+    # the path directly, not through this gate.
+    "credential_redaction.json",
     # The single-use step-up nonce that authorizes RECORDING a flagged-file
     # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
     # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level

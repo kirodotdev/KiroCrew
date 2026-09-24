@@ -9122,6 +9122,11 @@ async def _run_chat(
     # so raw fragments never reach WS/SSE consumers. assistant_text (the source
     # for the final _flush_segment redaction) is accumulated independently and is
     # unaffected. Reset per segment via _flush_text_stream / _wsred.reset().
+    # Deliberately NOT an owner-view seam: this wire stream fans to every
+    # connected dashboard client, owner or not, and the finalized text is
+    # redacted before it is appended, so the owner's credential-redaction switch
+    # cannot apply to chat at all (it applies to the owner's dashboard file
+    # viewer only -- see ``security.redaction_switch``).
     _wsred = StreamRedactor()
 
     def _persist_partial_reply() -> None:

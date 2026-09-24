@@ -1043,6 +1043,17 @@ export interface FileDeliveryConsentStatus {
   grants: Record<string, FileDeliveryGrant | null>
 }
 
+/**
+ * The owner's credential-redaction switch (Settings > Security > Credential
+ * redaction). `enabled` is the position as RECORDED by the backend, which reads a
+ * missing or unreadable record as `true`; `changed_at` is empty until the owner
+ * has flipped it at least once.
+ */
+export interface CredentialRedactionState {
+  enabled: boolean
+  changed_at: string
+}
+
 /** The SPA-safe view of an armed grant request. The approval NONCE is never
  *  sent to the browser: finishing the grant needs `approve_command` run on the
  *  host, which is the human-presence proof an agent-driven browser cannot fake. */
@@ -5110,6 +5121,14 @@ export const api = {
   revokeFileDeliveryConsent: (destinationClass: string) =>
     del('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
       .then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
+  // Credential-redaction switch (Settings > Security > Credential redaction).
+  // Two explicit verbs for the same reason the consent helpers above keep
+  // theirs: the handler applies the owner gate to the read and the write
+  // separately, and the write is the ONLY writer of the keystone.
+  credentialRedaction: () =>
+    fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
+  setCredentialRedaction: (enabled: boolean) =>
+    put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
   voiceSynthesize: (slot: string, text: string, opts?: { voice?: string; engine?: string; rate?: string; pitch?: string; request_id?: string }) => {
     const request_id = opts?.request_id || createVoiceRequestId()
     window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot, request_id } }))

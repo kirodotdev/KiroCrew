@@ -23,6 +23,7 @@ import { render, screen, fireEvent, waitFor, act, within } from '@testing-librar
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PierreEditorHandle } from '../pierre'
+import { evictDocumentBodies } from '../hooks/usePanelTabs'
 
 // ── CSS Custom Highlight API stub (must precede the dynamic import) ──────────
 const highlightRegistry = new Map<string, Range[]>()
@@ -85,6 +86,8 @@ interface FetchOpts {
   knowledgePostStatus?: number
   fileReadOk?: boolean
   fileReadText?: string
+  /** Hold the /api/file-read answer until the returned release is called. */
+  fileReadHold?: { release: () => void }
   fileReadTruncated?: boolean
   downloadOk?: boolean
   downloadThrows?: boolean
@@ -110,6 +113,9 @@ function installFetch() {
       return { ok: true, blob: async () => new Blob(['bytes']) }
     }
     // /api/file-read
+    if (fetchOpts.fileReadHold) {
+      await new Promise<void>(r => { fetchOpts.fileReadHold!.release = r })
+    }
     const ok = fetchOpts.fileReadOk !== false
     return {
       ok,
@@ -372,6 +378,23 @@ describe('MarkdownPanel — refresh', () => {
     openPanelMenu()
     fireEvent.click(screen.getByText('Refresh'))
     await waitFor(() => expect(onContentChange).toHaveBeenCalledWith('reloaded from disk'))
+  })
+
+  it('discards a re-read that straddled a document-body purge (redaction switch flipped)', async () => {
+    // The read starts while the owner's switch is off (raw bytes), the switch
+    // flips before it lands: the result is stale under the pass now in force and
+    // must not be applied to the tab.
+    const onContentChange = vi.fn()
+    fetchOpts.fileReadText = 'AKIA-raw-while-off'
+    fetchOpts.fileReadHold = { release: () => {} }
+    mountPanel({ onContentChange })
+    openPanelMenu()
+    fireEvent.click(screen.getByText('Refresh'))
+    await waitFor(() => expect(fetchOpts.fileReadHold!.release).not.toBeUndefined())
+    act(() => { evictDocumentBodies() })
+    await act(async () => { fetchOpts.fileReadHold!.release() })
+    await new Promise(r => setTimeout(r, 20))
+    expect(onContentChange).not.toHaveBeenCalledWith('AKIA-raw-while-off')
   })
 
   it('disables Refresh while the buffer is dirty so edits cannot be clobbered', () => {

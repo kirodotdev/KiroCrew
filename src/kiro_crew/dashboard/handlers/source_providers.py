@@ -6583,6 +6583,22 @@ def stale_owner_session_response(request: web.Request) -> web.Response | None:
     )
 
 
+def owner_view_for_request(request: web.Request) -> bool:
+    """Whether the owner's credential-redaction switch may apply to THIS request.
+
+    :func:`is_owner_dashboard_request` with the fail direction spelled out: any
+    request the owner predicate cannot evaluate (no ``state`` on the app, an
+    unexpected shape) is NOT an owner view, so the caller falls back to the
+    unconditional redaction pass. Used only by the owner-view seams
+    (``security.redaction_switch``); a gate that must REFUSE on non-owner keeps
+    calling the predicate directly.
+    """
+    try:
+        return is_owner_dashboard_request(request)
+    except Exception:
+        return False
+
+
 def is_owner_dashboard_request(request: web.Request) -> bool:
     """Return whether request has a configured or implicit local owner identity."""
     state = request.app["state"]

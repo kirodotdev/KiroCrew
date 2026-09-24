@@ -27,6 +27,7 @@ import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRen
 import { api } from '../api/client'
 import { fileReadUrl, downloadFileToDisk } from '../utils/fileReadUrl'
 import { fetchFileRead, fileReadQueryKey } from '../utils/fileReadQuery'
+import { documentBodyEpochNow } from '../hooks/usePanelTabs'
 import { loadCommentDrafts, saveCommentDrafts, setCommentsForFile } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -1403,9 +1404,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     diskReadAbortRef.current?.abort()
     const ac = new AbortController()
     diskReadAbortRef.current = ac
+    // A purge of document bodies (the owner's redaction switch flipped) between
+    // start and finish makes this read's bytes stale under the pass now in
+    // force: superseded, never applied. The tab rehydrates through a fresh read.
+    const epoch = documentBodyEpochNow()
     try {
       const r = await fetchFileRead(filePath, ac.signal)
-      if (ac.signal.aborted) return { kind: 'superseded' }
+      if (ac.signal.aborted || documentBodyEpochNow() !== epoch) return { kind: 'superseded' }
       return r.ok ? { kind: 'ok', text: r.text, binary: r.binary } : { kind: 'failed' }
     } catch {
       return ac.signal.aborted ? { kind: 'superseded' } : { kind: 'failed' }

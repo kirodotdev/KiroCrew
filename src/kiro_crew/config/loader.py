@@ -1196,6 +1196,27 @@ def file_delivery_consent_path() -> Path:
     return config_dir() / "file_delivery_consent.json"
 
 
+def credential_redaction_path() -> Path:
+    """Return path to credential_redaction.json -- the credential-redaction switch.
+
+    Same KEYSTONE reasoning as :func:`file_delivery_consent_path`, and the leaf
+    is on ``security._CREW_SECRET_LEAVES`` for the same reason: turning the
+    credential scrubber OFF is an authorization, not a preference. Stored in the
+    agent-readable ``config.json`` it would be writable by any auto-approved agent
+    shell, so a prompt-injected agent could switch off the very pass that keeps
+    the secrets it can read out of the owner's dashboard file viewer (the one
+    surface the switch governs). ``is_sensitive_path`` blocks the tool path and
+    the OS sandbox mounts the keystone read-only for the shell.
+
+    Holds ``{"enabled": bool, "changed_at": str}``; a missing, unreadable or
+    malformed file reads as ENABLED (see ``security.redaction_switch``), so the
+    fail direction is always "keep redacting". The only writer is the
+    authenticated, OWNER-gated dashboard ``/api/security/credential-redaction``
+    handler. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "credential_redaction.json"
+
+
 def ssh_auth_sock_consent_path() -> Path:
     """Return path to ssh_auth_sock_consent.json -- the SSH-agent forward consent.
 

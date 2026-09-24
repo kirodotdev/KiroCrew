@@ -1895,6 +1895,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Live Security Posture"
   },
   {
+    "id": "security.redact-credentials-in-files-the-dashboard-opens-for-you",
+    "labelKey": "pages.settings.securityPanel.credential_redaction_toggle",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "redaction"
+    },
+    "label": "Redact credentials in files the dashboard opens for you",
+    "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
+  },
+  {
     "id": "security.trust-every-third-party-app",
     "labelKey": "pages.settings.securityPanel.trustedApps.allow_all_label",
     "tab": "security",

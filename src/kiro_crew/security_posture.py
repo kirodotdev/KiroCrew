@@ -1224,8 +1224,26 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "File cards broadcast to the browser",
         "dashboard/handlers/files.py",
         "The file-card JSON pushed over the chat WebSocket is redacted before "
-        "broadcast. (This module's other redact() calls are upload GATES — they "
-        "abort a send when redaction would alter the content — not egress.)",
+        "broadcast. (Apart from the owner's file read and diff on the next row, "
+        "this module's other redact() calls are upload GATES — they abort a send "
+        "when redaction would alter the content — not egress.)",
+    ),
+    (
+        "File viewer read and diff for the owner",
+        "dashboard/handlers/files.py",
+        "The file body returned by the dashboard's file read (api_file_read) — "
+        "the chat side panel's Files tab, and the Library and Artifacts session-"
+        "document previews and re-reads that use the same route — and the "
+        "original and diff bodies returned by the matching file diff "
+        "(api_file_diff), which the panel compares that buffer against. Both "
+        "scanners run for every caller EXCEPT the dashboard owner with the "
+        "credential-redaction switch turned off (Settings → Security → "
+        "Credential redaction in file views): then these two responses run the exfil-URL "
+        "pass alone, in the owner's own dashboard only, with one verdict per "
+        "request so neither side is raw while the other is masked. The switch "
+        "defaults to on, "
+        "is stored on the keystone floor the agent cannot write, and every flip "
+        "is audited.",
     ),
     (
         "MCP custom server specs",
@@ -2222,6 +2240,18 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # surface that eventually renders a Zoom connector error is the egress
         # boundary and is a registered sink there, not here.
         "connections/vendors/zoom/errors.py",
+        # Not a redactor call at all: the keystone path helper
+        # `credential_redaction_path()` merely NAMES the switch that governs the
+        # credential pass (its docstring and identifier match the scan). Nothing
+        # is redacted here and nothing leaves; the sink that honours the switch is
+        # `dashboard/handlers/files.py`, already registered.
+        "config/loader.py",
+        # Owner-gated GET/PUT for the credential-redaction switch. The identifiers
+        # (`api_credential_redaction_*`, `redaction_switch.set_enabled`) match the
+        # scan, but the handler redacts nothing: it reads and writes a boolean on
+        # the keystone and audits the change. The output it produces is that
+        # boolean, never agent-authored text, so it is not an egress boundary.
+        "dashboard/handlers/credential_redaction.py",
     }
 )
 
@@ -2611,7 +2641,8 @@ _CONTROLS: tuple[PostureControl, ...] = (
         summary=(
             "Every boundary where agent output reaches a human or an external "
             "service runs a redaction pass first. Most run both scanners; the few "
-            "that run only one say so on their own row."
+            "that run only one, or that the owner can narrow to one for their own "
+            "view, say so on their own row."
         ),
         source="src/kiro_crew/security/__init__.py",
         items_fn=_redaction_sink_items,

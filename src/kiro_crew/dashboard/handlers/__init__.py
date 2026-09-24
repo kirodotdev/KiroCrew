@@ -1002,6 +1002,13 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     pwa_file,
 )
 
+# Credential-redaction switch — owner-gated, and the ONLY writer of
+# ``credential_redaction.json`` (see ``security.redaction_switch``).
+from kiro_crew.dashboard.handlers.credential_redaction import (  # noqa: E402, F401
+    api_credential_redaction_get,
+    api_credential_redaction_put,
+)
+
 # Decision seam — the operator's switch for sending conversation state to Jev
 # (sole writer of the ``decisions_consent.json`` keystone), plus the chat strip's
 # verdict writer and folded report.

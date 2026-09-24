@@ -95,6 +95,18 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     configKey: 'agent.yolo_duration',
   },
   {
+    // Same shape as the third-party-apps override above: the toggle lives in
+    // the `redaction` rail section, so without `section=redaction` the deep
+    // link lands on the security rail with the card unmounted.
+    id: 'security.redact-credentials-in-files-the-dashboard-opens-for-you',
+    labelKey: 'pages.settings.securityPanel.credential_redaction_toggle',
+    descriptionKey: 'pages.settings.securityPanel.credential_redaction_toggle_help',
+    tab: 'security',
+    type: 'toggle',
+    occurrence: 1,
+    params: { section: 'redaction' },
+  },
+  {
     id: 'security.trust-this-machine-s-tailnet-name',
     labelKey: 'pages.settings.securityPanel.tailnet_title',
     tab: 'security',

@@ -90,7 +90,7 @@ from kiro_crew.pdf_extract import PdfExtraction, extract_pdf_segments
 from kiro_crew.platform import binary_content_is_flagged
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.platform import wide_content_is_flagged
-from kiro_crew.platform.context import redact_log_via_context
+from kiro_crew.platform.context import redact_log_via_context, redact_owner_view_via_context
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     popen_limited,
@@ -104,6 +104,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
     redact_path_segments,
+    redaction_switch,
     sandbox_credential_targets,
 )
 from kiro_crew.validation import (
@@ -2888,7 +2889,6 @@ def _read_request_path(raw: str, read_cap: int) -> _TextRead:
 
 async def api_file_watch(request: web.Request) -> web.StreamResponse:
     """GET /api/file-watch?path=... — SSE stream of file content changes."""
-
     raw_path = request.query.get("path", "")
     try:
         validate_tool_args({"path": raw_path}, FILE_READ_SCHEMA)
@@ -2980,6 +2980,11 @@ async def api_file_watch(request: web.Request) -> web.StreamResponse:
                     break
                 try:
                     content = await asyncio.to_thread(_read_file, current_resolved, read_cap)
+                    # NOT an owner-view seam, on purpose: this stream also
+                    # serves file-backed artifact live reload, and neither
+                    # consumer renders the frame -- both re-read through
+                    # api_file_read, which is the one seam the owner's
+                    # credential-redaction switch applies to.
                     content = redact(content)
                 except Exception:
                     logger.warning("file-watch read error for %s", path, exc_info=True)
@@ -3000,6 +3005,28 @@ async def api_file_watch(request: web.Request) -> web.StreamResponse:
         pass
 
     return resp
+
+
+async def _owner_view_bypasses_credential_pass(request: web.Request) -> bool:
+    """Whether THIS request renders the owner's own view with the credential pass
+    stood down: the requester is the dashboard owner AND the owner's switch is OFF.
+
+    The two handlers that feed the file viewer -- ``api_file_read`` (the buffer)
+    and ``api_file_diff`` (the ``original`` it is compared against) -- call this
+    with the same request, so both sides of one render carry the same verdict.
+    A non-owner never bypasses; the verdict is read off the event loop per
+    request, so it is never older than the response it shapes. The keystone is a
+    fixed, trusted path (not caller-supplied), so the default executor is the
+    right one.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
+        owner_view_for_request,
+    )
+
+    if not owner_view_for_request(request):
+        return False
+    switch = await asyncio.to_thread(redaction_switch.read_state)
+    return not switch.enabled
 
 
 async def api_file_read(request: web.Request) -> web.Response:
@@ -3111,7 +3138,17 @@ async def api_file_read(request: web.Request) -> web.Response:
         content = outcome.content
         truncated = len(content) > read_cap
         content = content[:read_cap]
-        content = redact(content)
+        # OWNER-VIEW seam: when the requester IS the dashboard owner, the owner's
+        # credential-redaction switch applies to this read of their own disk
+        # (``security.redaction_switch``). A non-owner dashboard user (a Slack
+        # allow-listed ``!dashboard`` caller) gets the unconditional pass. The only
+        # other opener in this module is ``api_file_diff``, which feeds the SAME
+        # panel the ``original`` this buffer is compared against; the outbox
+        # flagged-file check and the upload gates keep the unconditional ``redact``.
+        if await _owner_view_bypasses_credential_pass(request):
+            content = redact_owner_view_via_context(content)
+        else:
+            content = redact(content)
         _sel().log_tool_invocation(
             session_key="dashboard", tool_name="file_read", outcome="success", resources=path
         )
@@ -6020,6 +6057,12 @@ async def api_file_diff(request: web.Request) -> web.Response:
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, UnicodeDecodeError):
             return {"diff": "", "original": "", "status": "error"}
 
+    # Same verdict as ``api_file_read`` for the same caller: the panel compares
+    # the buffer that read served against this ``original``, so the two MUST be
+    # redacted alike -- one side raw and the other masked renders an unchanged
+    # credential line as a hunk, in either direction.
+    bypass = await _owner_view_bypasses_credential_pass(request)
+
     def _run_redacted() -> dict:
         # Both text fields carry file content, so they pass through the same
         # redactor ``api_file_read`` applies to the panel's buffer. The panel's
@@ -6034,8 +6077,12 @@ async def api_file_diff(request: web.Request) -> web.Response:
         # credential's regex-required tail, and the surviving prefix is then
         # served as real bytes. Redacting whole text costs an unbounded scan,
         # which is why it runs here rather than on the event loop.
-        result["original"] = redact(result.get("original", ""))
-        result["diff"] = redact(result.get("diff", ""))
+        if bypass:
+            result["original"] = redact_owner_view_via_context(result.get("original", ""))
+            result["diff"] = redact_owner_view_via_context(result.get("diff", ""))
+        else:
+            result["original"] = redact(result.get("original", ""))
+            result["diff"] = redact(result.get("diff", ""))
         return result
 
     result = await asyncio.to_thread(_run_redacted)
