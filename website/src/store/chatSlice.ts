@@ -2071,11 +2071,25 @@ function hasUnidentifiedDurableRow(rows: ChatMessage[]): boolean {
  *  both under exactly one condition and unsafe for both under exactly one other --
  *  and a rule proved for one must not be able to go missing from the other.
  *
- *  `rows` is what the caller already holds. Only DURABLE rows carrying a `mid` are
- *  counted: the limit reaches a handler that slices DISK, disk holds no client-only
- *  row (a `thinking` block, a `permission` card, a `queued` bubble), and counting one
- *  inflates the request past the caller's own span. `floor` keeps a near-empty view
- *  from asking for a single row; `ceiling` is the widest window worth a round trip.
+ *  `rows` is what the caller already holds. Only DURABLE rows are counted: the limit
+ *  reaches a handler that slices DISK, disk holds no client-only row (a `thinking`
+ *  block, a `permission` card, a `queued` bubble), and counting one inflates the
+ *  request past the caller's own span. `floor` keeps a near-empty view from asking
+ *  for a single row; `ceiling` is the widest window worth a round trip.
+ *
+ *  `span` picks WHICH durable rows are counted, and it must match the check the
+ *  caller runs on the page it gets back:
+ *
+ *  - `identified` (default, `refreshSlot`): rows carrying a `mid`. Its post-fetch
+ *    checks are `mid`-keyed, and the floor guard below is argued over that count.
+ *  - `placeable` (`warmSlotCache`): rows carrying a `mid` OR a readable `ts` -- the
+ *    exact rows `slotCoverageShortfall` measures the page against. Counting only
+ *    `mid` rows there sized the page SMALLER than the span coverage checks: 50+
+ *    identified rows plus one mid-less legacy row asked for one row too few, so the
+ *    shortfall was always > 0 and every warm paid the bounded read AND the unbounded
+ *    retry this limit exists to cap. The floor guard still holds: at `want === held`
+ *    a page of `held` rows is the whole placeable span, and above it the decline for
+ *    unidentified history is unchanged.
  *
  *  Declines in the two shapes where a window can strand a row the caller holds:
  *
@@ -2092,12 +2106,16 @@ export function countMatchedFetchLimit(input: {
   rows: readonly ChatMessage[]
   floor: number
   ceiling: number
+  span?: 'identified' | 'placeable'
 }): number | undefined {
-  const { rows, floor, ceiling } = input
-  const held = rows.filter(
-    m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0,
-  ).length
-  if (held <= 0) return undefined
+  const { rows, floor, ceiling, span = 'identified' } = input
+  const hasMid = (m: ChatMessage) => typeof m.meta?.mid === 'string' && m.meta.mid.length > 0
+  // Nothing identified: no span to match, so any number would be a fixed bound.
+  if (!rows.some(m => isDurableRow(m) && hasMid(m))) return undefined
+  const counted = span === 'placeable'
+    ? (m: ChatMessage) => hasMid(m) || transcriptTsMs(m.ts) !== null
+    : hasMid
+  const held = rows.filter(m => isDurableRow(m) && counted(m)).length
   const want = Math.max(held, floor)
   if (want > ceiling) return undefined
   if (want > held && hasUnidentifiedDurableRow(rows as ChatMessage[])) return undefined
@@ -3353,6 +3371,7 @@ export const warmSlotCache = createAsyncThunk(
           rows: cache,
           floor: PANE_HYDRATE_LIMIT,
           ceiling: SLOT_DETAIL_MAX_LIMIT,
+          span: 'placeable',
         })
     const limit = running && cache.length > 0 && matchedLimit !== undefined
       ? Math.min(SLOT_DETAIL_MAX_LIMIT, matchedLimit + 1)

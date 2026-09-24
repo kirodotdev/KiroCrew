@@ -158,6 +158,30 @@ describe('warmSlotCache hydrate bound', () => {
     expect(api.chatSlotDetail).not.toHaveBeenCalledWith('bg-slot')
   })
 
+  /* The limit counts rows with the SAME predicate coverage measures (durable + a
+   * readable `ts`), not `mid`-bearing rows only. One mid-less legacy row among 50+
+   * identified ones made the page one row short, so coverage always reported a
+   * hole and every warm also paid the unbounded retry. */
+  it('sizes the window to cover a mid-less legacy row without a retry', async () => {
+    const legacy = msg('legacy', new Date(Date.UTC(2026, 7, 13, 7, 0, 0)).toISOString())
+    const identified = Array.from({ length: PANE_HYDRATE_LIMIT }, (_, i) =>
+      msg(`message ${i}`, new Date(Date.UTC(2026, 7, 13, 8, 0, i)).toISOString(), `m-${i}`))
+    const held = [legacy, ...identified]
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(
+      (_key: string, limit?: number) => {
+        const start = limit === undefined ? 0 : Math.max(0, held.length - limit)
+        return Promise.resolve({
+          ...detail, messages: held.slice(start), total: held.length, has_more: start > 0,
+        })
+      },
+    )
+    const store = makeStore('active-slot', { slotMessages: { 'bg-slot': held } })
+    await store.dispatch(warmSlotCache('bg-slot') as never)
+
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls)
+      .toEqual([['bg-slot', PANE_HYDRATE_LIMIT + 1]])
+  })
+
   it('leaves room for the folded stream in a count-matched running window', async () => {
     const held = Array.from({ length: PANE_HYDRATE_LIMIT }, (_, i) =>
       msg(`message ${i}`, new Date(Date.UTC(2026, 7, 13, 8, 0, i)).toISOString(), `m-${i}`))

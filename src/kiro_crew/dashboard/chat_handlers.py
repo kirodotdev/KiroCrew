@@ -97,6 +97,7 @@ from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
     _MANUAL_CONTINUE_MSG,
     _MANUAL_RESUME_MSG,
+    SLOT_DETAIL_MAX_LIMIT,
     SYNTHETIC_RECOVERY_KIND,
     _broadcast_expired_oauth_banners,
     _build_stream_chunk,
@@ -2319,7 +2320,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
 
     Query params:
       - ``limit``: max messages to return (optional; if omitted, returns ALL messages from disk).
-        Clamped to 1..500. A value below 1 is rejected rather than clamped up, because
+        Clamped to 1..SLOT_DETAIL_MAX_LIMIT (500). A value below 1 is rejected rather than clamped up, because
         no caller asking for 0 wanted exactly one message.
       - ``before``: return messages before this index (legacy pagination, still supported).
         ``before=0`` is valid and yields an empty page.
@@ -2347,7 +2348,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # plainly a bad request. The branch below still keys off the RAW values, so
     # routing is unchanged.
     try:
-        limit = min(int(limit_raw or "200"), 500)
+        limit = min(int(limit_raw or "200"), SLOT_DETAIL_MAX_LIMIT)
         before = int(before_raw) if before_raw is not None else None
     except ValueError:
         return web.json_response(

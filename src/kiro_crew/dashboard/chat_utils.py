@@ -1803,14 +1803,19 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
 # The entry cap counts individual STRINGS, and a rendered row costs several --
 # ``_prepare_messages`` redacts the content plus every meta string (a row's
 # unique ``meta.mid`` alone takes a slot) plus each variant. The backend page
-# ceiling is 500 rows, so the cap must hold one full page with headroom:
+# ceiling is ``SLOT_DETAIL_MAX_LIMIT`` rows, so the cap must hold one full page with headroom:
 # below that, a page's oldest-to-newest pass evicts its own head before the
 # next render reaches it, and the hit rate on exactly the multi-MB sessions this
 # cache exists for collapses to near zero. The 16 MiB byte cap is the real bound.
-_DISPLAY_REDACTION_PAGE_ROW_CEILING = 500
+#
+# ONE literal for the slot-detail page ceiling. The handler clamps ``?limit=`` to
+# it and the cache cap is derived from it, so raising the page size cannot leave
+# the cache sized for the old one. The frontend mirrors it as
+# ``SLOT_DETAIL_MAX_LIMIT`` in ``website/src/store/chatSlice.ts``.
+SLOT_DETAIL_MAX_LIMIT = 500
 _DISPLAY_REDACTION_STRINGS_PER_ROW = 8
 _DISPLAY_REDACTION_CACHE_MAX_ENTRIES = (
-    _DISPLAY_REDACTION_PAGE_ROW_CEILING * _DISPLAY_REDACTION_STRINGS_PER_ROW * 2
+    SLOT_DETAIL_MAX_LIMIT * _DISPLAY_REDACTION_STRINGS_PER_ROW * 2
 )
 _DISPLAY_REDACTION_CACHE_MAX_BYTES = 16 * 1024 * 1024
 _DisplayRedactionKey = tuple[bytes, int]

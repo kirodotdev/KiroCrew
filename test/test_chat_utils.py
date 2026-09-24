@@ -361,7 +361,7 @@ class TestRedactForDisplay:
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
         secret = "AKIAIOSFODNN7EXAMPLE"
-        rows = chat_utils._DISPLAY_REDACTION_PAGE_ROW_CEILING
+        rows = chat_utils.SLOT_DETAIL_MAX_LIMIT
         messages = [
             {
                 "role": "assistant",
