@@ -3573,7 +3573,8 @@ class TestBoundSlotRefusesTurnRestartingActions:
 
         # Readiness is orthogonal to this guard; stub it so a 503 latch cannot
         # mask the 409 under test (continue is not readiness-gated).
-        async def _ok(_request):
+        async def _ok(_request, *, backend=None, signs_in_via_kiro_cli=None, session_key=None):
+            del backend, signs_in_via_kiro_cli, session_key
             return None
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_regenerate.reject_if_kiro_unverified", _ok)
@@ -3627,7 +3628,7 @@ class TestBoundSlotRefusesTurnRestartingActions:
         """
         from aiohttp.test_utils import TestClient, TestServer
 
-        async def _ok(_request):
+        async def _ok(_request, **_kw):
             return None
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_rewind.reject_if_kiro_unverified", _ok)

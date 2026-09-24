@@ -103,7 +103,11 @@ from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     find_written_steer_row,
 )
-from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.chat_persistence import (
+    INTERRUPTED_TURN_META_KEY,
+    destructive_history_rollback_owns_slot,
+    save_slot_off_loop,
+)
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
@@ -4776,8 +4780,14 @@ def _flush_segment(
     broadcast: bool = True,
     quiet_persist: bool = False,
     interrupted: bool = False,
-) -> None:
+) -> dict:
     """Finalize current text block as a segment and persist it.
+
+    Returns the assistant row it appended, so the turn can keep track of every
+    segment it finalized: an abnormal end stamps those rows alongside the
+    partial reply (see ``_persist_partial_reply``), and the authentication
+    rollback drops them by that identity rather than keeping them as foreign
+    appends.
 
     ``quiet_persist`` additionally suppresses the per-message ``chat_message``
     broadcast that ``slot.append`` emits for the finalized assistant message.
@@ -4924,6 +4934,7 @@ def _flush_segment(
     # dashboard-surfaced copy of the widget, so it must not persist a credential
     # the segment redaction just stripped out of chat.
     _schedule_widget_registration(state, slot, redacted, str(last_msg.get("ts", "")))
+    return last_msg
 
 
 def _schedule_widget_registration(
@@ -8212,8 +8223,12 @@ async def _finish_queue_cycle(
     :func:`chat_utils.chat_done_payload` whether the floor really goes back to
     the user, and that question reaches the task store."""
 
+    preserve_destructive_reservation = bool(
+        slot._last_turn_auth_required and destructive_history_rollback_owns_slot(slot)
+    )
     will_synthesize = (
-        allow_automatic_successor
+        not preserve_destructive_reservation
+        and allow_automatic_successor
         and slot._pending_synthesis
         and not slot._synthesis_inflight
         # A slot gone from the registry is being torn down, so it has no next
@@ -8260,7 +8275,8 @@ async def _finish_queue_cycle(
         return
 
     slot.append("done", "", "done")
-    slot.task = None
+    if not preserve_destructive_reservation:
+        slot.task = None
     state.push_slots_update()
     state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
     # The turn that just finished is the most likely moment for this session's
@@ -8716,6 +8732,13 @@ async def _run_chat(
             logger.warning("Hook fire error: %s", exc)
         return injected
 
+    _interrupted_turn_id = uuid.uuid4().hex
+    # Every assistant row ``_flush_segment`` finalized during THIS turn. A tool
+    # boundary flushes the text streamed so far and resets ``assistant_text``,
+    # so an abnormal end has nothing left to persist under its own stamp; the
+    # rows already flushed are still this turn's output, and the stamp is what
+    # lets the authentication rollback tell them from a foreign append.
+    _turn_segment_rows: list[dict] = []
     assistant_text = ""
     # Initialized HERE (not with the other turn-state flags below) because
     # _steer_segment_cut declares it nonlocal — mypy requires the binding to
@@ -8766,7 +8789,20 @@ async def _run_chat(
         continuing. What they share with it is the obligation to record the body.
         ``interrupted`` is what makes the entry honest -- this text is what the
         turn had produced when it died, not a reply it finished.
+
+        The segments this turn already flushed at a tool boundary are stamped
+        first, whether or not any partial text remains: they are the failed
+        turn's output as much as the tail is, and the stamp is applied on an
+        abnormal end ONLY, so a turn that finishes leaves them untouched. The
+        edit lands in place; the window is re-serialized in full, so the
+        persisted copy carries it.
         """
+        for row in _turn_segment_rows:
+            meta = row.get("meta")
+            if not isinstance(meta, dict):
+                meta = {}
+                row["meta"] = meta
+            meta[INTERRUPTED_TURN_META_KEY] = _interrupted_turn_id
         if not assistant_text:
             return
         # Same glued-marker repair as _flush_segment: the interrupted body is the
@@ -8774,7 +8810,14 @@ async def _run_chat(
         body = _reflow_label_and_audit(slot, assistant_text)
         slot.purge_chunks()
         _redacted = redact_credentials(redact_exfiltration_urls(body)[0])[0]
-        slot.append("assistant", _redacted, "msg msg-a", meta=_decisions_strip_meta(slot))
+        _partial_meta = _decisions_strip_meta(slot) or {}
+        _partial_meta[INTERRUPTED_TURN_META_KEY] = _interrupted_turn_id
+        slot.append(
+            "assistant",
+            _redacted,
+            "msg msg-a",
+            meta=_partial_meta,
+        )
         _append_redaction_notice(slot, _redacted)
         crew_log_emit.on_message_sent(
             _crew_log_sid,
@@ -8858,13 +8901,15 @@ async def _run_chat(
             # interrupted from one the model finished. It needs no coordination
             # with the echo that proves consumption, which is why this fact is
             # recordable where a steer entry of its own is not.
-            _flush_segment(
-                state,
-                slot,
-                assistant_text,
-                broadcast=False,
-                quiet_persist=True,
-                interrupted=True,
+            _turn_segment_rows.append(
+                _flush_segment(
+                    state,
+                    slot,
+                    assistant_text,
+                    broadcast=False,
+                    quiet_persist=True,
+                    interrupted=True,
+                )
             )
             # The flushed segment IS visible output. Every other mid-turn site
             # that resets assistant_text (compaction, clear, agent switch,
@@ -11657,7 +11702,7 @@ async def _run_chat(
                 if in_tool_group:
                     _flush_text_stream()
                     if assistant_text:
-                        _flush_segment(state, slot, assistant_text)
+                        _turn_segment_rows.append(_flush_segment(state, slot, assistant_text))
                         assistant_text = ""
                         _turn_flushed_visible_text = True
                     else:
@@ -11828,7 +11873,9 @@ async def _run_chat(
                 # but keep the streaming message in place for correct tool ordering.
                 _flush_text_stream()
                 if not in_tool_group and assistant_text:
-                    _flush_segment(state, slot, assistant_text, broadcast=False)
+                    _turn_segment_rows.append(
+                        _flush_segment(state, slot, assistant_text, broadcast=False)
+                    )
                     assistant_text = ""
                     _turn_flushed_visible_text = True
                 # AFTER the flush, because seq is the order a reader folds on and
@@ -12900,7 +12947,7 @@ async def _run_chat(
                 # permission flow so the frontend renders them in order.
                 _flush_text_stream()
                 if assistant_text:
-                    _flush_segment(state, slot, assistant_text)
+                    _turn_segment_rows.append(_flush_segment(state, slot, assistant_text))
                     assistant_text = ""
                     _turn_flushed_visible_text = True
                 _pre_tool_hooks_fired = False
@@ -15419,7 +15466,7 @@ async def _run_chat(
         # until something flushes it, so a skipped notice was emitted nowhere.)
         if assistant_text and not _answer_text:
             _flush_text_stream()
-            _flush_segment(state, slot, assistant_text, broadcast=False)
+            _turn_segment_rows.append(_flush_segment(state, slot, assistant_text, broadcast=False))
 
         if _answer_text:
             # Get the withheld tail onto the wire BEFORE any plan reformat, so
@@ -15481,7 +15528,7 @@ async def _run_chat(
                         _extract_and_redact_plan_metadata(assistant_text)
                     )
             _flush_text_stream()
-            _flush_segment(state, slot, assistant_text, broadcast=False)
+            _turn_segment_rows.append(_flush_segment(state, slot, assistant_text, broadcast=False))
             if _stop_reason == STOP_REASON_REFUSAL:
                 # The Kiro service's content filter STREAMS its canned
                 # explanation as assistant text and then ends the turn, so the

@@ -26,14 +26,23 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import (
+    _save_slot_to_history,
+    capture_destructive_history_checkpoint,
+    reserve_destructive_history_rollback,
+    restore_destructive_history_after_auth_failure,
+)
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     reject_if_slot_under_construction,
     slot_history_key,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    backend_signs_in_via_kiro_cli,
+    reject_if_kiro_unverified,
+    selected_backend,
+)
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -81,12 +90,6 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     edited prompt against it. Slot key, title, folder, sidebar position, and
     color are unchanged.
     """
-    # Destructive: this truncates and PERSISTS history before the background
-    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -112,6 +115,27 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # 404 (not 403): indistinguishable from a missing slot —
             # anti-enumeration (CWE-204); true reason logged via SEL above.
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # Destructive: this truncates and PERSISTS history before the background
+    # turn runs. Kiro-backed sessions honor readiness BEFORE mutation. A foreign
+    # harness cannot use that latch, so the checkpoint below is restored if its
+    # authoritative ACP attempt reports AcpAuthRequired. The rewind replaces
+    # the session, so the backend that matters is the one the factory will build
+    # THIS session on -- resolved from its key, because a member thread is
+    # routed to `agent.member_acp_backend`, not the gateway default. AFTER the
+    # app-ownership 404 above: the gate now reads THIS slot's routing, and a
+    # foreign app must not learn slot existence or sign-in state from a 503
+    # (same anti-enumeration contract as the 404).
+    gate_session_key = effective_session_key(slot)
+    backend = await selected_backend(gate_session_key)
+    signs_in_via_kiro_cli = backend_signs_in_via_kiro_cli(backend)
+    blocked = await reject_if_kiro_unverified(
+        request,
+        signs_in_via_kiro_cli=signs_in_via_kiro_cli,
+    )
+    if blocked is not None:
+        return blocked
+    restore_on_auth_failure = not signs_in_via_kiro_cli
 
     # A crew-bound slot has no local rewind: it would rebuild the LOCAL ACP
     # session and re-run the edited turn on this machine, diverging from the peer.
@@ -246,6 +270,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # commit re-checks this key so the edit can never land on state it
         # never read.
         expected_history_key = slot_history_key(slot)
+        auth_checkpoint = (
+            capture_destructive_history_checkpoint(slot) if restore_on_auth_failure else None
+        )
         orphan_kiro_session_id = ""
         if state.sessions is not None:
             try:
@@ -268,6 +295,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         prospective_slot._dirty = True
         prospective_slot._resumed_count = 0
         prospective_slot._pending_rewrite = True
+        prospective_slot._pending_rewrite_basis = None
 
         # The backing queue belongs to the discarded suffix too. Entries that
         # arrive AFTER this snapshot (a send diverted to the queue by the
@@ -354,6 +382,16 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     # parameter's own default and reads as "not named".
                     _turn_actor="app" if request_app else "",
                 )
+                if auth_checkpoint is not None and slot._last_turn_auth_required:
+                    await restore_destructive_history_after_auth_failure(
+                        state,
+                        slot,
+                        auth_checkpoint,
+                        msgs_snapshot,
+                        expected_history_key=expected_history_key,
+                        expected_slot_name=name,
+                        restore_queue=True,
+                    )
                 return
             # Rewind rejected. A send diverted to the queue by this
             # reservation has no drain trigger of its own (no turn ran), so
@@ -367,6 +405,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
 
         task = asyncio.create_task(_rewind_dispatch())
         slot.task = task
+        reserve_destructive_history_rollback(state, slot, task)
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
 

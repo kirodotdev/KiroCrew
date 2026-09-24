@@ -14,6 +14,7 @@ reachable; ``_run_chat`` is always patched, so no backend session is started.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,6 +84,37 @@ async def test_regenerate_unknown_slot_is_404(state) -> None:
     async with _client(state) as client:
         resp = await client.post("/api/chat/slots/nope/regenerate")
     assert resp.status == 404
+
+
+@pytest.mark.asyncio
+async def test_regenerate_denies_an_app_that_does_not_own_the_slot(state) -> None:
+    """A foreign app gets the missing-slot shape before readiness is read."""
+    slot = state.get_or_create_slot("s1")
+    slot._app = "app-b"
+    slot.append("user", "hi")
+    slot.append("assistant", "hello")
+    slot.drain()
+    original_messages = list(slot.messages)
+    request = make_mocked_request(
+        "POST",
+        "/api/chat/slots/s1/regenerate",
+        match_info={"slot": "s1"},
+        app=_make_regen_app(state),
+    )
+    request["app"] = "app-a"
+    readiness = AsyncMock(side_effect=AssertionError("readiness must not be queried"))
+
+    with patch(
+        "kiro_crew.dashboard.chat_regenerate.reject_if_kiro_unverified",
+        new=readiness,
+    ):
+        resp = await api_chat_slot_regenerate(request)
+
+    assert resp.status == 404
+    assert resp.text is not None
+    assert json.loads(resp.text) == {"error": "not found", "code": "slot_not_found"}
+    readiness.assert_not_awaited()
+    assert slot.messages == original_messages
 
 
 @pytest.mark.asyncio
@@ -192,6 +224,9 @@ async def test_regenerate_survives_a_history_write_failure(state, caplog) -> Non
     slot.append("user", "hi")
     slot.append("assistant", "hello v1")
     slot.drain()
+    # Model a failed authentication rollback whose retry basis is still armed.
+    slot._pending_rewrite = True
+    slot._pending_rewrite_basis = [{"role": "user", "content": "failed candidate"}]
 
     with (
         patch(
@@ -208,6 +243,7 @@ async def test_regenerate_survives_a_history_write_failure(state, caplog) -> Non
 
     assert "failed to rewrite session history" in caplog.text
     assert slot._pending_rewrite is True
+    assert slot._pending_rewrite_basis is None
 
 
 @pytest.mark.asyncio
@@ -2021,3 +2057,46 @@ async def test_no_variants_refusal_carries_its_own_code(state) -> None:
         payload = await resp.json()
         assert payload["code"] == "no_variants"
         assert payload["error"] == "no variants"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_gates_on_the_live_sessions_backend_after_a_hot_switch(state) -> None:
+    """A live session keeps its backend across a PATCH of agent.acp_backend.
+
+    Regenerate continues that session rather than discarding it, so with the
+    default switched to Claude Code and the slot still on a signed-out kiro-cli,
+    the configured default would let the truncation through and the auth failure
+    would land only after the history was rewritten.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+    class _SignedOut(KiroPrerequisiteService):
+        async def session_ready(self) -> bool:
+            return False
+
+        async def verified_ready(self, *, max_age_secs: float) -> bool:
+            del max_age_secs
+            return False
+
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    state.kiro_prerequisite_service = object.__new__(_SignedOut)
+    state.sessions._sessions = {
+        effective_session_key(slot): SimpleNamespace(
+            provider=SimpleNamespace(uses_kiro_identity_store=True)
+        )
+    }
+    configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE))
+    with patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/regenerate")
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "kiro_prerequisite_required"
+
+    assert [m["role"] for m in slot.messages] == ["user", "assistant"]

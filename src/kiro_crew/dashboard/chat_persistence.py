@@ -13,6 +13,8 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
 
@@ -36,6 +38,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
+    _redact_for_display,
     _redact_meta_for_role,
     _sync_dashboard_slots,
     effective_session_key,
@@ -102,6 +105,11 @@ _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
 #: non-member key) — defaulting to ``None`` would silently unpin every member
 #: slot restored by a caller that forgot to prefetch.
 _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
+
+#: Row-level identity for partial assistant output from an interrupted turn.
+#: The value is unique per runner invocation so rollback can exclude that turn's
+#: orphan without matching on model-authored text.
+INTERRUPTED_TURN_META_KEY = "interruptedTurn"
 
 
 # Recognized title-origin values (mirrors chat_title._TITLE_ORIGINS; duplicated
@@ -3366,6 +3374,7 @@ def _save_slot_to_history(
     expected_disk_older_count: int | None = None,
     expected_slot_name: str | None = None,
     rows_only: bool = False,
+    rewrite_foreign_basis: list[dict] | None = None,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
 
@@ -3423,6 +3432,14 @@ def _save_slot_to_history(
     its own uncommitted metadata — an edit is acknowledged when it lands in memory
     and persists on a later flush, and after the pop no flush ever visits that slot
     again.
+
+    ``rewrite_foreign_basis`` is the failed candidate branch for an authentication
+    rollback. A normal rewrite remains authoritative and drops every disk-only
+    window row. When this basis is supplied, rows represented by either the restored
+    window or that failed branch are still rewrite-owned, while unmatched disk rows
+    are concurrent foreign appends and survive the replacement. The rollback retains
+    this basis on the slot until the rewrite commits, so a periodic flush retry
+    replays the same foreign-row classification as the first attempt.
 
     ``expected_disk_older_count`` pairs an explicit *messages* snapshot with the
     ``slot._disk_older_count`` the caller observed in the SAME synchronous stretch
@@ -4394,8 +4411,26 @@ def _save_slot_to_history(
                 e for m in window if (e := build_entry(m, attachments=attachments)) is not None
             ]
             window_lines = [json.dumps(e) + "\n" for e in window_entries]
+            basis = (
+                rewrite_foreign_basis
+                if rewrite_foreign_basis is not None
+                else (
+                    slot._pending_rewrite_basis
+                    if messages is None and slot._pending_rewrite
+                    else None
+                )
+            )
+            foreign_basis_entries = window_entries
+            if basis is not None:
+                foreign_basis_entries = window_entries + [
+                    e for m in basis if (e := build_entry(m, attachments=attachments)) is not None
+                ]
             frozen_prefix, foreign_lines, dedup_dropped = _frozen_prefix_and_foreign_appends(
-                slot, path, disk_older, window_entries, collect_foreign=not rewrite
+                slot,
+                path,
+                disk_older,
+                foreign_basis_entries,
+                collect_foreign=not rewrite or basis is not None,
             )
             # A fresh-``ts`` disk copy folded into the window by the bounded
             # (role, content) tiebreak is redundant with a window entry, so the
@@ -4554,6 +4589,7 @@ def _save_slot_to_history(
                 # flag so later saves return to the cheap default path.
                 if rewrite:
                     slot._pending_rewrite = False
+                    slot._pending_rewrite_basis = None
                 # How many window messages are now on disk, so memory trimming can
                 # safely fold leading window messages into the frozen prefix.
                 slot._disk_window_len = len(window)
@@ -4738,8 +4774,10 @@ async def save_slot_off_loop(
     rewrite: bool = False,
     best_effort: bool = True,
     expected_history_key: str | None = None,
+    expected_disk_older_count: int | None = None,
     expected_slot_name: str | None = None,
     rows_only: bool = False,
+    rewrite_foreign_basis: list[dict] | None = None,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
 
@@ -4788,6 +4826,12 @@ async def save_slot_off_loop(
     holds. See :func:`_save_slot_to_history` for the full contract, including the
     ``tab_id`` test that keeps the flag from deferring to the caller's own line.
 
+    ``rewrite_foreign_basis``: on the authentication rollback only, identify the
+    failed candidate branch so the authoritative rewrite can drop its rows while
+    retaining unmatched rows concurrently appended by another writer. The basis is
+    also retained on the slot until that rewrite commits, giving a periodic retry
+    the same foreign-row basis as the first attempt.
+
     Returns ``False`` only when the save was skipped WITHOUT writing: the
     session was permanently deleted while the save awaited the lock (the
     delete-won guard in :func:`_save_slot_to_history`), or the routing moved
@@ -4808,8 +4852,10 @@ async def save_slot_off_loop(
             force=force,
             rewrite=rewrite,
             expected_history_key=expected_history_key,
+            expected_disk_older_count=expected_disk_older_count,
             expected_slot_name=expected_slot_name,
             rows_only=rows_only,
+            rewrite_foreign_basis=rewrite_foreign_basis,
         )
 
     def _begin_guarded_metadata_write() -> None:
@@ -4873,6 +4919,191 @@ async def save_slot_off_loop(
     finally:
         if guarded_metadata:
             _finish_guarded_metadata_write()
+
+
+@dataclass(slots=True)
+class _DestructiveHistoryCheckpoint:
+    """Live state needed to undo a destructive rerun that never authenticated."""
+
+    messages: list[dict]
+    pending: list[dict]
+    queue: list[dict]
+    disk_older_count: int
+    disk_older_durable_count: int
+    resumed_count: int
+
+
+def capture_destructive_history_checkpoint(slot: _ChatSlot) -> _DestructiveHistoryCheckpoint:
+    """Freeze the user-visible branch before a destructive rerun mutates it."""
+
+    return _DestructiveHistoryCheckpoint(
+        messages=list(slot.messages),
+        pending=list(slot._pending),
+        queue=list(slot._queue),
+        disk_older_count=slot._disk_older_count,
+        disk_older_durable_count=slot._disk_older_durable_count,
+        resumed_count=slot._resumed_count,
+    )
+
+
+_DESTRUCTIVE_HISTORY_ROLLBACK_TASK_ATTR = "_kirocrew_destructive_history_rollback"
+
+
+def destructive_history_rollback_owns_slot(slot: _ChatSlot) -> bool:
+    """Whether this task must keep the slot reserved through auth rollback."""
+
+    task = asyncio.current_task()
+    return bool(
+        task is not None
+        and slot.task is task
+        and getattr(task, _DESTRUCTIVE_HISTORY_ROLLBACK_TASK_ATTR, False)
+    )
+
+
+def reserve_destructive_history_rollback(
+    state: DashboardState, slot: _ChatSlot, task: "asyncio.Task[None]"
+) -> None:
+    """Keep *task* reserved as the slot owner until its rollback wrapper completes.
+
+    The caller publishes ``slot.task = task`` itself, as every dispatch site
+    does; this only stamps the task so :func:`_finish_queue_cycle` leaves the
+    reservation in place, and releases it once the wrapper is done.
+    """
+
+    setattr(task, _DESTRUCTIVE_HISTORY_ROLLBACK_TASK_ATTR, True)
+
+    def _release(completed: "asyncio.Task[None]") -> None:
+        if slot.task is completed:
+            slot.task = None
+            state.push_slots_update()
+
+    task.add_done_callback(_release)
+
+
+async def restore_destructive_history_after_auth_failure(
+    state: DashboardState,
+    slot: _ChatSlot,
+    checkpoint: _DestructiveHistoryCheckpoint,
+    candidate_messages: list[dict],
+    *,
+    expected_history_key: str,
+    expected_slot_name: str,
+    restore_queue: bool = False,
+) -> bool:
+    """Restore the pre-rerun branch after a foreign harness rejects authentication.
+
+    ``_run_chat`` handles :class:`AcpAuthRequired` and records the structural
+    result on ``slot._last_turn_auth_required``. By the time it returns, rewind,
+    edit-resend, and regenerate have already persisted their candidate branch.
+    Re-adopt the checkpoint, discard the interrupted turn's stamped partial
+    assistant output, and retain other rows that arrived outside the candidate,
+    including the actionable authentication error. Then rewrite the same
+    transcript. The live branch is restored before the I/O so it remains the
+    retry source if persistence is temporarily unavailable: ``_dirty`` and
+    ``_pending_rewrite`` are armed first, and the failed candidate basis is retained
+    on the slot until the rewrite commits. The save is the truncation's own
+    best-effort write, so a failure or refusal leaves all three set for the periodic
+    flush to replay the first attempt. Returns ``False`` only when the restore was
+    skipped because the slot was replaced or moved to another transcript.
+    """
+
+    async with slot._lock:
+        if state._slots.get(expected_slot_name) is not slot:
+            logger.warning(
+                "auth rollback skipped for %s: the slot was replaced", expected_slot_name
+            )
+            return False
+        if slot_history_key(slot) != expected_history_key:
+            logger.warning(
+                "auth rollback skipped for %s: the slot moved to another transcript",
+                expected_slot_name,
+            )
+            return False
+
+        checkpoint_ids = {id(row) for row in checkpoint.messages}
+        candidate_ids = {id(row) for row in candidate_messages}
+        new_rows = [
+            row
+            for row in slot.messages
+            if id(row) not in checkpoint_ids and id(row) not in candidate_ids
+        ]
+        interrupted_rows = [
+            row
+            for row in new_rows
+            if row.get("role") == "assistant"
+            and isinstance(row.get("meta"), dict)
+            and isinstance(row["meta"].get(INTERRUPTED_TURN_META_KEY), str)
+        ]
+        interrupted_ids = {id(row) for row in interrupted_rows}
+        retained_tail = [row for row in new_rows if id(row) not in interrupted_ids]
+        retained_ids = {id(row) for row in retained_tail}
+        pending_ids = {id(row) for row in slot._pending}
+        slot.messages = checkpoint.messages + retained_tail
+        slot._pending[:] = [row for row in checkpoint.pending if id(row) in pending_ids] + [
+            row for row in slot._pending if id(row) in retained_ids
+        ]
+
+        if restore_queue:
+            checkpoint_queue_ids = {entry["id"] for entry in checkpoint.queue}
+            slot._queue[:] = checkpoint.queue + [
+                entry for entry in slot._queue if entry["id"] not in checkpoint_queue_ids
+            ]
+            # Rewind announced each discarded entry with ``queue_cancel``, so the
+            # other open clients dropped their cards; re-adding the entries here
+            # without the inverse frame leaves those prompts server-held and
+            # invisible until the next slot-detail fetch. Same payload as the
+            # requeued-steer ``queue_push`` in ``chat_runner``, and best-effort
+            # for the same reason: the entry is already back in the queue, and a
+            # broadcast failure must not abort the restore it follows.
+            for entry in checkpoint.queue:
+                try:
+                    state.broadcast_ws(
+                        "queue_push",
+                        {
+                            "slot": slot.key,
+                            "content": _redact_for_display(entry.get("content", "")),
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "queue_id": entry["id"],
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "queue_push broadcast failed for restored queue entry (slot %s)",
+                        slot.key,
+                        exc_info=True,
+                    )
+
+        slot._disk_older_count = checkpoint.disk_older_count
+        slot._disk_older_durable_count = checkpoint.disk_older_durable_count
+        slot._resumed_count = checkpoint.resumed_count
+        slot._pending_variants = []
+        slot.invalidate_source_links()
+        slot._frozen_prefix_cache = None
+        slot._pending_rewrite = True
+        slot._dirty = True
+        if slot._pending:
+            slot.event.set()
+        else:
+            slot.event.clear()
+        state.push_slots_update()
+
+        restored_ids = {id(row) for row in slot.messages}
+        failed_branch_only = [row for row in candidate_messages if id(row) not in restored_ids]
+        slot._pending_rewrite_basis = failed_branch_only + interrupted_rows
+        # Same best-effort contract as the truncation save this undoes: a failed
+        # or refused write leaves ``_dirty`` and ``_pending_rewrite`` set, so
+        # the periodic flush re-projects the restored window.
+        await save_slot_off_loop(
+            state,
+            slot,
+            list(slot.messages),
+            expected_history_key=expected_history_key,
+            expected_disk_older_count=checkpoint.disk_older_count,
+            expected_slot_name=expected_slot_name,
+            rewrite_foreign_basis=slot._pending_rewrite_basis,
+        )
+        logger.info("restored pre-rerun history after auth failure for %s", expected_slot_name)
+        return True
 
 
 def _build_history_prefix(

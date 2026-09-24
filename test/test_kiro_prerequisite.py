@@ -3749,7 +3749,7 @@ class TestKiroPrerequisiteHandlers:
             {"role": "assistant", "content": "answer", "ts": "a1"},
         ]
         original_messages = copy.deepcopy(messages)
-        slot = SimpleNamespace(messages=messages)
+        slot = SimpleNamespace(key="paused", messages=messages)
         sessions = MagicMock()
         persistence = MagicMock()
         state = SimpleNamespace(

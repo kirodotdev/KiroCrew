@@ -8,14 +8,24 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.chat_persistence import (
+    capture_destructive_history_checkpoint,
+    reserve_destructive_history_rollback,
+    restore_destructive_history_after_auth_failure,
+    save_slot_off_loop,
+)
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     reject_if_slot_under_construction,
     slot_history_key,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    backend_signs_in_via_kiro_cli,
+    live_session_signs_in_via_kiro_cli,
+    reject_if_kiro_unverified,
+    selected_backend,
+)
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
@@ -55,20 +65,54 @@ def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
 
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/regenerate — regenerate the last assistant reply."""
-    # Destructive: this truncates and PERSISTS history before the background
-    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
+    # Local import, and it must STAY local: ``chat_handlers`` cannot be the first
+    # module of the package to import (its own transitive
+    # ``validation`` <-> ``artifacts`` cycle resolves only once something else
+    # has pulled those in), so hoisting these two to module scope makes
+    # ``import kiro_crew.dashboard.chat_regenerate`` fail on its own. Same reason
+    # ``session_control`` and ``handlers/core`` reach it this way.
+    from kiro_crew.dashboard.chat_handlers import (
+        _check_slot_app_ownership,
+        _reauthorize_after_await,
+    )
+
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
+    request_app = request.get("app", "")
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     under_construction = reject_if_slot_under_construction(state, slot)
     if under_construction is not None:
         return under_construction
+
+    denied = _check_slot_app_ownership(slot, name, request_app, "chat.slot_regenerate")
+    if denied is not None:
+        return denied
+
+    # Destructive: this truncates and PERSISTS history before the background
+    # turn runs. Kiro-backed sessions honor readiness BEFORE mutation. A foreign
+    # harness cannot use that latch, so the checkpoint below is restored if its
+    # authoritative ACP attempt reports AcpAuthRequired. Gated on the backend
+    # the turn will ACTUALLY run on: regenerate continues the slot's live
+    # session (no discard, unlike edit-resend and rewind), and a live session
+    # keeps the backend it was started on across a hot switch of
+    # `agent.acp_backend` -- so after a switch to Claude Code the configured
+    # default says "not kiro" while the rerun still lands on a kiro-cli that may
+    # be signed out. Only with no live session does the default decide -- the
+    # default for THIS session, which for a member thread is
+    # `agent.member_acp_backend`, not the gateway-wide field.
+    session_key = effective_session_key(slot)
+    signs_in_via_kiro_cli = live_session_signs_in_via_kiro_cli(state, session_key)
+    if signs_in_via_kiro_cli is None:
+        signs_in_via_kiro_cli = backend_signs_in_via_kiro_cli(await selected_backend(session_key))
+    blocked = await reject_if_kiro_unverified(
+        request,
+        signs_in_via_kiro_cli=signs_in_via_kiro_cli,
+    )
+    if blocked is not None:
+        return blocked
+    restore_on_auth_failure = not signs_in_via_kiro_cli
 
     # A crew-bound slot has no local regenerate: it would truncate LOCAL history
     # and re-run the turn on this machine, diverging from the peer.
@@ -77,6 +121,12 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         return refusal
 
     async with slot._lock:
+        # The readiness checks above await, so authorize again against the slot
+        # and conversation that are current at the destructive commit boundary.
+        stale = _reauthorize_after_await(state, slot, name, request_app, "chat.slot_regenerate")
+        if stale is not None:
+            return stale
+
         busy = _destructive_history_busy(slot)
         if busy is not None:
             return busy
@@ -122,6 +172,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 {"error": "empty user message", "code": "empty_user_message"}, status=400
             )
 
+        auth_checkpoint = (
+            capture_destructive_history_checkpoint(slot) if restore_on_auth_failure else None
+        )
         ai_msg = msgs[ai_idx]
         _rv = ai_msg.get("variants")
         variants: list[dict] = list(_rv) if isinstance(_rv, list) else []  # type: ignore[arg-type]
@@ -139,6 +192,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         # If the inline save below fails, the flag keeps the flush loop on the
         # rewrite path so the dropped tail is still archived.
         slot._pending_rewrite = True
+        slot._pending_rewrite_basis = None
         slot._pending_variants = variants
 
         # Pin the transcript and the slot object this truncation was authorized
@@ -216,8 +270,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
-        task = asyncio.create_task(
-            _run_chat(
+
+        async def _regenerate_dispatch() -> None:
+            await _run_chat(
                 state,
                 slot,
                 user_msg,
@@ -228,8 +283,19 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 # own default and reads as "not named".
                 _turn_actor="app" if request.get("app", "") else "",
             )
-        )
+            if auth_checkpoint is not None and slot._last_turn_auth_required:
+                await restore_destructive_history_after_auth_failure(
+                    state,
+                    slot,
+                    auth_checkpoint,
+                    msgs_snapshot,
+                    expected_history_key=expected_history_key,
+                    expected_slot_name=name,
+                )
+
+        task = asyncio.create_task(_regenerate_dispatch())
         slot.task = task
+        reserve_destructive_history_rollback(state, slot, task)
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
 
@@ -372,12 +438,6 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         _subagents_attached_response,
     )
 
-    # Destructive: this truncates and PERSISTS history before the background
-    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -402,6 +462,27 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     denied = _check_slot_app_ownership(slot, name, request_app, "chat.slot_edit_resend")
     if denied is not None:
         return denied
+
+    # Destructive: this truncates and PERSISTS history before the background
+    # turn runs. Kiro-backed sessions honor readiness BEFORE mutation. A foreign
+    # harness cannot use that latch, so the checkpoint below is restored if its
+    # authoritative ACP attempt reports AcpAuthRequired. The discard below
+    # rebuilds the session, so the backend that matters is the one the factory
+    # will build THIS session on -- resolved from its key, because a member
+    # thread is routed to `agent.member_acp_backend`, not the gateway default.
+    # AFTER the app-ownership 404 above: the gate now reads THIS slot's routing,
+    # and a foreign app must not learn slot existence or sign-in state from a
+    # 503 (same anti-enumeration contract as the 404).
+    gate_session_key = effective_session_key(slot)
+    backend = await selected_backend(gate_session_key)
+    signs_in_via_kiro_cli = backend_signs_in_via_kiro_cli(backend)
+    blocked = await reject_if_kiro_unverified(
+        request,
+        signs_in_via_kiro_cli=signs_in_via_kiro_cli,
+    )
+    if blocked is not None:
+        return blocked
+    restore_on_auth_failure = not signs_in_via_kiro_cli
 
     # A crew-bound slot has no local edit-and-resend: it would truncate LOCAL
     # history and re-run the edited turn on this machine, diverging from the peer.
@@ -520,6 +601,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         # authorized against (``session_key``, the session whose native resume
         # identity is cleared, was resolved with the busy guards above).
         expected_history_key = slot_history_key(slot)
+        auth_checkpoint = (
+            capture_destructive_history_checkpoint(slot) if restore_on_auth_failure else None
+        )
 
         # Prepare the truncated+edited window on a COPY. The dirty-slot flush
         # can run while either durable boundary below is pending, so exposing a
@@ -621,6 +705,15 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     # parameter's own default and reads as "not named".
                     _turn_actor="app" if request_app else "",
                 )
+                if auth_checkpoint is not None and slot._last_turn_auth_required:
+                    await restore_destructive_history_after_auth_failure(
+                        state,
+                        slot,
+                        auth_checkpoint,
+                        msgs_snapshot,
+                        expected_history_key=expected_history_key,
+                        expected_slot_name=name,
+                    )
                 return
             # Edit rejected. A send diverted to the queue by this reservation
             # has no drain trigger of its own (no turn ran), so hand it to the
@@ -634,6 +727,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
 
         task = asyncio.create_task(_edit_resend_dispatch())
         slot.task = task
+        reserve_destructive_history_rollback(state, slot, task)
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
 

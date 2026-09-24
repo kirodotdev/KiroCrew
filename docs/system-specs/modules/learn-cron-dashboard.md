@@ -1202,7 +1202,18 @@ specified compatibility change.
   edit-resend, rewind) have already rewritten durable history by the time a turn
   could fail; and `POST /v1/chat/completions` has no transcript, so an error card
   would surface as a successful empty completion. A missing or invalid service
-  fails closed in all three.
+  fails closed in all three. **All three apply only while the selected harness
+  signs in through kiro-cli**: the guard reads `agent.acp_backend` first and
+  stands aside — returning `None` without consulting the service — unless the
+  backend is a member of `backends_retired_by_host_logout()`, because the latch
+  describes a kiro-cli sign-in and says nothing about a claude-agent-acp or
+  codex-acp session (see `modules/acp-client.md` § "The latch governs only a
+  harness that signs in through kiro-cli"). "Selected" means the backend the
+  turn will run on: plain regenerate continues the slot's live session, which
+  keeps its backend across a hot switch, so it gates on
+  `live_session_signs_in_via_kiro_cli()` (the provider's own
+  `uses_kiro_identity_store` declaration) and falls back to the configured
+  default only with no session live.
   **These callers authorize on a FRESH probe, not the latch**
   (`kiro_verified_ready` → `KiroPrerequisiteService.verified_ready`, re-probing
   when the latch is older than `_VERIFY_MAX_AGE_SECS` = 30s). The latch is
@@ -2590,11 +2601,57 @@ turn.)
 
 **`POST /v1/chat/completions` also fails closed**, for a different reason: it has
 no transcript the caller reads. Its collectors pick up only `chunk`/`assistant`
-roles, so the `error` card an `AcpAuthRequired` turn appends is invisible and the
-request would return **HTTP 200 with empty content** — an OpenAI SDK client
-cannot distinguish that from a model that legitimately said nothing. It returns
-the `kiro_prerequisite_required` 503 in OpenAI error shape until the endpoint
-learns to translate `AcpAuthRequired` itself.
+roles, so the `error` card an `AcpAuthRequired` turn appends would otherwise be
+invisible and the request would return **HTTP 200 with empty content** — an
+OpenAI SDK client cannot distinguish that from a model that legitimately said
+nothing. For a kiro-cli-authenticated harness the endpoint returns the shared
+`kiro_prerequisite_required` 503 in OpenAI error shape before the turn starts.
+On any other selected backend the endpoint translates `AcpAuthRequired` itself:
+both collectors retain the turn's terminal `error` row, and when the turn ends
+with the structural auth-required verdict they return the OpenAI
+`authentication_error` envelope (HTTP 401, `code: auth_required`) instead of an
+empty 200. The streaming path defers `StreamResponse.prepare()` only on turns
+the gate stands aside for (`defer_prepare=not signs_in_via_kiro_cli`, the same
+per-request verdict the gate used), so a pre-output auth failure on a foreign
+harness still carries the 401 status while a kiro-backed turn — which the gate
+already vouched for pre-turn — sends its SSE headers eagerly as before. On the
+deferred path, headers can arrive as late as the first token or the keepalive,
+whichever comes first.
+
+**Decision: no harness-side readiness probe for the foreign harnesses.** On
+claude-agent-acp and codex-acp the destructive reruns run with no pre-flight
+check, and the turn's own ACP attempt is the authority — the same rule an
+ordinary send already follows. A Claude-side or Codex-side probe would have to
+spawn that harness's CLI on a timer to ask whether it is signed in, which is
+the browser-storm shape the kiro-cli gate exists to contain, and neither
+adapter offers a cheaper sign-in query. What makes that affordable is a
+bounded rollback instead of a probe: each destructive rerun captures a
+checkpoint of the live branch before mutating it, and when the turn ends with
+the structural auth-required verdict the handler restores the pre-rerun
+history — live and persisted — while keeping the actionable authentication
+error card, so a signed-out foreign harness costs the user one failed turn,
+never their transcript while the gateway stays up: the live branch is restored
+first and the rollback's own write is best-effort, so a failed write leaves the
+slot dirty for the periodic flush to re-project within its 5-second interval
+with the same foreign-row basis retained on the slot until that rewrite commits,
+and a crash inside that retry window leaves the pre-rerun tail in the
+transcript's `archive/` file (written by the truncation itself), not in the
+transcript. The failed turn's partial assistant output is excluded by identity,
+not by text: the runner stamps an `interruptedTurn` meta key on the rows a turn
+left behind — the partial reply it persists on the way out and every segment it
+had already finalized at a tool boundary — and it does so on every abnormal turn
+end (auth-required, cancelled, process died alike), a benign additive key that
+the rollback is the only reader of. Known residual: only assistant rows carry
+the stamp, so a redaction `notice` row or a `tool` card the failed turn appended
+survives the rollback as a foreign append. The destructive wrapper keeps the slot
+reserved through that rollback, so no queued or automatic successor can observe
+the failed candidate branch while the checkpoint is being restored. Rewind's
+rollback also re-inserts the queue it discarded and announces each restored entry
+with `queue_push`, the inverse of the `queue_cancel` the discard sent, so other
+open clients redraw the held prompts instead of waiting for a slot-detail fetch.
+Revisit the no-probe
+half only if an adapter grows a side-effect-free sign-in check (a credentials-file
+read, not a spawn).
 
 **An unresolved check is never rendered as "setup required."** The cold probe
 spawns two sandboxed `kiro-cli` subprocesses (`--version`, then `whoami`), which

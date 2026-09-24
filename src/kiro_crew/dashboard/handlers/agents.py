@@ -26,6 +26,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    backends_retired_by_host_logout,
     model_registry_namespace,
     selectable_backend_values,
 )
@@ -2285,6 +2286,22 @@ async def api_models(request: web.Request) -> web.Response:
         return web.json_response(
             _codex_models(request, configured_default=_scoped_default(cfg, backend))
         )
+    # The list below comes from `kiro-cli chat --list-models`, so it is only an
+    # answer for a harness that signs in through kiro-cli (positive membership,
+    # harness-parity H5). Any other selected backend is refused BEFORE the binary
+    # is resolved, and deliberately not routed through the readiness gate: that
+    # gate stands aside for a foreign harness, while kiro-cli may still be
+    # installed and signed out on this host, and an unauthenticated spawn opens a
+    # browser window on every 8s poll whatever backend the sessions use.
+    if backend not in backends_retired_by_host_logout():
+        return web.json_response(
+            {
+                "error": "model list is served by kiro-cli; not available on the "
+                "selected agent backend",
+                "code": "model_list_backend_unsupported",
+            },
+            status=503,
+        )
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -2292,8 +2309,11 @@ async def api_models(request: web.Request) -> web.Response:
     # degraded — which is exactly the signed-out state. Ungated, that pairing
     # opened a browser window every 8s indefinitely. The 503 is the same
     # degraded response the timeout/unresolved branches already return, so the
-    # client contract is unchanged; only the subprocess is skipped.
-    blocked = await reject_if_kiro_unverified(request)
+    # client contract is unchanged; only the subprocess is skipped. The gate is
+    # handed the backend read above rather than reading its own: two reads are
+    # two snapshots, and a PATCH landing between them would admit this branch on
+    # the first while the gate stood aside on the second.
+    blocked = await reject_if_kiro_unverified(request, backend=backend)
     if blocked is not None:
         return blocked
     kiro_bin: str | None = None

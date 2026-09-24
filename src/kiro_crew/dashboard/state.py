@@ -2631,6 +2631,7 @@ class _ChatSlot:
         "_disk_tail_ts",
         "_frozen_prefix_cache",
         "_pending_rewrite",
+        "_pending_rewrite_basis",
         "_file_changes",
         "linked_session_key",
         # Remote-execution binding: this slot lives in the LOCAL list and local
@@ -3505,6 +3506,9 @@ class _ChatSlot:
         # overwriting (the default save skips archiving). Cleared on a
         # successful rewrite save.
         self._pending_rewrite: bool = False
+        # An authentication rollback retains the failed candidate branch here so
+        # a periodic rewrite retry preserves foreign rows exactly like attempt one.
+        self._pending_rewrite_basis: list[dict] | None = None
         self._file_changes: list[dict[str, str]] = (
             []
         )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
