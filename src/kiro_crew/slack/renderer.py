@@ -76,6 +76,7 @@ from kiro_crew.slack.handler import (
     _NO_RESPONSE,
     _STREAM_CONTINUED,
     _THINKING,
+    DELIVERY_DEBT_NOTICE,
     StatusReactionController,
     _append_footer_actions,
     _filter_options_brackets,
@@ -404,6 +405,23 @@ class SlackRenderer(Renderer):
         # arrives, while a chunk only reaches Slack when the edit throttle opens,
         # so between flushes ``_accumulated`` holds text nobody has seen.
         self._delivered = ""
+        # Delivery debt: real answer text Slack refused for good -- the append
+        # failed AND its post-rotation retry failed, so those characters are on no
+        # message.
+        #
+        # Never cleared, including at a wait boundary. That boundary discards
+        # ``_accumulated`` and abandons the message, so text lost before it can no
+        # longer be restated from anything the turn still holds -- which is why the
+        # debt has to outlive it and be disclosed at the end.
+        #
+        # Only the streaming finalize reads it. A refused append always attempts a
+        # rotation, so a for-good loss leaves the turn in one of two states: the
+        # rotation succeeded and the answer now spans two messages, where the loss
+        # is disclosed because restating the whole text in the message the reader
+        # is watching would repeat the abandoned one; or the rotation failed and
+        # the stream was demoted, where the end-of-turn ``chat.update`` already
+        # re-sends that segment's complete text and there is nothing to disclose.
+        self._stream_debt = False
         # Held text from '[' until ']' to filter [OPTIONS:], or from a
         # line-leading '<' while it can still be the reply's control-tag tail
         # (see ``_filter_options_brackets`` / ``_resolve_comment_hold``).
@@ -577,11 +595,10 @@ class SlackRenderer(Renderer):
                 except Exception:
                     logger.warning("Slack append_stream failed after rotation", exc_info=True)
                     ok = False
-        # A delta that failed both the append and the post-rotation retry is
-        # not re-delivered here: this matches the shipped client's refused-
-        # append outcome on this path. Confirmed-delivery recovery for the
-        # class is a designed subsystem tracked as its own issue (delivery
-        # debt), deliberately not grown inside this guard sweep.
+        # A delta that failed both the append and the post-rotation retry is on no
+        # message. Record the debt rather than dropping it silently, so finalize can
+        # tell the reader. The early returns above are not deliveries and never
+        # reach here, so withheld text does not count as lost.
         if ok:
             # Delivery ledger. This is the ONE sink every streamed assistant string
             # passes through, and it reports whether Slack accepted the append — so
@@ -590,7 +607,46 @@ class SlackRenderer(Renderer):
             # cumulative and final, so the ledger needs no reconciliation when
             # ``_accumulated`` is reset at a ``wait`` boundary.
             self._delivered += text
+        else:
+            self._stream_debt = True
         return ok
+
+    async def _settle_stream_debt(self, ts: str) -> None:
+        """Disclose answer text Slack refused for good, on the message that lost it.
+
+        Called at every point a stream is abandoned, so the notice goes out while
+        an append can still reach the message the hole is in. Clearing the debt is
+        part of settling it: a second notice on a later message would report a gap
+        the reader has already been shown.
+
+        Sent directly rather than through ``_append_stream``: the notice is not
+        answer text, so it must not enter the delivery ledger, which the rescue
+        replays to the next turn as text the reader already established.
+
+        ``append_stream`` reports a refusal by RETURNING False -- the client turns
+        every exception into that return -- so the return value is the whole
+        signal, and leaving it unread hides the very loss this notice exists to
+        disclose. The two refusals that takes fall inside one Slack rate-limit or
+        outage window, so they are correlated rather than independent. On refusal
+        post a separate message, which does not depend on the stream that just
+        refused and, sent directly, stays out of the ledger too.
+        """
+        if not self._stream_debt:
+            return
+        self._stream_debt = False
+        notice_ok = False
+        try:
+            notice_ok = await self.slack.append_stream(self.channel, ts, DELIVERY_DEBT_NOTICE)
+        except Exception:
+            logger.warning("Slack: appending the delivery-debt notice failed")
+        if not notice_ok:
+            try:
+                await self.slack.post_message(self.channel, DELIVERY_DEBT_NOTICE, self.thread_ts)
+            except Exception:
+                logger.warning(
+                    "Slack: the delivery-debt notice reached neither the "
+                    "stream nor a separate message"
+                )
 
     async def _flush_stream_buffer(self, *, final: bool = False) -> None:
         """Strip thinking tags and flush the buffered stream text (if any).
@@ -1209,6 +1265,13 @@ class SlackRenderer(Renderer):
             )
             if released:
                 await self._append_stream(released)
+            # Last chance to tell the reader: the seal below drops ``_stream_ts``
+            # and ``_accumulated``, so a turn that ends with no post-wait text
+            # opens no further stream and reaches no other disclosure point, while
+            # the lost characters are gone from the text a later message could
+            # restate. Settling here also puts the notice on the message the gap is
+            # in. Ordered after the holds so a refusal of any of them counts.
+            await self._settle_stream_debt(self._stream_ts)
             # Best-effort: MUST NOT raise. The stream is being abandoned
             # either way (``_stream_ts`` is cleared just below and the next
             # chunk opens a fresh one), so a raising ``stop_stream`` changes
@@ -1366,6 +1429,21 @@ class SlackRenderer(Renderer):
                     await self._append_stream(tail)
                 if upload_notes:
                     await self._append_stream(f"\n\n{upload_notes}")
+                # Delivery-debt settlement, after the appends above so a tail or
+                # note that was itself refused counts, and before the seal because
+                # an append past ``stop_stream`` would be refused.
+                #
+                # Reaching here with debt means a rotation succeeded, because a
+                # refused append always attempts one and a failed rotation leaves
+                # the ledger empty and takes the wholly-refused branch above. So
+                # the answer spans the abandoned message and this one: restating
+                # the whole text here would repeat what the reader already has
+                # above, and characters lost before a wait boundary are absent
+                # from ``clean_text`` to restate at all. Saying so is what a reader
+                # can act on -- they can ask again -- where a complete-looking
+                # answer with a hole in it gives them nothing to notice.
+                if self._stream_debt:
+                    await self._settle_stream_debt(self._stream_ts)
                 # stop_stream is a SEAL, not a delivery: the answer already
                 # reached the reader append by append (each confirmed into the
                 # delivery ledger), and chat.stopStream only closes the live
