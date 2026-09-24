@@ -683,6 +683,28 @@ no longer destroy older turns.
   remains as a defense-in-depth fallback for legacy callers that pass no
   generation. Reconsolidating a few already-processed messages is harmless and
   idempotent; dropping unprocessed ones is a persisted data-integrity failure.
+- **Client-supplied row `meta` survives the whole path (the client-meta
+  survival contract).** The `meta` a dashboard send carries (`POST /api/chat`
+  body) rides onto the user row it becomes and reaches every
+  reader unchanged: ingress drops only `RESERVED_ROW_META_KEYS` (today
+  `decisions_strip`, the gateway's own receipt carrier -- `chat_handlers.py`),
+  `_redact_meta` (`chat_utils.py`) redacts credential- and exfiltration-shaped
+  STRING values recursively and is not a key allowlist, `slot.append` broadcasts
+  the row's `meta` on the WebSocket `chat_message` echo
+  (`include_metadata=True`), `_save_slot_to_history` writes it verbatim on the
+  JSONL line, and `read_messages_chained` / `GET /api/chat/slots/{slot}` return
+  it on rehydrate. A client may therefore stamp a semantic key on a send and
+  read it back from the row wherever the row is drawn -- the optimistic bubble,
+  the echo, a reloaded transcript, a second tab -- with no per-slot client state:
+  `sendId` (delivery identity), `origin: 'widget'`, and the "Request a Feature"
+  flow's `featureRequest: true` (the stamp `isFeatureRequestRefusal` in
+  `transcriptRenderers.tsx` keys the usage-limit form fallback on, #13429) all
+  rest on it. A later allowlist on client-supplied meta would break them
+  silently, so the contract is pinned end to end -- ingress, live row, WS echo,
+  JSONL line, chained read, slot fetch -- by
+  `test/test_chat_send_client_meta_survival.py`, which uses a non-`sendId` key
+  (`featureRequest`) with `decisions_strip` as the reserved-key control, beside
+  `test/test_chat_send_echo_scope.py`, which pins `sendId` alone.
 
 ## Session Archive (`history.py`, `history_rewrite.py`)
 

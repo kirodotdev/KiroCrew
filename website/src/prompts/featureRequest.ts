@@ -13,6 +13,29 @@ export const FEATURE_REQUEST_URL = 'https://github.com/kirodotdev/KiroCrew/issue
 export const FEATURE_REQUEST_FORM_URL = `${FEATURE_REQUEST_URL}?template=feature_request.yml`
 
 /**
+ * Row-meta key the "Request a Feature" flow stamps on the user row it seeds,
+ * beside the send's `sendId` (`meta.featureRequest: true`). The gateway
+ * persists a send's `meta` verbatim on the user row and echoes it
+ * (`chat_handlers.py`: only `RESERVED_ROW_META_KEYS` is dropped at ingress,
+ * `_redact_meta` redacts credential-shaped strings and is not an allowlist), so
+ * the row itself says which turn was the feature request -- on the optimistic
+ * bubble, on the echo, on a reloaded transcript and in a second tab alike --
+ * and nothing has to be remembered on the client. The transcript offers the
+ * form on a `usage_limit` row only when the nearest user row above it carries
+ * this key as the literal `true` (`isFeatureRequestRow`). Client-stamped, like
+ * `meta.origin = 'widget'`; a forged stamp can only swap one row's Resume for
+ * a link to {@link FEATURE_REQUEST_FORM_URL}, which is a constant here, never
+ * read from the row.
+ */
+export const FEATURE_REQUEST_ROW_META_KEY = 'featureRequest'
+
+/** Whether a row's `meta` carries the flow's stamp -- the literal `true` under
+ *  {@link FEATURE_REQUEST_ROW_META_KEY}; any other shape is not a claim. */
+export function isFeatureRequestRow(meta: unknown): boolean {
+  return !!meta && typeof meta === 'object' && (meta as Record<string, unknown>)[FEATURE_REQUEST_ROW_META_KEY] === true
+}
+
+/**
  * Prompt used when the dashboard has already confirmed that the
  * `feature-request` skill is installed. The ``$feature-request`` token is
  * resolved server-side by the chat runner (``resolve_dollar_skills``) and

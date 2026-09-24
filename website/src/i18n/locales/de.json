@@ -6417,7 +6417,7 @@
       "nightly": "Nightly",
       "report_problem": "Problem melden",
       "report_problem_on_build": "Ein Problem in diesem {{channel}}-Build melden",
-      "request_feature_starts_agent": "Startet eine Unterhaltung mit dem Agenten, der dir beim Schreiben und Einreichen des Vorschlags hilft. Sie verbraucht Inferenz wie jeder Chat-Zug."
+      "request_feature_starts_agent": "Startet einen Chat, der deinen Vorschlag entwirft und ihn nach deiner Freigabe auf GitHub einreicht. Verbraucht das monatliche Kontingent deines Tarifs."
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
@@ -9936,7 +9936,7 @@
         "sign_in": "Bei Kiro anmelden",
         "sign_in_hint": "Öffne Einstellungen → Übersicht → Kiro-Anmeldung, melde dich erneut an und sende deine Nachricht noch einmal.",
         "feature_request_form": "Formular für Funktionsvorschläge öffnen",
-        "feature_request_form_hint": "Gerade keine Inferenz-Kapazität — öffne stattdessen das Formular für Funktionsvorschläge."
+        "feature_request_form_hint": "Dein monatliches Kontingent ist aufgebraucht — reiche deinen Vorschlag stattdessen auf GitHub über dieses Formular ein. Dieses Formular umgeht den Agenten: Es öffnet das GitHub-Issue-Formular, das du selbst ausfüllst, und verbraucht nichts von deinem monatlichen Kontingent."
       },
       "folderPanel": {
         "clear_search": "Suche löschen",

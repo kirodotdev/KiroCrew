@@ -914,14 +914,6 @@ interface ChatState {
   slotStopping: boolean
   slotState: SlotState
   slotStatusDetail: Record<string, SlotStatusDetail>
-  /** Slots the header's "Request a Feature" action created, this tab only. The
-   *  transcript reads it to offer the non-inference route (the repo's
-   *  feature-request form) on a `usage_limit` error row in one of them
-   *  (#13342): the row's kind says the plan is spent, but only the flow that
-   *  created the slot knows the turn was a feature request, and the backend is
-   *  not told. Keys are never removed -- slot keys are unique, so a stale entry
-   *  can match nothing -- and the list grows by one per press. */
-  featureRequestSlots: string[]
   slotHasMore: boolean
   slotOldestIndex: number
   /** Slot the cursor above describes. A switch moves activeSlot first, so
@@ -1252,7 +1244,6 @@ const initialState: ChatState = {
   slotStopping: false,
   slotState: 'idle',
   slotStatusDetail: {},
-  featureRequestSlots: [],
   slotHasMore: false,
   slotOldestIndex: 0,
   slotCursorKey: null,
@@ -5000,19 +4991,6 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    /** Remember that the "Request a Feature" action created `slot`, so a later
-     *  `usage_limit` error row in it can offer the feature-request form (#13342).
-     *  Written right after the slot exists and BEFORE the send settles: the
-     *  refusal arrives over the WebSocket once the turn has started, so a marker
-     *  written only on a happy receipt would miss the one case it exists for.
-     *  Tolerates a preloaded state without the field (older persisted shapes,
-     *  partial test stores). */
-    markFeatureRequestSlot(state, action: PayloadAction<string>) {
-      const slot = action.payload
-      if (!slot) return
-      if (!Array.isArray(state.featureRequestSlots)) state.featureRequestSlots = []
-      if (!state.featureRequestSlots.includes(slot)) state.featureRequestSlots.push(slot)
-    },
     clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false) },
     /** A server-confirmed clear for a slot that is NOT the active view. The
      *  active-slot case routes through `clearMessages`; this one exists so a
@@ -7321,7 +7299,7 @@ const chatSlice = createSlice({
 
 export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, markFeatureRequestSlot, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
@@ -7338,17 +7316,6 @@ export function selectAutomationForSlot(
 ): AutomationRecord | null {
   if (isUnsafeKey(slotKey)) return null
   return automationForSlot(state.chat.automations, safeKey(slotKey))
-}
-
-/** True when the header's "Request a Feature" action created `slotKey` in this
- *  tab (see `markFeatureRequestSlot`). Tolerates a state without the field. */
-export function selectIsFeatureRequestSlot(
-  state: { chat: Pick<ChatState, 'featureRequestSlots'> },
-  slotKey: string | null | undefined,
-): boolean {
-  if (!slotKey) return false
-  const marked = state.chat.featureRequestSlots
-  return Array.isArray(marked) && marked.includes(slotKey)
 }
 
 export default chatSlice.reducer

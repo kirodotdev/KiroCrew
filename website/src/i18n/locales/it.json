@@ -6516,7 +6516,7 @@
       "nightly": "Nightly",
       "report_problem": "Segnala un problema",
       "report_problem_on_build": "Segnala un problema su questa build {{channel}}",
-      "request_feature_starts_agent": "Avvia una conversazione con l’agente, che ti aiuta a scrivere e inviare la richiesta. Consuma inferenza come qualsiasi turno di chat."
+      "request_feature_starts_agent": "Avvia una chat che redige la tua richiesta e la invia su GitHub una volta che l’approvi. Consuma l’utilizzo mensile del tuo piano."
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
@@ -10074,7 +10074,7 @@
         "sign_in": "Accedi a Kiro",
         "sign_in_hint": "Apri Impostazioni → Panoramica → Accesso a Kiro, accedi di nuovo e reinvia il messaggio.",
         "feature_request_form": "Apri il modulo di richiesta funzionalità",
-        "feature_request_form_hint": "Nessuna capacità di inferenza al momento — apri invece il modulo di richiesta funzionalità."
+        "feature_request_form_hint": "Il tuo utilizzo mensile è esaurito — invia invece la richiesta su GitHub con questo modulo. Questo modulo salta l’agente: apre il modulo delle issue di GitHub che compili tu e non consuma nulla del tuo utilizzo mensile."
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",

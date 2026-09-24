@@ -1421,13 +1421,16 @@ describe('App routing', () => {
         // cannot leave it queued for a later, unrelated message.
         { source: 'feature-request', maxAge: 60 },
       )
-      // sendTurn's dashboard wire passes (message, slot, agent, signal, memoryMode, steer).
+      // sendTurn's dashboard wire passes (message, slot, colorTheme, signal,
+      // meta, steer). `meta` carries only the seeded turn's correlation id
+      // (#13342): the hidden instructions ride the context seed above, never
+      // the visible message.
       expect(api.sendChat).toHaveBeenCalledWith(
         'I’d like to request a feature!',
         'feature-slot',
         expect.any(String),
         expect.any(AbortSignal),
-        undefined,
+        { sendId: expect.stringMatching(/^s-/), featureRequest: true },
         undefined,
       )
     })

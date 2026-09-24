@@ -6516,7 +6516,7 @@
       "nightly": "Nightly",
       "report_problem": "Signaler un problème",
       "report_problem_on_build": "Signaler un problème sur cette version {{channel}}",
-      "request_feature_starts_agent": "Démarre une conversation avec l’agent, qui t’aide à rédiger et à déposer la demande. Elle consomme de l’inférence comme n’importe quel tour de chat."
+      "request_feature_starts_agent": "Démarre une conversation qui rédige ta demande et la dépose sur GitHub une fois que tu l'as approuvée. Consomme le quota mensuel de ton forfait."
     },
     "fileCard": {
       "audio": "Audio : {{name}}",
@@ -10074,7 +10074,7 @@
         "sign_in": "Se connecter à Kiro",
         "sign_in_hint": "Ouvrez Paramètres → Aperçu → Connexion Kiro, reconnectez-vous, puis renvoyez votre message.",
         "feature_request_form": "Ouvrir le formulaire de demande de fonctionnalité",
-        "feature_request_form_hint": "Aucune capacité d’inférence pour le moment — ouvre plutôt le formulaire de demande de fonctionnalité."
+        "feature_request_form_hint": "Ton quota mensuel est épuisé — dépose plutôt ta demande sur GitHub avec ce formulaire. Ce formulaire contourne l’agent : il ouvre le formulaire d’issue GitHub que tu remplis toi-même et ne consomme rien de ton quota mensuel."
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",

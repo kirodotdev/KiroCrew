@@ -26,7 +26,16 @@ import { createPortal } from 'react-dom'
  *   anywhere else in the document leaves the anchor where it was, so the
  *   bubble stays (see `scrollMovesAnchor`).
  */
-export interface TipPos { top: number; left: number }
+export interface TipPos {
+  top: number
+  left: number
+  /** Which side of the anchor the bubble opens on. Absent means `above`, the
+   *  original and default: the bubble's bottom edge sits 8px over the anchor's
+   *  top. `below` puts its top edge 8px under the anchor's bottom -- for an
+   *  anchor in the top bar, where "above" is off-screen. */
+  placement?: TipPlacement
+}
+export type TipPlacement = 'above' | 'below'
 
 /** Hover-intent window. Long enough that a pointer merely crossing the anchor
  *  paints nothing, short enough to read as instant. A module constant, not a
@@ -51,7 +60,8 @@ export function scrollMovesAnchor(target: EventTarget | null, anchor: HTMLElemen
   return target !== anchor && target.contains(anchor)
 }
 
-export function useInstantTip() {
+export function useInstantTip(options: { placement?: TipPlacement } = {}) {
+  const placement: TipPlacement = options.placement ?? 'above'
   const [tip, setTip] = useState<TipPos | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const anchorRef = useRef<HTMLElement | null>(null)
@@ -66,6 +76,13 @@ export function useInstantTip() {
   }
   const showFor = (el: HTMLElement) => {
     const r = el.getBoundingClientRect()
+    if (placement === 'below') {
+      // Under the anchor. No boundary lift: the lift exists so a bubble opening
+      // ABOVE a wrapped row does not cover the row above it, which a bubble
+      // opening below cannot do.
+      setTip({ top: r.bottom + 8, left: r.left, placement })
+      return
+    }
     // Lift above the nearest [data-tip-boundary] ancestor, when one exists.
     // In a wrapped chip row the anchor can sit in row 2+, and a bubble opening
     // just above IT covers the row above — the exact chips the user is
@@ -163,12 +180,16 @@ export function InstantTip({ tip, tipId, className = '', children }: {
     if (next !== tip.left) setClampedLeft(next)
   }, [tip])
   if (!tip) return null
+  // `above` (the default) anchors the bubble's BOTTOM edge at `top` by pulling
+  // it up its own height; `below` anchors its top edge there, so no translate.
+  const edge = tip.placement === 'below' ? '' : '-translate-y-full '
   return createPortal(
     <div
       ref={ref}
       id={tipId}
       role="tooltip"
-      className={`fixed z-[9999] -translate-y-full rounded-lg border border-border-strong bg-bg-elevated px-2.5 py-1.5 text-[11px] leading-snug shadow-lg pointer-events-none ${className}`}
+      data-placement={tip.placement ?? 'above'}
+      className={`fixed z-[9999] ${edge}rounded-lg border border-border-strong bg-bg-elevated px-2.5 py-1.5 text-[11px] leading-snug shadow-lg pointer-events-none ${className}`}
       style={{ top: tip.top, left: clampedLeft ?? tip.left }}
     >
       {children}

@@ -16,6 +16,7 @@ import { toApiDecision } from '../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import { mergeRenderers, resolveRenderer, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from './chat/transcriptRenderers'
+import { featureRequestRefusalIsNewest } from './chat/transcriptRenderers'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../store'
@@ -39,10 +40,8 @@ import {
   requestSlotReveal,
   mcpAppKey,
   selectAutomationForSlot,
-  selectIsFeatureRequestSlot,
   sseAutomation,
 } from '../store/chatSlice'
-import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
@@ -4131,14 +4130,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     navigate(KIRO_SIGN_IN_PATH)
   }, [navigate])
   // The non-inference exit for a feature request the plan could not afford
-  // (#13342). Only a slot the header's "Request a Feature" action created gets
-  // the form route: the row's `usage_limit` kind says the allowance is spent,
-  // but nothing in the transcript says the turn was a feature request -- the
-  // flow that created the slot recorded that, in this tab. Read here, decided
-  // per row in the shared row set, so a usage limit in an ordinary chat keeps
-  // today's card.
-  const isFeatureRequestSlot = useAppSelector(s => selectIsFeatureRequestSlot(s, activeSlot))
-  const featureRequestFormUrl = isFeatureRequestSlot ? FEATURE_REQUEST_FORM_URL : undefined
+  // (#13342) is decided per row in the shared row set, from the row alone: the
+  // user row the header's "Request a Feature" action sent carries the flow's
+  // stamp in its `meta`, so the form is offered on that turn's own refusal,
+  // while a usage limit in an ordinary chat, or after the user typed on in
+  // this one, keeps today's card. The card withholds Resume on that refusal
+  // because a retry replays the rejection; the composer must not urge it
+  // beneath the same card, so its Resume and "press Resume" hint yield too
+  // (same rule, same row).
+  const featureRequestRefused = featureRequestRefusalIsNewest(messages)
 
   const handleContinue = useCallback(() => {
     if (!activeSlot || continuing || !continuable) return
@@ -5784,7 +5784,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       onPickModel: openModelPickerFromError,
       onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
       onOpenSignIn: embedded || popout ? undefined : openKiroSignIn,
-      featureRequestFormUrl,
       onSessionOpen: selectSessionTab,
       sessions: connected ? sessionTitles : undefined,
       activeSession: activeSlot || undefined,
@@ -5822,7 +5821,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, featureRequestFormUrl, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -7788,8 +7787,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                  the one shape `_is_interrupted` cannot see. That slot loses its
                  one-click nudge; typing anything still resumes it. Closing that
                  hole needs a persisted turn-in-flight marker (backend), not a
-                 louder button here. */
-              continuable={continuable && interrupted}
+                 louder button here.
+
+                 `featureRequestRefused` is the one case where the card and the
+                 composer would otherwise disagree (#13342): the newest row is
+                 the plan's refusal of a feature request, the card has withheld
+                 Resume because a retry replays that rejection and offered the
+                 issue form instead, and a composer beneath it saying "press
+                 Resume" would argue with the card. The composer falls back to
+                 the ordinary Send button; typing still works. */
+              continuable={continuable && interrupted && !featureRequestRefused}
               continueIsRecovery={interrupted}
               onContinue={handleContinue}
               continuing={continuing}

@@ -2085,7 +2085,7 @@
       "insider": "Insider",
       "report_problem": "Report problem",
       "report_problem_on_build": "Report a problem on this {{channel}} build",
-      "request_feature_starts_agent": "Starts an agent conversation that helps you write and file the request. It uses inference like any chat turn."
+      "request_feature_starts_agent": "Starts a chat that drafts your request and files it on GitHub once you approve. Uses your plan's monthly usage."
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
@@ -4271,7 +4271,7 @@
       },
       "errorCard": {
         "feature_request_form": "Open the feature request form",
-        "feature_request_form_hint": "No inference capacity right now — open the feature request form instead.",
+        "feature_request_form_hint": "Your monthly usage is used up — file your request on GitHub with this form instead. This form skips the agent: it opens the GitHub issue form for you to fill in yourself and uses none of your monthly usage.",
         "sign_in": "Sign in to Kiro",
         "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again."
       },

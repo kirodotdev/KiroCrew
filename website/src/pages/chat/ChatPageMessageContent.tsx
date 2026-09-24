@@ -142,14 +142,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
  *  suffix is as reload-stable as the key it disambiguates. Rows without a
  *  `mid` (locally-minted streaming/optimistic bubbles) fall back to `msgKey`
  *  alone, which is exactly the uniqueness they had before. */
-/** Client-generated one-shot correlation id for an optimistic user bubble.
- *  The server preserves meta fields on the user row it appends, so an echo or
- *  transcript page carries this id back and the bubble is matchable without
- *  relying on content equality (#2845). Shared by the plain send path and the
- *  mid-turn steer path (#6075) so the two cannot drift in id shape. */
-export function mintSendId(): string {
-  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
+/** Client-generated one-shot correlation id for an optimistic user bubble; see
+ *  `mintSendId` in `utils/sendDelivery`. Re-exported so the page and the tests
+ *  keep their import path. */
+export { mintSendId } from '../../utils/sendDelivery'
 
 /** Row-identity builders live in chat-core (P5-e); re-exported here so the
  *  page, the store, and the tests keep their import path. */

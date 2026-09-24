@@ -51,8 +51,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, selectIsFeatureRequestSlot, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
-import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -375,10 +374,6 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
-  // Same rule as ChatPage: only the slot the header's "Request a Feature"
-  // action created hands its usage-limit row the issue-form route, so the
-  // pane offers the non-inference exit where the main surface would.
-  const isFeatureRequestSlot = useAppSelector((s) => selectIsFeatureRequestSlot(s, slotKey))
   // The composer is a `Composer` root around the ChatInput preset (chat-core
   // P3-b). Its Voice atom is what gives the pane a microphone: the pane wires no
   // voice props, only the two things the atom cannot know — the endpointer's
@@ -1336,11 +1331,10 @@ export default function ChatPane({
       // A steer-only surface has no steer/queue concept to explain, so a
       // confirmed steer draws as an ordinary message: no badge, no tint.
       hideSteerBadge: busyMode === 'steer-only',
-      featureRequestFormUrl: isFeatureRequestSlot ? FEATURE_REQUEST_FORM_URL : undefined,
       crewmate,
       crewmateTranscript,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, isFeatureRequestSlot, crewmate, crewmateTranscript],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, crewmate, crewmateTranscript],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main

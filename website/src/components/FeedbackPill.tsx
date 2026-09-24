@@ -2,6 +2,7 @@ import { Lightbulb, Bug } from 'lucide-react'
 
 import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
+import { InstantTip, useInstantTip } from './InstantTip'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../utils/laneMembership'
 
 /**
@@ -85,6 +86,20 @@ export default function FeedbackPill({
     channel: channelLabel,
   })
 
+  // What "Request a Feature" DOES, as real copy rather than a hover-only
+  // `title`: the action starts an agent conversation (the skill drafts and
+  // files the request), which spends the plan's monthly usage like any chat
+  // turn. Its wording used to promise a feedback form, and a capped user
+  // learned the difference only from the usage-limit error (#13342); the first
+  // fix put the fact in a native `title`, which no screenshot can show and
+  // touch and keyboard users never see. The shared instant tip is a DOM
+  // element: it opens under the pill on hover intent AND synchronously on
+  // keyboard focus, and the button names it via `aria-describedby`. Below,
+  // not above -- the pill sits in the top bar, so "above" is off-screen. The
+  // visible label stays the action, so the accessible NAME is unchanged and
+  // every caller that finds the button by it keeps working.
+  const { tip, tipHandlers, tipId } = useInstantTip({ placement: 'below' })
+
   return (
     <div
       data-testid="feedback-pill"
@@ -94,17 +109,16 @@ export default function FeedbackPill({
         type="button"
         className="flex items-center gap-1.5 h-full px-2.5 text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap bg-transparent border-0"
         onClick={onRequestFeature}
-        // The tooltip says what the click DOES, not what the label already
-        // says: this half is an agent conversation (the skill drafts and files
-        // the request), so it uses inference like any chat turn. Its wording
-        // used to promise a feedback form, and a capped user learned the
-        // difference only from the usage-limit error (#13342). The visible
-        // label stays the action, so the accessible name is unchanged.
-        title={i18nT('components.feedbackPill.request_feature_starts_agent')}
+        {...tipHandlers}
       >
         <Lightbulb size={13} className="lucide-inline" />{' '}
         {i18nT('app.request_a_feature_2')}
       </button>
+      <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(22rem,calc(100vw-1rem))] whitespace-normal">
+        <div className="text-text" data-testid="feedback-pill-request-feature-tip">
+          {i18nT('components.feedbackPill.request_feature_starts_agent')}
+        </div>
+      </InstantTip>
 
       {chipChannel && (
         <>

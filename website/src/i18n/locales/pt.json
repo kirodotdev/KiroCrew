@@ -6516,7 +6516,7 @@
       "nightly": "Nightly",
       "report_problem": "Relatar um problema",
       "report_problem_on_build": "Relatar um problema nesta versão {{channel}}",
-      "request_feature_starts_agent": "Inicia uma conversa com o agente, que ajuda você a escrever e enviar a sugestão. Ela consome inferência como qualquer turno de chat."
+      "request_feature_starts_agent": "Inicia um chat que redige a sua sugestão e a envia no GitHub quando você aprovar. Consome o uso mensal do seu plano."
     },
     "fileCard": {
       "audio": "Áudio: {{name}}",
@@ -10074,7 +10074,7 @@
         "sign_in": "Entrar no Kiro",
         "sign_in_hint": "Abra Configurações → Visão geral → Login do Kiro, entre novamente e reenvie sua mensagem.",
         "feature_request_form": "Abrir o formulário de sugestão de recurso",
-        "feature_request_form_hint": "Sem capacidade de inferência no momento — abra o formulário de sugestão de recurso em vez disso."
+        "feature_request_form_hint": "Seu uso mensal acabou — envie sua sugestão no GitHub por este formulário em vez disso. Este formulário dispensa o agente: ele abre o formulário de issue do GitHub para você preencher e não consome nada do seu uso mensal."
       },
       "folderPanel": {
         "clear_search": "Limpar pesquisa",

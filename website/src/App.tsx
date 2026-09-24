@@ -10,7 +10,8 @@ import { performAgentSlotSwitch } from './lib/agentSwitch'
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendSlotMessage, markFeatureRequestSlot, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { mintSendId } from './utils/sendDelivery'
 import { queryComposerOrExpand } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
@@ -145,7 +146,7 @@ import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
 import { getTopBarWidgets } from './apps/topBarWidgets'
 import { getCapsuleSegments } from './apps/capsuleSegments'
-import { FEATURE_REQUEST_PROMPT_FALLBACK } from './prompts/featureRequest'
+import { FEATURE_REQUEST_PROMPT_FALLBACK, FEATURE_REQUEST_ROW_META_KEY } from './prompts/featureRequest'
 import { useKeyboardShortcuts, IS_MAC } from './hooks/useKeyboardShortcuts'
 import { useNavShortcutHint } from './hooks/useNavShortcutHint'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
@@ -3204,10 +3205,17 @@ export default function App() {
     // This flow is an agent turn by design (the skill drafts and files the
     // request), so it consumes metered inference and a spent plan allowance
     // refuses it. The transcript can offer the non-inference route -- the
-    // repo's feature-request form -- on that refusal ONLY if it knows the slot
-    // belongs to this flow, which nothing else records (#13342). Marked before
-    // the send: the refusal arrives over the WebSocket once the turn starts.
-    dispatch(markFeatureRequestSlot(slot))
+    // repo's feature-request form -- on that refusal ONLY if it knows the
+    // refused turn was this one, which nothing else records (#13342). The
+    // record is the ROW: the send's `meta` carries the flow's stamp beside its
+    // `sendId` (`FEATURE_REQUEST_ROW_META_KEY`), and the gateway persists a
+    // send's `meta` verbatim on the user row and echoes it back, so the same
+    // stamp is on the optimistic bubble below, on the echo that reconciles it,
+    // on the row a reload rebuilds and in every other tab of the slot --
+    // nothing is kept on this client. A message the user types later in the
+    // same slot is an unstamped row, so its limit hit keeps today's card.
+    const sendId = mintSendId()
+    const meta = { sendId, [FEATURE_REQUEST_ROW_META_KEY]: true }
     const visibleMessage = i18nT('app.i_d_like_to_request_a_feature')
     navigate('/chat')
     // Both optimistic writes are addressed to the slot this flow CREATED, not
@@ -3217,7 +3225,7 @@ export default function App() {
     // put the bubble in an unrelated session's transcript, and an
     // unconditional running flag would mark that session busy for a turn it
     // never started (review finding on #4198).
-    dispatch(appendSlotMessage({ slot, message: { role: 'user', content: visibleMessage, cls: '', ts: new Date().toISOString() } }))
+    dispatch(appendSlotMessage({ slot, message: { role: 'user', content: visibleMessage, cls: '', ts: new Date().toISOString(), meta } }))
     if (appStore.getState().chat.activeSlot === slot) dispatch(setSlotRunning(true))
     // A send the server never accepted has to say so where the request landed
     // (#4198): an HTTP 4xx/5xx RESOLVES rather than rejecting, so the catch
@@ -3256,7 +3264,11 @@ export default function App() {
     } catch { /* Send the visible request even if hidden context is unavailable. */ }
     // The chat-core transport owns the receipt contract (`?ws=1` JSON receipt,
     // HTTP 4xx/5xx RESOLVE rather than reject, deadline) and never rejects.
-    const receipt = await sendTurn({ message: visibleMessage, slot, colorTheme })
+    // `meta` rides the wire exactly as a composer send's does: the gateway
+    // persists it on the user row and echoes it, so the echo reconciles the
+    // optimistic bubble by `sendId` and the persisted row keeps the stamp the
+    // transcript reads the refusal by.
+    const receipt = await sendTurn({ message: visibleMessage, slot, colorTheme, meta })
     // Resolution is not success: `refused` means the server accepted neither
     // `ok` nor `queued`, so no turn started and no WS response is coming, and
     // `transport-error` means the request never left. Both get the error row.

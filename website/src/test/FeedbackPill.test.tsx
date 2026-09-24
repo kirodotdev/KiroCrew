@@ -9,8 +9,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { i18nT } from '../i18n/t'
 
 import FeedbackPill from '../components/FeedbackPill'
 
@@ -178,16 +179,28 @@ describe('FeedbackPill', () => {
     )
   })
 
-  it('tells the user up front that Request a Feature starts an agent conversation (#13342)', () => {
+  it('tells the user up front, in plain words, that Request a Feature starts a chat that spends monthly usage (#13342)', () => {
     // The action is a metered agent turn by design (the agent drafts and files
     // the request), but its wording promised a feedback form: a capped user
-    // learned the difference only from the usage-limit error. The tooltip is
-    // where that fact lives -- the visible label stays the action -- so the
-    // button's accessible NAME is unchanged and every caller that finds it by
-    // that name keeps working.
+    // learned the difference only from the usage-limit error. The explanation
+    // is real copy, not a native `title` -- a DOM bubble the button names via
+    // aria-describedby, opened synchronously on keyboard focus (and on hover
+    // intent), so it is readable by keyboard and screen-reader users and can be
+    // photographed. It opens BELOW the pill: the pill lives in the top bar.
+    // The visible label stays the action, so the button's accessible NAME is
+    // unchanged and every caller that finds it by that name keeps working.
     mount()
     const button = screen.getByRole('button', { name: /request a feature/i })
-    expect(button.getAttribute('title')).toMatch(/agent conversation/i)
-    expect(button.getAttribute('title')).toMatch(/inference/i)
+    expect(button).not.toHaveAttribute('title')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.focus(button)
+    const tip = screen.getByRole('tooltip')
+    expect(tip.id).toBe(button.getAttribute('aria-describedby'))
+    expect(tip).toHaveAttribute('data-placement', 'below')
+    expect(tip).toHaveTextContent(i18nT('components.feedbackPill.request_feature_starts_agent'))
+    // Plain words: no "inference", no "agent conversation"; it names the cost.
+    expect(tip.textContent).toMatch(/monthly usage/i)
+    expect(tip.textContent).not.toMatch(/inference/i)
+    expect(button).toHaveAccessibleName(/request a feature/i)
   })
 })

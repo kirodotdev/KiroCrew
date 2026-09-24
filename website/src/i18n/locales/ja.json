@@ -6318,7 +6318,7 @@
       "nightly": "Nightly ビルド",
       "report_problem": "問題を報告",
       "report_problem_on_build": "この {{channel}} の問題を報告",
-      "request_feature_starts_agent": "エージェントとの会話を開始し、リクエストの作成と送信を手伝ってもらいます。通常のチャットのターンと同じように推論を消費します。"
+      "request_feature_starts_agent": "リクエストの下書きを作成し、あなたの承認後に GitHub に送信するチャットを開始します。プランの今月の利用量を消費します。"
     },
     "fileCard": {
       "audio": "音声：{{name}}",
@@ -9798,7 +9798,7 @@
         "sign_in": "Kiro にサインイン",
         "sign_in_hint": "「設定 → 概要 → Kiro サインイン」を開いて再度サインインし、メッセージをもう一度送信してください。",
         "feature_request_form": "機能リクエストフォームを開く",
-        "feature_request_form_hint": "現在、推論の容量がありません。代わりに機能リクエストフォームから送信できます。"
+        "feature_request_form_hint": "今月の利用量を使い切りました — 代わりにこのフォームから GitHub にリクエストを送信できます。このフォームはエージェントを介しません。GitHub の Issue フォームが開き、自分で入力するため、今月の利用量は消費されません。"
       },
       "folderPanel": {
         "clear_search": "検索をクリア",
