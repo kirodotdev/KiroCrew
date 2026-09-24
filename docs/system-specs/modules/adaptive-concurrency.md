@@ -291,7 +291,9 @@ concurrently") and the `{{MAX_SUBAGENTS}}` prompt token
 (`context.py::_resolve_prompt_templates`) -- read the in-process registry only,
 through `resource_status.adaptive_exec_cap()`, and never the loopback API: the
 prompt token is resolved once per session -- a session start takes the reading
-and the restore of the contract after compaction reuses it -- and `schemas()`
+and the restore of the contract after compaction reuses it, unless the memo has
+since evicted that session, in which case the restore takes a live reading and
+the two renders can differ -- and `schemas()`
 runs on the gateway's own discovery cycle as well as in a tool server. In the
 gateway that read is the live cap (a disabled controller reports the user's max,
 which is then the cap in force; a paused dispatch reads as unknown). Where it is

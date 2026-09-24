@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -3214,8 +3215,11 @@ class ContextBuilder:
         self.conversation_log = conversation_log
         self.channel_history = channel_history
         # One reading of the delegation cap per session key; see
-        # `_session_cap_figure`.
+        # `_session_cap_figure`. One builder serves every session in the
+        # gateway and is reached from a thread executor, so the memo's
+        # read-evict-insert transaction is guarded.
         self._cap_figures: dict[str, str] = {}
+        self._cap_figures_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it
@@ -3288,6 +3292,19 @@ class ContextBuilder:
             ceiling = 0
         return f"{ceiling} (configured ceiling)" if ceiling > 0 else "several"
 
+    @staticmethod
+    def _cap_memo_key(session_key: str) -> str:
+        """The memo's key for a session: a fixed-size digest of its key.
+
+        ``_CAP_FIGURE_SESSIONS`` caps how MANY readings are held, and a count
+        caps memory only when each thing held is itself bounded. A session key
+        reaches ``build_message`` from the caller at whatever length it likes, and
+        an entry leaves the memo only by eviction, never when its session closes,
+        so an oversized key would stay retained. Digesting it makes every
+        retained key the same size and the cap govern bytes as well as entries.
+        """
+        return hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+
     def _session_cap_figure(self, session_key: str, *, refresh: bool) -> str:
         """One session's reading of the delegation cap, taken once.
 
@@ -3300,13 +3317,37 @@ class ContextBuilder:
         the host from session to session while one session's contract holds
         still. A session whose start this process did not serve has no reading
         and takes a live one.
+
+        The memo holds ``_CAP_FIGURE_SESSIONS`` readings, so on a gateway that
+        starts more sessions than that the reuse is not unconditional: an evicted
+        session's restoring render finds no reading and takes a live one, which
+        is the drift this method otherwise removes. Eviction therefore takes the
+        least recently USED entry rather than the oldest one -- a hit moves its
+        key to the end, so a session that keeps rendering its contract stops
+        being the next one dropped. That orders the victims sensibly; it does not
+        make the reuse a guarantee, and nothing distinguishes an evicted session
+        from one this process never started.
+
+        One builder serves every session in the gateway and is reached from a
+        thread executor, so a sibling thread can evict this key between a
+        lookup and a second read of it -- eviction takes the oldest entry, and
+        the restoring render of the oldest session is exactly the caller that
+        would read it back. The figure is therefore returned as a local, and the
+        lookup, eviction and insertion are held under one lock.
         """
         memo = self._cap_figures
-        if refresh or session_key not in memo:
-            if session_key not in memo and len(memo) >= self._CAP_FIGURE_SESSIONS:
+        key = self._cap_memo_key(session_key)
+        with self._cap_figures_lock:
+            if not refresh:
+                cached = memo.get(key)
+                if cached is not None:
+                    memo[key] = memo.pop(key)
+                    return cached
+            figure = self._live_cap_figure()
+            if key not in memo and len(memo) >= self._CAP_FIGURE_SESSIONS:
                 memo.pop(next(iter(memo)), None)
-            memo[session_key] = self._live_cap_figure()
-        return memo[session_key]
+            memo[key] = figure
+            return figure
 
     @staticmethod
     def _resolve_prompt_templates(prompt: str, session_key: str, cap_figure: str = "") -> str:
@@ -4614,6 +4655,9 @@ class ContextBuilder:
                 agent_prompt = ""
         if not agent_prompt:
             return ""
+        # Any host-derived token in this prompt must be snapshotted per session:
+        # the contract block is asserted byte-identical across a session's
+        # renders, so a token resolved live on each render cannot hold it.
         cap_figure = (
             self._session_cap_figure(session_key or "", refresh=session_start)
             if self._MAX_SUBAGENTS_TOKEN in agent_prompt

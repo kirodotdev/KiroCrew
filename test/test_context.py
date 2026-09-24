@@ -582,6 +582,81 @@ class TestContextBuilder:
         assert "4242" in self._contract(fresh)
         assert self._contract(msg) == self._contract(fresh)
 
+    def test_an_eviction_during_the_reading_cannot_break_the_caller(self, tmp_path):
+        """One builder serves every session, so a sibling thread's eviction can
+        land on this key in the gap after this call stores it. Eviction takes the
+        oldest entry and the restoring render of the oldest session is the caller
+        that would read it back, so the figure is handed over as a local rather
+        than fetched from the memo a second time."""
+
+        class EvictsRightAfterStoring(dict):
+            """The memo as the losing interleaving leaves it: the entry is gone
+            the instant after it is stored, which is where a sibling thread's
+            eviction lands."""
+
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                super().pop(key, None)
+
+        builder = self._reinject_builder(tmp_path)
+        builder._cap_figures = EvictsRightAfterStoring()
+
+        with patch.object(builder, "_live_cap_figure", return_value="7171"):
+            figure = builder._session_cap_figure("dashboard:chat-evicted", refresh=True)
+
+        assert figure == "7171"
+        assert ContextBuilder._cap_memo_key("dashboard:chat-evicted") not in builder._cap_figures
+
+    def test_an_oversized_session_key_is_not_what_the_memo_retains(self, tmp_path):
+        """The cap counts entries, and counting bounds memory only if each entry
+        is bounded. A session key arrives from the caller at any length and an
+        entry leaves only by eviction, so the key is digested before it is kept."""
+        builder = self._reinject_builder(tmp_path)
+        huge = "dashboard:" + "k" * 100_000
+
+        with patch.object(builder, "_live_cap_figure", return_value="5151"):
+            assert builder._session_cap_figure(huge, refresh=True) == "5151"
+            # The same session still finds its own reading.
+            assert builder._session_cap_figure(huge, refresh=False) == "5151"
+
+        assert huge not in builder._cap_figures
+        assert [len(k) for k in builder._cap_figures] == [64]
+
+    def test_the_cap_memo_transaction_is_serialized(self, tmp_path):
+        """The reading, the eviction and the insertion are one transaction: a
+        second thread must not observe the memo between them."""
+        builder = self._reinject_builder(tmp_path)
+        held: list[bool] = []
+
+        def observe_lock() -> str:
+            held.append(builder._cap_figures_lock.locked())
+            return "3131"
+
+        with patch.object(builder, "_live_cap_figure", side_effect=observe_lock):
+            builder._session_cap_figure("dashboard:chat-locked", refresh=True)
+
+        assert held == [True]
+        assert not builder._cap_figures_lock.locked()
+
+    def test_a_rendering_session_stops_being_the_next_one_evicted(self, tmp_path):
+        """Evicting the oldest ENTRY picks the longest-lived session, which is
+        the one most likely to still be restored -- so the reading this exists to
+        preserve would be the first dropped. A hit moves its key to the end, and
+        eviction takes the least recently used instead."""
+        builder = self._reinject_builder(tmp_path)
+        with (
+            patch.object(ContextBuilder, "_CAP_FIGURE_SESSIONS", 3),
+            patch.object(builder, "_live_cap_figure", side_effect=["1", "2", "3", "4"]),
+        ):
+            for key in ("dashboard:s-a", "dashboard:s-b", "dashboard:s-c"):
+                builder._session_cap_figure(key, refresh=True)
+            # s-a restores its contract, so it is the most recently used.
+            assert builder._session_cap_figure("dashboard:s-a", refresh=False) == "1"
+            builder._session_cap_figure("dashboard:s-d", refresh=True)
+
+        assert ContextBuilder._cap_memo_key("dashboard:s-a") in builder._cap_figures
+        assert ContextBuilder._cap_memo_key("dashboard:s-b") not in builder._cap_figures
+
     def test_no_reinjection_when_the_flag_is_absent(self, tmp_path):
         """The default path is unchanged — no marker, no index re-injection."""
         builder = self._reinject_builder(tmp_path)
