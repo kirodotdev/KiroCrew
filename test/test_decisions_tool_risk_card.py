@@ -137,15 +137,18 @@ def _tool_call(
     title: str = "bash",
     *,
     arguments: str = '{"command": "rm -rf /data"}',
+    tool_kind: str = "execute",
+    diff_path: str = "",
 ) -> LLMEvent:
     return LLMEvent(
         kind=EVENT_TOOL_CALL,
         title=title,
         tool_name=title,
         tool_call_id=tool_call_id,
-        tool_kind="execute",
+        tool_kind=tool_kind,
         tool_input=arguments,
         is_shell=True,
+        diff_path=diff_path,
     )
 
 
@@ -379,6 +382,26 @@ class TestTheModeItAnnotates:
         assert calls[0]["tool"] == "bash"
         assert calls[0]["arguments"] == '{"command": "rm -rf /data"}'
         assert calls[0]["message"] == "clean up /data"
+        # The harness's ACP kind rides along; it decides the file-write rule.
+        assert calls[0]["tool_kind"] == "execute"
+
+    @pytest.mark.asyncio
+    async def test_the_cached_diff_path_rides_along_too(self, tmp_path):
+        """``diff_path`` is the OR half of the file-write predicate: an edit whose
+        ACP ``kind`` arrives empty or ``read`` still routes on this alone, so a
+        wiring test that only checks ``tool_kind`` would pass even if this field
+        were silently dropped between the event and the call site."""
+        state, client = _runner(tmp_path)
+        slot = _slot()
+        state.is_yolo_active = MagicMock(return_value=False)
+        _scripts(client, [_tool_call(tool_kind="read", diff_path="README.md")])
+
+        with _quiet_sel(), _answering(RECORD) as calls:
+            await chat_runner._run_chat(state, slot, "clean up /data")
+        await _settle(slot)
+
+        assert calls[0]["tool_kind"] == "read"
+        assert calls[0]["diff_path"] == "README.md"
 
 
 # ── the mutation check: permission behaviour is byte-identical ────────────────

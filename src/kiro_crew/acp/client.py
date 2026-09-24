@@ -13395,6 +13395,7 @@ class AcpClient:
                 )
             # For edit tools with diff content blocks, generate unified diff
             found_diff = False
+            _diff_path = ""
             content_blocks = update.get("content", [])
             if isinstance(content_blocks, list):
                 for cb in content_blocks:
@@ -13404,6 +13405,7 @@ class AcpClient:
                         path = cb.get("path", "")
                         if tool_call_id and path:
                             self._tool_call_diff_path[tool_call_id] = path
+                            _diff_path = path
                         diff_str = _make_unified_diff(old, new, path)
                         if diff_str:
                             input_str = diff_str
@@ -13514,6 +13516,7 @@ class AcpClient:
                 mcp_server_name=identity.mcp_server_name,
                 tool_identity_trusted=identity.tool_identity_trusted,
                 mcp_identity_trusted=identity.identity_trusted,
+                diff_path=_diff_path,
             )
         return None
 
@@ -13676,6 +13679,7 @@ class AcpClient:
             input_str = raw_input
         # Edit-style diff content blocks: prefer the rendered unified diff over
         # the raw input dict (mirrors `_extract_tool_event`).
+        _diff_path = ""
         content_blocks = update.get("content", [])
         if isinstance(content_blocks, list):
             for cb in content_blocks:
@@ -13685,6 +13689,7 @@ class AcpClient:
                     path = cb.get("path", "")
                     if path:
                         self._tool_call_diff_path[tool_use_id] = path
+                        _diff_path = path
                     diff_str = _make_unified_diff(old, new, path)
                     if diff_str:
                         input_str = diff_str
@@ -13747,6 +13752,7 @@ class AcpClient:
             tool_call_id=tool_use_id,
             raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
             is_shell=is_shell,
+            diff_path=_diff_path,
         )
 
     def _read_new_tool_results_sync(self) -> list[AcpEvent]:

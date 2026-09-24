@@ -5720,6 +5720,40 @@ class TestExtractToolEvent:
         event = client._extract_tool_event(msg)
         assert event is not None
         assert "-old" in event.tool_input or "+new" in event.tool_input
+        assert event.diff_path == "f.py"
+
+    def test_tool_call_diff_path_survives_an_inaccurate_kind(self):
+        """A diff content block still marks the write plane even when the
+        backend's own ``kind`` is not ``edit`` (e.g. ``read`` or unset) --
+        ``is_edit_call`` ORs ``diff_path`` with ``kind`` precisely so an
+        agent-influenced ``kind`` cannot hide a real file write from
+        ``tool.risk``'s caution carve-out."""
+        client = AcpClient()
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            method="session/update",
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "title": "write",
+                    "kind": "read",
+                    "toolCallId": "tc-diffpath",
+                    "input": {},
+                    "content": [
+                        {
+                            "type": "diff",
+                            "oldText": "old\n",
+                            "newText": "new\n",
+                            "path": "README.md",
+                        }
+                    ],
+                }
+            },
+        )
+        event = client._extract_tool_event(msg)
+        assert event is not None
+        assert event.diff_path == "README.md"
 
     def test_tool_call_str_replace_fallback(self):
         client = AcpClient()
@@ -8071,6 +8105,7 @@ class TestExtractToolCallRefinement:
         assert event is not None
         # _make_unified_diff prefixes file headers
         assert "foo.py" in event.tool_input
+        assert event.diff_path == "foo.py"
 
     def test_redacts_credentials_in_input(self):
         client = self._client()

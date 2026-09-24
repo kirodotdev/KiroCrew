@@ -117,8 +117,9 @@ You have to turn this on separately. The Decisions switch covers your message te
 | The second switch is off | Nothing -- no tool arguments are sent and no notes appear |
 | Asks you before each tool call | Nothing new -- you are already reading the call |
 | Trusts the session, or YOLO, and Jev says `safe` | Nothing -- the card looks as it always did |
-| Trusts the session, or YOLO, and Jev says `caution` or `risky` with a score of 0.80 or more | The note, with the score and thumbs |
-| Trusts the session, or YOLO, and Jev says `caution` or `risky` but scores it under 0.80 | Nothing -- Jev was not sure enough for a note, though the answer is still written to the log |
+| Trusts the session, or YOLO, and Jev says `risky`, and Jev is sure | The note, with a score and thumbs |
+| Trusts the session, or YOLO, and Jev says `caution`, is sure, and the call is not a plain file write | The note, with a score and thumbs |
+| Trusts the session, or YOLO, and Jev is hesitant, or says `caution` on a plain file write | Nothing -- the answer is still logged, just not shown |
 | Timeout, refusal or invalid answer | Nothing |
 
 A session that asks you is never annotated, because you are the one looking at the call. The note exists for the sessions where nobody is.
