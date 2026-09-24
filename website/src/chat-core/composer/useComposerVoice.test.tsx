@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
  * instances sharing one fake engine factory. */
 
 type Engine = {
-  recording: boolean; transcribing: boolean; sessionOwner: string | null; streamEnabled: boolean
+  recording: boolean; transcribing: boolean; draining: boolean; sessionOwner: string | null; streamEnabled: boolean
   toggle: () => void; start: () => Promise<void>; stop: () => void; cancel: () => void; prewarm: () => void
   error: string | null; level: number; deviceLabel: string; deviceId: string; clearError: () => void; partial: string
   download: null; sampleRef: { current: object }; switchDevice: () => void; deviceSwitchIsLive: boolean
@@ -26,7 +26,7 @@ const fx = vi.hoisted(() => {
   const state = { renderingInstance: 0 }
   function makeEngine(): Engine {
     const e: Engine = {
-      recording: false, transcribing: false, sessionOwner: null, streamEnabled: false,
+      recording: false, transcribing: false, draining: false, sessionOwner: null, streamEnabled: false,
       toggle: vi.fn(), start: vi.fn(async () => { e.recording = true }), stop: vi.fn(() => { e.recording = false }), cancel: vi.fn(), prewarm: vi.fn(),
       error: null, level: 0, deviceLabel: '', deviceId: '', clearError: vi.fn(), partial: '',
       download: null, sampleRef: { current: {} }, switchDevice: vi.fn(), deviceSwitchIsLive: false,
