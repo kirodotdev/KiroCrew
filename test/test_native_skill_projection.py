@@ -763,6 +763,146 @@ def test_prune_caps_reclaims_per_run_so_the_backlog_drains_over_spawns(native_tr
     assert not any(p.exists() for p in backlog), "successive runs did not drain the backlog"
 
 
+def _crew_home_id():
+    """The owner id the spawn path passes, for a test that drives the prune itself."""
+    return projection.data_home().absolute().as_posix()
+
+
+def _prune_walk(monkeypatch, classifications, blocked=frozenset()):
+    """Record each candidate the walk classifies, and end it after *classifications*.
+
+    The lease probe is the first per-candidate cost in the loop, so the names it
+    sees ARE the candidates this call examined, and answering "leased" for
+    *blocked* pins an entry unreclaimable without inventing a live projection.
+
+    Time is frozen and advanced ONLY by that probe, so one tick means one
+    candidate. A clock that ticked per READ cannot express this: the
+    classification path reads the clock too, so the budget would be spent by
+    reads rather than by work. Nothing sleeps, and the count is exact.
+    """
+    seen = []
+    real = projection._alias_has_external_lease
+    if classifications == 0:
+        monkeypatch.setattr(projection, "_PRUNE_MAX_SECONDS_PER_RUN", 0.0)
+    budget = projection._PRUNE_MAX_SECONDS_PER_RUN
+    ticks = [0]
+
+    def clock():
+        # Counted, never accumulated: summing budget/N N times lands either side of
+        # the budget by one float ulp, which is one candidate either way.
+        return 0.0 if not classifications else budget * ticks[0] / classifications
+
+    def probe(directory, alias):
+        seen.append(alias)
+        ticks[0] += 1
+        return True if alias in blocked else real(directory, alias)
+
+    monkeypatch.setattr(projection, "_alias_has_external_lease", probe)
+    monkeypatch.setattr(projection.time, "monotonic", clock)
+    return seen
+
+
+def test_a_backlog_cannot_stretch_the_locked_section_past_this_calls_budget(
+    native_tree, monkeypatch
+):
+    """The prune holds the publication lock, whose acquisition ceiling is fixed.
+
+    So the section it holds has to be bounded by something other than the size of
+    the pile it is draining. The reclaim cap is not that bound: a candidate that
+    is kept, active or leased costs a full classification and never increments
+    it, so a backlog whose entries are ALL unreclaimable costs the full walk and
+    buys no reclaim at all -- the case this budget exists for.
+    """
+    _home, agents, _project = native_tree
+    backlog = [_legacy_alias(agents, f"{n:024x}") for n in range(24)]
+    _prune_walk(monkeypatch, 8)
+
+    projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+
+    survivors = sum(1 for p in backlog if p.exists())
+    assert survivors == len(backlog) - 8, "the walk did not stop on its own time budget"
+
+
+def test_the_walk_stops_on_its_deadline_without_reclaiming_anything(native_tree, monkeypatch):
+    """The deadline is the guarantee; the candidate cap only makes cost predictable.
+
+    Per-candidate cost is not flat -- the lease probe rescans the lease directory
+    for every candidate -- so a count alone cannot bound wall-clock time. A spent
+    budget is proved by a zero-length walk, which needs no clock and no sleep.
+    """
+    _home, agents, _project = native_tree
+    backlog = [_legacy_alias(agents, f"{n:024x}") for n in range(6)]
+    seen = _prune_walk(monkeypatch, 0)
+
+    projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+
+    assert seen == [], "the walk classified a candidate after its deadline had passed"
+    assert all(p.exists() for p in backlog), "a deletion happened past the deadline"
+
+
+def test_the_walk_starts_where_the_rotation_points(native_tree, monkeypatch):
+    """A fixed start examines one prefix forever; the offset is what moves it.
+
+    Driven through the prune itself rather than a spawn: publishing rewrites an
+    alias and its sidecar, and a directory whose entries have been rewritten is
+    free to enumerate them in a different order on another platform. Asserting a
+    position across that would assert the filesystem, not the rotation.
+    """
+    _home, agents, _project = native_tree
+    backlog = [_legacy_alias(agents, f"{n:024x}") for n in range(12)]
+    order = list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
+    assert len(order) == len(backlog), "the walk sees entries this test did not seed"
+    monkeypatch.setattr(projection, "_prune_start_offset", lambda count: count - 1)
+    seen = _prune_walk(monkeypatch, 1, blocked={p.stem for p in order})
+
+    projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+
+    assert seen == [order[-1].stem], "the walk ignored the rotation and took the prefix"
+
+
+def test_an_unreclaimable_prefix_cannot_hide_the_backlog_behind_it(native_tree, monkeypatch):
+    """Rotation has to REACH every entry across calls, not merely differ per call.
+
+    With a bounded walk and a fixed start, entries that are kept, active or leased
+    at the front of the directory's own order hide everything behind them for
+    good: the walk spends its whole budget on them every single call.
+    """
+    _home, agents, _project = native_tree
+    backlog = [_legacy_alias(agents, f"{n:024x}") for n in range(12)]
+    order = list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
+    assert len(order) == len(backlog), "the walk sees entries this test did not seed"
+    pinned = order[:4]
+    reclaimable = order[4:]
+    assert reclaimable, "no entry sits behind the pinned prefix"
+
+    turns = iter(range(0, 64, 4))
+
+    def rotate(count):
+        return next(turns, 0) % count if count else 0
+
+    monkeypatch.setattr(projection, "_prune_start_offset", rotate)
+    _prune_walk(monkeypatch, 4, blocked={p.stem for p in pinned})
+
+    for _ in range(8):
+        projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+
+    assert all(p.exists() for p in pinned), "a pinned entry was reclaimed"
+    assert not any(p.exists() for p in reclaimable), (
+        "entries behind the unreclaimable prefix were never reached, so the bounded "
+        "walk disabled its own cleanup"
+    )
+
+
+def test_the_rotation_offset_is_not_a_constant_and_stays_in_range(native_tree):
+    """The seam's own contract: in range, and genuinely moving."""
+    assert projection._prune_start_offset(0) == 0
+    assert projection._prune_start_offset(1) == 0
+    drawn = {projection._prune_start_offset(64) for _ in range(256)}
+    assert drawn, "the seam returned nothing"
+    assert all(0 <= offset < 64 for offset in drawn), "an offset fell outside the list"
+    assert len(drawn) > 1, "a constant offset walks one prefix forever"
+
+
 def test_prune_reclaims_alias_whose_work_dir_was_deleted(native_tree, monkeypatch, tmp_path):
     _home, agents, project = native_tree
     gone = tmp_path / "gone-workdir"

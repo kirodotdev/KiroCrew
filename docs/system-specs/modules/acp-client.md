@@ -107,12 +107,26 @@ this agents directory sees the same eviction-then-republish rather than the
 home-scoped skip a recorded alias gets. Every other gate still applies to it:
 this run's own set, live in-process projections and held leases are all checked
 first, and removal is identity-checked against the bytes and inode just read.
-Reclaims are capped PER RUN rather than per candidate examined: the first prune
-after an upgrade faces the whole accumulated backlog, and it runs while the
-publication lock is held, whose own acquisition ceiling is 2s — draining
-thousands of files in one sweep would make a concurrent spawn fail to acquire and
-fall back to authored agents. The backlog is bounded and shrinking, so spreading
-it over successive spawns reclaims it just as completely. Projected agent JSON contains only fields accepted by Kiro's strict
+The prune runs while the publication lock is held, which is what keeps a deletion
+from landing on an alias a publisher that takes the same lock is writing. That
+lock's acquisition ceiling is fixed, so one call's classification work carries a
+time budget. It is a BETWEEN-candidate budget, not a bound on the section: it is
+read before each candidate, so it limits how many are walked and not how long any
+single one takes, and the directory enumeration that precedes the walk is outside
+it. Reclaims are capped per run as well, but that cap is a ceiling and never a
+floor, and it bounds no part of the section — a candidate that is kept, active or
+leased costs a full classification and never increments it, so a backlog of
+entirely unreclaimable entries was walked in full while the lock was held.
+Per-candidate cost is not flat either, since the lease probe rescans the lease
+directory for every candidate. Each call starts at a rotating offset into the
+candidate list: a budgeted walk from a fixed start examines the same prefix every
+time, so entries that are kept, active or leased at the front of the directory's
+own order would hide the whole reclaimable remainder behind them permanently. The
+offset is drawn per call rather than remembered, since the workload this bounds
+spawns a fresh process per run and a process-local cursor would restart at zero
+every time. Drawing it makes reach across successive spawns probabilistic rather
+than scheduled: the backlog is bounded and shrinking, and every entry is reached
+in expectation, but no single spawn is promised any particular entry. Projected agent JSON contains only fields accepted by Kiro's strict
 schema; lifecycle ownership lives in the non-spec
 `.kirocrew-skill-projection-metadata` directory. Each sidecar records the alias's
 exact byte digest, so a stale or replaced sidecar cannot authorize deletion of a

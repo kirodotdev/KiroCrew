@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import stat
 import threading
 import time
@@ -58,17 +59,20 @@ _PROJECTION_LEASE_MAX_BYTES = 65536
 # here rather than recomputed from the writer, because widening the writer must
 # not silently widen what the reclaim is willing to delete.
 _LEGACY_ALIAS_NAME_RE = re.compile(re.escape(NATIVE_SKILL_ALIAS_PREFIX) + r"[0-9a-f]{24}")
-# Reclaims PER RUN, not candidates examined. The first prune after an upgrade
-# faces the whole accumulated backlog -- thousands of files on the hosts that
-# motivated this -- and it runs while the publication lock is held, whose own
-# acquisition ceiling is 2s. Draining it in one sweep would make a concurrent
-# spawn in a worktree-per-task pipeline fail to acquire and fall back to authored
-# agents. The backlog is bounded and shrinking, so spreading it over successive
-# spawns reclaims it just as completely without ever holding the lock long.
-# This is the headroom the per-run cap keeps over the aliases one run publishes,
-# so an accumulated backlog drains by at least this many per spawn while the
-# steady-state orphan rate is covered (see _prune_stale_managed_aliases).
+# A CEILING on reclaims per run, never a floor: the time budget below can end a
+# call having reclaimed none at all. It is headroom over the aliases one run
+# publishes, so a call that does reach them covers the steady-state orphan rate
+# as well as some backlog. It bounds no part of the critical section: a candidate
+# that is kept, active or leased costs a full classification and never increments
+# it, which is why the section carries its own budget below.
 _PRUNE_MAX_RECLAIMS_PER_RUN = 64
+# The budget for one call's classification work, and a BETWEEN-candidate one: it
+# bounds how many candidates are walked, not how long any single one takes, and
+# the directory enumeration that precedes the walk is outside it. Sized well under
+# _PROJECTION_LOCK_TIMEOUT_SECS and sharing that ceiling with the publication
+# writes in the same section -- two atomic writes per alias plus the settings
+# commit -- so it has to leave room for those, not merely fit under the ceiling.
+_PRUNE_MAX_SECONDS_PER_RUN = 0.4
 # The ONE window the re-preparation contract does not cover, and the only thing
 # this age excludes. A publisher from a build that predates the lease holds no
 # lease, so between its write and kiro-cli reading `--agent` its alias looks
@@ -617,15 +621,34 @@ def _managed_metadata_for_alias(
     return None
 
 
+def _prune_start_offset(count: int) -> int:
+    """Where this call begins its bounded walk over *count* candidates.
+
+    A bounded walk over a stable directory order examines the same prefix every
+    call, so a prefix of entries that are kept, active or leased hides the whole
+    reclaimable remainder behind it -- permanently, because the walk never gets
+    past its own budget to see it. Moving the start makes every entry reachable
+    across calls. It cannot be a cursor in memory: the workload this bound exists
+    for spawns a fresh process per cron run, so a process-local cursor restarts at
+    zero every time and rotates nothing.
+    """
+    if count <= 0:
+        return 0
+    return secrets.randbelow(count)
+
+
 def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: set[str]) -> None:
     """Remove aliases owned by this Kiro Crew data home that no projection uses.
 
-    Runs while the publication lock is held. An alias is kept when this run
-    publishes it, a projection in this process holds it, or a held lease in any
-    process names it. Everything else this data home recorded is a cache entry
-    for a projection that has ended: every consumer re-prepares before it sends
-    an alias, so removing one costs the next spawn for that work directory one
-    rewrite and nothing else. Whether the recorded work directory still exists
+    Runs while the publication lock is held, so a deletion cannot land on an alias
+    a publisher that takes that lock is writing; a build predating the lease takes
+    no part in it, and the minimum age is what covers that one. A time budget keeps
+    the held lock down to a slice of the walk rather than all of it. An alias is
+    kept when this run publishes it, a projection in this process holds it, or a
+    held lease in any process names it. Everything else this data home
+    recorded is a cache entry for a projection that has ended: every consumer
+    re-prepares before it sends an alias, so removing one costs the next spawn
+    for that work directory one rewrite and nothing else. Whether the recorded work directory still exists
     is not consulted: a per-run work directory outlives its run, so keying on
     it keeps one alias per agent for every run ever spawned.
     """
@@ -638,7 +661,11 @@ def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: se
     # Each run publishes len(keep) aliases and leaves that many behind when it
     # ends, so the cap covers that steady-state rate plus bounded backlog drain.
     cap = _PRUNE_MAX_RECLAIMS_PER_RUN + len(keep)
+    offset = _prune_start_offset(len(candidates))
+    candidates = candidates[offset:] + candidates[:offset]
+    deadline = time.monotonic() + _PRUNE_MAX_SECONDS_PER_RUN
     reclaimed = 0
+    examined = 0
     for path in candidates:
         if reclaimed >= cap:
             logger.info(
@@ -646,6 +673,15 @@ def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: se
                 cap,
             )
             break
+        if time.monotonic() >= deadline:
+            logger.info(
+                "skill projection: prune budget spent after %d candidate(s); the rest drains on later spawns",
+                examined,
+            )
+            break
+        # Counted for EVERY candidate, not only the reclaimed ones: what the budget
+        # has to cover is the classification, which a skip pays in full.
+        examined += 1
         if (
             path.stem in keep
             or path.stem in active
