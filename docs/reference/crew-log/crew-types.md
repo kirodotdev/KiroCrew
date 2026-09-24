@@ -3,14 +3,13 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-> **No crew emitter exists yet.** The families on this page are the specified
-> shape a crew writer must produce, and most of them are still only that. The two
-> contracts are narrower: `crew/dispatch` and `crew/report` are declared in
-> `kiro_crew.crew_log.entry_types` as `CREW_ENTRY_TYPES`, and the append path
-> checks every entry of those two types against the declaration, so a malformed
-> one is refused with [`bad_data_field`](errors.md#bad_data_field) rather than
-> written. A field rule under any OTHER family is the agreement, not something
-> the code enforces.
+> **Two of these types have a writer; the rest do not.** `crew/dispatch` and
+> `crew/report` are declared in `kiro_crew.crew_log.entry_types` as
+> `CREW_ENTRY_TYPES`, the append path checks every entry of those two types
+> against the declaration, and `crew_log.emit` writes them: the conductor work
+> board's `bind` records a dispatch into the dispatching crew's log, and a
+> worker's report records the answer. A field rule under any OTHER family is the
+> agreement, not something the code enforces or produces.
 
 A crew's log uses the same file layout, the same header rules and the same eight
 envelope fields as a session's log — [envelope.md](envelope.md) covers all of

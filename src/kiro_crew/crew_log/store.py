@@ -1241,9 +1241,12 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
     crew log already written, permanently, since nothing else collects them.
 
     Crew logs are out of scope and are never scanned: this walks
-    ``crew-log/sessions`` alone. They have no writer yet, and no ``session/closed``
-    to age from, so a rule invented for them now would be a guess applied to
-    files nothing produces.
+    ``crew-log/sessions`` alone. A crew's log IS written -- the crew emitter
+    appends a dispatch and the reports that answer it -- and it is still not aged
+    here, because nothing in that file says when its history stops being wanted. A
+    session's does: ``session/closed`` names the moment the unit's life ended. A
+    crew outlives every item it dispatched, so ageing one needs a rule of its own
+    rather than a session's lifecycle applied to a unit that has none.
 
     A unit is collectable only when its own log PROVES the session is finished:
     the newest lifecycle entry is a ``session/closed`` whose reason is one of

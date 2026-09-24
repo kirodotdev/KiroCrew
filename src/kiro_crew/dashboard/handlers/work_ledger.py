@@ -609,6 +609,26 @@ async def api_work_report(request: web.Request) -> web.Response:
                     caller, "work_report", item.item_id, conductor_key, snapshot
                 )
             await asyncio.to_thread(_mark_recorded, conductor_key, item.item_id)
+            crew_store = _crew_store(conductor_key)
+            if crew_store and item.status:
+                # The answer to the dispatch, in the crew's own log: the emitter
+                # threads it onto that dispatch's seq and builds the required
+                # ``ref`` from this worker's unit, so the claim carries its
+                # evidence. ``replying`` says this is an answer rather than a
+                # volunteered report, which is what makes an unresolved anchor
+                # refuse the write instead of recording the wrong provenance.
+                # Written after the work entry landed, best-effort.
+                await asyncio.to_thread(
+                    crew_log_emit.on_crew_report,
+                    crew_store,
+                    {
+                        "item": item.item_id,
+                        "status": item.status,
+                        **({"summary": item.summary} if item.summary else {}),
+                    },
+                    cite_unit=acting_unit,
+                    replying=True,
+                )
             _audit(caller, "work_report", "ok", resources=f"{item_id} status={item.status}")
             return web.json_response(
                 {"ok": True, "item_id": item.item_id, "status": item.status, "round": item.round}
@@ -958,6 +978,26 @@ def _acting_unit(
             "this session's crew log unit is not known; there is nothing to record into",
         )
     return unit, None
+
+
+def _crew_store(conductor_slot_key: str) -> str:
+    """The crew-log store a conductor's dispatch record belongs to, or ``""``.
+
+    A crew log belongs to a CREW, and the crew a conductor slot names is the member
+    whose DM thread it is -- keyed ``member-<slug>``, so the store is that slug,
+    read through the members module's own derivation so this cannot drift from the
+    slot layer.
+
+    ``""`` for every other slot, and that is a refusal rather than a gap: a board
+    driven from an ordinary chat slot has no crew to own the record, and spelling a
+    unit id out of a slot key would attribute the work to a unit whose header
+    names a crew no reader can resolve. The board's own authority is unaffected --
+    it is the ``work/recorded`` entry in the acting session's log, which every
+    write already refuses to proceed without.
+    """
+    from kiro_crew.eventlog_hooks import member_slug_for_slot
+
+    return member_slug_for_slot(conductor_slot_key) or ""
 
 
 def _report(
@@ -1348,6 +1388,20 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             await asyncio.to_thread(_mark_recorded, key, item.item_id)
         if action == "goal":
             await asyncio.to_thread(_mark_goal_recorded, key)
+        crew_store = _crew_store(key) if action == "bind" else ""
+        worker_slot = getattr(item, "worker_session_key", "") or ""
+        if item is not None and crew_store and worker_slot:
+            # The crew-side record of the fact the entry above recorded: a dispatch
+            # is a crew handing one item to a target, and ``bind`` is the action
+            # that names the target. Written AFTER the work entry landed, so the
+            # crew's log cannot claim a dispatch the board does not hold, and
+            # best-effort, so a crew log that cannot be written does not fail a
+            # ledger write that succeeded.
+            await asyncio.to_thread(
+                crew_log_emit.on_crew_dispatch,
+                crew_store,
+                {"item": item.item_id, "target": {"kind": "session", "slot": worker_slot}},
+            )
         _audit(
             key,
             "work_ledger_record",
