@@ -3474,9 +3474,15 @@ async def handle_message(
     _stream_delivered = False  # True once ANY real-text append is confirmed on the stream
     # Rolling-buffer redactor for the live Slack wire: withholds the trailing
     # credential-class run so a credential split across streaming chunks can't
-    # reach Slack unredacted (issue 3). The final message is posted from the
-    # complete, fully-redacted `accumulated`, so the held tail is superseded at
-    # stop_stream — no data loss.
+    # reach Slack unredacted (issue 3). stop_stream ignores final_text, so the
+    # withheld tail is appended at end-of-turn ONLY when the final full-text
+    # render proved the whole turn clean; when that render redacted anything the
+    # tail is dropped and the guaranteed final overwrite posts the complete
+    # redacted text instead — an appended frame is visible the instant it lands,
+    # so "overwritten later" is not a defense. The mid-turn wait boundary settles
+    # the tail by the same rule against its own complete PRE-wait text: clean
+    # appends, redacted resets and the stopped message is overwritten with the
+    # redacted render. See _flush_sred_tail.
     _sred = StreamRedactor()
     accumulated = ""
     thinking_accumulated = ""
@@ -3538,9 +3544,11 @@ async def handle_message(
         Streams through the rolling redactor (``_sred``) so a credential split
         across streaming chunks can't reach Slack unredacted (issue 3): only the
         confirmed-safe prefix is sent now; the trailing (possible-partial-
-        credential) run is withheld until the next append. The final message is
-        posted from the complete, fully-redacted ``accumulated`` at stop_stream,
-        so the withheld tail is superseded — never lost.
+        credential) run is withheld until the next append. The final held tail
+        is appended at end-of-turn only when the final full-text render proved
+        the turn clean; otherwise it is dropped and the final overwrite posts
+        the complete redacted text (see _flush_sred_tail). stop_stream ignores
+        final_text.
         """
         nonlocal _stream_had_redaction, _stream_delivered
         if not stream_ts:
@@ -3587,6 +3595,81 @@ async def handle_message(
         if ok:
             _stream_delivered = True
         return ok
+
+    async def _flush_sred_tail(render_redacted: bool) -> None:
+        """Emit _sred's withheld tail before stopping the stream at END OF TURN.
+
+        stop_stream ignores final_text, so the held tail is dropped unless sent
+        as an append frame. flush() runs redact() (credentials AND exfil URLs).
+        Rotates on append failure, mirroring _append_stream.
+
+        ``render_redacted`` is the end-of-turn render's verdict over the
+        COMPLETE accumulated text (strip_ansi + canonicalise, then redact —
+        strictly more context than the per-chunk scan ever sees). False means
+        the tail is proven clean: appending it cannot disclose anything and
+        keeps the wire copy whole. True means the tail is NOT appended: the
+        per-chunk redactor does not normalise ANSI/zero-width obfuscation, so a
+        flushed tail can complete an obfuscated credential whose prefix already
+        streamed, and an appended frame is visible (and capturable) the instant
+        it lands — the later _safe_final_update overwrite cannot recall it. The
+        tail is reset instead, and that overwrite — guaranteed to run for the
+        same render_redacted flag — posts the complete, fully-redacted text, so
+        nothing is lost. The mid-turn wait boundary calls this with its own
+        verdict over the complete PRE-wait text: clean appends (the stopped
+        message keeps its tail), redacted resets -- a stopped message has no
+        overwrite to correct it, and `accumulated` restarts empty so no later
+        verdict covers these bytes. If the append and its rotated retry both
+        fail, streaming is abandoned (use_slack_stream=False) so the final
+        update posts the complete text rather than losing the tail silently.
+
+        Best-effort: MUST NOT raise, for the same reason ``_append_stream``
+        must not. Both call sites sit under a catch-all that books the turn a
+        delivery FAILURE and posts a terminal error, and a raising append is
+        the same event as a refused one — the tail is not on the stream — which
+        the rotate-and-retry path below already handles. So each append is
+        wrapped exactly as ``_append_stream`` wraps its own.
+
+        A landed tail is a confirmed real-text delivery, so it raises
+        ``_stream_delivered`` on the same rule ``_append_stream`` uses. It is the
+        ONLY append for a reply that is entirely a credential-class run (a bare
+        word, a number): every streamed delta is withheld as a possible partial
+        credential and returns early without confirming anything, so without this
+        the reader gets the answer while finalize books the turn a delivery
+        failure and walks the consecutive-failure breaker toward a session reset.
+        """
+        nonlocal _stream_had_redaction, use_slack_stream, _stream_delivered
+        if not stream_ts:
+            return
+        if render_redacted:
+            _sred.reset()
+            return
+        tail = _sred.flush()
+        if not tail:
+            return
+        if "[REDACTED" in tail:
+            _stream_had_redaction = True
+        try:
+            ok = await slack.append_stream(channel, stream_ts, tail)
+        except Exception:
+            logger.warning("Slack tail flush failed — attempting rotation", exc_info=True)
+            ok = False
+        if not ok and use_slack_stream:
+            if await _rotate_stream():
+                assert stream_ts is not None
+                try:
+                    ok = await slack.append_stream(channel, stream_ts, tail)
+                except Exception:
+                    logger.warning("Slack tail flush failed after rotation", exc_info=True)
+                    ok = False
+                if not ok:
+                    # The rotated retry failed too: the tail never reached the
+                    # wire. Drop to non-stream mode so the end-of-turn final
+                    # update posts the complete text instead of the turn
+                    # silently ending without its tail. (_rotate_stream already
+                    # does this itself when the rotation fails.)
+                    use_slack_stream = False
+        if ok:
+            _stream_delivered = True
 
     async def _append_task(task_id: str, title: str, status: str, details: str = "") -> bool:
         """Append task card to stream. Never rotates — see below.
@@ -4279,6 +4362,38 @@ async def handle_message(
                     bracket_hold, _released = _resolve_comment_hold(bracket_hold, accumulated)
                     if _released:
                         await _append_stream(_released)
+                    # The pre-wait message is stopped here and never
+                    # re-rendered by any later path, so its withheld tail must
+                    # be RESOLVED now, by the same rule as the end-of-turn
+                    # flush: render the COMPLETE pre-wait text and let that
+                    # verdict decide. Clean -> the tail is proven safe; append
+                    # it so the stopped message is not truncated (an ordinary
+                    # reply ending in a credential-class run -- a word, a
+                    # number -- must not lose its last token to a wait).
+                    # Redacted -> the tail is NOT appended (its bytes could
+                    # complete an obfuscated credential already streamed);
+                    # instead, after stopping, the message is overwritten with
+                    # the complete REDACTED render -- the same recovery the
+                    # end-of-turn stop uses -- so safe trailing text survives
+                    # and only the redacted spans are masked. Carrying the
+                    # tail forward instead is not an option: `accumulated`
+                    # resets below, so no later render verdict covers these
+                    # bytes. The release above is appended first so its bytes
+                    # pass through ``_sred`` before the tail is settled.
+                    _pre_wait_render = (
+                        render_one_for_slack(accumulated, keep_tables=True) if accumulated else None
+                    )
+                    _pre_wait_redacted = bool(_pre_wait_render and _pre_wait_render.redacted)
+                    await _flush_sred_tail(_pre_wait_redacted)
+                    # ``use_slack_stream`` was True to reach this branch, so
+                    # False here means the flush could land the tail on neither
+                    # the append nor its rotated retry. The wire copy is then
+                    # truncated with nothing behind it: this message is stopped
+                    # just below and `accumulated` resets, so no later render
+                    # verdict ever covers those bytes. The overwrite is the only
+                    # recovery, exactly as in the redacted case.
+                    _pre_wait_tail_lost = not use_slack_stream
+                    _pre_wait_ts = stream_ts
                     try:
                         await slack.stop_stream(channel, stream_ts)
                     except Exception:
@@ -4286,6 +4401,13 @@ async def handle_message(
                             "Slack stop_stream failed at wait finalize — abandoning stream",
                             exc_info=True,
                         )
+                    if (
+                        (_pre_wait_redacted or _pre_wait_tail_lost)
+                        and _pre_wait_ts
+                        and _pre_wait_render
+                    ):
+                        _pw_text = _convert_tables(_pre_wait_render.text) or _NO_RESPONSE
+                        await _safe_final_update(slack, channel, _pre_wait_ts, _pw_text, reply_ts)
                     stream_ts = None
                     accumulated = ""
 
@@ -5108,6 +5230,7 @@ async def handle_message(
                 if stream_buffer:
                     stream_buffer, _ = strip_thinking_tags(stream_buffer, strip_whitespace=False)
                     await _append_stream(stream_buffer)
+                await _flush_sred_tail(_render_redacted)
                 # On the streaming path the answer is delivered incrementally as
                 # it arrives, and a refused append on a stream that DID land text
                 # is recoverable delivery-debt (a designed follow-up), NOT a turn
@@ -5137,7 +5260,22 @@ async def handle_message(
                     logger.warning("Slack stop_stream failed at finalize", exc_info=True)
                 # Redaction overwrite is decoration on an already-delivered stream:
                 # it corrects the visible copy, it does not deliver the answer.
-                if _stream_had_redaction or _render_redacted or exfil_warnings or cred_warnings:
+                #
+                # ``not use_slack_stream`` is the tail-abandon case: the flush
+                # above could not land the withheld tail (neither the append nor
+                # its post-rotation retry), so it dropped out of stream mode.
+                # The wire copy is then missing its tail and the overwrite is
+                # the only thing that carries the complete text -- the same
+                # outcome the legacy branch below produces, with the same text.
+                # It is read here rather than on the enclosing ``if`` because
+                # this block is entered once and must still reach its stop.
+                if (
+                    _stream_had_redaction
+                    or _render_redacted
+                    or exfil_warnings
+                    or cred_warnings
+                    or not use_slack_stream
+                ):
                     fallback_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
                     await _safe_final_update(
                         slack, channel, stream_ts, fallback_text or _NO_RESPONSE, reply_ts
