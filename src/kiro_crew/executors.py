@@ -384,6 +384,7 @@ _path_resolve_pool: SubprocessPoolExecutor | None = None
 _path_probe_pool: ThreadPoolExecutor | None = None
 _path_transfer_pool: ThreadPoolExecutor | None = None
 _crew_log_pool: ThreadPoolExecutor | None = None
+_channel_history_pool: ThreadPoolExecutor | None = None
 
 
 def configure_default_executor() -> None:
@@ -429,6 +430,31 @@ def maintenance_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _pool
+
+
+def channel_history_executor() -> ThreadPoolExecutor:
+    """Return the process-wide channel-history disk lane, creating it on first use.
+
+    Threads are named ``mc-chan-hist``.  Exactly ONE worker, on purpose: the
+    observe-history file pair is mutated by appends, rotations and unlinks,
+    and the single worker makes submission order execution order, so a
+    rotation lands after every append to the generation it moves aside, a
+    queued write can never resurrect a file an unlink already removed, and the
+    lane-owned rotation counter needs no lock. Widening this pool breaks that
+    ordering invariant — see ``ChannelHistory._append_to_disk``,
+    ``ChannelHistory._read_observe`` and ``ChannelHistory._remove_from_disk``,
+    the jobs the lane runs.
+    """
+    global _channel_history_pool
+    if _channel_history_pool is None:
+        with _lock:
+            if _channel_history_pool is None:
+                _channel_history_pool = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="mc-chan-hist",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _channel_history_pool
 
 
 def subprocess_executor() -> ThreadPoolExecutor:
@@ -1100,7 +1126,7 @@ def shutdown_maintenance_executor() -> None:
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool, _path_resolve_pool
     global _path_probe_pool, _path_transfer_pool
-    global _crew_log_pool, _kiro_spawn_pool, _mcp_probe_pool
+    global _crew_log_pool, _kiro_spawn_pool, _mcp_probe_pool, _channel_history_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
@@ -1118,6 +1144,7 @@ def shutdown_maintenance_executor() -> None:
         path_probe_pool, _path_probe_pool = _path_probe_pool, None
         path_transfer_pool, _path_transfer_pool = _path_transfer_pool, None
         crew_log_pool, _crew_log_pool = _crew_log_pool, None
+        channel_history_pool, _channel_history_pool = _channel_history_pool, None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     if subprocess_pool is not None:
@@ -1150,3 +1177,5 @@ def shutdown_maintenance_executor() -> None:
         path_transfer_pool.shutdown(wait=False, cancel_futures=True)
     if crew_log_pool is not None:
         crew_log_pool.shutdown(wait=False, cancel_futures=True)
+    if channel_history_pool is not None:
+        channel_history_pool.shutdown(wait=False, cancel_futures=True)
