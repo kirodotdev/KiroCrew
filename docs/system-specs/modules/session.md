@@ -1998,9 +1998,15 @@ Off the loop (CLI, tests, worker threads) every mutation still writes inline. Lo
 flush on a crash leaves a well-formed older map, never a truncated file.
 
 **Auto-prune:** `SessionMap.get()` auto-removes entries whose `.json` file
-no longer exists (the entry drops from memory immediately; the file write rides
-the deferred flush). `SessionMap.prune()` bulk-removes all stale entries at
-startup.
+no longer exists, or whose `.jsonl` holds no turn (the entry drops from memory
+immediately; the file write rides the deferred flush). `SessionMap.prune()`
+bulk-removes all stale entries at startup. The resumability rule itself —
+kiro-cli's `.json` present and `.jsonl` at least `_RESUMABLE_JSONL_MIN_BYTES`,
+any other backend left to `session/load` — has ONE definition:
+`_RESUMABLE_JSONL_MIN_BYTES` read through `_jsonl_holds_a_turn`, which `get()`
+prunes on directly and `session_files_resumable(sid, provider)` wraps together with
+the `.json` and provider checks for a reader outside the module (the sub-agent
+orphan notice's resume hint), so the two cannot drift.
 
 **Mapped-session enumeration:** `SessionMap.mapped_sids_by_key()` returns session
 key → kiro-cli session ID for every entry that has one. Disk accounting

@@ -58,6 +58,43 @@ def _kiro_sessions_dir() -> Path:
     return _KIRO_SESSIONS_DIR if _KIRO_SESSIONS_DIR is not None else kiro_sessions_dir()
 
 
+#: Below this many bytes a kiro-cli session's ``.jsonl`` holds no turn: the
+#: conversation exists on disk but ``session/load`` has nothing to restore, so
+#: :meth:`SessionMap.get` prunes the mapping rather than resume it. The ONE
+#: definition of that bar, read only through :func:`_jsonl_holds_a_turn` -- by
+#: :meth:`SessionMap.get`, which prunes on it, and by
+#: :func:`session_files_resumable`, the whole-rule predicate a reader outside
+#: this module asks -- so the two cannot drift.
+_RESUMABLE_JSONL_MIN_BYTES = 10
+
+
+def _jsonl_holds_a_turn(sessions_dir: Path, sid: str) -> bool:
+    try:
+        size = (sessions_dir / f"{sid}.jsonl").stat().st_size
+    except FileNotFoundError:
+        size = 0
+    return size >= _RESUMABLE_JSONL_MIN_BYTES
+
+
+def session_files_resumable(sid: str, provider: str = "") -> bool:
+    """Whether *sid*'s on-disk files still let ``session/load`` resume it.
+
+    The same rule :meth:`SessionMap.get` applies before it hands a sid out, in
+    one place so a second reader cannot drift from it. Only kiro-cli keeps
+    transcripts at a flat path this process can stat -- the ``{sid}.json``
+    present and the ``{sid}.jsonl`` holding at least one turn. For every other
+    backend the sid's validity is decided by ``session/load`` itself, so this
+    answers True and leaves the typed refusal to the resume. An absent
+    provider label means kiro-cli.
+    """
+    if (provider or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT:
+        return True
+    if not sid:
+        return False
+    sessions_dir = _kiro_sessions_dir()
+    return (sessions_dir / f"{sid}.json").exists() and _jsonl_holds_a_turn(sessions_dir, sid)
+
+
 # Per-conversation flag recording a refusal of automatic origin mirroring. Named
 # here rather than at the caller because it is an ON-DISK contract: the map
 # persists it, so renaming the literal would silently re-enable mirroring for
@@ -868,12 +905,7 @@ class SessionMap:
             return sid
         sessions_dir = _kiro_sessions_dir()
         if sid and (sessions_dir / f"{sid}.json").exists():
-            jsonl = sessions_dir / f"{sid}.jsonl"
-            try:
-                jsonl_size = jsonl.stat().st_size
-            except FileNotFoundError:
-                jsonl_size = 0
-            if jsonl_size < 10:
+            if not _jsonl_holds_a_turn(sessions_dir, sid):
                 logger.info("Session %s has empty JSONL — pruning stale entry for %s", sid, key)
                 self._repair_or_remove_stale(matched_key)
                 return None

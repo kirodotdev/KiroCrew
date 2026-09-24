@@ -166,6 +166,12 @@ Three adjacent variants exist for a gateway restart, same prefix:
   holding an opening sentence; this variant exists so the parent is not sent to
   read a fragment as though it were the answer.
 - `❌ lost to gateway restart` plus `No result was captured before the restart.`
+  When the run's conversation is still resumable
+  (`session_map.session_files_resumable` on the orphan's `session_id` /
+  `provider`), one more line follows: how many turns it completed, its last
+  tool call, and the `spawn_continue(conversation="<id>", task=...)` handle
+  that resumes it — see `orphan_resume_hint` in
+  [subagent](../modules/subagent.md#gateway-restart-reconciliation).
 
 All three are redacted before any delivery path. When the parent has no open
 dashboard surface, undelivered notices are batched into a single digest DM rather

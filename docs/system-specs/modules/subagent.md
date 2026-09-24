@@ -1719,6 +1719,21 @@ reconciliation classifies the file on that flag alone — `result_available` wit
 it, `partial_result` without — and the `partial_result` notice tells the parent
 the text is an unfinished fragment rather than pointing it at a result to read.
 
+No result is not no work. A run the restart caught before its first token has no
+`result.txt`, but its CONVERSATION — every turn and tool call kiro-cli persisted
+under `~/.kiro/sessions/cli/{sid}.json` (+ `.jsonl`) — is a file reconciliation
+deliberately keeps (retain-by-default), and `spawn_continue` re-seeds the session
+map from the run's `state.json` to resume it after a restart. The `lost to gateway
+restart` notice therefore carries the run's progress (`turns`, `last_tool`) and the
+resume handle (`spawn_continue(conversation="<owner>", task=...)`, where the owner is
+the `conversation_key`'s subagent id when the run was itself minted by `spawn_continue`,
+else the run's own id — one session-map key per sid) — `orphan_resume_hint` — but ONLY when the conversation is resumable by the one rule
+`SessionMap.get` applies before it hands a sid out, `session_map.session_files_resumable`
+(for kiro-cli the `.json` present and the `.jsonl` holding at least
+`_RESUMABLE_JSONL_MIN_BYTES`; for any other backend `session/load` decides, so the
+handle is offered and `spawn_continue` refuses typed if the session is gone). A pruned,
+released or never-started kiro-cli conversation is therefore never advertised. Without
+the hint the parent re-spawns from scratch and pays for the same tool calls twice.
 
 **Orphan delivery is wired** (not a stub): the gateway registers `on_orphan_notify` (session injection — rides the parent slot's batched pending-failures drain) and `on_orphan_dm` (fallback). The DM fallback collects every undelivered orphan across the reconciliation scan and sends ONE digest message (`"N subagent(s)…"`) — never N pings; a lone orphan keeps the plain per-agent message.
 

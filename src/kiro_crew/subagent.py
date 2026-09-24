@@ -147,7 +147,10 @@ from kiro_crew.subagent_manager import (
     bind_component_globals,
     copy_component_docs,
 )
-from kiro_crew.subagent_manager.monitoring import tombstone_recovery_action
+from kiro_crew.subagent_manager.monitoring import (  # noqa: F401 - resolved by monitoring.py via bind_component_globals
+    orphan_resume_hint,
+    tombstone_recovery_action,
+)
 from kiro_crew.subagent_persistence import (
     _agent_dir,
     _cleanup_session_files_sync,
