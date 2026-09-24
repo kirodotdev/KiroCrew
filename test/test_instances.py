@@ -5121,6 +5121,9 @@ class TestSelfHealRefreshRestart:
                 self.returncode = -9
                 self._exited.set()
 
+            # A real asyncio Process always exposes both stream attributes, and
+            # they are None for a stream that was not piped.
+            stdout = None
             stderr = None
 
         async def fake_exec(*a, **k):
@@ -6364,6 +6367,8 @@ class TestSsmTunnelArgv:
 
         class FakeProc:
             returncode = None
+            # A real asyncio Process always exposes both stream attributes.
+            stdout = None
             stderr = None
             pid = 4242
 

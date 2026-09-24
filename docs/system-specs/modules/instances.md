@@ -152,7 +152,7 @@ Module responsibilities:
 | `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
 | `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
-| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder and mints nothing (§16). |
+| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder and mints nothing (§16). An SSM child's stdout is captured and drained alongside stderr, because the close notice that names why a forward ended is printed there. |
 | `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
 
@@ -594,6 +594,18 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   benign stderr written earlier (e.g. arbitrary `LocalCommand` output) cannot
   consume the budget and truncate the classified reason out of the surfaced
   detail.
+- **Untrusted SSM close notice.** The session-manager plugin prints every close
+  notice to its *stdout*, so an SSM forward pipes that stream too and drains it
+  in the background for the tunnel's life. The buffer is bounded the same way
+  stderr is, and is ANSI-stripped, control-stripped and credential-redacted at
+  read, before any matching. Matching is line-anchored on the fixed literals the
+  plugin prints, so the session banner and per-connection lines cannot be
+  mistaken for a close notice. The service-supplied reason text inside a notice
+  is a **classification signal only**: it never leaves the classifier, so it
+  reaches neither the operator nor the log, and every surfaced message is
+  composed from this repo's own wording. A notice whose reason is unrecognised,
+  or absent, is reported as a plain AWS-ended close rather than given a cause
+  the stream does not establish.
 - **Trust root.** `<data-home>/run/` (the run-marker dir) is on the
   `is_sensitive_path` floor, so agent file tools can neither read nor write it.
   See §12 and [security.md](security.md).
@@ -1325,6 +1337,18 @@ credentials, `ssm:StartSession` denial, missing plugin, target not a connected
 managed node, local bind conflict) rather than running SSM stderr through the ssh
 auth/transport matchers, which would mislabel an `AccessDenied` as an ssh auth
 failure.
+
+Stderr is not the only input. The plugin exits `0` with an empty stderr whether
+the session went idle, the transport was lost, or the session never started, so
+those three would otherwise collapse into one bare exit-code message. The close
+notice that tells them apart is on stdout, which the forward therefore captures
+under the rules in §Security. `_ssm_close_reason` reads that buffer and returns
+one shape -- idle, closed, resume-timeout, start-failed, or nothing matched --
+and `_ssm_exit_error` composes its own message and remedy from the shape. A real
+stderr signal still outranks the close notice, and a stop this code initiated is
+never classified at all. The remedy points at Connect on the crew's card, the
+surface a Fargate crew actually has, and states no timeout duration: the idle
+window is a Session Manager preference, not a value this code knows.
 
 ### Diagnosis ladder
 

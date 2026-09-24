@@ -176,6 +176,15 @@ _READY_POLL_INTERVAL_SECS = 0.25
 # Bound on retained stderr so a chatty/looping ssh can't grow memory unbounded.
 _MAX_STDERR_CHARS = 2000
 
+# Bound on retained SSM stdout, at parity with the stderr cap. The SSM child's
+# stdout is drained concurrently for the whole session (see _drain_stdout), so
+# this is what keeps a service that streams into that pipe from growing memory.
+_MAX_STDOUT_CHARS = 2000
+
+# Chunk size for the concurrent stdout drain. Small enough that a close notice
+# lands promptly, large enough that a quiet session costs one pending read.
+_STDOUT_READ_CHUNK = 4096
+
 # Self-heal respawn backoff: wait this base (doubled per consecutive attempt,
 # capped) before rebuilding a failed tunnel, so a flapping link / bind race
 # can't spin a tight respawn loop. Applied in the scheduling seam (_on_tunnel_exit)
@@ -282,6 +291,101 @@ _SSM_TARGET_SIGNALS = (
     "invalidinstanceinformation",
 )
 _SSM_BIND_SIGNALS = ("address already in use", "bind")
+
+# ---------------------------------------------------------------------------
+# SSM close-reason shapes, matched against the tunnel child's STDOUT.
+#
+# `aws ssm start-session` prints every session-close notice to STDOUT and sends
+# its own diagnostics to a rolling log FILE, so none of it reaches the stderr
+# the error classifiers read. The four literals below are the only close shapes
+# session-manager-plugin prints, each taken from its source:
+#
+#   datachannel HandleChannelClosedMessage
+#     "\n\nSessionId: %s : %s\n\n"                   service gave a close reason
+#     "\n\nExiting session with sessionId: %s.\n\n"  closed, no reason given
+#   sessionhandler ResumeSessionHandler
+#     "Session: %s timed out.\n"                     resume gave up; session gone
+#   session ValidateInputAndStartSession
+#     "Cannot perform start session: %v\n"           the session never opened
+#
+# All four paths end in exit status 0: the plugin's Stop() is os.Exit(0) and its
+# main() has no non-zero exit at all. So the exit code cannot separate them and
+# the anchored shape is what does. An unrecognised shape stays generic rather
+# than being guessed at, because naming a cause the text does not establish is
+# the same defect as naming a duration the documentation does not settle.
+_SSM_CLOSED_WITH_REASON_ANCHOR = "sessionid: "
+_SSM_CLOSED_NO_REASON_ANCHOR = "exiting session with sessionid: "
+_SSM_RESUME_TIMED_OUT_ANCHOR = "session: "
+_SSM_START_FAILED_ANCHOR = "cannot perform start session: "
+# Separator the reason-carrying shape puts between the session id and the text.
+_SSM_REASON_SEPARATOR = " : "
+
+# Idle phrases matched INSIDE a service-supplied close reason. The reason text
+# is generated service-side (the message gateway), which is not open source, so
+# this set is deliberately narrow and anything it does not match falls back to
+# the generic wording. Widening it would trade a correct generic message for a
+# possibly-wrong specific one.
+_SSM_IDLE_CLOSE_SIGNALS = (
+    "due to inactivity",
+    "idle timeout",
+    "idle session timeout",
+)
+
+# C0 control characters other than tab and newline. Stripped from captured
+# stdout so a bare ESC, NUL or CR cannot survive into a match or a buffer.
+_C0_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _sanitize_ssm_stdout(text: str) -> str:
+    """ANSI-strip, control-strip and credential-redact captured SSM stdout.
+
+    Applied at READ time rather than per drained chunk: redaction keys on whole
+    tokens, and a credential split across two reads would survive a per-chunk
+    pass. The buffer is already bounded to ``_MAX_STDOUT_CHARS`` when it is
+    captured, so there is no cost to sanitizing all of it at once.
+    """
+    cleaned = _ANSI_CSI_RE.sub("", text)
+    cleaned = _C0_CONTROL_RE.sub("", cleaned)
+    return redact(cleaned)
+
+
+def _ssm_close_reason(stdout: str) -> str:
+    """Classify SSM stdout into one anchored close shape.
+
+    Returns ``"idle"``, ``"closed"``, ``"resume_timeout"``, ``"start_failed"``
+    or ``""`` when nothing matched.
+
+    The service-supplied reason text inside a reason-carrying notice is read
+    here to pick the shape and is not returned: it is a CLASSIFICATION SIGNAL
+    ONLY. The caller composes its own wording from the shape, because
+    service-controlled text is not something this code can vouch for to an
+    operator. Keeping it inside this function means no caller can surface or
+    log it.
+
+    Matching is line-anchored on the literal each shape starts with, so the
+    session banner and per-connection lines the plugin also prints cannot be
+    mistaken for a close notice.
+    """
+    for raw_line in _sanitize_ssm_stdout(stdout).splitlines():
+        line = raw_line.strip()
+        low = line.lower()
+        if low.startswith(_SSM_CLOSED_WITH_REASON_ANCHOR):
+            rest = line[len(_SSM_CLOSED_WITH_REASON_ANCHOR) :]
+            head, sep, reason = rest.partition(_SSM_REASON_SEPARATOR)
+            # No separator means the id was printed without a reason; that is
+            # not a shape the plugin emits, so it is not claimed as one.
+            if not sep or not reason.strip():
+                continue
+            if _first_hit(reason.strip().lower(), _SSM_IDLE_CLOSE_SIGNALS) is not None:
+                return "idle"
+            return "closed"
+        if low.startswith(_SSM_CLOSED_NO_REASON_ANCHOR):
+            return "closed"
+        if low.startswith(_SSM_RESUME_TIMED_OUT_ANCHOR) and low.rstrip(".").endswith("timed out"):
+            return "resume_timeout"
+        if low.startswith(_SSM_START_FAILED_ANCHOR):
+            return "start_failed"
+    return ""
 
 
 def _first_hit(low: str, phrases: tuple[str, ...]) -> str | None:
@@ -562,6 +666,12 @@ class _SshTunnel:
         self._probe_failed = False  # set when the health probe forced teardown
         self._stopping = False
         self._stderr_buf = ""
+        # SSM only: the child's close notices go to stdout, so that pipe is
+        # drained concurrently for the whole session by _stdout_task rather than
+        # read once after exit. A second pipe read only at exit would deadlock a
+        # child that fills the OS buffer while still running.
+        self._stdout_buf = ""
+        self._stdout_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self.status = TunnelStatus(
             instance_id=instance_id,
             local_port=local_port,
@@ -613,7 +723,14 @@ class _SshTunnel:
             ssm = self._transport == "ssm"
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,
-                stdout=asyncio.subprocess.DEVNULL,
+                # SSM only: `aws ssm start-session` prints every session-close
+                # notice to STDOUT (its own diagnostics go to a rolling log
+                # file), so this pipe is the ONLY place the reason a forward
+                # closed can be read — see _ssm_close_reason. It is drained
+                # concurrently from spawn, so a child that keeps writing cannot
+                # fill the buffer and block. ssh writes nothing useful here and
+                # keeps its output discarded.
+                stdout=(asyncio.subprocess.PIPE if ssm else asyncio.subprocess.DEVNULL),
                 stderr=asyncio.subprocess.PIPE,
                 # SSM tunnels get process-group isolation (mirroring
                 # cloud.ssm.open_port_forward) so a later teardown can reap the aws
@@ -642,6 +759,12 @@ class _SshTunnel:
             self.status.error = f"failed to spawn {self._transport} tunnel: {e}"
             logger.error("Tunnel spawn failed for %s: %s", self._id, e)
             return False
+
+        # Started BEFORE the readiness wait, so a child that closes during
+        # startup still has its reason captured: _wait_until_ready can conclude
+        # via _failed_on_child_exit, which classifies on this buffer.
+        if self._proc.stdout is not None:
+            self._stdout_task = asyncio.create_task(self._drain_stdout())
 
         ready = await self._wait_until_ready()
         if not ready:
@@ -745,6 +868,7 @@ class _SshTunnel:
         proc = self._proc
         if proc is None or proc.returncode is None:
             return False
+        await self._finish_stdout_drain()
         await self._capture_stderr()
         self.status.state = TunnelState.ERROR
         self.status.error = self._exit_error(proc.returncode)
@@ -773,6 +897,7 @@ class _SshTunnel:
             raise
         if self._stopping:
             return
+        await self._finish_stdout_drain()
         await self._capture_stderr()
         self.status.state = TunnelState.ERROR
         self.status.error = self._exit_error(proc.returncode)
@@ -836,6 +961,14 @@ class _SshTunnel:
         registered/online SSM managed node, and a local bind conflict. Like the
         ssh classifier, the raw stderr is ANSI-stripped and credential-redacted
         before being surfaced as a secondary detail.
+
+        Those are all stderr signals. A session AWS itself closed writes nothing
+        to stderr at all and exits 0, so when no stderr signal matches this falls
+        through to :meth:`_ssm_closed_error`, which reads the close notice the
+        child prints to stdout. That is the only place the cause of a closed
+        forward exists: the child's own diagnostics go to a rolling log file, and
+        the exit status is 0 for a clean close, a transport drop and a failed
+        start alike.
         """
         tail = self._stderr_buf.strip()
         low = tail.lower()
@@ -868,9 +1001,116 @@ class _SshTunnel:
         if hit is not None:
             detail = _sanitize_banner(tail, anchor=hit)
             return f"SSM forward bind failed (local port already in use): {detail}"
+        # Nothing actionable on stderr. The child prints WHY a session closed to
+        # stdout, so consult that next — it outranks unclassified stderr noise
+        # because a close notice states the cause and the noise does not. Only
+        # `kind` is used: the service-supplied reason text stays a classification
+        # signal and is never surfaced or logged.
+        closed = self._ssm_closed_error()
+        if closed:
+            return closed
         if tail:
             return f"SSM session exited {returncode}: {_sanitize_banner(tail)}"
         return f"SSM session exited with code {returncode}"
+
+    def _ssm_closed_error(self) -> str:
+        """Message for a recognised session-close shape, ``""`` when none matched.
+
+        Every branch is worded against what the code can actually establish:
+
+        * No duration. The ECS Exec documentation calls its idle limit fixed
+          while the Session Manager preferences documentation describes an
+          adjustable one, and neither settles which governs a port forward at an
+          ``ecs:`` target — so the preference is named and no number is.
+        * No promise that traffic holds the session open. The documented activity
+          list is terminal-centric, and a client holding a forward open while
+          making no requests can still idle out.
+        * No offer to reconnect. Re-opening is a human action (the cloud lane's
+          opener carries :func:`~kiro_crew.cloud.aws.assert_human_action`), and a
+          fargate crew deliberately gets no auto-connect at all.
+        * Only a real action. A fargate crew has no dashboard pane and no CLI
+          connect verb; its card in Settings is what reaches it.
+        """
+        kind = _ssm_close_reason(self._stdout_buf)
+        port = self._local_port
+        if kind == "idle":
+            return (
+                f"the SSM session on local port {port} was closed by AWS after a period "
+                "with no activity. Open a new forward with Connect on the crew's card in "
+                "Settings. To allow longer idle periods, raise the Session Manager "
+                "idle-timeout preference for this account and region "
+                "(Systems Manager > Session Manager > Preferences)."
+            )
+        if kind == "closed":
+            # AWS ended it and either gave no reason or gave one this code does
+            # not recognise. Say only that, rather than guessing at idleness.
+            return (
+                f"AWS ended the SSM session on local port {port}. Open a new forward "
+                "with Connect on the crew's card in Settings."
+            )
+        if kind == "resume_timeout":
+            return (
+                f"the SSM session on local port {port} was lost and AWS ended it before "
+                "it could be resumed. Open a new forward with Connect on the crew's "
+                "card in Settings."
+            )
+        if kind == "start_failed":
+            return (
+                f"the SSM session for local port {port} never opened: the session-manager "
+                "plugin reported a start-session failure. Run Diagnose on the crew's "
+                "card in Settings for the cause."
+            )
+        return ""
+
+    async def _drain_stdout(self) -> None:
+        """Continuously drain the SSM child's stdout into a bounded buffer.
+
+        Runs for the child's whole life rather than reading once at exit, for two
+        reasons. A pipe nobody reads blocks the writer once the OS buffer fills,
+        which would hang the tunnel itself; and the notice this buffer exists to
+        capture is written immediately before the child exits, so a reader that
+        starts at exit can race the pipe's teardown.
+
+        The buffer keeps the most recent ``_MAX_STDOUT_CHARS`` and nothing else,
+        so a service that streams into this pipe cannot grow memory. Decoding is
+        lossy-by-design (``"replace"``): a split multi-byte sequence must not
+        raise in a background task whose failure nobody observes. Sanitizing is
+        deliberately NOT done here but at read time, because a credential split
+        across two reads would survive a per-chunk pass.
+        """
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        stream = proc.stdout
+        with contextlib.suppress(Exception):
+            while True:
+                data = await stream.read(_STDOUT_READ_CHUNK)
+                if not data:
+                    return
+                self._stdout_buf = (self._stdout_buf + data.decode("utf-8", "replace"))[
+                    -_MAX_STDOUT_CHARS:
+                ]
+
+    async def _finish_stdout_drain(self, *, timeout: float = 2.0) -> None:
+        """Let the stdout drain reach EOF, then retire it.
+
+        Called on every exit path BEFORE the error is composed. The drain is
+        concurrent, so a close notice the child wrote immediately before exiting
+        can still be unread when ``proc.wait()`` returns; awaiting the task lets
+        it observe EOF and land that notice first. Bounded, then cancelled: a
+        surviving grandchild can hold the write end open, and teardown must not
+        wait on it. Whatever was captured is kept either way.
+        """
+        task = self._stdout_task
+        self._stdout_task = None
+        if task is None or task.done():
+            return
+        with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
     async def _capture_stderr(self) -> None:
         """Drain whatever the ssh child wrote to stderr (bounded)."""
@@ -896,6 +1136,7 @@ class _SshTunnel:
             self._monitor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._monitor_task
+        await self._finish_stdout_drain(timeout=0.5)
         await self._terminate()
         self.status.state = TunnelState.STOPPED
         logger.info("Tunnel stopped for %s", self._id)
