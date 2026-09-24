@@ -23,6 +23,7 @@ KNOWLEDGE_NOTES_DIR = (
 
 
 SHIPPED_SMOKE = {
+    "apps-discover-enable-notes",
     "apps-discover-enable-research-lab",
     "artifacts-library-table-and-kind-filter",
     "auth-sign-in-card-signed-out",
@@ -38,6 +39,7 @@ SHIPPED_SMOKE = {
     "memory-open-browser-from-overview",
     "notifications-bell-sheet-open-close",
     "notifications-center-empty-state",
+    "schedule-add-cron-job",
     "schedule-list-calendar-executions-views",
     "search-everywhere-jump-to-setting",
     "sessions-new-chat",
@@ -57,10 +59,12 @@ SHIPPED_SMOKE = {
     "taskrunner-projects-page-compose",
 }
 SHIPPED = SHIPPED_SMOKE | {
+    "chat-subagents-panel-empty",
     "crewmate-panel-tabs",
     "knowledge-add-folder-source-and-scan",
     "members-dm-hello",
     "members-private-memory-keeps-thread",
+    "members-roster-filter-and-summary",
 }
 
 
@@ -83,8 +87,8 @@ class TestShippedScenarios:
             assert s.max_steps <= 14, s.name
         smoke_steps = sum(s.max_steps for s in smoke)
         smoke_seconds = sum(s.max_seconds for s in smoke)
-        assert smoke_steps == 307, f"smoke max_steps total is {smoke_steps}; re-pin"
-        assert smoke_seconds == 8420, f"smoke max_seconds total is {smoke_seconds}; re-pin"
+        assert smoke_steps == 335, f"smoke max_steps total is {smoke_steps}; re-pin"
+        assert smoke_seconds == 9080, f"smoke max_seconds total is {smoke_seconds}; re-pin"
 
     def test_nightly_includes_smoke(self) -> None:
         nightly = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="nightly")
@@ -172,6 +176,7 @@ class TestShippedScenarios:
         assert {slug: [s.name for s in g] for slug, g in groups.items()} == {
             "chat": [
                 "chat-session-title",
+                "chat-subagents-panel-empty",
                 "chat-switch-seeded-sessions",
                 "chat-turn-stats-footer",
                 "sessions-new-chat",
@@ -187,6 +192,7 @@ class TestShippedScenarios:
                 "crewmate-panel-tabs",
                 "members-dm-hello",
                 "members-private-memory-keeps-thread",
+                "members-roster-filter-and-summary",
             ],
             "capabilities": [
                 "capabilities-agents-list-and-open-editor",
@@ -197,9 +203,12 @@ class TestShippedScenarios:
             "knowledge": ["knowledge-add-folder-source-and-scan"],
             "artifacts": ["artifacts-library-table-and-kind-filter"],
             "files": ["chat-files-side-panel-browse"],
-            "apps": ["apps-discover-enable-research-lab"],
+            "apps": ["apps-discover-enable-notes", "apps-discover-enable-research-lab"],
             "task-runner": ["taskrunner-projects-page-compose"],
-            "schedule": ["schedule-list-calendar-executions-views"],
+            "schedule": [
+                "schedule-add-cron-job",
+                "schedule-list-calendar-executions-views",
+            ],
             "notifications": [
                 "notifications-bell-sheet-open-close",
                 "notifications-center-empty-state",
@@ -597,7 +606,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_18 of {len(scenarios.FEATURES)} features covered · 36 scenarios (32 smoke / 4 nightly)._"
+            f"_18 of {len(scenarios.FEATURES)} features covered · 40 scenarios (34 smoke / 6 nightly)._"
             in md
         )
         assert (
