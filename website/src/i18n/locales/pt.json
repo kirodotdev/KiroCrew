@@ -231,7 +231,6 @@
     "rebuilding_package": "Reconstruindo o pacote",
     "report_a_problem_with_diagnostics": "Relatar um problema — coleta logs e relatórios de falhas, sem segredos",
     "report_issue": "Relatar problema",
-    "request_a_feature": "Solicitar um recurso",
     "request_a_feature_2": "Solicitar um recurso",
     "resets": "Renova em",
     "restarting_server": "Reiniciando o servidor",
@@ -6499,7 +6498,8 @@
       "insider": "Insider",
       "nightly": "Nightly",
       "report_problem": "Relatar um problema",
-      "report_problem_on_build": "Relatar um problema nesta versão {{channel}}"
+      "report_problem_on_build": "Relatar um problema nesta versão {{channel}}",
+      "request_feature_starts_agent": "Inicia uma conversa com o agente, que ajuda você a escrever e enviar a sugestão. Ela consome inferência como qualquer turno de chat."
     },
     "fileCard": {
       "audio": "Áudio: {{name}}",
@@ -9979,7 +9979,9 @@
         "elsewhere_hint": "O seletor de modelos e Configurações → Chat ficam na janela principal do chat. Abra-a para escolher um modelo e alterar o padrão.",
         "elsewhere_settings_hint": "Configurações → Chat fica na janela principal do chat. Abra-a para alterar o modelo padrão.",
         "sign_in": "Entrar no Kiro",
-        "sign_in_hint": "Abra Configurações → Visão geral → Login do Kiro, entre novamente e reenvie sua mensagem."
+        "sign_in_hint": "Abra Configurações → Visão geral → Login do Kiro, entre novamente e reenvie sua mensagem.",
+        "feature_request_form": "Abrir o formulário de sugestão de recurso",
+        "feature_request_form_hint": "Sem capacidade de inferência no momento — abra o formulário de sugestão de recurso em vez disso."
       },
       "folderPanel": {
         "clear_search": "Limpar pesquisa",

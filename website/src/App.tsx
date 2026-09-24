@@ -10,7 +10,7 @@ import { performAgentSlotSwitch } from './lib/agentSwitch'
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { createSlot, appendSlotMessage, markFeatureRequestSlot, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
 import { queryComposerOrExpand } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
@@ -3171,6 +3171,13 @@ export default function App() {
   const requestFeature = useCallback(async () => {
     const result = await dispatch(createSlot(undefined)).unwrap()
     const slot = result.key
+    // This flow is an agent turn by design (the skill drafts and files the
+    // request), so it consumes metered inference and a spent plan allowance
+    // refuses it. The transcript can offer the non-inference route -- the
+    // repo's feature-request form -- on that refusal ONLY if it knows the slot
+    // belongs to this flow, which nothing else records (#13342). Marked before
+    // the send: the refusal arrives over the WebSocket once the turn starts.
+    dispatch(markFeatureRequestSlot(slot))
     const visibleMessage = i18nT('app.i_d_like_to_request_a_feature')
     navigate('/chat')
     // Both optimistic writes are addressed to the slot this flow CREATED, not

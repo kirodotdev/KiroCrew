@@ -216,6 +216,44 @@ describe('the error row offers Continue only where the single-chat surface does'
   })
 })
 
+describe('a usage-limit error row in a feature-request slot offers the issue form (#13342)', () => {
+  const FORM = 'https://github.com/kirodotdev/KiroCrew/issues/new?template=feature_request.yml'
+  const limitRow = msg('error', {
+    content: '❌ The monthly usage limit has been reached. Retrying will not help until the limit resets.',
+    meta: { kind: 'usage_limit' },
+  })
+  const rows = [msg('user', { content: 'I’d like to request a feature!' }), limitRow]
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+
+  it('hands the card the form route and withholds Continue, which would replay the rejection', () => {
+    const el = render(limitRow, { ...recoverable, featureRequestFormUrl: FORM }, { index: 1, messages: rows }) as ReactElement
+    expect(el.props.featureRequestFormUrl).toBe(FORM)
+    expect(el.props.onContinue).toBeUndefined()
+  })
+
+  it('reads the kind from the rebuilt carrier too', () => {
+    const rebuilt = msg('error', { content: limitRow.content, kind: 'usage_limit' })
+    const el = render(rebuilt, { slot: 's1', featureRequestFormUrl: FORM }, { index: 1, messages: [rows[0], rebuilt] }) as ReactElement
+    expect(el.props.featureRequestFormUrl).toBe(FORM)
+  })
+
+  it('offers nothing on the same row when the host has no form route (not the pill’s slot)', () => {
+    const el = render(limitRow, recoverable, { index: 1, messages: rows }) as ReactElement
+    expect(el.props.featureRequestFormUrl).toBeUndefined()
+    // Today's behaviour, untouched: the newest error row of an interrupted turn still resumes.
+    expect(el.props.onContinue).toBeTypeOf('function')
+  })
+
+  it('offers nothing on an ordinary failure in the feature-request slot (#4198 shapes keep their rows)', () => {
+    // A refused send has no structural kind: the send never went out, so a
+    // retry CAN help, and the fallback would misdescribe it as a capacity problem.
+    const refused = msg('error', { content: 'Message could not be sent: slot agent mismatch' })
+    const el = render(refused, { ...recoverable, featureRequestFormUrl: FORM }, { index: 1, messages: [rows[0], refused] }) as ReactElement
+    expect(el.props.featureRequestFormUrl).toBeUndefined()
+    expect(el.props.onContinue).toBeTypeOf('function')
+  })
+})
+
 describe('rows the defaults already draw correctly are left to them', () => {
   it('keeps the default entry for the rows this module does not claim', () => {
     expect(idFor(msg('user'))).toBe('user')

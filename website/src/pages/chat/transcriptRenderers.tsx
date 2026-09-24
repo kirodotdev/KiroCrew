@@ -37,7 +37,7 @@ import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
-import { ErrorCard, isAuthRequired, isModelUnentitled } from './ErrorCard'
+import { ErrorCard, isAuthRequired, isModelUnentitled, isUsageLimit } from './ErrorCard'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
@@ -141,6 +141,13 @@ export interface TranscriptRendererOptions {
   /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
    *  card in Settings. Omitted on a surface with no settings route. */
   onOpenSignIn?: () => void
+  /** The non-inference exit for a `usage_limit` row: the repo's feature-request
+   *  form (#13342). The host passes it ONLY when the slot on screen is one the
+   *  header's "Request a Feature" action created -- that flow is an agent turn
+   *  by design, so a spent allowance refuses it, and this is the route that
+   *  still files the request. A usage limit in any other slot has no form to
+   *  offer and keeps today's row, Continue included. */
+  featureRequestFormUrl?: string
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -361,6 +368,11 @@ export function createTranscriptRenderers(
         }
         const unentitled = isModelUnentitled(m)
         const authRequired = isAuthRequired(m)
+        // The form is offered on the plan's own refusal and nowhere else: a
+        // #4198 refused-send row in the same slot carries no kind (the send
+        // never went out, so a retry CAN help), and a usage limit in a slot the
+        // pill did not create has no form route from the host.
+        const featureRequestFormUrl = isUsageLimit(m) ? o.featureRequestFormUrl : undefined
         return ctx.row(
           <ErrorCard
             content={transient ? transient.text : m.content}
@@ -368,9 +380,9 @@ export function createTranscriptRenderers(
             // A rejection the backend says no retry can fix never offers Continue,
             // even when this row is the newest and the turn was interrupted:
             // resuming would replay the identical rejection (or the same
-            // signed-out wall).
+            // signed-out wall, or the same spent allowance).
             onContinue={
-              !unentitled && !authRequired && o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
+              !unentitled && !authRequired && !featureRequestFormUrl && o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
                 ? o.onContinue
                 : undefined
             }
@@ -379,6 +391,7 @@ export function createTranscriptRenderers(
             onOpenDefaultModel={unentitled ? o.onOpenDefaultModel : undefined}
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
             unentitledElsewhere={unentitled}
+            featureRequestFormUrl={featureRequestFormUrl}
           />,
         )
       },

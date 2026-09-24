@@ -1,6 +1,18 @@
 export const FEATURE_REQUEST_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
 
 /**
+ * The NON-inference route to the same tracker: the repo's feature-request
+ * issue form, pre-selected. Offered on the error row when the conversational
+ * flow below is refused for a spent plan allowance (#13342) -- the one moment
+ * a user has no inference left is exactly when "Request a Feature" must not
+ * dead-end. Derived from {@link FEATURE_REQUEST_URL} so the two routes cannot
+ * point at different repos, and deliberately nothing more than the template
+ * selector: `.github/ISSUE_TEMPLATE/feature_request.yml` applies its own
+ * `enhancement` label, and no agent turn has run to draft a title or body.
+ */
+export const FEATURE_REQUEST_FORM_URL = `${FEATURE_REQUEST_URL}?template=feature_request.yml`
+
+/**
  * Prompt used when the dashboard has already confirmed that the
  * `feature-request` skill is installed. The ``$feature-request`` token is
  * resolved server-side by the chat runner (``resolve_dollar_skills``) and

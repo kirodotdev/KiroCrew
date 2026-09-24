@@ -231,7 +231,6 @@
     "rebuilding_package": "Recompilando el paquete",
     "report_a_problem_with_diagnostics": "Reportar un problema — recopila registros e informes de fallos, con los secretos eliminados",
     "report_issue": "Reportar problema",
-    "request_a_feature": "Solicitar una función",
     "request_a_feature_2": "Solicitar una función",
     "resets": "Se restablece",
     "restarting_server": "Reiniciando el servidor",
@@ -6499,7 +6498,8 @@
       "insider": "Insider",
       "nightly": "Nightly",
       "report_problem": "Informar de un problema",
-      "report_problem_on_build": "Informar de un problema en esta compilación {{channel}}"
+      "report_problem_on_build": "Informar de un problema en esta compilación {{channel}}",
+      "request_feature_starts_agent": "Inicia una conversación con el agente, que te ayuda a redactar y enviar la solicitud. Consume inferencia como cualquier turno de chat."
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
@@ -9979,7 +9979,9 @@
         "elsewhere_hint": "El selector de modelos y Configuración → Chat están en la ventana de chat principal. Ábrela para elegir un modelo y cambiar el predeterminado.",
         "elsewhere_settings_hint": "Configuración → Chat está en la ventana de chat principal. Ábrela para cambiar el modelo predeterminado.",
         "sign_in": "Iniciar sesión en Kiro",
-        "sign_in_hint": "Abre Ajustes → Resumen → Inicio de sesión en Kiro, vuelve a iniciar sesión y envía tu mensaje de nuevo."
+        "sign_in_hint": "Abre Ajustes → Resumen → Inicio de sesión en Kiro, vuelve a iniciar sesión y envía tu mensaje de nuevo.",
+        "feature_request_form": "Abrir el formulario de solicitud de función",
+        "feature_request_form_hint": "No hay capacidad de inferencia en este momento — abre el formulario de solicitud de función en su lugar."
       },
       "folderPanel": {
         "clear_search": "Borrar búsqueda",

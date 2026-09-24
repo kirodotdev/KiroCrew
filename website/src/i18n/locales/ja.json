@@ -225,7 +225,6 @@
     "rebuilding_package": "パッケージを再構築中",
     "report_a_problem_with_diagnostics": "問題を報告 — ログとクラッシュレポートを収集します。シークレットは削除されます",
     "report_issue": "問題を報告",
-    "request_a_feature": "機能をリクエスト",
     "request_a_feature_2": "機能をリクエスト",
     "resets": "リセット",
     "restarting_server": "サーバーを再起動中",
@@ -6305,7 +6304,8 @@
       "insider": "Insider ビルド",
       "nightly": "Nightly ビルド",
       "report_problem": "問題を報告",
-      "report_problem_on_build": "この {{channel}} の問題を報告"
+      "report_problem_on_build": "この {{channel}} の問題を報告",
+      "request_feature_starts_agent": "エージェントとの会話を開始し、リクエストの作成と送信を手伝ってもらいます。通常のチャットのターンと同じように推論を消費します。"
     },
     "fileCard": {
       "audio": "音声：{{name}}",
@@ -9707,7 +9707,9 @@
         "elsewhere_hint": "モデルピッカーと「設定 → チャット」はメインのチャットウィンドウにあります。そこでモデルを選び、デフォルトモデルを変更してください。",
         "elsewhere_settings_hint": "「設定 → チャット」はメインのチャットウィンドウにあります。そこでデフォルトモデルを変更してください。",
         "sign_in": "Kiro にサインイン",
-        "sign_in_hint": "「設定 → 概要 → Kiro サインイン」を開いて再度サインインし、メッセージをもう一度送信してください。"
+        "sign_in_hint": "「設定 → 概要 → Kiro サインイン」を開いて再度サインインし、メッセージをもう一度送信してください。",
+        "feature_request_form": "機能リクエストフォームを開く",
+        "feature_request_form_hint": "現在、推論の容量がありません。代わりに機能リクエストフォームから送信できます。"
       },
       "folderPanel": {
         "clear_search": "検索をクリア",

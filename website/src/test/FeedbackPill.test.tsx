@@ -177,4 +177,17 @@ describe('FeedbackPill', () => {
       /nightly/i,
     )
   })
+
+  it('tells the user up front that Request a Feature starts an agent conversation (#13342)', () => {
+    // The action is a metered agent turn by design (the agent drafts and files
+    // the request), but its wording promised a feedback form: a capped user
+    // learned the difference only from the usage-limit error. The tooltip is
+    // where that fact lives -- the visible label stays the action -- so the
+    // button's accessible NAME is unchanged and every caller that finds it by
+    // that name keeps working.
+    mount()
+    const button = screen.getByRole('button', { name: /request a feature/i })
+    expect(button.getAttribute('title')).toMatch(/agent conversation/i)
+    expect(button.getAttribute('title')).toMatch(/inference/i)
+  })
 })

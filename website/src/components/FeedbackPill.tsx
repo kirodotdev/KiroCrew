@@ -94,7 +94,13 @@ export default function FeedbackPill({
         type="button"
         className="flex items-center gap-1.5 h-full px-2.5 text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap bg-transparent border-0"
         onClick={onRequestFeature}
-        title={i18nT('app.request_a_feature')}
+        // The tooltip says what the click DOES, not what the label already
+        // says: this half is an agent conversation (the skill drafts and files
+        // the request), so it uses inference like any chat turn. Its wording
+        // used to promise a feedback form, and a capped user learned the
+        // difference only from the usage-limit error (#13342). The visible
+        // label stays the action, so the accessible name is unchanged.
+        title={i18nT('components.feedbackPill.request_feature_starts_agent')}
       >
         <Lightbulb size={13} className="lucide-inline" />{' '}
         {i18nT('app.request_a_feature_2')}

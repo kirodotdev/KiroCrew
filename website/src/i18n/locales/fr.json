@@ -231,7 +231,6 @@
     "rebuilding_package": "Reconstruction du paquet",
     "report_a_problem_with_diagnostics": "Signaler un problème — collecte les journaux et les rapports de plantage, secrets masqués",
     "report_issue": "Signaler un problème",
-    "request_a_feature": "Demander une fonctionnalité",
     "request_a_feature_2": "Demander une fonctionnalité",
     "resets": "Réinitialisation",
     "restarting_server": "Redémarrage du serveur",
@@ -6499,7 +6498,8 @@
       "insider": "Insider",
       "nightly": "Nightly",
       "report_problem": "Signaler un problème",
-      "report_problem_on_build": "Signaler un problème sur cette version {{channel}}"
+      "report_problem_on_build": "Signaler un problème sur cette version {{channel}}",
+      "request_feature_starts_agent": "Démarre une conversation avec l’agent, qui t’aide à rédiger et à déposer la demande. Elle consomme de l’inférence comme n’importe quel tour de chat."
     },
     "fileCard": {
       "audio": "Audio : {{name}}",
@@ -9979,7 +9979,9 @@
         "elsewhere_hint": "Le sélecteur de modèle et Paramètres → Chat sont dans la fenêtre de chat principale. Ouvrez-la pour choisir un modèle et changer le modèle par défaut.",
         "elsewhere_settings_hint": "Paramètres → Chat est dans la fenêtre de chat principale. Ouvrez-la pour changer le modèle par défaut.",
         "sign_in": "Se connecter à Kiro",
-        "sign_in_hint": "Ouvrez Paramètres → Aperçu → Connexion Kiro, reconnectez-vous, puis renvoyez votre message."
+        "sign_in_hint": "Ouvrez Paramètres → Aperçu → Connexion Kiro, reconnectez-vous, puis renvoyez votre message.",
+        "feature_request_form": "Ouvrir le formulaire de demande de fonctionnalité",
+        "feature_request_form_hint": "Aucune capacité d’inférence pour le moment — ouvre plutôt le formulaire de demande de fonctionnalité."
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",

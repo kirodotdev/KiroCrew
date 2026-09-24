@@ -394,6 +394,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     TRANSIENT_RESUMING_TEXT,
     TRANSIENT_RETRY_KIND,
     TRANSIENT_RETRYING_TEXT,
+    USAGE_LIMIT_KIND,
     EmptyTurnActivity,
     RecoveryPayload,
     classify_empty_turn,
@@ -5432,17 +5433,20 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Two structural tags, both set by ``_raise_acp_error`` from the raw frame and
-    read here without looking at the prose: a model-entitlement rejection
-    (``rejected_model`` / ``advertised``) and a sign-in failure
-    (``auth_required``). The entitlement verdict wins when both are set, because
-    its fix (pick a served model) is the one the prose describes.
+    Three structural tags, all set by ``_raise_acp_error`` from the raw frame
+    and read here without looking at the prose: a model-entitlement rejection
+    (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``)
+    and a spent plan allowance (``usage_limit``). The entitlement verdict wins
+    when it is set, because its fix (pick a served model) is the one the prose
+    describes; the other two are exclusive at raise time.
     """
     unentitled = _model_unentitled_meta(exc)
     if unentitled is not None:
         return unentitled
     if getattr(exc, "auth_required", False):
         return {"kind": AUTH_REQUIRED_KIND}
+    if getattr(exc, "usage_limit", False):
+        return {"kind": USAGE_LIMIT_KIND}
     return None
 
 

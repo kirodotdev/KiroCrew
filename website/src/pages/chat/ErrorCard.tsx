@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { KeyRound, Loader2, RotateCw, Settings, SlidersHorizontal } from 'lucide-react'
+import { ExternalLink, KeyRound, Loader2, RotateCw, Settings, SlidersHorizontal } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -22,6 +22,16 @@ const AUTH_REQUIRED_KIND = 'auth_required'
 
 export const isAuthRequired = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === AUTH_REQUIRED_KIND || (m.meta as { kind?: string } | undefined)?.kind === AUTH_REQUIRED_KIND
+
+/** Row kind the backend stamps on the terminal error a SPENT PLAN ALLOWANCE
+ *  produces (`chat_utils.USAGE_LIMIT_KIND`): the provider refused the turn
+ *  because the account's usage limit is reached. Decided from the raw frame on
+ *  the backend, never from the prose here -- a copy edit or a translation moves
+ *  the words, not the kind. Same two carriers as above. */
+const USAGE_LIMIT_KIND = 'usage_limit'
+
+export const isUsageLimit = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === USAGE_LIMIT_KIND || (m.meta as { kind?: string } | undefined)?.kind === USAGE_LIMIT_KIND
 
 /**
  * WIRE SHAPES, never rendered — the gateway's own English error prose, matched
@@ -109,6 +119,17 @@ export interface ErrorCardProps {
    * has to act on. Omitted on a surface with no settings route (embed, popout).
    */
   onOpenSignIn?: () => void
+  /**
+   * The non-inference exit for a `usage_limit` row in a slot the header's
+   * "Request a Feature" action created (#13342): the repo's feature-request
+   * issue form. That action is an agent turn by design, so a spent allowance
+   * refuses it -- and this row was where the request dead-ended, at the one
+   * moment the user had no inference left. Offered INSTEAD of Continue, which
+   * would replay the rejection; the backend's own sentence (which limit, the
+   * request id) stays. The host passes it only for that slot: a usage limit in
+   * an ordinary chat has no form to offer and keeps today's card.
+   */
+  featureRequestFormUrl?: string
 }
 
 const ACTION_BTN =
@@ -139,12 +160,49 @@ export const ErrorCard = memo(function ErrorCard({
   onOpenDefaultModel,
   onOpenSignIn,
   unentitledElsewhere,
+  featureRequestFormUrl,
 }: ErrorCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
   // Resume button. A row with no control keeps the wire text: telling the
   // reader to resume beside nothing is worse than the mismatch it would fix.
   const content = (onContinue && retryProse(wireContent)) || wireContent
+  if (featureRequestFormUrl) {
+    // A feature request the plan could not afford: the one action that still
+    // ends it is the tracker's own form, which needs no agent turn. The prose
+    // (the provider's sentence, request id included) stays first, the one-line
+    // explanation says why a form and not a retry, and the link is styled as
+    // the row's primary action so it reads as the way forward rather than a
+    // footnote. A plain anchor, like Report a Problem's issue link: the desktop
+    // shell routes `_blank` to the system browser, and `noopener noreferrer`
+    // hands the new tab no handle back to this window.
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+        data-usage-limit-fallback="true"
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {content}
+        </div>
+        <div className="text-[12px] leading-5 text-muted" data-testid="error-card-feature-request-hint">
+          {i18nT('pages.chat.errorCard.feature_request_form_hint')}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <a
+            href={featureRequestFormUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover no-underline`}
+            data-testid="error-card-feature-request-form"
+          >
+            <ExternalLink size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+            {i18nT('pages.chat.errorCard.feature_request_form')}
+          </a>
+        </div>
+      </div>
+    )
+  }
   if (onOpenSignIn) {
     // A signed-out agent process: the one action that ends it is signing in
     // again from Settings. The prose (the backend's own wording, which may

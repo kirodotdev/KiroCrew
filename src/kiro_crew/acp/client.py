@@ -3064,6 +3064,13 @@ class AcpError(Exception):
         # is a session-expiry / rejected-credential answer, so the dashboard's
         # error row can offer the Kiro sign-in card instead of a retry.
         self.auth_required: bool = False
+        # Spent-allowance tag, set by :func:`_raise_acp_error` when the raw
+        # frame is a usage-limit answer ("The monthly usage limit has been
+        # reached"), so the dashboard's error row can offer a route that needs
+        # no inference where one exists (the feature-request form) instead of a
+        # retry that reproduces the rejection. Terminal like ``auth_required``
+        # and, like it, decided from the raw frame rather than the prose.
+        self.usage_limit: bool = False
         # Structural-rejection tag, set by :func:`_raise_acp_error` when the raw
         # frame is a malformed-request answer ("Improperly formed request"). A
         # DETERMINISTIC rejection of the payload's SHAPE: unlike a transient
@@ -4761,6 +4768,15 @@ def _raise_acp_error(
         and not _RE_USAGE_LIMIT.search(raw_data)
     ):
         err.auth_required = True
+    # Tag a spent plan allowance the same way: from the raw frame, and only when
+    # the formatter reached its usage-limit branch -- an entitlement rejection
+    # that happens to carry limit wording keeps its own (served-model) remedy.
+    # The sign-in tag above already withholds itself for this wording, so the
+    # two tags are exclusive and the row's kind is unambiguous.
+    if _RE_USAGE_LIMIT.search(raw_data) and not _model_is_unentitled(
+        raw_data_field, available_models
+    ):
+        err.usage_limit = True
     raise err
 
 

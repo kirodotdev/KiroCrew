@@ -2070,7 +2070,8 @@
       "nightly": "Nightly",
       "insider": "Insider",
       "report_problem": "Report problem",
-      "report_problem_on_build": "Report a problem on this {{channel}} build"
+      "report_problem_on_build": "Report a problem on this {{channel}} build",
+      "request_feature_starts_agent": "Starts an agent conversation that helps you write and file the request. It uses inference like any chat turn."
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
@@ -4229,6 +4230,8 @@
         "copy_failed": "Copy failed"
       },
       "errorCard": {
+        "feature_request_form": "Open the feature request form",
+        "feature_request_form_hint": "No inference capacity right now — open the feature request form instead.",
         "sign_in": "Sign in to Kiro",
         "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again."
       },

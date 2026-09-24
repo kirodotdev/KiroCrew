@@ -231,7 +231,6 @@
     "rebuilding_package": "Ricompilazione del pacchetto",
     "report_a_problem_with_diagnostics": "Segnala un problema — raccoglie i log e i report di crash, con i segreti rimossi",
     "report_issue": "Segnala un problema",
-    "request_a_feature": "Richiedi una funzionalità",
     "request_a_feature_2": "Richiedi una funzionalità",
     "resets": "Reimpostazioni",
     "restarting_server": "Riavvio del server",
@@ -6499,7 +6498,8 @@
       "insider": "Insider",
       "nightly": "Nightly",
       "report_problem": "Segnala un problema",
-      "report_problem_on_build": "Segnala un problema su questa build {{channel}}"
+      "report_problem_on_build": "Segnala un problema su questa build {{channel}}",
+      "request_feature_starts_agent": "Avvia una conversazione con l’agente, che ti aiuta a scrivere e inviare la richiesta. Consuma inferenza come qualsiasi turno di chat."
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
@@ -9979,7 +9979,9 @@
         "elsewhere_hint": "Il selettore dei modelli e Impostazioni → Chat sono nella finestra principale della chat. Aprila per scegliere un modello e cambiare quello predefinito.",
         "elsewhere_settings_hint": "Impostazioni → Chat è nella finestra principale della chat. Aprila per cambiare il modello predefinito.",
         "sign_in": "Accedi a Kiro",
-        "sign_in_hint": "Apri Impostazioni → Panoramica → Accesso a Kiro, accedi di nuovo e reinvia il messaggio."
+        "sign_in_hint": "Apri Impostazioni → Panoramica → Accesso a Kiro, accedi di nuovo e reinvia il messaggio.",
+        "feature_request_form": "Apri il modulo di richiesta funzionalità",
+        "feature_request_form_hint": "Nessuna capacità di inferenza al momento — apri invece il modulo di richiesta funzionalità."
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",

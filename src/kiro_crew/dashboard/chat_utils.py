@@ -3168,6 +3168,18 @@ MODEL_UNENTITLED_KIND = "model_unentitled"
 #: backend formatted it.
 AUTH_REQUIRED_KIND = "auth_required"
 
+#: Row-level kind for the terminal `error` row a SPENT PLAN ALLOWANCE produces
+#: ("The monthly usage limit has been reached"). Like the two above, no
+#: recovery is queued -- the allowance does not come back until it resets, so a
+#: retry reproduces the rejection -- and the prose stays as the backend
+#: formatted it. The kind exists so a surface that has a NON-inference way to
+#: finish what the turn was for can offer it on the row: the header's "Request
+#: a Feature" action is an agent turn by design, and without this tag the one
+#: moment a user has no inference left was the one moment that action
+#: dead-ended (the frontend must never infer the limit from the prose, which a
+#: copy edit or a translation moves).
+USAGE_LIMIT_KIND = "usage_limit"
+
 #: Structural queue-entry kinds for system injections.  Classification by kind
 #: tag — set at enqueue time — is unforgeable: a user typing the same prefix
 #: text will not have the kind tag and will correctly classify as plain input.

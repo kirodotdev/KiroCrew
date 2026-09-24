@@ -225,7 +225,6 @@
     "rebuilding_package": "패키지 다시 빌드 중",
     "report_a_problem_with_diagnostics": "문제 신고 — 로그와 크래시 리포트를 수집하며, 비밀 정보는 제거됩니다",
     "report_issue": "문제 신고",
-    "request_a_feature": "기능 요청",
     "request_a_feature_2": "기능 요청",
     "resets": "초기화",
     "restarting_server": "서버 재시작 중",
@@ -6305,7 +6304,8 @@
       "insider": "Insider",
       "nightly": "Nightly",
       "report_problem": "문제 신고",
-      "report_problem_on_build": "이 {{channel}} 빌드의 문제 신고"
+      "report_problem_on_build": "이 {{channel}} 빌드의 문제 신고",
+      "request_feature_starts_agent": "에이전트와 대화를 시작해 요청 작성과 제출을 도와줍니다. 일반 채팅 턴처럼 추론을 사용합니다."
     },
     "fileCard": {
       "audio": "오디오: {{name}}",
@@ -9707,7 +9707,9 @@
         "elsewhere_hint": "모델 선택기와 설정 → 채팅은 기본 채팅 창에 있습니다. 거기서 모델을 선택하고 기본 모델을 바꾸세요.",
         "elsewhere_settings_hint": "설정 → 채팅은 기본 채팅 창에 있습니다. 거기서 기본 모델을 바꾸세요.",
         "sign_in": "Kiro에 로그인",
-        "sign_in_hint": "설정 → 개요 → Kiro 로그인을 열어 다시 로그인한 후 메시지를 다시 보내세요."
+        "sign_in_hint": "설정 → 개요 → Kiro 로그인을 열어 다시 로그인한 후 메시지를 다시 보내세요.",
+        "feature_request_form": "기능 요청 양식 열기",
+        "feature_request_form_hint": "지금은 추론 용량이 없습니다. 대신 기능 요청 양식을 여세요."
       },
       "folderPanel": {
         "clear_search": "검색 지우기",

@@ -228,7 +228,6 @@
     "rebuilding_package": "Paket wird neu gebaut",
     "report_a_problem_with_diagnostics": "Problem melden — erfasst Protokolle und Absturzberichte, Geheimnisse entfernt",
     "report_issue": "Problem melden",
-    "request_a_feature": "Eine Funktion anfragen",
     "request_a_feature_2": "Eine Funktion anfragen",
     "resets": "Zurücksetzungen",
     "restarting_server": "Server wird neu gestartet",
@@ -6402,7 +6401,8 @@
       "insider": "Insider",
       "nightly": "Nightly",
       "report_problem": "Problem melden",
-      "report_problem_on_build": "Ein Problem in diesem {{channel}}-Build melden"
+      "report_problem_on_build": "Ein Problem in diesem {{channel}}-Build melden",
+      "request_feature_starts_agent": "Startet eine Unterhaltung mit dem Agenten, der dir beim Schreiben und Einreichen des Vorschlags hilft. Sie verbraucht Inferenz wie jeder Chat-Zug."
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
@@ -9843,7 +9843,9 @@
         "elsewhere_hint": "Die Modellauswahl und Einstellungen → Chat sind im Haupt-Chatfenster. Dort ein Modell wählen und das Standardmodell ändern.",
         "elsewhere_settings_hint": "Einstellungen → Chat ist im Haupt-Chatfenster. Dort das Standardmodell ändern.",
         "sign_in": "Bei Kiro anmelden",
-        "sign_in_hint": "Öffne Einstellungen → Übersicht → Kiro-Anmeldung, melde dich erneut an und sende deine Nachricht noch einmal."
+        "sign_in_hint": "Öffne Einstellungen → Übersicht → Kiro-Anmeldung, melde dich erneut an und sende deine Nachricht noch einmal.",
+        "feature_request_form": "Formular für Funktionsvorschläge öffnen",
+        "feature_request_form_hint": "Gerade keine Inferenz-Kapazität — öffne stattdessen das Formular für Funktionsvorschläge."
       },
       "folderPanel": {
         "clear_search": "Suche löschen",

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { ErrorCard, isAuthRequired, isModelUnentitled, retryProse } from '../pages/chat/ErrorCard'
+import { ErrorCard, isAuthRequired, isModelUnentitled, isUsageLimit, retryProse } from '../pages/chat/ErrorCard'
+import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
+import { i18nT } from '../i18n/t'
 
 const setupMeta = (member = 'reviewer') => ({
   code: 'memory_unavailable',
@@ -227,5 +229,61 @@ describe('ErrorCard — agent not signed in', () => {
     render(<ErrorCard content="not signed in" />)
     expect(screen.queryByTestId('error-card-sign-in')).toBeNull()
     expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-auth-required')
+  })
+})
+
+/**
+ * A feature request refused for a spent plan allowance (#13342). The header's
+ * "Request a Feature" is an agent turn by design, so at the usage limit it used
+ * to dead-end on this very row. When the host knows the row belongs to that
+ * flow it hands the card the non-inference route -- the repo's feature-request
+ * form -- and the card offers it INSTEAD of Resume, which would only replay the
+ * rejection. The backend's own sentence (which limit, request id) stays.
+ */
+describe('ErrorCard — feature request refused for a usage limit', () => {
+  const prose = '❌ The monthly usage limit has been reached. Retrying will not help until the limit resets. (request_id: be06fbe8)'
+
+  it('offers the feature-request form with a one-line explanation and NO Continue, even when resumable', () => {
+    const onContinue = vi.fn()
+    render(<ErrorCard content={prose} onContinue={onContinue} featureRequestFormUrl={FEATURE_REQUEST_FORM_URL} />)
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveAttribute('data-usage-limit-fallback', 'true')
+    // The backend's sentence is still the first thing on the card.
+    expect(card).toHaveTextContent('The monthly usage limit has been reached.')
+    expect(card).toHaveTextContent(i18nT('pages.chat.errorCard.feature_request_form_hint'))
+    const link = screen.getByTestId('error-card-feature-request-form')
+    expect(link.tagName).toBe('A')
+    expect(link).toHaveAttribute('href', FEATURE_REQUEST_FORM_URL)
+    // A new tab, opened without a handle back to this window.
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link.getAttribute('rel')).toMatch(/noopener/)
+    expect(link.getAttribute('rel')).toMatch(/noreferrer/)
+    expect(link).toHaveAccessibleName(i18nT('pages.chat.errorCard.feature_request_form'))
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    expect(onContinue).not.toHaveBeenCalled()
+    cleanup()
+  })
+
+  it('points at the repo\'s feature_request issue template, not a blank issue', () => {
+    const url = new URL(FEATURE_REQUEST_FORM_URL)
+    expect(url.origin + url.pathname).toBe('https://github.com/kirodotdev/KiroCrew/issues/new')
+    expect(url.searchParams.get('template')).toBe('feature_request.yml')
+  })
+
+  it('recognises the usage_limit kind on both the live and the rebuilt carrier', () => {
+    expect(isUsageLimit({ kind: 'usage_limit' })).toBe(true)
+    expect(isUsageLimit({ meta: { kind: 'usage_limit' } })).toBe(true)
+    expect(isUsageLimit({ kind: 'auth_required' })).toBe(false)
+    expect(isUsageLimit({})).toBe(false)
+  })
+
+  it('renders the ordinary row when no form route is handed to it', () => {
+    // The same prose in a slot the pill did not create: today's card, Resume
+    // and all. A usage limit outside the feature-request flow has no
+    // non-inference route to offer.
+    render(<ErrorCard content={prose} onContinue={() => undefined} />)
+    expect(screen.queryByTestId('error-card-feature-request-form')).toBeNull()
+    expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-usage-limit-fallback')
+    expect(screen.getByTestId('error-card-continue')).toBeInTheDocument()
   })
 })
