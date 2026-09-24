@@ -16809,6 +16809,7 @@
         "transport_hint_fargate": "Session Manager के माध्यम से AWS Fargate टास्क तक पहुँचता है। यह चैट API देता है, डैशबोर्ड नहीं।",
         "transport_hint_ssh": "SSH के माध्यम से कनेक्ट होता है।",
         "transport_hint_ssm": "AWS Systems Manager Session Manager के माध्यम से कनेक्ट होता है।",
+        "transport_hint_unmapped": "{{productName}} का यह संस्करण {{method}} कनेक्शन विधि का समर्थन नहीं करता, इसलिए यह इस crew से कनेक्ट नहीं हो सकता। {{productName}} अपडेट करो, फिर दोबारा कनेक्ट करो।",
         "transport_locked_note": "{{productName}} इस क्रू को उसकी कनेक्शन पहचान के ज़रिए उसके AWS संसाधनों से जोड़ता है, इसलिए यहाँ कनेक्शन विधि और लक्ष्य बदले नहीं जा सकते।",
         "ttl_must_be_hours_or_minutes": "20h या 30m जैसी अवधि दर्ज करें।",
         "turn_api": "चैट API",

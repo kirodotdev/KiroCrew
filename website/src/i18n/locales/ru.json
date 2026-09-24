@@ -17281,6 +17281,7 @@
         "transport_hint_fargate": "Достигает задачи AWS Fargate через Session Manager. Она обслуживает API чата, а не панель.",
         "transport_hint_ssh": "Подключается по SSH.",
         "transport_hint_ssm": "Подключается через AWS Systems Manager Session Manager.",
+        "transport_hint_unmapped": "Эта версия {{productName}} не поддерживает способ подключения {{method}}, поэтому не может подключиться к этой команде. Обнови {{productName}} и подключись снова.",
         "transport_locked_note": "{{productName}} связывает эту команду с её ресурсами AWS через идентификатор подключения, поэтому способ подключения и цель здесь изменить нельзя.",
         "ttl_must_be_hours_or_minutes": "Укажите срок в виде 20h или 30m.",
         "turn_api": "API чата",
