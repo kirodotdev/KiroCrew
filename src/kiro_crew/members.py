@@ -217,6 +217,96 @@ def member_dispatch_session_server(
     ``None`` when the server command cannot be resolved — the member thread
     then runs as plain chat and the caller logs the degradation.
     """
+    return _member_session_element(
+        MEMBER_DISPATCH_SERVER, "mcp-dashboard", session_key, session_token
+    )
+
+
+#: MCP server mounted per session into member DM threads so a crew can publish
+#: its own webview (``panel_publish``) and discover what renders it
+#: (``panel_templates``). A SECOND session-level mount beside
+#: :data:`MEMBER_DISPATCH_SERVER` rather than a widening of it, because
+#: assignment in Kiro Crew is per server: the dashboard set is folder
+#: organization plus session control, publishing a document is neither, and the
+#: two are withdrawn independently (``agent.member_dispatch``,
+#: ``agent.crew_panel``).
+MEMBER_PANEL_SERVER = "kirocrew-panel"
+
+
+def member_panel_session_server(
+    session_key: str, session_token: str = ""
+) -> dict[str, object] | None:
+    """ACP ``session/new`` ``mcpServers`` element mounting the crew panel.
+
+    The panel server is ``opt_in`` in ``agent._MANAGED_MCP_SERVERS``, so no spec
+    emits it, and the Capabilities editor cannot offer it either: that list is
+    built from CONFIGURED connections and a host-managed opt-in server is not
+    one. This element is therefore the only path by which a crew member reaches
+    its own webview, exactly as :func:`member_dispatch_session_server` is the
+    only path to session control.
+
+    Identity carriage, env and failure mode are that function's, through the one
+    writer :func:`_member_session_element`: the panel server reads the session's
+    tool policy through the same ``mcp_shared.run_mcp_stdio_loop`` path, so an
+    entry without the attestation comes up present-but-unusable and refuses
+    every call as ``identity_unattested``.
+
+    ``None`` when the server command cannot be resolved; the caller logs the
+    degradation and the DM thread keeps the rest of its tools.
+    """
+    return _member_session_element(MEMBER_PANEL_SERVER, "mcp-panel", session_key, session_token)
+
+
+def crew_panel_enabled() -> bool:
+    """Whether a crew member's DM session is granted its own webview.
+
+    The operator ceiling on the zero-configuration panel grant, and the mirror of
+    :func:`~kiro_crew.dashboard.session_control.member_dispatch_enabled`: default
+    true is the contract the capability ships with, and ``agent.crew_panel:
+    false`` withdraws it from every member at once without editing a spec.
+
+    Fails CLOSED in both directions the ceiling can lose the operator's value,
+    for the reason that reader states: a config read that RAISES resolves to
+    false, and a config that LOADS having discarded the ``agent`` section
+    resolves to false too. ``load()`` does not raise on a malformed section, it
+    coerces the section away and falls back to the field default, which is
+    permissive, so without the second check a degraded overlay carrying
+    ``crew_panel: false`` would silently revert to the grant the operator meant
+    to withdraw.
+    """
+    # circular import: the config loader's provider-backend path imports this
+    # module, so both names are resolved at call time like the seams below.
+    from kiro_crew.config.loader import DEGRADED_WHOLE_CONFIG, KiroCrewConfig
+
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        logger.warning(
+            "crew_panel: config read failed - withdrawing the panel grant until config loads",
+            exc_info=True,
+        )
+        return False
+    if cfg.degraded_sections & {DEGRADED_WHOLE_CONFIG, "agent"}:
+        logger.warning("crew_panel: agent config section degraded - withdrawing the panel grant")
+        return False
+    return bool(cfg.agent.crew_panel)
+
+
+def _member_session_element(
+    server_name: str, invocation: str, session_key: str, session_token: str
+) -> dict[str, object] | None:
+    """One session-level ``mcpServers`` element for a member DM thread.
+
+    The single writer of the shape both member mounts use. Two servers reach a
+    member session and each needs the same three things: the managed home
+    override, this session's identity, and the port this gateway actually bound.
+    Composing the element twice is how one of them would later be built without
+    one of them.
+
+    *invocation* is the managed subcommand (``mcp-dashboard``, ``mcp-panel``).
+    ``None`` when it cannot be resolved, which each caller reports in its own
+    words because the capability lost differs.
+    """
     # circular import: agent's module graph is heavy and imports config, which
     # sits below this module for the thread-endpoint path.
     from kiro_crew.agent import _kirocrew_mcp_invocation, _managed_mcp_env
@@ -226,9 +316,9 @@ def member_dispatch_session_server(
     from kiro_crew.port_resolution import resolve_serving_port
 
     try:
-        command, args = _kirocrew_mcp_invocation("mcp-dashboard")
+        command, args = _kirocrew_mcp_invocation(invocation)
     except Exception:  # pragma: no cover - defensive; resolver logs its own reason
-        logger.warning("member dispatch: could not resolve the dashboard server command")
+        logger.warning("member mount: could not resolve the %s server command", server_name)
         return None
     if not command:
         return None
@@ -251,7 +341,7 @@ def member_dispatch_session_server(
     # than forwarded.
     env.append({"name": "KIROCREW_BOUND_PORT", "value": str(resolve_serving_port())})
     return {
-        "name": MEMBER_DISPATCH_SERVER,
+        "name": server_name,
         "command": command,
         "args": list(args),
         "env": env,

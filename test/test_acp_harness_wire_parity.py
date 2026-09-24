@@ -197,7 +197,7 @@ async def _capture(backend: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     # write is neither on the wire nor this gate's business.
     monkeypatch.setattr(runtime_mod, "publish_session_token", lambda token, key: None)
 
-    async def _fake_kas_agents(agent, *, member_dispatch=False, session_key=""):
+    async def _fake_kas_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
         # The real projection reads ~/.kiro/agents; the GATE it is behind is what
         # this capture is about, so the payload is pinned and the gate is not.
         from kiro_crew.acp.harness import SessionExtras

@@ -88,6 +88,8 @@ with no row here.
      - pre-session registry query (whether enrolled members can load a full saved spec)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
      - driver-internal (whether a per-session tool set can be mounted)
+   * - ``ACP_BACKENDS_MEMBER_PANEL``
+     - driver-internal (whether a member's own webview can be mounted)
    * - ``ACP_BACKENDS_STEER``
      - pre-session registry query (whether ``_session/steer`` exists)
    * - ``ACP_BACKENDS_COMPACT``
@@ -949,6 +951,56 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset({ACP_BACKEND_KIRO})
 # accepted-and-ignored would withhold every member's tools on a condition that
 # cannot describe that backend.
 ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
+    }
+)
+
+# Backends a crew member's OWN WEBVIEW may be mounted into (``kirocrew-panel``:
+# ``panel_publish``, ``panel_templates``).
+#
+# Its own set, and its own argument, because H6 requires membership to be opted
+# into PER CAPABILITY: supporting session control establishes nothing about the
+# panel, so reusing ``ACP_BACKENDS_MEMBER_DISPATCH`` would grant a distinct
+# capability on evidence gathered for a different one. The two memberships happen
+# to coincide today; what must not coincide is the DECISION, and a backend added
+# to one set does not join the other.
+#
+# The panel asks a SMALLER question than session control does, which is why every
+# dispatch-capable harness also clears this one. Session control needs a
+# server-side ownership fence (``created_by``) to bound which OTHER sessions a
+# member may drive; the panel reaches no other session at all. ``panel_publish``
+# takes no crew or session argument, resolves the publishing crew strictly from
+# the calling session, and refuses a subagent, so the worst an auto-approved call
+# can do is rewrite the caller's own drawer. What the panel still needs is exactly
+# what makes an approval-free grant safe to project at all, and it is the same
+# two preconditions the dispatch set is argued on:
+#
+# * a session-level ``mcpServers`` array this core composes, so the element can
+#   carry the session identity the panel server's tool-policy read demands --
+#   ``ACP_BACKENDS_SESSION_MCP_ARRAY`` for the client-composed harnesses, and
+#   ``AcpRuntime``'s own array for codex and KAS; and
+# * a permission surface Crew either gates (``tool_gate.is_enforced``) or owns
+#   (claude's ``settings.local.json``), so a verb Crew did not grant is not
+#   silently pre-approved in a file Crew does not write.
+#
+# pi and deepseek are excluded for the reasons the dispatch set states and neither
+# reason is about session control specifically: pi accepts the array and never
+# forwards it, so a mounted panel server would be inert, and deepseek's routing is
+# ``Routing.UNVERIFIED``, so a session that cannot be gated is never refused --
+# projecting an approval-free grant onto a harness whose tool calls Crew does not
+# decide is the thing both exclusions protect against.
+#
+# kiro is excluded and cannot be added by this set alone: a member session's key is
+# what every mount reads, and ``providers/acp.py`` ``_member_session_key`` gates
+# that key on ``ACP_BACKENDS_MEMBER_DISPATCH``. So this set decides whether a
+# member session that EXISTS gets a panel; whether one exists at all is that
+# gate's decision, and a backend must clear both.
+ACP_BACKENDS_MEMBER_PANEL = frozenset(
     {
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,

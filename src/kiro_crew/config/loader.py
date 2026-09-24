@@ -2653,6 +2653,12 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # the `_validate_config_data` call. `_safe_bool` here is the
         # final guard for a real bool.
         member_dispatch=_safe_bool(agent_data.get("member_dispatch", True), True),
+        # Default true is the zero-configuration panel grant, and the guard is the
+        # one above: a present-but-malformed value was already coerced to False
+        # upstream, BEFORE schema validation, so it cannot ride the missing-field
+        # default back to true. `_safe_bool` here is the final guard for a real
+        # bool.
+        crew_panel=_safe_bool(agent_data.get("crew_panel", True), True),
         subagent_cost_gb=_safe_float(agent_data.get("subagent_cost_gb", 0.5), 0.5),
         subagent_cpu_cost_cores=_safe_float(agent_data.get("subagent_cpu_cost_cores", 1.0), 1.0),
         subagent_auto_max=_safe_int(
@@ -4326,19 +4332,20 @@ class KiroCrewConfig:
                 data["resource_limits"] = asdict(
                     ResourceLimitsConfig.from_raw(data["resource_limits"])
                 )
-            # Same fail-closed-before-validation reason for the two agent
+            # Same fail-closed-before-validation reason for the three agent
             # switches whose safe direction is FALSE.
             # `agent.session_control` is the operator's single withdrawal of
-            # cross-session control, and `agent.member_dispatch` gates whether
-            # a crew member bypasses that withdrawal. Schema validation pops a
+            # cross-session control, `agent.member_dispatch` gates whether
+            # a crew member bypasses that withdrawal, and `agent.crew_panel`
+            # gates the member's own webview. Schema validation pops a
             # present-but-malformed value and the missing-field default is TRUE
-            # for both, so a quoted `"false"` — a routine operator quoting
-            # mistake — would silently ride that default back to the
+            # for all three, so a quoted `"false"` -- a routine operator quoting
+            # mistake -- would silently ride that default back to the
             # capability staying enabled. Coerce a present non-bool to False
             # HERE, so validation sees a valid bool and keeps it; a genuinely
             # absent key is left absent and still defaults to true (today's
-            # behaviour). One loop, so neither switch can keep the guard while
-            # the other loses it.
+            # behaviour). One loop, so no switch can keep the guard while
+            # another loses it.
             #
             # Say so out loud. The coercion resolves a malformed value one way,
             # and an operator who meant the other way has no other signal:
@@ -4348,7 +4355,7 @@ class KiroCrewConfig:
             # find missing later.
             _agent_section = data.get("agent")
             if isinstance(_agent_section, dict):
-                for _fail_closed_key in ("session_control", "member_dispatch"):
+                for _fail_closed_key in ("session_control", "member_dispatch", "crew_panel"):
                     if _fail_closed_key in _agent_section and not isinstance(
                         _agent_section[_fail_closed_key], bool
                     ):

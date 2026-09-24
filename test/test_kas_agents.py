@@ -1485,6 +1485,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             *,
             stub_server_names=frozenset(),
             member_dispatch=False,
+            crew_panel=False,
             session_key="",
         ):
             seen.append(stub_server_names)
@@ -1500,7 +1501,16 @@ class TestRuntimeSuppliesTheStubbedSet:
 
         seen = []
 
-        def capture(directory, agent, spec, *, stub_server_names, member_dispatch, session_key):
+        def capture(
+            directory,
+            agent,
+            spec,
+            *,
+            stub_server_names,
+            member_dispatch,
+            crew_panel=False,
+            session_key,
+        ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]
 

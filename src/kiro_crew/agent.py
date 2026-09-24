@@ -7293,6 +7293,44 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
     "@kirocrew-dashboard/session_stop",
 )
 
+#: The panel verbs a CREW MEMBER's DM session may call without an approval
+#: prompt. BOTH of them, which is the whole surface ``kirocrew-panel`` exposes.
+#:
+#: This does not contradict the rule ``mcp_panel``'s own module doc states for
+#: that server ("No ``autoApprove`` key ... this tool's input is derived from
+#: text the agent read unattended"). The two paths differ in exactly the thing
+#: that rule is about. An ``autoApprove`` key is resolved inside kiro-cli, emits
+#: no permission request, and so skips ``hooks.on_tool_call`` -- the always-on
+#: deny floor, the sensitive-path check and the governance ceiling. A grant named
+#: here travels as ``allowedTools`` and is filtered by
+#: ``kas_agents._ceiling_permitted`` through ``may_skip_gate_now``, which fails
+#: closed, before any rule reaches the wire. So the ceiling the ``autoApprove``
+#: key would have bypassed is the ceiling this grant crosses, and an operator who
+#: governs either verb still governs it.
+#:
+#: ``panel_templates`` is a read and needs no further argument.
+#:
+#: ``panel_publish`` is a write, and it is granted on the invariant the dashboard
+#: tuples above are judged by -- a granted verb may CREATE or READ, never MUTATE
+#: something that already exists and is not the agent's OWN -- taking the same
+#: asymmetry those tuples record for ``session_release``: the panel a call writes
+#: is the CALLING CREW'S own, which is that agent's state. The server cannot be
+#: pointed anywhere else. It takes no crew or session argument at all, resolves
+#: the publishing crew strictly from the calling session, and refuses a subagent
+#: outright rather than walking ``/proc`` ancestors to its parent's panel. The
+#: worst case of an auto-approved call is therefore a member's own drawer showing
+#: something its own unattended cycle put there, which is what the surface is for.
+#:
+#: Withholding ``panel_publish`` instead would cost the capability rather than
+#: bound it: a panel exists to be refreshed once per cycle of long-running work
+#: with nobody at the keyboard, so an approval prompt on the write verb stalls
+#: exactly the unattended loop the drawer is watched during, and the operator's
+#: real switch for that is ``agent.crew_panel``.
+_MEMBER_PANEL_GRANTS: tuple[str, ...] = (
+    "@kirocrew-panel/panel_templates",
+    "@kirocrew-panel/panel_publish",
+)
+
 
 #: The kirocrew-core verbs the goal conductor may call WITHOUT an approval
 #: prompt. Named one by one rather than as the whole ``@kirocrew-core`` server,

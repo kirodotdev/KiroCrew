@@ -630,6 +630,57 @@ class TestMemberDispatchLoad:
         assert [m for m in logs if "agent.member_dispatch" in m and "not a boolean" in m], logs
 
 
+class TestCrewPanelLoad:
+    """agent.crew_panel load-time coercion.
+
+    The operator ceiling on the crew member's own webview, and the third key on
+    the shared fail-closed loop. A MISSING key defaults to true (the capability's
+    zero-configuration contract), but a PRESENT-but-malformed value -- the routine
+    quoted `"false"` config mistake -- must coerce to FALSE, so a botched opt-out
+    withdraws the grant rather than silently leaving every member able to publish.
+    """
+
+    def test_missing_key_defaults_true(self) -> None:
+        assert _load_from_dict({}).agent.crew_panel is True
+
+    def test_explicit_true_and_false(self) -> None:
+        assert _load_from_dict({"agent": {"crew_panel": True}}).agent.crew_panel is True
+        assert _load_from_dict({"agent": {"crew_panel": False}}).agent.crew_panel is False
+
+    def test_quoted_false_coerces_to_false_not_true(self) -> None:
+        assert _load_from_dict({"agent": {"crew_panel": "false"}}).agent.crew_panel is False
+
+    def test_any_present_non_bool_coerces_to_false(self) -> None:
+        for bad in ("false", "true", "yes", 1, 0, {}, [], None):
+            assert _load_from_dict({"agent": {"crew_panel": bad}}).agent.crew_panel is False, bad
+
+    def test_round_trips_through_to_dict(self) -> None:
+        loaded = _load_from_dict({"agent": {"crew_panel": False}})
+        reloaded = _load_from_dict(loaded.to_dict())
+        assert reloaded.agent.crew_panel is False
+
+    def test_coercion_says_so_in_the_log(self) -> None:
+        """The shared loop covers this key too, so the signal does as well."""
+        cfg, logs = _load_from_dict_with_logs({"agent": {"crew_panel": "true"}})
+        assert cfg.agent.crew_panel is False
+        assert [m for m in logs if "agent.crew_panel" in m and "not a boolean" in m], logs
+
+    def test_the_three_switches_share_one_loop(self) -> None:
+        """One loop, so no switch can keep the guard while another loses it."""
+        cfg = _load_from_dict(
+            {
+                "agent": {
+                    "session_control": "false",
+                    "member_dispatch": "false",
+                    "crew_panel": "false",
+                }
+            }
+        )
+        assert cfg.agent.session_control is False
+        assert cfg.agent.member_dispatch is False
+        assert cfg.agent.crew_panel is False
+
+
 class TestFallbackModelLoad:
     """agent.fallback_model flows through the explicit load() kwargs."""
 

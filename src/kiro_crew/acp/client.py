@@ -112,6 +112,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_MEMBER_DISPATCH,
+    ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_POD_HOME_REMAP,
@@ -5498,8 +5499,12 @@ class AcpClient:
         # The restriction half of the projection's withhold set, from the SAME parse the
         # array came out of: the member append must not re-add a name this projection
         # refused on a transport where the withhold is the whole of the enforcement.
-        return self._append_member_dispatch_server(
-            out, projection.restricted_servers, projection.disabled_servers
+        return self._append_member_panel_server(
+            self._append_member_dispatch_server(
+                out, projection.restricted_servers, projection.disabled_servers
+            ),
+            projection.restricted_servers,
+            projection.disabled_servers,
         )
 
     def _pooled_broker_stubs(self) -> list[dict[str, Any]]:
@@ -5598,42 +5603,121 @@ class AcpClient:
         if not is_member_session_key(self._session_key):
             return servers
         session_key = self._session_key or ""
-        if MEMBER_DISPATCH_SERVER in disabled:
+        if self._member_mount_withheld(
+            MEMBER_DISPATCH_SERVER, "session control", restricted, disabled
+        ):
+            return servers
+        entry = member_dispatch_session_server(session_key, self._stub_session_token)
+        if entry is None:
             logger.warning(
-                "member session %s: %s is switched off for this session (disabled), so "
-                "session control is not mounted -- no backend can refuse a call to a "
-                "server it was handed, and mounting it would undo that switch. The DM "
-                "thread runs as plain chat; re-enable that server to restore it",
+                "member session %s: dashboard server unresolved -- the DM thread "
+                "runs as plain chat this session",
                 self._session_key,
-                MEMBER_DISPATCH_SERVER,
             )
             return servers
-        if MEMBER_DISPATCH_SERVER in restricted and self._withhold_is_the_only_deny_channel():
+        return [e for e in servers if e.get("name") != entry["name"]] + [entry]
+
+    def _member_mount_withheld(
+        self,
+        server_name: str,
+        capability: str,
+        restricted: Collection[str],
+        disabled: Collection[str],
+    ) -> bool:
+        """Whether a member session-array append must be withheld for *server_name*.
+
+        The three preconditions :meth:`_append_member_dispatch_server` documents at
+        length, asked once so both member mounts answer them the same way. Each is
+        about the array, not about which capability rides it: a whole-server
+        ``disabled``, a per-tool restriction on a backend where withholding is the
+        only deny channel there is, and a permission surface Crew does not own.
+
+        *capability* is the phrase the log uses for what the session loses, because
+        that is the only part that differs between the two mounts.
+        """
+        if server_name in disabled:
+            logger.warning(
+                "member session %s: %s is switched off for this session (disabled), so "
+                "%s is not mounted -- no backend can refuse a call to a server it was "
+                "handed, and mounting it would undo that switch; re-enable that server "
+                "to restore it",
+                self._session_key,
+                server_name,
+                capability,
+            )
+            return True
+        if server_name in restricted and self._withhold_is_the_only_deny_channel():
             logger.warning(
                 "member session %s: one of %s's tools is switched off and this backend has "
                 "no channel to refuse a call to it, so the projection withheld the server "
-                "and mounting it here would make that tool reachable again. The DM thread "
-                "runs as plain chat; stop narrowing that server to restore session control",
+                "and mounting it here would make that tool reachable again; %s is not "
+                "mounted, so stop narrowing that server to restore it",
                 self._session_key,
-                MEMBER_DISPATCH_SERVER,
+                server_name,
+                capability,
             )
-            return servers
+            return True
         # An unenforced routing is the ONLY case the owned-file fallback answers for;
         # see the precondition paragraph above for why an enforced one must not read it.
         if not acp_tool_gate.is_enforced(self.backend) and not getattr(
             self, "_claude_settings_authored", False
         ):
             logger.warning(
-                "member session %s: permission surface not Crew-owned — session "
-                "control is not mounted; the DM thread runs as plain chat",
+                "member session %s: permission surface not Crew-owned -- %s is not mounted",
+                self._session_key,
+                capability,
+            )
+            return True
+        return False
+
+    def _append_member_panel_server(
+        self,
+        servers: list[dict[str, Any]],
+        restricted: Collection[str] = (),
+        disabled: Collection[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Mount the crew-panel server into a member DM session.
+
+        The sibling of :meth:`_append_member_dispatch_server` and subject to the
+        same three array-level preconditions, through the one reader
+        :meth:`_member_mount_withheld`. One addition: ``agent.crew_panel``, the
+        operator's single withdrawal of the capability, read fail-closed.
+
+        Its own append rather than a widening of the dispatch one, because the two
+        capabilities are assigned per server and withdrawn by separate switches: a
+        member may hold session control without a panel, or a panel without session
+        control, and each mount must answer for itself. For the same reason the
+        backend question is read from :data:`ACP_BACKENDS_MEMBER_PANEL`, whose
+        membership is argued for THIS capability: harness support for session
+        control establishes nothing about the panel (harness-parity H6), so
+        reusing the dispatch set would grant one capability on another's evidence.
+        """
+        if self.backend not in ACP_BACKENDS_MEMBER_PANEL:
+            return servers
+        # circular import: members' module graph is heavy; resolved at call time.
+        from kiro_crew.members import (
+            MEMBER_PANEL_SERVER,
+            crew_panel_enabled,
+            is_member_session_key,
+            member_panel_session_server,
+        )
+
+        if not is_member_session_key(self._session_key):
+            return servers
+        if not crew_panel_enabled():
+            logger.info(
+                "member session %s: agent.crew_panel is off, so the crew panel is not "
+                "mounted; the member keeps its other tools",
                 self._session_key,
             )
             return servers
-        entry = member_dispatch_session_server(session_key, self._stub_session_token)
+        if self._member_mount_withheld(MEMBER_PANEL_SERVER, "the crew panel", restricted, disabled):
+            return servers
+        entry = member_panel_session_server(self._session_key or "", self._stub_session_token)
         if entry is None:
             logger.warning(
-                "member session %s: dashboard server unresolved — the DM thread "
-                "runs as plain chat this session",
+                "member session %s: panel server unresolved -- the member runs without "
+                "a panel this session",
                 self._session_key,
             )
             return servers

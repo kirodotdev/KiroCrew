@@ -1607,6 +1607,27 @@ class AgentConfig:
             "same fence that binds it when Session Control is on.",
         ),
     )
+    crew_panel: bool = field(
+        default=True,
+        metadata=_meta(
+            "Crew Dashboard",
+            "Let a crew member publish its own webview, shown in that member's "
+            "drawer on the Crew page. A member sends a JSON object and names a "
+            "template that renders it, so a long-running crew can say what it is "
+            "holding, which worker is stuck and what needs a decision, to someone "
+            "who is not reading its transcript. On by default, because a crew that "
+            "cannot be watched is the thing this surface exists to fix. The tools "
+            "come from the kirocrew-panel MCP server, so the grant follows the "
+            "same rule as every other MCP server: an agent that does not mount it "
+            "never has them. Turn this off to withdraw the capability from every "
+            "member at once without editing each spec, and the withdrawal is "
+            "immediate: the publish route reads this switch on every call, so a "
+            "member whose session was already running loses the panel too. A "
+            "member writes only its OWN panel: the server resolves the publishing "
+            "crew from the calling session and takes no crew or session argument, "
+            "and a subagent has no panel to write.",
+        ),
+    )
     subagent_cost_gb: float = field(
         default=0.5,
         metadata=_meta(

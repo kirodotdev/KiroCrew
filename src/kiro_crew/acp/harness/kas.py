@@ -150,6 +150,7 @@ class KasHarness(MembershipHarness):
         work_dir: str | Path | None,
         mcp_gateway_overlay: Any = None,
         member_dispatch: bool = False,
+        crew_panel: bool = False,
         session_key: str = "",
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
@@ -241,6 +242,11 @@ class KasHarness(MembershipHarness):
                 from kiro_crew.members import MEMBER_DISPATCH_SERVER
 
                 stubbed = frozenset(stubbed) | {MEMBER_DISPATCH_SERVER}
+            if crew_panel:
+                # And the panel server, for the same reason on the same path.
+                from kiro_crew.members import MEMBER_PANEL_SERVER
+
+                stubbed = frozenset(stubbed) | {MEMBER_PANEL_SERVER}
             # The snapshot travels WITH the payload it built. This payload is where the
             # spec is CONSUMED on this host -- ``set_mode`` activates what is already
             # registered and reads nothing -- so the check that proves the consumed spec
@@ -253,6 +259,7 @@ class KasHarness(MembershipHarness):
                     spec,
                     stub_server_names=stubbed,
                     member_dispatch=member_dispatch,
+                    crew_panel=crew_panel,
                     session_key=session_key,
                 ),
                 snapshot,

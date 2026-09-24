@@ -1931,14 +1931,16 @@ def _doctor_name_grant_platform_scope() -> None:
 #: MCP servers that host strict-identity tools — the reflexive verbs
 #: (``monitor_start``, ``session_ledger_*``, ``set_project``, ``ask_question``)
 #: and the authorization-subject ones (session control, ``chat_folder_*``).
-#: Mirrors ``mcp_core._STRICT_IDENTITY_SERVERS``; ``kirocrew-dashboard`` is
-#: opt-in per agent, so it is reported only when an agent actually references it.
+#: Mirrors ``mcp_core._STRICT_IDENTITY_SERVERS``; ``kirocrew-dashboard`` and
+#: ``kirocrew-panel`` are opt-in per agent, so each is reported only when an
+#: agent actually references it.
 _STRICT_IDENTITY_SERVERS = (
     "kirocrew-core",
     "kirocrew-dashboard",
     "kirocrew-work",
     "kirocrew-crew-log",
     "kirocrew-debug",
+    "kirocrew-panel",
 )
 
 

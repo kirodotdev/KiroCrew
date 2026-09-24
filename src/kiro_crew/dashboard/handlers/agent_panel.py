@@ -102,6 +102,29 @@ async def _resolve_publishing_crew(
         return None, web.json_response(
             {"error": "forbidden", "code": "internal_secret_required"}, status=403
         )
+    # The operator ceiling, read HERE and synchronously, right before the act.
+    # The mount sites read it too, but a mount answers only for a session being
+    # established: a member whose session was already running when the switch
+    # flipped still holds the grant, and nothing short of ending that session
+    # would take it back. ``agent.crew_panel``'s own description promises the
+    # withdrawal reaches "every member at once", and the two sibling switches in
+    # this subsystem keep that promise the same way -- ``session_control.py``
+    # reads them at the gate rather than at mount time. Read through
+    # ``crew_panel_enabled``, so an unreadable or degraded config fails closed
+    # here exactly as it does at the mount.
+    if not await asyncio.to_thread(members_mod.crew_panel_enabled):
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="agent.crew_panel is off",
+        )
+        return None, web.json_response(
+            {"error": "the crew dashboard is switched off", "code": "crew_panel_disabled"},
+            status=403,
+        )
     # BEFORE `slot.agent` is read, so an app identity can never be resolved into a
     # crew. `await`: the guard offloads its SEL audit, and an un-awaited coroutine
     # is truthy but never runs -- the failure mode that silently disarmed this same

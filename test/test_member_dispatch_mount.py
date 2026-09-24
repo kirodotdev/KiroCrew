@@ -358,7 +358,7 @@ class TestKasMemberProjection:
 
 
 class _ClientStub:
-    """The four attributes ``_append_member_dispatch_server`` reads.
+    """The attributes ``_append_member_dispatch_server`` reads.
 
     ``_stub_session_token`` joined them when the dashboard element started
     carrying this session's signed identity token beside its session key: the
@@ -373,6 +373,9 @@ class _ClientStub:
     # The real predicate, not a double: it is the thing that decides whether a
     # restricted server may be re-added, and a stubbed answer would test the stub.
     _withhold_is_the_only_deny_channel = AcpClient._withhold_is_the_only_deny_channel
+    # The real guard, for the same reason: it is where the disabled, restricted and
+    # permission-surface preconditions are decided, and both member mounts read it.
+    _member_mount_withheld = AcpClient._member_mount_withheld
 
 
 def _base_servers() -> list[dict]:
@@ -606,10 +609,16 @@ class TestOpencodeSessionArray:
         client = self._client(agents_dir, tmp_path, MEMBER_KEY)
         out = client._resolve_session_mcp_servers()
         names = [e["name"] for e in out]
-        assert names[-1] == MEMBER_DISPATCH_SERVER, names
+        assert MEMBER_DISPATCH_SERVER in names, names
         assert names.count(MEMBER_DISPATCH_SERVER) == 1, names
         assert "kirocrew-core" in names, names
-        env = {p["name"]: p["value"] for p in out[-1]["env"]}
+        # Located by NAME rather than by position: a member session also carries
+        # the panel element, so which appended entry sits at the end of the array
+        # says nothing. Uniqueness plus the identity env is what the mount
+        # guarantees, and no consumer reads this array's order -- precedence is by
+        # declaration SITE (session-level over agent block).
+        mounted = next(e for e in out if e["name"] == MEMBER_DISPATCH_SERVER)
+        env = {p["name"]: p["value"] for p in mounted["env"]}
         assert env["KIROCREW_SESSION_KEY"] == MEMBER_KEY
         assert env[STUB_SESSION_TOKEN_ENV] == client._stub_session_token
 
@@ -807,6 +816,7 @@ class TestRuntimeMemberThreading:
             *,
             stub_server_names=frozenset(),
             member_dispatch=False,
+            crew_panel=False,
             session_key="",
         ):
             seen.append(member_dispatch)
@@ -883,6 +893,7 @@ class TestMemberServerJoinsSubtraction:
             *,
             stub_server_names=frozenset(),
             member_dispatch=False,
+            crew_panel=False,
             session_key="",
         ):
             seen.append(frozenset(stub_server_names))
@@ -920,6 +931,7 @@ class TestMemberServerJoinsSubtraction:
             *,
             stub_server_names=frozenset(),
             member_dispatch=False,
+            crew_panel=False,
             session_key="",
         ):
             seen.append(frozenset(stub_server_names))
@@ -1032,10 +1044,12 @@ class TestGooseSessionArray:
         client = _goose_client(tmp_path, MEMBER_KEY)
         out = client._resolve_session_mcp_servers()
         names = [e["name"] for e in out]
-        assert names[-1] == MEMBER_DISPATCH_SERVER, names
+        assert MEMBER_DISPATCH_SERVER in names, names
         assert names.count(MEMBER_DISPATCH_SERVER) == 1, names
         assert "kirocrew-core" in names, names
-        env = {p["name"]: p["value"] for p in out[-1]["env"]}
+        # By NAME, not by position: see the opencode twin of this test.
+        mounted = next(e for e in out if e["name"] == MEMBER_DISPATCH_SERVER)
+        env = {p["name"]: p["value"] for p in mounted["env"]}
         assert env["KIROCREW_SESSION_KEY"] == MEMBER_KEY
         assert env[STUB_SESSION_TOKEN_ENV] == client._stub_session_token
 

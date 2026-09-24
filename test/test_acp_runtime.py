@@ -317,7 +317,7 @@ async def test_derived_worker_identity_keeps_freshness_and_readiness(
             agent_name="kirocrew-worker",
         )
         wire.runtime._kas_custom_agents.assert_awaited_once_with(
-            "kirocrew-worker", member_dispatch=False, session_key=key
+            "kirocrew-worker", member_dispatch=False, crew_panel=False, session_key=key
         )
         if revoked:
             wire.status("connected", extra_servers=("kirocrew-work",))
@@ -365,7 +365,10 @@ async def test_kas_readiness_delays_prompt_until_active_managed_tools(
             resume, pre_ready=pre_ready, session_key="subagent:readiness-worker"
         )
         wire.runtime._kas_custom_agents.assert_awaited_once_with(
-            "worker", member_dispatch=False, session_key="subagent:readiness-worker"
+            "worker",
+            member_dispatch=False,
+            crew_panel=False,
+            session_key="subagent:readiness-worker",
         )
         # Two pre-mode snapshots must be consumed without satisfying this activation.
         for _ in range(3 if pre_ready else 1):
@@ -5916,7 +5919,7 @@ class TestRuntimeMemberDispatchDisabled:
         rt, _, _ = _make_runtime()
         seen: list[bool] = []
 
-        async def _capture(_agent, *, member_dispatch=False, session_key=""):
+        async def _capture(_agent, *, member_dispatch=False, crew_panel=False, session_key=""):
             seen.append(member_dispatch)
             return SessionExtras(custom_agents=None, derived_spec_snapshot=None)
 
@@ -5955,14 +5958,26 @@ class TestRuntimeMemberDispatchDisabled:
     async def test_both_paths_pass_that_scope(self, monkeypatch, path):
         """Not just the helper: the value each path actually hands the reader."""
         from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER, MEMBER_PANEL_SERVER
 
-        seen: list[object] = []
+        seen: list[tuple[str, object]] = []
 
-        def _capture(_name, _agent, *, work_dir=None):
-            seen.append(work_dir)
+        def _capture(name, _agent, *, work_dir=None):
+            seen.append((name, work_dir))
             return False
 
+        # The per-tool reader is the THIRD read on these paths and takes the same
+        # scope, so it is captured here too: left real it would be handed the
+        # sentinel below and fail on it, and the property under test is that every
+        # reader gets the decider's answer.
+        tool_scopes: list[object] = []
+
+        def _capture_tools(_agent, *, work_dir=None):
+            tool_scopes.append(work_dir)
+            return frozenset()
+
         monkeypatch.setattr(runtime_mod, "session_mcp_server_is_disabled", _capture)
+        monkeypatch.setattr(runtime_mod, "session_mcp_disabled_tools", _capture_tools)
         rt, _, _ = _make_runtime()
         rt._can_load_session = True
 
@@ -5992,8 +6007,16 @@ class TestRuntimeMemberDispatchDisabled:
                 agent="kirocrew",
                 member_session_key=self.MEMBER_KEY,
             )
-        assert len(seen) == 1, seen
-        assert seen[0] is scope, seen
+        assert {name for name, _ in seen} == {
+            MEMBER_DISPATCH_SERVER,
+            MEMBER_PANEL_SERVER,
+        }, seen
+        # EVERY call, not just the first: all three reads on these paths take the
+        # same switch scope, and one of them resolving its own is the mismatch
+        # this pins shut.
+        assert all(work_dir is scope for _, work_dir in seen), seen
+        assert tool_scopes, "the per-tool switch must be read too"
+        assert all(work_dir is scope for work_dir in tool_scopes), tool_scopes
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("disabled", [True, False])
@@ -6162,7 +6185,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, session_key=""):
+        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
@@ -6209,7 +6232,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, session_key=""):
+        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
@@ -6261,7 +6284,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, session_key=""):
+        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
@@ -6296,7 +6319,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, session_key=""):
+        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
             from kiro_crew.acp.harness import SessionExtras
 
             calls.append(agent)

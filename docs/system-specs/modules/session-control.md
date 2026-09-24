@@ -616,6 +616,54 @@ that cannot establish the asking posture is refused there too, and
 accepted-and-ignored for exactly that reason.
 
 Which code appends the entry depends on who composes the array.
+
+### The crew panel rides the same vehicle
+
+A crew member's DM session mounts a SECOND session-level server, `kirocrew-panel`,
+by which the member publishes its own webview: `panel_publish` sends a JSON object
+and names a template, and the Members page Dashboard tab renders it. Same vehicle,
+same reason. The server is `opt_in` in `agent._MANAGED_MCP_SERVERS`, so no spec
+emits it, and the Capabilities editor's "Add configured MCP connection" list is
+built from CONFIGURED connections rather than from host-managed opt-in servers, so
+it never appears there either. Without this mount the only remaining grant surface
+is a hand-typed custom connection colliding with the managed name, and no crew can
+publish a panel at all.
+
+The element is `members.member_panel_session_server`, composed by the one writer
+`members._member_session_element` that also builds the dispatch entry, so both
+carry `KIROCREW_SESSION_KEY`, `KIROCREW_BOUND_PORT` and the managed `KIROCREW_HOME`
+override by construction. On the KAS backend the wire projection grants
+`@kirocrew-panel` in `tools` plus `_MEMBER_PANEL_GRANTS` in `allowedTools`,
+ceiling-filtered like every other grant.
+
+Both panel verbs are approval-free, and the reason is worth stating because
+`mcp_panel`'s own module doc forbids an `autoApprove` key on that server. The two
+paths differ in exactly the thing that rule is about: an `autoApprove` key is
+resolved inside kiro-cli, emits no permission request, and so skips
+`hooks.on_tool_call` and the governance ceiling with it, while a grant in
+`allowedTools` is filtered by `kas_agents._ceiling_permitted` through
+`may_skip_gate_now`, which fails closed. `panel_templates` is a read.
+`panel_publish` is a write, and it passes the invariant the dashboard grant sets
+are judged by -- a granted verb may create or read, never mutate something that
+already exists and is not the agent's own -- because the panel it writes is the
+calling crew's own: the server takes no crew or session argument, resolves the
+publishing crew strictly from the calling session, and refuses a subagent rather
+than walking `/proc` ancestors to its parent's panel.
+
+Two operator switches, asked per server rather than shared. `agent.crew_panel`
+(bool, default **true**) is the ceiling, read through `members.crew_panel_enabled`,
+which fails closed on a raising read AND on a config that loaded having discarded
+the `agent` section -- `load()` coerces a malformed section away and falls back to
+the permissive default, so trusting that default would be a fail-open. A
+whole-server `disabled` on `kirocrew-panel` withholds the mount too, for the reason
+it withholds the dashboard one. Neither switch is inherited from the other server's
+answer: an operator who withdrew session control keeps the drawer, and one who
+switched the panel off loses only the panel. The grant follows the mount in the
+same call (`AcpRuntime._mount_member_panel` returns both), so a switched-off server
+is never both named in `tools` and pre-approved on the session that is not mounting
+it.
+
+
 `AcpClient._append_member_dispatch_server` serves the backends whose array the
 CLIENT builds — claude's and opencode's — and honours the permission-surface
 precondition there for an UNENFORCED routing only: claude's is `SEEDED_SETTINGS`,

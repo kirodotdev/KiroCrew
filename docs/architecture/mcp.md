@@ -1197,6 +1197,16 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates` |
 
+`kirocrew-panel` is opt-in and reaches a crew member's DM session the way
+`kirocrew-dashboard` does: as a session-level `mcpServers` entry carrying that
+session's identity (`members.member_panel_session_server`), plus
+`@kirocrew-panel` in `tools` and `_MEMBER_PANEL_GRANTS` in `allowedTools` on the
+KAS projection. Neither the Capabilities editor nor any emitted spec can grant
+it -- that list is built from configured connections, and an opt-in managed
+server is not one -- so this mount is the only path to it. The operator ceiling
+is `agent.crew_panel`; see the session-control module spec for the grant
+reasoning and the fail-closed behaviour.
+
 `kirocrew-dashboard` is one transport carrying **two** authorization models, which is
 what makes its assignment decision larger than its name suggests. The
 `chat_folder_*` verbs are bounded by RESOURCE ownership — a folder created by an app

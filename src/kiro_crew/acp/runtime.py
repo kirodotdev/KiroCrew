@@ -88,7 +88,11 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
     advertised_models_from_session,
 )
-from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_server_is_disabled
+from kiro_crew.acp.session_mcp import (
+    agent_spec_snapshot,
+    session_mcp_disabled_tools,
+    session_mcp_server_is_disabled,
+)
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -5444,7 +5448,12 @@ class AcpRuntime:
         )
 
     async def _kas_custom_agents(
-        self, agent: str, *, member_dispatch: bool = False, session_key: str = ""
+        self,
+        agent: str,
+        *,
+        member_dispatch: bool = False,
+        crew_panel: bool = False,
+        session_key: str = "",
     ) -> SessionExtras:
         """The per-session payload for a wire-registered host, and what built it.
 
@@ -5467,6 +5476,7 @@ class AcpRuntime:
             work_dir=getattr(self, "_work_dir", None),
             mcp_gateway_overlay=self._mcp_gateway_overlay,
             member_dispatch=member_dispatch,
+            crew_panel=crew_panel,
             session_key=session_key,
         )
         # Judged HERE, on the payload, so every path that builds one -- session/new
@@ -5474,6 +5484,126 @@ class AcpRuntime:
         # ``custom_agents`` is None) never reaches the check.
         self._refuse_if_loader_unreachable(agent, extras.custom_agents)
         return extras
+
+    async def _mount_member_panel(
+        self,
+        mcp_servers: list[dict[str, Any]],
+        *,
+        member_session_key: str,
+        agent_name: str,
+        session_work_dir: Any,
+        stub_token: str,
+        resuming: bool = False,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Mount the crew-panel server into a member DM session's server array.
+
+        Returns the array and whether the GRANT may follow it. The two answers are
+        one call because they must agree: a grant that outlived the mount would
+        leave a switched-off server both named in ``tools`` and pre-approved on the
+        very session that is not mounting it, which is the shape
+        ``member_dispatch`` already avoids by deriving its flag from its own
+        withhold.
+
+        Asked on the resume path as well as on create, and it matters MORE there:
+        ``session/load`` re-initializes the session's servers, so an unasked
+        question would re-mount a switched-off server onto a conversation whose
+        ``session/new`` withheld it.
+
+        Two withholds, each the operator's own, and BOTH spellings of the switch:
+
+        * ``agent.crew_panel`` -- the config ceiling, read through
+          :func:`~kiro_crew.members.crew_panel_enabled`, which fails closed on an
+          unreadable or degraded config.
+        * a whole-server ``disabled`` on ``kirocrew-panel``. ``disabled`` has no
+          per-tool or per-call spelling, so a harness handed the server cannot
+          refuse a call to it, and the ``tools`` allowlist that keeps a disabled
+          server out of a projected array does not reach an entry appended here.
+        * a per-tool ``disabledTools`` naming any panel verb. Asked HERE and not
+          only on the client sibling, because the two paths serve different
+          backends and this one is the only path KAS takes: ``disabledTools`` is a
+          hand-editable documented key in the global ``settings/mcp.json`` that
+          :func:`~kiro_crew.acp.session_mcp.session_mcp_disabled_tools` reads, and
+          the KAS grant that follows this mount puts ``panel_publish`` into
+          ``allowedTools`` approval-free. KAS has no wire slot for hooks, so there
+          is no later point at which a call to the switched-off verb could be
+          refused -- withholding is the only faithful answer, and an operator's
+          per-tool switch-off would otherwise be silently undone.
+
+        The per-tool withhold takes the WHOLE server on every runtime-served
+        backend rather than only where withholding is the sole deny channel. The
+        mount and the grant are one answer here by construction, so keeping the
+        mount for a backend that can refuse per call (codex) while withholding the
+        grant would need two, and a grant that outlived a withhold is the failure
+        this coupling exists to prevent. Withholding a server is an availability
+        cost; forwarding an un-narrowed one is a capability the user switched off.
+
+        Asked PER SERVER rather than inherited from the dashboard server's answer:
+        the panel and session control are separate capabilities with separate
+        switches, so an operator who withdrew session control keeps the drawer
+        they never asked to lose, and one who switched the panel off loses only
+        the panel.
+        """
+        if not member_session_key:
+            return mcp_servers, False
+        # circular import: members' module graph is heavy; resolved at call time
+        # like the dispatch seam on both paths.
+        from kiro_crew.members import (
+            MEMBER_PANEL_SERVER,
+            crew_panel_enabled,
+            member_panel_session_server,
+        )
+
+        where = " on resume" if resuming else ""
+        if not await asyncio.to_thread(crew_panel_enabled):
+            logger.info(
+                "member session %s: agent.crew_panel is off, so the crew panel is "
+                "not mounted%s; the member keeps its other tools",
+                member_session_key,
+                where,
+            )
+            return mcp_servers, False
+        if await asyncio.to_thread(
+            session_mcp_server_is_disabled,
+            MEMBER_PANEL_SERVER,
+            agent_name,
+            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
+        ):
+            logger.warning(
+                "member session %s: %s is switched off for this session (disabled), "
+                "so the crew panel is not mounted%s; re-enable that server to restore it",
+                member_session_key,
+                MEMBER_PANEL_SERVER,
+                where,
+            )
+            return mcp_servers, False
+        narrowed = await asyncio.to_thread(
+            session_mcp_disabled_tools,
+            agent_name,
+            work_dir=_disable_check_scope(self.acp_backend, session_work_dir),
+        )
+        if any(server == MEMBER_PANEL_SERVER for server, _tool in narrowed):
+            logger.warning(
+                "member session %s: one of %s's tools is switched off, and the grant "
+                "that follows this mount is approval-free with no later point to "
+                "refuse the call, so the crew panel is not mounted%s; stop narrowing "
+                "that server to restore it",
+                member_session_key,
+                MEMBER_PANEL_SERVER,
+                where,
+            )
+            return mcp_servers, False
+        entry = await asyncio.to_thread(member_panel_session_server, member_session_key, stub_token)
+        if entry is None:
+            logger.warning(
+                "member session %s: panel server unresolved%s -- the member runs "
+                "without a panel this session",
+                member_session_key,
+                where,
+            )
+            return mcp_servers, False
+        # Session-level entries outrank same-named spec entries, so drop any stub
+        # for the same server rather than registering it twice.
+        return [e for e in mcp_servers if e.get("name") != entry["name"]] + [entry], True
 
     async def _session_start_budget(self) -> float:
         """The session/new + session/load budget, resolved per session start.
@@ -5864,6 +5994,9 @@ class AcpRuntime:
             # snapshot.
             stub_token = ""
         member_withheld = False
+        # False for every non-member session, set without an awaited call so the
+        # Kiro construction path is untouched by this capability (H13).
+        panel_mounted = False
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time like the projection seams below.
@@ -5908,6 +6041,17 @@ class AcpRuntime:
                     "thread runs as plain chat this session",
                     member_session_key,
                 )
+            # INSIDE the member branch, like the mount above it: a session with no
+            # member key reaches no part of this composition, so the Kiro
+            # construction path gains no conditional, no awaited step and no new
+            # failure mode from the panel capability (harness-parity H13).
+            mcp_servers, panel_mounted = await self._mount_member_panel(
+                mcp_servers,
+                member_session_key=member_session_key,
+                agent_name=agent or self._agent,
+                session_work_dir=session_work_dir,
+                stub_token=stub_token,
+            )
         # The agent to run: an explicit request, else the runtime default. KAS
         # has no --agent spawn flag, so its default must be BOTH injected (below)
         # and activated (via set_mode after session/new); the kiro default is
@@ -5924,6 +6068,9 @@ class AcpRuntime:
             # outlived the withhold would leave the switched-off server both named and
             # pre-approved on the very session that is not mounting it.
             member_dispatch=bool(member_session_key) and not member_withheld,
+            # Same rule, its own withhold: see _mount_member_panel, which answers
+            # the mount and the grant together so the two cannot disagree.
+            crew_panel=panel_mounted,
             session_key=session_key,
         )
         kas_agents = kas_extras.custom_agents
@@ -6609,6 +6756,9 @@ class AcpRuntime:
             )
             mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         member_withheld = False
+        # False for every non-member session, set without an awaited call so the
+        # Kiro construction path is untouched by this capability (H13).
+        panel_mounted = False
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().
@@ -6649,6 +6799,15 @@ class AcpRuntime:
                     "the DM thread runs as plain chat this session",
                     member_session_key,
                 )
+            # INSIDE the branch, for the reason create_session() states.
+            mcp_servers, panel_mounted = await self._mount_member_panel(
+                mcp_servers,
+                member_session_key=member_session_key,
+                agent_name=active_agent,
+                session_work_dir=session_work_dir,
+                stub_token=stub_token,
+                resuming=True,
+            )
         # Narrowed by the host for the same reason session/new is, and it matters
         # MORE here: session/load re-initializes the session's servers, so a
         # rejected array does not just fail to add tools -- it takes them away from
@@ -6699,6 +6858,7 @@ class AcpRuntime:
                 active_agent,
                 # The grant follows the withhold here too -- see create_session().
                 member_dispatch=bool(member_session_key) and not member_withheld,
+                crew_panel=panel_mounted,
                 session_key=session_key,
             )
             kas_agents = kas_extras.custom_agents

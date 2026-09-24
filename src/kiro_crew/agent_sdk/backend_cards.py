@@ -324,6 +324,15 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_MEMBER_PANEL": (
+        "whether a member DM session may mount its own webview. Its membership is the "
+        "same as ACP_BACKENDS_MEMBER_DISPATCH's, and the member-thread-tools line "
+        "already answers for that one, so a card line here would repeat a claim the "
+        "reader has read one line earlier and tell them nothing a harness differs on. "
+        "The set exists so the DECISION is opted into per capability (harness-parity "
+        "H6) rather than inherited from session control; if the two memberships ever "
+        "diverge, that divergence is what earns a line"
+    ),
     "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": (
         "whose disk the transcript sits on. Crew holds a non-member's transcript under "
         "its own sessions tree and a reopened chat restores from there, so the "
