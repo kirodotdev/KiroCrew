@@ -2175,15 +2175,20 @@ class SessionManager:
         )
 
     async def release_subagent_runtime(
-        self, parent_session_key: str, *, expected: Any = None
+        self,
+        parent_session_key: str,
+        *,
+        expected: Any = None,
+        expected_generation: int | None = None,
     ) -> bool:
         """Release the shared companion runtime for a parent.
 
         ``expected`` restricts the release to that runtime object (see the
         allocation boundary); returns whether one was released.
+        Pass ``expected_generation`` to skip the release when a successor already owns the key.
         """
         return await self._allocation_boundary().release_subagent_runtime(
-            parent_session_key, expected=expected
+            parent_session_key, expected=expected, expected_generation=expected_generation
         )
 
     async def _get_or_bootstrap_run_runtime(

@@ -865,7 +865,11 @@ class SessionAllocationService:
                 return runtime
 
     async def release_subagent_runtime(
-        self, parent_session_key: str, *, expected: Any = None
+        self,
+        parent_session_key: str,
+        *,
+        expected: Any = None,
+        expected_generation: int | None = None,
     ) -> bool:
         """Serialize release with spawn and kill the detached runtime off-map.
 
@@ -876,7 +880,25 @@ class SessionAllocationService:
         replacement under the same key before letting go, and a pop by key
         alone would then kill the replacement the caller never looked at.
         Returns whether a runtime was popped (and so killed).
+
+        ``expected_generation`` makes the release CONDITIONAL, the way
+        :meth:`SessionManager.destroy_if` makes destruction conditional. The registry is keyed
+        by parent session key alone, so a release that outlives its own teardown would pop and
+        kill whatever runtime is registered when it finally runs -- including one a SUCCESSOR
+        turn spawned under the same key. A caller that captured the generation belonging to its
+        own teardown passes it here, and a key whose generation has advanced past that capture
+        is left alone. Omitting it keeps the unconditional behaviour.
         """
+        if (
+            expected_generation is not None
+            and self.session_generation(parent_session_key) != expected_generation
+        ):
+            self._deps.logger.debug(
+                "Skipping subagent runtime release for %s: generation moved past %s",
+                parent_session_key,
+                expected_generation,
+            )
+            return False
         lock = self._subagent_runtime_locks.get(parent_session_key)
         if lock is not None:
             async with lock:
@@ -884,6 +906,13 @@ class SessionAllocationService:
                     expected is not None
                     and self._subagent_runtimes.get(parent_session_key) is not expected
                 ):
+                    return False
+                if (
+                    expected_generation is not None
+                    and self.session_generation(parent_session_key) != expected_generation
+                ):
+                    # Re-checked under the lock: waiting for it is a window a successor can
+                    # be published in.
                     return False
                 runtime = self._subagent_runtimes.pop(parent_session_key, None)
                 # A waiter on this removed lock re-checks canonical identity in
