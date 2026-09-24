@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { MoreHorizontal, Check, Clock, Pause, Play, MessageSquare, Folder, FolderPlus } from 'lucide-react'
+import { MoreHorizontal, Check, Clock, Pause, Play, MessageSquare, Folder, FolderPlus, ArrowRightLeft } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
@@ -25,7 +25,7 @@ import { i18nT } from '../i18n/t'
  */
 export default function CronRowActions({
   job, folders, running, cancelling, onRun, onCancelRun, onOpenInChat, onToggleEnabled,
-  onToggleStrict, onMove, onNewFolder,
+  onToggleStrict, onMove, onNewFolder, onMoveToCrew,
 }: {
   job: CronJob
   folders: CronFolder[]
@@ -38,6 +38,12 @@ export default function CronRowActions({
   onToggleStrict: () => void
   onMove: (folderId: string) => void
   onNewFolder: (moveTo?: boolean) => Promise<string | undefined> | void
+  /**
+   * Crew-to-crew work migration (issue #7577). Distinct from `onMove`, which
+   * moves the job between FOLDERS on this crew; this hands the job to another
+   * crew entirely. Optional so surfaces that cannot migrate simply omit it.
+   */
+  onMoveToCrew?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const sortedFolders = [...folders].sort((a, b) => a.order - b.order)
@@ -141,6 +147,15 @@ export default function CronRowActions({
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+        {onMoveToCrew && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => { setOpen(false); onMoveToCrew() }}>
+              <ArrowRightLeft size={13} className="shrink-0 text-accent" />
+              <span className="truncate">{i18nT('components.moveToCrew.menu_label')}</span>
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

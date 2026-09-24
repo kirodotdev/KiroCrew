@@ -12,6 +12,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import WeekGrid from '../components/WeekGrid'
 import TimezoneSelect from '../components/TimezoneSelect'
 import JobForm from '../components/JobForm'
+import MoveToCrewDialog from '../components/MoveToCrewDialog'
 import JobLogsView from '../components/JobLogsView'
 import ErrorNotice from '../components/ErrorNotice'
 import type { KiroCrewAgent } from '../components/AgentSelector'
@@ -216,6 +217,8 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
 
 export default function SchedulePage() {
   const [jobs, setJobs] = useState<CronJob[]>([])
+  // Crew-to-crew work migration (issue #7577): which job's move plan is open.
+  const [movingJobId, setMovingJobId] = useState<string | null>(null)
   const dispatch = useAppDispatch()
   const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
   // A recovered roster must not be recovered for this form alone. `useAgents`
@@ -526,6 +529,16 @@ export default function SchedulePage() {
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
+        {/* Crew-to-crew work migration (issue #7577): the Schedule-tab action.
+            Shows what moving this job to another crew WOULD do — the transmit
+            step lands with the tunnel wiring. */}
+        {movingJobId && (
+          <MoveToCrewDialog
+            unitId={movingJobId}
+            onPlan={toCrew => api.planCronMove(movingJobId, toCrew)}
+            onClose={() => setMovingJobId(null)}
+          />
+        )}
         {/* View switching is NAVIGATION, so it sits at page level rather than in
             the list's own toolbar — next to three action buttons it read as
             three more of them. `collapse={false}`: this lives in the header's
@@ -930,7 +943,38 @@ export default function SchedulePage() {
                     without it. */}
                 <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
-                <TableCell title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</TableCell>
+                <TableCell title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}
+                  {/* A hover title is not an error surface: it is unreachable by
+                      keyboard and by a screen reader, so a failed job announced
+                      only there is announced to nobody. askAgent is deliberately
+                      ON here -- unlike the move dialog's unsaved draft, a cron
+                      failure is durable server state the agent can go and read.
+                      `message` renders nothing when falsy, so no guard is needed.
+
+                      `inline` because this is a dense table cell, not the top of
+                      a panel: the boxed `block` variant is sized for a panel
+                      header, and several failing jobs would stack banners down
+                      the status column.
+
+                      The bounded wrapper is load-bearing, not cosmetic. The
+                      inline variant is an `inline-flex` run built to sit in a
+                      button row, so with no width limit it renders on one line
+                      and overruns the cell -- a long `last_error` then paints
+                      across the Last Run and Next Run columns. The wrapper gives
+                      it the cell's width, `messageClassName` clamps the height
+                      (the component's own documented knob for holding a row
+                      height), and the full text stays reachable through the
+                      cell's title. */}
+                  <div className="mt-1 max-w-[15rem]">
+                    <ErrorNotice
+                      variant="inline"
+                      message={j.last_error}
+                      messageClassName="line-clamp-2"
+                      askAgent
+                      testId={`cron-error-${j.id}`}
+                    />
+                  </div>
+                  </TableCell>
                 <TableCell className="text-muted">
                   {fmtAgo(j.last_run_ts)}
                   {/* Retry telemetry for the LAST run only: a job that needed
@@ -996,6 +1040,7 @@ export default function SchedulePage() {
                       onToggleStrict={async () => { try { await api.updateCron(j.id, { strict_schedule: !j.strict_schedule }); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } }}
                       onMove={fid => handleMoveJob(j.id, fid)}
                       onNewFolder={handleNewFolder}
+                      onMoveToCrew={() => setMovingJobId(j.id)}
                     />
                   </div>
                   {/* askAgent on: row actions (pause, strict, move, run, delete)
