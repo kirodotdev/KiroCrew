@@ -133,8 +133,20 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
     expect(store.getState().chat.slotMessages.bg.length).toBe(111)
 
     await store.dispatch(warmSlotCache('bg'))
-    expect(limitsFor('bg')).toEqual([undefined])
-    expect(store.getState().chat.slotMessages.bg.length).toBeGreaterThanOrEqual(111)
+    // The property, not the mechanism (#10005, as for the switch above). The warm
+    // asks for a window sized to what the pane holds. This fixture's cache is the
+    // OLDEST 111 rows and the window is the newest 111, so they are disjoint --
+    // and a FULL window wholly past the cache is the window having MOVED, not a
+    // hole: the page replaces the cache with the door marked (`has_more`), one
+    // bounded read, and the rows behind it are the pane's load-earlier bar's to
+    // fetch. Not below what it held: 111 in, 111 out.
+    expect(limitsFor('bg')).toEqual([111])
+    const bg = store.getState().chat
+    expect(bg.slotMessages.bg).toHaveLength(111)
+    expect(bg.slotMessages.bg[0].content).toBe(`m${TOTAL - 111}`)
+    expect(bg.slotMessages.bg.at(-1)?.content).toBe(`m${TOTAL - 1}`)
+    expect(bg.slotPaneHasMore.bg).toBe(true)
+    expect(bg.slotPaneBounded.bg).toBe(111)
   })
 
   // A cache at or below the limit still loses rows: unseen server growth moves the
@@ -159,7 +171,12 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
     expect({ limit: limitsFor('active').at(-1), dropped }).toEqual({ limit: undefined, dropped: [] })
   })
 
-  it('does not bound a small background cache the server has grown past', async () => {
+  // The background counterpart is NOT the same verdict: the pane is not on screen,
+  // and a full newest-N window wholly past a small cache is the window having moved
+  // (rows the server grew by outnumber the page). The page replaces the cache with
+  // the door marked -- one bounded read, no unbounded retry on every `done` -- and
+  // the painted rows are behind the pane's load-earlier bar, not lost.
+  it('bounds a small background cache the server has grown past to the marked newest window', async () => {
     HISTORY = makeHistory(false)
     const store = makeStore()
     store.dispatch(setActiveSlot('other'))
@@ -171,9 +188,11 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
 
     await store.dispatch(warmSlotCache('bg'))
 
-    const cache = new Set(store.getState().chat.slotMessages.bg.map(m => m.content))
-    const dropped = painted.filter(m => !cache.has(m.content)).map(m => m.content)
-    expect({ limit: limitsFor('bg').at(-1), dropped }).toEqual({ limit: undefined, dropped: [] })
+    expect(limitsFor('bg')).toEqual([WARM])
+    const bg = store.getState().chat
+    expect(bg.slotMessages.bg.map(m => m.content)).toEqual(HISTORY.slice(TOTAL - WARM).map(m => m.content))
+    expect(bg.slotPaneHasMore.bg).toBe(true)
+    expect(bg.slotPaneBounded.bg).toBe(WARM)
   })
 
   // Negative control: the bound must SURVIVE where it was designed to help, so the
@@ -194,14 +213,19 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
    *  at the wrong occurrence. These two pin both directions of that rule on the warm
    *  path, which reaches the cut without the thunk-side strict check in front of it. */
   it('keeps the cache whole when the page-oldest id names two rows', async () => {
+    // The cache holds rows 0..199, so the newest-200 window is rows 100..299 and
+    // OVERLAPS it: the page-oldest row 100 shares its id with row 20, so the cut
+    // is ambiguous. (An overlap, deliberately: a window wholly past the cache is
+    // a different case -- the window having moved -- pinned in
+    // chatSlice.warmSlotCacheBound.test.ts.)
     const dup = 'mid-repeated'
     HISTORY = makeHistory(true).map((r, i) =>
-      i === 0 || i === 60 ? { ...r, meta: { mid: dup } } : r,
+      i === 20 || i === 100 ? { ...r, meta: { mid: dup } } : r,
     )
     const store = makeStore()
     store.dispatch(setActiveSlot('other'))
     store.dispatch(hydrateSlotMessages({
-      slot: 'bg', messages: HISTORY.slice(0, 140), hasMore: false,
+      slot: 'bg', messages: HISTORY.slice(0, 200), hasMore: false,
       bounded: false, total: TOTAL, running: false,
     }))
 
@@ -211,7 +235,7 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
     // reducer keeps the longer prior array instead of trusting a wrong boundary.
     const cache = store.getState().chat.slotMessages.bg
     const kept = new Set(cache.map(m => m.content))
-    const dropped = HISTORY.slice(0, 140).filter(m => !kept.has(m.content)).map(m => m.content)
+    const dropped = HISTORY.slice(0, 200).filter(m => !kept.has(m.content)).map(m => m.content)
     expect(dropped).toEqual([])
   })
 
