@@ -71,6 +71,9 @@ from kiro_crew.apps.manifest import (
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
+    sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
+    scrub_env,
     wrap_argv,
     wrap_argv_async,
 )
@@ -327,6 +330,92 @@ def anonymous_git_env(**extra: str) -> dict[str, str]:
     env["LC_ALL"] = _GIT_CLONE_LOCALE
     env.update(extra)
     return env
+
+
+#: Env names a ``detectInstalled`` probe may receive. Deliberately an explicit
+# KEEP set rather than ``_SAFE_ENV_KEYS`` minus a few names: that allowlist serves
+# operator-initiated spawns -- installs, app backends, lifecycle scripts -- so it
+# carries toolchain configuration an operator may legitimately have loaded with a
+# secret (``MAVEN_OPTS`` with a ``-D`` password, ``GRADLE_USER_HOME`` pointing at a
+# credential store, a ``PYTHONPATH``/``NODE_PATH`` tree that lets a probe import
+# code). Subtracting each such name as it is noticed leaves the next one in, and a
+# probe is the one spawn here whose command text is untrusted, so the axis is
+# closed instead: only location hints a ``command -v`` / ``test -x`` style check
+# needs to run, plus the Windows names a process needs to start at all (a child
+# without ``SystemRoot`` dies before ``main()``). A probe that genuinely needs a
+# toolchain variable reads it from the app's own config, not from the operator's
+# shell.
+_DETECT_PROBE_ENV_KEYS = frozenset(
+    {
+        "HOME",
+        "PATH",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        # Windows equivalents, spelled as in `_SAFE_ENV_KEYS`.
+        "COMSPEC",
+        "PATHEXT",
+        "ProgramFiles",
+        "PROGRAMFILES",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "WINDIR",
+        # Set BY `anonymous_git_env`, not copied from the operator: the git
+        # suppression that keeps a credential helper from firing must survive the
+        # filter below, or dropping it would undo that suppression.
+        "GIT_TERMINAL_PROMPT",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_SSH_COMMAND",
+    }
+)
+
+
+def _detect_probe_env() -> dict[str, str]:
+    """Environment for a ``/bin/sh -c <detectInstalled>`` probe.
+
+    A probe's command string is NOT operator-authored: it comes from an
+    app-registry manifest, which is untrusted content, and the listing path runs it
+    automatically at browse time. So a probe gets the credential-free treatment an
+    index-originated clone gets (:func:`anonymous_git_env`), narrowed further to
+    :data:`_DETECT_PROBE_ENV_KEYS`.
+
+    What that closes, in the order the layers apply: :func:`anonymous_git_env`
+    drops the agent socket and any ``GIT_SSH``/``GIT_SSH_COMMAND`` override, so
+    manifest code cannot authenticate through the operator's keys; it disables
+    system and global git config, so a configured credential helper -- macOS ships
+    ``osxkeychain`` in its system config, and the ``cache`` helper's socket is
+    reachable through an allowlisted ``XDG_CACHE_HOME`` -- never fires for a
+    manifest-chosen remote; and it turns prompting off, so a probe fails rather
+    than asking the operator for a password. :func:`scrub_env` removes the
+    credential-bearing prefixes. The keep set then leaves only location hints, so a
+    toolchain variable carrying a secret has no route in.
+
+    All of this matters on one host shape: the sandbox launcher strips the socket
+    in every mode, so these names only ever survive where no launcher runs --
+    Windows, and a POSIX host with no sandbox backend plus
+    ``agent.sandbox_allow_unsandboxed_exec``. ``PATH`` and ``HOME`` are kept, so a
+    detect command still resolves programs and still reads its own per-user config.
+    """
+    scrubbed = scrub_env(anonymous_git_env())
+    return {k: v for k, v in scrubbed.items() if _is_probe_env_key(k)}
+
+
+def _is_probe_env_key(key: str) -> bool:
+    """Whether *key* may reach a probe, honoring Windows' case-insensitive env.
+
+    Same matching convention as :func:`_is_safe_env_key` -- exact on POSIX,
+    case-folded on Windows -- so a literal membership test cannot silently drop
+    ``SystemRoot`` there.
+    """
+    return platform_compat.env_key_allowed(key, _DETECT_PROBE_ENV_KEYS)
 
 
 # Manifest cache: fetched app.json files from repos
@@ -3637,14 +3726,34 @@ async def _detect_installed_probe(
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
-            sandboxed_cmd, _cleanup = await wrap_argv_async(
-                base_cmd, mode="strict", _prepare=wrap_argv
+            # Through the single sandboxed-spawn chokepoint, not a hand-rolled
+            # wrap + cgroup pair: it applies the strict launcher, the credential
+            # scrub and the cgroup DoS ceiling, AND it forwards the systemd bus
+            # locators that the ceiling's own `systemd-run --user` wrapper needs
+            # to reach the user bus, dropping them again with an `env -u` shim
+            # inside the scope so the probe itself never sees a live bus address.
+            # A caller-built env that omits those locators makes `systemd-run`
+            # exit 1 before the command runs, which with DEVNULL stderr reads as
+            # "not installed" for every app on a cgroup-delegated host.
+            #
+            # `_detect_probe_env` is the credential-free base it scrubs on top of:
+            # no agent socket, no git credential helper, no prompt, no toolchain
+            # variable. The command string comes from a registry manifest, which
+            # is untrusted content, and `strict` mode's own scrub only runs when
+            # the launcher does -- not on Windows, and not on a host with no
+            # sandbox backend plus agent.sandbox_allow_unsandboxed_exec -- so the
+            # env handed over here is the only control left on those hosts.
+            sandboxed_cmd, probe_env, _cleanup = await sandboxed_spawn_argv_async(
+                base_cmd,
+                mode="strict",
+                env=_detect_probe_env(),
+                _prepare=sandboxed_spawn_argv,
             )
-            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                env=probe_env,
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
@@ -6935,14 +7044,34 @@ async def install_from_registry(
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
-            sandboxed_cmd, _cleanup = await wrap_argv_async(
-                base_cmd, mode="strict", _prepare=wrap_argv
+            # Through the single sandboxed-spawn chokepoint, not a hand-rolled
+            # wrap + cgroup pair: it applies the strict launcher, the credential
+            # scrub and the cgroup DoS ceiling, AND it forwards the systemd bus
+            # locators that the ceiling's own `systemd-run --user` wrapper needs
+            # to reach the user bus, dropping them again with an `env -u` shim
+            # inside the scope so the probe itself never sees a live bus address.
+            # A caller-built env that omits those locators makes `systemd-run`
+            # exit 1 before the command runs, which with DEVNULL stderr reads as
+            # "not installed" for every app on a cgroup-delegated host.
+            #
+            # `_detect_probe_env` is the credential-free base it scrubs on top of:
+            # no agent socket, no git credential helper, no prompt, no toolchain
+            # variable. The command string comes from a registry manifest, which
+            # is untrusted content, and `strict` mode's own scrub only runs when
+            # the launcher does -- not on Windows, and not on a host with no
+            # sandbox backend plus agent.sandbox_allow_unsandboxed_exec -- so the
+            # env handed over here is the only control left on those hosts.
+            sandboxed_cmd, probe_env, _cleanup = await sandboxed_spawn_argv_async(
+                base_cmd,
+                mode="strict",
+                env=_detect_probe_env(),
+                _prepare=sandboxed_spawn_argv,
             )
-            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                env=probe_env,
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
