@@ -1716,6 +1716,13 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             _cron_add_fail(found.error)
         folder_id = found.folder_id
 
+    if script:
+        kind = "script"
+    elif command:
+        kind = "command"
+    else:
+        kind = "agent"
+
     # ── Governance: the capabilities.cron on/off gate, at authoring time ──
     # The gateway re-vets every job at fire time, so a job authored under a
     # disabled capability can never run -- but without this fail-fast the CLI
@@ -1725,8 +1732,6 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     # the cron surface (sel._infer_source), so the profile that governs cron
     # jobs decides authoring too -- a CLI-surface bind does not, by design:
     # what is being gated is the cron capability, not the CLI as a whole.
-
-    kind = "script" if script else ("command" if command else "agent")
     cap_err = _vet_cron_capability_governance("cron:cli_add")
     if cap_err:
         _cron_add_fail(cap_err, audit_kind=kind)

@@ -4497,7 +4497,9 @@ def _doctor_import_path(issues: list[str]) -> None:
             print(f"               Fix: {remedy}, or run from another directory")
         issues.append("stdlib shadowed")
         return
-    launch = None if getattr(sys.flags, "safe_path", False) else (sys.path[0] if sys.path else None)
+    launch = None
+    if not getattr(sys.flags, "safe_path", False) and sys.path:
+        launch = sys.path[0]
     if launch is None:
         print("  import path: ✅ stdlib intact (launch directory kept off sys.path: -P)")
     else:
