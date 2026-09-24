@@ -989,10 +989,13 @@ demonstrated the fault is gone, which is the line `_unattended_sessions_redactio
 already draws. The status read serves the record as `nightlyFailures` so an operator
 can see the count and the day it started; no console renderer ships with it.
 When the success itself cannot write the state file, its process-local run overlay masks
-the older persisted failure from that status projection immediately. The next successful
-state mutation persists the held run and removes the row on disk; until then `runs` and
-`nightlyFailures` still describe one latest outcome rather than success and stale failure
-at once.
+the older persisted failure from that status projection immediately, and the retry
+backoff reads the same projection, so a superseded row withholds nothing. A held run
+masks a row only when it is newer than both the persisted run and the row itself; a
+failure stamped after it (another process's later attempt) stays visible and keeps its
+backoff. The next successful state mutation persists the held run and removes the row on
+disk; until then `runs`, `nightlyFailures` and the retry schedule still describe one
+latest outcome rather than success and stale failure at once.
 
 The clear alone is not enough, because the two writers serialize under the sidecar lock
 but each mutate re-reads fresh state. An unconditional failure write can therefore land
