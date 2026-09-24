@@ -223,6 +223,10 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
     orch._json_ready = True
     orch._owner_id = ""
     orch._dashboard_port = 0
+    # ``run`` reads the dashboard state before the memory-backed writers start
+    # (the crewmate-prune barrier); a bare orchestrator has none, as the
+    # ``__init__`` this test skips would have set.
+    orch.dashboard_state = None
     order = []
 
     async def bind_dashboard():

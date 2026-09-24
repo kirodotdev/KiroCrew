@@ -52,6 +52,7 @@ from kiro_crew.config.loader import (
     tailnet_effective_allowed_logins,
     tailnet_identity_unknown,
 )
+from kiro_crew.crewmate_prune_migration import prune_synced_crewmates
 from kiro_crew.dashboard import (
     cautious_boot,
     channel_slots,
@@ -3285,6 +3286,210 @@ def _register_workflow_lifecycle(app: web.Application, state: DashboardState) ->
     app.on_cleanup.append(_workflow_shutdown)
 
 
+# How long a mutating request waits for the startup crewmate prune before it is
+# answered 503. The pass is marker-gated and runs immediately after the bind, so
+# on every boot but the first after the upgrade the wait is the few milliseconds
+# the pass takes to find the marker; on that first boot it is one config read
+# and one scan of the session metadata lines.
+_CREWMATE_PRUNE_GATE_TIMEOUT_S = 60.0
+_CREWMATE_PRUNE_GATE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+#: Held whatever the method. A read of the member roster is not a pure read:
+#: ``GET /api/members`` calls ``MemberEventLogService.ensure`` for every row,
+#: which folds a member's pre-log ``activity.jsonl`` into the event log and
+#: RETIRES the file under another name, and ``reconcile_member_config`` appends
+#: to the same log. The prune reads both places (``_activity_names_member``);
+#: a fold running beside it can move a crewmate's only activity record out of
+#: the file after the prune read the log and before it read the file, and the
+#: crewmate reads as never chatted. Every ``/api/members`` route reaches the
+#: same logs, so the whole prefix waits.
+_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
+
+
+def _register_crewmate_prune_gate(app: web.Application, state: DashboardState) -> None:
+    """Arm the crewmate-prune barrier before bind; the pass itself runs after.
+
+    The startup prune (``crewmate_prune_migration``) decides from chat history
+    and the DM bindings which sync-generated crewmates were never used, then
+    deletes their rows. Every writer that can bind an agent to a session while
+    the gateway is up reaches it through a mutating request -- the chat send,
+    slot create, slot agent switch, member thread, channel and import routes
+    under ``/api/``, and the OpenAI-compatible ``POST /v1/chat/completions`` --
+    so ONE middleware holds every non-safe-method request until the pass
+    settles, with no path list to keep in step with the route table. The
+    member roster is the one READ that writes evidence -- its ``ensure`` folds
+    and retires a member's legacy activity file and its reconcile appends to
+    the member log, both of which the prune reads -- so every request under
+    ``/api/members`` is held whatever its method
+    (``_CREWMATE_PRUNE_GATE_HELD_PREFIXES``). The writers that do not come
+    through HTTP wait in ``await_crewmate_prune_settled`` instead.
+
+    Armed HERE, before ``_start_site`` binds the listener, so no request can
+    pass between the bind and the pass. The pass itself is kicked as a tracked
+    background task right after the bind (``_kick_crewmate_prune``) and sets
+    ``crewmate_prune_settled`` in its ``finally``, so the hold is the pass
+    alone and readiness is not gated by it. Other reads are never held, and
+    the fast path is one ``is_set()`` read, which is what every request pays
+    once the pass has settled. A held request that outlives the budget is
+    answered 503 and writes nothing; it does not abandon the pass.
+    """
+    state.crewmate_prune_settled.clear()
+
+    @web.middleware
+    async def _crewmate_prune_gate(request: web.Request, handler: Any) -> web.StreamResponse:
+        if not state.crewmate_prune_settled.is_set() and (
+            request.method not in _CREWMATE_PRUNE_GATE_SAFE_METHODS
+            or _crewmate_prune_gate_holds_path(request.path)
+        ):
+            try:
+                await asyncio.wait_for(
+                    state.crewmate_prune_settled.wait(), timeout=_CREWMATE_PRUNE_GATE_TIMEOUT_S
+                )
+            except asyncio.TimeoutError:
+                return web.json_response(
+                    {
+                        "error": "Crewmates are being tidied; retry shortly.",
+                        "code": "prune_in_progress",
+                    },
+                    status=503,
+                )
+        return await handler(request)
+
+    app.middlewares.append(_crewmate_prune_gate)
+
+
+def _crewmate_prune_gate_holds_path(path: str) -> bool:
+    """Whether *path* is one the gate holds whatever the request's method."""
+    return any(
+        path == prefix or path.startswith(prefix + "/")
+        for prefix in _CREWMATE_PRUNE_GATE_HELD_PREFIXES
+    )
+
+
+def _kick_crewmate_prune(state: DashboardState) -> None:
+    """Run the one-time crewmate prune as a tracked background task, post-bind.
+
+    ``prune_synced_crewmates`` scans the first line of every session file, so
+    its cost scales with the user's history and it must not sit between the
+    bind and ``KIROCREW_READY`` (``no-new-work-on-gateway-boot-path``, item 3).
+    Same shape as ``_kick_knowledge_orphan_reclaim``: kicked after ``_start_site``
+    returns, run on a worker thread (config lock and file reads are IO). The
+    gate armed before the bind holds every mutating request until the event is
+    set, which happens in ``finally`` whatever the pass does. Nothing on the
+    readiness path waits for it -- not even the slot restores: a row the pass
+    removes has, by its own evidence rule, no DM binding and no session whose
+    metadata names it, so no restore can rebuild a slot for it. The writers
+    that do NOT come through HTTP -- channel agent resume, cron dispatch, the
+    subagent pump -- start only after ``await_crewmate_prune_settled`` returns
+    (``GatewayOrchestrator.run`` after the memory barrier, past
+    ``KIROCREW_READY``; the standalone dashboard before its inline channel
+    resume), so none of them can bind a crewmate while the pass is judging it.
+    The one startup step that DELETES a transcript, the channel transcript
+    migration, merges but keeps its copies while the event is clear and
+    removes them from ``_kick_deferred_transcript_removal`` once it is set, so
+    the pass reads every first line the boot started with; a transcript that
+    still vanishes under the pass voids it (nothing removed).
+    The pass reads ``crewmate_prune_abandon`` before each candidate and again
+    inside the config lock before each delete; that helper sets it when the
+    pass outlives its budget, and the pass then finishes without deleting.
+    The pass itself takes a cross-process lock beside its marker for its whole
+    length, so a second gateway on the same data home cannot run its own pass
+    beside this one -- its pass waits on that lock (its writers held by its
+    own barrier meanwhile) and then finds the marker. On every boot but the
+    first after the upgrade the pass is that lock and one marker stat.
+    """
+
+    async def _run() -> None:
+        try:
+            prune = await asyncio.to_thread(
+                prune_synced_crewmates,
+                state.conversation_log,
+                abandoned=state.crewmate_prune_abandon.is_set,
+            )
+            if prune.removed:
+                logger.info(
+                    "removed %d unused auto-generated crewmates: %s",
+                    len(prune.removed),
+                    ", ".join(prune.removed),
+                )
+        except Exception:  # noqa: BLE001 -- the pass never raises for unreadable history
+            logger.warning("crewmate prune migration failed", exc_info=True)
+        finally:
+            state.crewmate_prune_settled.set()
+
+    task = asyncio.create_task(_run())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+async def await_crewmate_prune_settled(state: DashboardState, *, before: str) -> None:
+    """Wait for the startup crewmate prune before starting a session writer.
+
+    Every writer that binds an agent to a session without an HTTP request --
+    the channel agent resume, cron dispatch, the subagent pump -- calls this
+    first, so the pass's history snapshot cannot be overtaken by a binding it
+    never saw. Returns only once ``crewmate_prune_settled`` is set, which the
+    pass does in ``finally`` after it has RETURNED -- so no writer ever runs
+    beside a pass that can still delete. The budget bounds how long the pass
+    may keep deleting, not how long the writer waits: when the pass outlives
+    it, this sets ``crewmate_prune_abandon`` -- the pass reads it before each
+    candidate and inside the config lock before each delete, keeps whatever it
+    has not judged, writes its marker and returns -- and then waits for the
+    event. The pass always returns: its file opens are non-blocking and its
+    lock acquires are bounded (``platform_compat.file_lock`` raises rather
+    than waits on a stuck holder), and either outcome ends in ``finally``.
+    ``before`` names the writer for the log line.
+    """
+    try:
+        await asyncio.wait_for(
+            state.crewmate_prune_settled.wait(), timeout=_CREWMATE_PRUNE_GATE_TIMEOUT_S
+        )
+        return
+    except asyncio.TimeoutError:
+        state.crewmate_prune_abandon.set()
+        logger.warning(
+            "crewmate prune has not settled in %.0fs; it will keep its unjudged "
+            "crewmates, and %s starts once it has returned",
+            _CREWMATE_PRUNE_GATE_TIMEOUT_S,
+            before,
+        )
+    await state.crewmate_prune_settled.wait()
+
+
+def _kick_deferred_transcript_removal(state: DashboardState, claimed: frozenset[str]) -> None:
+    """Remove the channel transcript copies the startup merge left for the prune.
+
+    ``start_dashboard`` merges every orphaned dashboard copy into its channel
+    transcript before the session restores read it, but while the crewmate
+    prune has not settled it passes ``remove=False``: the copy's first line is
+    the only record of the agent that dashboard surface ran as, and the pass
+    reads exactly that line to decide which crewmates were used. Deleting the
+    copy under the pass would leave a used crewmate with no evidence and get
+    its row removed. So the delete waits here, off the readiness path, for
+    the pass to RETURN (``crewmate_prune_settled`` is set in its ``finally``),
+    then re-runs the migration with removal on; the re-merge is byte-identical
+    and only the deletes are new. Best-effort like the startup call: a failure
+    leaves the copies for the next start, which merges and removes them again.
+    """
+
+    async def _run() -> None:
+        await state.crewmate_prune_settled.wait()
+        try:
+            removed = await asyncio.to_thread(
+                migrate_channel_transcripts, dashboard_slots=claimed, remove=True
+            )
+            if removed:
+                logger.info(
+                    "Removed %d leftover channel transcript copies after the crewmate prune",
+                    removed,
+                )
+        except Exception:  # noqa: BLE001 -- the copies stay for the next start
+            logger.warning("deferred channel transcript removal failed", exc_info=True)
+
+    task = asyncio.create_task(_run())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _kick_workflow_initialization(state: DashboardState) -> None:
     """Called only after listener bind and successful credential publication."""
     if state.workflow_startup_task is not None or state.workflow_startup_stopping:
@@ -5302,6 +5507,7 @@ async def start_dashboard(
         _register_browser_view_cleanup(app, state)
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
+        _register_crewmate_prune_gate(app, state)
 
         # Unix-socket cleanup hook — registered before runner.setup freezes the
         # signal lists; the path itself only becomes known after the site starts
@@ -5337,6 +5543,13 @@ async def start_dashboard(
     # The listener is up -- keep it up. One failed accept() on Windows would
     # otherwise close it for the life of the process (see listener_guard).
     _arm_listener_guard(state, runner, site)
+    # One-time prune of the crewmates an enrol-on-mount agent sync generated
+    # from the user's own specs (see crewmate_prune_migration). Kicked here,
+    # right after the bind, as a tracked background task -- its cost scales
+    # with the session count, so it stays off the boot path and nothing here
+    # awaits it -- while the gate armed before the bind holds every mutating
+    # request until it settles.
+    _kick_crewmate_prune(state)
     # (No _export_bound_port republish here: the reservation above already
     # exported this same socket's name before the spawn pass — the one
     # authoritative write on this path. The headless entrypoint, which binds
@@ -5825,9 +6038,20 @@ async def start_dashboard(
         # dashboard session that merely happens to be named like a channel
         # stem is never mistaken for an orphan of it.
         _claimed = await asyncio.to_thread(_claimed_dashboard_slots, state)
-        merged = await asyncio.to_thread(migrate_channel_transcripts, dashboard_slots=_claimed)
+        # The crewmate prune reads the first line of every transcript, and an
+        # orphan is the only file that recorded the agent of the dashboard
+        # surface it came from. While the prune has not settled the merge is
+        # written but the copy stays, so the prune still finds that evidence;
+        # a follow-up removes the copies once the pass has returned. Nothing
+        # here waits for the pass: the readiness path stays as it was.
+        _remove = state.crewmate_prune_settled.is_set()
+        merged = await asyncio.to_thread(
+            migrate_channel_transcripts, dashboard_slots=_claimed, remove=_remove
+        )
         if merged:
             logger.info("Merged %d leftover channel transcript copies", merged)
+        if not _remove:
+            _kick_deferred_transcript_removal(state, _claimed)
     except Exception:
         # A failed migration leaves the orphan in place rather than losing
         # messages, so starting up without it is safe.
@@ -5900,8 +6124,13 @@ async def start_dashboard(
             )
 
     if defer_channel_agent_resume:
+        # The gateway resumes them after its memory barrier, behind
+        # ``await_crewmate_prune_settled`` (GatewayOrchestrator.run).
         state.resume_channel_agents = _resume_channel_agents
     else:
+        # A resumed channel agent binds its crewmate to a session; the prune
+        # must have judged every candidate before that binding can appear.
+        await await_crewmate_prune_settled(state, before="channel agent resume")
         _resume_channel_agents()
 
     # ── AEA Tunnel ───────────────────────────────────────────────────────────

@@ -205,6 +205,32 @@ class TestMigrateChannelTranscripts:
         assert not orphan.exists()
         assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == ["channel", "tab"]
 
+    def test_remove_false_merges_but_keeps_the_copy_and_its_first_line(self, tmp_path):
+        # The startup crewmate prune reads the first line of every transcript;
+        # the orphan's is the only record of the agent its dashboard surface ran
+        # as. With ``remove=False`` the merge lands (the restores read a complete
+        # channel transcript) and the copy stays, first line untouched, so the
+        # prune still finds that agent. A removing pass afterwards converges.
+        log = ConversationLog(base_dir=tmp_path)
+        channel = tmp_path / f"{CHANNEL_STEM}.jsonl"
+        orphan = tmp_path / f"{ORPHAN_STEM}.jsonl"
+        _write(channel, {"agent": "kirocrew"}, [_msg("user", "channel", "2026-08-01T10:00:00")])
+        _write(orphan, {"agent": "scout"}, [_msg("user", "tab", "2026-08-01T11:00:00")])
+        orphan_before = orphan.read_text(encoding="utf-8")
+
+        assert migrate_channel_transcripts(log, remove=False) == 0
+        assert orphan.exists()
+        assert orphan.read_text(encoding="utf-8") == orphan_before
+        assert _read_lines(orphan)[0]["agent"] == "scout"
+        assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == ["channel", "tab"]
+        assert _read_lines(channel)[0]["agent"] == "kirocrew"
+        merged = channel.read_text(encoding="utf-8")
+
+        log = ConversationLog(base_dir=tmp_path)
+        assert migrate_channel_transcripts(log) == 1
+        assert not orphan.exists()
+        assert channel.read_text(encoding="utf-8") == merged
+
     def test_dashboard_born_lookalike_is_left_alone(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
         # A real dashboard session, plus a channel transcript whose name is NOT

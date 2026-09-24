@@ -13588,6 +13588,19 @@ class GatewayOrchestrator:
         if not await self._wait_for_memory_preparation():
             await self._shutdown_and_exit()
             return
+        # The startup crewmate prune judges each sync-generated crewmate from
+        # the session history it can see; every writer below (subagent pump,
+        # channel agent resume, cron) can bind a crewmate to a NEW session, so
+        # none may start until the pass has RETURNED. Past KIROCREW_READY, so
+        # readiness does not wait. A pass that outlives its budget is told to
+        # stop deleting and is still waited for; it always returns (bounded
+        # locks, non-blocking opens), so this cannot hold the gateway for good.
+        if self.dashboard_state is not None:
+            from kiro_crew.dashboard.server import await_crewmate_prune_settled
+
+            await await_crewmate_prune_settled(
+                self.dashboard_state, before="the memory-backed session writers"
+            )
         if self.subagent_mgr is not None:
             await self.subagent_mgr.wait_taskq_ready()
             # The store exists now; bind the coordinator and the adoption sweep

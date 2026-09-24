@@ -240,7 +240,9 @@ def _write_merged(path: Path, meta: dict, messages: list[dict]) -> None:
     atomic_write(path, "".join(lines))
 
 
-def _migrate_one(log: ConversationLog, channel_stem: str, orphan_stem: str) -> bool:
+def _migrate_one(
+    log: ConversationLog, channel_stem: str, orphan_stem: str, *, remove: bool = True
+) -> bool:
     """Merge one orphan into its channel transcript. True if the orphan is gone.
 
     The read, merge, write and delete all happen inside the channel session's
@@ -248,6 +250,12 @@ def _migrate_one(log: ConversationLog, channel_stem: str, orphan_stem: str) -> b
     so a concurrent append cannot be lost to the rewrite. The orphan's lock nests
     inside it; the order is fixed (channel then orphan) so two migrators cannot
     deadlock against each other.
+
+    With ``remove`` false the merge is written and the orphan is LEFT IN PLACE
+    (the answer is then always false): the file is a record other startup work
+    may still be reading, and a later pass -- this one re-merges to a
+    byte-identical transcript -- removes it. See
+    :func:`migrate_channel_transcripts`.
     """
     channel_path = log._path(channel_stem)
     orphan_path = log._path(orphan_stem)
@@ -279,7 +287,15 @@ def _migrate_one(log: ConversationLog, channel_stem: str, orphan_stem: str) -> b
             log.invalidate_tab_id_cache()
 
         # Only now, with every message durable in the channel transcript, is the
-        # orphan expendable.
+        # orphan expendable -- and only when the caller says it may go.
+        if not remove:
+            logger.info(
+                "channel transcript migration: merged %s into %s; the copy stays for a "
+                "later pass to remove",
+                orphan_stem,
+                channel_stem,
+            )
+            return False
         return log.delete_session(orphan_stem)
 
 
@@ -287,6 +303,7 @@ def migrate_channel_transcripts(
     log: ConversationLog | None = None,
     *,
     dashboard_slots: frozenset[str] | None = None,
+    remove: bool = True,
 ) -> int:
     """Merge every orphaned dashboard copy into its channel transcript.
 
@@ -297,6 +314,16 @@ def migrate_channel_transcripts(
     *dashboard_slots* names the slots the session map claims as real dashboard
     sessions; any orphan whose target is in that set is left alone. Omitting it
     disables that protection, so the gateway startup call always supplies it.
+
+    *remove* false merges every orphan but deletes none: the copies stay on
+    disk, to be removed by a later pass. The gateway passes false while its
+    one-time crewmate prune has not settled (and runs a removing pass once it
+    has) -- that pass reads the first line
+    of every transcript for the agent it ran as, and an orphan is the only
+    transcript that recorded the agent of the dashboard surface it came from
+    (the channel file keeps its own ``agent``), so deleting it under the prune
+    would destroy the evidence that keeps a crewmate. The merge itself still
+    lands before the session restores read the channel transcript.
 
     Best-effort per orphan: a lock timeout or I/O error is logged and the next
     orphan is still attempted, because one wedged session must not stop the rest
@@ -338,7 +365,7 @@ def migrate_channel_transcripts(
             )
             continue
         try:
-            if _migrate_one(log, channel_stem, path.stem):
+            if _migrate_one(log, channel_stem, path.stem, remove=remove):
                 migrated += 1
                 logger.info(
                     "channel transcript migration: merged %s into %s",
