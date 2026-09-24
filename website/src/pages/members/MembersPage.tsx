@@ -48,6 +48,7 @@ import { CrewMemberMark } from '../../components/CrewMemberMark'
 import DeployMyCrewDialog from './DeployMyCrew'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberActivityEntry, type MemberRosterRow } from '../../api/client'
+import { crewDisplayName } from '../../components/AgentSelector'
 import {
   MEMBERS_ROSTER_QUERY_KEY,
   memberActivityQueryKey,
@@ -515,7 +516,7 @@ function MemberRow({
             </AnimatePresence>
           </span>
           <span className="min-w-0 flex-1">
-            <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{view.name}</span>
+            <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{crewDisplayName(view)}</span>
             {/* Last-message preview, like a session row — presence
                 already rides the avatar dot, so a textual Idle/Working
                 label says nothing the dot does not. A "Stopped" chip
@@ -834,6 +835,7 @@ export default function MembersPage() {
       source: activeRoster.source ?? active.source,
       starred: activeRoster.starred ?? active.starred,
       avatar: activeRoster.avatar ?? active.avatar,
+      display_name: activeRoster.display_name ?? active.display_name,
       slot_key: activeRoster.slot_key ?? active.slot_key,
       // Transcript-first, for the reason the row above states: the projection's
       // message copy is a second copy and a refused append leaves it behind.
@@ -845,9 +847,10 @@ export default function MembersPage() {
   // the two fields so the pane's renderer memo does not rebuild per render.
   const crewmateName = activeView?.name
   const crewmateAvatar = activeView?.avatar
+  const crewmateLabel = activeView ? crewDisplayName(activeView) : undefined
   const crewmateIdentity = useMemo<CrewmateIdentity | undefined>(
-    () => (crewmateName ? { name: crewmateName, avatar: crewmateAvatar } : undefined),
-    [crewmateName, crewmateAvatar],
+    () => (crewmateName ? { name: crewmateName, avatar: crewmateAvatar, label: crewmateLabel } : undefined),
+    [crewmateName, crewmateAvatar, crewmateLabel],
   )
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted from the cached roster,
@@ -2244,7 +2247,12 @@ export default function MembersPage() {
                   writer (issue #9103). `group/title` is scoped to this row so
                   the drawer toggle to the right does not reveal it. */}
               <div className="group/title min-w-0 flex-1 flex items-center gap-1.5" data-testid="member-title-row">
-                <div className="text-[13.5px] font-semibold truncate">{active.name}</div>
+                <div className="text-[13.5px] font-semibold truncate">{crewDisplayName(active)}</div>
+                {/* The ID stays visible when a label covers it — routes, crons
+                    and spawn params address the ID, never the label. */}
+                {crewDisplayName(active) !== active.name && (
+                  <div className="text-[11px] font-mono text-muted truncate max-w-[11rem]" title={t('components.agentSelector.agent_id_tooltip', { name: active.name })}>{active.name}</div>
+                )}
                 <button
                   type="button"
                   onClick={() => navigate(crewEditPath(active.name))}
@@ -2469,7 +2477,7 @@ export default function MembersPage() {
           const identityRow = (
             <div className="flex items-center gap-2 mb-3 min-w-0" data-testid="member-identity-row">
               <CrewAvatar seed={active.name} avatar={active.avatar} size={22} />
-              <span className="text-[13px] font-semibold truncate">{active.name}</span>
+              <span className="text-[13px] font-semibold truncate">{crewDisplayName(activeView ?? active)}</span>
               <span className="text-[11px] truncate ml-auto shrink-0" data-testid="member-summary-status">
                 {isRunning(active) ? (
                   <span className="text-ok">{t(delegatedOnly
@@ -2987,7 +2995,7 @@ export default function MembersPage() {
             onArtifactOpen: openArtifact,
             onFileSave: saveFile,
             leadingTabs,
-            slotTitle: active.name,
+            slotTitle: crewDisplayName(activeView ?? active),
             canDockBottom: false,
           }
           // ONE SidePanel instance for both placements. Docked and overlay differ
@@ -3072,6 +3080,7 @@ export default function MembersPage() {
                             slot={confirmedSlot}
                             mid={openThreadMid}
                             crewmateName={activeName}
+                            crewmateLabel={crewmateLabel}
                             onClose={closeReplyThread}
                           />
                         </motion.div>

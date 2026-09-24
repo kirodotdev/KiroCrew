@@ -5545,6 +5545,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 {{productName}}에 준비되었습니다."
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — 에이전트 ID입니다. 크론, 스폰 매개변수, CLI는 라벨이 아닌 이 ID를 사용합니다.",
       "agent_list": "에이전트 목록",
       "default": "기본값",
       "filter_agents": "에이전트 필터",
@@ -11593,6 +11594,7 @@
       "discard_new_schedule": "새 일정을 삭제하시겠습니까?",
       "discard_new_schedule_body": "입력한 일정이 저장되지 않았으며 사라집니다.",
       "discard_schedule_confirm": "일정 삭제",
+      "display_name": "표시 이름",
       "e_g_oncall": "예: oncall",
       "edit_crew_named": "에이전트 {{name}} 편집",
       "edit_model": "기본 모델 편집",
@@ -11640,6 +11642,7 @@
       "select_an_agent_template": "에이전트 템플릿 선택…",
       "session_color_hint_member": "이 멤버가 시작하는 세션은 세션 자체에 색상이 없는 한 이 색상을 사용합니다. 비워 두면 멤버 색상이 없습니다.",
       "shared_lower": "공유",
+      "shown_across_the_dashboard_instead_of_the_name_l": "이름({{name}}) 대신 대시보드 전체에 표시됩니다. 비워 두면 이름 자체가 표시됩니다.",
       "subdirectory_inside_kiro_crew_where_this_workspa": "이 워크스페이스가 데이터(채팅 기록, 레슨, 프로젝트)를 저장하는 ~/.kiro/crew 내부 하위 디렉터리입니다. 각 워크스페이스는 격리된 자체 디렉터리를 갖습니다.",
       "template_hint_member": "이 멤버가 사용하는 시작 설정 — 도구, 연결 및 지침.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "이 에이전트가 사용하는 시작 설정 — 도구, 연결, 지침입니다.",

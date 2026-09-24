@@ -4070,6 +4070,7 @@
       "your_existing_kirocrew_setup_will_not_be_affecte": "Your existing {{productName}} setup will not be affected."
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — the agent ID. Crons, spawn params, and the CLI address this ID, never the label.",
       "agent_list": "Agent list",
       "default": "default",
       "filter_agents": "Filter agents",
@@ -6977,6 +6978,7 @@
       "discard_new_schedule": "Discard the new schedule?",
       "discard_new_schedule_body": "The schedule you typed has not been saved and will be lost.",
       "discard_schedule_confirm": "Discard schedule",
+      "display_name": "Display name",
       "e_g_oncall": "e.g. oncall",
       "edit_crew_named": "Edit agent {{name}}",
       "edit_model": "Edit default model",
@@ -7018,6 +7020,7 @@
       "save_changes": "Save changes",
       "session_color_hint_member": "Sessions this member starts use this color unless the session has a color of its own. Leave empty for no member color.",
       "shared_lower": "shared",
+      "shown_across_the_dashboard_instead_of_the_name_l": "Shown across the dashboard instead of the name ({{name}}). Leave empty to show the name itself.",
       "template_hint_member": "The starting setup this member uses — its tools, connections and instructions.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "The starting setup this agent uses — its tools, connections and instructions.",
       "triggers": "Triggers",

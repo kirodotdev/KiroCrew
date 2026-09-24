@@ -54,6 +54,22 @@ beforeEach(() => {
 })
 
 describe('ThreadPanel', () => {
+  it('renders the display label on author lines and the header while the name keeps seeding', async () => {
+    // The evidence for the label on this surface (the stub screenshot harness
+    // cannot fake a live thread transcript): a crew with a display_name shows
+    // the LABEL wherever the panel names the speaker, and the immutable name
+    // appears nowhere as text — it survives only as the avatar seed.
+    render(
+      <QueryClientProvider client={qc}>
+        <ThreadPanel slot="member-radar" mid="m-1" crewmateName="radar" crewmateLabel="Radar Watch" onClose={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    await screen.findByTestId('thread-parent')
+    // Header chip + parent author line + the crewmate run's author line.
+    expect(screen.getAllByText('Radar Watch').length).toBeGreaterThanOrEqual(2)
+    expect(screen.queryByText('radar')).not.toBeInTheDocument()
+  })
+
   it('quotes the parent, counts the replies and groups the crewmate run', async () => {
     renderPanel()
     expect(screen.getByRole('complementary', { name: 'Thread' })).toBeInTheDocument()

@@ -1536,7 +1536,7 @@ export default function ChatPane({
                   <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
                     {crewmate && paneMessages.length > 0 ? (
                       <>
-                        <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.name })}</div>
+                        <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.label || crewmate.name })}</div>
                         {/* Where the work went: named after the panel tab
                             (pages.membersPage.work_log_tab). A link when the
                             host can focus that tab — the words read as a
@@ -1888,7 +1888,7 @@ export default function ChatPane({
           project={paneSlot?.project ?? ''}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…").
-          placeholder={crewmate ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.name }) : undefined}
+          placeholder={crewmate ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.label || crewmate.name }) : undefined}
           onUploadFiles={uploadFiles}
           onCancelUpload={cancelUpload}
           pendingFiles={pendingFiles}

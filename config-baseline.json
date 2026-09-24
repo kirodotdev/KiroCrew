@@ -8496,6 +8496,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.display_name",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Display Name",
+      "help": "Optional label the dashboard shows instead of the agent's name. Purely presentational: the name stays the immutable identity — it keys this record, addresses /api/agents/{name}, and is what dispatch, crons and spawn resolve — so renaming the label never breaks a binding. Empty means the dashboard shows the name itself.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.description",
       "kind": "core",
       "type": "string",

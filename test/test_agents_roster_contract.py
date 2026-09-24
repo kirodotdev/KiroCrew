@@ -50,6 +50,7 @@ ROSTER_ROW_KEYS = frozenset(
         "memory_store",
         "model",
         "reasoning_effort",
+        "display_name",
         "description",
         "triggers",
         "source",
@@ -302,6 +303,7 @@ class TestUnshowableValuesAreMasked:
             model=self.PROBE,
             reasoning_effort=self.PROBE,
             session_color=self.PROBE,
+            display_name=f"label {self.PROBE}",
             description=f"see {self.PROBE}",
             source=self.PROBE,
         )

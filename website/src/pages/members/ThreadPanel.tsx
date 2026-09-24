@@ -76,7 +76,7 @@ function AuthorLine({ name, ts, align }: { name: string; ts: string; align: 'lef
   )
 }
 
-function ReplyRow({ reply, pos, crewmateName, youLabel }: { reply: ThreadReply; pos: CrewmateRunPosition; crewmateName: string; youLabel: string }) {
+function ReplyRow({ reply, pos, crewmateName, crewmateLabel, youLabel }: { reply: ThreadReply; pos: CrewmateRunPosition; crewmateName: string; crewmateLabel?: string; youLabel: string }) {
   if (reply.role === 'user') {
     return (
       <li className="flex flex-col items-end mt-3" data-testid="thread-reply" data-reply-from="user">
@@ -90,7 +90,7 @@ function ReplyRow({ reply, pos, crewmateName, youLabel }: { reply: ThreadReply; 
     <li className={`flex gap-2 ${opens ? 'mt-3' : 'mt-1'}`} data-testid="thread-reply" data-reply-from="assistant" data-thread-run={pos}>
       <div className="shrink-0" style={{ width: AVATAR_PX }}>{opens && <CrewAvatar seed={crewmateName} size={AVATAR_PX} />}</div>
       <div className="min-w-0 flex-1 flex flex-col items-start">
-        {opens && <AuthorLine name={crewmateName} ts={reply.ts} align="left" />}
+        {opens && <AuthorLine name={crewmateLabel || crewmateName} ts={reply.ts} align="left" />}
         <Bubble pos={pos} side="left">
           <MessageErrorBoundary rawContent={reply.content}><MarkdownRenderer content={reply.content} softBreaks /></MessageErrorBoundary>
         </Bubble>
@@ -99,10 +99,13 @@ function ReplyRow({ reply, pos, crewmateName, youLabel }: { reply: ThreadReply; 
   )
 }
 
-export default function ThreadPanel({ slot, mid, crewmateName, onClose }: {
+export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, onClose }: {
   slot: string
   mid: string
   crewmateName: string
+  /** Presentation label rendered in place of the name; the name still seeds
+   *  avatars and keys the thread, so both are needed. */
+  crewmateLabel?: string
   onClose: () => void
 }) {
   const { t } = useTranslation()
@@ -230,7 +233,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, onClose }: {
     const err = send.error
     if (!err) return ''
     const code = err instanceof ApiError ? parseErrorCode(err.body) : undefined
-    if (code === 'thread_turn_in_flight') return t('pages.chat.thread.err_replying', { name: crewmateName })
+    if (code === 'thread_turn_in_flight') return t('pages.chat.thread.err_replying', { name: crewmateLabel || crewmateName })
     if (code === 'parent_not_found') return t('pages.chat.thread.err_parent_gone')
     if (code === 'reply_too_long') return t('pages.chat.thread.err_too_long')
     if (code === 'thread_full') return t('pages.chat.thread.err_full')
@@ -257,7 +260,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, onClose }: {
     >
       <div className="shrink-0 flex items-center gap-2 px-3 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border">
         <h2 className="text-[13px] font-semibold m-0 leading-none">{t('pages.chat.thread.title')}</h2>
-        <span className="text-[12px] text-muted truncate">{crewmateName}</span>
+        <span className="text-[12px] text-muted truncate">{crewmateLabel || crewmateName}</span>
         <button
           type="button"
           onClick={onClose}
@@ -302,7 +305,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, onClose }: {
             <div className="flex gap-2" data-testid="thread-parent">
               <div className="shrink-0" style={{ width: AVATAR_PX }}><CrewAvatar seed={crewmateName} size={AVATAR_PX} /></div>
               <div className="min-w-0 flex-1 flex flex-col items-start">
-                <AuthorLine name={crewmateName} ts={parent.ts} align="left" />
+                <AuthorLine name={crewmateLabel || crewmateName} ts={parent.ts} align="left" />
                 <Bubble side="left" testId="thread-parent-bubble">
                   <MessageErrorBoundary rawContent={parent.content}><MarkdownRenderer content={parent.content} softBreaks /></MessageErrorBoundary>
                 </Bubble>
@@ -322,7 +325,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, onClose }: {
         )}
         <ul className="list-none m-0 p-0" data-testid="thread-replies">
           {replies.map((r, i) => (
-            <ReplyRow key={r.id} reply={r} pos={positions[i] ?? 'single'} crewmateName={crewmateName} youLabel={youLabel} />
+            <ReplyRow key={r.id} reply={r} pos={positions[i] ?? 'single'} crewmateName={crewmateName} crewmateLabel={crewmateLabel} youLabel={youLabel} />
           ))}
           {live && !live.error && (
             // The reply as it streams in: one crewmate bubble that grows, then
@@ -330,7 +333,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, onClose }: {
             <li className="flex gap-2 mt-3" data-testid="thread-reply-live" aria-live="polite">
               <div className="shrink-0" style={{ width: AVATAR_PX }}><CrewAvatar seed={crewmateName} size={AVATAR_PX} working="subtle" /></div>
               <div className="min-w-0 flex-1 flex flex-col items-start">
-                <AuthorLine name={crewmateName} ts="" align="left" />
+                <AuthorLine name={crewmateLabel || crewmateName} ts="" align="left" />
                 <Bubble side="left">
                   <MessageErrorBoundary rawContent={live.text}><MarkdownRenderer content={live.text} streaming softBreaks /></MessageErrorBoundary>
                 </Bubble>
@@ -344,7 +347,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, onClose }: {
                 <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '150ms' }} />
                 <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '300ms' }} />
               </span>
-              <span className="text-[12px]">{t('pages.chat.thread.replying', { name: crewmateName })}</span>
+              <span className="text-[12px]">{t('pages.chat.thread.replying', { name: crewmateLabel || crewmateName })}</span>
             </li>
           )}
         </ul>

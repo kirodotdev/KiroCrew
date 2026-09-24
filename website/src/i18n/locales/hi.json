@@ -5662,6 +5662,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।"
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — एजेंट ID। क्रॉन, spawn पैरामीटर और CLI इसी ID का इस्तेमाल करते हैं, लेबल का नहीं।",
       "agent_list": "एजेंट सूची",
       "default": "डिफ़ॉल्ट",
       "filter_agents": "एजेंट फ़िल्टर करें",
@@ -11761,6 +11762,7 @@
       "discard_new_schedule": "नया शेड्यूल हटाओ?",
       "discard_new_schedule_body": "टाइप किया गया शेड्यूल सहेजा नहीं गया है और खो जाएगा।",
       "discard_schedule_confirm": "शेड्यूल हटाओ",
+      "display_name": "प्रदर्शित नाम",
       "e_g_oncall": "उदा. oncall",
       "edit_crew_named": "एजेंट {{name}} संपादित करें",
       "edit_model": "डिफ़ॉल्ट मॉडल संपादित करो",
@@ -11808,6 +11810,7 @@
       "select_an_agent_template": "एजेंट टेम्पलेट चुनें…",
       "session_color_hint_member": "इस सदस्य द्वारा शुरू किए गए सत्र इस रंग का उपयोग करते हैं, जब तक सत्र का अपना रंग न हो। सदस्य रंग न रखने के लिए खाली छोड़ें।",
       "shared_lower": "साझा",
+      "shown_across_the_dashboard_instead_of_the_name_l": "नाम ({{name}}) की जगह पूरे डैशबोर्ड में दिखाया जाता है। नाम ही दिखाने के लिए खाली छोड़ दो।",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew के अंदर वह उपडायरेक्टरी जहाँ यह वर्कस्पेस अपना डेटा (चैट इतिहास, सीख, प्रोजेक्ट) रखता है। हर वर्कस्पेस को अपनी अलग डायरेक्टरी मिलती है।",
       "template_hint_member": "इस सदस्य का प्रारंभिक सेटअप — इसके टूल, कनेक्शन और निर्देश।",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "यह एजेंट जिस शुरुआती सेटअप से चलता है — इसके टूल, कनेक्शन और हिदायतें।",

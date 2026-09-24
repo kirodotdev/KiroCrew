@@ -5572,6 +5572,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "你所选的配置已在 {{productName}} 中就绪。"
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — 代理 ID。定时任务、spawn 参数和 CLI 使用此 ID，而不是标签。",
       "agent_list": "代理列表",
       "default": "默认",
       "filter_agents": "筛选代理",
@@ -11593,6 +11594,7 @@
       "discard_new_schedule": "放弃新建的计划？",
       "discard_new_schedule_body": "输入的计划尚未保存，将会丢失。",
       "discard_schedule_confirm": "放弃计划",
+      "display_name": "显示名称",
       "e_g_oncall": "例如 oncall",
       "edit_crew_named": "编辑代理 {{name}}",
       "edit_model": "编辑默认模型",
@@ -11640,6 +11642,7 @@
       "select_an_agent_template": "选择 Agent 模板…",
       "session_color_hint_member": "该成员发起的会话使用此颜色，除非会话自身设置了颜色。留空则该成员无颜色。",
       "shared_lower": "共用",
+      "shown_across_the_dashboard_instead_of_the_name_l": "在整个面板中代替名称（{{name}}）显示。留空则显示名称本身。",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew 下用于存放此工作区数据（聊天历史、经验、项目）的子目录。每个工作区都有各自独立的目录。",
       "template_hint_member": "该成员的起始配置 — 它的工具、连接和指令。",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "这个代理的起始设置 — 自带的工具、连接和指令。",

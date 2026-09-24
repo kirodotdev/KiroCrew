@@ -4120,6 +4120,10 @@ def _agent_roster_row(
         "memory_store": _roster_mask(agent_cfg.memory_store),
         "model": _roster_mask(agent_cfg.model),
         "reasoning_effort": _roster_mask(agent_cfg.reasoning_effort),
+        # Presentation label only — masked like every other user-authored string.
+        # The picker and roster render it in place of ``name`` when non-empty;
+        # ``name`` above stays the row's identity and dispatch handle.
+        "display_name": _roster_mask(agent_cfg.display_name),
         "description": _roster_mask(agent_cfg.description),
         "triggers": _roster_mask(agent_cfg.triggers),
         "source": _roster_mask(agent_cfg.source),
@@ -4840,6 +4844,16 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             {"error": effort_reason, "code": "invalid_reasoning_effort"}, status=400
         )
     reasoning_effort = _raw_effort.strip()
+    # Same placement rule as the other pre-lock validations: refused before any
+    # state is touched. Presentation only, but strictly a string — every roster
+    # surface renders it verbatim in place of the name.
+    _raw_display = body.get("display_name", "")
+    if not isinstance(_raw_display, str):
+        return web.json_response(
+            {"error": "display_name must be a string", "code": "invalid_display_name"},
+            status=400,
+        )
+    display_name = _raw_display.strip()
     # Same convention as session_color: a non-empty raw value that the coercer
     # collapses to "no override" is a caller mistake worth a 400, not a silent
     # fallback to the name-derived face. The one exception is a well-formed
@@ -4929,6 +4943,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             memory_store=memory_store,
             model=model,
             reasoning_effort=reasoning_effort,
+            display_name=display_name,
             description=body.get("description", ""),
             triggers=body.get("triggers", ""),
             source=body.get("source", "kirocrew"),
@@ -5198,6 +5213,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             "source": agent.source,
             "starred": bool(agent.starred),
             "avatar": agent.avatar,
+            "display_name": agent.display_name,
         }
         changed: list[str] = []
         if "kiro_agent" in body:
@@ -5241,6 +5257,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "description" in body:
             agent.description = body["description"]
             changed.append("description")
+        if "display_name" in body:
+            # Presentation only, but strictly a string: a non-string here would
+            # be stored verbatim and then rendered by every roster surface.
+            # "" is a real value — it clears the label back to the name.
+            if not isinstance(body["display_name"], str):
+                return web.json_response(
+                    {"error": "display_name must be a string", "code": "invalid_display_name"},
+                    status=400,
+                )
+            agent.display_name = body["display_name"].strip()
+            changed.append("display_name")
         if "triggers" in body:
             agent.triggers = body["triggers"]
             changed.append("triggers")
@@ -5405,6 +5432,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 "source": normalize_member_source(agent.source),
                 "starred": bool(agent.starred),
                 "avatar": agent.avatar,
+                # Presentation label; ships raw here like its config peers —
+                # the projection delivery path redacts every string before the
+                # browser (`_redact_projection_value`), and the HTTP roster row
+                # masks it independently (`_roster_mask`).
+                "display_name": agent.display_name,
             }
             _ev_changed = [k for k, v in _ev_after.items() if v != _ev_before.get(k)]
             # A save that touched none of the roster fields is not a fact worth

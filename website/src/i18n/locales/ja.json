@@ -5545,6 +5545,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。"
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — エージェントID。cron、spawnパラメータ、CLIはラベルではなくこのIDを使用します。",
       "agent_list": "エージェントリスト",
       "default": "デフォルト",
       "filter_agents": "エージェントをフィルター",
@@ -11593,6 +11594,7 @@
       "discard_new_schedule": "新しいスケジュールを破棄しますか？",
       "discard_new_schedule_body": "入力したスケジュールは保存されておらず、失われます。",
       "discard_schedule_confirm": "スケジュールを破棄",
+      "display_name": "表示名",
       "e_g_oncall": "例: oncall",
       "edit_crew_named": "エージェント{{name}}を編集",
       "edit_model": "デフォルトモデルを編集",
@@ -11640,6 +11642,7 @@
       "select_an_agent_template": "エージェントテンプレートを選択…",
       "session_color_hint_member": "このメンバーが開始するセッションは、セッション自体に色がない限りこの色を使います。空欄にするとメンバーの色はなしになります。",
       "shared_lower": "共有",
+      "shown_across_the_dashboard_instead_of_the_name_l": "名前（{{name}}）の代わりにダッシュボード全体で表示されます。空にすると名前そのものが表示されます。",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew内のサブディレクトリで、このワークスペースがそのデータ（チャット履歴、レッスン、プロジェクト）を保存します。各ワークスペースには独自の分離されたディレクトリがあります。",
       "template_hint_member": "このメンバーが使う初期セットアップ — ツール、接続、指示。",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "このエージェントが使用する開始設定 — ツール、接続、指示。",

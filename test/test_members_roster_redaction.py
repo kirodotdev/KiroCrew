@@ -81,7 +81,15 @@ async def _roster(tmp_path, agents, memory_stores=None):
 class TestRecordStringsAreMasked:
     @pytest.mark.parametrize(
         "field",
-        ["kiro_agent", "workspace", "memory_store", "model", "description", "triggers"],
+        [
+            "kiro_agent",
+            "workspace",
+            "memory_store",
+            "model",
+            "display_name",
+            "description",
+            "triggers",
+        ],
     )
     @pytest.mark.parametrize("planted", [CRED, EXFIL])
     @pytest.mark.asyncio
@@ -135,6 +143,7 @@ class TestBenignRowsAreUntouched:
                 workspace="default",
                 memory_store="default",
                 model="sonnet",
+                display_name="Release Writer",
                 description="Drafts release notes.",
                 triggers="release notes, changelog",
             )
@@ -145,6 +154,7 @@ class TestBenignRowsAreUntouched:
         assert row["workspace"] == "default"
         assert row["memory_store"] == "default"
         assert row["model"] == "sonnet"
+        assert row["display_name"] == "Release Writer"
         assert row["description"] == "Drafts release notes."
         assert row["triggers"] == "release notes, changelog"
 

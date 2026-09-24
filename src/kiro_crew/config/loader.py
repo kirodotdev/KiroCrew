@@ -4636,6 +4636,10 @@ class KiroCrewConfig:
                     # Same guard as model: a non-string triggers (e.g. `1`) must
                     # not survive load — select_crew's roster calls .strip() on it.
                     raw_triggers = entry.get("triggers", "")
+                    # Same guard family: the label is rendered verbatim by every
+                    # roster surface, so a non-string collapses to "" (show the
+                    # name) rather than reaching the wire.
+                    raw_display_name = entry.get("display_name", "")
                     agents[name] = KiroCrewAgentConfig(
                         member_id=entry.get("member_id", ""),
                         kiro_agent=entry.get("kiro_agent", ""),
@@ -4646,6 +4650,7 @@ class KiroCrewConfig:
                         # collapse to "" (inherit) rather than travel to the
                         # provider, where kiro-cli rejects the whole overlay.
                         reasoning_effort=coerce_effort(entry.get("reasoning_effort", "")),
+                        display_name=raw_display_name if isinstance(raw_display_name, str) else "",
                         description=entry.get("description", ""),
                         triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),

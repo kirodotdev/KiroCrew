@@ -632,6 +632,7 @@ describe('crew editor — create', () => {
     await waitFor(() =>
       expect(mockApi.createKirocrewAgent).toHaveBeenCalledWith({
         name: 'staging',
+        display_name: '',
         kiro_agent: 'oncall-agent',
         workspace: 'default',
         memory_store: 'default',
@@ -655,6 +656,7 @@ describe('crew editor — save', () => {
 
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', {
+      display_name: '',
       kiro_agent: 'oncall-agent',
       workspace: 'oncall',
       memory_store: 'oncall-mem',

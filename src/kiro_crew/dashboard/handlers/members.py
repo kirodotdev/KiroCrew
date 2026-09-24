@@ -321,6 +321,10 @@ async def api_members(request: web.Request) -> web.Response:
                 # operator's opt-out from being routed to at all.
                 "description": _roster_mask(agent_cfg.description),
                 "triggers": _roster_mask(agent_cfg.triggers),
+                # Presentation label only, masked like the other free text. The
+                # page shows it in place of `name` when non-empty; `name` stays
+                # the identity every per-member route and binding is keyed on.
+                "display_name": _roster_mask(agent_cfg.display_name),
             }
         )
 

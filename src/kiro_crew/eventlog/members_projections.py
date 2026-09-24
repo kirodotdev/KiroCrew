@@ -25,6 +25,7 @@ _CONFIG_FIELDS = (
     "source",
     "starred",
     "avatar",
+    "display_name",
 )
 
 _ACTIVITY_RING = 50

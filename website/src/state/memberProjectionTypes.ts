@@ -28,6 +28,8 @@ export interface RosterView {
   source?: string
   starred?: boolean
   avatar?: string
+  /** Presentation label shown in place of `name` when non-empty. */
+  display_name?: string
   slot_key?: string
   last_active_ts?: number
   last_message?: string

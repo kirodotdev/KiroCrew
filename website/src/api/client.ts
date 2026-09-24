@@ -2859,6 +2859,9 @@ export interface MemberRosterRow {
   memory_version?: number
   memory_owner?: string
   model?: string
+  /** Optional presentation label shown in place of `name`. `name` stays the
+   *  identity every per-member route and binding is keyed on. */
+  display_name?: string
   /** Crew origin, NORMALIZED by the server to exactly 'kirocrew' (created in
    *  the crew manager), 'builtin', or 'package' (agent-sync-installed; the
    *  legacy 'aim' spelling and any unknown value collapse to this). */

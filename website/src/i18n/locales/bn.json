@@ -5662,6 +5662,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "তোমার নির্বাচিত সেটআপ {{productName}}-এ তৈরি।"
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — এজেন্ট ID। ক্রন, spawn প্যারামিটার আর CLI এই ID ব্যবহার করে, লেবেল নয়।",
       "agent_list": "এজেন্ট তালিকা",
       "default": "ডিফল্ট",
       "filter_agents": "এজেন্ট ফিল্টার করুন",
@@ -11761,6 +11762,7 @@
       "discard_new_schedule": "নতুন সময়সূচি বাতিল করবেন?",
       "discard_new_schedule_body": "আপনার টাইপ করা সময়সূচি সংরক্ষিত হয়নি এবং হারিয়ে যাবে।",
       "discard_schedule_confirm": "সময়সূচি বাতিল করুন",
+      "display_name": "প্রদর্শিত নাম",
       "e_g_oncall": "যেমন oncall",
       "edit_crew_named": "এজেন্ট {{name}} সম্পাদনা করুন",
       "edit_model": "ডিফল্ট মডেল সম্পাদনা করো",
@@ -11808,6 +11810,7 @@
       "select_an_agent_template": "এজেন্ট টেমপ্লেট নির্বাচন করুন…",
       "session_color_hint_member": "এই সদস্য শুরু করা সেশনগুলি এই রঙ ব্যবহার করে, যদি না সেশনের নিজস্ব রঙ থাকে। সদস্যের রঙ না রাখতে খালি রাখুন।",
       "shared_lower": "শেয়ার করা",
+      "shown_across_the_dashboard_instead_of_the_name_l": "নাম ({{name}}) এর বদলে পুরো ড্যাশবোর্ডে দেখানো হয়। নামটিই দেখাতে খালি রাখো।",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew-এর ভিতরের সাবডিরেক্টরি, যেখানে এই ওয়ার্কস্পেস তার ডেটা রাখে (চ্যাট ইতিহাস, শিক্ষা, প্রজেক্ট)। প্রতিটি ওয়ার্কস্পেস নিজের আলাদা ডিরেক্টরি পায়।",
       "template_hint_member": "এই সদস্যের প্রারম্ভিক সেটআপ — এর টুল, সংযোগ এবং নির্দেশনা।",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "এই এজেন্ট যে শুরুর সেটআপ ব্যবহার করে — এর টুল, সংযোগ ও নির্দেশনা।",

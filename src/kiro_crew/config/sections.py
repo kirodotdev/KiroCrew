@@ -3857,6 +3857,17 @@ class KiroCrewAgentConfig:
             "is ignored, exactly as the global default is.",
         ),
     )
+    display_name: str = field(
+        default="",
+        metadata=_meta(
+            "Display Name",
+            "Optional label the dashboard shows instead of the agent's name. "
+            "Purely presentational: the name stays the immutable identity — it "
+            "keys this record, addresses /api/agents/{name}, and is what "
+            "dispatch, crons and spawn resolve — so renaming the label never "
+            "breaks a binding. Empty means the dashboard shows the name itself.",
+        ),
+    )
     description: str = field(
         default="",
         metadata=_meta("Description", "Human-readable agent description."),

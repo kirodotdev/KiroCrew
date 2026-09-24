@@ -5752,6 +5752,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "La configuration sélectionnée est prête dans {{productName}}."
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — l'ID de l'agent. Les crons, les paramètres de spawn et la CLI utilisent cet ID, jamais le libellé.",
       "agent_list": "Liste des agents",
       "default": "par défaut",
       "filter_agents": "Filtrer les agents",
@@ -11929,6 +11930,7 @@
       "discard_new_schedule": "Abandonner la nouvelle planification ?",
       "discard_new_schedule_body": "La planification saisie n'a pas été enregistrée et sera perdue.",
       "discard_schedule_confirm": "Abandonner la planification",
+      "display_name": "Nom affiché",
       "e_g_oncall": "ex. oncall",
       "edit_crew_named": "Modifier l’agent {{name}}",
       "edit_model": "Modifier le modèle par défaut",
@@ -11976,6 +11978,7 @@
       "select_an_agent_template": "Sélectionner un modèle d'agent…",
       "session_color_hint_member": "Les sessions lancées par ce membre utilisent cette couleur sauf si la session a la sienne. Laissez vide pour aucune couleur de membre.",
       "shared_lower": "en commun",
+      "shown_across_the_dashboard_instead_of_the_name_l": "Affiché dans tout le tableau de bord à la place du nom ({{name}}). Laisse vide pour afficher le nom lui-même.",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Sous-répertoire dans ~/.kiro/crew où cet espace de travail stocke ses données (historique des chats, leçons, projets). Chaque espace de travail dispose de son propre répertoire isolé.",
       "template_hint_member": "La configuration de départ de ce membre — ses outils, connexions et instructions.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "La configuration de départ de cet agent — ses outils, ses connexions et ses instructions.",
