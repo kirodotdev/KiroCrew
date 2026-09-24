@@ -26,9 +26,10 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NoReturn
 from zoneinfo import ZoneInfo
 
-from kiro_crew import __version__, app_lifecycle_client, beacon, platform_compat
+from kiro_crew import __version__, app_lifecycle_client, beacon, model_registry, platform_compat
 from kiro_crew.agent import reset_agent_model
 from kiro_crew.apps.bridges import (
     deregister_app,
@@ -71,12 +72,18 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.cron import (
+    _JOB_TIMEOUT_SECS,
+    _SUBPROC_CLEANUP_ALLOWANCE_SECS,
     CronSchedule,
     CronService,
+    CronStoreBusy,
     CronStoreUnreadable,
     format_schedule,
+    get_local_tz,
     lookup_cron_folder_id,
+    parse_time_string,
 )
+from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.origin import parse_dashboard_url
@@ -93,6 +100,11 @@ from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.mcp_cron import (
+    _vet_cron_capability_governance,
+    _vet_script_file,
+    _vet_shell_command,
+)
 from kiro_crew.member_memory_auth import require_member_memory_creation
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
@@ -109,6 +121,7 @@ from kiro_crew.memory_stores import (
     resolve_declared_store,
     retire_unpublished_allocation,
 )
+from kiro_crew.platform import redact_log_via_context
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.project_scope import scope_is_admissible, scope_selector_is_inadmissible
 from kiro_crew.secrets.migrate import (
@@ -130,8 +143,11 @@ from kiro_crew.sel import sel
 from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
+    _MODEL_NAME_RE,
     CHANNEL_ID_RE,
     CHANNEL_MAX_LEN,
+    CRON_ADD_SCHEMA,
+    MAX_SHORT_STRING,
     WORKSPACE_NAME_RE,
     normalize_lesson_category,
 )
@@ -250,8 +266,9 @@ def _format_schedule(schedule: object, *, tz_name: str = "") -> str:
             if tz_name:
                 dt = datetime.fromtimestamp(schedule.at_ts, ZoneInfo(tz_name))
                 return f"at {dt:%Y-%m-%d %H:%M %Z}"
-            dt = datetime.fromtimestamp(schedule.at_ts)
-            return f"at {dt:%Y-%m-%d %H:%M}"
+            _, configured_tz = get_local_tz()
+            dt = datetime.fromtimestamp(schedule.at_ts, configured_tz)
+            return f"at {dt:%Y-%m-%d %H:%M %Z}"
         except Exception:
             # Same degrade-on-render posture as cron.format_schedule: an
             # extreme stored at_ts (beyond year 9999, epoch milliseconds)
@@ -1401,6 +1418,329 @@ def _agent_reset_model(args: argparse.Namespace) -> None:
     print("   It now tracks the shipped default; restart the gateway to apply.")
 
 
+def _cron_add_bounds(field_name: str) -> tuple[int, int]:
+    """Numeric bounds of a ``cron add`` field, read from ``CRON_ADD_SCHEMA``.
+
+    The MCP ``cron_add`` tool validates its input against that schema; the
+    CLI enforces the same range by reading it rather than repeating the
+    literals, so the two surfaces cannot drift apart.
+    """
+    spec = next(s for s in CRON_ADD_SCHEMA.fields if s.name == field_name)
+    assert spec.min_val is not None and spec.max_val is not None, field_name
+    return int(spec.min_val), int(spec.max_val)
+
+
+def _cron_add_fail(msg: str, *, audit_kind: str = "") -> NoReturn:
+    """Refuse a ``cron add`` on stderr with exit 1.
+
+    Every refusal takes this one path so a headless installer can rely on a
+    single contract: nothing is written, the reason is on stderr, and the exit
+    status is non-zero. A refusal on stdout with exit 0 is indistinguishable
+    from success to a script, which is why none of the checks below prints
+    its own message.
+
+    ``audit_kind`` names the job kind (``agent`` / ``script`` / ``command``)
+    when the refusal is a SECURITY decision: the ``cron:cli_add`` capability
+    gate denying authoring outright (any kind), a vetted command body, or a
+    script path outside the crons root. A blocked job never reaches the
+    kiro-cli permission/hook flow that would otherwise leave the audit
+    trail, so the
+    denial is recorded in the SEL here, as ``cron_add`` (``_log_cron_denial``)
+    and the apps SDK do for their surfaces. Plain input validation (a bad
+    flag combination, an unparseable time) is not a permission decision and
+    leaves no event. The audited copy of the message is passed through
+    ``redact_log_via_context`` here -- the gate-side log spelling, which
+    applies a loaded companion's stricter pass and never raises -- so the
+    invariant holds whoever produced the message: the vets already redact,
+    but the script-resolution and identifier refusals relay a raw exception
+    or the caller's own argument.
+    """
+    text = msg if msg.startswith("Error: ") else f"Error: {msg}"
+    if audit_kind:
+        # The refusal contract outranks the audit trail; denial logging is
+        # best-effort, matching mcp_cron._log_cron_denial.
+        try:
+            sel().log_api_access(
+                caller="cli",
+                operation="cron.add",
+                outcome="denied",
+                source="cli",
+                resources=f"kind={audit_kind}",
+                error=redact_log_via_context(text),
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("cron add denial audit emit failed", exc_info=True)
+    print(text, file=sys.stderr)
+    sys.exit(1)
+
+
+def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
+    """``kirocrew cron add``: validate every field, then ONE locked ``add_job``.
+
+    The CLI is a thin front-end over ``CronService.add_job`` -- the same single
+    writer the dashboard POST, the MCP ``cron_add`` tool and the apps SDK
+    converge on. Every field is resolved here and handed to that one locked
+    build+persist, so the job lands on disk fully-formed. The old shape --
+    ``add_job`` with a subset, then ``job.agent_id = ...`` / ``job.silent = True``
+    and a second, unlocked ``svc._save()`` -- was a data-loss window: the bare
+    save could clobber a job another writer had appended between the two
+    writes, and a crash between them left a job missing its agent.
+
+    Job kind is exactly one of agent (the default), ``--script`` or
+    ``--command``; schedule is exactly one of ``--every``, ``--cron`` or
+    ``--at``. Schedule/timeout coupling is split by who can see it: when both
+    ``--timeout`` and ``--timeout-secs`` are given, ``_build_job`` at the
+    persistence owner validates the pair and the CLI surfaces its
+    ``ValueError``; when ``--timeout-secs`` is omitted the CLI passes ``0``,
+    which ``_build_job`` reads as "no wake budget given", so the CLI itself
+    checks ``--timeout`` against the default wake budget it knows will apply.
+
+    A ``--script`` file must already live under ``<config_dir>/crons/``
+    (``resolve_script_path`` enforces containment) -- the CLI registers, it
+    does not stage. Script bodies and shell commands go through the same
+    storage-time security vet the MCP tool and the apps SDK apply
+    (``_vet_script_file`` / ``_vet_shell_command``). The gateway re-vets at
+    fire time regardless, so this is fail-fast for the caller, not the only
+    guard: a job that would be refused at every wake is refused once, here,
+    with a non-zero exit, instead of being stored and silently never running.
+    """
+    every = getattr(args, "every", None)
+    cron_expr = (getattr(args, "cron_expr", None) or "").strip() or None
+    at_raw = str(getattr(args, "at", None) or "").strip()
+    tz = (getattr(args, "timezone", "") or "").strip()
+    channel = (getattr(args, "channel", None) or "").strip() or None
+    approval_mode = getattr(args, "approval_mode", "") or ""
+    agent = (getattr(args, "agent", "") or "").strip()
+    script = (getattr(args, "script", "") or "").strip()
+    command = (getattr(args, "shell_command", "") or "").strip()
+    model = (getattr(args, "model", "") or "").strip()
+    silent = bool(getattr(args, "silent", False))
+    hide_in_chat = bool(getattr(args, "hide_in_chat", False))
+    timeout = getattr(args, "timeout", None)
+    timeout_secs = getattr(args, "timeout_secs", None)
+    folder_ref = (getattr(args, "folder", "") or "").strip()
+    message = args.message or ""
+
+    # ── Job kind: exactly one of agent / script / command ──
+    if script and command:
+        _cron_add_fail("--script and --command are mutually exclusive")
+    if agent and (script or command):
+        _cron_add_fail("--agent cannot be combined with --script or --command")
+    zero_token = bool(script or command)
+    if not message and not zero_token:
+        _cron_add_fail("message is required for an agent job (only --script/--command may omit it)")
+    if agent and not _AGENT_NAME_RE.match(agent):
+        _cron_add_fail("invalid agent name (alphanumeric, hyphens, underscores; 1-64 chars)")
+    if timeout is not None:
+        if not zero_token:
+            _cron_add_fail("--timeout applies only to a --script or --command job")
+        lo, hi = _cron_add_bounds("timeout")
+        if not lo <= int(timeout) <= hi:
+            _cron_add_fail(f"--timeout must be within {lo}..{hi}, got {timeout}")
+    if timeout_secs is not None:
+        lo, hi = _cron_add_bounds("timeout_secs")
+        if not lo <= int(timeout_secs) <= hi:
+            _cron_add_fail(f"--timeout-secs must be within {lo}..{hi}, got {timeout_secs}")
+    effective_timeout_secs = int(timeout_secs) if timeout_secs is not None else _JOB_TIMEOUT_SECS
+    if (
+        zero_token
+        and timeout is not None
+        and timeout_secs is None
+        and int(timeout) + _SUBPROC_CLEANUP_ALLOWANCE_SECS > effective_timeout_secs
+    ):
+        _cron_add_fail(
+            f"--timeout {timeout} plus cleanup exceeds the {effective_timeout_secs}s "
+            "wake budget; pass a larger --timeout-secs"
+        )
+
+    # ── Schedule: exactly one of --every / --cron / --at ──
+    given = [
+        flag for flag, val in (("--every", every), ("--cron", cron_expr), ("--at", at_raw)) if val
+    ]
+    if len(given) != 1:
+        _cron_add_fail("provide exactly one of --every, --cron or --at")
+    # --timezone governs how a --cron expression's hour/minute fields are read.
+    # An interval (--every) has no wall clock to interpret, and a time string
+    # given to --at is resolved by parse_time_string in the configured timezone
+    # with its confirmation rendered in that same timezone -- a per-job value
+    # would change only the render. Either pair is refused rather than
+    # persisted as a field the schedule never consults.
+    if tz and not cron_expr:
+        _cron_add_fail(
+            "--timezone applies to --cron only; a time string given to --at is read "
+            "in the configured timezone"
+        )
+    at_ts: float | None = None
+    if at_raw:
+        if len(at_raw) > 64:
+            _cron_add_fail("--at must be at most 64 characters")
+        try:
+            try:
+                at_ts = float(at_raw)
+            except ValueError:
+                parsed = parse_time_string(at_raw)
+                if isinstance(parsed, str):
+                    _cron_add_fail(parsed)
+                at_ts = parsed
+            if at_ts > 4102444800:
+                _cron_add_fail(
+                    "--at must resolve to a timestamp at or before 4102444800 (year 2100)"
+                )
+            # Guard against a past instant from either spelling, as cron_add does:
+            # an `at` job in the past would fire immediately and vanish.
+            if at_ts < _time.time():
+                # Render in the zone parse_time_string resolved the value in,
+                # so the refusal echoes a wall clock the operator recognises.
+                _, configured_tz = get_local_tz()
+                local = datetime.fromtimestamp(at_ts, configured_tz)
+                _cron_add_fail(
+                    f"resolved time {local.strftime('%Y-%m-%d %I:%M %p %Z')} is in the past"
+                )
+        except (OverflowError, OSError, ValueError):
+            _cron_add_fail("--at is outside the supported timestamp range")
+
+    # ── Fields validated up front so an invalid value never strands a job ──
+    if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
+        _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
+    if model:
+        if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
+            _cron_add_fail("invalid model format")
+        # Same normalisation as the dashboard and cron_add: the "auto" inherit
+        # sentinel resolves to no pinned provider id and is stored as unset.
+        if model_registry.to_provider_id(model, "claude_code") == "":
+            model = ""
+    # Resolve BEFORE add_job so a typo'd folder never leaves an orphaned
+    # job behind. Existing folders only: cron_folders.json is owned by the
+    # dashboard (its state rewrites the file wholesale), so a CLI-side
+    # create could be silently clobbered by the next Schedule-page folder
+    # operation.
+    folder_id = ""
+    if folder_ref:
+        found = lookup_cron_folder_id(folder_ref)
+        if found.error:
+            _cron_add_fail(found.error)
+        folder_id = found.folder_id
+
+    # ── Governance: the capabilities.cron on/off gate, at authoring time ──
+    # The gateway re-vets every job at fire time, so a job authored under a
+    # disabled capability can never run -- but without this fail-fast the CLI
+    # would persist it and print "Added job", and the caller would only learn
+    # otherwise from the job's error status at its first wake. Same call
+    # cron_add makes before it stores anything. The `cron:` key classifies as
+    # the cron surface (sel._infer_source), so the profile that governs cron
+    # jobs decides authoring too -- a CLI-surface bind does not, by design:
+    # what is being gated is the cron capability, not the CLI as a whole.
+
+    kind = "script" if script else ("command" if command else "agent")
+    cap_err = _vet_cron_capability_governance("cron:cli_add")
+    if cap_err:
+        _cron_add_fail(cap_err, audit_kind=kind)
+
+    # ── Storage-time security vet for the two zero-token kinds ──
+    if command:
+        err = _vet_shell_command(command)
+        if err:
+            _cron_add_fail(err, audit_kind="command")
+    if script:
+        # Two leading path separators in any mix (`\\`, `//`, `/\`, `\/`) name
+        # a UNC/network path: Windows normalises the alternate separator
+        # first, so Path.resolve() would do an outbound host lookup before
+        # containment is checked. Refuse the shape before it reaches
+        # resolve_script_path; CRON_ADD_SCHEMA's script regex in validation.py
+        # excludes the same shape (^(?![\\/]{2})).
+        if re.match(r"^[\\/]{2}", script):
+            _cron_add_fail(
+                "--script must be a local path, not a UNC/network path (leading \\\\ or //)",
+                audit_kind="script",
+            )
+        try:
+            script_file, func = resolve_script_path(script)
+        except (PermissionError, FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            _cron_add_fail(str(exc) or "could not resolve script path", audit_kind="script")
+        # Reject malformed entry points before reading the script body.
+        if not func.isidentifier():
+            _cron_add_fail(
+                f"--script function name {func!r} must be a valid Python identifier "
+                "(expected FILE.py:FUNC)",
+                audit_kind="script",
+            )
+        err = _vet_script_file(script_file)
+        if err:
+            _cron_add_fail(err, audit_kind="script")
+        # Persist the RESOLVED absolute spec, not the caller's raw one. A
+        # relative --script resolves against the CLI's CWD here; the gateway
+        # re-vets at fire time against ITS CWD, so a raw relative spec would
+        # fail every wake. An already-absolute spec round-trips unchanged.
+        script = f"{script_file}:{func}"
+
+    # ── Session shape: the store's defaults, exactly as cron_add and the
+    # dashboard POST forward them. One defaulting policy across every create
+    # surface, so the same --command job means the same job whichever door it
+    # came through; a caller that wants a fresh minimal wake says so with
+    # --no-persistent-session --minimal-context (the help text recommends
+    # both for a --script/--command job).
+    persistent_session = bool(getattr(args, "persistent_session", True))
+    minimal_context = bool(getattr(args, "minimal_context", False))
+
+    try:
+        job = svc.add_job(
+            name=args.name,
+            message=message,
+            every_secs=every,
+            cron_expr=cron_expr,
+            at_ts=at_ts,
+            # One-shot: derived from the schedule, never caller-supplied, exactly
+            # as cron_add and the dashboard derive it -- a job with a single fire
+            # time that never leaves the store is one the scheduler cannot re-run.
+            delete_after_run=bool(at_ts),
+            channel=channel,
+            approval_mode=approval_mode,
+            agent_id=agent,
+            model=model,
+            silent=silent,
+            timezone=tz,
+            hide_in_chat=hide_in_chat,
+            folder_id=folder_id,
+            command=command,
+            script=script,
+            persistent_session=persistent_session,
+            minimal_context=minimal_context,
+            timeout=int(timeout) if timeout else 0,
+            timeout_secs=int(timeout_secs) if timeout_secs else 0,
+        )
+    except CronStoreBusy:
+        # The store lock stayed contended past its timeout (another writer --
+        # the gateway, a dashboard create -- holds it). Nothing was written;
+        # the same retryable refusal cron_add returns, not a traceback.
+        _cron_add_fail("cron store busy, please retry")
+    except ValueError as e:
+        _cron_add_fail(str(e))
+    except OSError as e:
+        # The store write failed (disk full, permissions, a vanished config
+        # dir). _save is tmp-then-rename, so the store is untouched and the
+        # refusal contract still holds: reason on stderr, exit 1, nothing
+        # written -- not a traceback an installer cannot classify.
+        _cron_add_fail(f"could not write the cron store: {e}")
+    sched_desc = _format_schedule(job.schedule, tz_name=job.timezone or "")
+    # Once add_job persists, the caller-facing contract is the printed id and exit 0.
+    # An audit failure must not turn a committed job into a spurious non-zero exit
+    # that an installer retries into a duplicate.
+    try:
+        sel().log_api_access(
+            caller="cli",
+            operation="cron.add",
+            outcome="allowed",
+            source="cli",
+            resources=(
+                f"job_id={job.id} kind={kind} approval_mode={approval_mode or 'default'} "
+                f"agent={agent or 'default'} silent={silent}"
+            ),
+        )
+    except Exception:
+        logging.getLogger(__name__).debug("cron add success audit emit failed", exc_info=True)
+    print(f"Added job: {job.id} ({job.name}) [{sched_desc}]")
+
+
 def _cron(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands, translating a refused write into an error.
 
@@ -1530,83 +1870,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             )
 
     elif action == "add":
-        every = getattr(args, "every", None)
-        cron_expr = getattr(args, "cron_expr", None)
-        channel = (getattr(args, "channel", None) or "").strip() or None
-        approval_mode = getattr(args, "approval_mode", "") or ""
-        agent = (getattr(args, "agent", "") or "").strip()
-        silent = getattr(args, "silent", False)
-        folder_ref = (getattr(args, "folder", "") or "").strip()
-        # Resolve BEFORE add_job so a typo'd folder never leaves an orphaned
-        # job behind. Existing folders only: cron_folders.json is owned by the
-        # dashboard (its state rewrites the file wholesale), so a CLI-side
-        # create could be silently clobbered by the next Schedule-page folder
-        # operation.
-        folder_id = ""
-        if folder_ref:
-            found = lookup_cron_folder_id(folder_ref)
-            if found.error:
-                print(f"Error: {found.error}", file=sys.stderr)
-                sys.exit(1)
-            folder_id = found.folder_id
-        if agent and not _AGENT_NAME_RE.match(agent):
-            print(
-                "Error: invalid agent name (alphanumeric, hyphens, underscores; 1-64 chars)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
-            print(
-                f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})"
-            )
-            return
-        try:
-            if cron_expr:
-                job = svc.add_job(
-                    name=args.name,
-                    message=args.message,
-                    cron_expr=cron_expr,
-                    channel=channel,
-                    approval_mode=approval_mode,
-                    folder_id=folder_id,
-                )
-            elif every:
-                job = svc.add_job(
-                    name=args.name,
-                    message=args.message,
-                    every_secs=every,
-                    channel=channel,
-                    approval_mode=approval_mode,
-                    folder_id=folder_id,
-                )
-            else:
-                print("Provide --every or --cron")
-                return
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        # agent_id and silent are CronJob fields but not add_job kwargs;
-        # mirror the MCP cron_add post-create mutation pattern so they
-        # are persisted with the job.
-        if agent:
-            job.agent_id = agent
-        if silent:
-            job.silent = True
-        if agent or silent:
-            svc._save()
-        sched_desc = _format_schedule(job.schedule, tz_name=job.timezone or "")
-
-        sel().log_api_access(
-            caller="cli",
-            operation="cron.add",
-            outcome="allowed",
-            source="cli",
-            resources=(
-                f"job_id={job.id} approval_mode={approval_mode or 'default'} "
-                f"agent={agent or 'default'} silent={silent}"
-            ),
-        )
-        print(f"Added job: {job.id} ({job.name}) [{sched_desc}]")
+        _cron_add(svc, args)
 
     elif action == "update":
         kwargs: dict = {}

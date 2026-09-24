@@ -233,6 +233,12 @@ writes.
 | `kirocrew cron add NAME MESSAGE --agent myagent` | Add job for specific agent |
 | `kirocrew cron add NAME MESSAGE --approval-mode auto` | Add job with auto tool approval |
 | `kirocrew cron add NAME MESSAGE --channel C123456` | Post results to Slack channel |
+| `kirocrew cron add NAME MESSAGE --at "tomorrow 9am"` | One-shot job: fires once, then deletes itself (Unix timestamp or time string) |
+| `kirocrew cron add NAME MESSAGE --cron "0 9 * * *" --timezone Europe/Paris` | Evaluate the cron expression in an IANA timezone |
+| `kirocrew cron add NAME "" --every 3600 --script ~/.kiro/crew/crons/f.py:run --no-persistent-session --minimal-context` | Zero-token job: run a Python function (file must already be under `crons/`; registers, does not copy) |
+| `kirocrew cron add NAME "" --every 600 --command "df -h /" --no-persistent-session --minimal-context` | Zero-token job: run a vetted shell command |
+| `kirocrew cron add ... --timeout 30 --timeout-secs 60` | Subprocess timeout (script/command) and whole-wake budget |
+| `kirocrew cron add ... --[no-]persistent-session --[no-]minimal-context --hide-in-chat --model ID` | Session shape and model; defaults are persistent session on, minimal context off, so pass `--no-persistent-session --minimal-context` for a script/command job |
 | `kirocrew cron update JOB_ID --message "new msg"` | Update job message |
 | `kirocrew cron update JOB_ID --agent myagent` | Update job agent |
 | `kirocrew cron update JOB_ID --approval-mode auto` | Set auto-approval |

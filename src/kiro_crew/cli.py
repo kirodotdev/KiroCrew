@@ -1505,20 +1505,128 @@ Examples:
     )
     cron_sub = cron_parser.add_subparsers(dest="cron_action")
     cron_sub.add_parser("list", help="List cron jobs")
-    cron_add = cron_sub.add_parser("add", help="Add a cron job")
+    cron_add = cron_sub.add_parser(
+        "add",
+        help="Add a cron job",
+        description="Add a cron job. The job is persisted in one locked write and its id is "
+        "printed on stdout; any refusal exits non-zero (2 for a flag-combination error, 1 for "
+        "a validation, security or store refusal), so an installer can register a job "
+        "headlessly and detect a refused one.",
+        epilog="""
+Examples:
+  kirocrew cron add "standup" "post the standup" --cron "0 9 * * MON-FRI" --timezone Europe/Paris
+  kirocrew cron add "version-check" "" --every 3600 --script ~/.kiro/crew/crons/check.py:run \\
+      --no-persistent-session --minimal-context
+  kirocrew cron add "disk" "" --every 600 --command "df -h /" --timeout 30 --timeout-secs 60
+  kirocrew cron add "reminder" "call the vet" --at "tomorrow 9am"
+""",
+        formatter_class=_fmt,
+    )
     cron_add.add_argument("name", help="Job name")
-    cron_add.add_argument("message", help="Message to send to agent")
-    cron_add.add_argument("--every", type=int, help="Interval in seconds")
     cron_add.add_argument(
+        "message",
+        help="Message to send to the agent. For a --script job this is ctx.message; "
+        "for a --command job it is recorded but not used.",
+    )
+    cron_add_schedule = cron_add.add_mutually_exclusive_group()
+    cron_add_schedule.add_argument("--every", type=int, help="Interval in seconds")
+    cron_add_schedule.add_argument(
         "--cron", dest="cron_expr", help='Cron expression (e.g. "0 9 * * MON-FRI")'
     )
-    cron_add.add_argument("--channel", help="Slack channel ID to post results to")
+    cron_add_schedule.add_argument(
+        "--at",
+        dest="at",
+        help="One-shot: fire once at this time and then delete the job. A Unix timestamp, "
+        "or a time string ('5pm', 'in 30 minutes', 'tomorrow 9am', '2026-10-01 09:00') "
+        "read in the configured timezone.",
+    )
     cron_add.add_argument(
+        "--timezone",
+        dest="timezone",
+        default="",
+        help="IANA timezone the --cron expression is evaluated in (e.g. America/New_York). "
+        "Applies to --cron only; refused with --every (an interval has no wall clock) "
+        "and with --at, whose time string is read in the configured timezone.",
+    )
+    cron_add.add_argument("--channel", help="Slack channel ID to post results to")
+    # One job KIND per job. A script or command job never launches an agent,
+    # so --agent alongside either would be dead configuration; argparse refuses
+    # the pair up front instead of persisting a field nothing reads.
+    cron_add_kind = cron_add.add_mutually_exclusive_group()
+    cron_add_kind.add_argument(
         "--agent",
         dest="agent",
         default="",
         help="Agent name for this job (e.g. 'customer360-code-agent'). "
         "Empty or omitted uses the default kirocrew agent.",
+    )
+    cron_add_kind.add_argument(
+        "--script",
+        dest="script",
+        default="",
+        metavar="FILE.py:FUNC",
+        help="Zero-token job: run this Python function instead of prompting an agent. "
+        "The file must ALREADY be under ~/.kiro/crew/crons/ (this command registers, "
+        "it does not copy) and is security-scanned before the job is stored.",
+    )
+    cron_add_kind.add_argument(
+        "--command",
+        # NOT dest="command": that is the top-level subcommand's dest, and a
+        # subparser default silently overwrites the parent's parsed value (the
+        # same trap --no-jail documents above) -- `kirocrew cron add` would then
+        # dispatch as command="" and print the top-level help.
+        dest="shell_command",
+        default="",
+        metavar="SHELL",
+        help="Zero-token job: run this shell command (sh -c, sandboxed) instead of "
+        "prompting an agent. Vetted by the same deny-list as the bash tool.",
+    )
+    cron_add.add_argument(
+        "--timeout",
+        type=int,
+        dest="timeout",
+        default=None,
+        help="Subprocess timeout in seconds for a --script/--command job "
+        "(0..3600; omit for the store's per-kind default)",
+    )
+    cron_add.add_argument(
+        "--timeout-secs",
+        type=int,
+        dest="timeout_secs",
+        default=None,
+        help="Per-wake execution budget in seconds (1..86400, default 1800). For a "
+        "--script/--command job it must cover the subprocess timeout -- --timeout, or "
+        "the store's per-kind default when --timeout is omitted -- plus 5s cleanup.",
+    )
+    cron_add.add_argument(
+        "--model",
+        dest="model",
+        default="",
+        help="Model id for the agent wake (as advertised by kiro-cli --list-models)",
+    )
+    cron_add.add_argument(
+        "--persistent-session",
+        dest="persistent_session",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Resume one long-lived session across wakes (default on). Pass "
+        "--no-persistent-session for a --script/--command job: it has no conversation "
+        "to resume.",
+    )
+    cron_add.add_argument(
+        "--minimal-context",
+        dest="minimal_context",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Wake with a ~200-token context instead of the full memory/lessons/steering "
+        "load (default off). Recommended for a --script/--command job.",
+    )
+    cron_add.add_argument(
+        "--hide-in-chat",
+        dest="hide_in_chat",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Keep the job's wakes out of the chat sidebar",
     )
     cron_add.add_argument(
         "--silent",

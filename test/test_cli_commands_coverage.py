@@ -31,6 +31,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -149,9 +150,15 @@ class TestSmallHelpers:
         assert cc._format_schedule("weekly-ish") == "weekly-ish"
 
     def test_format_schedule_at_job_shows_full_date(self) -> None:
+        # A one-shot renders in the CONFIGURED timezone (the zone the instant
+        # was resolved in), with its zone label, not the host's local time.
         sched = CronSchedule(kind="at", at_ts=1700000000.0)
-        out = cc._format_schedule(sched)
-        assert out.startswith("at ") and len(out) == len("at 2023-11-14 14:13")
+        with patch(
+            "kiro_crew.cli_commands.get_local_tz",
+            return_value=("UTC", ZoneInfo("UTC")),
+        ):
+            out = cc._format_schedule(sched)
+        assert out == "at 2023-11-14 22:13 UTC"
 
     def test_format_schedule_delegates_for_every(self) -> None:
         sched = CronSchedule(kind="every", every_secs=300)
