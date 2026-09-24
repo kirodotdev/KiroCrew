@@ -767,6 +767,122 @@ def test_an_empty_store_seeds_to_an_empty_tree():
     assert proj.reading().incomplete is False
 
 
+# ── a seed that failed ─────────────────────────────────────────────────────
+
+
+def test_a_failed_seed_is_re_attempted_rather_than_latched(monkeypatch):
+    """A store fault must cost a cooldown of missing lineage, not the whole process.
+
+    A failed seed serves an EMPTY tree, and the seed gate is otherwise cleared only by
+    the data home changing -- so latching it means the first transient fault of a boot
+    takes every reader's lineage until the gateway restarts. Nothing downstream recovers
+    it: ``_attach_slot_parents`` asks whether the projection is seeded, and it is.
+    """
+    _write_unit("s-parent", "slot-a")
+    _write_unit("s-child", "slot-b", parent="slot-a")
+
+    proj = SessionTreeProjection()
+    calls = {"n": 0}
+    real = SessionTreeProjection._seed
+
+    def flaky(self, live_sids):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("the store could not be read")
+        return real(self, live_sids)
+
+    monkeypatch.setattr(SessionTreeProjection, "_seed", flaky)
+
+    proj.ensure_seeded()
+    assert proj.nodes() == {}, "a failed seed serves no lineage, which is the point"
+    assert proj.reading().incomplete is True
+
+    # Inside the cooldown: no second scan, because the readers arrive on a timer and a
+    # bare unlatch would re-pay a cold scan every few seconds on a broken store.
+    proj.ensure_seeded()
+    assert calls["n"] == 1
+
+    # Past it: the fault is re-attempted and the lineage comes back.
+    monkeypatch.setattr(stp.time, "monotonic", lambda: 1e9)
+    proj.ensure_seeded()
+
+    assert calls["n"] == 2
+    assert proj.nodes()["slot-b"].parent_slot == "slot-a"
+
+
+def test_a_seed_that_succeeded_is_never_re_attempted(monkeypatch):
+    """The retry belongs to the failure alone: success is final for its store.
+
+    Without clearing the marker a recovered store would keep re-scanning forever, which
+    is the per-read cost this module exists to remove.
+    """
+    _write_unit("s-parent", "slot-a")
+
+    proj = SessionTreeProjection()
+    calls = {"n": 0}
+    real = SessionTreeProjection._seed
+
+    def counted(self, live_sids):
+        calls["n"] += 1
+        return real(self, live_sids)
+
+    monkeypatch.setattr(SessionTreeProjection, "_seed", counted)
+
+    proj.ensure_seeded()
+    assert calls["n"] == 1
+
+    monkeypatch.setattr(stp.time, "monotonic", lambda: 1e9)
+    for _ in range(5):
+        proj.ensure_seeded()
+
+    assert calls["n"] == 1
+
+
+def test_a_failed_seed_says_so_at_warning(monkeypatch, caplog):
+    """The empty tree it serves is indistinguishable from a store with no lineage."""
+
+    def boom(self, live_sids):
+        raise OSError("the store could not be read")
+
+    monkeypatch.setattr(SessionTreeProjection, "_seed", boom)
+
+    with caplog.at_level(logging.WARNING, logger=stp.logger.name):
+        SessionTreeProjection().ensure_seeded()
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "could not be seeded" in warnings[0].getMessage()
+    assert warnings[0].exc_info is not None
+
+
+# ── a gateway restart ──────────────────────────────────────────────────────
+
+
+def test_a_restart_keeps_the_edge_the_slots_older_log_recorded():
+    """A restored slot writes a NEW log naming no creator, and the old edge survives.
+
+    The citation is stamped at ``session_create`` from a witness this process holds and
+    does not persist, so every slot restored after a restart opens a second log with no
+    ``parent``. The edge has to come from the slot's FIRST log, which is on disk and
+    closed -- and the cold seed has to admit that log, not only the live session's
+    newest one. Both halves are asserted here because either alone leaves a sidebar
+    that stops nesting after every gateway restart.
+    """
+    _write_unit("s-parent", "slot-a")
+    _write_unit("s-child-first", "slot-b", parent="slot-a")
+    # The restart: same slots, new sessions, no creator known to this process.
+    _write_unit("s-parent-again", "slot-a")
+    _write_unit("s-child-again", "slot-b")
+
+    # A cold seed, as the process after the restart does it, preferring the LIVE sids --
+    # which are the parentless ones.
+    stp.reset_for_tests()
+    proj = SessionTreeProjection()
+    proj.ensure_seeded(("s-parent-again", "s-child-again"))
+
+    assert proj.nodes()["slot-b"].parent_slot == "slot-a"
+
+
 # ── the emitter hook ───────────────────────────────────────────────────────
 
 

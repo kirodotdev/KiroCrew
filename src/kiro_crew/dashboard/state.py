@@ -409,6 +409,12 @@ def _slots_serialization_note(slots_data: object, *, path: str = "slots-broadcas
 _lineage_seed_lock = threading.Lock()
 _lineage_seed_in_flight = False
 
+#: Latches :func:`_attach_slot_parents`'s failure WARNING to once per process. The
+#: function runs on every slots frame, so the line is worth a warning the first time
+#: and worth nothing the thousandth. Not reset when the store changes: the point is one
+#: report per process that something is wrong, not a per-store tally.
+_lineage_failure_warned = False
+
 
 def _attach_slot_parents(rows: "list[dict]") -> None:
     """Give every slot row its ``parent`` -- ``{slot, key}`` or ``None``. IN PLACE.
@@ -462,14 +468,20 @@ def _attach_slot_parents(rows: "list[dict]") -> None:
     Never raises, and every row gets the key either way. A sidebar that cannot paint is
     a worse failure than a sidebar that does not nest, and a row silently MISSING the
     key would make the frontend's ``parent === undefined`` mean two different things.
+
+    A failure IS reported, once per process at WARNING with its traceback, because it is
+    the only outcome this leaves no evidence of: the payload it produces is
+    byte-identical to a store that genuinely holds no lineage, so without the line a
+    missing conductor lane cannot be told from a gateway with nothing to nest.
     """
     if not rows:
         return
     parents: dict = {}
-    # Set ONLY when a later read would answer differently: the projection is not seeded
-    # for this store yet and a seed has been asked for. With the crew log off, or after a
-    # failure this cannot promise will clear, the flag stays off -- a client must never be
-    # told to come back for an answer that will never change.
+    # Set ONLY when a later read would answer differently, which is now two cases: the
+    # projection is not seeded for this store yet, and a seed that FAILED is due for
+    # another attempt. Both have a seed asked for behind them, so the promise the flag
+    # makes is one something is working to keep. With the crew log off it stays off -- a
+    # client must never be told to come back for an answer that will never change.
     pending = False
     try:
         from kiro_crew.crew_log import emit as crew_log_emit
@@ -489,6 +501,15 @@ def _attach_slot_parents(rows: "list[dict]") -> None:
         proj = projection()
         if proj.seeded_for_current_store:
             parents = lineage_parents(rows, proj.nodes())
+            # A seed that FAILED leaves a readable but EMPTY state, so the check above
+            # is satisfied and this path would otherwise never ask for another one --
+            # the projection's own retry is reached only by a caller that seeds, and
+            # the one that does is the System page's sampler. A sidebar on a gateway
+            # nobody opens that page on would stay unnested for the life of the
+            # process. Asking here is what makes the retry reach this payload.
+            if proj.seed_retry_due:
+                _request_lineage_seed()
+                pending = True
         else:
             _request_lineage_seed()
             # Say that this frame's answer is PROVISIONAL, so a reader can come back for
@@ -499,9 +520,30 @@ def _attach_slot_parents(rows: "list[dict]") -> None:
             # to be a READ the client chooses to repeat, not a frame this pushes.
             pending = True
     except Exception:
-        # Includes the crew log being off, in which case there are no records and no
-        # lineage to report -- not an error, and not worth a warning on a hot path.
-        logger.debug("slot lineage could not be resolved; slots ship without parents")
+        # Reached only by a genuine failure. The crew log being off returns above, so
+        # this is a broken read, not a configuration -- and it is the ONE outcome of
+        # this function that leaves no trace a reader can find. A parent, an explicit
+        # ``None`` and ``lineage_pending`` are all visible in the payload, so a
+        # sidebar that never offers the conductor lane is diagnosable from the wire in
+        # every case but this one, where the payload is byte-identical to a store that
+        # genuinely holds no lineage. Report it at WARNING, with the traceback: the
+        # alternative is what actually happened, an investigation that could not tell
+        # a swallowed exception from an empty store.
+        #
+        # Latched to once per process because this runs on EVERY slots frame, and a
+        # failure here is far more likely to be persistent (a bad store, an import
+        # that cannot load) than one-off, so an unlatched WARNING would fill the log
+        # with one line per broadcast. Later occurrences keep the traceback at DEBUG.
+        global _lineage_failure_warned
+        if not _lineage_failure_warned:
+            _lineage_failure_warned = True
+            logger.warning(
+                "slot lineage could not be resolved; slots ship without parents and "
+                "the chat sidebar will not offer its conductor lane",
+                exc_info=True,
+            )
+        else:
+            logger.debug("slot lineage could not be resolved", exc_info=True)
     for row in rows:
         key = row.get("key")
         row["parent"] = parents.get(key) if isinstance(key, str) else None

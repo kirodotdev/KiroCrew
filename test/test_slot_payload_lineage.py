@@ -228,6 +228,130 @@ def test_a_lineage_failure_still_ships_every_slot(monkeypatch):
     assert [row["parent"] for row in rows] == [None, None]
 
 
+def test_a_lineage_failure_says_so_once_at_warning(monkeypatch, caplog):
+    """The failure is the one outcome the payload cannot express, so it is logged.
+
+    ``parent``, an explicit ``None`` and ``lineage_pending`` are all on the wire, so
+    every other answer this gives is readable from the payload. A swallowed exception
+    is not: the rows it produces are byte-identical to a store that genuinely holds no
+    lineage, which is why the report has to carry the traceback.
+
+    Once per process, because this runs on every slots frame and the likely failures
+    are persistent -- an unlatched warning would be one line per broadcast.
+    """
+    monkeypatch.setattr(st, "_lineage_failure_warned", False)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("projection is broken")
+
+    monkeypatch.setattr(stp, "projection", boom)
+
+    with caplog.at_level("DEBUG", logger=st.logger.name):
+        for _ in range(3):
+            _attach_slot_parents(_rows("chat-1", "chat-2"))
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "conductor lane" in warnings[0].getMessage()
+    # The traceback is the payload of the report: without it the line says only that
+    # something failed, which is what the rows already implied.
+    assert warnings[0].exc_info is not None
+
+
+def test_a_healthy_read_says_nothing(caplog):
+    """No warning on the ordinary path -- the latch must not be armed by success."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    with caplog.at_level("WARNING", logger=st.logger.name):
+        _attach_slot_parents(_rows("chat-1", "chat-2"))
+
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+# ── the wire ───────────────────────────────────────────────────────────────
+
+
+def test_a_failed_seed_is_re_requested_from_the_slots_path(monkeypatch):
+    """The sidebar must reach the projection's retry on its own.
+
+    A seed that failed leaves a readable but EMPTY state, so ``seeded_for_current_store``
+    is satisfied and this path would take the healthy branch forever. The only caller
+    that seeds is the System page's sampler, so on a gateway nobody opens that page on
+    the sidebar would stay unnested for the life of the process -- the projection's retry
+    would exist and never be reached.
+    """
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+
+    proj = stp.projection()
+    monkeypatch.setattr(
+        type(proj), "seeded_for_current_store", property(lambda self: True), raising=False
+    )
+    monkeypatch.setattr(type(proj), "seed_retry_due", property(lambda self: True))
+
+    asked: list = []
+    monkeypatch.setattr(st, "_request_lineage_seed", lambda: asked.append(1))
+
+    rows = _rows("chat-1", "chat-2")
+    _attach_slot_parents(rows)
+
+    assert asked == [1], "the slots path never asked for the retry"
+    # Provisional, because a retry is a promise the answer will change -- which is what
+    # makes the flag correct here rather than the thing it is forbidden for.
+    assert all(row["lineage_pending"] is True for row in rows)
+
+
+def test_an_established_seed_asks_for_nothing(monkeypatch):
+    """The healthy path must not request a seed, or every frame would queue one."""
+    _unit("s-1", "chat-1")
+    _unit("s-2", "chat-2", parent="chat-1")
+    _seeded()
+
+    asked: list = []
+    monkeypatch.setattr(st, "_request_lineage_seed", lambda: asked.append(1))
+
+    rows = _rows("chat-1", "chat-2")
+    _attach_slot_parents(rows)
+
+    assert asked == []
+    assert rows[1]["parent"] == {"slot": "chat-1", "key": "chat-1"}
+    assert all("lineage_pending" not in row for row in rows)
+
+
+def test_the_serialized_payload_carries_parent_for_a_created_child(tmp_path, monkeypatch):
+    """``serialize_slots`` is what ``GET /api/chat/slots`` dumps, so pin IT.
+
+    The tests above call ``_attach_slot_parents`` directly, which proves the helper and
+    not the payload: the handler builds its body from ``serialize_slots()`` alone, so a
+    serializer that dropped or overwrote the key would pass every one of them and still
+    ship a sidebar with no conductor lane.
+    """
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "wire-home"))
+    stp.reset_for_tests()
+    _unit("s-1", "chat-1-parent")
+    _unit("s-2", "chat-2-child", parent="chat-1-parent")
+    _seeded()
+
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("chat-1-parent")
+    state.get_or_create_slot("chat-2-child")
+
+    payloads = state.serialize_slots()
+    by_key = {p["key"]: p for p in payloads}
+
+    assert by_key["chat-2-child"]["parent"] == {
+        "slot": "chat-1-parent",
+        "key": "chat-1-parent",
+    }
+    assert by_key["chat-1-parent"]["parent"] is None
+    # The frontend branches on `parent === undefined`, so every row carries the key.
+    assert all("parent" in p for p in payloads)
+
+
 def test_an_empty_payload_is_left_alone():
     rows: list[dict] = []
     _attach_slot_parents(rows)

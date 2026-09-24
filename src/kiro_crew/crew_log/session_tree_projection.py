@@ -111,6 +111,16 @@ CHECKPOINT_NAME: Final[str] = "session-tree.json"
 #: exactly like the truth and is wrong.
 CHECKPOINT_VERSION: Final[int] = 4
 
+#: How long the projection waits before re-attempting a seed that RAISED, in seconds.
+#: A failed seed serves an empty tree, so latching it for the life of the process makes
+#: one transient store fault cost every reader its lineage until the gateway restarts --
+#: the seed gate is otherwise cleared only by the data home changing. A cooldown rather
+#: than an immediate retry because the readers arrive on a timer, and a bare unlatch
+#: would re-pay a full cold scan every few seconds for as long as the store stays broken.
+#: Sized so a fault that clears is picked up within a minute without the retries
+#: themselves becoming the load.
+SEED_RETRY_COOLDOWN_SECS: Final[float] = 30.0
+
 #: One unit's log identity for the scan cache: the directory's mtime, its segment count,
 #: and the newest segment's size and mtime. Named because it appears in the state, in the
 #: checkpoint and in two signatures, and four bare ints in a tuple say nothing at a call
@@ -369,6 +379,13 @@ class SessionTreeProjection:
         self._incomplete = False
         self._over_cap = False
         self._seeded = False
+        #: When a seed that RAISED may be re-attempted, on the monotonic clock. ``None``
+        #: means the state was established rather than given up on, which is the only
+        #: case where reading it is final: a failed seed serves an EMPTY tree, and
+        #: without this the first transient store fault of a process would cost every
+        #: reader its lineage until the gateway restarted, because nothing else clears
+        #: :attr:`_seeded` for an unchanged root.
+        self._seed_retry_at: Optional[float] = None
         #: The store root this state was folded from, as a string. The fold's IDENTITY:
         #: a root that does not match means these records describe another store, so
         #: they are dropped rather than served or reconciled.
@@ -468,6 +485,26 @@ class SessionTreeProjection:
         root = _current_root()
         with self._lock:
             return self._seeded and self._root == root
+
+    @property
+    def seed_retry_due(self) -> bool:
+        """Whether the state was given up on and a re-attempt is owed NOW. No I/O.
+
+        Separate from :attr:`seeded_for_current_store` rather than folded into it,
+        because the two answer different questions and one of them is depended on
+        elsewhere. That property means "may :meth:`nodes` be read", and a failed seed
+        leaves a readable -- empty -- state for the store configured now, so reporting
+        it as unseeded would also re-point every other caller that asks, including the
+        adoption guard in ``session_control``, which already refuses on
+        :attr:`~TreeReading.incomplete` and needs no second signal.
+
+        What this one says is that the empty answer is provisional: a caller that cannot
+        block can ask for a seed and tell its reader to come back. False whenever the
+        state was established, which is the ordinary path, so the clock is not read at
+        all on a healthy projection.
+        """
+        with self._lock:
+            return self._retry_due_locked()
 
     # ── the delta ──────────────────────────────────────────────────────────
 
@@ -811,12 +848,15 @@ class SessionTreeProjection:
 
         Never raises. A seed that cannot be established leaves the projection empty
         and ``incomplete``, which every consumer renders as "no creator known" --
-        the same answer the pages gave before any of this existed.
+        the same answer the pages gave before any of this existed. That state is
+        RE-ATTEMPTED: the next call after :data:`SEED_RETRY_COOLDOWN_SECS` seeds again,
+        so a store fault that clears costs a minute of missing lineage rather than the
+        rest of the process's life. A seed that SUCCEEDS is final for its store.
         """
         root = _current_root()
         with self._seed_gate:
             with self._lock:
-                if self._seeded and self._root == root:
+                if self._seeded and self._root == root and not self._retry_due_locked():
                     return
                 if self._root != root:
                     # A different store. Drop the previous one's fold rather than
@@ -828,6 +868,7 @@ class SessionTreeProjection:
                     self._incomplete = False
                     self._over_cap = False
                     self._seeded = False
+                    self._seed_retry_at = None
                     self._dirty = False
                     # An armed debounced write pinned the PREVIOUS store's path but
                     # builds its payload from ``_records`` when it wakes -- which is
@@ -840,15 +881,44 @@ class SessionTreeProjection:
                 self._seed(live_sids)
             except Exception:  # pragma: no cover -- defensive; every step is guarded
                 logger.warning(
-                    "session tree projection could not be seeded; reporting no lineage",
+                    "session tree projection could not be seeded; reporting no lineage "
+                    "until the next attempt",
                     exc_info=True,
                 )
                 with self._lock:
                     self._seeded = True
                     self._incomplete = True
                     self._nodes = None
+                    # A store fault is usually transient, and the state it leaves is an
+                    # EMPTY tree, so latching it is a much worse answer than re-paying
+                    # a scan: the gate above is the only thing that clears for an
+                    # unchanged root, so without an expiry the first fault of a process
+                    # costs every reader its lineage until the gateway restarts.
+                    #
+                    # A cooldown rather than an immediate retry because the readers are
+                    # on a timer -- the memory sampler asks per sample -- so a bare
+                    # unlatch would re-pay a full cold scan every few seconds for as
+                    # long as the store stays broken, which is the cost this module
+                    # exists to remove.
+                    self._seed_retry_at = time.monotonic() + SEED_RETRY_COOLDOWN_SECS
+            else:
+                with self._lock:
+                    # Established, so nothing is owed. Cleared on the way out of a
+                    # SUCCESSFUL seed only, which is what makes a recovered store stop
+                    # re-scanning.
+                    self._seed_retry_at = None
             with self._lock:
                 self._root = root
+
+    def _retry_due_locked(self) -> bool:
+        """Whether a seed that failed earlier may be re-attempted now. ``_lock`` held.
+
+        False whenever the state was established, which is the ordinary path: the marker
+        is set only by the handler above, so a healthy projection answers without reading
+        the clock.
+        """
+        at = self._seed_retry_at
+        return at is not None and time.monotonic() >= at
 
     def _install_seed_locked(self, scanned: "dict[str, OpenedRecord]") -> None:
         """Install what a seed established WITHOUT discarding commits made meanwhile.
