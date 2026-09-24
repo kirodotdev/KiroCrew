@@ -1328,6 +1328,43 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "capabilities.spawn": ScopeSpec(
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}
     ),
+    # Delegating a task to a REMOTE agent (an ``a2a_agents`` entry, driven over
+    # A2A) sends the task text to an operator-configured host — an egress
+    # surface, like publish/messaging, distinct from a local spawn that never
+    # leaves the machine. A second row so an enterprise POLICY can allow local
+    # sub-agents while forbidding or scoping off-box delegation; ``agents``
+    # bounds WHICH registry entries may be targeted once it is on. Checked at the
+    # spawn chokepoint (``subagent._vet_spawn_governance``) IN ADDITION to
+    # ``capabilities.spawn`` when the target resolves to a registry entry. Same
+    # opt-in posture as the other external-side-effect rows: a policy that names
+    # the key without ``enabled`` resolves to denied; an unnamed key is
+    # ungoverned and permitted (CAPABILITY-DEFAULT CONTRACT above). Data row only.
+    # Two scopes: ``agents`` over registry entry NAMES, and ``origins`` over the
+    # entries' card-URL origins (``scheme://host[:port]``, host-glob matched
+    # like network.egress). The origins ruleset is what makes the destination an
+    # OPERATOR decision: config.json is agent-writable, so a policy that only
+    # names agents can be satisfied by an entry that keeps an allowed name and
+    # points its URL elsewhere; a policy that pins origins cannot.
+    #
+    # TRUST MODEL (a design decision, not an oversight): the registry lives in
+    # agent-writable config.json on purpose, and membership is the grant. This is
+    # the same posture as MCP servers, which the same file registers and which
+    # carry at least as much risk (arbitrary local processes with the agent's
+    # credentials). Moving the registry to an agent-inaccessible file would make
+    # remote agents undiscoverable to the agent that has to use them, and a
+    # default-deny would break the standalone (no policy) profile this feature
+    # ships in. The enterprise answer is the ``origins`` ruleset above: an
+    # operator who wants an allowlist writes one in security_policy.json, which
+    # the agent cannot edit, and the registry then cannot point anywhere else.
+    # Credentials never travel to an origin other than the one pinned in the
+    # environment (``<token_env>_ORIGIN``), so an entry rewritten to an
+    # attacker's URL sends the task text but not the token. See the RFC's
+    # Security section and docs/system-specs/modules/a2a-subagents.md.
+    "capabilities.remote_spawn": ScopeSpec(
+        CAPABILITY,
+        capability_default=False,
+        scope_matchers={"agents": "identifier", "origins": "host"},
+    ),
     "capabilities.memory_writes": ScopeSpec(CAPABILITY, capability_default=True),
     # Web browsing (the ``browser`` MCP tool driving the native panel, and the
     # playwright-cli fallback it points at) is a governable egress surface: an

@@ -119,6 +119,15 @@ class LLMProvider(ABC):
         """Exact documents supplied at native startup, empty without evidence."""
         return {}
 
+    #: The session-map ``provider`` label a run served by this provider is
+    #: persisted under, when the provider is a self-contained backend (the A2A
+    #: remote provider sets ``"a2a"``). Empty means "not self-identifying": the
+    #: ACP family's label is derived from the backend it wraps by
+    #: ``providers.acp.provider_label()``, which stays the authority for it.
+    #: Declared here so identity is read through the ABC contract rather than a
+    #: ``getattr`` probe that any attribute of the same name could satisfy.
+    provider_label: str = ""
+
     @abstractmethod
     async def start(self) -> None:
         """Initialize the provider (spawn process, create client, etc.)."""

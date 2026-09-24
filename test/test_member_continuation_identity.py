@@ -72,7 +72,9 @@ async def test_app_continuations_preserve_scope_through_two_runs(monkeypatch, re
         lambda: [SimpleNamespace(name="example-app--worker", filename="example-app--worker.json")],
     )
 
-    monkeypatch.setattr("kiro_crew.subagent._validate_agent", lambda name, cwd: (name, "", ""))
+    monkeypatch.setattr(
+        "kiro_crew.subagent._validate_agent", lambda name, cwd, **kw: (name, "", "")
+    )
     governance = MagicMock(return_value="")
     monkeypatch.setattr("kiro_crew.subagent._vet_spawn_governance", governance)
     sessions = _continuation_sessions()
@@ -147,7 +149,9 @@ async def test_app_continuations_preserve_scope_through_two_runs(monkeypatch, re
 async def test_unknown_app_ownership_cannot_resume_as_the_user(monkeypatch, agent) -> None:
     from kiro_crew.dashboard.token_auth import caller_record_is_missing
 
-    monkeypatch.setattr("kiro_crew.subagent._validate_agent", lambda name, cwd: (name, "", ""))
+    monkeypatch.setattr(
+        "kiro_crew.subagent._validate_agent", lambda name, cwd, **kw: (name, "", "")
+    )
     await asyncio.to_thread(subagent_persistence.create_agent_folder, "legacy-app")
     path = subagent_persistence._agent_dir("legacy-app") / "state.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -211,7 +215,9 @@ async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypat
     pass  # Member routing does not depend on OS isolation.
     monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: f"test-start-{pid}")
     monkeypatch.setattr("kiro_crew.session_pid_sig._load_hmac_key", lambda: b"test-key" * 4)
-    monkeypatch.setattr("kiro_crew.subagent._validate_agent", lambda name, cwd: (name, "", ""))
+    monkeypatch.setattr(
+        "kiro_crew.subagent._validate_agent", lambda name, cwd, **kw: (name, "", "")
+    )
     monkeypatch.setattr(context, "_vector_stores", dict(env.tiers))
     monkeypatch.setattr(context, "_memory_stores", {})
     monkeypatch.setattr(context, "_lesson_stores", {})

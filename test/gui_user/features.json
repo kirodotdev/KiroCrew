@@ -1,18 +1,18 @@
 {
   "generated_from_sha": "2f71d47e6c0673e7dc6a49f5a170601c17eee2a8",
-  "raw_record_count": 387,
+  "raw_record_count": 393,
   "counts": {
     "smoke": 42,
-    "nightly": 166,
+    "nightly": 172,
     "native-only": 12,
     "needs-secret": 27,
     "excluded": 22,
-    "total": 269
+    "total": 275
   },
   "priorities": {
-    "P0": 10,
-    "P1": 35,
-    "P2": 162,
+    "P0": 11,
+    "P1": 39,
+    "P2": 164,
     "P3": 61
   },
   "per_feature": {
@@ -22,6 +22,13 @@
       "native-only": 0,
       "needs-secret": 2,
       "excluded": 2
+    },
+    "subagents": {
+      "smoke": 0,
+      "nightly": 6,
+      "native-only": 0,
+      "needs-secret": 0,
+      "excluded": 0
     },
     "side-panel": {
       "smoke": 1,
@@ -270,7 +277,7 @@
       "title": "Sessions",
       "user_story": "As a dashboard user, I want a multi-slot agent chat with one slot per conversation and pinned rows on top, so that I can run and return to several conversations at once.",
       "start_url": "/chat",
-      "entry_path": "Rail → Sessions → new-chat button in ChatSidebar (or pick an existing row) → type in composer → Enter",
+      "entry_path": "Rail \u2192 Sessions \u2192 new-chat button in ChatSidebar (or pick an existing row) \u2192 type in composer \u2192 Enter",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -279,7 +286,7 @@
       },
       "runnable": "smoke",
       "estimated_steps": 4,
-      "rationale": "P0 core daily path (new session + send): open /chat, create or select a session, send, see the reply — four actions on the fake backend, no Electron or external account. Merged the feature-map 'Sessions' record with the code-derived new-session flow (same route, same flow).",
+      "rationale": "P0 core daily path (new session + send): open /chat, create or select a session, send, see the reply \u2014 four actions on the fake backend, no Electron or external account. Merged the feature-map 'Sessions' record with the code-derived new-session flow (same route, same flow).",
       "source": [
         "docs/feature-map/README.md",
         "website/src/App.tsx",
@@ -300,7 +307,7 @@
       "title": "Subagents",
       "user_story": "As a user, I want to see background agent runs spawned from a session with their status and a rail badge, so that I can follow delegated work.",
       "start_url": "/chat",
-      "entry_path": "Chat activity viewer (right panel → Subagents); rail badge",
+      "entry_path": "Chat activity viewer (right panel \u2192 Subagents); rail badge",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -325,7 +332,7 @@
       "title": "Session title",
       "user_story": "As a user, I want auto-generated slot titles I can rename inline, so that sessions are recognisable in the sidebar.",
       "start_url": "/chat",
-      "entry_path": "Header title → click to rename",
+      "entry_path": "Header title \u2192 click to rename",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -334,7 +341,7 @@
       },
       "runnable": "smoke",
       "estimated_steps": 3,
-      "rationale": "Click, type, Enter — a daily micro-action with an immediate visible result.",
+      "rationale": "Click, type, Enter \u2014 a daily micro-action with an immediate visible result.",
       "source": [
         "docs/feature-map/README.md"
       ],
@@ -378,7 +385,7 @@
       "title": "Collapse the message input",
       "user_story": "As a reader, I want to put the composer away and restore it from a labelled bar showing my draft's first line, so that a long reply gets the whole pane.",
       "start_url": "/chat",
-      "entry_path": "Composer + menu → Collapse the message input (touch: ⋯ overflow beside attach)",
+      "entry_path": "Composer + menu \u2192 Collapse the message input (touch: \u22ef overflow beside attach)",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -546,7 +553,7 @@
       "title": "Pinned messages",
       "user_story": "As a user, I want to pin a message and see a per-session pins panel, so that key answers stay one click away.",
       "start_url": "/chat",
-      "entry_path": "Message hover → pin; header pin count (or side panel → Pinned messages) opens the per-session pins panel",
+      "entry_path": "Message hover \u2192 pin; header pin count (or side panel \u2192 Pinned messages) opens the per-session pins panel",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -575,7 +582,7 @@
       "title": "Pinned prompt banner",
       "user_story": "As a reader of long replies, I want the turn's own prompt kept visible in a banner while I scroll, so that I never lose the question the answer belongs to.",
       "start_url": "/settings/chat",
-      "entry_path": "Settings → Chat → Pin the latest turn, then scroll a long reply in /chat",
+      "entry_path": "Settings \u2192 Chat \u2192 Pin the latest turn, then scroll a long reply in /chat",
       "preconditions": {
         "seed": "sessions-long-history",
         "members": [],
@@ -625,7 +632,7 @@
       "title": "Regenerate / variants",
       "user_story": "As a user, I want to re-run a turn and switch between kept answers, so that I can compare responses.",
       "start_url": "/chat",
-      "entry_path": "Message action → Regenerate; variant switcher on the bubble",
+      "entry_path": "Message action \u2192 Regenerate; variant switcher on the bubble",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -650,12 +657,12 @@
       "title": "Rewind",
       "user_story": "As a user, I want to drop the transcript back to an earlier turn, so that I can redo the conversation from that point.",
       "start_url": "/chat",
-      "entry_path": "Message action → Rewind",
+      "entry_path": "Message action \u2192 Rewind",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
         "feature_flags": [],
-        "notes": "Session with ≥3 turns."
+        "notes": "Session with \u22653 turns."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
@@ -675,7 +682,7 @@
       "title": "Session summary",
       "user_story": "As a user, I want a rolling summary of the conversation in the right panel, so that I can catch up on a long session at a glance.",
       "start_url": "/chat",
-      "entry_path": "Chat right panel → Summary tab",
+      "entry_path": "Chat right panel \u2192 Summary tab",
       "preconditions": {
         "seed": "sessions-long-history",
         "members": [],
@@ -700,7 +707,7 @@
       "title": "Share message as card",
       "user_story": "As a user, I want to turn an assistant reply into a branded PNG card with a prefilled caption, so that I can post it to X or LinkedIn.",
       "start_url": "/chat",
-      "entry_path": "Message hover → More actions → Share as image",
+      "entry_path": "Message hover \u2192 More actions \u2192 Share as image",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -729,7 +736,7 @@
       "title": "Side chat",
       "user_story": "As a user, I want a scratch sub-conversation beside the main turn, opened from the panel, /side, or 'Ask about this' on selected text, so that I can ask a tangent without polluting the main transcript.",
       "start_url": "/chat",
-      "entry_path": "Chat right panel → Side; or /side in the composer; or select assistant text → Ask about this",
+      "entry_path": "Chat right panel \u2192 Side; or /side in the composer; or select assistant text \u2192 Ask about this",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -785,7 +792,7 @@
       "title": "Turn minimap",
       "user_story": "As a desktop user reading a long transcript, I want a proportional marker rail in the left gutter with hover previews and click/arrow-key jumps, so that I can navigate turns quickly.",
       "start_url": "/chat",
-      "entry_path": "Session transcript → left gutter (viewport ≥768px, pane ≥560px, ≥2 turns, fine pointer)",
+      "entry_path": "Session transcript \u2192 left gutter (viewport \u2265768px, pane \u2265560px, \u22652 turns, fine pointer)",
       "preconditions": {
         "seed": "sessions-long-history",
         "members": [],
@@ -813,7 +820,7 @@
       "title": "Worktrees",
       "user_story": "As a developer, I want to create a git worktree for a follow-up session from a card, so that parallel work stays isolated.",
       "start_url": "/chat",
-      "entry_path": "Chat follow-up card → Start in new worktree",
+      "entry_path": "Chat follow-up card \u2192 Start in new worktree",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -948,7 +955,7 @@
       "title": "Source-provider review",
       "user_story": "As a developer, I want PR state, checks and review threads in the Changes panel, so that I can review without leaving the chat.",
       "start_url": "/chat",
-      "entry_path": "Chat right panel → Changes",
+      "entry_path": "Chat right panel \u2192 Changes",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -964,6 +971,186 @@
       "priority": "P3",
       "merged_from": [
         "standalone-source-provider-review"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-spawn",
+      "feature": "subagents",
+      "title": "Delegate to a remote agent",
+      "user_story": "As a user, I want to ask my agent something that it delegates to a remote agent, so that I see the remote worker stream and finish on the subagent board exactly like a local one.",
+      "start_url": "/chat",
+      "entry_path": "Rail \u2192 Sessions \u2192 composer \u2192 type a request the primary agent delegates \u2192 watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 16,
+      "rationale": "Scenario `subagents-remote-spawn.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Delegate a task to the remote agent and watch it complete on the subagent board",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-spawn.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P0",
+      "merged_from": [
+        "subagents-remote-spawn"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-connection-lost",
+      "feature": "subagents",
+      "title": "Dropped remote connection shows as failed",
+      "user_story": "As a user, I want a remote subagent whose connection drops to show as failed together with the output it managed to produce, so that I never mistake a dead worker for a finished one.",
+      "start_url": "/chat",
+      "entry_path": "Rail \u2192 Sessions \u2192 composer \u2192 type a request the primary agent delegates \u2192 watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 16,
+      "rationale": "Scenario `subagents-remote-connection-lost.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Drop the remote connection mid-stream and confirm the run is marked failed, output kept",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-connection-lost.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P1",
+      "merged_from": [
+        "subagents-remote-connection-lost"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-continue",
+      "feature": "subagents",
+      "title": "Continue a finished remote conversation",
+      "user_story": "As a user, I want to continue a finished remote subagent conversation and have it remember what we discussed, so that a long investigation can be picked up later without re-explaining.",
+      "start_url": "/chat",
+      "entry_path": "Rail \u2192 Sessions \u2192 composer \u2192 type a request the primary agent delegates \u2192 watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 20,
+      "rationale": "Scenario `subagents-remote-continue.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Tell the remote agent a codeword, finish, then ask it back in a new turn",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-continue.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P1",
+      "merged_from": [
+        "subagents-remote-continue"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-not-primary",
+      "feature": "subagents",
+      "title": "Remote agents absent from the primary picker",
+      "user_story": "As a user, I want the agent picker for my chat to offer only local agents, so that I cannot accidentally run a whole session on a remote worker that is meant to be delegated to.",
+      "start_url": "/chat",
+      "entry_path": "Rail \u2192 Sessions \u2192 composer \u2192 type a request the primary agent delegates \u2192 watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 12,
+      "rationale": "Scenario `subagents-remote-not-primary.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Open the chat's agent switcher and confirm the remote agent is not offered",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-not-primary.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P1",
+      "merged_from": [
+        "subagents-remote-not-primary"
+      ],
+      "component": "AgentPicker"
+    },
+    {
+      "id": "subagents-remote-mixed-batch",
+      "feature": "subagents",
+      "title": "Local and remote workers in one batch",
+      "user_story": "As a user, I want one request to fan out to a local and a remote worker at once, so that I get both results in a single completion without having to choose a backend.",
+      "start_url": "/chat",
+      "entry_path": "Rail \u2192 Sessions \u2192 composer \u2192 type a request the primary agent delegates \u2192 watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 16,
+      "rationale": "Scenario `subagents-remote-mixed-batch.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Fan one message out to a local and a remote subagent and see both finish together",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-mixed-batch.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P2",
+      "merged_from": [
+        "subagents-remote-mixed-batch"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-steer",
+      "feature": "subagents",
+      "title": "Steer a running remote subagent",
+      "user_story": "As a user, I want to send a follow-up to a running remote subagent and be told plainly when live interrupt is not available, so that I know which kinds of steering work with a remote agent.",
+      "start_url": "/chat",
+      "entry_path": "Rail \u2192 Sessions \u2192 composer \u2192 type a request the primary agent delegates \u2192 watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 24,
+      "rationale": "Scenario `subagents-remote-steer.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Interrupt a running remote run (refused, typed) then follow it up (delivered)",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-steer.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P2",
+      "merged_from": [
+        "subagents-remote-steer"
       ],
       "component": ""
     },
@@ -1084,7 +1271,7 @@
       "title": "Terminal panel",
       "user_story": "As a developer, I want a docked PTY and a per-chat terminal opening on the chat's working directory, so that I can run commands beside the conversation.",
       "start_url": "/chat",
-      "entry_path": "Header terminal toggle (docked); right panel → + → Terminal (per-chat)",
+      "entry_path": "Header terminal toggle (docked); right panel \u2192 + \u2192 Terminal (per-chat)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -1109,7 +1296,7 @@
       "title": "Open a docked terminal tab and run a command",
       "user_story": "As a developer, I want a terminal beside the chat, so that I can run commands in the session's project directory.",
       "start_url": "/chat",
-      "entry_path": "Chat page → side panel + menu → Terminal",
+      "entry_path": "Chat page \u2192 side panel + menu \u2192 Terminal",
       "preconditions": {
         "seed": "rich",
         "members": [
@@ -1174,7 +1361,7 @@
       },
       "runnable": "smoke",
       "estimated_steps": 3,
-      "rationale": "P0: this is the newly merged list-shell sidebar (folders, pinned rows, History pane) rendered read-only on the rich seed in ≤5 actions; the seed is designed for it.",
+      "rationale": "P0: this is the newly merged list-shell sidebar (folders, pinned rows, History pane) rendered read-only on the rich seed in \u22645 actions; the seed is designed for it.",
       "source": [
         "src/kiro_crew/tests_fixtures/rich/README.md",
         "src/kiro_crew/tests_fixtures/rich/fixture.yaml"
@@ -1191,7 +1378,7 @@
       "title": "Older sessions",
       "user_story": "As a user, I want a searchable history pane of closed sessions with per-session and bulk delete, so that I can revisit or prune past work.",
       "start_url": "/chat",
-      "entry_path": "Sidebar → Older Sessions disclosure",
+      "entry_path": "Sidebar \u2192 Older Sessions disclosure",
       "preconditions": {
         "seed": "sessions-long-history",
         "members": [],
@@ -1200,7 +1387,7 @@
       },
       "runnable": "smoke",
       "estimated_steps": 4,
-      "rationale": "Open disclosure, search, open a session — a core retrieval path; the bulk delete is destructive and left out of the smoke script.",
+      "rationale": "Open disclosure, search, open a session \u2014 a core retrieval path; the bulk delete is destructive and left out of the smoke script.",
       "source": [
         "docs/feature-map/README.md"
       ],
@@ -1225,7 +1412,7 @@
       },
       "runnable": "smoke",
       "estimated_steps": 3,
-      "rationale": "Read-only list at a stable URL; open, search, click a chip or row — trivially pixel-testable. Moved the code-derived chooser record from the chat bucket (it is a session list, not a transcript) and merged it.",
+      "rationale": "Read-only list at a stable URL; open, search, click a chip or row \u2014 trivially pixel-testable. Moved the code-derived chooser record from the chat bucket (it is a session list, not a transcript) and merged it.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/App.tsx",
@@ -1295,7 +1482,7 @@
       "title": "Fork a session",
       "user_story": "As a user, I want to branch a new slot from an existing transcript, keeping incognito or temporary mode on the child, so that I can explore an alternative without losing the original.",
       "start_url": "/chat",
-      "entry_path": "Session row menu → Fork",
+      "entry_path": "Session row menu \u2192 Fork",
       "preconditions": {
         "seed": "incognito-mix",
         "members": [],
@@ -1320,7 +1507,7 @@
       "title": "Session folders",
       "user_story": "As a user with many sessions, I want to group session rows into folders and start mode-pinned ephemeral chats inside them, so that my sidebar stays organised.",
       "start_url": "/chat",
-      "entry_path": "Sidebar folder header → drag a row; folder ⋯ menu → New ephemeral chat",
+      "entry_path": "Sidebar folder header \u2192 drag a row; folder \u22ef menu \u2192 New ephemeral chat",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -1345,7 +1532,7 @@
       "title": "Session tags",
       "user_story": "As a user, I want to put coloured labels on sessions and filter by them, so that I can find related conversations quickly.",
       "start_url": "/chat",
-      "entry_path": "Sidebar row context menu → Tags",
+      "entry_path": "Sidebar row context menu \u2192 Tags",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -1579,7 +1766,7 @@
       "title": "Promote a capability tab to the rail",
       "user_story": "As a daily user of one capability tab, I want to pin it as its own rail row (up to NAV_PINNED_LIMIT), so that it is one click away instead of two.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities page header → pin control (PinSurfaceButton) on the current tab",
+      "entry_path": "Agent Capabilities page header \u2192 pin control (PinSurfaceButton) on the current tab",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1609,7 +1796,7 @@
       "title": "Redirect /agents and /mc-agents",
       "user_story": "As a user with an old bookmark, I want /agents and /mc-agents to land on Agent Capabilities, so that deep links keep working.",
       "start_url": "/agents",
-      "entry_path": "Type /agents or /mc-agents → /capabilities",
+      "entry_path": "Type /agents or /mc-agents \u2192 /capabilities",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1634,7 +1821,7 @@
       "title": "Redirect /artifacts/deploy",
       "user_story": "As a user with an old bookmark, I want /artifacts/deploy to land on /deploy, so that deep links keep working.",
       "start_url": "/artifacts/deploy",
-      "entry_path": "Type /artifacts/deploy → /deploy",
+      "entry_path": "Type /artifacts/deploy \u2192 /deploy",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1659,7 +1846,7 @@
       "title": "Redirect /connections",
       "user_story": "As a user with an old bookmark, I want /connections to land on the Connections tab, so that deep links keep working.",
       "start_url": "/connections",
-      "entry_path": "Type /connections → /capabilities?tab=mcp",
+      "entry_path": "Type /connections \u2192 /capabilities?tab=mcp",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1684,7 +1871,7 @@
       "title": "Redirect /instances",
       "user_story": "As a user with an old bookmark, I want /instances to land on Settings Instances, so that deep links keep working.",
       "start_url": "/instances",
-      "entry_path": "Type /instances → /settings/instances",
+      "entry_path": "Type /instances \u2192 /settings/instances",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1709,7 +1896,7 @@
       "title": "Redirect /knowledge",
       "user_story": "As a user with an old bookmark, I want /knowledge to land on the Knowledge tab, so that deep links keep working.",
       "start_url": "/knowledge",
-      "entry_path": "Type /knowledge → lands on /capabilities?tab=knowledge",
+      "entry_path": "Type /knowledge \u2192 lands on /capabilities?tab=knowledge",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1734,7 +1921,7 @@
       "title": "Redirect /overview",
       "user_story": "As a user with an old bookmark, I want /overview to land on Settings Overview, so that deep links keep working.",
       "start_url": "/overview",
-      "entry_path": "Type /overview → /settings/overview",
+      "entry_path": "Type /overview \u2192 /settings/overview",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1759,7 +1946,7 @@
       "title": "Redirect /tasks",
       "user_story": "As a user with an old bookmark, I want /tasks to land on Task Runner, so that deep links keep working.",
       "start_url": "/tasks",
-      "entry_path": "Type /tasks → /projects",
+      "entry_path": "Type /tasks \u2192 /projects",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1784,7 +1971,7 @@
       "title": "Redirect unmatched paths",
       "user_story": "As a user who mistypes a URL, I want anything unmatched to land on /chat, so that I am never stranded.",
       "start_url": "/this-does-not-exist",
-      "entry_path": "Type any unknown path → /chat",
+      "entry_path": "Type any unknown path \u2192 /chat",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2044,7 +2231,7 @@
       "title": "Crews",
       "user_story": "As an operator, I want to define named crews binding an agent, model and workspace with a custom avatar, so that I can pick the right worker per task.",
       "start_url": "/capabilities",
-      "entry_path": "Rail → Agent Capabilities → Crews tab (?tab=crews)",
+      "entry_path": "Rail \u2192 Agent Capabilities \u2192 Crews tab (?tab=crews)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -2098,7 +2285,7 @@
       "title": "Agent templates inside a crew's Template pane",
       "user_story": "As an operator, I want to inspect the harness-level agent definitions crews bind to, so that I understand what a crew actually runs.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Crews tab → open a crew → Template pane (the standalone Agent Templates tab no longer exists)",
+      "entry_path": "Agent Capabilities \u2192 Crews tab \u2192 open a crew \u2192 Template pane (the standalone Agent Templates tab no longer exists)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2123,7 +2310,7 @@
       "title": "Crew appearance library",
       "user_story": "As an operator, I want a Library tab of appearance packs a crew can wear, with import and guarded delete, so that crews look distinct.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Crews → a crew → Edit avatar → Library",
+      "entry_path": "Agent Capabilities \u2192 Crews \u2192 a crew \u2192 Edit avatar \u2192 Library",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -2148,7 +2335,7 @@
       "title": "Hooks",
       "user_story": "As an operator, I want event-triggered agent runs, so that routine reactions happen without me.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Hooks tab (?tab=hooks)",
+      "entry_path": "Agent Capabilities \u2192 Hooks tab (?tab=hooks)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2173,7 +2360,7 @@
       "title": "Prompts",
       "user_story": "As a user, I want reusable prompt entries from the registry, so that common requests are one pick away.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Prompts tab (?tab=prompts)",
+      "entry_path": "Agent Capabilities \u2192 Prompts tab (?tab=prompts)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2227,7 +2414,7 @@
       "title": "Skills",
       "user_story": "As an operator, I want to see installed skills, browse the public registry and review pending candidates, so that I can curate agent know-how.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Skills tab (?tab=skills)",
+      "entry_path": "Agent Capabilities \u2192 Skills tab (?tab=skills)",
       "preconditions": {
         "seed": "skills-custom",
         "members": [],
@@ -2252,7 +2439,7 @@
       "title": "Steering",
       "user_story": "As an operator, I want to manage always-injected steering documents, so that every agent turn follows house rules.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Steering tab (?tab=steering)",
+      "entry_path": "Agent Capabilities \u2192 Steering tab (?tab=steering)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2277,7 +2464,7 @@
       "title": "Workflows",
       "user_story": "As a user, I want saved dynamic-workflow definitions and their runs in one library, so that I can rerun orchestrations.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Workflows tab (?tab=workflows)",
+      "entry_path": "Agent Capabilities \u2192 Workflows tab (?tab=workflows)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -2327,10 +2514,10 @@
     {
       "id": "settings-skills",
       "feature": "capabilities",
-      "title": "Settings › Skills",
+      "title": "Settings \u203a Skills",
       "user_story": "As a user, I want skill enablement and a context budget, so that agents load the right skills without blowing context.",
       "start_url": "/settings/skills",
-      "entry_path": "Settings → Skills",
+      "entry_path": "Settings \u2192 Skills",
       "preconditions": {
         "seed": "skills-custom",
         "members": [],
@@ -2413,7 +2600,7 @@
       "title": "Connections",
       "user_story": "As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Connections tab (?tab=mcp)",
+      "entry_path": "Agent Capabilities \u2192 Connections tab (?tab=mcp)",
       "preconditions": {
         "seed": "connections-two",
         "members": [
@@ -2476,7 +2663,7 @@
       "title": "Memory browser",
       "user_story": "As a user, I want to browse preferences, projects, history, lessons and the vector store, so that I know what the agent remembers about me.",
       "start_url": "/settings/overview",
-      "entry_path": "Settings → Overview → memory drill-in (?view=memory)",
+      "entry_path": "Settings \u2192 Overview \u2192 memory drill-in (?view=memory)",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2507,7 +2694,7 @@
       "title": "Embeddings",
       "user_story": "As a user, I want to enable the vector store and pick its model, so that semantic memory search works.",
       "start_url": "/settings/overview",
-      "entry_path": "Memory browser (?view=memory) → vector card",
+      "entry_path": "Memory browser (?view=memory) \u2192 vector card",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2557,7 +2744,7 @@
       "title": "Portability",
       "user_story": "As a user moving machines, I want to export and import the whole memory/config bundle, so that nothing is lost.",
       "start_url": "/settings/imports",
-      "entry_path": "Settings → Imports → Portability export/import",
+      "entry_path": "Settings \u2192 Imports \u2192 Portability export/import",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2584,7 +2771,7 @@
       "title": "Usage",
       "user_story": "As a user, I want token and turn usage over time, so that I understand my consumption.",
       "start_url": "/settings/overview",
-      "entry_path": "Settings → Overview → usage drill-in (?view=usage)",
+      "entry_path": "Settings \u2192 Overview \u2192 usage drill-in (?view=usage)",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2609,7 +2796,7 @@
       "title": "WakaTime coding activity and export",
       "user_story": "As a freelancer, I want coding stats and project-grouped hours exported as CSV/JSON, so that I can invoice billable time.",
       "start_url": "/settings/overview",
-      "entry_path": "Settings → Overview → WakaTime drill-in (?view=wakatime)",
+      "entry_path": "Settings \u2192 Overview \u2192 WakaTime drill-in (?view=wakatime)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -2830,7 +3017,7 @@
       "title": "Artifact library",
       "user_story": "As a user, I want saved widgets, HTML and documents organised in versioned folders with gallery and table views and a kind filter, so that I can find and reuse what agents produced.",
       "start_url": "/artifacts",
-      "entry_path": "Rail → Artifacts → view toggle (grid | table) → folder tree / kind filter",
+      "entry_path": "Rail \u2192 Artifacts \u2192 view toggle (grid | table) \u2192 folder tree / kind filter",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [
@@ -2841,7 +3028,7 @@
       },
       "runnable": "smoke",
       "estimated_steps": 3,
-      "rationale": "Open library, toggle view, browse a folder / filter by kind — core daily path, fixture supplies folders and artifacts.",
+      "rationale": "Open library, toggle view, browse a folder / filter by kind \u2014 core daily path, fixture supplies folders and artifacts.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/App.tsx",
@@ -2864,7 +3051,7 @@
       "title": "Artifact comments",
       "user_story": "As a reviewer, I want threaded, anchored comments on an artifact, so that feedback lands on the exact passage.",
       "start_url": "/artifacts/pagination-design",
-      "entry_path": "Artifact detail → select text → comment",
+      "entry_path": "Artifact detail \u2192 select text \u2192 comment",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [
@@ -2891,7 +3078,7 @@
       "title": "Iterate on an artifact via the companion chat on its detail page",
       "user_story": "As a user, I want a chat bound to the artifact beside its render, so that I can ask for changes without leaving the page.",
       "start_url": "/artifacts/pagination-design",
-      "entry_path": "Artifacts → detail page → companion chat panel → send",
+      "entry_path": "Artifacts \u2192 detail page \u2192 companion chat panel \u2192 send",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [
@@ -2919,7 +3106,7 @@
       "title": "Artifact detail",
       "user_story": "As a user, I want to view an artifact, switch between its versions and read its comment threads, so that I can review the agent's iterations.",
       "start_url": "/artifacts/release-checklist",
-      "entry_path": "Artifacts → click an artifact (/artifacts/:slug) → version dropdown → comments panel",
+      "entry_path": "Artifacts \u2192 click an artifact (/artifacts/:slug) \u2192 version dropdown \u2192 comments panel",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [
@@ -2953,7 +3140,7 @@
       "title": "In-session Artifacts tab shows only what this session produced",
       "user_story": "As a user, I want the chat side panel's Artifacts tab to list this session's artifacts only, so that library artifacts from elsewhere do not appear as mine.",
       "start_url": "/chat",
-      "entry_path": "Chat page → side panel Artifacts tab",
+      "entry_path": "Chat page \u2192 side panel Artifacts tab",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [
@@ -2980,7 +3167,7 @@
       "title": "Star an artifact, switch to the Starred view, and see the choice persist on reload",
       "user_story": "As a user, I want to pin artifacts and have the Starred/All choice remembered, so that my library opens where I left it.",
       "start_url": "/artifacts",
-      "entry_path": "Artifacts → star column → Starred view → reload",
+      "entry_path": "Artifacts \u2192 star column \u2192 Starred view \u2192 reload",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [
@@ -3007,7 +3194,7 @@
       "title": "Deploy",
       "user_story": "As a user, I want to ship a webapp artifact to a public URL on my AWS account, so that others can use it.",
       "start_url": "/deploy",
-      "entry_path": "Artifact detail → Deploy → /deploy (/artifacts/deploy redirects here) → scan status → confirm",
+      "entry_path": "Artifact detail \u2192 Deploy \u2192 /deploy (/artifacts/deploy redirects here) \u2192 scan status \u2192 confirm",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [
@@ -3018,7 +3205,7 @@
       },
       "runnable": "needs-secret",
       "estimated_steps": 5,
-      "rationale": "The deploy action needs an external AWS account and network, which the target has neither of. Only the config/scan page renders offline — that read-only render could be split out as a nightly check later.",
+      "rationale": "The deploy action needs an external AWS account and network, which the target has neither of. Only the config/scan page renders offline \u2014 that read-only render could be split out as a nightly check later.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/App.tsx",
@@ -3039,7 +3226,7 @@
       "title": "Publishing",
       "user_story": "As a user, I want to push an artifact to a configured provider and re-check a recorded notice, so that it reaches my team.",
       "start_url": "/artifacts",
-      "entry_path": "Artifact detail → share menu; publication banner → Check again",
+      "entry_path": "Artifact detail \u2192 share menu; publication banner \u2192 Check again",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [],
@@ -3064,7 +3251,7 @@
       "title": "Remote artifacts",
       "user_story": "As a user, I want to browse and comment on provider-hosted docs in place, so that I do not switch tools.",
       "start_url": "/artifacts",
-      "entry_path": "Artifacts → remote provider browse (/artifacts/remote/:provider/:externalId)",
+      "entry_path": "Artifacts \u2192 remote provider browse (/artifacts/remote/:provider/:externalId)",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [],
@@ -3089,7 +3276,7 @@
       "title": "A chat-rendered mcwidget is auto-registered as an artifact",
       "user_story": "As a user, I want widgets the agent renders to appear in the library automatically, so that I can find them later.",
       "start_url": "/chat",
-      "entry_path": "Chat page → agent reply containing an mcwidget → Artifacts tab",
+      "entry_path": "Chat page \u2192 agent reply containing an mcwidget \u2192 Artifacts tab",
       "preconditions": {
         "seed": "minimal",
         "members": [
@@ -4037,7 +4224,7 @@
       "title": "Manage worktrees and pods on the Dev Fleet page",
       "user_story": "As a developer, I want to see worktrees and agent pods, so that I can coordinate parallel work.",
       "start_url": "/dev-fleet",
-      "entry_path": "Builtin app route /dev-fleet (BuiltinAppRoute) → worktree list → pod system",
+      "entry_path": "Builtin app route /dev-fleet (BuiltinAppRoute) \u2192 worktree list \u2192 pod system",
       "preconditions": {
         "seed": "multi-workspace",
         "members": [],
@@ -4067,7 +4254,7 @@
       "title": "Schedule",
       "user_story": "As a user, I want to see my scheduled jobs with status and next run and create new cron jobs (agent turns, scripts, commands), so that routine work runs on time.",
       "start_url": "/schedule",
-      "entry_path": "Rail → Schedule → list (two active, one paused with expressions) → Add job → save; also crew editor → What wakes this crew",
+      "entry_path": "Rail \u2192 Schedule \u2192 list (two active, one paused with expressions) \u2192 Add job \u2192 save; also crew editor \u2192 What wakes this crew",
       "preconditions": {
         "seed": "crons-active",
         "members": [
@@ -4098,7 +4285,7 @@
       "title": "Switch Schedule between list, calendar, and executions views",
       "user_story": "As a user with cron jobs, I want list, calendar, and execution-history views, so that I can see when jobs run and what happened.",
       "start_url": "/schedule",
-      "entry_path": "Rail → Schedule → view segmented control (list | calendar | executions)",
+      "entry_path": "Rail \u2192 Schedule \u2192 view segmented control (list | calendar | executions)",
       "preconditions": {
         "seed": "crons-active",
         "members": [],
@@ -4125,7 +4312,7 @@
       "title": "Cron secret grants",
       "user_story": "As an owner, I want to approve, deny or revoke vault-secret env grants a script cron requested, so that scripts get secrets only with my consent.",
       "start_url": "/schedule",
-      "entry_path": "Schedule → script job → drawer → Secrets section → approve",
+      "entry_path": "Schedule \u2192 script job \u2192 drawer \u2192 Secrets section \u2192 approve",
       "preconditions": {
         "seed": "crons-active",
         "members": [],
@@ -4134,7 +4321,7 @@
       },
       "runnable": "nightly",
       "estimated_steps": 4,
-      "rationale": "Requires a pending request in the fixture; approval is a single PUT with visible state, mutating only the throwaway home — no external account.",
+      "rationale": "Requires a pending request in the fixture; approval is a single PUT with visible state, mutating only the throwaway home \u2014 no external account.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/pages/SchedulePage.tsx",
@@ -4153,7 +4340,7 @@
       "title": "Open a job's detail drawer and read its logs",
       "user_story": "As a user, I want to inspect a job's last result and logs, so that I can debug a failing schedule.",
       "start_url": "/schedule",
-      "entry_path": "/schedule → click job row → drawer → Logs tab",
+      "entry_path": "/schedule \u2192 click job row \u2192 drawer \u2192 Logs tab",
       "preconditions": {
         "seed": "crons-active",
         "members": [],
@@ -4178,7 +4365,7 @@
       "title": "Monitor loops",
       "user_story": "As a user, I want same-session bounded monitors and nudge loops I can arm, inspect and stop from the composer popover, so that the agent babysits something for me.",
       "start_url": "/chat",
-      "entry_path": "Chat composer → monitor popover; Crew Members → Crew summary → Auto patrol (read-only)",
+      "entry_path": "Chat composer \u2192 monitor popover; Crew Members \u2192 Crew summary \u2192 Auto patrol (read-only)",
       "preconditions": {
         "seed": "crons-active",
         "members": [],
@@ -4203,7 +4390,7 @@
       "title": "Template update signal",
       "user_story": "As a user who created a job from a template, I want a dismissible hint when that template's prompt changes, so that I can refresh my job.",
       "start_url": "/schedule",
-      "entry_path": "Schedule → job detail (TemplateUpdatedNotice)",
+      "entry_path": "Schedule \u2192 job detail (TemplateUpdatedNotice)",
       "preconditions": {
         "seed": "crons-active",
         "members": [],
@@ -4350,10 +4537,10 @@
     {
       "id": "settings-webhooks",
       "feature": "webhooks",
-      "title": "Settings › Webhooks",
+      "title": "Settings \u203a Webhooks",
       "user_story": "As an integrator, I want inbound webhook tokens and contexts, so that external systems can wake an agent.",
       "start_url": "/settings/webhooks",
-      "entry_path": "Settings → Webhooks (preview flag + hiddenFromNav)",
+      "entry_path": "Settings \u2192 Webhooks (preview flag + hiddenFromNav)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4416,7 +4603,7 @@
     {
       "id": "settings-channels",
       "feature": "channels",
-      "title": "Settings › Channels",
+      "title": "Settings \u203a Channels",
       "user_story": "As a team lead, I want to configure Slack, Discord, Telegram, WhatsApp, Teams and more, so that the crew reaches my team where they are.",
       "start_url": "/settings/channels",
       "entry_path": "Settings → Messaging Channels → provider panel",
@@ -4608,7 +4795,7 @@
       "title": "Channel mirroring",
       "user_story": "As a team member, I want to mirror a session into Slack, Discord or another channel, so that colleagues can follow along where they already are.",
       "start_url": "/chat",
-      "entry_path": "Header channel menu → Link channel",
+      "entry_path": "Header channel menu \u2192 Link channel",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -5064,10 +5251,10 @@
     {
       "id": "settings-computer-use",
       "feature": "computer-use",
-      "title": "Settings › Computer Use",
+      "title": "Settings \u203a Computer Use",
       "user_story": "As a desktop user, I want to enable and scope native desktop automation, so that the agent can drive my apps safely.",
       "start_url": "/settings/computer-use",
-      "entry_path": "Settings → Computer Use",
+      "entry_path": "Settings \u2192 Computer Use",
       "preconditions": {
         "seed": "minimal",
         "members": [
@@ -5243,7 +5430,7 @@
       "title": "Remote-bound session",
       "user_story": "As an operator with a connected peer crew, I want a local session whose turns execute on that crew and stream back over its tunnel, so that I can drive remote work from my own sidebar.",
       "start_url": "/chat",
-      "entry_path": "ChatSidebar new-chat menu → New chat on crew → pick a connected crew (only with mc-preview-remote-crew-chat=1)",
+      "entry_path": "ChatSidebar new-chat menu \u2192 New chat on crew \u2192 pick a connected crew (only with mc-preview-remote-crew-chat=1)",
       "preconditions": {
         "seed": "multi-workspace",
         "members": [],
@@ -5409,7 +5596,7 @@
       "title": "Popout artifact window",
       "user_story": "As a user, I want one artifact in its own window, so that I can view it full-size beside the chat.",
       "start_url": "/artifacts/queue-badge",
-      "entry_path": "Artifact detail → pop out (/popout/artifact/:slug); nav intents relayed to main window",
+      "entry_path": "Artifact detail \u2192 pop out (/popout/artifact/:slug); nav intents relayed to main window",
       "preconditions": {
         "seed": "artifacts-library",
         "members": [
@@ -5440,7 +5627,7 @@
       "title": "Popout chat window",
       "user_story": "As a user, I want one session in its own OS window, so that I can keep it beside other work.",
       "start_url": "/popout/chat",
-      "entry_path": "Session header → pop out (/popout/chat/:slug)",
+      "entry_path": "Session header \u2192 pop out (/popout/chat/:slug)",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -5536,7 +5723,7 @@
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "boot.sh launches Chromium already at /?token=…; the lane should open a fresh tab/profile-less request to observe the gate. Token is throwaway CI value from target.env."
+        "notes": "boot.sh launches Chromium already at /?token=\u2026; the lane should open a fresh tab/profile-less request to observe the gate. Token is throwaway CI value from target.env."
       },
       "runnable": "smoke",
       "estimated_steps": 3,
@@ -5721,7 +5908,7 @@
     {
       "id": "settings-about",
       "feature": "settings",
-      "title": "Settings › About",
+      "title": "Settings \u203a About",
       "user_story": "As a user, I want version, build info and a diagnostics bundle, so that I can report a problem accurately.",
       "start_url": "/settings/about",
       "entry_path": "Settings > About (version, licence, update controls, Support/ReportProblemCard, MobileLoginCard)",
@@ -5749,10 +5936,10 @@
     {
       "id": "settings-chat",
       "feature": "settings",
-      "title": "Settings › Chat",
+      "title": "Settings \u203a Chat",
       "user_story": "As a user, I want chat behaviour preferences including plain vs highlighted diffs, so that the transcript reads the way I like.",
       "start_url": "/settings/chat",
-      "entry_path": "Settings → Chat",
+      "entry_path": "Settings \u2192 Chat",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -5838,10 +6025,10 @@
     {
       "id": "settings-display",
       "feature": "settings",
-      "title": "Settings › Display",
+      "title": "Settings \u203a Display",
       "user_story": "As a user, I want theme, density, language and terminal font/shell options, so that the dashboard fits my eyes and habits.",
       "start_url": "/settings/display",
-      "entry_path": "Settings → Display",
+      "entry_path": "Settings \u2192 Display",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -5934,7 +6121,7 @@
     {
       "id": "settings-overview",
       "feature": "settings",
-      "title": "Settings › Overview",
+      "title": "Settings \u203a Overview",
       "user_story": "As a user, I want a health hero, stat cards and drill-ins to memory and usage, so that I see system state at a glance.",
       "start_url": "/settings",
       "entry_path": "Sidebar > Settings (gear) > lands on Overview (segment-less /settings and /overview both resolve to /settings/overview); hero shows KiroSignInCard + TunnelStatus",
@@ -5964,10 +6151,10 @@
     {
       "id": "settings-privacy",
       "feature": "settings",
-      "title": "Settings › Privacy",
+      "title": "Settings \u203a Privacy",
       "user_story": "As a user, I want telemetry disclosure and an opt-out, so that I control what is collected.",
       "start_url": "/settings/privacy",
-      "entry_path": "Settings → Privacy",
+      "entry_path": "Settings \u2192 Privacy",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -5994,10 +6181,10 @@
     {
       "id": "settings-shortcuts",
       "feature": "settings",
-      "title": "Settings › Shortcuts",
+      "title": "Settings \u203a Shortcuts",
       "user_story": "As a keyboard user, I want a shortcut reference with overrides, so that I can work faster.",
       "start_url": "/settings/shortcuts",
-      "entry_path": "Settings → Shortcuts",
+      "entry_path": "Settings \u2192 Shortcuts",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -6054,7 +6241,7 @@
       "title": "Default memory mode",
       "user_story": "As a privacy-conscious user, I want to choose Persistent, Incognito or Temporary as the default for new dashboard chats, so that new sessions follow my retention preference without a per-chat click.",
       "start_url": "/settings/chat",
-      "entry_path": "Settings → Chat → Default Memory Mode; Welcome view overrides one chat",
+      "entry_path": "Settings \u2192 Chat \u2192 Default Memory Mode; Welcome view overrides one chat",
       "preconditions": {
         "seed": "incognito-mix",
         "members": [],
@@ -6598,10 +6785,10 @@
     {
       "id": "settings-releases",
       "feature": "settings",
-      "title": "Settings › Releases",
+      "title": "Settings \u203a Releases",
       "user_story": "As a user, I want a release channel, update check and changelog, so that I stay current on my terms.",
       "start_url": "/settings/releases",
-      "entry_path": "Settings → Releases",
+      "entry_path": "Settings \u2192 Releases",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -7009,7 +7196,7 @@
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "Harness pre-writes a minimal theme.json (formatVersion 1, level 0, variables) under $KIROCREW_SCRATCH; path is typed. Watch for the 'Applying…' indicator."
+        "notes": "Harness pre-writes a minimal theme.json (formatVersion 1, level 0, variables) under $KIROCREW_SCRATCH; path is typed. Watch for the 'Applying\u2026' indicator."
       },
       "runnable": "nightly",
       "estimated_steps": 6,
@@ -7080,7 +7267,7 @@
     {
       "id": "settings-security",
       "feature": "security",
-      "title": "Settings › Security",
+      "title": "Settings \u203a Security",
       "user_story": "As an owner, I want denied commands, sensitive paths and the approval posture in one place, so that I can tighten what agents may do.",
       "start_url": "/settings/security",
       "entry_path": "Settings > Security > section rail > /settings/security/<section> (posture default, approval, rules, tailnet, apps, layers, governance, docs)",
@@ -7111,10 +7298,10 @@
     {
       "id": "settings-secrets",
       "feature": "security",
-      "title": "Settings › Secrets",
+      "title": "Settings \u203a Secrets",
       "user_story": "As a user, I want managed integration credentials and other vault entries, so that secrets live encrypted, not in config.",
       "start_url": "/settings/secrets",
-      "entry_path": "Settings → Secrets",
+      "entry_path": "Settings \u2192 Secrets",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -7352,7 +7539,7 @@
       "title": "Developer › Agent backend",
       "user_story": "As a developer, I want to see which agent harness backend is live, what each harness can and cannot do, and whether Kiro prerequisites are met, so that I know what turns run on before I choose a harness.",
       "start_url": "/developer",
-      "entry_path": "Developer → agent-backend tab (?tab=agent-backend)",
+      "entry_path": "Developer \u2192 agent-backend tab (?tab=agent-backend)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -7381,10 +7568,10 @@
     {
       "id": "developer-archive",
       "feature": "developer",
-      "title": "Developer › Archive",
+      "title": "Developer \u203a Archive",
       "user_story": "As a developer, I want a consolidated session archive browser, so that I can inspect compacted history.",
       "start_url": "/developer",
-      "entry_path": "Developer → archive tab (?tab=archive)",
+      "entry_path": "Developer \u2192 archive tab (?tab=archive)",
       "preconditions": {
         "seed": "sessions-long-history",
         "members": [],
@@ -7408,10 +7595,10 @@
     {
       "id": "developer-config",
       "feature": "developer",
-      "title": "Developer › Config",
+      "title": "Developer \u203a Config",
       "user_story": "As a developer, I want raw Kiro Crew and agent config editors, so that I can fix a setting no panel exposes.",
       "start_url": "/developer",
-      "entry_path": "Developer → config tab (?tab=config)",
+      "entry_path": "Developer \u2192 config tab (?tab=config)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -7435,10 +7622,10 @@
     {
       "id": "developer-debug-tools",
       "feature": "developer",
-      "title": "Developer › Debug tools",
+      "title": "Developer \u203a Debug tools",
       "user_story": "As a developer, I want diagnostic overlays such as the chat scroll inspector, so that I can debug layout issues.",
       "start_url": "/developer",
-      "entry_path": "Developer → debug-tools tab (?tab=debug-tools)",
+      "entry_path": "Developer \u2192 debug-tools tab (?tab=debug-tools)",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],
@@ -7462,10 +7649,10 @@
     {
       "id": "developer-logs",
       "feature": "developer",
-      "title": "Developer › Logs",
+      "title": "Developer \u203a Logs",
       "user_story": "As a developer, I want a live gateway log stream with level control, so that I can debug in real time.",
       "start_url": "/developer",
-      "entry_path": "Developer → logs tab (?tab=logs)",
+      "entry_path": "Developer \u2192 logs tab (?tab=logs)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -7489,10 +7676,10 @@
     {
       "id": "developer-mcp-pool",
       "feature": "developer",
-      "title": "Developer › MCP pool",
+      "title": "Developer \u203a MCP pool",
       "user_story": "As a developer, I want MCP connection pool state and a probe, so that I can diagnose tool outages.",
       "start_url": "/developer",
-      "entry_path": "Developer → mcp-pool tab (?tab=mcp-pool)",
+      "entry_path": "Developer \u2192 mcp-pool tab (?tab=mcp-pool)",
       "preconditions": {
         "seed": "connections-two",
         "members": [],
@@ -7519,7 +7706,7 @@
       "title": "Memory graph",
       "user_story": "As a developer, I want an entity/relation visualiser over the memory store plus every memory layer and saved lesson, so that I can debug and audit what the agent remembers.",
       "start_url": "/developer",
-      "entry_path": "Developer → memory tab (?tab=memory)",
+      "entry_path": "Developer \u2192 memory tab (?tab=memory)",
       "preconditions": {
         "seed": "memory-populated",
         "members": [
@@ -7552,7 +7739,7 @@
       "title": "Navigate the Developer page internals tabs",
       "user_story": "As a developer, I want logs, system, telemetry, storage, MCP pool, memory graph, config, agent backend, debug tools, and archive in one place, so that I can diagnose the gateway.",
       "start_url": "/developer",
-      "entry_path": "Enable dev mode → Rail bottom → Developer → tabs (logs, system, telemetry, storage, mcp-pool, memory, config, agent-backend, debug-tools, archive)",
+      "entry_path": "Enable dev mode \u2192 Rail bottom \u2192 Developer \u2192 tabs (logs, system, telemetry, storage, mcp-pool, memory, config, agent-backend, debug-tools, archive)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -7585,10 +7772,10 @@
     {
       "id": "developer-storage",
       "feature": "developer",
-      "title": "Developer › Storage",
+      "title": "Developer \u203a Storage",
       "user_story": "As a developer, I want a raw localStorage inspector, so that I can debug client preferences.",
       "start_url": "/developer",
-      "entry_path": "Developer → storage tab (?tab=storage)",
+      "entry_path": "Developer \u2192 storage tab (?tab=storage)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -7612,10 +7799,10 @@
     {
       "id": "developer-system",
       "feature": "developer",
-      "title": "Developer › System",
+      "title": "Developer \u203a System",
       "user_story": "As a developer, I want host runtime, services, sessions and performance views, so that I can spot resource problems and reclaim session storage.",
       "start_url": "/developer",
-      "entry_path": "Developer → system tab (?tab=system) → sub-tabs Sessions | Services | Performance → SessionStorageScreen",
+      "entry_path": "Developer \u2192 system tab (?tab=system) \u2192 sub-tabs Sessions | Services | Performance \u2192 SessionStorageScreen",
       "preconditions": {
         "seed": "sessions-long-history",
         "members": [],
@@ -7646,10 +7833,10 @@
     {
       "id": "developer-telemetry",
       "feature": "developer",
-      "title": "Developer › Telemetry",
+      "title": "Developer \u203a Telemetry",
       "user_story": "As a developer, I want startup timings and context traces, so that I can find slow paths.",
       "start_url": "/developer",
-      "entry_path": "Developer → telemetry tab (?tab=telemetry)",
+      "entry_path": "Developer \u2192 telemetry tab (?tab=telemetry)",
       "preconditions": {
         "seed": "minimal",
         "members": [],

@@ -933,6 +933,15 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     # `continue_conversation` is synchronous. Doing it here keeps the gateway
     # responsive even when the recorded path lives on a stalled mount.
     resumed_cwd = await asyncio.to_thread(state.subagents.recorded_cwd, conv_id)
+    # Same for the remote-agent record: a remote conversation's continuation
+    # inherits (or must match) the agent that owns it, decided from state.json
+    # read here, in a thread, not inside the synchronous method. A manager
+    # without the accessor (a stub, or a build without remote agents) has no
+    # remote conversations, so the record is None and the continuation is local.
+    _recorded_a2a = getattr(state.subagents, "recorded_a2a", None)
+    a2a_record = (
+        await asyncio.to_thread(_recorded_a2a, conv_id) if callable(_recorded_a2a) else None
+    )
     info = await _continue_on_loop(
         state,
         conv_id,
@@ -944,6 +953,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         cwd=resumed_cwd,
         _memory_mode=admitted_mode,
         _stage_boundary_owner=_stage_boundary_owner_for_parent(state, parent_session),
+        a2a_record=a2a_record,
     )
     if not info:
         return web.json_response(
@@ -964,6 +974,8 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
             )
         if info.error.startswith("conversation_gone"):
             return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
+        if info.error.startswith("agent_mismatch"):
+            return web.json_response({"error": info.error, "code": "agent_mismatch"}, status=400)
         return web.json_response({"error": info.error, "code": _SPAWN_REJECTED_CODE}, status=400)
     return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})
 

@@ -124,6 +124,49 @@ class TestFollowUpDelivery:
         assert info.pending_followups == []
 
     @pytest.mark.asyncio
+    async def test_remote_runs_followup_carries_its_a2a_conversation(self, monkeypatch) -> None:
+        """A follow-up on a REMOTE run continues its A2A conversation: the
+        dispatch passes the record the dashboard handler would resolve for
+        ``spawn_continue`` (agent + contextId), from the run record itself. Without
+        it the rebuilt provider has no contextId and the resume guard settles the
+        queued message as failed. A local run's follow-up carries no record."""
+        from kiro_crew.config.sections import A2aAgentConfig
+        from kiro_crew.subagent_manager.continuation import RecordedA2A
+
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        info = SubagentInfo(id="rr3", task="t", parent_session_key="dash:1", agent="remote-demo")
+        setattr(
+            info, "_a2a_entry", A2aAgentConfig(name="remote-demo", agent_card_url="https://h/c")
+        )
+        setattr(info, "_session_id", "ctx-77")  # persisted at provider release
+        mgr._agents["rr3"] = info
+        info.pending_followups = ["and then?"]
+        continues: list = []
+        _patch_continue(
+            monkeypatch,
+            mgr,
+            lambda cid, task, **kw: (
+                continues.append((cid, task, kw)),
+                SubagentInfo(id="child", task=task),
+            )[1],
+        )
+        info.done = True
+        await asyncio.wait_for(mgr._deliver_followups(info), timeout=2)
+        assert len(continues) == 1
+        assert continues[0][2]["a2a_record"] == RecordedA2A(
+            agent="remote-demo", context_id="ctx-77"
+        )
+
+        local = SubagentInfo(id="r4", task="t", parent_session_key="dash:1", agent="coder")
+        mgr._agents["r4"] = local
+        local.pending_followups = ["more"]
+        local.done = True
+        await asyncio.wait_for(mgr._deliver_followups(local), timeout=2)
+        assert len(continues) == 2
+        assert continues[1][2]["a2a_record"] is None
+
+    @pytest.mark.asyncio
     async def test_waits_for_task_pop_before_dispatch(self, monkeypatch) -> None:
         """done=True alone is not enough — teardown (task pop) must finish first."""
         mgr = _manager()

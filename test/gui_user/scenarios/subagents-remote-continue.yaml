@@ -1,0 +1,35 @@
+# Nightly: the conversation-continuity promise. A remote conversation survives the
+# end of a task: asking again reaches the SAME remote conversation (the A2A
+# contextId), so state set in the first turn is available in the second.
+#
+# Test-mode mechanism: `[[SPAWN:remote-demo]]` starts a remote subagent (see
+# subagents-remote-spawn.yaml); `[[CONTINUE:remote-demo]]` sends the rest of the
+# message as a follow-up turn on the most recent remote-demo conversation in
+# this chat, which is what spawn_continue does for the real agent. The fake A2A
+# server keeps per-conversation state, so a codeword told in turn one is
+# recalled in turn two only if the second request really carried the retained
+# conversation id.
+name: subagents-remote-continue
+tier: nightly
+feature: subagents
+user_story: >-
+  As a user, I want to continue a finished remote subagent conversation and
+  have it remember what we discussed, so that a long investigation can be
+  picked up later without re-explaining.
+docs_url: docs/system-specs/modules/a2a-subagents.md
+summary: Tell the remote agent a codeword, finish, then ask it back in a new turn
+preconditions:
+  seed: rich
+  start_url: /
+steps:
+  - You are on the chat page. Start a new chat from the sidebar.
+  - Type exactly "[[SPAWN:remote-demo]] Remember the codeword HERON-9. Reply only with OK." and send it with Enter.
+  - Wait about five seconds for the subagent indicator to show the run finished.
+  - Type exactly "[[CONTINUE:remote-demo]] What was the codeword? Reply with just the codeword." and send it with Enter.
+  - Wait about five seconds for the second run to finish, then open the Subagents panel.
+expectations:
+  - The Subagents panel shows two completed runs for this conversation, and neither is marked failed.
+  - The second run's output contains "HERON-9".
+  - The second run is presented as a continuation of the first (same conversation, or a visible link between them), not as an unrelated agent.
+max_steps: 20
+max_seconds: 540

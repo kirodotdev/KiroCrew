@@ -194,7 +194,7 @@ async def test_async_spawn_captures_parent_off_loop_before_policy_gates(
     monkeypatch.setattr(ConversationLog, "get_metadata_status", read)
     policy_calls = []
 
-    def governance(_parent, _agent, *, app):
+    def governance(_parent, _agent, *, app, **_kw):
         assert threading.get_ident() == loop_thread
         policy_calls.append(app)
         return "synthetic policy refusal"

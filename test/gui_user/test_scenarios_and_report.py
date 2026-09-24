@@ -61,6 +61,13 @@ SHIPPED = SHIPPED_SMOKE | {
     "knowledge-add-folder-source-and-scan",
     "members-dm-hello",
     "members-private-memory-keeps-thread",
+    # Remote (A2A) sub-agent stories: nightly tier, real gateway + fake A2A sidecar.
+    "subagents-remote-connection-lost",
+    "subagents-remote-continue",
+    "subagents-remote-mixed-batch",
+    "subagents-remote-not-primary",
+    "subagents-remote-spawn",
+    "subagents-remote-steer",
 }
 
 
@@ -176,6 +183,14 @@ class TestShippedScenarios:
                 "chat-turn-stats-footer",
                 "sessions-new-chat",
             ],
+            "subagents": [
+                "subagents-remote-connection-lost",
+                "subagents-remote-continue",
+                "subagents-remote-mixed-batch",
+                "subagents-remote-not-primary",
+                "subagents-remote-spawn",
+                "subagents-remote-steer",
+            ],
             "side-panel": ["chat-activity-side-panel-toggle"],
             "sidebar": [
                 "chat-sessions-page",
@@ -224,6 +239,7 @@ class TestShippedScenarios:
         # FEATURES order, not alphabetical: chat is the product's primary surface.
         assert list(groups) == [
             "chat",
+            "subagents",
             "side-panel",
             "sidebar",
             "search",
@@ -597,7 +613,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_18 of {len(scenarios.FEATURES)} features covered · 36 scenarios (32 smoke / 4 nightly)._"
+            f"_19 of {len(scenarios.FEATURES)} features covered · 42 scenarios (32 smoke / 10 nightly)._"
             in md
         )
         assert (

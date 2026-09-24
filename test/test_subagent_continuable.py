@@ -521,7 +521,8 @@ class TestContinuationAgentInheritance:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch(
-                "kiro_crew.subagent._validate_agent", side_effect=lambda name, cwd: (name, "", "")
+                "kiro_crew.subagent._validate_agent",
+                side_effect=lambda name, cwd, **kw: (name, "", ""),
             ),
         ):
             original = manager.spawn(
@@ -604,7 +605,7 @@ class TestContinuationAgentInheritance:
         manager = _manager(sessions)
         manager._spawn_stagger_secs = 0
 
-        def validate(name: str, cwd: str) -> tuple[str, str, str]:
+        def validate(name: str, cwd: str, **kw: object) -> tuple[str, str, str]:
             if name == "worker" and refusal == "removed-template":
                 return "", "agent 'worker' not found", "agent_not_found"
             return name, "", ""
@@ -622,7 +623,7 @@ class TestContinuationAgentInheritance:
             ),
             patch(
                 "kiro_crew.subagent._vet_spawn_governance",
-                side_effect=lambda parent, agent, app="": (
+                side_effect=lambda parent, agent, app="", **kw: (
                     "worker denied" if agent == "worker" and refusal == "spawn-policy" else None
                 ),
             ) as governance,
@@ -693,7 +694,8 @@ class TestContinuationAgentInheritance:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch(
-                "kiro_crew.subagent._validate_agent", side_effect=lambda name, cwd: (name, "", "")
+                "kiro_crew.subagent._validate_agent",
+                side_effect=lambda name, cwd, **kw: (name, "", ""),
             ),
         ):
             original = manager.spawn(
@@ -770,11 +772,12 @@ class TestContinuationAgentInheritance:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch(
-                "kiro_crew.subagent._validate_agent", side_effect=lambda name, cwd: (name, "", "")
+                "kiro_crew.subagent._validate_agent",
+                side_effect=lambda name, cwd, **kw: (name, "", ""),
             ),
             patch(
                 "kiro_crew.subagent._vet_spawn_governance",
-                side_effect=lambda parent, agent, app="": (
+                side_effect=lambda parent, agent, app="", **kw: (
                     "worker denied" if agent == "worker" else None
                 ),
             ) as governance,
@@ -811,7 +814,8 @@ class TestContinuationAgentInheritance:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch(
-                "kiro_crew.subagent._validate_agent", side_effect=lambda name, cwd: (name, "", "")
+                "kiro_crew.subagent._validate_agent",
+                side_effect=lambda name, cwd, **kw: (name, "", ""),
             ),
             patch.object(manager, "_promote_conversation", return_value=object()),
         ):
@@ -853,7 +857,8 @@ class TestContinuationAgentInheritance:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch(
-                "kiro_crew.subagent._validate_agent", side_effect=lambda name, cwd: (name, "", "")
+                "kiro_crew.subagent._validate_agent",
+                side_effect=lambda name, cwd, **kw: (name, "", ""),
             ),
             patch.object(restored, "_promote_conversation", return_value=object()),
         ):
@@ -927,7 +932,8 @@ class TestContinuationAgentInheritance:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch(
-                "kiro_crew.subagent._validate_agent", side_effect=lambda name, cwd: (name, "", "")
+                "kiro_crew.subagent._validate_agent",
+                side_effect=lambda name, cwd, **kw: (name, "", ""),
             ),
             patch.object(manager, "_promote_conversation", return_value=object()),
         ):
@@ -954,7 +960,8 @@ class TestContinuationAgentInheritance:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch(
-                "kiro_crew.subagent._validate_agent", side_effect=lambda name, cwd: (name, "", "")
+                "kiro_crew.subagent._validate_agent",
+                side_effect=lambda name, cwd, **kw: (name, "", ""),
             ),
             patch.object(
                 type(manager._run_events),
@@ -1680,7 +1687,7 @@ class TestContinuationTemplateNamespace:
         if fault == "governance":
             monkeypatch.setattr(
                 "kiro_crew.subagent._vet_spawn_governance",
-                lambda parent, agent, app="": "member denied" if agent == "worker" else None,
+                lambda parent, agent, app="", **kw: "member denied" if agent == "worker" else None,
             )
         else:
 
@@ -1783,7 +1790,8 @@ class TestContinuationTemplateNamespace:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch(
-                "kiro_crew.subagent._validate_agent", side_effect=lambda name, cwd: (name, "", "")
+                "kiro_crew.subagent._validate_agent",
+                side_effect=lambda name, cwd, **kw: (name, "", ""),
             ),
         ):
             target = "legacy"

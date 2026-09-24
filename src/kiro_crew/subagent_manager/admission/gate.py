@@ -10,14 +10,19 @@ from .types import ClaimPoint, PreparedSpawn
 if TYPE_CHECKING:
     from ...execution_context import ExecutionContext
     from ...subagent import (
+        AGENT_NAME_COLLISION_CODE,
         KiroCrewConfig,
         SubagentInfo,
+        _a2a_agent_entry,
+        _a2a_entry_from_record,
+        _a2a_entry_record,
         _startup_memory_reserve_gb,
         _validate_agent,
         _validate_app_agent_ownership,
         _vet_spawn_governance,
         asyncio,
         cached_admission_check,
+        card_origin,
         check_memory_available,
         logger,
         platform_compat,
@@ -185,6 +190,8 @@ class _GateMixin(ManagerComponent):
         delegation: dict[str, str] | None = None,
         _execution_context: dict | None = None,
         _stage_boundary_owner: str = "",
+        _a2a_context: str = "",
+        _a2a_vetted: dict | None = None,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
         """Spawn a subagent for *task*.
 
@@ -456,7 +463,76 @@ class _GateMixin(ManagerComponent):
         # to named agents (capabilities.spawn.scopes.agents).  Resolved against
         # the PARENT surface so a per-app/per-surface profile contains what it
         # can spawn — even if the kiro side would allow it.
-        gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app) if _gate else None
+        #
+        # Local-vs-remote is classified ONCE per entry, here, and that single
+        # resolution is what the remote-spawn gate, the collision refusal
+        # (_validate_agent) and the run path's A2A branch all consume (stashed on
+        # the record below as ``_a2a_entry``). Each of them re-reading the
+        # mtime-cached config was a time-of-check/time-of-use hole: config.json is
+        # agent-writable, and a spawn can wait in the approval prompt between
+        # admission and run, so an ``a2a_agents`` entry written in that window
+        # flipped a spawn vetted as LOCAL onto the remote route — task text
+        # off-box past a capabilities.remote_spawn deny that only ever saw the
+        # earlier snapshot.
+        #
+        # The same hole exists between the gated pass and a RE-ENTRY (an accepted
+        # ``spawn_async`` row, a claimed slot, a drained queue row): the governance
+        # vet runs only under ``_gate``, so a re-entry that resolved the registry
+        # afresh would stash whatever config says NOW without a vet. A re-entry
+        # therefore consumes the entry the gated pass vetted (``_a2a_vetted``,
+        # carried in its params as plain data) and reads the registry not at all.
+        if _gate:
+            a2a_entry = _a2a_agent_entry(agent) if agent else None
+        else:
+            a2a_entry = _a2a_entry_from_record(_a2a_vetted)
+        is_remote = a2a_entry is not None
+        remote_origin = card_origin(a2a_entry.agent_card_url) if a2a_entry is not None else ""
+        # A prevalidated spawn (app SpawnSDK) validated a LOCAL app agent off the
+        # loop and therefore skips _validate_agent below -- including its
+        # agent_name_collision refusal. If that name ALSO resolves to an
+        # ``a2a_agents`` entry, the auto-approved app task would route off-host
+        # under a validation that never considered a remote. Refuse, fail closed
+        # -- on every entry, not only the gated first one: a re-entry that
+        # classifies as remote must never reach the remote route unrefused.
+        if _agent_prevalidated and is_remote:
+            reason = (
+                f"agent {agent!r} is a prevalidated app agent but also names an a2a_agents "
+                "entry; an app spawn never routes to a remote agent (agent_name_collision)"
+            )
+            logger.warning("Subagent spawn refused: %s", reason)
+            # Context-aware pass, imported here for the same reason as the
+            # cwd-refusal audit above (this function runs rebound on the subagent
+            # module's namespace).
+            from kiro_crew.platform.context import redact_log_via_context
+
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="denied",
+                error=reason,
+                metadata={"agent": agent, "app": app, "task": redact_log_via_context(task)[:120]},
+            )
+            return _refuse_row(
+                SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    agent="",
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=reason,
+                    error_code=AGENT_NAME_COLLISION_CODE,
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+            )
+        gov_spawn_err = (
+            _vet_spawn_governance(
+                parent_session_key, agent, app=app, remote=is_remote, remote_origin=remote_origin
+            )
+            if _gate
+            else None
+        )
         if gov_spawn_err:
             if _persistent_diagnostics:
                 logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
@@ -529,6 +605,13 @@ class _GateMixin(ManagerComponent):
             # the parent's LIVE turn -- the very misfiling `_crew_log_asked` exists
             # to prevent. A drained member ignores it (already pinned).
             "_crew_log_asked": _crew_log_asked,
+            # A continuation's admitted remote contextId: dropped here, a
+            # queued remote continuation would resume as a fresh conversation.
+            "_a2a_context": _a2a_context,
+            # The local-or-remote classification THIS pass vetted (None = local),
+            # as plain data (rows are JSON): the re-entry consumes it instead of
+            # re-reading the agent-writable registry past the governance vet.
+            "_a2a_vetted": _a2a_entry_record(a2a_entry),
             "_agent_prevalidated": _agent_prevalidated,
             "_preassigned_id": agent_id,
         }
@@ -909,7 +992,7 @@ class _GateMixin(ManagerComponent):
             effective_cwd = resolved_cwd or str(
                 getattr(self._manager._sessions, "_pool_cwd", "") or ""
             )
-            agent, err, err_code = _validate_agent(agent, effective_cwd)
+            agent, err, err_code = _validate_agent(agent, effective_cwd, remote=is_remote)
             if err:
                 # The row was accepted; an agent name that does not resolve at
                 # dispatch is a terminal failure of THAT row, never a silent drop.
@@ -1032,6 +1115,12 @@ class _GateMixin(ManagerComponent):
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._memory_mode_ready = not bool(conversation_key)
         info._taskq_generation = taskq_generation
+        # The admitted routing decision travels WITH the record: the run path
+        # branches on this object, never on a fresh registry read (see above).
+        setattr(info, "_a2a_entry", a2a_entry)
+        # Same rule for a continuation's remote contextId: admitted once by the
+        # continue caller, carried on the record, used by the run path as-is.
+        setattr(info, "_a2a_context", _a2a_context)
         self._manager._agents[agent_id] = info
         self._record_crew_log_dispatch(info, from_queue=_from_queue, asked=_crew_log_asked)
         if not _dispatch_now:  # a ClaimPoint re-entry already holds its reservation

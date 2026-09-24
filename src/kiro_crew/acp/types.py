@@ -261,6 +261,9 @@ PROVIDER_LABEL_OPENCODE = "opencode"
 PROVIDER_LABEL_PI = "pi"
 PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
+# A remote agent driven over A2A (kiro_crew.providers.a2a.A2AProvider). Persisted
+# with a subagent run's state so cleanup routing and resume identify the backend.
+PROVIDER_LABEL_A2A = "a2a"
 
 #: Backend id -> its label. The mapping is what ``provider_label`` resolves
 #: through, so a harness's label and the answer a session persists under are one
