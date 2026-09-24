@@ -28,6 +28,11 @@
  *
  *   import { suppressOverviewBuiltin }   from '@/pages/overviewBuiltins'
  *
+ * Syntax-highlighting languages are the one contribution that is NOT a
+ * registrar here: the highlight.js worker must load them too, and it never
+ * imports this module. The edition ships them as a data module,
+ * `$KIROCREW_EDITION_DIR/languages.ts` (see `@/utils/highlightLanguages`).
+ *
  * For edition-owned API methods there is no registrar — the edition imports the
  * blessed `apiTransport` (`@/api/apiTransport`) and builds its own typed API
  * module on it (the core never consumes edition API methods, so a registry would

@@ -22,6 +22,7 @@ import { CodeEditor } from './CodeEditor'
 export { CodeEditor } from './CodeEditor'
 
 import { i18nT } from '../i18n/t'
+import { highlightLanguageForExtension } from '../utils/highlightLanguages'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 export const MD_EXTS = new Set(['.md', '.markdown', '.mdx', '.txt', ''])
@@ -44,7 +45,10 @@ export function langFor(ext: string): string {
     '.rs': 'rust', '.go': 'go', '.java': 'java', '.kt': 'kotlin',
     '.rb': 'ruby', '.sql': 'sql', '.xml': 'xml', '.toml': 'ini', '.cfg': 'ini',
   }
-  return map[ext] || 'plaintext'
+  // An edition extension is passed on as its token (`.foo` -> `foo`), not as the
+  // language id: fenceLanguage then checks the core tables before edition
+  // languages, so a core extension the edition also claims stays core.
+  return map[ext] || (highlightLanguageForExtension(ext) ? ext.slice(1) : 'plaintext')
 }
 
 /**

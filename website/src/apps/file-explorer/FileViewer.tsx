@@ -9,6 +9,7 @@ import {
 import { IMAGE_EXTS, LANG_BY_EXT } from './constants'
 import { extOf, basename, formatBytes, formatTime, isSensitivePath } from './utils'
 import { copyToClipboard } from '../../utils/clipboard'
+import { highlightLanguageForExtension } from '../../utils/highlightLanguages'
 import { revealOrOpen, useRevealFailure, useRevealLabel, useCanOpenFile } from '../../components/FilePathMenu'
 import { useBranding } from '../../hooks/useBranding'
 import type { FileMeta } from './types'
@@ -35,7 +36,9 @@ function renderViewerBody({ ext, fileMeta, content, openFile }: { ext: string; f
   if (ext === '.md' || ext === '.markdown') {
     return <BasePathCtx.Provider value={openFile}><MarkdownRenderer content={content || ''} /></BasePathCtx.Provider>
   }
-  const lang = LANG_BY_EXT[ext] || 'plaintext'
+  // Edition extensions go through as their token so the core tables win first
+  // (see ContentRenderer.langFor).
+  const lang = LANG_BY_EXT[ext] || (highlightLanguageForExtension(ext) ? ext.slice(1) : 'plaintext')
   const maxRun = (content || '').match(/`{3,}/g)?.reduce((max, s) => Math.max(max, s.length), 0) ?? 0
   const fence = '`'.repeat(Math.max(3, maxRun + 1))
   const wrapped = fence + lang + '\n' + (content || '') + '\n' + fence

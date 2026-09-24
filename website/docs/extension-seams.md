@@ -38,13 +38,13 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 | Remote-instance provisioner forms | `components/remoteProvisionerRenderers.tsx` | `registerRemoteProvisionerRenderer()` to `getRemoteProvisionerRenderer()` / `canRenderRemoteProvisionerKind()` |
 | Bare-token autolink rules | `utils/autolinkRules.ts` | `registerAutolinkRules()` to `getAutolinkRules()` |
 
-Plus one **exported-transport** seam for edition-owned API methods. It is not a
-registry; see "API methods" below.
+Plus one **exported-transport** seam for edition-owned API methods and one
+**data-module** seam for syntax-highlighting languages. Neither is a registry; see
+"API methods" and "Highlighting languages" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
-providers, tool pills, terminal sockets, highlight.js languages) are core-internal
-wiring, not edition seams. Only the fifteen above are called from the composition
-root.
+providers, tool pills, terminal sockets) are core-internal wiring, not edition
+seams. Only the fifteen above are called from the composition root.
 
 Fourteen of the fifteen are **additive** — the edition contributes a surface. The
 remaining one is **subtractive**: `suppressOverviewBuiltin()` removes a built-in
@@ -715,3 +715,31 @@ without an ordering hazard against `extensions.ts`.
 
 Trust boundary: the transport carries the session key. It is for the edition
 composition root, **never** for app or plugin-contributed frontend code.
+
+## Highlighting languages: a data module, not a registrar
+
+An edition adds a syntax-highlighting language with
+`$KIROCREW_EDITION_DIR/languages.ts`, whose default export is a
+`HighlightLanguageContribution[]` (`utils/highlightLanguages.ts`): an `id`, optional
+fence `aliases` and file `extensions`, and an `hljs` grammar, a `textmate` loader,
+or both. `editionLanguagesPlugin` in `vite.config.ts` resolves
+`virtual:kirocrew-edition-languages` to that file when the edition seam is armed,
+and to an empty list otherwise, for the main bundle and the worker bundles.
+
+It is a data module rather than a `register*()` call because a highlight.js grammar
+is a function: it cannot be posted to the highlight Web Worker, and the worker never
+imports the composition root. Keep the module worker-safe (no React, no DOM), and
+load TextMate grammars with a dynamic `import()` so they stay out of the worker.
+
+The export is untrusted data. `validateHighlightLanguages` copies it into a plain
+array and copies each entry's known fields into a fresh object, checking their
+runtime types; an entry or array that throws while being read counts as malformed.
+Every refusal goes through `reportSeamCollision`, so a malformed module can drop a
+language but cannot stop the dashboard from mounting.
+
+Core wins every collision, and **each consumer owns its conflict table**:
+`registerHljsLanguages` checks the highlight.js set, and
+`registerEditionShikiLanguages` checks Pierre's grammar names, extension tokens and
+reserved `text` / `ansi` ids. A new consumer of `HIGHLIGHT_LANGUAGES` must check
+its own core table the same way; `validateHighlightLanguages` only rejects entries
+that are malformed or collide with each other.

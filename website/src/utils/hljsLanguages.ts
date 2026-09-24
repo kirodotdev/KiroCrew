@@ -14,8 +14,13 @@ import sql from 'highlight.js/lib/languages/sql'
 import rust from 'highlight.js/lib/languages/rust'
 import java from 'highlight.js/lib/languages/java'
 import markdown from 'highlight.js/lib/languages/markdown'
+import { reportSeamCollision } from '../apps/seamCollision'
+import { HIGHLIGHT_LANGUAGES, type ResolvedHighlightLanguage } from './highlightLanguages'
 
-export function registerHljsLanguages(hljs: HLJSApi): void {
+export function registerHljsLanguages(
+  hljs: HLJSApi,
+  contributions: readonly ResolvedHighlightLanguage[] = HIGHLIGHT_LANGUAGES,
+): void {
   hljs.registerLanguage('javascript', javascript)
   hljs.registerLanguage('js', javascript)
   hljs.registerLanguage('jsx', javascript)
@@ -40,4 +45,22 @@ export function registerHljsLanguages(hljs: HLJSApi): void {
   hljs.registerLanguage('java', java)
   hljs.registerLanguage('markdown', markdown)
   hljs.registerLanguage('md', markdown)
+
+  // Edition languages (see highlightLanguages.ts). Registered after the core
+  // set so a name the core already owns is detected and the core keeps it.
+  for (const lang of contributions) {
+    if (!lang.hljs) continue
+    const taken = [lang.id, ...lang.aliases].find(name => hljs.getLanguage(name))
+    if (taken !== undefined) {
+      reportSeamCollision('highlightLanguages', `hljs language '${taken}' is a core language; ignoring '${lang.id}'`)
+      continue
+    }
+    try {
+      hljs.registerLanguage(lang.id, lang.hljs)
+      if (lang.aliases.length > 0) hljs.registerAliases(lang.aliases, { languageName: lang.id })
+    } catch {
+      hljs.unregisterLanguage(lang.id)
+      reportSeamCollision('highlightLanguages', `hljs language '${lang.id}' failed to register; ignoring it`)
+    }
+  }
 }

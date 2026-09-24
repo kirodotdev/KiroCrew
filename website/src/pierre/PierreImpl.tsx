@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react'
 import type { BaseCodeOptions, FileContents, SupportedLanguages } from '@pierre/diffs'
-import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, setCustomExtension } from '@pierre/diffs'
+import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, registerCustomLanguage, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import { WorkerPoolManager, type WorkerRequest, type WorkerResponse } from '@pierre/diffs/worker'
 import highlightWorkerUrl from '@pierre/diffs/worker/worker-portable.js?worker&url'
@@ -17,6 +17,13 @@ import ErrorNotice from '../components/ErrorNotice'
 import { Btn } from '../components/ui'
 import { i18nT } from '../i18n/t'
 import { PlainCodeFallback, PlainFilePairFallback } from './PlainCodeFallback'
+import { reportSeamCollision } from '../apps/seamCollision'
+import {
+  HIGHLIGHT_LANGUAGES,
+  highlightLanguageForExtension,
+  highlightLanguageForTag,
+  type ResolvedHighlightLanguage,
+} from '../utils/highlightLanguages'
 import {
   PIERRE_EXTENSION_OVERRIDES,
   PIERRE_REGEX_ENGINE,
@@ -63,6 +70,70 @@ const FENCE_NAME_LANGS = new Set<string>([
   'objective-c', 'powershell', 'prisma', 'regex', 'solidity', 'vim', 'zig',
 ])
 
+/** Every language name the core already resolves: the fence names above, every
+ *  grammar Pierre's extension table or the core overrides point at, and Pierre's
+ *  reserved `text` / `ansi` (registerCustomLanguage throws on those). */
+const CORE_SHIKI_LANGS = new Set<string>([
+  'text',
+  'ansi',
+  ...FENCE_NAME_LANGS,
+  ...Object.values(EXTENSION_TO_FILE_FORMAT).filter((v): v is NonNullable<typeof v> => v != null),
+  ...Object.values(PIERRE_EXTENSION_OVERRIDES),
+])
+
+/** Register edition TextMate grammars (see utils/highlightLanguages.ts) with
+ *  Pierre. Registration is main-thread only: the worker pool resolves a task's
+ *  languages here and ships the resolved grammars to the worker that runs it.
+ *  Core wins: a contributed name or extension the core already resolves is
+ *  reported and dropped. Returns the ids that were registered. */
+export function registerEditionShikiLanguages(
+  languages: readonly ResolvedHighlightLanguage[],
+  register?: typeof registerCustomLanguage,
+): Set<string> {
+  const registered = new Set<string>()
+  for (const lang of languages) {
+    if (!lang.textmate) continue
+    // A name is taken when it is a core grammar OR a core extension token:
+    // fenceLanguage resolves ```dm through the extension table before it ever
+    // reaches an edition language, so the alias would silently lose.
+    const taken = [lang.id, ...lang.aliases].find(
+      name => CORE_SHIKI_LANGS.has(name) || EXTENSION_TO_FILE_FORMAT[name] != null || PIERRE_EXTENSION_OVERRIDES[name] != null,
+    )
+    if (taken !== undefined) {
+      reportSeamCollision('highlightLanguages', `Shiki language '${taken}' is a core language; ignoring '${lang.id}'`)
+      continue
+    }
+    // Pierre keys custom extensions WITHOUT the leading dot. A token that is a
+    // core language name collides too: the file surfaces hand it to fenceLanguage.
+    const extensions = lang.extensions.map(e => e.slice(1)).filter(ext => {
+      if (!CORE_SHIKI_LANGS.has(ext) && EXTENSION_TO_FILE_FORMAT[ext] == null && PIERRE_EXTENSION_OVERRIDES[ext] == null) {
+        return true
+      }
+      reportSeamCollision('highlightLanguages', `extension '.${ext}' is a core extension or language; ignoring it for '${lang.id}'`)
+      return false
+    })
+    // Read lazily: the stock build contributes nothing and never touches it.
+    const doRegister = register ?? registerCustomLanguage
+    try {
+      doRegister(lang.id, lang.textmate, extensions)
+    } catch {
+      reportSeamCollision('highlightLanguages', `Shiki language '${lang.id}' failed to register; ignoring it`)
+      continue
+    }
+    registered.add(lang.id)
+  }
+  return registered
+}
+
+const EDITION_SHIKI_LANGS = registerEditionShikiLanguages(HIGHLIGHT_LANGUAGES)
+
+/** The registered edition language for a fence tag: its id, an alias, or one
+ *  of its file extensions (```foo for a `.foo` language). */
+function editionFenceLanguage(tag: string): string | undefined {
+  const lang = highlightLanguageForTag(tag) ?? highlightLanguageForExtension(`.${tag}`)
+  return lang !== undefined && EDITION_SHIKI_LANGS.has(lang.id) ? lang.id : undefined
+}
+
 /** Resolve a markdown fence tag to a language Pierre can highlight. */
 export function fenceLanguage(tag?: string): SupportedLanguages {
   if (!tag) return 'text'
@@ -74,6 +145,8 @@ export function fenceLanguage(tag?: string): SupportedLanguages {
   const mapped = EXTENSION_TO_FILE_FORMAT[t]
   if (mapped != null) return mapped
   if (FENCE_NAME_LANGS.has(t)) return t as SupportedLanguages
+  const edition = editionFenceLanguage(t)
+  if (edition !== undefined) return edition as SupportedLanguages
   return 'text'
 }
 
