@@ -1780,7 +1780,16 @@ read-your-writes should add it deliberately, with its own tests.
   file edited on disk after authoring is re-checked too), and `message` (LLM)
   jobs re-run the capability gate before the session dispatch. A policy
   tightened after a job was scheduled therefore denies that job's next run
-  instead of only affecting jobs authored after the change. Denial at
+  instead of only affecting jobs authored after the change. The same entry
+  point also asks, for every job kind, whether the APP that installed the job
+  is still enabled (`mcp_cron._vet_app_owner_enabled`, ownership read from the
+  `created_by` stamp `apps.cron_sdk.owner_tag` writes, never a name prefix): an
+  app's crons are COPIES in the global store, and an app disable removes them
+  only when a cron service is reachable at that moment, so a disable that could
+  not reach the store left them firing. Only a definite `enabled: true`
+  authorizes: app metadata that cannot be READ is no licence to run an app's
+  code either, the same closed reading `apps.backend` takes before it spawns
+  one, and the gate persists nothing so the next fire re-asks. Denial at
   fire time marks the run `last_status="error"`, emits a SEL
   `outcome="denied"` event keyed `cron:<job.id>`, and does not delete or pause
   a RECURRING job — deliberately including the consecutive-failure auto-pause
