@@ -293,6 +293,7 @@ def drop_committed_restored_notes(
     if not notes or not messages:
         return notes
     committed: set[str] = set()
+    row_only: set[str] = set()
     for row in messages:
         if not isinstance(row, dict):
             continue
@@ -301,9 +302,20 @@ def drop_committed_restored_notes(
             note_id = row_meta.get("noteId")
             if isinstance(note_id, str) and note_id:
                 committed.add(note_id)
-    if not committed:
+            row_for = row_meta.get("noteRowFor")
+            if isinstance(row_for, str) and row_for:
+                row_only.add(row_for)
+    if not committed and not row_only:
         return notes
-    return [entry for entry in notes if entry.get("id") not in committed]
+    kept: list[dict[str, Any]] = []
+    for entry in notes:
+        entry_id = entry.get("id")
+        if entry_id in committed:
+            continue
+        if entry_id in row_only:
+            entry = {**entry, "rowCommitted": True}
+        kept.append(entry)
+    return kept
 
 
 def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
@@ -729,8 +741,12 @@ class SlotBufferCoordinator:
         return sum(1 for note in slot._deferred_notes if note.get("context") is not None)
 
     @staticmethod
-    def flush_deferred_notes(slot: Any, *, logger: logging.Logger) -> int:
+    def flush_deferred_notes(slot: Any, *, logger: logging.Logger, broadcast: bool = True) -> int:
         """Flush held notes in order, restoring the unwritten suffix on failure.
+
+        ``broadcast=False`` appends and persists the rows without the live
+        delivery, which routes by ``slot.key``: a popped slot's archival flush
+        must not reach a replacement that now holds that name.
 
         Purely an in-memory drain: the flush NEVER writes the durable hold.
         Each delivered inject row carries its note id in
@@ -750,6 +766,8 @@ class SlotBufferCoordinator:
         held = slot._deferred_notes[:]
         slot._deferred_notes.clear()
         live_session = effective_session_key(slot)
+        retain = bool(getattr(slot, "_closing", False))
+        kept: list[dict[str, Any]] = []
         written = 0
         for index, note in enumerate(held):
             authorized_session = note.get("session")
@@ -776,6 +794,45 @@ class SlotBufferCoordinator:
                     # entry replaying (and re-dropping) after every restart
                     # until the hold's ceiling fills with garbage.
                     slot._dropped_note_ids.add(dropped_id)
+                continue
+
+            note_id = note.get("id")
+            has_id = isinstance(note_id, str) and bool(note_id)
+            if note.get("rowCommitted"):
+                if retain:
+                    kept.append(note)
+                    continue
+                context = note.pop("context", None)
+                if context is not None:
+                    context["noteSession"] = live_session
+                    if not slot.append_pending_context(context):
+                        logger.warning(
+                            "Slot %s dropped a held note's context: "
+                            "the pending-context queue had no seat",
+                            slot.key,
+                        )
+                if has_id:
+                    slot._dropped_note_ids.add(note_id)
+                continue
+            if retain and has_id and note.get("context") is not None:
+                row_meta_kept: dict[str, Any] = {"noteSession": live_session, "noteRowFor": note_id}
+                kept_source = note.get("source")
+                if isinstance(kept_source, str) and kept_source:
+                    row_meta_kept["appLabel"] = kept_source
+                try:
+                    slot.append(
+                        role="inject",
+                        content=note["content"],
+                        cls=note["cls"],
+                        broadcast=broadcast,
+                        meta=row_meta_kept,
+                    )
+                except Exception:
+                    slot._deferred_notes[:0] = kept + held[index:]
+                    raise
+                note["rowCommitted"] = True
+                kept.append(note)
+                written += 1
                 continue
 
             # Pop is a retry marker: if the visible row fails after the context
@@ -814,7 +871,7 @@ class SlotBufferCoordinator:
                     role="inject",
                     content=note["content"],
                     cls=note["cls"],
-                    broadcast=True,
+                    broadcast=broadcast,
                     meta=row_meta,
                 )
             except Exception:
@@ -823,9 +880,11 @@ class SlotBufferCoordinator:
                 # included) and the next full save trues it up against live
                 # state; see the docstring for why no metadata write happens
                 # here.
-                slot._deferred_notes[:0] = held[index:]
+                slot._deferred_notes[:0] = kept + held[index:]
                 raise
             written += 1
+        if kept:
+            slot._deferred_notes[:0] = kept
         return written
 
     @staticmethod
