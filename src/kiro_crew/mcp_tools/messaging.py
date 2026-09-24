@@ -28,6 +28,7 @@ from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.platform import binary_content_is_flagged
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.platform import wide_content_is_flagged
 from kiro_crew.security import BINARY_MIME_ALLOWLIST, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN
 
@@ -948,6 +949,9 @@ def file_send(name: str, args: dict[str, Any]) -> str:
     # non-UTF-8 bytes through the shared ``binary_content_is_flagged``. Binary
     # must also carry an allow-listed MIME type (deny-by-default), and that check
     # runs first so bytes of a type this path refuses outright are never scanned.
+    # ``wide_content_is_flagged`` runs on BOTH branches: NUL-interleaved ASCII is
+    # valid UTF-8, so a wide-encoded credential decodes cleanly and its characters
+    # arrive NUL-separated, which the contiguous-ASCII detectors do not match.
     flagged = False
     try:
         text = raw.decode("utf-8")
@@ -964,7 +968,7 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             return f"Error: binary file type not allowed: {guessed or 'unknown'}. Allowed: audio, video, image, PDF."
         flagged = binary_content_is_flagged(raw)
     else:
-        flagged = redact(text) != text
+        flagged = redact(text) != text or wide_content_is_flagged(raw)
     # A positive here is almost always CORRECT -- the reported case (a VPN device
     # private key) matches the PEM branch, the highest-confidence detector in the
     # catalogue -- so the remedy is not a looser scan but an owner who can say

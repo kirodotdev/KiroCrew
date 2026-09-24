@@ -89,6 +89,7 @@ from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.pdf_extract import PdfExtraction, extract_pdf_segments
 from kiro_crew.platform import binary_content_is_flagged
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.platform import wide_content_is_flagged
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -461,7 +462,15 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         # The store read goes through a thread: ``is_granted`` ends in a
         # synchronous file read, and a coroutine that waits on storage stalls the
         # whole gateway. Ordered after the scan so a clean file never reads it.
-        if redact(text) != text and not await asyncio.to_thread(
+        #
+        # The wide pass runs here as well as on the binary branch below: a
+        # credential written at UTF-16/UTF-32 spacing is NUL-interleaved ASCII,
+        # which is valid UTF-8, so it decodes cleanly into this branch and the
+        # contiguous-ASCII detectors in ``redact`` match none of it.
+        flagged = redact(text) != text or await asyncio.to_thread(
+            wide_content_is_flagged, raw
+        )
+        if flagged and not await asyncio.to_thread(
             file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
         ):
             _sel().log_tool_invocation(
@@ -717,8 +726,16 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         )
 
     if is_text:
+        # Two passes on this branch, not one. ``redact`` reads the correctly
+        # decoded text, which is the more accurate read of it; the wide pass reads
+        # the raw bytes, because a credential at UTF-16/UTF-32 spacing is
+        # NUL-interleaved ASCII, decodes as valid UTF-8 into this very branch, and
+        # arrives with its characters separated so no contiguous-ASCII detector
+        # matches. Short-circuited, so a file the text pass already flags pays no
+        # second scan.
         redacted = redact(text)
-        if redacted != text:
+        narrow_flagged = redacted != text
+        if narrow_flagged or await asyncio.to_thread(wide_content_is_flagged, raw):
             granted = await asyncio.to_thread(
                 file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
             )
@@ -729,7 +746,7 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
                     tool_name="file_send",
                     tool_kind="download",
                     outcome="denied",
-                    error="content_redacted",
+                    error="content_redacted" if narrow_flagged else "wide_credential_detected",
                 )
                 return web.json_response(
                     {"error": "file content was redacted; download aborted"}, status=400
@@ -978,6 +995,24 @@ def _gate_upload_file(
                         {
                             "error": "file content was redacted; upload aborted",
                             "code": "content_redacted",
+                        },
+                        status=400,
+                    ),
+                    None,
+                    None,
+                )
+            # Wide-encoded credentials reach this branch rather than the binary one
+            # above: NUL-interleaved ASCII is valid UTF-8, so the decode succeeds
+            # and ``redact`` sees characters separated by NUL, which matches no
+            # detector. Unconditional here for the same reason the binary scan is:
+            # this leg has a third-party audience and no owner grant to weigh.
+            if wide_content_is_flagged(raw):
+                _audit_denial("wide_credential_detected")
+                return (
+                    web.json_response(
+                        {
+                            "error": "file contains embedded credentials",
+                            "code": "wide_credential_detected",
                         },
                         status=400,
                     ),

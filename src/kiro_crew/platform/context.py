@@ -18,6 +18,7 @@ See ``docs/system-specs/modules/platform-context.md``.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Tuple, TypeVar
@@ -877,6 +878,61 @@ def redact_via_context(text: str) -> str:
         return _security_redact(text)
 
 
+#: Wide-encoding projections :func:`binary_content_is_flagged` scans beside its
+#: ``latin-1`` pass, each as ``(pattern, offset, stride)``.
+#:
+#: A credential written as UTF-16 or UTF-32 inside an allow-listed container --
+#: an ID3v2 UTF-16 tag in ``audio/mpeg``, a UTF-16BE string in
+#: ``application/pdf`` -- carries NUL bytes between its characters, so a
+#: single-byte projection reads ``K\x00E\x00Y`` and no detector matches. Each
+#: pattern finds a run of printable ASCII at one encoding's spacing and the
+#: stride lifts those characters back out; both byte orders and both widths are
+#: covered, and a run at any alignment falls inside one of them.
+#:
+#: Matching a RUN, rather than striding the whole buffer, is what keeps this from
+#: handing the detectors a second stream of high-entropy bytes: random binary
+#: almost never holds a long alternating-NUL sequence, so a media file with no
+#: wide text in it contributes nothing to scan and pays only the search.
+_WIDE_PROJECTIONS: Tuple[Tuple["re.Pattern[bytes]", int, int], ...] = (
+    (re.compile(rb"(?:[\x09\x0a\x0d\x20-\x7e]\x00){8,}"), 0, 2),
+    (re.compile(rb"(?:\x00[\x09\x0a\x0d\x20-\x7e]){8,}"), 1, 2),
+    (re.compile(rb"(?:[\x09\x0a\x0d\x20-\x7e]\x00\x00\x00){8,}"), 0, 4),
+    (re.compile(rb"(?:\x00\x00\x00[\x09\x0a\x0d\x20-\x7e]){8,}"), 3, 4),
+)
+
+
+def wide_content_is_flagged(raw: bytes) -> bool:
+    """Whether *raw* carries credential material written at UTF-16/UTF-32 spacing.
+
+    Every file-delivery gate runs this over every buffer it decides on, and it is
+    deliberately behind neither a UTF-8 decode failure nor a MIME check. Both
+    conditions are unsound gates for it: NUL-interleaved ASCII is itself valid
+    UTF-8, so a buffer holding ``K\\x00E\\x00Y`` decodes cleanly and takes the
+    text branch, where the detectors match contiguous ASCII and so match nothing;
+    and a file needs no media extension to hold wide text, so a MIME allow-list
+    does not bound which buffers can carry it.
+
+    Cheap on a buffer that holds no wide text: :data:`_WIDE_PROJECTIONS` searches
+    for a RUN of printable ASCII at each encoding's spacing, and with no run found
+    this returns before any detector runs. Ordinary text and ordinary media both
+    take that path. Searching for runs rather than striding the whole buffer is
+    also what keeps the detectors from being handed a second stream of
+    high-entropy bytes, which would widen the false-positive surface.
+
+    Synchronous, like :func:`binary_content_is_flagged`: an async gate calls it
+    through ``asyncio.to_thread`` rather than on the event loop.
+    """
+    lifted = [
+        match.group()[offset::stride]
+        for pattern, offset, stride in _WIDE_PROJECTIONS
+        for match in pattern.finditer(raw)
+    ]
+    if not lifted:
+        return False
+    wide = b"\n".join(lifted).decode("latin-1")
+    return redact_via_context(wide) != wide
+
+
 def binary_content_is_flagged(raw: bytes) -> bool:
     """Whether non-UTF-8 *raw* carries credential material the scanner finds.
 
@@ -886,6 +942,13 @@ def binary_content_is_flagged(raw: bytes) -> bool:
     pass ever runs, so those bytes need a pass of their own. ``latin-1`` is the
     decode used because it is total: every byte maps to a code point, so no input
     can escape the scan by failing to decode.
+
+    Totality is not enough on its own, because a single-byte projection reads a
+    wide-encoded credential as characters separated by NUL and matches nothing.
+    :func:`wide_content_is_flagged` covers that, and every gate calls it on its
+    text branch too: a buffer whose bytes ARE valid UTF-8 never reaches here, and
+    NUL-interleaved ASCII is valid UTF-8, so the wide pass cannot live behind this
+    function's decode-failure entry condition alone.
 
     Four gates guard the ``file_send`` delivery path -- the MCP tool before any
     byte is copied, ``POST /api/outbox/notify``, ``GET /api/outbox/{filename}``,
@@ -910,7 +973,9 @@ def binary_content_is_flagged(raw: bytes) -> bool:
     on the event loop.
     """
     text = raw.decode("latin-1")
-    return redact_via_context(text) != text
+    if redact_via_context(text) != text:
+        return True
+    return wide_content_is_flagged(raw)
 
 
 #: Substituted for a log line's text when redaction could not be composed. Names

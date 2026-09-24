@@ -63,6 +63,29 @@ def _synth_flagged_media() -> bytes:
     return b"\x89PNG\r\n\x1a\n\xff\xfe" + _synth_pem().encode() + b"\x80\x81"
 
 
+#: Wide encodings a credential can be written in inside an allow-listed
+#: container. Both widths, both byte orders: an ID3v2 tag in ``audio/mpeg`` is
+#: UTF-16, and a ``application/pdf`` text string is commonly UTF-16BE.
+_WIDE_ENCODINGS = ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
+
+
+def _synth_wide_flagged_media(encoding: str) -> bytes:
+    """Allow-listed media bytes carrying the synthetic key at WIDE spacing.
+
+    Same container and same key material as :func:`_synth_flagged_media`, with
+    the key encoded so its characters arrive separated by NUL bytes. Explicit
+    ``-le``/``-be`` spellings are used so no byte-order mark is prepended and the
+    run starts where this function says it does.
+    """
+    return b"\x89PNG\r\n\x1a\n\xff\xfe" + _synth_aws_key().encode(encoding) + b"\x80\x81"
+
+
+def _synth_wide_clean_media(encoding: str) -> bytes:
+    """Wide-encoded text in the same container with no credential in it."""
+    innocent = "the quick brown fox jumps over the lazy dog"
+    return b"\x89PNG\r\n\x1a\n\xff\xfe" + innocent.encode(encoding) + b"\x80\x81"
+
+
 @pytest.fixture(autouse=True)
 def _isolated_store(tmp_path, monkeypatch):
     """Point the consent store at a tmp dir so no test touches the real one."""
@@ -1282,6 +1305,66 @@ class TestOneBinaryScanForEveryGate:
         src = inspect.getsource(files_handlers._gate_upload_file)
         assert "binary_credential_detected" in src
         assert "is_granted" not in src
+
+
+class TestWideEncodedCredentialsReachTheScan:
+    """A credential written at UTF-16/UTF-32 spacing must flag like a narrow one.
+
+    The scan's decode is total, so nothing escapes it by failing to decode. That
+    is a different property from seeing the content: a single-byte projection of
+    UTF-16 reads the key as characters separated by NUL, which no credential
+    grammar matches. Wide text inside these containers is ordinary output from
+    standard writers -- an ID3v2 UTF-16 tag in ``audio/mpeg``, a UTF-16BE string
+    in ``application/pdf`` -- so this is reachable input, not a crafted one.
+
+    A negative answer from the scan skips the owner conjunct on the download
+    route entirely, so a miss here does not degrade to "owner only": the bytes
+    leave to any authenticated caller, including the Slack allow-listed non-owner
+    that conjunct exists to stop. The first test below is what keeps the rest
+    honest -- it asserts the material really is invisible to a single-byte
+    projection, so a scan that only did the narrow pass would fail them.
+    """
+
+    @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
+    def test_the_wide_key_is_invisible_to_a_single_byte_projection(self, encoding):
+        raw = _synth_wide_flagged_media(encoding)
+        narrow = raw.decode("latin-1")
+        assert security.redact(narrow) == narrow
+
+    @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
+    def test_a_wide_key_in_allow_listed_media_is_flagged(self, encoding):
+        from kiro_crew.platform import binary_content_is_flagged
+
+        raw = _synth_wide_flagged_media(encoding)
+        with pytest.raises(UnicodeDecodeError):
+            raw.decode("utf-8")
+        assert binary_content_is_flagged(raw)
+
+    @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
+    def test_innocent_wide_text_is_not_flagged(self, encoding):
+        """The wide pass must discriminate on content, not on wide text existing."""
+        from kiro_crew.platform import binary_content_is_flagged
+
+        assert not binary_content_is_flagged(_synth_wide_clean_media(encoding))
+
+    def test_media_with_no_wide_run_pays_no_extra_answer(self):
+        """Binary holding no wide run at all stays unflagged.
+
+        Striding the whole buffer instead of matching a run would hand the
+        detectors a second stream of high-entropy bytes, and this is the case that
+        would show it.
+        """
+        from kiro_crew.platform import binary_content_is_flagged
+
+        raw = b"\x89PNG\r\n\x1a\n\xff\xfe" + bytes(range(256)) * 8 + b"\x80\x81"
+        assert not binary_content_is_flagged(raw)
+
+    def test_both_widths_and_both_byte_orders_are_covered(self):
+        """One projection per (width, byte order); a missing one is a silent hole."""
+        from kiro_crew.platform import context as platform_context
+
+        strides = {(offset, stride) for _, offset, stride in platform_context._WIDE_PROJECTIONS}
+        assert strides == {(0, 2), (1, 2), (0, 4), (3, 4)}
 
 
 class TestAuditDecisionRedactsBeforeTruncate:

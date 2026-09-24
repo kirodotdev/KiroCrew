@@ -44,6 +44,47 @@ def _clean_png() -> bytes:
     return b"\x89PNG\r\n\x1a\n\xff\xfe" + b"\x00" * 200
 
 
+#: Wide encodings a credential can be written in inside an allow-listed
+#: container: both widths, both byte orders. An ID3v2 tag in ``audio/mpeg`` is
+#: UTF-16 and an ``application/pdf`` text string is commonly UTF-16BE, so these
+#: are what standard writers emit rather than a crafted shape.
+_WIDE_ENCODINGS = ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
+
+
+def _pem_text() -> str:
+    """Key-SHAPED PEM text, assembled at runtime for the reason above.
+
+    Same convention as :func:`_synth_flagged_png`: literal PEM headers in a diff
+    read as an exfiltration recipe to a review provider, and the scanner sees
+    identical bytes either way.
+    """
+    rule = "-" * 5
+    begin = " ".join(["BEGIN", "RSA", "PRIVATE", "KEY"])
+    end = " ".join(["END", "RSA", "PRIVATE", "KEY"])
+    body = "\n".join(
+        base64.b64encode(hashlib.sha256(f"kc-8779-wide-{i}".encode()).digest() * 2).decode()
+        for i in range(4)
+    )
+    return f"{rule}{begin}{rule}\n{body}\n{rule}{end}{rule}\n"
+
+
+def _synth_wide_utf8_pdf(encoding: str) -> bytes:
+    """PDF-shaped bytes that DECODE AS UTF-8 and carry the key at wide spacing.
+
+    The distinction from :func:`_synth_flagged_png` is the whole point: that one
+    carries ``\\xff\\xfe`` so the UTF-8 decode raises and the bytes take each
+    gate's binary branch. Every byte here is either ASCII or NUL, and NUL is
+    itself valid UTF-8, so these bytes decode cleanly and take the TEXT branch --
+    where the key's characters arrive NUL-separated and no contiguous-ASCII
+    detector matches them.
+
+    Explicit ``-le``/``-be`` spellings keep a byte-order mark off the front, so
+    the run starts where this function says it does and the buffer stays
+    UTF-8-decodable.
+    """
+    return b"%PDF-1.7\n" + _pem_text().encode(encoding) + b"\n%%EOF\n"
+
+
 def _make_app(state=None) -> web.Application:
     app = web.Application()
     app["state"] = state or MagicMock(_slots={})
@@ -373,3 +414,73 @@ class TestOwnerFacingGatesScanBinaryContent:
             outcome="denied",
             error=f"binary_mime_not_allowed: {expected_mime}",
         )
+
+
+class TestWideEncodedCredentialInAUtf8DecodableFile:
+    """A wide-encoded credential in bytes that DECODE must still be refused.
+
+    NUL-interleaved ASCII is itself valid UTF-8, so these bytes take each gate's
+    TEXT branch rather than its binary one, and ``redact`` matches contiguous
+    ASCII so it matches none of the key. A gate whose wide pass sits behind a
+    decode failure therefore never scans this file at all.
+
+    A negative answer from the scan does not degrade to "owner only" on the
+    download route -- it skips the owner conjunct entirely, so the bytes leave to
+    any authenticated caller, and the completed-download record notes the
+    handover without undoing it.
+
+    The first test is the control that keeps the rest honest: it asserts the
+    buffer really does decode as UTF-8 and that the text pass really does miss
+    the key, so a gate doing only the narrow pass fails the others.
+    """
+
+    @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
+    def test_the_container_decodes_as_utf8_and_the_text_pass_misses_it(self, encoding):
+        from kiro_crew import security
+
+        raw = _synth_wide_utf8_pdf(encoding)
+        text = raw.decode("utf-8")
+        assert security.redact(text) == text
+
+    @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
+    def test_the_shared_wide_pass_answers_on_it(self, encoding):
+        from kiro_crew.platform import wide_content_is_flagged
+
+        assert wide_content_is_flagged(_synth_wide_utf8_pdf(encoding))
+
+    @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
+    def test_innocent_wide_text_in_a_utf8_container_is_not_flagged(self, encoding):
+        """The pass must discriminate on content, not on wide text existing."""
+        from kiro_crew.platform import wide_content_is_flagged
+
+        innocent = "the quick brown fox jumps over the lazy dog\n" * 3
+        raw = b"%PDF-1.7\n" + innocent.encode(encoding) + b"\n%%EOF\n"
+        assert raw.decode("utf-8")
+        assert not wide_content_is_flagged(raw)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
+    async def test_notify_refuses_it_without_a_grant(self, outbox, mock_sel, encoding):
+        pdf = outbox / "report.pdf"
+        pdf.write_bytes(_synth_wide_utf8_pdf(encoding))
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/outbox/notify",
+                json={
+                    "path": str(pdf),
+                    "filename": "report.pdf",
+                    "description": "report",
+                    "size": pdf.stat().st_size,
+                },
+            )
+            assert resp.status == 400
+            assert "sensitive" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
+    async def test_download_refuses_it_without_a_grant(self, outbox, mock_sel, encoding):
+        pdf = outbox / "report.pdf"
+        pdf.write_bytes(_synth_wide_utf8_pdf(encoding))
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/report.pdf")
+            assert resp.status == 400
