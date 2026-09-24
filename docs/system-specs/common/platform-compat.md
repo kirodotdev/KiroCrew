@@ -448,7 +448,9 @@ pull request's CI wall clock, and the queue sat on the required check. So a
 POSIX-but-not-Linux regression is caught within a day and before any nightly bytes
 are published, rather than before merge. In front of a pull request there is
 `macos-on-demand.yml` (the same full suite, called against the PR head, advisory;
-runs on a darwin-sensitive path, on the `ci:macos` label, or on a 1-in-20 SHA sample) and the static side of
+runs on a darwin-sensitive path, on the `ci:macos` label, or on a 1-in-20 SHA sample; the path and
+sample switches are refused while the lane already holds six live runs of the hosted macOS pool, the
+label never is) and the static side of
 this table. A shard passing is still not
 evidence that a gateway starts: files listed in
 `test/windows-collect-ignore.txt` are excluded on Windows, with further node ids in

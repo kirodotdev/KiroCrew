@@ -349,8 +349,17 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
     ``.venv`` inside the checkout that the shards never create, and costs minutes.
     Its own dedicated ci.yml job names it on the command line, which bypasses this
     list by design.
+
+    ``test_macos_pool_ceiling_posix.py`` executes the macos-on-demand `decide` job's
+    real bash against a stub ``gh``, so it needs a POSIX shell AND an executable bit
+    that survives. On Windows ``shutil.which("bash")`` resolves the WSL launcher,
+    which cannot read the Windows tmp paths the harness writes, and ``chmod`` is a
+    no-op on NTFS so the stub is never the ``gh`` that resolves. Listing the module
+    is how a POSIX-only-by-design suite is stated here; a class-level ``skipif``
+    would leave a marker that proves nothing on that shard either.
     """
     assert _ignore_names() == {
+        "test_macos_pool_ceiling_posix.py",
         "test_sandbox_argv.py",
         "test_sandbox_cc_mode.py",
         "test_sandbox_hardlink_scan.py",

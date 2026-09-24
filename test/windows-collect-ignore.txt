@@ -57,3 +57,11 @@ test_file_office_preview.py        # FILE_READ_SCHEMA rejects C:\ paths (POSIX-o
 # budgets. The canary names the file explicitly on the pytest command line,
 # which bypasses this list by design (see the header above).
 test_pod_windows_boot.py           # dedicated windows pod-boot canary, not a shard test
+
+# Executes the macos-on-demand `decide` job's real bash against a stub `gh`, so it
+# needs a POSIX shell AND an executable bit that survives: on Windows
+# `shutil.which("bash")` resolves the WSL launcher, which cannot read the Windows
+# tmp paths the harness writes, and `chmod` is a no-op on NTFS so the stub is never
+# the `gh` that resolves. The workflow's platform-independent assertions stay in
+# test_macos_platform_tests_gate.py, which IS collected here.
+test_macos_pool_ceiling_posix.py   # executes bash + needs a real exec bit

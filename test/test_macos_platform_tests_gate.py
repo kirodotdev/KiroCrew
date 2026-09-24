@@ -32,6 +32,7 @@ import json
 from pathlib import Path
 
 import yaml
+from macos_lane_helpers import verdict_script as _verdict_script
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -292,3 +293,45 @@ class TestTheOnDemandLaneCannotBecomeAGate:
             "test/test_theme_install.py",
         ):
             assert path in darwin, f"{path} must select the native macOS suite"
+
+
+class TestTheDecideJobsReadScope:
+    """The ceiling's occupancy read must not widen what `decide` may see.
+
+    Platform-independent, so it stays collected on every shard; the bash-executing
+    assertions live in ``test_macos_pool_ceiling_posix.py``.
+    """
+
+    def test_the_decide_job_may_only_read_actions(self) -> None:
+        decide = _load("macos-on-demand.yml")["jobs"]["decide"]
+        assert decide["permissions"] == {"contents": "read", "actions": "read"}
+        # Counting is workflow-scoped, so it needs neither paging nor a wider read.
+        assert "actions/workflows/macos-on-demand.yml/runs" in _verdict_script()
+        # And it asks each candidate run whether it HOLDS a macOS job, rather than
+        # counting runs of this workflow, most of which decide not to run the suite.
+        assert "/jobs?per_page=100&filter=latest" in _verdict_script()
+        assert 'startswith("macOS Tests")' in _verdict_script()
+
+    def test_the_probes_job_name_prefix_matches_the_job_it_looks_for(self) -> None:
+        """The occupancy probe and the job it counts are coupled by a STRING.
+
+        The probe keeps a run only when a job's name starts with a literal; the suite
+        job supplies that name. Nothing else ties them, so renaming the job makes the
+        probe return a valid `0` for every candidate: no warning fires, the ceiling
+        never trips, and the lane silently goes back to owning the pool. Pin the pair
+        so a rename goes red here instead.
+        """
+        document = _load("macos-on-demand.yml")
+        suite_job = next(
+            job
+            for name, job in document["jobs"].items()
+            if name != "decide" and "platform-tests.yml" in str(job.get("uses", ""))
+        )
+        declared = suite_job["name"]
+        script = _verdict_script()
+        prefix = script.split('startswith("', 1)[1].split('")', 1)[0]
+        assert declared.startswith(prefix), (
+            f"the occupancy probe filters on jobs whose name starts with {prefix!r}, "
+            f"but the suite job is named {declared!r}; a run holding the pool would "
+            f"not be counted"
+        )
