@@ -55,9 +55,11 @@ way of spelling an exception.
 from __future__ import annotations
 
 import ast
+import sys
 from collections import Counter
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
 
+import pytest
 from source_corpus import parsed_candidates, src_root
 
 #: Names whose call performs, or delegates, a read / merge / whole-file rewrite.
@@ -83,6 +85,10 @@ _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 #: the per-agent lock; a new entry is a new path into a file three fences already
 #: guard, and calls for the policy above to be revisited rather than one more
 #: line here.
+#:
+#: The fence text is prose, and this gate does not re-derive it. A site that
+#: moves on or off the loop keeps the same key, so the commit that moves it
+#: updates or deletes its row here.
 _WRITE_SITES: dict[tuple[str, str, str], tuple[int, str]] = {
     (
         "kiro_crew/execution_context.py",
@@ -365,6 +371,66 @@ def test_every_census_entry_still_exists() -> None:
         "_WRITE_SITES records site(s) that no longer exist -- remove them so the "
         f"census keeps matching the code: {stale}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Meta-tests: prove each gate above still discriminates                        #
+# --------------------------------------------------------------------------- #
+#: A gate whose own assertion is dropped passes silently, and the detector
+#: meta-tests further down cannot see that: they exercise the scanner, never a
+#: gate's verdict. So each gate is driven here against a census or a site list
+#: that MUST fail it. Dropping an assertion above reddens one of these.
+_PINNED_SITE = (
+    "kiro_crew/subagent_persistence.py",
+    "promote_retention",
+    "state_writer",
+)
+
+
+def _patch_census(
+    monkeypatch: pytest.MonkeyPatch,
+    census: dict[tuple[str, str, str], tuple[int, str]],
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "_WRITE_SITES", census)
+
+
+def test_the_census_gate_fails_on_an_unrecorded_site(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _PINNED_SITE in _WRITE_SITES, "the pinned key left the census"
+    _patch_census(monkeypatch, {k: v for k, v in _WRITE_SITES.items() if k != _PINNED_SITE})
+    with pytest.raises(AssertionError, match="NEW SITE"):
+        test_no_new_whole_file_state_write_site()
+
+
+def test_the_census_gate_fails_when_a_recorded_count_disagrees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    count, fence = _WRITE_SITES[_PINNED_SITE]
+    _patch_census(monkeypatch, {**_WRITE_SITES, _PINNED_SITE: (count + 1, fence)})
+    with pytest.raises(AssertionError, match="COUNT"):
+        test_no_new_whole_file_state_write_site()
+
+
+def test_the_stale_entry_gate_fails_on_a_phantom_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    phantom = ("kiro_crew/nowhere.py", "gone", "update_state")
+    _patch_census(monkeypatch, {**_WRITE_SITES, phantom: (1, "records nothing live")})
+    with pytest.raises(AssertionError, match="nowhere.py"):
+        test_every_census_entry_still_exists()
+
+
+def test_the_coroutine_gate_fails_on_a_write_in_a_coroutine_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "collect_repo_write_sites",
+        lambda: [("kiro_crew/x.py", "run", "update_state", True, 7)],
+    )
+    with pytest.raises(AssertionError, match="async def"):
+        test_no_state_write_directly_in_a_coroutine_body()
 
 
 # --------------------------------------------------------------------------- #

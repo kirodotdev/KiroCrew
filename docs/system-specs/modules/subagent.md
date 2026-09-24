@@ -1048,6 +1048,17 @@ none. Every current site lives in a *synchronous* function that a coroutine
 calls, which is why the gate pins sites rather than trying to decide statically
 whether a given call runs on the loop.
 
+**What the gate does not check.** The fence column above is prose, derived by
+reading each call site's callers; no test re-derives it. A site that moves on or
+off the loop keeps the same `(module, function, call)` key, so the stale-entry
+test cannot see a fence go out of date — only a site that moves or disappears
+entirely. A commit that changes a site's loop status therefore updates that row
+in the same commit, and a commit that takes the last on-loop site off the loop
+deletes its row, which is how the census shrinks. The gates' own assertions are
+pinned by meta-tests that drive each gate against a census or a site list that
+must fail it, so dropping an assertion reddens the suite instead of quietly
+disabling the gate.
+
 ## Durable task queue (`kiro_crew.taskq`)
 
 Specified in [taskq.md](taskq.md); this section is the manager's side of it.
