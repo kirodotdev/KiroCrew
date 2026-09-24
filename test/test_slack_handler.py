@@ -3560,13 +3560,23 @@ class TestTransientCompactionRetry:
         posted above where its answer would have gone must not stay behind, and
         its reaction ladder / stall watchdog must be finalized before the nested
         call takes over the Slack message."""
+        import dataclasses
+
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        _real_cfg = KiroCrewConfig.load()
+        # The real ``agent`` section, not a stub of it: ``handler._get_default_agent``
+        # reads ``load().agent.default_agent`` and caches it in a module global, so a
+        # config object carrying only ``slack`` raises unless some earlier test in the
+        # same process happened to warm that cache first.
         monkeypatch.setattr(
             "kiro_crew.slack.handler.KiroCrewConfig.load",
-            lambda: type(
-                "_Cfg",
-                (),
-                {"slack": type("_S", (), {"show_thinking": True, "reactions_enabled": False})()},
-            )(),
+            lambda: dataclasses.replace(
+                _real_cfg,
+                slack=dataclasses.replace(
+                    _real_cfg.slack, show_thinking=True, reactions_enabled=False
+                ),
+            ),
         )
         slack = MockSlackClient()
         provider = _SequencedProvider(
