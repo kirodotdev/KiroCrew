@@ -3783,6 +3783,20 @@ class TestOpusTwoStageArchitecture:
 
     LANES = ("claude-review.yml", "fork-opus-review.yml")
 
+    #: One turn budget, both stages, both lanes. Discovery explores the repo, so
+    #: it is the stage that runs out: a 31-file diff exhausted 120 turns in 25
+    #: minutes and published no verdict at all, because a run stopped at the cap
+    #: emits no stamp and the lane refuses to call that a review.
+    TURN_BUDGET = 180
+    #: The job wall, which stays a HANG backstop rather than a second budget. Both
+    #: stages share one job, so the wall bounds their sum. Sized off the one run
+    #: that exhausted the budget -- fork-opus-review run 35948052812, job
+    #: 107470355540, 121 turns in 25m14s, so ~12.5 s per turn -- which makes two
+    #: exhausted stages about 76 minutes. Re-measure from a fresh exhausted run
+    #: before trusting the margin: one observation is what this number rests on,
+    #: and a slower turn moves the wall back into being the real budget.
+    WALL_MINUTES = 120
+
     # Clauses that must live ONLY in validation. Each of these was shown, by
     # single-clause ablation with n=3 on a known-real defect, to silence a
     # finding the same model reports 3/3 times without it.
@@ -3804,6 +3818,22 @@ class TestOpusTwoStageArchitecture:
             # it, an unfiltered candidate list would be posted and gated on.
             assert "\n        id: review\n" in workflow[validate_at:], lane
             assert "\n        id: discover\n" in workflow[discover_at:validate_at], lane
+
+    def test_both_stages_of_both_lanes_carry_the_same_turn_budget(self) -> None:
+        """A cap that differs per stage or per lane makes one of them the wall."""
+        for lane in self.LANES:
+            # Line-anchored: the surrounding prose names the number too, and a
+            # comment is not a budget.
+            budgets = re.findall(r"(?m)^ *--max-turns (\d+) *$", _workflow(lane))
+            assert budgets == [str(self.TURN_BUDGET)] * 2, (lane, budgets)
+
+    def test_the_job_wall_leaves_room_for_two_exhausted_stages(self) -> None:
+        """Both stages share one job, so the wall bounds their SUM."""
+        for lane in self.LANES:
+            spec = yaml.safe_load(_workflow(lane))
+            walls = [job.get("timeout-minutes") for job in spec["jobs"].values()]
+            assert walls == [self.WALL_MINUTES], (lane, walls)
+            assert self.WALL_MINUTES * 60 > self.TURN_BUDGET * 2 * 12.5, lane
 
     def test_candidates_cross_the_stage_boundary_as_a_file(self) -> None:
         """Model output must never be spliced into YAML or a shell argument."""

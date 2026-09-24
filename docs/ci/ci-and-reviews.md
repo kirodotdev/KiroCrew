@@ -1284,7 +1284,7 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 
 | Reviewer | Check name | Harness | Reads | Question | Blocks? |
 |---|---|---|---|---|---|
-| Opus 5 | `Opus 5 Review` | Agentic Opus 5 with Opus 4.8 as the overload fallback, `--max-turns 120` per stage, **two real invocations** (discovery -> validation) | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
+| Opus 5 | `Opus 5 Review` | Agentic Opus 5 with Opus 4.8 as the overload fallback, `--max-turns 180` per stage, **two real invocations** (discovery -> validation) | **Code only, and no shell**: `Read`, `Grep`, `Glob`. The diff is prefetched to a file, so `Bash(gh pr diff:*)` is not granted -- its prefix match also admits `gh pr diff <n> > <path>`, which a directive in the PR-authored diff could use to overwrite the stage-2 prompt | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
 | GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two GPT invocations** (discovery, then authoritative falsification), `reasoning_effort: medium`, plus conditional Opus 5 adjudication of blocking candidates | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
 | Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
 | UX Review | `UX Review` | Agentic Fable 5, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the PR's screenshots **only** -- the attachments its body links, downloaded, plus any committed image; pass 2: code, PR text, and pass 1's report | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
@@ -1712,9 +1712,11 @@ Two lanes stay outside that function, and both exclusions are deliberate:
   secret-key or session-token shapes before any public comment.
 - Dependabot PRs skip the review work and let the gate pass, since they run with a
   read-only token and no credential access.
-- A 90-minute job timeout is a runaway backstop, not a review budget: a healthy
-  review self-terminates well before it, so the timeout exists solely to fail the
-  gate closed on a true hang.
+- A lane's job timeout is a runaway backstop, not a review budget: 30 to 160
+  minutes, sized per lane off its turn budget so a healthy review self-terminates
+  well before it, so the timeout exists solely to fail the gate closed on a true
+  hang. The Opus lanes sit at 120, because both of their stages share one job and
+  the wall therefore bounds their sum.
 
 ### Advisory means advisory, with one exception
 

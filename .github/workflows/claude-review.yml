@@ -80,14 +80,17 @@ jobs:
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Opus 5 Review' || 'Opus 5 Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: a healthy review
-    # self-terminates at --max-turns 120 per stage (two stages; see below)
+    # self-terminates at --max-turns 180 per stage (two stages; see below)
     # long before this, so this
     # ceiling exists solely to fail the gate closed (a no-output review can't
     # look clean) if the agentic review ever HANGS -- a Bedrock stall or retry
-    # loop. Set generously at 90 min so it never cuts a completing 120-turn
-    # review the way the old 30-min wall did, while still killing a true hang
-    # well under GitHub's 360-min job default. Keep in sync with codex-review.yml.
-    timeout-minutes: 90
+    # loop. Sized off the measured turn cost on this repo, ~12.5 s: two stages
+    # exhausting 180 turns each is about 76 min, plus a couple of minutes of
+    # setup, so 120 min keeps the wall a hang backstop instead of a second
+    # budget that cuts a completing review. Still well under GitHub's 360-min
+    # job default. The reasoning is shared with codex-review.yml; the numbers
+    # differ because that lane's turn budget does.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event.pull_request.head.repo.full_name == github.repository
@@ -269,7 +272,7 @@ jobs:
           claude_args: |
             --model us.anthropic.claude-opus-5
             --fallback-model us.anthropic.claude-opus-4-8
-            --max-turns 120
+            --max-turns 180
             --allowedTools "Read,Grep,Glob"
           prompt: |
             Read `.review-prompts/opus-discovery.md` and follow it exactly. It is
@@ -417,8 +420,7 @@ jobs:
       # The security token included in the request is expired` -- the gate then
       # failed closed with no verdict and no way to tell a real hang from a
       # spent session. Each stage now starts on a fresh session, leaving the
-      # 90-minute job timeout as the only wall. Keep in sync with
-      # codex-review.yml.
+      # job timeout as the only wall. Keep in sync with codex-review.yml.
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
@@ -449,7 +451,7 @@ jobs:
           claude_args: |
             --model us.anthropic.claude-opus-5
             --fallback-model us.anthropic.claude-opus-4-8
-            --max-turns 120
+            --max-turns 180
             --allowedTools "Read,Grep,Glob"
           prompt: |
             Read `.review-prompts/opus-validate.md` and follow it exactly. It is

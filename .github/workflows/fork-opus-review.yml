@@ -56,11 +56,12 @@ jobs:
     name: Fork Opus 5 Review
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: the review
-    # self-terminates well before this. Set at 90 min (matches claude-review.yml)
-    # so it never cuts a completing --max-turns 120 review the way the old 30-min
-    # wall did, while still failing the gate closed on a true hang. Keep in sync
-    # with claude-review.yml.
-    timeout-minutes: 90
+    # self-terminates well before this. Set at 120 min (matches
+    # claude-review.yml) so it never cuts a completing --max-turns 180 review --
+    # two stages at the measured ~12.5 s per turn is about 76 min -- while still
+    # failing the gate closed on a true hang. Keep in sync with
+    # claude-review.yml.
+    timeout-minutes: 120
     # Only for a SUCCESSFUL Stage 1 run that was itself a fork pull_request.
     if: >-
       github.event.workflow_run.event == 'pull_request'
@@ -401,7 +402,7 @@ jobs:
           claude_args: |
             --model us.anthropic.claude-opus-5
             --fallback-model us.anthropic.claude-opus-4-8
-            --max-turns 120
+            --max-turns 180
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Read(//proc/**),Read(//sys/**)"
           prompt: |
@@ -591,7 +592,7 @@ jobs:
           claude_args: |
             --model us.anthropic.claude-opus-5
             --fallback-model us.anthropic.claude-opus-4-8
-            --max-turns 120
+            --max-turns 180
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Read(//proc/**),Read(//sys/**)"
           prompt: |
