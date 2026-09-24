@@ -110,7 +110,6 @@ export interface AgentBinding {
 
 export interface ProviderLabels {
   sessionProcess: string
-  agentTemplateField: string
   processCountLabel: string
   configFile: string
   pluginRegistryName: string

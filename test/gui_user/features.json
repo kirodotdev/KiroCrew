@@ -1267,7 +1267,7 @@
       "id": "sidebar-rail-order-and-active-state",
       "feature": "sidebar",
       "title": "Rail shows Main group in registry order with one active row",
-      "user_story": "As a user, I want the rail to list Sessions, Schedule, Artifacts, then Apps/Discover/Library, then Agent Capabilities and Settings, so that navigation is predictable.",
+      "user_story": "As a user, I want the rail to list Sessions, Schedule, Artifacts, then Apps/Discover/Library, then Customize and Settings, so that navigation is predictable.",
       "start_url": "/schedule",
       "entry_path": "Load any page > inspect rail rows and active highlight",
       "preconditions": {
@@ -1579,7 +1579,7 @@
       "title": "Promote a capability tab to the rail",
       "user_story": "As a daily user of one capability tab, I want to pin it as its own rail row (up to NAV_PINNED_LIMIT), so that it is one click away instead of two.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities page header → pin control (PinSurfaceButton) on the current tab",
+      "entry_path": "Customize page header → pin control (PinSurfaceButton) on the current tab",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -1607,7 +1607,7 @@
       "id": "redirect-agents",
       "feature": "navigation",
       "title": "Redirect /agents and /mc-agents",
-      "user_story": "As a user with an old bookmark, I want /agents and /mc-agents to land on Agent Capabilities, so that deep links keep working.",
+      "user_story": "As a user with an old bookmark, I want /agents and /mc-agents to land on Customize, so that deep links keep working.",
       "start_url": "/agents",
       "entry_path": "Type /agents or /mc-agents → /capabilities",
       "preconditions": {
@@ -2077,7 +2077,7 @@
       "title": "Crews",
       "user_story": "As an operator, I want to define named crews binding an agent, model and workspace with a custom avatar, so that I can pick the right worker per task.",
       "start_url": "/capabilities",
-      "entry_path": "Rail → Agent Capabilities → Crews tab (?tab=crews)",
+      "entry_path": "Rail → Customize → Crewmates tab (?tab=crews)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -2099,10 +2099,10 @@
     {
       "id": "capabilities-crews-templates-skills-tabs",
       "feature": "capabilities",
-      "title": "Navigate Agent Capabilities tabs: Crews, Agent Templates, Skills",
+      "title": "Navigate Customize tabs: Crewmates, Custom agents, Skills",
       "user_story": "As a user, I want to manage crews, agent templates, and skills in one panel, so that agent configuration is centralized.",
       "start_url": "/capabilities",
-      "entry_path": "Rail > Agent Capabilities (bottom group) > tabs Crews | Agent Templates | Skills; /agents and /mc-agents redirect here",
+      "entry_path": "Rail > Customize (bottom group) > tabs Crewmates | Custom agents | Skills; /agents and /mc-agents redirect here",
       "preconditions": {
         "seed": "skills-custom",
         "members": [],
@@ -2131,7 +2131,7 @@
       "title": "Agent templates inside a crew's Template pane",
       "user_story": "As an operator, I want to inspect the harness-level agent definitions crews bind to, so that I understand what a crew actually runs.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Crews tab → open a crew → Template pane (the standalone Agent Templates tab no longer exists)",
+      "entry_path": "Customize → Crewmates tab → open a crewmate → Template pane (the shared definitions live on the Custom agents tab)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2156,7 +2156,7 @@
       "title": "Crew appearance library",
       "user_story": "As an operator, I want a Library tab of appearance packs a crew can wear, with import and guarded delete, so that crews look distinct.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Crews → a crew → Edit avatar → Library",
+      "entry_path": "Customize → Crewmates → a crewmate → Edit avatar → Library",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -2181,7 +2181,7 @@
       "title": "Hooks",
       "user_story": "As an operator, I want event-triggered agent runs, so that routine reactions happen without me.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Hooks tab (?tab=hooks)",
+      "entry_path": "Customize → Hooks tab (?tab=hooks)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2206,7 +2206,7 @@
       "title": "Prompts",
       "user_story": "As a user, I want reusable prompt entries from the registry, so that common requests are one pick away.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Prompts tab (?tab=prompts)",
+      "entry_path": "Customize → Prompts tab (?tab=prompts)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2231,7 +2231,7 @@
       "title": "Navigate Prompts, Steering, Hooks, and Workflows tabs",
       "user_story": "As a user, I want to edit prompts, steering files, hooks, and saved workflows, so that I can shape agent behavior and automation.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities > tabs Prompts | Steering files | Hooks | Workflows (/hooks also standalone route)",
+      "entry_path": "Customize > tabs Prompts | Steering files | Hooks | Workflows (/hooks also standalone route)",
       "preconditions": {
         "seed": "skills-custom",
         "members": [],
@@ -2260,7 +2260,7 @@
       "title": "Skills",
       "user_story": "As an operator, I want to see installed skills, browse the public registry and review pending candidates, so that I can curate agent know-how.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Skills tab (?tab=skills)",
+      "entry_path": "Customize → Skills tab (?tab=skills)",
       "preconditions": {
         "seed": "skills-custom",
         "members": [],
@@ -2285,7 +2285,7 @@
       "title": "Steering",
       "user_story": "As an operator, I want to manage always-injected steering documents, so that every agent turn follows house rules.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Steering tab (?tab=steering)",
+      "entry_path": "Customize → Steering tab (?tab=steering)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2310,7 +2310,7 @@
       "title": "Workflows",
       "user_story": "As a user, I want saved dynamic-workflow definitions and their runs in one library, so that I can rerun orchestrations.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Workflows tab (?tab=workflows)",
+      "entry_path": "Customize → Workflows tab (?tab=workflows)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -2335,7 +2335,7 @@
       "title": "Steering tab lists global and workspace steering docs with their declared inclusion mode and lets me edit it",
       "user_story": "As an author, I want to see each steering document's inclusion mode (and typos resolved as always), so that I understand what loads into every session.",
       "start_url": "/capabilities",
-      "entry_path": "Open Capabilities and pick the Steering tab. Agent Capabilities > Steering tab > document > inclusion",
+      "entry_path": "Open Capabilities and pick the Steering tab. Customize > Steering tab > document > inclusion",
       "preconditions": {
         "seed": "minimal",
         "members": [
@@ -2393,7 +2393,7 @@
       "title": "Skills tab splits live skills from a pending crystallized candidate and lets me approve or dismiss it",
       "user_story": "As a user, I want to review an auto-generated skill before it goes live, so that only skills I trust are injected.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities > Skills tab > Pending section",
+      "entry_path": "Customize > Skills tab > Pending section",
       "preconditions": {
         "seed": "skills-custom",
         "members": [
@@ -2446,7 +2446,7 @@
       "title": "Connections",
       "user_story": "As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities → Connections tab (?tab=mcp)",
+      "entry_path": "Customize → Connections tab (?tab=mcp)",
       "preconditions": {
         "seed": "connections-two",
         "members": [
@@ -2482,7 +2482,7 @@
       "title": "Connect a third-party service from the Services gallery",
       "user_story": "As a user, I want to sign in to GitHub, Notion, or similar, so that the agent can use those services.",
       "start_url": "/capabilities",
-      "entry_path": "Agent Capabilities > Connections > Services gallery > provider card > Connect (OAuth relay)",
+      "entry_path": "Customize > Connections > Services gallery > provider card > Connect (OAuth relay)",
       "preconditions": {
         "seed": "connections-two",
         "members": [],
@@ -2667,7 +2667,7 @@
       "title": "Add a folder source pointing at the seeded workspace memory and scan it",
       "user_story": "As a user, I want to register a local folder and see per-source counts after a scan, so that its markdown becomes searchable.",
       "start_url": "/knowledge",
-      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Agent Capabilities > Knowledge > Add source > Folder > path > Scan",
+      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Customize > Knowledge > Add source > Folder > path > Scan",
       "preconditions": {
         "seed": "memory-populated",
         "members": [
@@ -2695,7 +2695,7 @@
       "title": "Knowledge",
       "user_story": "As a user, I want a document library with sources and items I can open, so that agents can search what my team knows.",
       "start_url": "/knowledge",
-      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Rail > Agent Capabilities > Knowledge tab (?tab=knowledge; /knowledge redirects here) > SourcesList > ItemCard > DetailView",
+      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Rail > Customize > Knowledge tab (?tab=knowledge; /knowledge redirects here) > SourcesList > ItemCard > DetailView",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2727,7 +2727,7 @@
       "title": "Switch Knowledge to the graph view",
       "user_story": "As a user, I want a graph of knowledge relations, so that I can see how documents connect.",
       "start_url": "/knowledge",
-      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Agent Capabilities > Knowledge > graph view toggle (KnowledgeGraph.tsx)",
+      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Customize > Knowledge > graph view toggle (KnowledgeGraph.tsx)",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2753,7 +2753,7 @@
       "title": "Knowledge tab shows an empty library with add-source affordances",
       "user_story": "As a new user, I want the Knowledge tab to show no sources and how to add one, so that I know where to start.",
       "start_url": "/knowledge",
-      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Sidebar > Agent Capabilities > Knowledge tab",
+      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Sidebar > Customize > Knowledge tab",
       "preconditions": {
         "seed": "empty",
         "members": [
@@ -2782,7 +2782,7 @@
       "title": "Review knowledge settings and embedding status",
       "user_story": "As a user, I want to see embedding progress and knowledge settings, so that I know search is ready.",
       "start_url": "/knowledge",
-      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Agent Capabilities > Knowledge > Settings tab > EmbeddingStatus",
+      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Customize > Knowledge > Settings tab > EmbeddingStatus",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2808,7 +2808,7 @@
       "title": "Upload a document into the knowledge library",
       "user_story": "As a user, I want to upload a PDF or markdown file, so that its content is searchable by the agent.",
       "start_url": "/knowledge",
-      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Agent Capabilities > Knowledge > Upload",
+      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Customize > Knowledge > Upload",
       "preconditions": {
         "seed": "empty",
         "members": [
@@ -2836,7 +2836,7 @@
       "title": "Add a URL source that is fetched and ingested",
       "user_story": "As a user, I want to paste a URL and have its page ingested, so that web docs join my library.",
       "start_url": "/knowledge",
-      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Agent Capabilities > Knowledge > Add source > URL",
+      "entry_path": "Open /knowledge (redirects to the Knowledge tab of Capabilities). Customize > Knowledge > Add source > URL",
       "preconditions": {
         "seed": "empty",
         "members": [

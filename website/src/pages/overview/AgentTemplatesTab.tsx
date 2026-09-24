@@ -5,7 +5,7 @@ import { FileCode2, MessageSquare, UserPlus, Copy, Trash2, Lock, Plus, X, MoreHo
 import { useAppDispatch } from '../../store'
 import { createSlot } from '../../store/chatSlice'
 import { api, ApiError } from '../../api/client'
-import { Card, CardTitle, Btn, Badge, SearchInput, EmptyState, PanelSectionHeader } from '../../components/ui'
+import { Btn, Badge, SearchInput, EmptyState, PanelSectionHeader } from '../../components/ui'
 import Modal from '../../components/Modal'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -72,7 +72,9 @@ interface Draft {
   allowed: string[]
 }
 
-const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
+// The pane sits flat under the search row (no card, no title row, no glossary),
+// so the height budget is the shell's header + tab strip + that one toolbar row.
+const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-212px)] supports-[height:100svh]:h-[calc(100svh-212px)] min-h-[420px]'
 
 const strList = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 
@@ -146,13 +148,7 @@ const referencesIn = (body: string): TemplateReference[] => {
   }
 }
 
-/** Where a reference lives, so the delete guard's rows can be followed. */
 /** Full literal keys, so extractors and the dead-key gate can see every one. */
-const GLOSSARY_ROWS = [
-  ['pages.overview.agentTemplatesTab.term_template', 'pages.overview.agentTemplatesTab.glossary_template'],
-  ['pages.overview.agentTemplatesTab.term_chat', 'pages.overview.agentTemplatesTab.glossary_chat'],
-  ['pages.overview.agentTemplatesTab.term_crewmate', 'pages.overview.agentTemplatesTab.glossary_crewmate'],
-] as const
 const READ_ONLY_LEAD_KEY = {
   package: 'pages.overview.agentTemplatesTab.read_only_lead_package',
   runtime: 'pages.overview.agentTemplatesTab.read_only_lead_runtime',
@@ -607,27 +603,26 @@ export default function AgentTemplatesTab() {
   ])).sort(), [draft?.tools, draft?.allowed])
 
   return (<>
-    <Card>
-      <CardTitle>
-        <FileCode2 className="lucide-inline" /> {i18nT('pages.overview.agentTemplatesTab.title')}
-        <span className="ml-auto"><Btn primary onClick={() => openCreate()}><Plus className="lucide-inline" aria-hidden /> {i18nT('pages.overview.agentTemplatesTab.new_template')}</Btn></span>
-      </CardTitle>
-      {/* The four nouns this surface uses, defined once; the editing warning
-          lives in the per-template box, not here. */}
-      {/* One term per line, term first: the nouns this tab uses, and the one
-          fact about saving vs restarting a reader keeps asking. The override is
-          defined where its group is, not here. */}
-      <dl className="text-muted text-[12.5px] mb-3 leading-relaxed grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
-        {GLOSSARY_ROWS.map(([term, def]) => (
-          <div key={term} className="contents">
-            <dt className="font-semibold text-text">{i18nT(term)}</dt>
-            <dd>{i18nT(def)}</dd>
+    <div className="min-w-0">
+      {/* Flat in the pane like the Crewmates tab: the rail tab and the page title
+          already say "Custom agents", so there is no title row to repeat it. The
+          toolbar is the Skills tab's rhythm -- search left, the one primary
+          action right on the same row -- and only exists once there is a list
+          to search; the empty state below carries its own New button. A failed
+          load renders no empty state, so the toolbar stays for it too --
+          otherwise New custom agent would exist nowhere on the tab. */}
+      {(rows.length > 0 || error) && (
+        // Narrow-first: below `sm` the search and the primary action stack (a
+        // 288px pane cannot hold both on one row without clipping one); from
+        // `sm` up they share the row, the Skills tab's rhythm.
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative min-w-0 max-w-[480px] flex-1">
+            <SearchInput placeholder={i18nT('pages.overview.agentTemplatesTab.filter')} value={filter} onChange={e => setFilter(e.target.value)} />
           </div>
-        ))}
-      </dl>
-      <p className="text-muted text-[12.5px] mb-3 leading-relaxed">{i18nT('pages.overview.agentTemplatesTab.glossary_save_restart')}</p>
-      {rows.length > 0 && (
-        <div className="mb-3"><SearchInput placeholder={i18nT('pages.overview.agentTemplatesTab.filter')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
+          <div className="flex items-center gap-2 sm:ml-auto">
+            <Btn primary onClick={() => openCreate()}><Plus className="lucide-inline" aria-hidden /> {i18nT('pages.overview.agentTemplatesTab.new_template')}</Btn>
+          </div>
+        </div>
       )}
       {isLoading && <p className="text-muted italic text-sm px-3 py-4">{i18nT('pages.overview.agentTemplatesTab.loading')}</p>}
       {error && <ErrorNotice message={i18nT('pages.overview.agentTemplatesTab.load_failed')} askAgent className="mb-2" />}
@@ -672,7 +667,8 @@ export default function AgentTemplatesTab() {
                     {/* Two controls in the row: the primary action and one overflow
                         menu holding the rest. The read-only remedy (Duplicate to
                         edit) sits in the read-only banner below, next to its reason. */}
-                    <div className="flex flex-wrap gap-2 justify-end shrink-0">
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                    <div className="flex flex-wrap gap-2 justify-end">
                       <Btn onClick={() => void chatWith(selected)} title={i18nT('pages.overview.agentTemplatesTab.chat_with_hint')}><MessageSquare className="lucide-inline" aria-hidden /> {i18nT('pages.overview.agentTemplatesTab.chat_with')}</Btn>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -713,6 +709,10 @@ export default function AgentTemplatesTab() {
                           )}
                         </DropdownMenuContent>
                       </DropdownMenu>
+                    </div>
+                    {/* Visible, not hover-only: the one behavioural difference from a
+                        crewmate's Chat button is which memory the chat runs on. */}
+                    <span className="text-[11px] text-muted text-right">{i18nT('pages.overview.agentTemplatesTab.chat_with_caption')}</span>
                     </div>
                   </div>
 
@@ -869,9 +869,10 @@ export default function AgentTemplatesTab() {
                           {' · '}
                           {i18nT('pages.overview.agentTemplatesTab.affects_crewmates', { count: selected.used_by.filter(u => u.kind === 'crew').length })}
                         </span>
-                        {/* Save vs the page header's Apply & Restart, both halves in one
-                            line where both controls are visible: saving is enough for new
-                            chats; running chats need the restart. */}
+                        {/* One line says what a save reaches and what it does not:
+                            new chats use it at once; running chats keep what they
+                            started with. No restart control on this page to point at
+                            (Apply & Restart lives on Connections, with the MCP changes). */}
                         {/* No hand-off: the refused save leaves the template draft
                             above unsaved, and leaving with the agent would drop it. */}
                         {saveError
@@ -891,10 +892,10 @@ export default function AgentTemplatesTab() {
           )}
         </div>
       )}
-    </Card>
+    </div>
 
-    {/* Titled by entry point: the three Duplicate affordances and New template are
-        one flow, and the title is where that is said. */}
+    {/* Titled by entry point: the three Duplicate affordances and New custom agent
+        are one flow, and the title is where that is said. */}
     <Modal open={creating} onClose={() => { if (!create.isPending) { setCreating(false); setNotice(null) } }} title={createForm.from ? i18nT('pages.overview.agentTemplatesTab.duplicate_title', { name: createForm.from }) : i18nT('pages.overview.agentTemplatesTab.new_template')} maxWidth={560} guardAccidentalDismiss footer={<>
       <Btn disabled={create.isPending} onClick={() => { setCreating(false); setNotice(null) }}>{i18nT('pages.overview.agentTemplatesTab.cancel')}</Btn>
       <Btn primary disabled={!createForm.name.trim() || !!nameProblem(createForm.name) || create.isPending} onClick={() => create.mutate(createForm)}>{i18nT('pages.overview.agentTemplatesTab.create_and_edit')}</Btn>

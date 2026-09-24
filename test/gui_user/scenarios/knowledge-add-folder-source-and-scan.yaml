@@ -26,7 +26,7 @@ preconditions:
   members: [nova-sky]
   start_url: /knowledge
 steps:
-  - You are on the Agent Capabilities page with its Knowledge tab selected; the pane header reads "Knowledge" with "Documents and sources your agent can search when answering" beneath it. Under that header is a row of view tabs (List View, Graph View, Sources, Settings). Click the "Sources" tab.
+  - You are on the Customize page with its Knowledge tab selected; the pane header reads "Knowledge" with "Documents and sources your agent can search when answering" beneath it. Under that header is a row of view tabs (List View, Graph View, Sources, Settings). Click the "Sources" tab.
   - Click the "+ Add Source" button on the right. A form titled "Add Source" opens with two type buttons, "Local File" and "Local Folder". Click "Local Folder".
   - Click into the field whose placeholder reads "Name (optional)" and type exactly "Team notes".
   - Click into the field whose placeholder reads "Folder path (e.g., /home/user/notes)" and type exactly "/tmp/kirocrew-gui-user-test/team-notes".

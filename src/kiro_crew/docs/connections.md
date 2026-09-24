@@ -7,7 +7,7 @@ session; a server nobody curated is added by hand on the same page and behaves t
 same way afterwards. The page also reports whether each one is actually answering,
 which is usually the question you came with.
 
-Open it from the sidebar: **Agent Capabilities → Connections**. The older
+Open it from the sidebar: **Customize → Connections**. The older
 `/connections` address still works and redirects there.
 
 The gallery ships on. To remove every Connections surface from an install, set

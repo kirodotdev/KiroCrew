@@ -1,7 +1,7 @@
 # Smoke: the Developer Mode consent gate on Settings > Developer. The switch is
 # a per-device flag (localStorage `mc-dev-mode`); while it is on, an "Open
 # Developer page" link appears under it and a "Developer" item appears in the
-# left rail's pinned bottom group, between Agent Capabilities and Settings. The
+# left rail's pinned bottom group, between Customize and Settings. The
 # flow is on -> read -> off, so the scenario leaves the flag exactly as it found
 # it (off on a fresh browser profile). Both switch steps name the position to
 # leave the switch in rather than "click it", so a retry against the
@@ -31,7 +31,7 @@ steps:
   - Wait a second.
 expectations:
   - The "Developer Mode" switch is off, and no "Open Developer page" link is shown under it.
-  - The left rail's bottom group shows "Agent Capabilities" and "Settings" but no item labelled "Developer".
+  - The left rail's bottom group shows "Customize" and "Settings" but no item labelled "Developer".
   - In the screenshot taken right after you set the switch to ON, the switch was on, the "Open Developer page" link was visible under it, and a "Developer" item was listed in the left rail above "Settings".
   - No red error banner is visible and nothing in the rail overlaps another row.
 max_steps: 8

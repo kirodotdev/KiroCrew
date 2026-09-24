@@ -593,7 +593,7 @@ app-generated one, nothing — change `~/.kiro/crew/agent.json` or the Template 
 Frontmatter keys map one-to-one onto the JSON fields above; nesting works
 (`mcpServers`, `permissions`). What differs is who may write the file.
 
-| Field | Template pane (Agent Capabilities → Agents) |
+| Field | Built from pane (Customize → Crewmates) |
 |---|---|
 | `model` | editable |
 | `resources` `skill://` entries | editable, via the Skills section |

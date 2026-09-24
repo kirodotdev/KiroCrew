@@ -102,7 +102,7 @@ render as floors (`12+ chats`) instead of asserting a total.
 The only crewmate *configuration* the Crew Members page writes is the star on a
 row, a roster preference stored on the crewmate. (Opening a member writes too,
 but only its own thread binding.) Every configuration edit — **Add member** and
-both Edit affordances — navigates to the crew manager — **Agent Capabilities → Crews**
+both Edit affordances — navigates to the crew manager — **Customize → Crewmates**
 (`/capabilities?tab=crews`) — which is the single editor for name, template,
 model, reasoning effort, workspace, triggers, avatar and session color.
 

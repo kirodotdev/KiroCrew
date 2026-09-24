@@ -65,7 +65,7 @@ try {
   })
 
   await page.goto('/capabilities?tab=crews', { waitUntil: 'domcontentloaded' })
-  await page.locator('#main-content').getByText('Agents you chat with', { exact: false })
+  await page.locator('#main-content').getByText('Your AI teammates', { exact: false })
     .waitFor({ state: 'visible', timeout: 15000 })
 
   /* ── 1. Create — note present ──────────────────────────────────────────── */
@@ -83,16 +83,16 @@ try {
   await page.keyboard.press('Escape')
 
   /* ── 2. Edit → template pane — note absent ─────────────────────────────── */
-  const card = page.getByRole('button', { name: /Edit (crew|agent) default/i })
+  const card = page.getByRole('button', { name: /Edit (crew|agent|crewmate) default/i })
   await card.waitFor({ state: 'visible', timeout: 15000 })
   await card.click()
-  const edit = page.getByRole('dialog', { name: /edit (crew|agent)/i })
+  const edit = page.getByRole('dialog', { name: /edit (crew|agent|crewmate)/i })
   await edit.waitFor({ state: 'visible', timeout: 10000 })
   await edit.getByRole('button', { name: /template/i }).first().click()
 
   // The pane must still own the template select — a frame that lost the field
   // would pass a bare "no note" check while proving the wrong thing.
-  if (!(await edit.getByRole('combobox', { name: /agent template/i }).count())) {
+  if (!(await edit.getByRole('combobox', { name: /built from/i }).count())) {
     throw new Error('edit modal: the template pane no longer renders its own field')
   }
   if (await edit.getByText(NOTE).count()) {

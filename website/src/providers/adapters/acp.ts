@@ -210,7 +210,6 @@ export class AcpAdapter implements ProviderAdapter {
 
   readonly labels: ProviderLabels = {
     sessionProcess: 'ACP subprocess',
-    agentTemplateField: 'Agent Template',
     processCountLabel: 'acp_cli',
     configFile: 'kirocrew.json',
     pluginRegistryName: 'Packages',

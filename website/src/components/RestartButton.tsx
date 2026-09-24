@@ -3,10 +3,12 @@ import { Zap } from 'lucide-react'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from './ErrorNotice'
+
 export default function RestartButton() {
   const [restarting, setRestarting] = useState(false)
-  const [msg, setMsg] = useState('')
-  const [isError, setIsError] = useState(false)
+  const [ok, setOk] = useState('')
+  const [err, setErr] = useState('')
 
   const restart = async () => {
     // The reassurance lives at the moment of the click, not only in a hover
@@ -16,30 +18,50 @@ export default function RestartButton() {
     // reply in progress) before anything happens.
     if (!window.confirm(i18nT('components.restartButton.confirm'))) return
     setRestarting(true)
+    setErr('')
+    setOk('')
     try {
       const res = await api.restartSessions()
       // The sessions DID restart, but a failed reconcile means they restarted
       // against a config that may not match the sources — reporting "config
       // applied" there would be the exact lie this button exists to avoid.
       if (res && res.mcp_sync_ok === false) {
-        setIsError(true)
-        setMsg(i18nT('components.restartButton.sessions_restarted_but_mcp_sync_failed'))
+        setErr(i18nT('components.restartButton.sessions_restarted_but_mcp_sync_failed'))
       } else {
-        setIsError(false)
-        setMsg(i18nT('components.restartButton.sessions_restarted_config_applied'))
+        setOk(i18nT('components.restartButton.sessions_restarted_config_applied'))
+        // Success is a passing confirmation, so it clears itself. A failure
+        // stays until dismissed or the next attempt: an error that vanishes
+        // after five seconds is one the reader may never have seen.
+        setTimeout(() => setOk(''), 5000)
       }
     } catch (e: unknown) {
-      setIsError(true)
-      setMsg(e instanceof Error ? e.message : i18nT('components.restartButton.restart_failed'))
+      // Lead with the page's own sentence and keep the server's reason after
+      // it: a bare "restart refused: …" reads as a log line, not as an answer.
+      setErr(
+        e instanceof Error
+          ? i18nT('components.restartButton.restart_failed_because', { reason: e.message })
+          : i18nT('components.restartButton.restart_failed'),
+      )
     } finally {
       setRestarting(false)
-      setTimeout(() => setMsg(''), 5000)
     }
   }
 
   return (
     <div className="flex items-center gap-2">
-      {msg && <span className={`text-[13px] animate-rise ${isError ? 'text-danger' : 'text-ok'}`}>{msg}</span>}
+      {ok && <span className="text-[13px] animate-rise text-ok">{ok}</span>}
+      {/* The failure goes through ErrorNotice like every other error the user
+          sees, so the journal lookup applies; `inline` because this sits in a
+          header row, not at the top of a panel. The agent hand-off stays at
+          ErrorNotice's default (off): it navigates to the chat, which unmounts
+          the page this button sits in, and the Connections header sits above
+          an editable MCP server form. */}
+      <ErrorNotice
+        message={err}
+        variant="inline"
+        onDismiss={() => setErr('')}
+        testId="restart-button-error"
+      />
       <button
         onClick={restart}
         disabled={restarting}

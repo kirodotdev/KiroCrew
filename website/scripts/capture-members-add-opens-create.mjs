@@ -30,7 +30,7 @@ import { check, podInfo, primeCrewPod } from './lib/crew-pod-harness.mjs'
 const OUT = process.argv[2] || '../temp-screenshots/members-add-opens-create'
 const CREW = 'oncall'
 const ADD_MEMBER = 'Add member'
-const CREATE_TITLE = 'Add crew member' // the create-mode DialogContent's aria-label when arriving from the roster
+const CREATE_TITLE = 'Add crewmate' // the create-mode DialogContent's aria-label when arriving from the roster
 
 mkdirSync(OUT, { recursive: true })
 const { BASE, authed } = podInfo(readFileSync)
@@ -87,7 +87,7 @@ async function shoot(browser, theme) {
   // server's, so it is the same text as the crew manager's own path; the
   // frame shows where it lands in the member-titled form.
   await form.getByPlaceholder('e.g. oncall').fill(CREW)
-  const template0 = form.getByRole('combobox', { name: 'Agent Template' })
+  const template0 = form.getByRole('combobox', { name: 'Built from' })
   await template0.click()
   await page.getByRole('option', { name: 'kirocrew', exact: true }).click()
   await form.getByRole('button', { name: 'Create member', exact: true }).click()

@@ -174,7 +174,7 @@ async function main() {
   //    div[role=button], so getByRole finds it while a `button` selector does not.
   //    Taller frame here: the card grid needs the room the transcript did not.
   await page.setViewportSize({ width: 1440, height: 1000 })
-  await page.getByRole('button', { name: 'Agent Capabilities' }).first().click()
+  await page.getByRole('button', { name: 'Customize' }).first().click()
   const connectionsTab = page.locator('#main-content').getByRole('button', { name: 'Connections', exact: true })
   // Wait for the capabilities panel to mount before clicking its tab -- clicking
   // into a still-rendering panel lands on the default Crews tab and the shot
