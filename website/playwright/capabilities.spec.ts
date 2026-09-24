@@ -13,13 +13,13 @@ import { test, expect } from '@playwright/test'
 test.describe('Capabilities Page — /capabilities', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/capabilities', { waitUntil: 'domcontentloaded' })
-    // Wait for the SidePanelLayout page title (in the nav panel, scoped to avoid ambiguity)
-    await expect(page.locator('#main-content .text-lg.font-bold').first()).toBeVisible({ timeout: 10000 })
+    // Wait for the SidePanelLayout nav-column title
+    await expect(page.getByTestId('side-panel-nav-title')).toBeVisible({ timeout: 10000 })
   })
 
   test('renders the page title and default Agents tab heading', async ({ page }) => {
     // SidePanelLayout nav title "Agent Capabilities" — scoped inside main-content
-    await expect(page.locator('#main-content .text-lg.font-bold').first()).toHaveText('Agent Capabilities')
+    await expect(page.getByTestId('side-panel-nav-title')).toHaveText('Agent Capabilities')
     // Default tab description from the content area header
     // Prose deliberately: on /capabilities this string is a TAB DESCRIPTION
     // (CapabilitiesPage.tsx:16), not a PageHeader subtitle, so there is no

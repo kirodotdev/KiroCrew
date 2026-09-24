@@ -512,7 +512,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   return (
     <div className="flex-1 min-h-0 flex overflow-hidden">
       {!isMobile && <nav className="w-[200px] shrink-0 border-r border-border bg-bg pt-1 pb-3 px-3 flex flex-col">
-          <div className="text-lg font-bold text-text-strong px-2.5 py-2 mb-1 shrink-0">{title}</div>
+          <div data-testid="side-panel-nav-title" className="text-sm font-semibold text-muted px-2.5 py-2 mb-1 shrink-0">{title}</div>
           {/* Pinned sidebar-top slot: stays put while the tab list scrolls. The
             * dropdown it may open renders full-rail-width and downward (dock
             * 'nav'), so it never spills past the rail and gets clipped. */}
