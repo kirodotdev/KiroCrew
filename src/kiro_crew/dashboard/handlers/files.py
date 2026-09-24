@@ -399,6 +399,12 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             outcome="denied",
             error="sensitive_filename_rejected",
         )
+        file_delivery_consent.audit_refusal(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD,
+            leg="notify",
+            name=redact(raw_filename),
+            reason="flagged name or path",
+        )
         return web.json_response(
             {"error": "filename or path contains sensitive content"}, status=400
         )
@@ -454,7 +460,7 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     try:
         text = raw.decode("utf-8")
         # The owner's grant covers this leg: the card renders in the owner's own
-        # authenticated dashboard. No audit event here -- the delivery decision is
+        # authenticated dashboard. No DELIVERY entry here -- that decision is
         # already recorded by the tool leg, and the byte handover is recorded by
         # the download route; a third entry for rendering a card would only bury
         # the two that answer a real question.
@@ -480,6 +486,12 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
                 tool_kind="notify",
                 outcome="denied",
                 error="sensitive_content_detected",
+            )
+            file_delivery_consent.audit_refusal(
+                file_delivery_consent.CLASS_OWNER_DASHBOARD,
+                leg="notify",
+                name=raw_filename,
+                reason="flagged content",
             )
             return web.json_response({"error": "file content contains sensitive data"}, status=400)
     except UnicodeDecodeError:
@@ -511,6 +523,12 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
                 tool_kind="notify",
                 outcome="denied",
                 error="binary_credential_detected",
+            )
+            file_delivery_consent.audit_refusal(
+                file_delivery_consent.CLASS_OWNER_DASHBOARD,
+                leg="notify",
+                name=raw_filename,
+                reason="flagged binary content",
             )
             return web.json_response(
                 {
@@ -710,6 +728,28 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
 
         return granted and is_owner_dashboard_request(request)
 
+    def _requester_is_not_the_owner() -> bool:
+        """Whether THIS caller is somebody other than the dashboard owner.
+
+        The refusal entry has to say which of the gate's two conjuncts stopped the
+        handover, and the grant cannot answer that: the conjunction short-circuits,
+        so in the default no-grant state a non-owner is refused before identity is
+        ever examined. Keying the entry off the grant would therefore record a Slack
+        allow-listed non-owner reaching for a flagged file as an ordinary scanner
+        hold-back, byte-identical to the owner's own -- losing the attribution
+        exactly in the configuration almost every install runs. Identity answers it
+        in every configuration, and a non-owner is refused here whether or not a
+        grant exists.
+
+        Pure attribute reads, so unlike the grant this needs no thread: it consults
+        the request's own claims and the in-memory owner id.
+        """
+        from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
+            is_owner_dashboard_request,
+        )
+
+        return not is_owner_dashboard_request(request)
+
     def _audit_consented_handover() -> None:
         _sel().log_tool_invocation(
             session_key="api",
@@ -747,6 +787,24 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
                     tool_kind="download",
                     outcome="denied",
                     error="content_redacted" if narrow_flagged else "wide_credential_detected",
+                )
+                # The two conjuncts fail for different events, so the entry must
+                # not read the same for both. Identity is the discriminator, not
+                # the grant: the conjunction short-circuits, so a non-owner in the
+                # default no-grant state never reaches the owner check, and an
+                # entry keyed off the grant would call that a scanner hold-back and
+                # name the other principal nowhere.
+                cross_principal = _requester_is_not_the_owner()
+                file_delivery_consent.audit_refusal(
+                    file_delivery_consent.CLASS_OWNER_DASHBOARD,
+                    leg="download",
+                    name=path.name,
+                    reason=(
+                        "flagged content, non-owner caller"
+                        if cross_principal
+                        else "flagged content, no grant"
+                    ),
+                    caller=str(request.get("user") or "unknown") if cross_principal else "",
                 )
                 return web.json_response(
                     {"error": "file content was redacted; download aborted"}, status=400
@@ -787,6 +845,21 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
                     tool_kind="download",
                     outcome="denied",
                     error="binary_credential_detected",
+                )
+                # Same discriminator as the text branch above: identity, because the
+                # conjunction short-circuits before the owner check in the default
+                # no-grant state.
+                cross_principal = _requester_is_not_the_owner()
+                file_delivery_consent.audit_refusal(
+                    file_delivery_consent.CLASS_OWNER_DASHBOARD,
+                    leg="download",
+                    name=path.name,
+                    reason=(
+                        "flagged binary content, non-owner caller"
+                        if cross_principal
+                        else "flagged binary content, no grant"
+                    ),
+                    caller=str(request.get("user") or "unknown") if cross_principal else "",
                 )
                 return web.json_response(
                     {
@@ -897,7 +970,7 @@ def _gate_upload_file(
     # others, and before path resolution so a sensitive name never even
     # selects a file. Mirrors the MCP-side file_send refusal.
     if redact(filename) != filename:
-        _audit_denial("sensitive_filename_rejected")
+        _audit_denial(f"sensitive_filename_rejected: {redact(filename)}")
         return (
             web.json_response(
                 {
@@ -973,7 +1046,7 @@ def _gate_upload_file(
         # audience and so has nothing to weigh, which is why it reads no store at
         # all -- a property asserted on this function's own source.
         if binary_content_is_flagged(raw):
-            _audit_denial("binary_credential_detected")
+            _audit_denial(f"binary_credential_detected: {filename}")
             return (
                 web.json_response(
                     {
@@ -989,7 +1062,7 @@ def _gate_upload_file(
         try:
             redacted = redact(text)
             if redacted != text:
-                _audit_denial("content_redacted")
+                _audit_denial(f"content_redacted: {filename}")
                 return (
                     web.json_response(
                         {
@@ -1007,7 +1080,7 @@ def _gate_upload_file(
             # detector. Unconditional here for the same reason the binary scan is:
             # this leg has a third-party audience and no owner grant to weigh.
             if wide_content_is_flagged(raw):
-                _audit_denial("wide_credential_detected")
+                _audit_denial(f"wide_credential_detected: {filename}")
                 return (
                     web.json_response(
                         {

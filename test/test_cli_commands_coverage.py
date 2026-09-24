@@ -1774,6 +1774,152 @@ class TestSecurityCli:
             cc._security(_ns(sec_action="events", limit=5))
         assert "No security events recorded." in capsys.readouterr().out
 
+    def test_events_prints_the_resources_a_decision_was_about(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A refusal the owner cannot read the subject of tells them nothing.
+
+        ``resources`` is where a scanner refusal names the file it held back, and
+        this renderer is the read path an owner actually has: the endpoint is
+        owner-only and there is no audit UI. Printing operation and outcome alone
+        says a refusal happened and never says what was refused.
+        """
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            sel.return_value.recent.return_value = [
+                {
+                    "timestamp": "2026-09-24T12:00:00Z",
+                    "event_type": "api_access",
+                    "operation": "file_delivery_consent.refused",
+                    "outcome": "refused",
+                    "source": "file-delivery-consent",
+                    "caller_identity": "gateway",
+                    "resources": "owner_dashboard: download (flagged content): device.conf",
+                }
+            ]
+            cc._security(_ns(sec_action="events", limit=5))
+        out = capsys.readouterr().out
+        assert "device.conf" in out
+        assert "resources:" in out
+
+    def test_events_omits_the_resources_line_when_there_is_none(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The negative: an empty field must print no line, not a bare label."""
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            sel.return_value.recent.return_value = [
+                {
+                    "timestamp": "2026-09-24T12:00:00Z",
+                    "event_type": "api_access",
+                    "operation": "sel.events.read",
+                    "outcome": "allowed",
+                    "source": "dashboard",
+                    "caller_identity": "owner",
+                    "resources": "",
+                }
+            ]
+            cc._security(_ns(sec_action="events", limit=5))
+        assert "resources:" not in capsys.readouterr().out
+
+    def test_events_strips_control_bytes_from_untrusted_audit_fields(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A refused file name is text the AGENT chose, and it lands on a terminal.
+
+        A POSIX name may carry ESC/OSC bytes, and nothing upstream removes them --
+        the consent module's redaction and SEL's write-path pass both police
+        credentials and length, not control sequences. Printed raw here those bytes
+        would execute in the owner's terminal, which is the one place this trail is
+        read, so both untrusted fields go through the shared one-line policy.
+        """
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            sel.return_value.recent.return_value = [
+                {
+                    "timestamp": "2026-09-24T12:00:00Z",
+                    "event_type": "api_access",
+                    "operation": "file_delivery_consent.refused",
+                    "outcome": "refused",
+                    "source": "file-delivery-consent",
+                    "caller_identity": "gateway",
+                    "resources": "owner_dashboard: download: \x1b]0;pwned\x07evil.conf",
+                    "error": "content_redacted: \x1b[2Jwiped.conf",
+                }
+            ]
+            cc._security(_ns(sec_action="events", limit=5))
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+        # The readable part survives -- sanitizing must not blank the subject.
+        assert "evil.conf" in out
+        assert "wiped.conf" in out
+
+    def test_events_strips_control_bytes_from_the_summary_line_too(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``operation`` and ``outcome`` are caller text, like the detail fields.
+
+        SEL's own ``_REDACTED_TEXT_FIELDS`` names ``operation`` beside ``resources``
+        and ``error``, and ``log_api_access`` documents ``outcome`` the same way,
+        because an installed app reaches it through ``ctx.audit``. Sanitizing only
+        the indented detail lines would leave the summary line above them a live
+        path to the same terminal.
+        """
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            sel.return_value.recent.return_value = [
+                {
+                    "timestamp": "2026-09-24T12:00:00Z",
+                    "event_type": "api_\x1b[31maccess",
+                    "operation": "app:evil.\x1b]0;pwned\x07publish",
+                    "outcome": "suc\x1b[2Jcess",
+                    "source": "app\x1b[1m-kit",
+                    "caller_identity": "app:e\x1bvil",
+                }
+            ]
+            cc._security(_ns(sec_action="events", limit=5))
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+        # The readable parts survive on the summary line.
+        assert "publish" in out
+        assert "cess" in out
+
+    def test_events_survives_a_forged_row_whose_fields_are_not_strings(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A non-string field must not abort the owner's only read path.
+
+        ``recent()`` validates that each line is a dict, not that any field is a
+        string, and the log is sandbox read-write, so a forged line can carry an int
+        or a list. Handing that straight to ``re.sub`` would raise ``TypeError`` and
+        take the whole listing down -- one bad row would hide every good one.
+        """
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            sel.return_value.recent.return_value = [
+                {
+                    "timestamp": 1234567890,
+                    "event_type": ["api_access"],
+                    "operation": {"a": 1},
+                    "outcome": None,
+                    "source": 42,
+                    "caller_identity": 7,
+                    "resources": 99,
+                    "error": ["boom"],
+                    "downstream_service": 5,
+                },
+                {
+                    "timestamp": "2026-09-24T12:00:00Z",
+                    "event_type": "api_access",
+                    "operation": "later.row",
+                    "outcome": "success",
+                    "source": "sel",
+                    "caller_identity": "gateway",
+                },
+            ]
+            cc._security(_ns(sec_action="events", limit=5))
+        out = capsys.readouterr().out
+        # The forged row renders instead of raising, and the good row still prints.
+        assert "99" in out
+        assert "later.row" in out
+
     def test_events_passes_the_time_window_through(self) -> None:
         """``-n`` alone cannot express "the last two hours"."""
         with patch("kiro_crew.cli_commands.sel") as sel:

@@ -2255,18 +2255,44 @@ def _security(args: argparse.Namespace) -> None:
             print(f"No security events recorded{window}.")
             return
         print(f"📋 Last {len(events)} security event(s){window}:\n")
+
+        def _safe(key: str, default: str = "") -> str:
+            """One row field, coerced to text and stripped of live controls.
+
+            Two separate hazards meet here. The row can hold CALLER text: SEL's own
+            ``_REDACTED_TEXT_FIELDS`` names ``operation``, ``resources`` and
+            ``error``, and ``log_api_access`` documents ``outcome`` the same way
+            because an installed app reaches it through ``ctx.audit``. Those passes
+            police credentials and length, never control sequences, so an ESC/OSC
+            payload would execute in the owner's terminal -- the one place this
+            trail is read. And the row need not be a string at all: the log is
+            sandbox read-write (``_CREW_SANDBOX_VISIBLE_LEAVES``) while ``recent()``
+            validates only that each line is a dict, so a forged line with a
+            non-string field would abort the whole command inside ``re.sub``.
+            Coercing before sanitizing answers both, and keeps one field's bad
+            value from hiding every other event.
+            """
+            value = e.get(key, default)
+            return safe_terminal_line(value if isinstance(value, str) else str(value))
+
         for e in events:
-            ts = e.get("timestamp", "?")[:19]
-            etype = e.get("event_type", "?")
-            op = e.get("operation", "?")
-            outcome = e.get("outcome", "?")
-            src = e.get("source", "?")
-            caller = e.get("caller_identity", "?")
+            ts = _safe("timestamp", "?")[:19]
+            etype = _safe("event_type", "?")
+            op = _safe("operation", "?")
+            outcome = _safe("outcome", "?")
+            src = _safe("source", "?")
+            caller = _safe("caller_identity", "?")
             print(f"  {ts}  [{src}] {etype}: {op} → {outcome}  (caller: {caller})")
             if e.get("error"):
-                print(f"    error: {e['error'][:120]}")
+                print(f"    error: {_safe('error')[:120]}")
+            # ``resources`` names WHAT the decision was about -- the file a scanner
+            # held back, the destination class a grant covered. Without it the line
+            # says a refusal happened and never says what was refused, which is the
+            # one thing the owner reading this is trying to learn.
+            if e.get("resources"):
+                print(f"    resources: {_safe('resources')[:120]}")
             if e.get("downstream_service"):
-                print(f"    downstream: {e['downstream_service']}")
+                print(f"    downstream: {_safe('downstream_service')}")
     elif action == "verify":
 
         # detailed=True: a segment dir that refused to pin (or was swapped

@@ -396,7 +396,10 @@ the decoded value makes every escape a bypass), and **redact before truncate**
 
 The Security Event Log is append-only and HMAC-chained, so tampering is
 detectable rather than merely discouraged; `GET /api/sel/verify` reports the
-chain's integrity and `GET /api/sel/events` returns recent records. Every event
+chain's integrity and `GET /api/sel/events` returns recent records to the
+dashboard OWNER alone -- the rows name the resources a decision was about, and a
+dashboard session is not by itself the owner, so any other caller is refused and
+the refusal is audited. Every event
 carries a `source` inferred from the session key (`sel._infer_source`, published
 via `sel.audit_sources()`), and a call site may stamp a more specific source, so
 the inferred set is a floor rather than a total.

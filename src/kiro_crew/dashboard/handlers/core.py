@@ -72,6 +72,7 @@ from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
     owner_surface_guard,
     pip_extra_install_command,
+    require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
@@ -1859,7 +1860,36 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
 
 
 async def api_sel_events(request: web.Request) -> web.Response:
-    """GET /api/sel/events — recent security events."""
+    """GET /api/sel/events — recent security events, owner only.
+
+    The rows are the security audit trail itself, and they name the resources a
+    decision was about: a file held back by the scanner, a service a grant
+    covered. A dashboard session is not by itself the owner -- the messaging
+    bridges mint a presigned token whose subject is the allowed user's own id --
+    so serving these rows to any authenticated session hands one principal the
+    other's audit trail. The check delegates to
+    :func:`is_owner_dashboard_request` rather than re-deriving the rule, so this
+    surface cannot drift from the secrets vault and the delivery-consent gate.
+
+    The gate is :func:`require_owner_dashboard_request`, the one every other
+    owner-only dashboard surface calls, rather than a second spelling of the same
+    rule: it makes the owner decision, audits the refusal, and relabels a session
+    signed before an owner was configured to ``401 stale_session_reauth``, since
+    that caller IS the owner and re-signing in is the remedy. Its denial audit is
+    an enqueue against the singleton warmed at startup, which is the whole reason
+    the shared spelling can stay this small.
+
+    A read that SUCCEEDS is audited too, and that row is this handler's own: a
+    trail carrying only refusals says who was turned away and never says the log
+    was read. It is written where the read is, off the loop, because the first
+    ``_sel()`` call constructs the singleton -- reading the HMAC key and scanning
+    the log tail -- and that must not happen on the event loop. It is written AFTER
+    the rows are captured: ``recent()`` flushes the write queue before it walks the
+    log, so a row enqueued first would be served back as the newest event.
+    """
+    denial = await require_owner_dashboard_request(request, "sel.events.read")
+    if denial is not None:
+        return denial
 
     try:
         limit = min(int(request.query.get("limit", "100")), 1000)
@@ -1875,8 +1905,30 @@ async def api_sel_events(request: web.Request) -> web.Response:
     # _sel() is called INSIDE the callable, not while building it: the first
     # call constructs the singleton, which reads/creates the HMAC key and scans
     # the log tail. Evaluating it here would leave that IO on the loop.
+
+    def _read_then_audit() -> list[dict]:
+        """Serve the read, then record it -- one hop for both, in that order.
+
+        ``recent()`` opens with ``flush()``, so a row enqueued before it is on disk
+        by the time the walk runs and comes back as the newest record: the caller
+        would receive its own audit row in place of a real event, and ``limit=1``
+        would return nothing else at all. So the rows are captured first. The write
+        still shares the hop, because the first ``_sel()`` call constructs the
+        singleton -- reading the HMAC key and scanning the log tail -- and that must
+        not happen on the event loop.
+        """
+        audit = _sel()
+        rows = audit.recent(limit=limit)
+        audit.log_api_access(
+            caller=str(request.get("user") or "owner"),
+            operation="sel.events.read",
+            outcome="allowed",
+            source="dashboard",
+        )
+        return rows
+
     events = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), lambda: _sel().recent(limit=limit)
+        discovery_executor(), _read_then_audit
     )
     return web.json_response({"events": events, "count": len(events)})
 

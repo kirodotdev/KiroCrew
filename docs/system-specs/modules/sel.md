@@ -138,7 +138,7 @@ Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/sel/events?limit=N` | Recent security events (max 1000) |
+| GET | `/api/sel/events?limit=N` | Recent security events (max 1000). **Owner only** — the rows name the resources a security decision was about, and a dashboard session is not by itself the owner, so every other caller gets `403 owner_only` from the shared owner gate and the refusal is itself audited. A session signed before an owner was configured keeps its bootstrap subject and is refused too, but that caller IS the owner, so it gets `401 stale_session_reauth` instead: re-signing in is the remedy, and a token refresh preserves the subject. A read that succeeds is audited as well, so the trail distinguishes an untouched log from one the owner has read. |
 | GET | `/api/sel/verify` | HMAC chain integrity check |
 
 ## CLI
