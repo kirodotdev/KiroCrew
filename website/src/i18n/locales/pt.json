@@ -5939,7 +5939,9 @@
         "confirm_after_failure": "Tentar de novo",
         "working": "Concedendo confiança e ativando...",
         "failed": "Não foi possível ligar o “{{app}}”, mas a confiança pode já estar salva. Escolha Tentar de novo, ou abra Configurações → Segurança → Apps de terceiros confiáveis para conferir e remover.",
-        "failed_generic": "Não foi possível ligar o “{{app}}” e nada foi alterado. Escolha Tentar de novo, ou confira os logs do {{productName}}."
+        "failed_generic": "Não foi possível ligar o “{{app}}” e nada foi alterado. Escolha Tentar de novo, ou confira os logs do {{productName}}.",
+        "failed_desktop_unsupported": "Não é possível instalar o “{{app}}” na versão para desktop do {{productName}}, e nada foi alterado.",
+        "failed_desktop_unsupported_help": "Ele precisa de pacotes Python que a versão de desktop não consegue adicionar; peça ao autor do app para incluí-los com o app, ou abra o {{productName}} em um navegador web em vez da versão de desktop."
       },
       "registryTier": {
         "curated": "Revisado pela equipe",
@@ -9304,6 +9306,11 @@
       "failed_to": "Falha ao {{action}}",
       "failed_to_load_app": "Falha ao carregar o app",
       "failed_to_uninstall": "Falha ao desinstalar",
+      "install_desktop_unsupported": "Este app não pode ser instalado na versão para desktop do {{productName}}.",
+      "install_desktop_unsupported_help": "{{help}} Quando o autor enviar os pacotes, dispense este aviso para instalar de novo.",
+      "install_log": "Log de instalação",
+      "dismiss_to_install_again": "Dispensar para instalar novamente",
+      "dismiss_notice_to_install_again": "Dispense o aviso acima para instalar novamente",
       "features": "Funcionalidades",
       "use_cases": "Casos de uso",
       "configuration": "Configuração",

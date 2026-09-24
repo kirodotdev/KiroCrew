@@ -7,12 +7,15 @@ import json
 import os
 import shutil
 import stat
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
@@ -264,6 +267,70 @@ class TestInstall:
         installed = app_home / "apps" / "test-app"
         assert (installed / "agents" / "analyst.json").is_file()
         assert (installed / "skills" / "triage" / "SKILL.md").is_file()
+
+    @requires_symlinks
+    def test_a_shipped_app_secret_link_is_unlinked_before_the_secret_is_written(
+        self, tmp_path, app_home
+    ):
+        """`.app_secret` is the gateway's. The copy keeps an in-tree link as a
+        link, and `write_app_secret` opens the path it is given -- so an app
+        shipping `.app_secret -> ui/leak.js` would have the freshly generated
+        secret written THROUGH the link into a file the unauthenticated UI route
+        serves. The install removes whatever the source shipped under that name,
+        unfollowed, before writing its own regular file there."""
+        src = _make_app_source(tmp_path)
+        (src / "ui").mkdir()
+        (src / "ui" / "leak.js").write_text("export const leak = 1;\n", encoding="utf-8")
+        (src / ".app_secret").symlink_to(Path("ui") / "leak.js")
+
+        result = install_app(src)
+
+        assert result.ok, result.error
+        installed = app_home / "apps" / "test-app"
+        assert (installed / "ui" / "leak.js").read_text(encoding="utf-8") == (
+            "export const leak = 1;\n"
+        )  # the link's target was never written to
+        secret = installed / ".app_secret"
+        assert not os.path.islink(secret) and secret.is_file()
+        assert secret.read_text(encoding="utf-8").strip()  # the gateway's own value
+        assert (src / "ui" / "leak.js").read_text(encoding="utf-8") == "export const leak = 1;\n"
+
+    def test_a_shipped_app_secret_file_is_replaced_by_the_gateway_s_own(self, tmp_path, app_home):
+        src = _make_app_source(tmp_path)
+        (src / ".app_secret").write_text("the-author-s-choice\n", encoding="utf-8")
+
+        result = install_app(src)
+
+        assert result.ok, result.error
+        secret = app_home / "apps" / "test-app" / ".app_secret"
+        assert secret.is_file()
+        assert secret.read_text(encoding="utf-8") != "the-author-s-choice\n"
+
+    @requires_symlinks
+    def test_a_shipped_data_link_is_unlinked_before_preserved_data_is_put_back(
+        self, tmp_path, app_home
+    ):
+        """A default uninstall leaves `data/` behind; the next install puts it back
+        over whatever the source shipped under that name. A shipped `data -> ui`
+        link is unlinked -- never traversed, never left for the move to fail on --
+        exactly as the preview copy the desktop gate judges drops it."""
+        assert install_app(_make_app_source(tmp_path)).ok
+        installed = app_home / "apps" / "test-app"
+        (installed / "data" / "state.json").write_text('{"kept": true}', encoding="utf-8")
+        assert uninstall_app("test-app").ok  # keeps data/
+        assert (installed / "data" / "state.json").is_file()
+
+        src = _make_app_source(tmp_path / "again")
+        (src / "ui").mkdir()
+        (src / "ui" / "index.js").write_text("", encoding="utf-8")
+        (src / "data").symlink_to(Path("ui"))
+
+        result = install_app(src)
+
+        assert result.ok, result.error
+        assert not os.path.islink(installed / "data")
+        assert (installed / "data" / "state.json").read_text(encoding="utf-8") == '{"kept": true}'
+        assert (installed / "ui" / "index.js").is_file()  # the link's target, untouched
 
 
 # ---------------------------------------------------------------------------
@@ -1952,6 +2019,40 @@ class TestCopyAppTree:
         assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
         assert secret.read_text(encoding="utf-8") == "s3cret"
 
+    @requires_symlinks
+    @pytest.mark.parametrize("secret_installed", [True, False])
+    def test_update_never_keeps_a_shipped_app_secret_link(
+        self, tmp_path, app_home, secret_installed
+    ):
+        """The copied `.app_secret` is removed, unfollowed, on EVERY update: with a
+        preserved secret it is replaced by that regular file; with none (an install
+        that predates per-app secrets) nothing the source shipped stands there
+        either, so no later write can be steered through an app-chosen link."""
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        dest = app_dir("test-app")
+        secret = dest / ".app_secret"
+        if secret_installed:
+            secret.write_text("s3cret", encoding="utf-8")
+        else:
+            secret.unlink()
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        (v2 / "ui").mkdir()
+        (v2 / "ui" / "leak.js").write_text("export const leak = 1;\n", encoding="utf-8")
+        (v2 / ".app_secret").symlink_to(Path("ui") / "leak.js")
+
+        result = update_app(v2)
+
+        assert result.ok, result.error
+        assert not os.path.islink(secret)
+        if secret_installed:
+            assert secret.read_text(encoding="utf-8") == "s3cret"
+        else:
+            assert not os.path.lexists(secret)
+        assert (dest / "ui" / "leak.js").read_text(encoding="utf-8") == "export const leak = 1;\n"
+
     @pytest.mark.parametrize("rollback_metadata_fails", [False, True])
     def test_metadata_failure_restores_data_secret_and_retired_tree(
         self, tmp_path, app_home, monkeypatch, rollback_metadata_fails
@@ -3536,3 +3637,210 @@ class TestRegisterExternalPreservesServerProvenance:
         assert meta.source == "C:/local/second"
         assert meta.sourceUrl == ""
         assert meta.origin == "external"
+
+
+class TestCopyAppTreeAsInstalled:
+    """The tree the install-time desktop gate judges: the install's own copy plus
+    the gateway's post-copy part, produced -- never predicted. Only the two tests
+    that create a link need the symlink privilege; the rest run on every host,
+    NTFS included, where the case probe answers for a folding filesystem."""
+
+    def _source(self, tmp_path: Path) -> Path:
+        # Under a directory named like the real sources dir, so a link text can
+        # re-enter the tree from above by naming it.
+        root = tmp_path / "app-sources" / "demo"
+        (root / "requirements").mkdir(parents=True)
+        (root / "requirements" / "prod.txt").write_text("fastapi\n", encoding="utf-8")
+        (root / "server.py").write_text("", encoding="utf-8")
+        return root
+
+    def test_the_gateway_owned_root_entries_are_removed_as_the_filesystem_names_them(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.apps import manager as manager_mod
+        from kiro_crew.apps.manager import copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "Data").mkdir()
+        (root / "Data" / "server.py").write_text("", encoding="utf-8")
+        (root / ".app_secret").write_text("secret\n", encoding="utf-8")
+        (root / "backend").mkdir()
+        (root / "backend" / "data").mkdir()
+        (root / "backend" / "data" / "kept.txt").write_text("", encoding="utf-8")
+        # The exact name ships from a SECOND source: `Data/` and `data/` cannot
+        # coexist in one directory on a folding filesystem, and this test runs on
+        # NTFS and APFS too.
+        exact = tmp_path / "app-sources-exact" / "demo"
+        (exact / "data").mkdir(parents=True)
+        (exact / "data" / "seed.txt").write_text("", encoding="utf-8")
+        (exact / "server.py").write_text("", encoding="utf-8")
+        (exact / ".app_secret").write_text("secret\n", encoding="utf-8")
+
+        # A case-folding destination (APFS, NTFS): `Data` IS `data` there, and both
+        # are the PRESERVED previous directory after an update; `.app_secret` is
+        # the gateway's file. Neither is the source's in the app directory.
+        monkeypatch.setattr(manager_mod, "_folds_case", lambda directory: True)
+        dest = tmp_path / "installed-folding"
+        copy_app_tree_as_installed(root, dest, data_preserved=True)
+        assert not (dest / "Data").exists() and not (dest / "data").exists()
+        assert not (dest / ".app_secret").exists()
+        assert (dest / "backend" / "data" / "kept.txt").is_file()  # nested: the app's own
+        assert (dest / "server.py").is_file()
+        dest = tmp_path / "installed-folding-exact"
+        copy_app_tree_as_installed(exact, dest, data_preserved=True)
+        assert not (dest / "data").exists() and not (dest / ".app_secret").exists()
+
+        # A case-sensitive destination (a Linux desktop): only the exact names are
+        # the gateway's; `Data/` is the app's own directory, carried as itself.
+        monkeypatch.setattr(manager_mod, "_folds_case", lambda directory: False)
+        dest = tmp_path / "installed-sensitive"
+        copy_app_tree_as_installed(root, dest, data_preserved=True)
+        assert (dest / "Data" / "server.py").is_file()
+        assert not (dest / ".app_secret").exists()
+        dest = tmp_path / "installed-sensitive-exact"
+        copy_app_tree_as_installed(exact, dest, data_preserved=True)
+        assert not (dest / "data").exists()
+        assert not (dest / ".app_secret").exists()
+
+    def test_a_first_install_carries_the_source_s_data_dir_as_itself(self, tmp_path, monkeypatch):
+        """With no preserved `data/` to put back -- a first install -- `install_app`
+        copies the source's `data/` and leaves it: an entry point under it is the
+        source's there, so the preview keeps it. `.app_secret` is the gateway's on
+        every install (written after the copy) and goes regardless."""
+        from kiro_crew.apps import manager as manager_mod
+        from kiro_crew.apps.manager import copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "data").mkdir()
+        (root / "data" / "server.py").write_text("", encoding="utf-8")
+        (root / ".app_secret").write_text("secret\n", encoding="utf-8")
+        for folds in (True, False):
+            monkeypatch.setattr(manager_mod, "_folds_case", lambda directory, f=folds: f)
+            dest = tmp_path / f"installed-fresh-{folds}"
+            copy_app_tree_as_installed(root, dest, data_preserved=False)
+            assert (dest / "data" / "server.py").is_file()
+            assert not os.path.lexists(dest / ".app_secret")
+
+    def test_preserved_data_awaits_reads_what_the_install_will_put_back(
+        self, tmp_path, monkeypatch
+    ):
+        """The three things `install_app` / `update_app` restore over the copied
+        `data/`: the installed app's own directory, one a default uninstall left
+        behind (same place), and a crashed sibling's `.{name}-data-tmp` copy."""
+        from kiro_crew.apps import manager as manager_mod
+        from kiro_crew.apps.manager import preserved_data_awaits
+
+        apps = tmp_path / "apps"
+        apps.mkdir()
+        monkeypatch.setattr(manager_mod, "apps_dir", lambda: apps)
+        assert preserved_data_awaits("demo") is False  # a first install
+        (apps / "demo").mkdir()
+        assert preserved_data_awaits("demo") is False  # an orphaned partial copy, no data
+        (apps / "demo" / "data").write_text("a file, not the directory\n", encoding="utf-8")
+        assert preserved_data_awaits("demo") is False
+        (apps / "demo" / "data").unlink()
+        (apps / "demo" / "data").mkdir()
+        assert preserved_data_awaits("demo") is True  # installed, or left by an uninstall
+        shutil.rmtree(apps / "demo")
+        (apps / ".demo-data-tmp").mkdir()
+        assert preserved_data_awaits("demo") is True  # a crashed sibling's copy, restored
+
+    def test_the_case_probe_reads_the_filesystem_it_stands_on(self, tmp_path):
+        from kiro_crew.apps.manager import _folds_case
+
+        # tmp_path is whatever this host's tmp is: the probe must agree with a direct
+        # check and leave nothing behind.
+        probe = tmp_path / "probe-check"
+        probe.touch()
+        expected = (tmp_path / "PROBE-CHECK").exists()
+        probe.unlink()
+        assert _folds_case(tmp_path) is expected
+        assert not list(tmp_path.iterdir())
+
+    @pytest.mark.parametrize("planted_name", [".kirocrew-case-probe-a", "forced-random-name"])
+    def test_the_case_probe_never_touches_an_entry_the_tree_planted(
+        self, tmp_path, monkeypatch, planted_name
+    ):
+        """The preview is a copy of an app-controlled tree. A probe with a fixed name
+        could be aimed: a regular file of that name would be deleted with the probe,
+        and a dangling link of that name would have its TARGET created by the
+        probe's open -- `server.py`, say, which then waives the gate for an app
+        whose real directory never gets one. The name is random per call and the
+        open is exclusive and no-follow, so a planted entry -- an app file under the
+        name an earlier probe used, or one forced onto the very name this probe will
+        pick -- makes the open fail rather than follow or bump, and the answer is
+        the narrower "does not fold"."""
+        from kiro_crew.apps import manager as manager_mod
+        from kiro_crew.apps.manager import _folds_case
+
+        fixed = uuid.UUID(int=7)
+        monkeypatch.setattr(manager_mod, "uuid", SimpleNamespace(uuid4=lambda: fixed), raising=False)
+        if planted_name == "forced-random-name":
+            planted_name = f".kirocrew-case-probe-{fixed.hex}"
+        planted = tmp_path / planted_name
+
+        planted.write_text("the app's own file\n", encoding="utf-8")
+        _folds_case(tmp_path)
+        assert planted.read_text(encoding="utf-8") == "the app's own file\n"  # not deleted
+        planted.unlink()
+
+        if hasattr(os, "symlink"):
+            try:
+                planted.symlink_to(Path("server.py"))  # dangling: no server.py yet
+            except (OSError, NotImplementedError):
+                pytest.skip("creating a symlink needs a privilege on Windows")
+            _folds_case(tmp_path)
+            assert not (tmp_path / "server.py").exists()  # the target was not created
+            assert os.path.islink(planted)  # and the link itself is still there
+            assert sorted(p.name for p in tmp_path.iterdir()) == [planted.name]
+
+    @requires_symlinks
+    def test_a_root_file_or_link_named_like_a_gateway_entry_is_removed_too(self, tmp_path):
+        from kiro_crew.apps.manager import copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "data").write_text("a regular file so named\n", encoding="utf-8")
+        (root / ".app_secret").symlink_to(Path("server.py"))
+        dest = tmp_path / "installed"
+
+        copy_app_tree_as_installed(root, dest, data_preserved=True)
+
+        assert not os.path.lexists(dest / "data")
+        assert not os.path.lexists(dest / ".app_secret")
+        assert (dest / "server.py").is_file()  # the link's target itself is untouched
+
+    @requires_symlinks
+    def test_it_is_the_install_copy_link_for_link(self, tmp_path):
+        """What the gate meets in the preview is what `install_app` leaves: a
+        structural in-tree link kept as a link, a link into a dropped name kept but
+        dangling, an escaping link omitted, an absolute in-tree link rewritten, and a
+        text that climbs above the root and re-enters by naming the checkout kept
+        verbatim -- so it resolves to the CHECKOUT's file from the copy."""
+        from kiro_crew.apps.manager import copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "requirements.txt").symlink_to(Path("requirements") / "prod.txt")
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "req.txt").write_text("x\n", encoding="utf-8")
+        (root / "dropped.txt").symlink_to(Path("node_modules") / "req.txt")
+        outside = tmp_path / "outside.txt"
+        outside.write_text("x\n", encoding="utf-8")
+        (root / "escaping.txt").symlink_to(outside)
+        (root / "absolute.txt").symlink_to(root / "requirements" / "prod.txt")
+        (root / "climbing.txt").symlink_to(
+            Path("..") / ".." / "app-sources" / "demo" / "requirements" / "prod.txt"
+        )
+        # Same depth as the checkout, as the real app directory is.
+        dest = tmp_path / "apps" / "demo"
+
+        copy_app_tree_as_installed(root, dest, data_preserved=True)
+
+        assert (dest / "requirements.txt").resolve() == (dest / "requirements" / "prod.txt")
+        assert os.path.islink(dest / "dropped.txt") and not (dest / "dropped.txt").exists()
+        assert not os.path.lexists(dest / "escaping.txt")
+        assert os.path.islink(dest / "absolute.txt") and not os.path.isabs(
+            os.readlink(dest / "absolute.txt")
+        )
+        assert (dest / "absolute.txt").resolve() == (dest / "requirements" / "prod.txt")
+        # Kept verbatim: from the copy it reaches the checkout, outside the copy.
+        assert (dest / "climbing.txt").resolve() == (root / "requirements" / "prod.txt").resolve()

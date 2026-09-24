@@ -74,6 +74,7 @@ export default function ErrorNotice({
   report,
   title,
   onDismiss,
+  dismissLabel,
   variant = 'block',
   askAgent = false,
   askAgentLabel,
@@ -98,6 +99,15 @@ export default function ErrorNotice({
   title?: string
   /** Renders a dismiss affordance when provided. */
   onDismiss?: () => void
+  /**
+   * Visible text for the dismiss control, naming what dismissing DOES when it
+   * is more than closing a notice ("Dismiss to install again" on a banner whose
+   * dismissal re-enables the Install button). Without it the control is the
+   * icon-only ✕ with the generic accessible name; with it the text is rendered
+   * beside the icon and doubles as the accessible name, so the path back is
+   * discoverable without reading the paragraph that mentions it.
+   */
+  dismissLabel?: string
   /** `block` = boxed banner; `inline` = compact text for an existing flex row. */
   variant?: 'block' | 'inline'
   /**
@@ -190,11 +200,12 @@ export default function ErrorNotice({
         {onDismiss && (
           <button
             type="button"
-            className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
-            aria-label={i18nT('components.errorNotice.dismiss')}
+            className={`shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors${dismissLabel ? ' inline-flex items-center gap-1 text-[12px] font-medium whitespace-nowrap' : ''}`}
+            aria-label={dismissLabel ?? i18nT('components.errorNotice.dismiss')}
             onClick={onDismiss}
           >
             <X size={13} aria-hidden="true" />
+            {dismissLabel && <span>{dismissLabel}</span>}
           </button>
         )}
       </span>
@@ -230,11 +241,12 @@ export default function ErrorNotice({
       {onDismiss && (
         <button
           type="button"
-          className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
-          aria-label={i18nT('components.errorNotice.dismiss')}
+          className={`shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors${dismissLabel ? ' inline-flex items-center gap-1 mt-[1px] text-[12px] font-medium whitespace-nowrap' : ''}`}
+          aria-label={dismissLabel ?? i18nT('components.errorNotice.dismiss')}
           onClick={onDismiss}
         >
           <X size={14} aria-hidden="true" />
+          {dismissLabel && <span>{dismissLabel}</span>}
         </button>
       )}
     </div>

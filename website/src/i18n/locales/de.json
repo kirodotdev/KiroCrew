@@ -5848,7 +5848,9 @@
         "confirm_after_failure": "Erneut versuchen",
         "working": "Vertrauen wird gewährt und aktiviert...",
         "failed": "„{{app}}“ konnte nicht eingeschaltet werden, aber das Vertrauen ist möglicherweise schon gespeichert. Wähle Erneut versuchen, oder öffne Einstellungen → Sicherheit → Vertrauenswürdige Apps von Drittanbietern, um es zu prüfen und zu entfernen.",
-        "failed_generic": "„{{app}}“ konnte nicht eingeschaltet werden, und es wurde nichts geändert. Wähle Erneut versuchen, oder sieh in den Logs von {{productName}} nach."
+        "failed_generic": "„{{app}}“ konnte nicht eingeschaltet werden, und es wurde nichts geändert. Wähle Erneut versuchen, oder sieh in den Logs von {{productName}} nach.",
+        "failed_desktop_unsupported": "„{{app}}“ kann in der Desktop-Version von {{productName}} nicht installiert werden, und es wurde nichts geändert.",
+        "failed_desktop_unsupported_help": "Sie braucht Python-Pakete, die der Desktop-Build nicht hinzufügen kann; bitte den Autor der App, sie mit der App auszuliefern, oder öffne {{productName}} statt in der Desktop-Version in einem Webbrowser."
       },
       "registryTier": {
         "curated": "Vom Team geprüft",
@@ -9181,6 +9183,11 @@
       "failed_to": "{{action}} fehlgeschlagen",
       "failed_to_load_app": "App konnte nicht geladen werden",
       "failed_to_uninstall": "Deinstallation fehlgeschlagen",
+      "install_desktop_unsupported": "Diese App kann in der Desktop-Version von {{productName}} nicht installiert werden.",
+      "install_desktop_unsupported_help": "{{help}} Sobald der Autor die Pakete mitliefert, schließe diesen Hinweis, um erneut zu installieren.",
+      "install_log": "Installationsprotokoll",
+      "dismiss_to_install_again": "Schließen, um erneut zu installieren",
+      "dismiss_notice_to_install_again": "Schließe den Hinweis oben, um erneut zu installieren",
       "features": "Funktionen",
       "use_cases": "Anwendungsfälle",
       "configuration": "Konfiguration",

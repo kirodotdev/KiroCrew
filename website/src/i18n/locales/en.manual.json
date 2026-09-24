@@ -1784,7 +1784,9 @@
         "confirm_after_failure": "Try again",
         "working": "Trusting and enabling...",
         "failed": "“{{app}}” could not be turned on, but trust may already have been saved. Choose Try again, or open Settings → Security → Trusted third-party apps to check and remove it.",
-        "failed_generic": "“{{app}}” could not be turned on, and nothing was changed. Choose Try again, or check {{productName}}'s logs."
+        "failed_generic": "“{{app}}” could not be turned on, and nothing was changed. Choose Try again, or check {{productName}}'s logs.",
+        "failed_desktop_unsupported": "“{{app}}” can't be installed in the desktop version of {{productName}}, and nothing was changed.",
+        "failed_desktop_unsupported_help": "It needs Python packages the desktop build can't add; ask the app's author to ship them with the app, or open {{productName}} in a web browser instead of the desktop version."
       },
       "registryTier": {
         "curated": "Team reviewed",
@@ -3627,6 +3629,11 @@
       "failed_to": "Failed to {{action}}",
       "failed_to_load_app": "Failed to load app",
       "failed_to_uninstall": "Failed to uninstall",
+      "install_desktop_unsupported": "This app can't be installed in the desktop version of {{productName}}.",
+      "install_desktop_unsupported_help": "{{help}} Once the author ships the packages, dismiss this notice to install again.",
+      "install_log": "Install log",
+      "dismiss_to_install_again": "Dismiss to install again",
+      "dismiss_notice_to_install_again": "Dismiss the notice above to install again",
       "use_cases": "Use cases",
       "configuration": "Configuration",
       "open_screenshot": "Open screenshot {{n}}",
