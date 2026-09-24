@@ -496,7 +496,8 @@ format change to land.
 ### Retention: whole units
 
 A unit's whole crew log is removed by `store.remove_unit(kind, id)`, and that is the ONE spelling of
-deletion in this module: the retention sweep and the session permanent-delete funnel both call it,
+deletion in this module: the retention sweep and the two permanent-delete funnels -- a session's and a
+crew member's -- all call it,
 because two callers deleting one tree two ways is two chances to get the order wrong and the order is
 the entire correctness argument. It is not rotation and not a format change, and NOTHING is written
 to a crew log that is about to go -- no tombstone, no `pruned` entry. A reader holding a citation into
@@ -676,6 +677,19 @@ SESSION ID, which never names a different conversation, so the removal cannot re
 all; and it holds a kernel-arbitrated lease, so a writer that IS still there refuses the removal
 rather than racing it. Neither property is available to the work ledger, which is why one is collected
 here and the other is not.
+
+**Deleting a crew member removes its crew log too, and the ROSTER is the whole authorization.** A
+member's unit is keyed by its slug, so the only question that makes the removal safe is whether a live
+member still derives that key -- not an age, not a size, and not a threshold anyone can tune, because a
+member log has no lifecycle-end entry for the sweep to age from. The crew-delete funnel resolves the
+slug through `member_slug` against the config it captured while the record still existed (a member
+carrying an explicit `member_id` keys its log by that id, so folding the name after the record is gone
+aims at a different unit), and the `guard` re-reads the roster inside the lease hold: a same-name
+member created in that window derives THIS unit, and its history is what an unguarded removal would
+take. The predicate fails closed -- a config the loader marks degraded answers `claimed`, since a load
+that could not read the file returns defaults and an emptiness test alone would read that as proof the
+owner is gone -- and it is asked through `eventlog.service`, not from the handler, so the service's
+cached log for that slug is dropped in the same step as the files.
 
 ## 9. Scope
 

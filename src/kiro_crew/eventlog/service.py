@@ -1261,6 +1261,49 @@ class MemberEventLogService:
         self._registry.drive(slug, event)
         return event
 
+    # ---- removal ----------------------------------------------------------
+    def remove_unit(self, slug: str, *, still_unclaimed: Callable[[], bool]) -> str:
+        """Remove *slug*'s crew log and forget it here. One of the ``REMOVE_*`` statuses.
+
+        The member half of the door ``sessions._remove_session_crew_log`` is for
+        sessions: a caller outside this package says WHICH member's history has no
+        owner left, and this owns the two steps that knowledge implies -- the
+        store's removal, and dropping what this service caches for that slug. A
+        handler reaching into the store itself would do the first and forget the
+        second, and a cached ``MemberLog`` that outlives its files answers reads
+        for a member whose history is gone.
+
+        *still_unclaimed* is the caller's reason, re-asked under the removal's own
+        lease hold: the store calls it as the ``guard`` it requires. It takes no
+        arguments because this reason is not a property of the file -- whether a
+        member is still in the roster is a property of the config -- so re-reading
+        the log here would answer a question nobody asked. Re-asking it at all is
+        what the session sweep's guard is for: the caller decided outside the
+        hold, and a same-name member committed in that window owns this very unit,
+        because the unit is keyed by the slug and a recreated namesake derives the
+        same one. The predicate answering false is an ordinary outcome, not a
+        failure: nothing is removed and nothing is written.
+
+        Called under the per-slug lock, so an append through this service is
+        serialized against it rather than racing the unlink. The lock ENTRY is
+        kept afterwards while the log and name caches are dropped: a later caller
+        that found no entry would build a second lock for the same slug, and two
+        threads holding different locks for one slug is worse than a dict entry
+        for a member that is gone. Nothing else is dropped, because nothing else
+        survives the removal as an answer -- the folded cells for this slug stay
+        in the registry, and are unreachable through every read here, each of
+        which returns empty once ``_get_log`` finds no file.
+        """
+        from kiro_crew.crew_log.store import REMOVE_REMOVED, remove_unit
+
+        with self._slug_lock(slug):
+            status = remove_unit(KIND_MEMBER, slug, guard=lambda _directory: still_unclaimed())
+            if status == REMOVE_REMOVED:
+                with self._map_lock:
+                    self._logs.pop(slug, None)
+                    self._names.pop(slug, None)
+        return status
+
     # ---- read -------------------------------------------------------------
     def snapshot(self, slug: str) -> dict:
         lock = self._slug_lock(slug)

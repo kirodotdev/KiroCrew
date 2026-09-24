@@ -366,7 +366,8 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
     """Remove one unit's crew log entirely. Returns one of the ``REMOVE_*`` statuses.
 
     The ONE spelling of deletion in this package, called by the retention sweep
-    and by the permanent-delete funnel alike, for the reason the work crew log's
+    and by each permanent-delete funnel alike -- a session's and a crew member's
+    -- for the reason the work crew log's
     ``purge_matching`` docstring gives: two callers deleting the same tree two
     ways is two chances to get the order wrong, and the order is the whole
     correctness argument.

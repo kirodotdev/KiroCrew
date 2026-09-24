@@ -32,6 +32,8 @@ Each member's log is a `member`-kind **crew log**, so it lives at `<data_home>/c
 
 A third kind rather than a second mechanism, because the protection is named at the root: `crew-log` is masked from a sandboxed process (`sandbox._CREW_HIDDEN_LEAVES`) and refused to the agent's own file tools (`security.paths._CREW_SECRET_LEAVES`), so a kind placed under it inherits both. Dispatch trust reads this log, and an append-only record an agent can rewrite is not an append-only record — that property has to hold by where the file lives, not by someone remembering to add a second fence entry when a new log appears.
 
+**One door removes a member's whole unit, and the roster is what opens it.** `MemberEventLogService.remove_unit` calls the store's `remove_unit` and drops this service's cached log and name for that slug in the same step, and the crew-delete funnel is its caller: the member whose config record has gone has no reader left for its history, and nothing else collects it, because the retention sweep ages a `session` unit from its `session/closed` and a member log has no such entry. The caller's reason arrives as a predicate the store calls as its `guard`, so it is re-asked under the removal's own lease hold — a same-name member created between the delete and the removal derives the same slug, and that unit is then its history. The predicate takes no argument deliberately: whether a member is still in the roster is a property of the config, not of the file, so re-reading the log there would answer a question nobody asked. `crew-log-core.md` states the authorization and its fail-closed direction in full.
+
 Line 1 is a header, not an event:
 
 ```
