@@ -1,4 +1,31 @@
-import { File, FileCode, FileJson, FileText, Image, Paintbrush, Settings, Terminal, type LucideIcon } from 'lucide-react'
+import {
+  BookOpen,
+  Box,
+  CalendarDays,
+  Database,
+  File,
+  FileArchive,
+  FileAudio,
+  FileCode,
+  FileCog,
+  FileDiff,
+  FileImage,
+  FileJson,
+  FileKey,
+  FileSpreadsheet,
+  FileTerminal,
+  FileText,
+  FileType,
+  FileVideo,
+  Image,
+  NotebookText,
+  Package,
+  Paintbrush,
+  Presentation,
+  Settings,
+  Terminal,
+  type LucideIcon,
+} from 'lucide-react'
 
 /** Per-extension color tokens for file-type icons in tiles, lists, the inline browser, and chips. */
 export const FILE_COLORS: Record<string, string> = {
@@ -41,32 +68,153 @@ export const FILE_COLORS: Record<string, string> = {
   bash: 'text-green-400',
 }
 
+export type FileFamily =
+  | 'document'
+  | 'spreadsheet'
+  | 'slides'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'code'
+  | 'data'
+  | 'log'
+  | 'archive'
+  | 'key'
+  | 'installer'
+  | 'database'
+  | 'patch'
+  | 'font'
+  | 'config'
+  | 'notebook'
+  | 'model3d'
+  | 'ebook'
+  | 'calendar'
+  | 'unknown'
+
+const FAMILY_ICONS: Record<FileFamily, LucideIcon> = {
+  document: FileText,
+  spreadsheet: FileSpreadsheet,
+  slides: Presentation,
+  image: FileImage,
+  video: FileVideo,
+  audio: FileAudio,
+  code: FileCode,
+  data: FileJson,
+  log: FileTerminal,
+  archive: FileArchive,
+  key: FileKey,
+  installer: Package,
+  database: Database,
+  patch: FileDiff,
+  font: FileType,
+  config: FileCog,
+  notebook: NotebookText,
+  model3d: Box,
+  ebook: BookOpen,
+  calendar: CalendarDays,
+  unknown: File,
+}
+
+const FAMILY_TONES: Record<FileFamily, string> = {
+  document: 'text-info',
+  spreadsheet: 'text-ok',
+  slides: 'text-warn',
+  image: 'text-accent',
+  video: 'text-accent',
+  audio: 'text-accent',
+  code: 'text-text',
+  data: 'text-text',
+  log: 'text-muted',
+  archive: 'text-muted',
+  key: 'text-warn',
+  installer: 'text-muted',
+  database: 'text-muted',
+  patch: 'text-ok',
+  font: 'text-muted',
+  config: 'text-muted',
+  notebook: 'text-warn',
+  model3d: 'text-accent',
+  ebook: 'text-info',
+  calendar: 'text-info',
+  unknown: 'text-muted',
+}
+
+/** One extension-to-family table shared by every file-icon surface. */
+const extensionFamilies: [FileFamily, RegExp][] = [
+  ['document', /^(?:pdf|doc|docx|odt|rtf|txt|md|mdx|markdown|pages)$/],
+  ['spreadsheet', /^(?:xls|xlsx|xlsm|csv|tsv|ods|numbers)$/],
+  ['slides', /^(?:ppt|pptx|odp)$/],
+  ['image', /^(?:png|jpg|jpeg|gif|webp|svg|heic|heif|bmp|tiff|tif|avif|ico)$/],
+  ['video', /^(?:mp4|mov|webm|mkv|avi|m4v)$/],
+  ['audio', /^(?:mp3|wav|m4a|flac|ogg|aac|opus)$/],
+  ['code', /^(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|swift|c|h|cpp|hpp|cs|rb|php|sh|bash|zsh|ps1|html|css|scss|less|vue|svelte)$/],
+  ['data', /^(?:json|yaml|yml|toml|xml|jsonl|ndjson)$/],
+  ['log', /^(?:log|out|err|trace)$/],
+  ['archive', /^(?:zip|tar|gz|tgz|bz2|xz|7z|rar|zst)$/],
+  ['key', /^(?:pem|key|crt|cer|der|p12|pfx|pub|asc|gpg)$/],
+  ['installer', /^(?:dmg|pkg|exe|msi|deb|rpm|apk|appimage|whl)$/],
+  ['database', /^(?:sqlite|sqlite3|db|sql|parquet)$/],
+  ['patch', /^(?:patch|diff)$/],
+  ['font', /^(?:ttf|otf|woff|woff2)$/],
+  ['config', /^(?:env|ini|conf|cfg|properties)$/],
+  ['notebook', /^(?:ipynb|rmd)$/],
+  ['model3d', /^(?:stl|obj|glb|gltf|fbx|dwg|dxf)$/],
+  ['ebook', /^(?:epub|mobi|azw3)$/],
+  ['calendar', /^(?:ics|vcf)$/],
+]
+
+/** Keep existing fine-grained glyphs while sharing the family table. */
+const iconOverrides: Record<string, LucideIcon> = {
+  json: FileJson,
+  yaml: Settings,
+  yml: Settings,
+  toml: Settings,
+  ini: Settings,
+  md: FileText,
+  mdx: FileText,
+  txt: FileText,
+  csv: FileText,
+  log: FileText,
+  css: Paintbrush,
+  scss: Paintbrush,
+  less: Paintbrush,
+  png: Image,
+  jpg: Image,
+  jpeg: Image,
+  gif: Image,
+  svg: Image,
+  webp: Image,
+  sh: Terminal,
+  bash: Terminal,
+  zsh: Terminal,
+}
+
+export function fileExtension(path: string): string {
+  const base = path.split('/').pop() ?? path
+  const dot = base.lastIndexOf('.')
+  if (dot <= 0) return base.startsWith('.') ? base.slice(1).toLowerCase() : ''
+  return base.slice(dot + 1).toLowerCase()
+}
+
+export function fileFamilyForPath(path: string): FileFamily {
+  const extension = fileExtension(path)
+  return extensionFamilies.find(([, pattern]) => pattern.test(extension))?.[0] ?? 'unknown'
+}
+
+export function fileIconForFamily(family: FileFamily): LucideIcon {
+  return FAMILY_ICONS[family]
+}
+
+export function fileToneForFamily(family: FileFamily): string {
+  return FAMILY_TONES[family]
+}
+
 export function colorForExt(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() || ''
-  return FILE_COLORS[ext] || 'text-muted'
+  return FILE_COLORS[fileExtension(path)] || 'text-muted'
 }
 
-/** Per-extension lucide icon component class. Single source of truth for the
- *  whole app — file chips, activity Files tab tiles, inline file browser, etc.
- *  Returns the component class (not a JSX element) so consumers can apply
- *  their own size and className. */
-export const FILE_ICONS: Record<string, LucideIcon> = {
-  // Code
-  ts: FileCode, tsx: FileCode, js: FileCode, jsx: FileCode, py: FileCode, rs: FileCode,
-  go: FileCode, java: FileCode, kt: FileCode, rb: FileCode, c: FileCode, cpp: FileCode, h: FileCode,
-  // Data / config
-  json: FileJson, yaml: Settings, yml: Settings, toml: Settings, ini: Settings,
-  // Docs
-  md: FileText, mdx: FileText, txt: FileText, csv: FileText, log: FileText,
-  // Styling
-  css: Paintbrush, scss: Paintbrush, less: Paintbrush,
-  // Images
-  png: Image, jpg: Image, jpeg: Image, gif: Image, svg: Image, webp: Image,
-  // Shell
-  sh: Terminal, bash: Terminal, zsh: Terminal,
-}
-
+/** Single icon lookup used by file chips, tiles, browsers and attachment cards. */
 export function fileIcon(path: string): LucideIcon {
-  const ext = path.split('.').pop()?.toLowerCase() || ''
-  return FILE_ICONS[ext] || File
+  const extension = fileExtension(path)
+  return iconOverrides[extension] ?? FAMILY_ICONS[fileFamilyForPath(path)]
 }
