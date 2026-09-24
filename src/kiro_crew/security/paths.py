@@ -1968,13 +1968,60 @@ class _BuiltTargets(set[str]):
 
     A plain ``set`` wherever it is consumed -- membership, iteration, equality
     and the casefold contract are all unchanged -- carrying one extra fact that
-    only the CACHE needs and no matcher does: did any target's canonical form
-    differ from its lexical one.
+    only the CACHE needs and no matcher does: did any path this build actually
+    RESOLVED come back spelled differently from the path it was asked about.
+
+    WHICH paths those are is the entire scope of the flag, so they are named here
+    rather than left to be read as "every target". The build resolves five classes
+    of path and no others: ``$HOME``, ``KIROCREW_OS_HOME``, each entry of the
+    CALLER'S ``home_dirs`` list that carries a crew prefix, re-anchored under
+    ``KIROCREW_HOME``, the agents dir under ``KIRO_HOME``, and each harness
+    credential leaf re-anchored under its own home override. Every
+    other member of the set comes from ``_anchor`` or
+    ``_anchor_both_separators``, neither of which touches the filesystem, so the
+    bulk of the set cannot report a traversal at all.
+
+    An ordinary symlinked dotfile under ``$HOME`` can set this flag, and a
+    dotfile-managed home is therefore a case to look for. The trigger is the union
+    this build already resolves: a crew-prefixed entry of the caller's
+    ``home_dirs`` under ``KIROCREW_HOME``, the agents dir under ``KIRO_HOME``, or a
+    DECLARED credential leaf under whichever harness variable relocates it. So a
+    symlinked ``sessions`` or ``models`` leaf under a ``KIROCREW_HOME`` that sits
+    below ``$HOME`` pins the write tier, and a symlinked ``goose`` directory under
+    whatever ``XDG_CONFIG_HOME`` resolves to pins the tier handed that leaf. Read
+    that second one literally: the leaf resolved is
+    ``$XDG_CONFIG_HOME/goose/secrets.yaml``, so it is the exported root that has to
+    contain the symlink. A host whose ``XDG_CONFIG_HOME`` points somewhere other
+    than ``~/.config`` can symlink ``~/.config/goose`` all it likes and no build
+    will resolve it. What CANNOT set it is a dotfile in none of those classes,
+    because the bulk targets are never resolved. The roots themselves cannot
+    either: ``_resolve_root_anchors`` canonicalises every root first, so the
+    symlink has to sit BELOW the resolved root -- which is why relocating the
+    exported config root alone does not trip it while a symlinked ``goose``
+    directory under it does.
+
+    The LEAF-BEARING override roots are ``KIROCREW_HOME``, ``KIRO_HOME``, and every
+    variable in ``host_auth.home_override_env_vars()``. That table is the
+    enumeration; naming the variables or their count here would be a second place
+    to forget the next harness, which is the documentation defect this docstring
+    exists to remove. ``_OVERRIDE_ROOT_ENVS`` carries one more root,
+    ``KIROCREW_OS_HOME``, which is resolved as a root but bears no leaf class of
+    its own -- its entries are joined lexically by ``_anchor_both_separators``.
+
+    The crew-prefix class is the caller's list, not a fixed set of leaves. The
+    crew-prefix arm loops over the ``home_dirs`` it was handed and resolves every
+    entry carrying a prefix, and the three callers hand it three different lists:
+    the read gate passes ``_SENSITIVE_HOME_DIRS``, ``is_sensitive_write_path``
+    passes ``_SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS``, and
+    ``_is_keystone_publish_artifact`` passes ``_KEYSTONE_ARTIFACT_PARENTS``. So no
+    one class of leaf describes the resolved population: on the write tier a
+    symlinked write-protected crew leaf that holds no secret sets the flag too,
+    and the three builds can disagree about it on one host.
 
     That fact is what bounds the deeper-leaf staleness the target cache always
-    carried. A target whose resolution differs came through a symlink at or
-    below a resolved root, and THAT is the entry a repoint can move out from
-    under a cached set. When no target resolved differently there is no
+    carried. A resolved path that comes back different came through a symlink at
+    or below a resolved root, and THAT is the entry a repoint can move out from
+    under a cached set. When nothing resolved differently there is no
     resolution-derived entry to go stale, so the long adaptive expiry is safe;
     when one did, the expiry is pinned to the floor. See
     :func:`_home_targets_ttl`.
@@ -2173,10 +2220,14 @@ def _home_dir_targets_uncached(
             _full_real = resolve_target(_full)
             if _full_real is not None:
                 sensitive_targets.add(_full_real.casefold())
-    # Did any target come through a symlink? Read off the memo this build already
-    # filled, so the answer costs one pass over a ~75-entry dict and no extra
-    # filesystem work -- the resolutions themselves are the expense and they have
-    # already happened. Normalised on both sides so a separator or case
+    # Did any path this build resolved come through a symlink? Read off the memo
+    # this build already filled -- the five classes named on ``_BuiltTargets``, so
+    # one entry on a host with no home override set and about eighty with every one
+    # set -- which costs one pass over that dict and no extra filesystem work: the
+    # resolutions themselves are the expense and they have already happened. The
+    # bulk of the set never appears here, because ``_anchor`` and
+    # ``_anchor_both_separators`` build it without resolving anything. Normalised
+    # on both sides so a separator or case
     # difference cannot read as a symlink; a false positive here is merely the
     # short expiry, a false negative would be the stale window this bounds.
     differed = any(
@@ -2382,12 +2433,13 @@ def _home_targets_ttl(rebuild_secs: float, *, resolution_differed: bool = True) 
     subtract.
 
     *resolution_differed* is what keeps the long expiry off the one class of
-    install it could hurt.  True means some target's canonical form differed from
-    its lexical one, i.e. the build came through a symlink at or below a resolved
-    root -- and that resolution-derived entry is exactly what a repoint can move
-    out from under a cached set, the deeper-leaf residual.  There the expiry is
+    install it could hurt.  True means one of the paths the build RESOLVED came
+    back spelled differently -- in practice a symlinked leaf under a home-override
+    root, which is the whole population :class:`_BuiltTargets` enumerates -- and
+    that resolution-derived entry is exactly what a repoint can move out from
+    under a cached set, the deeper-leaf residual.  There the expiry is
     pinned to the floor, so that window stays at 0.1s and does not grow.  False
-    means no target resolved differently, so the set holds nothing a repoint can
+    means nothing resolved differently, so the set holds nothing a repoint can
     stale WITHOUT first creating a symlink inside the crew home, which is a write
     the write gate refuses; the adaptive expiry applies.  It defaults to True so
     every caller that cannot prove otherwise gets the short expiry.
@@ -2414,12 +2466,38 @@ def _report_expiry_pin(pinned: bool) -> None:
     """Say once, on each transition, which expiry the cache is actually selecting.
 
     Without this the availability half self-disables in silence. On an install
-    whose sensitive dotfiles are symlinks -- a stow or chezmoi home is the ordinary
-    case, not an exotic one -- every build reports a traversal, every expiry is
-    therefore the floor, and both knobs read as no-ops to whoever tunes them. The
-    refusals then come back with nothing in the log to say why the fix did not
-    apply to this host. Deduplicated on the state, so a steady host says it once
-    rather than once per rebuild, and a host that flips says it again.
+    whose RESOLVED leaf under a home-override root is a symlink -- a crew-prefixed
+    entry of the caller's ``home_dirs`` under ``KIROCREW_HOME``, the agent-spec dir
+    under ``KIRO_HOME``, or a declared harness credential leaf under any variable in
+    ``host_auth.home_override_env_vars()`` --
+    the build that was handed that leaf reports a traversal, ITS expiry is
+    therefore the floor, and both knobs read as no-ops for that tier to whoever
+    tunes them. The refusals then come back with nothing in the log to say why the
+    fix did not apply to this host.
+
+    A dotfile-managed home IS a case to look for. The trigger is narrower than
+    "any symlinked dotfile" but not exotic: the symlinked path has to fall in one
+    of the three classes above -- a crew-prefixed entry of the caller's
+    ``home_dirs`` under ``KIROCREW_HOME``, the agent-spec dir under ``KIRO_HOME``,
+    or a declared harness credential leaf -- and it has to sit BELOW the resolved
+    root, since ``_resolve_root_anchors`` canonicalises each root first. A
+    symlinked ``sessions`` leaf under a ``KIROCREW_HOME`` below ``$HOME`` is that
+    shape, and so is a ``goose`` directory symlinked into a store underneath
+    whatever ``XDG_CONFIG_HOME`` resolves to -- the leaf resolved is
+    ``$XDG_CONFIG_HOME/goose/secrets.yaml``, so the symlink has to be under the
+    exported root and not under ``~/.config`` unless that is the same directory. A
+    dotfile in none of those classes cannot report
+    a traversal, because the bulk targets are never resolved.
+
+    The dedup is ONE shared boolean, and that is weaker than per-build accuracy.
+    ``_home_targets_pin_state`` holds a single ``"pinned"`` key while
+    ``_cached_home_dir_targets`` calls this once per cache entry, and the three
+    ``home_dirs`` lists can resolve to different answers on one host -- a symlinked
+    crew leaf can pin the read and write builds while the keystone-artifact build
+    reports no traversal. So a steady host says it once only while every build
+    agrees; where they disagree the line alternates between the two messages
+    instead, and neither names which build it is about. Read a single line as "some
+    build selected this expiry", not as the state of every tier.
     """
     if _home_targets_pin_state.get("pinned") is pinned:
         return
@@ -2427,8 +2505,8 @@ def _report_expiry_pin(pinned: bool) -> None:
     if pinned:
         logger.info(
             "sensitive-path anchor cache: expiry pinned to the %.1fs floor because a "
-            "target resolved through a symlink, so the cost-tracking expiry and both "
-            "of its knobs do not apply while that holds",
+            "path under a home-override root resolved through a symlink, so the "
+            "cost-tracking expiry and both of its knobs do not apply while that holds",
             _HOME_TARGETS_TTL_SECS,
         )
     else:
