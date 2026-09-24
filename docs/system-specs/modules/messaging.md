@@ -489,6 +489,68 @@ order (channel hook → Slack-DM/dashboard fallback → the #8914 fast-fail back
 the operator-log-vs-agent-error security split are documented in
 [`subagent.md`](subagent.md).
 
+**Discord is the second opt-in, and it is not identical.**
+`DiscordDispatcher.deliver_spawn_approval` posts the existing Approve/Deny buttons
+and awaits the press through the same `on_interaction` `a:` path, registered in
+`discord/gateway.py` on startup and unregistered from the client's `on_close` hook.
+Three differences from the Telegram reference are load-bearing. Discord's ladder has
+**no Trust rung**, so there is no in-channel way to grant standing spawn trust here —
+the operator grants it from the dashboard. A `unified` dm_scope collapses several
+peers into one session key, which names no single conversation, so such a key is
+unaddressable and falls through. And this client reports a refused send by
+**returning no message id** rather than by raising, so an absent id is read the same
+way as an exception: nothing was surfaced, fall through.
+
+**The channels governance ceiling is the seam's gate, read once for every hook.**
+`spawn_approval_delivery` consults `channel_inbound_permitted` after it resolves the
+hook and before it invokes one, and a deny answers `None` so the host gate falls
+through. It belongs there rather than inside each dispatcher: every hook posts a
+prompt whose answering press arrives inbound on the same channel, a denied channel
+drops that press, and a copy per implementation is the same authority duplicated
+where the next hook written without it reopens the hole.
+
+Discord adds ONE further read of its own, which is not that authority again. On the
+direct route the peer's DM channel is opened INSIDE the hook; that open is a full
+round trip, so the seam's answer can go stale across it and the seam cannot observe
+that happening. The dispatcher therefore re-reads immediately after the open, where
+everything remaining before the send is synchronous, which makes it the latest point
+a read can speak for. A thread route arrives with its channel already resolved,
+never suspends, and takes no re-read.
+
+**A press that lands before its waiter exists is answered, not dropped.** Both Discord
+prompt paths arm the per-prompt nonce when the prompt is BUILT, and the post that
+follows suspends, so a press can land before the caller starts awaiting.
+`register_nonce` therefore reserves the decision future as it arms the nonce, and
+`resolve_global` finds it there — rather than seeing no future and failing closed,
+which would deny-by-default at the timeout and tell a user who pressed Approve that
+the approval had expired. A spawn-approval prompt that never reaches the channel
+calls `retire`, which drops that reservation with the nonce, because the seam falls
+through to another surface and runs no wait of its own on that key.
+
+**A prompt whose wait outlives its own turn is armed detached.** `discard_session`
+closes the windows a turn opened and nobody awaited, and finds them by session-key
+prefix. A spawn approval matches that prefix but does not belong to the turn: the
+gate awaits it in its own task and the agent is told to end its turn, so the sweep
+would close a window while the user is still looking at the prompt, answer their
+press with an expiry it had not reached, and hand the gate a refusal nobody
+pressed. `register_nonce(key, detached=True)` marks such a key and the sweep skips
+it, so the window closes at the decision, at the wait's timeout, or at a `retire`
+and nowhere else. The mark is per key, so a tool approval awaited inside its own
+turn is swept exactly as before.
+
+**The task preview is cleared in the form Discord RENDERS, not the form it arrives
+in.** The preview is the agent-authored `spawn_run(<task>)` string and it is the one
+thing telling an operator which spawn they are approving, so it is shown rather than
+dropped. The upstream credential pass scans literal text, and a secret split by
+zero-width format characters survives that scan while rendering as nothing — the
+reader sees it whole. `deliver_spawn_approval` therefore runs the display-form pass
+over both outbound redactors, the same pass embed alt text and renderer-borne text go
+through. It is synchronous, so it adds no suspension point between the destination
+check and the send. Two markdown concerns ride along, because Discord renders the
+message as markdown: whitespace is collapsed so a multi-line preview stays one block,
+and backticks are dropped so the preview cannot close the fence it sits in and style
+the rest of the message.
+
 ## Layer 2b — `Renderer` + `OutputEvent` (`renderer.py`)
 
 ### `OutputEvent`

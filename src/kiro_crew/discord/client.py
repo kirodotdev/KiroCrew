@@ -564,6 +564,11 @@ class DiscordClient:
         # and on non-recoverable close — lets the gateway keep the dashboard
         # status badge truthful after boot.
         self.on_state_change: Callable[[bool, str], None] | None = None
+        #: Optional callback fired once at the START of ``close()``. The gateway
+        #: uses it to retire this channel's process-global spawn-approval
+        #: delivery hook so the host gate stops routing to a channel that is
+        #: going away (see ``messaging/spawn_approval_delivery.py``).
+        self.on_close: Callable[[], None] | None = None
 
     async def wait_ready(self, timeout: float = 15.0) -> bool:
         """Wait for the Gateway handshake to reach READY. Returns False on
@@ -601,6 +606,14 @@ class DiscordClient:
         rather than as a shutdown.
         """
         self._closed = True
+        # Retire any process-global registration this channel holds (the
+        # spawn-approval delivery hook) BEFORE tearing the connection down, so the
+        # host spawn gate stops routing to a dispatcher that is going away.
+        if self.on_close is not None:
+            try:
+                self.on_close()
+            except Exception:
+                logger.debug("Discord on_close callback failed", exc_info=True)
         # The session close is the LAST thing this method must do and the one
         # thing it must not skip, so it lives in a `finally`. Every step above it
         # can raise: `task.cancel()` on a task that ALREADY died with an error

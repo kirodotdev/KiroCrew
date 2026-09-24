@@ -27,6 +27,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from kiro_crew.config import live
@@ -47,6 +48,8 @@ from kiro_crew.discord.commands import (
     unknown_command_usage,
 )
 from kiro_crew.discord.renderer import (
+    _STYLE_DANGER,
+    _STYLE_SUCCESS,
     DiscordApprovalDecider,
     DiscordRenderer,
     build_model_components,
@@ -80,15 +83,18 @@ from kiro_crew.messaging.dispatch import (
     driver_turn_landed,
     rearm_reinjection,
 )
+from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import (
+    CHAT_TYPE_DIRECT,
     DM_SCOPE_UNIFIED,
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
     channel_namespace_of,
+    parse_session_key,
     rebind_conversation_location,
     release_conversation_location,
     seed_generation,
@@ -173,6 +179,16 @@ _ORIGIN_PREFIX = "discord_"
 #: it under is defined in that module, not here: a per-module copy of the string fails
 #: silently, making this channel's entries unowned to every drain.
 _CHANNEL = "discord"
+
+#: This channel's own ``chat_type`` spelling, for the routes it mints session keys
+#: under (``build_dm_session_key``): a guild thread is a group route. The direct
+#: route's spelling is :data:`kiro_crew.messaging.link.CHAT_TYPE_DIRECT`, imported
+#: above rather than restated, because ``build_dm_session_key`` defaults to it and
+#: the unified-scope collapse compares against it. ONE definition, because the
+#: spawn-approval reverse lookup (``_spawn_chat_target``) has to recognise the very
+#: spelling ``_session_key`` wrote -- a second copy of either string would read as
+#: an unaddressable key and silently send the prompt somewhere else, or nowhere.
+_CHAT_TYPE_THREAD = "group"
 
 #: Origin fields that are NOT part of "who sent this, and where does the reply go",
 #: so they are excluded from :attr:`_QueuedOrigin.sender_key`. Empty today: every
@@ -1979,6 +1995,260 @@ class DiscordDispatcher:
         """The user's CURRENT DM session key (dm_scope + ``!new`` generation)."""
         return self._session_key(user_id)
 
+    # ── Spawn-approval channel delivery ────────────────────────────────────
+
+    async def deliver_spawn_approval(
+        self, request_id: str, description: str, parent_session_key: str
+    ) -> bool | None:
+        """Post a spawn-approval prompt to the ORIGINATING Discord conversation.
+
+        Registered into the channel-neutral
+        :mod:`~kiro_crew.messaging.spawn_approval_delivery` seam so the single
+        host spawn gate can reach the same Approve/Deny buttons the main-agent
+        tool ladder already uses here. Returns the user's decision
+        (``True``/``False``), or ``None`` to tell the gate "not surfaced here,
+        fall through to Slack/dashboard": for a key this dispatcher cannot turn
+        back into a conversation (a ``unified`` dm_scope drops the peer, a
+        non-``discord`` key, an unparseable one), when the client is not up, when
+        the channels governance profile denies this channel, when the
+        destination's authorization has since been withdrawn, or when the post
+        fails.
+
+        The wait is the SAME deny-by-default one a tool prompt uses
+        (:class:`DiscordApprovalDecider`, ``APPROVAL_TIMEOUT_S``): the press
+        resolves through the ``on_interaction`` ``a:`` branch exactly as a tool
+        approval does, so a spawn id (``spawn:<agent_id>``) cannot collide with an
+        opaque tool id in a registry keyed by ``session_key:request_id``.
+
+        The prompt is armed under ``parent_session_key`` VERBATIM (its ``:genN``
+        suffix included), while a press recomputes the key from the LIVE
+        conversation (``_inbound_session_key``). Anything that moves that key
+        between the spawn and the press — a generation rotation from ``!new``, an
+        idle or daily reset, or a resumed session taking the channel over — means
+        the recomputed key does not match the armed one, the press resolves
+        nothing, and the prompt deny-by-defaults at its timeout (the user sees
+        "already expired"). This mirrors how a mid-run tool prompt behaves across a
+        rotation. An elapsed wait is a DENY and NOT a fall-through: the prompt WAS
+        surfaced, so ``False`` is a real decision and the gate refuses the spawn on
+        it rather than re-offering it on Slack/dashboard.
+        """
+        client = self.client
+        if client is None:
+            return None
+        target = self._spawn_chat_target(parent_session_key)
+        if target is None:
+            # A key this channel does not own or cannot address (unified DM
+            # bucket, non-discord key, malformed). Let the gate fall through.
+            return None
+        channel_id, thread_id, user_id, session_key = target
+        if not channel_id:
+            # A direct route names its PEER, not a channel, so the DM channel has
+            # to be opened before anything can be posted into it. Resolved here,
+            # ahead of the authorization check below, so that check has no
+            # suspension point between it and the send it guards.
+            try:
+                channel_id = await client.create_dm_channel(user_id)
+            except Exception:
+                logger.warning(
+                    "Discord: could not open a DM channel for the spawn-approval prompt for %s",
+                    request_id,
+                    exc_info=True,
+                )
+                return None
+            # The seam reads the operator's ceiling once, before it invokes any
+            # hook, which is the authority for entering here at all. This open is
+            # a full round trip INSIDE the hook, so the seam's answer can go stale
+            # across it and the seam cannot see that happen. Re-read on this route
+            # only: everything from here to the send is synchronous, which makes
+            # this the latest point a read can speak for, and a thread route
+            # arrives with its channel already resolved and never suspends.
+            if not await self._spawn_prompt_channel_permitted(request_id):
+                return None
+        if not channel_id:
+            return None
+
+        rid = str(request_id)
+        key = DiscordApprovalDecider.key(session_key, rid)
+        # Detached: the gate awaits this in its own task and the agent is told to
+        # end its turn, so the arming turn's sweep must not close the window while
+        # the user is still looking at the prompt.
+        nonce = DiscordApprovalDecider.register_nonce(key, detached=True)
+        components = [
+            {
+                "type": 1,
+                "components": [
+                    {
+                        "type": 2,
+                        "style": _STYLE_SUCCESS,
+                        "label": "✅ Approve",
+                        "custom_id": f"a:{rid}:{nonce}:1",
+                    },
+                    {
+                        "type": 2,
+                        "style": _STYLE_DANGER,
+                        "label": "🚫 Deny",
+                        "custom_id": f"a:{rid}:{nonce}:0",
+                    },
+                ],
+            }
+        ]
+        # ``description`` is the gate's own ``spawn_run(<task-preview>)`` string.
+        # The upstream credential pass scans the literal text, so a secret split by
+        # zero-width format characters survives it and Discord reassembles it on
+        # display: clear the preview in display form over both outbound redactors,
+        # the same pass embed alt text and renderer-borne text go through. It is
+        # synchronous, so it adds no suspension point between the destination check
+        # below and the send. Two markdown concerns ride along, because Discord
+        # renders the message as markdown and the task text is agent-authored:
+        # collapse whitespace so a multi-line preview stays one block, and drop
+        # backticks so the preview cannot close the fence it sits in and style the
+        # rest of the message.
+        detail, _ = redact_for_display(
+            " ".join((description or "spawn_run").split()).replace("`", "'"),
+            lambda s: redact_credentials(redact_exfiltration_urls(s)[0])[0],
+        )
+        if not self._spawn_prompt_destination_permitted(channel_id, thread_id, user_id):
+            # Authorization for this destination was withdrawn between the turn that
+            # asked for the spawn and this delivery. Retire the armed nonce and fall
+            # through, so the spawn is still answerable on Slack/dashboard.
+            DiscordApprovalDecider.retire(key)
+            logger.info(
+                "Discord: not posting the spawn-approval prompt for %s; the "
+                "originating conversation is not an authorized destination",
+                rid,
+            )
+            return None
+        try:
+            posted = await client.send_message(
+                channel_id,
+                f"🔐 Approve sub-agent spawn?\n```\n{detail}\n```",
+                components=components,
+            )
+        except Exception:
+            # Could not surface it: retire the armed nonce and fall through so the
+            # spawn can still be answered on Slack/dashboard rather than denied by a
+            # timeout nobody could see.
+            DiscordApprovalDecider.retire(key)
+            logger.warning(
+                "Discord: failed to post the spawn-approval prompt for %s",
+                rid,
+                exc_info=True,
+            )
+            return None
+        if not posted:
+            # This client reports a failed send by RETURNING no message id rather
+            # than by raising (a revoked token, a dead network, a channel it cannot
+            # write to), so the ``except`` above does not cover it. Same conclusion:
+            # nothing was surfaced, so fall through instead of waiting out the
+            # decision window on a prompt nobody can see and calling that a denial.
+            DiscordApprovalDecider.retire(key)
+            logger.warning(
+                "Discord: the spawn-approval prompt for %s was not accepted by the "
+                "channel; falling through",
+                rid,
+            )
+            return None
+
+        decider = DiscordApprovalDecider(session_key=session_key)
+        return bool(await decider(SimpleNamespace(request_id=rid)))
+
+    async def _spawn_prompt_channel_permitted(self, request_id: str) -> bool:
+        """Is the operator's channels ceiling open for this channel RIGHT NOW?
+
+        The delivery seam reads this once before it invokes any hook, so entering
+        this dispatcher at all is already gated and this is not that authority
+        again. It answers a narrower question the seam cannot: the peer's DM
+        channel is opened INSIDE the hook, that open is a full round trip, and the
+        ceiling can close across it.
+
+        Closing matters because a denied channel drops the Approve press that
+        would answer a prompt -- only an explicit reject is exempt there -- so a
+        prompt posted under a deny can never be answered, its wait
+        deny-by-defaults at the timeout, and the gate reads that elapsed wait as a
+        decision nobody made. Answering False makes the delivery fall through
+        instead, leaving the spawn answerable on Slack and the dashboard.
+        """
+        if await channel_inbound_permitted("discord"):
+            return True
+        logger.info(
+            "Discord: not posting the spawn-approval prompt for %s; the channel is "
+            "denied by channels governance policy",
+            request_id,
+        )
+        return False
+
+    def _spawn_prompt_destination_permitted(
+        self, channel_id: str, thread_id: str, user_id: str
+    ) -> bool:
+        """May a spawn-approval prompt be posted here RIGHT NOW? Fails closed.
+
+        The gate can hold a spawn for as long as its approval takes, so the
+        authorization that admitted the originating turn is not evidence about this
+        instant: an operator can drop the peer from ``discord.allowed_user_ids``, or
+        a thread from the thread roster, while the prompt is still being prepared.
+        The prompt carries a task preview, so it is a send that must be re-decided
+        against the LIVE rosters rather than the one the turn started under.
+
+        Called SYNCHRONOUSLY with no suspension point between it and the send it
+        gates — an await in between would reopen the window it closes.
+
+        Two authorities, both consulted, neither sufficient alone:
+
+        * this dispatcher's own live rosters, which are exactly the ones a PRESS is
+          judged by in ``on_interaction`` (``_authorized`` for the peer of a direct
+          route; ``_allowed_threads`` for a thread route), so a prompt is never
+          posted where its own button could not be honored;
+        * ``transport.may_send_to``, the transport's revocation-at-egress decision,
+          when a transport is wired. Absent (no transport, as in a unit harness) the
+          rosters above stand alone; a raise is read as a denial.
+        """
+        if thread_id:
+            if thread_id not in self._allowed_threads:
+                return False
+        elif not self._authorized(user_id):
+            return False
+        gate = getattr(self.transport, "may_send_to", None)
+        if gate is None:
+            return True
+        try:
+            # A thread route is recognised by its CONVERSATION id, which for a
+            # Discord thread is the thread's own snowflake; a direct route carries
+            # no usable conversation id for the roster, so it is judged by its
+            # principal. This is the split ``may_send_to`` itself documents.
+            return bool(gate(channel_id, thread_id or None, principal=user_id))
+        except Exception:
+            logger.warning(
+                "Discord: may_send_to raised for the spawn-approval destination; "
+                "treating it as revoked",
+                exc_info=True,
+            )
+            return False
+
+    def _spawn_chat_target(self, parent_session_key: str) -> tuple[str, str, str, str] | None:
+        """``(channel_id, thread_id, user_id, session_key)`` for a Discord spawn parent.
+
+        ``None`` for anything this channel cannot address. Reconstructs the
+        conversation from the parent session key's grammar
+        (``discord:{agent}:{chat_type}:{scope}``): a thread route's scope is the
+        thread's own snowflake, which IS the channel to post into; a direct route's
+        scope is the peer's user id, whose DM channel the caller opens, so
+        ``channel_id`` comes back empty and ``user_id`` carries the peer. A
+        ``unified`` DM bucket (``unified:{agent}``) parses as a non-discord surface
+        and returns ``None`` — it names no single conversation to post into, the
+        same reason the origin mirror declines it. ``session_key`` is returned so
+        the caller arms the decider under the exact key ``on_interaction``
+        recomputes for a press in that conversation.
+        """
+        parsed = parse_session_key(parent_session_key)
+        if parsed is None or parsed.surface != _CHANNEL or len(parsed.scope) != 1:
+            return None
+        scope = parsed.scope[0]
+        if parsed.chat_type == _CHAT_TYPE_THREAD:
+            return scope, scope, "", parent_session_key
+        if parsed.chat_type == CHAT_TYPE_DIRECT:
+            return "", "", scope, parent_session_key
+        return None
+
     # ── Helpers ────────────────────────────────────────────────────────────
 
     def _authorized(self, user_id: str) -> bool:
@@ -2046,7 +2316,7 @@ class DiscordDispatcher:
             thread_id or user_id,
             gen=gen,
             dm_scope=("per-channel-peer" if thread_id else str(self.cfg.messaging.dm_scope)),
-            chat_type=("group" if thread_id else "direct"),
+            chat_type=(_CHAT_TYPE_THREAD if thread_id else CHAT_TYPE_DIRECT),
         )
 
     def _inbound_session_key(
@@ -2066,7 +2336,7 @@ class DiscordDispatcher:
                 self._resolve_agent(),
                 thread_id,
                 dm_scope="per-channel-peer",
-                chat_type="group",
+                chat_type=_CHAT_TYPE_THREAD,
             )
             return self.sessions.max_generation(bucket)
         user_id = scope_id.removeprefix("user:")

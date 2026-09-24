@@ -412,6 +412,11 @@ class DiscordApprovalDecider:
     _REGISTRY: dict[str, "asyncio.Future[bool]"] = {}
     #: key -> the per-prompt nonce embedded in that prompt's buttons.
     _NONCES: dict[str, str] = {}
+    #: Keys whose wait runs OUTSIDE the turn that armed them, so the arming turn's
+    #: end must not close their window. A spawn approval is the case: the gate
+    #: awaits it in its own task and the agent is told to end its turn, so the
+    #: per-turn sweep would otherwise drop a prompt the user is still looking at.
+    _DETACHED: set[str] = set()
 
     def __init__(self, *, session_key: str) -> None:
         self._session_key = session_key
@@ -423,7 +428,7 @@ class DiscordApprovalDecider:
         return f"{session_key}:{request_id}"
 
     @classmethod
-    def register_nonce(cls, key: str) -> str:
+    def register_nonce(cls, key: str, *, detached: bool = False) -> str:
         """Mint the per-prompt nonce for *key* and OPEN its decision window.
 
         Called by whatever is about to post the prompt, so it runs on the event
@@ -443,9 +448,16 @@ class DiscordApprovalDecider:
         would leave that waiter on a future nobody resolves. A DONE future IS
         replaced, and that is the isolation bound: a decision left unawaited must
         not be adoptable by the next request to reuse this key.
+
+        ``detached`` says the wait will run outside the turn arming this, so
+        :meth:`discard_session` must leave it alone. Pass it whenever the prompt
+        outlives its own turn -- the window then closes at the decision, at the
+        wait's timeout, or at a ``retire``, and nowhere else.
         """
         nonce = new_approval_nonce()
         cls._NONCES[key] = nonce
+        if detached:
+            cls._DETACHED.add(key)
         reserved = cls._REGISTRY.get(key)
         if reserved is None or reserved.done():
             cls._REGISTRY[key] = asyncio.get_running_loop().create_future()
@@ -468,6 +480,7 @@ class DiscordApprovalDecider:
         """
         cls._NONCES.pop(key, None)
         cls._REGISTRY.pop(key, None)
+        cls._DETACHED.discard(key)
 
     @classmethod
     def refuse_undelivered(cls, key: str) -> None:
@@ -502,9 +515,18 @@ class DiscordApprovalDecider:
         Drops only PENDING reservations. A resolved one holds a decision that was
         already delivered, and the prefix carries its own ``:`` so one session key
         cannot match another that merely starts the same way.
+
+        A reservation marked detached by :meth:`register_nonce` is left alone: its
+        wait runs in another task and survives this turn, so closing it here would
+        strand a prompt the user can still see, and answer their press with an
+        expiry the window had not actually reached.
         """
         prefix = f"{session_key}:"
-        for k in [k for k, fut in cls._REGISTRY.items() if k.startswith(prefix) and not fut.done()]:
+        for k in [
+            k
+            for k, fut in cls._REGISTRY.items()
+            if k.startswith(prefix) and not fut.done() and k not in cls._DETACHED
+        ]:
             cls._REGISTRY.pop(k, None)
             cls._NONCES.pop(k, None)
 
@@ -528,6 +550,11 @@ class DiscordApprovalDecider:
                 finally:
                     DiscordApprovalDecider._REGISTRY.pop(k, None)
                     DiscordApprovalDecider._NONCES.pop(k, None)
+                    # Every exit that drops this key drops its detached mark with
+                    # it. A mark outliving its key exempts that key from the
+                    # turn-end sweep for the life of the process, so the next
+                    # request reusing it is swept by nothing.
+                    DiscordApprovalDecider._DETACHED.discard(k)
         fut: "asyncio.Future[bool]" = (
             reserved if reserved is not None else asyncio.get_running_loop().create_future()
         )
@@ -559,6 +586,7 @@ class DiscordApprovalDecider:
             # Retire the prompt's nonce with the decision window: a press on
             # the (now stale) buttons can never resolve a future request.
             DiscordApprovalDecider._NONCES.pop(k, None)
+            DiscordApprovalDecider._DETACHED.discard(k)
 
     @classmethod
     def resolve_global(cls, key: str, approved: bool, *, nonce: str = "") -> bool:

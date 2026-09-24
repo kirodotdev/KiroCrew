@@ -410,10 +410,23 @@ surface is attached. Telegram implements the hook over its existing
 Approve/Deny/Trust inline keyboard (`TelegramDispatcher.deliver_spawn_approval`):
 the press resolves through the same `on_callback` `a:` path as a tool approval, so
 **Trust** grants parent-session trust via `add_trusted_session` and a later spawn
-from that session is auto-approved by the parent-trusted rung. The seam is
-in-memory only (dies with the process); the hook is registered on Telegram startup
-and unregistered on client shutdown. The per-agent `auto_approve_spawn` rung
-(issue #2381 item 2) is deferred to #4751/#4693 and is NOT added here.
+from that session is auto-approved by the parent-trusted rung. Discord implements it
+too (`DiscordDispatcher.deliver_spawn_approval`), over its existing Approve/Deny
+buttons on the same `on_interaction` `a:` path, with three differences: no Trust rung
+(standing spawn trust is granted from the dashboard), a `unified` dm_scope key is
+unaddressable and falls through, and a refused send is reported by an absent message
+id rather than an exception and is read the same way. Consulting the channels
+governance ceiling (`channel_inbound_permitted`) before anything is armed is not a
+Discord peculiarity but a requirement of the seam: every channel's press path drops a
+non-reject press under a governance deny, so a prompt posted into a denied channel
+can never be answered and its wait hands the gate a deny-by-default nobody pressed.
+The seam reads it once for every hook, before invoking one. Discord adds a single
+re-read of its own on the direct route, after the peer's DM channel is opened: that
+open is a full round trip inside the hook, so the seam's answer can go stale across a
+gap the seam cannot see. The seam is in-memory
+only (dies with the process); each hook is registered on its channel's startup and
+unregistered on client shutdown. The per-agent `auto_approve_spawn` rung (issue #2381
+item 2) is deferred to #4751/#4693 and is NOT added here.
 
 **Delivery order.** A spawn-approval prompt that reaches `_spawn_with_approval`
 is offered to surfaces in this fixed order, and the search stops at the first one
