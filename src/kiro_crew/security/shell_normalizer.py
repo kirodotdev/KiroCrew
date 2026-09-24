@@ -1181,8 +1181,18 @@ def _shell_c_carrier_glued(token: str) -> "str | None":
 # the payload's FIRST-WORD length -- a real program name -- so 64 covers any
 # rule-relevant program with room to spare, while keeping the per-token scan
 # O(window) and immune to cluster padding (padding only adds fake splits
-# farther from the end, whose program words are runs of flag letters).
+# farther from the end, whose program words are runs of flag letters).  A
+# first word LONGER than the window is a NAME the payload refers back to (an
+# assignment used through ``$name``, a function called by name), and those
+# splits are found by the reference instead -- see
+# ``_shell_c_carrier_payloads``.
 _CARRIER_SPLIT_WINDOW = 64
+
+# The leading letter run of an identifier-shaped word (``name`` of ``name_1``):
+# what a carrier's letter-only leading region can end with when the payload's
+# first word is that identifier.  Finds the split candidates that sit before
+# the window above.
+_LEADING_LETTERS_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]+")
 
 
 def _shell_c_carrier_payloads(token: str) -> "list[str]":
@@ -1209,6 +1219,21 @@ def _shell_c_carrier_payloads(token: str) -> "list[str]":
     split's program word is a run of flag letters that matches no rule.
     Without the bound, a ~3 KB ``-acac…`` token made the candidate set
     quadratic and the synchronous deny scan outlived the loop watchdog.
+    The window's premise -- the first word is a program name -- fails when
+    the payload opens with a shell ASSIGNMENT: ``-Cc'<name>=<cli>; $<name>
+    <verb>'`` folds to ``-cc<name>=…``, the letter region runs through the
+    whole name, and a name longer than the window leaves the option ``c``
+    outside it, so only the first-``c`` reading (``c<name>=…``, an assignment
+    to a different name that ``$<name>`` never resolves) was yielded and the
+    mint went unexamined.  A first word that long is rule-relevant only as a
+    name the payload REFERS BACK TO -- through ``$name``, or as a function
+    called by name -- so before the window a split is yielded exactly where
+    the first word it produces is referenced later in the token.  That is
+    bounded by the references rather than by the ``c`` count: distinct
+    region suffixes have distinct lengths, so k of them need k*(k+1)/2
+    characters of references, and the candidates grow with the square root
+    of the token's length.  A word's leading letter run is what a letter-only
+    region can end with (``name_1`` is referenced as ``name``).
     The first-``c`` split is always yielded
     regardless of the window: it is the LONGEST suffix, so the unanchored
     regex tier sees every shorter reading as a substring of it.
@@ -1239,6 +1264,13 @@ def _shell_c_carrier_payloads(token: str) -> "list[str]":
             break
         region_end += 1
     index = max(1, region_end - _CARRIER_SPLIT_WINDOW)
+    if index > 1:
+        # Before the window: the splits whose first word is referred to later.
+        region = token[:region_end]
+        for prefix in {m.group(0) for m in _LEADING_LETTERS_RE.finditer(token, region_end)}:
+            split = region_end - len(prefix) - 1
+            if 1 <= split < index and token[split] == "c" and region.endswith(prefix):
+                _add(token[split + 1 :])
     while index < region_end:
         if token[index] == "c":
             run_start = index

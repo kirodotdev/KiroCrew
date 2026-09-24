@@ -9565,6 +9565,76 @@ class TestGluedShellCommandPayloadExtraction:
         assert is_denied("bash -Cc'git push origin my-feature'") is None
         assert is_denied("bash -cc'ls -la'") is None
 
+    def test_long_assignment_name_glued_carrier_split_is_found_by_its_reference(self) -> None:
+        """A first word longer than the window is a NAME, found by its later use.
+
+        A glued ``-Cc'<name>=<program>; $<name> <verb>'`` folds to
+        ``-cc<name>=…``, and the letter region runs through the WHOLE
+        assignment name up to the ``=``.  With a name longer than the split
+        window the only ``c``-run sat outside the window measured from the
+        region's end, so the correct split was never a candidate: the payload
+        read as ``c<name>=…``, the assignment went to a different name, the
+        use never resolved and the mint went unexamined -- while a short name
+        was denied.  A word that long matters only as a name the payload
+        refers back to, so the split is yielded where the first word it
+        produces is referenced later -- whatever padding precedes the option
+        ``c`` (``-C<78 flags>c'<78 letters>=…'`` puts it out of reach of any
+        fixed window from either end).
+        """
+        from kiro_crew.security import (
+            _CARRIER_SPLIT_WINDOW,
+            _is_credential_mint,
+            _shell_c_carrier_payloads,
+            is_denied,
+        )
+
+        long_name = "a" * (_CARRIER_SPLIT_WINDOW + 14)
+        padding = "a" * (_CARRIER_SPLIT_WINDOW + 14)
+        for name in ("x", long_name):
+            for shell in ("zsh", "bash", "sh"):
+                for cmd in (
+                    f"{shell} -Cc'{name}=kirocrew; ${name} token'",
+                    f"{shell} -cc'{name}=kirocrew; ${name} token'",  # folded, written directly
+                    f"{shell} -C{padding}c'{name}=kirocrew; ${name} token'",
+                    f"{shell} -C{padding}c'{name}(){{ kirocrew token; }}; {name}'",
+                ):
+                    assert _is_credential_mint(cmd.lower(), raw_text=cmd), cmd
+                    assert is_denied(cmd) is not None, cmd
+        # The ``<name>=…`` split is among the candidates for the long name, with
+        # and without padding before the option letter.
+        script = f"{long_name}=kirocrew; ${long_name} token"
+        assert script in _shell_c_carrier_payloads(f"-cc{script}")
+        assert script in _shell_c_carrier_payloads(f"-c{padding}c{script}")
+        # A name referenced only through its leading letters (``name_1``) is
+        # still found; a ``c`` before the window whose first word is never
+        # referenced yields nothing beyond the always-present first-``c`` split.
+        assert f"{long_name}_1=x; ${long_name}_1" in _shell_c_carrier_payloads(
+            f"-c{padding}c{long_name}_1=x; ${long_name}_1"
+        )
+        assert _shell_c_carrier_payloads(f"-{padding}c{padding}'ls'") == [f"{padding}'ls'"]
+        # Benign spellings with a long assignment name stay allowed.
+        assert is_denied(f"bash -Cc'{long_name}=ls; ${long_name} -la'") is None
+        assert is_denied(f"bash -C{padding}c'{long_name}=ls; ${long_name} -la'") is None
+
+    def test_referenced_splits_keep_the_candidate_set_bounded(self) -> None:
+        """Finding splits by reference is bounded by the references, not the ``c`` count.
+
+        The ~3 KB alternating ``-acac…`` token (the shape that made the
+        candidate set quadratic and outlived the loop watchdog) yields the
+        same bounded set as before; a payload that references k distinct
+        region suffixes adds at most k candidates and needs k*(k+1)/2
+        characters to do so.
+        """
+        from kiro_crew.security import _shell_c_carrier_payloads
+
+        flooded = _shell_c_carrier_payloads("-" + "ac" * 1600 + "c'git push origin main'")
+        assert len(flooded) <= 70, len(flooded)
+        refs = [f"${'ac' * k}" for k in range(1, 55)]
+        adversary = "-c" + "ac" * 1600 + "=x; " + " ".join(refs)
+        assert len(_shell_c_carrier_payloads(adversary)) <= len(flooded) + len(refs)
+        one_run = _shell_c_carrier_payloads("-" + "c" * 3000 + "'git push origin main'")
+        assert len(one_run) <= 3, len(one_run)
+
     def test_an_uppercase_cluster_does_not_eat_the_command_flag_stop(self) -> None:
         """The flag pattern stays lowercase-only ON PURPOSE.
 
