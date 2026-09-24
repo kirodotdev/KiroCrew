@@ -866,6 +866,23 @@ class TestCommands:
 
 class TestMidTurn:
     @pytest.mark.asyncio
+    async def test_a_command_typed_while_busy_is_executed_never_steered(self) -> None:
+        """The command intercept precedes the busy check: ``/new`` during a running
+        turn rotates the conversation and is never folded into the turn."""
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/new"))
+
+        assert provider.steered == []
+        assert client.replies == [("msg1", "✅ 已开始新对话")]
+        assert d._conv.current_gen(d._route(_inbound("/new"))) == 1
+        assert sessions.successes == []
+
+    @pytest.mark.asyncio
     async def test_busy_steers_and_acknowledges(self) -> None:
         provider = FakeProvider([])
         sessions = FakeSessions(provider)

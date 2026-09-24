@@ -16,6 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import api_chat_slot_queue_cancel
+from kiro_crew.dashboard.queue_origin_token import queue_provenance_proof
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 # ── Unit tests: _ChatSlot queue helpers ──
@@ -28,7 +29,12 @@ class TestQueueHelpers:
         assert isinstance(qid, str)
         assert len(qid) == 12
         assert len(slot._queue) == 1
+        # The entry is exactly what was enqueued; the origin proof every entry the
+        # gateway accepts as dashboard text gets lives BESIDE the queue, keyed by id.
         assert slot._queue[0] == {"id": qid, "content": "hello", "kind": ""}
+        assert slot._origin_proofs == {
+            qid: queue_provenance_proof("s1", qid, "hello", channel_address=None, admission=None)
+        }
 
     def test_queue_append_unique_ids(self):
         slot = _ChatSlot("s1")

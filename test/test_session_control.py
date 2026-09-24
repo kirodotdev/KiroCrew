@@ -2695,20 +2695,33 @@ async def test_the_reply_leg_consults_the_fence_before_publishing(tmp_path):
     ), "a constraint that newly holds since that admission withholds the leg"
 
     src = Path(cr.__file__).read_text(encoding="utf-8")
-    deliver_calls = [
-        line
-        for line in src.splitlines()
-        if "await _deliver_cross_surface_reply(" in line and not line.strip().startswith("#")
-    ]
+    lines = [line for line in src.splitlines() if not line.strip().startswith("#")]
+    # The transport leg is called from exactly ONE place: the fenced publication
+    # helper. Anything else that wants the channel-neutral leg goes through that
+    # helper and inherits the fence, so a new publication cannot skip it.
+    deliver_calls = [line for line in lines if "await _deliver_cross_surface_reply(" in line]
     assert len(deliver_calls) == 1, (
-        "one channel-neutral call site only; a second would need its own fence "
-        f"check: {deliver_calls}"
+        "one channel-neutral call site only, inside _publish_cross_surface_reply; a "
+        f"second would bypass the fence: {deliver_calls}"
     )
+    helper_src = src[src.index("async def _publish_cross_surface_reply(") :]
+    helper_src = helper_src[: helper_src.index("\nasync def ", 1)]
+    assert "await _deliver_cross_surface_reply(" in helper_src
+    assert "cross_surface_withheld(state, slot)" in helper_src
+    # The publishers, by name: the turn's completed reply and the linked-conversation
+    # command refusal. A third publisher is fine only if it is listed here.
+    publish_calls = [line for line in lines if "await _publish_cross_surface_reply(" in line]
+    assert sorted(line.strip() for line in publish_calls) == sorted(
+        [
+            "await _publish_cross_surface_reply(state, slot, session_key, assistant_text)",
+            "await _publish_cross_surface_reply(state, slot, session_key, _channel_notice)",
+        ]
+    ), f"unexpected publishers of the channel-neutral leg: {publish_calls}"
     # EVERY cross-surface publication asks, not just the channel-neutral leg: Slack
     # is an audience too, and it resolves its thread owner live. Four sites -- the
-    # channel-neutral reply, the Slack reply, the mid-turn tool stream, and the
-    # teardown's final task append, which would otherwise publish a title whose
-    # in-progress append was withheld.
+    # channel-neutral publication helper, the Slack reply, the mid-turn tool stream,
+    # and the teardown's final task append, which would otherwise publish a title
+    # whose in-progress append was withheld.
     asks = src.count("cross_surface_withheld(state, slot)")
     assert asks == 4, f"expected four fenced publication sites, found {asks}"
 

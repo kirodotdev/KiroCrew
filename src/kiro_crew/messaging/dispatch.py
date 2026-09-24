@@ -73,6 +73,7 @@ from kiro_crew.messaging.renderer import (
     Renderer,
     SilentRenderer,
 )
+from kiro_crew.messaging.session_resume import ReplayBindingChanged
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.security import (
     redact,
@@ -361,6 +362,27 @@ class ChannelTurn:
     the shared turn pipeline. It covers the later ``SessionClosingError`` race,
     after callback admission succeeded but before the provider turn opened.
     """
+
+    binding_check: Optional[Callable[[], None]] = None
+    """Yield-free re-read of the message's pinned binding, run in the closing gate.
+
+    The dispatcher passes its :class:`~kiro_crew.messaging.session_resume.ResumeBinding`'s
+    own ``check`` bound to a fresh read of the conversation's binding: it raises
+    :class:`ReplayBindingChanged` when a REPLAYED queue entry's pinned session is
+    no longer the one the conversation resumes, and does nothing for a live turn
+    or a native pin. The dispatcher's admission-time lookup ran before every await
+    this pipeline takes (acquisition, attachments, the context build), and an
+    unlink or a rebind landing in any of them would otherwise run and persist the
+    replay in a session the conversation has left. Called synchronously right
+    before the prompt opens; a raise drops the turn with
+    :attr:`binding_lost_notice` instead -- nothing runs, nothing is persisted, the
+    lease is released. ``None`` when the channel has no pin.
+    """
+
+    binding_lost_notice: str = ""
+    """What the conversation is told when :attr:`binding_check` raises -- the
+    channel's own dropped-replay wording, so the drop reads the same whether the
+    lookup or the gate caught it."""
 
 
 #: Every spelling a channel accepts for "abort the running turn". The union of
@@ -1198,6 +1220,16 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # typing indicator is opened for a turn that never runs. Inside the try
         # so the ``finally`` still finalizes the renderer; ``_acquired`` is still
         # False, so nothing is released.
+        #
+        # The pin's first re-read comes first. The closing gate re-reads it again
+        # right before the prompt opens, but the hook auto-reply answers AND
+        # persists without ever reaching that gate, and the dispatcher's own
+        # awaits (its restricted check, the inbound gate above) sit between the
+        # admission-time lookup and here -- a replay whose binding moved in them
+        # must not be answered by a hook in the session the conversation left.
+        # One lookup; a native pin always holds.
+        if turn.binding_check is not None:
+            turn.binding_check()
         hook_reply = hook_auto_reply(ctx_builder, turn.user_text)
         if hook_reply is not None:
             if hook_reply:
@@ -1375,6 +1407,14 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 context_provider=provider,
             )
 
+            def _closing_gate() -> None:
+                # Last look at the pin: this gate is the yield-free step right
+                # before the prompt opens, so a binding that moved during any await
+                # above is caught here and a replayed entry never runs.
+                if turn.binding_check is not None:
+                    turn.binding_check()
+                sessions.begin_turn(session_key)
+
             driver = TurnDriver(
                 provider,
                 retry_guard,
@@ -1387,9 +1427,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 directive_consumer=turn.directive_consumer,
                 audit_session_key=session_key,
                 audit_agent=turn.agent or "kirocrew",
-                closing_gate=turn_ceiling.gate(
-                    session_key, lambda: sessions.begin_turn(session_key)
-                ),
+                closing_gate=turn_ceiling.gate(session_key, _closing_gate),
             )
             if replaying:
                 # Last look before the replay opens a prompt: a Stop issued at any
@@ -1591,6 +1629,24 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # reach for the prompt.
         if not turn.inbound_restricted:
             await spool_refused_turn(channel_type=turn.channel_type, route=turn.inbound_route)
+    except ReplayBindingChanged:
+        # The prompt never opened, so there is no turn to record or persist and no
+        # fault of the session -- caught ahead of the generic handler for the same
+        # reason the shutdown refusal is: `record_failure` must not count it. The
+        # finally still finalizes the renderer and releases the lease. The notice
+        # rides the renderer, so a muted conversation is not written to.
+        logger.info(
+            "%s: replay binding moved before the prompt opened for %s; dropped",
+            turn.channel_type,
+            session_key,
+        )
+        try:
+            await renderer.on_text_chunk(turn.binding_lost_notice)
+            await renderer.on_done()
+        except Exception:
+            logger.warning(
+                "%s: could not display the drop notice", turn.channel_type, exc_info=True
+            )
     except UnknownMemoryStore as exc:
         logger.warning("%s member memory unavailable: %s", turn.channel_type, exc)
         try:

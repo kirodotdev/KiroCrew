@@ -3745,11 +3745,21 @@ def test_warm_auth_singletons_primes_both_off_loop(monkeypatch) -> None:
 
     monkeypatch.setattr(_ta, "_get_secret", spy_secret)
     monkeypatch.setattr(_ta, "_get_revoked_store", spy_store)
+    # The queue's provenance keys derive from the same secret on first use, from
+    # loop-bound callers (enqueue stamp, durable seal, slot restore); the warm-up
+    # must derive them here so that first use never loads the key file on the loop.
+    from kiro_crew.dashboard import queue_origin_token as _qot
+
+    monkeypatch.setattr(_qot, "_DERIVED_KEYS", {})
 
     asyncio.run(_ta.warm_auth_singletons())
 
     assert calls["secret"] >= 1, "warm_auth_singletons must warm _get_secret()"
     assert calls["store"] >= 1, "warm_auth_singletons must warm _get_revoked_store()"
+    assert set(_qot._DERIVED_KEYS) == {
+        _qot._ORIGIN_PROOF_DOMAIN,
+        _qot._RECORD_SEAL_DOMAIN,
+    }, "warm_auth_singletons must derive both queue proof keys"
 
 
 def test_middleware_factory_does_no_blocking_warmup() -> None:
@@ -3776,10 +3786,13 @@ def test_middleware_factory_does_no_blocking_warmup() -> None:
     assert "_get_secret()" not in factory_lines
     assert "_get_revoked_store()" not in factory_lines
 
-    # The async helper must offload BOTH warm-ups to a worker thread.
+    # The async helper must offload BOTH warm-ups to a worker thread -- and the
+    # queue proof keys' derivation, whose first use would otherwise load the key
+    # file from a loop-bound caller.
     warm_src = inspect.getsource(warm_auth_singletons)
     assert "asyncio.to_thread(_get_secret)" in warm_src
     assert "asyncio.to_thread(_get_revoked_store)" in warm_src
+    assert "asyncio.to_thread(queue_origin_token.warm_proof_keys)" in warm_src
 
 
 def test_start_paths_warm_auth_singletons_off_loop() -> None:

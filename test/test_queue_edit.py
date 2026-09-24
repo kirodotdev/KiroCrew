@@ -17,7 +17,14 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import api_chat_slot_queue_edit
 from kiro_crew.dashboard.chat_utils import _edit_queued_by_id
+from kiro_crew.dashboard.queue_origin_token import queue_provenance_proof
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+
+
+def _dashboard_proof(slot_key: str, queue_id: str, content: str) -> str:
+    """The proof of dashboard text: no channel address, no admission snapshot."""
+    return queue_provenance_proof(slot_key, queue_id, content, channel_address=None, admission=None)
+
 
 # ── Unit tests: _ChatSlot.queue_edit_by_id ──
 
@@ -64,6 +71,11 @@ class TestQueueEditHelper:
         slot.queue_edit_by_id(id2, "changed")
         assert slot._queue[0] == {"id": id1, "content": "same", "kind": ""}
         assert slot._queue[1] == {"id": id2, "content": "changed", "kind": ""}
+        # The edit re-signs the words: the proof (beside the queue) is over the content.
+        assert slot._origin_proofs == {
+            id1: _dashboard_proof(slot.key, id1, "same"),
+            id2: _dashboard_proof(slot.key, id2, "changed"),
+        }
 
     @pytest.mark.parametrize(
         "callback_name",
@@ -278,4 +290,8 @@ class TestQueueEditEndpoint:
             "content": "edited",
             "kind": "",
             "_directive_user_origin": True,
+        }
+        assert slot._origin_proofs == {
+            id1: _dashboard_proof(slot.key, id1, "same"),
+            id2: _dashboard_proof(slot.key, id2, "edited"),
         }

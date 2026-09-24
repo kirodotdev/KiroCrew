@@ -74,9 +74,11 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
     entry_channel,
+    entry_resumed_key,
     owner_token,
     register_drain,
     tag_entry,
+    tag_resumed_entry,
 )
 from kiro_crew.messaging.queue_receipt import (
     ATTACHMENT_PLACEHOLDER,
@@ -86,7 +88,7 @@ from kiro_crew.messaging.queue_receipt import (
     ReceiptSurface,
     receipt_address_key,
 )
-from kiro_crew.messaging.session_resume import refused_resume_is_restricted
+from kiro_crew.messaging.session_resume import ResumeBinding, refused_resume_is_restricted
 from kiro_crew.messaging.upload_gate import session_is_restricted
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
@@ -146,6 +148,35 @@ _RESUME_EXEMPT_COMMANDS = frozenset({"new", "unlink", "sessions", "help"})
 _RELEASE_FAILURE = (
     "⚠️ Couldn't save the session release, so the command was NOT completed. Fix the "
     "gateway's storage problem, then retry."
+)
+
+#: Receipt for a message handed to the DASHBOARD turn running on the resumed
+#: session (``dashboard/channel_busy.py``). The dashboard's own queue holds it and
+#: its reply mirrors back here, so the collapsing receipt -- whose flip belongs to
+#: this channel's drain -- is not used for it.
+_DASHBOARD_QUEUED_RECEIPT = (
+    "⏳ Queued (not steered): the dashboard is running this session's turn, and a "
+    "message cannot be steered into a dashboard-held turn, whatever your queue "
+    "mode says. It runs next if this chat still resumes the session then, and "
+    "the reply follows here."
+)
+
+#: A drained entry was accepted for a resumed session this conversation has
+#: left (`/unlink`, `/new` or a rebind landed while it waited). Replaying it
+#: there would answer into a session the user left, and natively it would run in a
+#: session that never accepted it; dropped and said so, like the Discord drain.
+_DROPPED_RESUMED_REPLAY = (
+    "⚠️ Dropped a queued message: this chat left the session it was queued for "
+    "before the message could run. Send it again if it still applies."
+)
+
+#: The dashboard is driving the resumed session and the message carries files,
+#: which only a Teams turn can download; refused whole rather than queued without
+#: them.
+_DASHBOARD_ATTACHMENTS_REFUSAL = (
+    "⏳ The dashboard is running a turn in this session and attachments cannot "
+    "wait behind it. Send them again once it finishes, or /unlink to return to "
+    "your Teams conversation."
 )
 
 #: Prefix the queued origin fields are stored under on a queue entry, so they can
@@ -424,12 +455,27 @@ class TeamsDispatcher:
         *,
         interpret_commands: bool = True,
         drain: bool = True,
+        binding: ResumeBinding | None = None,
     ) -> None:
         """Drive one authorized inbound Teams message through TurnDriver.
 
-        ``interpret_commands=False`` is used by the queue drain: a drained payload
-        is turn content, so a queued ``/new`` must reach the model as literal text
-        rather than executing on drain.
+        ``interpret_commands=False`` is used by the queue drain and by an option chip:
+        a drained payload and a model-authored chip label are turn content, so a
+        queued ``/new`` must reach the model as literal text rather than executing.
+
+        ``binding`` is a :class:`ResumeBinding` already pinned for this message, and
+        supplying one turns resume routing OFF: the message runs where the pin says,
+        provided this conversation still resumes that key. ``None`` (the default, and
+        what a chip passes) means the message is fresh, so routing applies normally
+        and the decision becomes its pin. A native pin (a replay of an entry accepted
+        NATIVELY) runs natively even when a binding appeared after it was queued; a
+        pin naming a RESUMED session runs on exactly that key. The drain supplies
+        the pin its entry recorded, and the busy path's retry after a false enqueue
+        supplies the one it was admitted with -- re-routing that retry is how a
+        rebind landing during the awaited steer would carry the message into another
+        session. An entry whose binding was released or moved is dropped with a
+        notice rather than answered into a session the user left or run natively in
+        one that never accepted it. Same contract as the Discord dispatcher's.
 
         ``drain=False`` is used by that same replay so the drained turn does not
         re-enter :meth:`_drain_queue` at its tail. The drain's own loop pumps
@@ -456,6 +502,7 @@ class TeamsDispatcher:
                 native_session_key,
                 resolve=lambda: self._session_resume.route(inbound.conversation_id),
                 is_restricted=self._session_restricted,
+                resumed_session_key=binding.resumed_key if binding is not None else None,
             )
 
         inbound_route = InboundRoute(
@@ -498,7 +545,18 @@ class TeamsDispatcher:
         # while the user believes they drive the resumed one; deciding here makes that
         # structural rather than a thing each handler has to remember.
         route = RoutingDecision()
-        if cmd not in _RESUME_EXEMPT_COMMANDS:
+        if binding is not None:
+            # Already pinned (a drain replay, a busy-path retry): routing is OFF, so
+            # the message cannot follow a binding that changed while it waited. It
+            # runs where the pin says -- after a LOOKUP confirming this conversation
+            # still resumes that key, which only ever confirms the pin or drops the
+            # message -- or natively for a native pin, which always holds.
+            current = self._session_resume.resumed_session(inbound.conversation_id)
+            if binding.dropped_by(current):
+                await self._reply(inbound, _DROPPED_RESUMED_REPLAY)
+                return
+            route = RoutingDecision(resumed_key=binding.resumed_key)
+        elif cmd not in _RESUME_EXEMPT_COMMANDS:
             route = await self._session_resume.route(inbound.conversation_id)
             if route.refusal is not None:
                 # Settle only once the refusal actually LANDED: an unsettled record owes
@@ -508,6 +566,11 @@ class TeamsDispatcher:
                 if await self._reply(inbound, route.refusal):
                     await self._session_resume.settle(inbound.conversation_id, route)
                 return
+        if binding is None:
+            # The pin is taken HERE, once, from the decision just made, and is what
+            # every later step takes: the hand-off, the busy path and its retry, the
+            # queue entry, the closing gate. None of them re-resolves the binding.
+            binding = ResumeBinding.from_route(route)
         if interpret_commands and not inbound.attachments:
             # ── Command intercept (no LLM session needed) ──
             if cmd == "sessions":
@@ -559,13 +622,30 @@ class TeamsDispatcher:
 
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
         # in-flight turn BEFORE any idle/daily rotation, then steer or queue.
-        # ``route.resumed_key`` is NOT re-resolved here: re-reading it would let the
-        # binding change between the decision and its use, which is the silent mis-route
-        # the single-decision shape exists to prevent.
-        session_key = route.resumed_key or self._session_key(email)
-        if self.sessions.is_busy(session_key):
-            await self._handle_busy(inbound, session_key, text, override_mode)
-            return
+        # The pin is NOT re-resolved here or anywhere below: re-reading the binding
+        # would let it change between the decision and its use, which is the silent
+        # mis-route the single-decision shape exists to prevent.
+        binding = binding.at(self._session_key(email))
+        session_key = binding.session_key
+        # Busy when EITHER holder says so: the SessionManager lease, or -- for a
+        # resumed session -- the dashboard's own predicate, which also covers a plan
+        # between its stages while the lease is briefly free (see the Discord
+        # dispatcher's busy check for the full rationale).
+        lease_busy = self.sessions.is_busy(session_key)
+        if lease_busy or (binding.pinned and self._dashboard_turn_in_progress(session_key)):
+            # A resumed session whose turn the DASHBOARD holds: this channel's queue
+            # is drained only from the tail of a Teams turn, so the message is handed
+            # to the slot's own queue instead (see ``dashboard/channel_busy.py``). A
+            # turn this channel started on the resumed key keeps the path below.
+            if binding.pinned and await self._hand_to_dashboard_turn(
+                inbound, binding, text, principal=email
+            ):
+                return
+            if lease_busy:
+                await self._handle_busy(inbound, binding, text, override_mode)
+                return
+            # The dashboard's stage hold lifted between the check and the hand-off
+            # and nothing holds the lease: the message runs as a fresh turn below.
 
         # Attachments are downloaded HERE -- after the governance gate, after the
         # command intercept, and after the busy check -- so nothing is fetched for a
@@ -584,7 +664,7 @@ class TeamsDispatcher:
                 text,
                 inbound_route=inbound_route,
                 drain=drain,
-                resumed_key=route.resumed_key,
+                binding=binding,
             )
         finally:
             if temp_paths:
@@ -600,7 +680,7 @@ class TeamsDispatcher:
         *,
         inbound_route: InboundRoute,
         drain: bool,
-        resumed_key: str | None = None,
+        binding: ResumeBinding,
     ) -> None:
         """Rotate, build the renderer, drive one turn, then drain what arrived.
 
@@ -616,7 +696,7 @@ class TeamsDispatcher:
             # no prompt behind it, and an empty turn would answer a message the
             # user never wrote.
             return
-        if resumed_key is None:
+        if not binding.pinned:
             # A RESUMED turn must not rotate: rotation is a property of this
             # conversation's own generation, and applying it to a dashboard session
             # would move the user off the transcript they just attached to.
@@ -626,9 +706,11 @@ class TeamsDispatcher:
                 idle_minutes=self._live_cfg().messaging.idle_reset_minutes,
                 daily_reset_hour=self._live_cfg().messaging.daily_reset_hour,
             )
-        # Decided ONCE, upstream, and not re-resolved: re-reading the binding here would
-        # let it change between the decision and its use.
-        session_key = resumed_key or self._session_key(email)
+        # Decided ONCE, upstream, and not re-resolved: the pin resolves against the
+        # (possibly rotated) native key; re-reading the binding here would let it
+        # change between the decision and its use.
+        binding = binding.at(self._session_key(email))
+        session_key = binding.session_key
         agent = self._resolve_agent()
         session_restricted = await self._session_restricted(session_key)
 
@@ -662,8 +744,16 @@ class TeamsDispatcher:
 
         # Mirror this conversation's dashboard tab back to Teams, unasked, using
         # the shared rule/opt-out/re-assert helper. Bounded: one whole-map write
-        # on a conversation's first turn.
-        self._bind_origin_mirror(session_key, inbound)
+        # on a conversation's first turn. NATIVE turns only, as Discord and
+        # Telegram have it: a resumed session's own surface owns its output and
+        # its binding is the resume machinery's to write and release. On a pinned
+        # turn the re-assert would run after this turn's awaits, and an unlink
+        # landing in them has just swept that session's mirror here -- rebinding
+        # it would send the session's later dashboard replies into the
+        # conversation that unlinked, even when the closing gate then drops the
+        # replay.
+        if not binding.pinned:
+            self._bind_origin_mirror(session_key, inbound)
 
         self._active_renderers[session_key] = renderer
         try:
@@ -673,6 +763,15 @@ class TeamsDispatcher:
                     session_key=session_key,
                     inbound_route=inbound_route,
                     inbound_restricted=session_restricted,
+                    # The pin re-reads its binding in the pipeline's closing gate,
+                    # right before the prompt opens: the lookup in ``handle_message``
+                    # ran before this turn's awaits, and an unlink or rebind landing
+                    # in them must not run the message in the session the
+                    # conversation has left. A native pin always holds.
+                    binding_check=lambda: binding.check(
+                        self._session_resume.resumed_session(conversation_id)
+                    ),
+                    binding_lost_notice=_DROPPED_RESUMED_REPLAY,
                     # Session-directive consumer: monitor_start / autonudge_stop /
                     # ... return a marker TurnDriver decodes; apply it against THIS
                     # turn's session key (dashboard-only directives stay refused
@@ -732,10 +831,57 @@ class TeamsDispatcher:
         if drain:
             await self._drain_queue(session_key, inbound)
 
+    async def _hand_to_dashboard_turn(
+        self,
+        inbound: "TeamsInbound",
+        binding: ResumeBinding,
+        text: str,
+        *,
+        principal: str = "",
+    ) -> bool:
+        """Queue a mid-turn message behind the DASHBOARD turn running on the resumed
+        session *binding* pins, and tell the user. Returns False when no dashboard turn holds
+        that session, so the caller takes its own steer/queue path.
+        """
+        # Circular import: the dashboard package imports the channel transports on
+        # its boot path, so this edge only exists at call time.
+        from kiro_crew.dashboard.channel_busy import (
+            HANDOFF_ATTACHMENTS_REFUSED,
+            HANDOFF_QUEUED,
+            hand_to_dashboard_turn,
+        )
+
+        assert binding.resumed_key is not None, "hand-off is only for a pinned resumed session"
+        outcome = hand_to_dashboard_turn(
+            getattr(self._session_resume, "dashboard_state", None),
+            binding.resumed_key,
+            text,
+            has_attachments=bool(inbound.attachments),
+            origin=self._session_resume.link_for(inbound.conversation_id),
+            principal=principal,
+        )
+        if outcome == HANDOFF_QUEUED:
+            await self._reply(inbound, _DASHBOARD_QUEUED_RECEIPT)
+            return True
+        if outcome == HANDOFF_ATTACHMENTS_REFUSED:
+            await self._reply(inbound, _DASHBOARD_ATTACHMENTS_REFUSAL)
+            return True
+        return False
+
+    def _dashboard_turn_in_progress(self, session_key: str) -> bool:
+        """Whether a DASHBOARD turn (a live task, or a plan between its stages)
+        holds the resumed session *session_key*; the lease alone misses the gap
+        between stages."""
+        from kiro_crew.dashboard.channel_busy import dashboard_turn_in_progress
+
+        return dashboard_turn_in_progress(
+            getattr(self._session_resume, "dashboard_state", None), session_key
+        )
+
     async def _handle_busy(
         self,
         inbound: "TeamsInbound",
-        session_key: str,
+        binding: ResumeBinding,
         text: str,
         override_mode: str | None = None,
     ) -> None:
@@ -745,12 +891,22 @@ class TeamsDispatcher:
         it -- losing it is the one outcome a queue exists to prevent. Teams can
         edit its own activities, so the held message gets the shared collapsing
         receipt bubble rather than a fire-and-forget notice.
+
+        *binding* is the pin the message was admitted with: it names the session
+        whose turn is running (the resumed one, or this conversation's own), the
+        queue entry records it (``queue_drain.QUEUED_RESUMED_KEY``) so the drain
+        replays the message there instead of re-deriving the native key with routing
+        off, and both retries below re-enter with it -- routing again there is how a
+        rebind landing during the awaited steer would carry the message into another
+        session (see ``handle_message``'s ``binding``).
         """
         assert self.client is not None
+        session_key = binding.session_key
+        assert session_key, "the pin is resolved at admission (ResumeBinding.at)"
         if not self.sessions.is_busy(session_key):
             # The turn finished inside the window; run it as a fresh turn rather
-            # than stranding it.
-            await self.handle_message(inbound)
+            # than stranding it -- on the pin it was admitted with.
+            await self.handle_message(inbound, binding=binding)
             return
         mode = override_mode or self._live_cfg().messaging.queue_mode
         # An attachment-bearing message is never steered: a steer carries TEXT into
@@ -779,8 +935,12 @@ class TeamsDispatcher:
                 await self._reply(inbound, f"{STEER_ACK_EMOJI} Folded into the reply in progress.")
                 return
         # queue mode, a /queue override, or steer unavailable.
-        if not await self._enqueue_with_receipt(session_key, inbound, text):
-            await self.handle_message(inbound)
+        if not await self._enqueue_with_receipt(binding, inbound, text):
+            # The turn ended in the window: run the message as a fresh turn, on the
+            # pin it was admitted with. Re-entering unpinned would route it again,
+            # and a rebind that landed during the awaited steer would then run and
+            # persist it in a session this message was never admitted for.
+            await self.handle_message(inbound, binding=binding)
 
     # ── Adaptive Card clicks ───────────────────────────────────────────────
 
@@ -968,7 +1128,10 @@ class TeamsDispatcher:
         return _Surface()
 
     async def _enqueue_with_receipt(
-        self, session_key: str, inbound: "TeamsInbound", text: str
+        self,
+        binding: ResumeBinding,
+        inbound: "TeamsInbound",
+        text: str,
     ) -> bool:
         """Atomically enqueue a mid-turn message and create/grow its receipt.
 
@@ -978,7 +1141,13 @@ class TeamsDispatcher:
         message queued WITH its receipt or sees neither yet, never a half state
         that would orphan a bubble. Returns False when the turn finished in the
         window, so the caller runs the message as a fresh turn instead.
+
+        *resumed_key* rides the entry (``tag_resumed_entry``) when the busy session
+        is one this conversation resumed, so the drain's replay -- which runs with
+        routing off -- can pin itself to that key instead of the native one.
         """
+        session_key = binding.session_key
+        assert session_key, "the pin is resolved at admission (ResumeBinding.at)"
         async with self._queue.lock:
             # The RAW attachment descriptors ride with the entry, not downloaded
             # bytes: the drained turn re-ingests them, so a queued picture is fetched
@@ -995,7 +1164,7 @@ class TeamsDispatcher:
                 # people share ONE session key and therefore one queue, so without
                 # this a message queued by one of them during the other's turn is
                 # answered into the other's chat and attributed to them.
-                **_origin_kwargs(inbound),
+                **tag_resumed_entry(_origin_kwargs(inbound), binding.resumed_key),
             ):
                 return False
             # An upload with no caption has no text; a placeholder keeps it from
@@ -1069,6 +1238,10 @@ class TeamsDispatcher:
             # collapses rather than from *inbound*, whose turn another person may
             # have opened.
             origin: _QueuedOrigin | None = None
+            # The RESUMED session the collapsed entries were accepted for ("" when
+            # native), read off the first one. Every entry in one session's queue
+            # was accepted for THAT session, so the collapse never mixes markers.
+            resumed_for = ""
             async with self._queue.lock:
                 remainder: list[tuple[str, str, dict]] = []
                 defer_rest = False
@@ -1093,6 +1266,7 @@ class TeamsDispatcher:
                         continue
                     if origin is None:
                         origin = item_origin
+                        resumed_for = entry_resumed_key(item[2])
                     # One collapsed turn must not exceed the neutral ingest's own
                     # per-turn attachment cap, or the surplus files would be
                     # silently refused by the ingest instead of answered next round.
@@ -1168,8 +1342,15 @@ class TeamsDispatcher:
             # Drained payloads are turn content, so command interpretation is off:
             # a queued "/new" must reach the model as text, not execute on drain.
             # drain=False keeps the pump in THIS loop instead of nesting a drain
-            # inside the replayed turn.
-            await self.handle_message(replay, interpret_commands=False, drain=False)
+            # inside the replayed turn. The marker is passed AS READ -- "" for an
+            # entry accepted natively -- because that is what tells this replay apart
+            # from a chip, which also runs with commands off but must still route.
+            await self.handle_message(
+                replay,
+                interpret_commands=False,
+                drain=False,
+                binding=ResumeBinding.for_replay(resumed_for),
+            )
             # Loop rather than return: messages that arrived DURING the combined
             # turn join this same FIFO pump, as do messages this iteration deferred
             # because they came from someone else. The only exit is the empty-queue

@@ -522,6 +522,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
     # gateway opens the path.
     "tag-grants",
+    # The committed queue generation per slot (``dashboard/queue_generation_store.py``).
+    # It is the one fact the restore checks a session's queued-prompt line against
+    # that the line's editor cannot also rewrite: an agent that could set it would
+    # roll a transcript back to an older line and have a consumed ``/goal`` run
+    # again with its authority. Whole directory (``atomic_write`` temp sibling);
+    # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
+    # gateway opens the path -- the save writes it, the restore's prefetch reads it.
+    "queue-generations",
     # Crewmate teams (``crew_teams.py``): the owner's grouping of the roster. Not
     # a secret, but it decides which team view a crewmate's questions and work
     # roll up into, and a crewmate must not be able to move itself or a sibling.

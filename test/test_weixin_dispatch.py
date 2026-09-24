@@ -507,6 +507,20 @@ def test_busy_session_does_not_start_a_second_turn(tmp_path):
     assert any("稍后" in s["text"] for s in client.sent)
 
 
+def test_a_command_typed_while_busy_is_executed_never_held(tmp_path):
+    """The command intercept precedes the busy check: ``/help`` during a running turn
+    is answered by the gateway rather than folded into the turn or bounced with the
+    wait-a-moment notice."""
+    provider = FakeProvider()
+    d, client, _ = _make(tmp_path, provider=provider, busy=True)
+
+    asyncio.run(d.handle_message(_msg("/help")))
+
+    assert provider.prompts == []
+    assert any("/stop" in m["text"] for m in client.sent)
+    assert not any("稍后" in m["text"] for m in client.sent)
+
+
 # ── mid-turn attachments ──────────────────────────────────────────────────────
 
 

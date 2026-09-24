@@ -469,6 +469,14 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # appends above. Written and read only by the GATEWAY (dashboard tag CRUD
     # + the chat_tag applier); no in-sandbox code opens it.
     "tag-grants",
+    # The committed queue generation per slot (``dashboard/queue_generation_store.py``):
+    # what the restore requires a session's queued-prompt line to name before it
+    # honours the line's seals. The line is an ordinary agent-writable file, so a
+    # sandboxed process that could read or write THIS would roll the transcript
+    # back to an older line and re-run a consumed command. Written by the save
+    # and read by the restore's prefetch, both in the GATEWAY; no in-sandbox code
+    # opens it.
+    "queue-generations",
     "agentcore-inbound",
     "routing",
     "webhooks",
@@ -1640,6 +1648,12 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # otherwise the first sandbox spawned before the first grant write sees an
     # unmasked leaf appear later.
     "tag-grants",
+    # The committed queue generations are written on the first durable queue save
+    # (atomic rename of a sibling temp), so a sandbox spawned before that finds the
+    # name absent and the mask is vacuous for its lifetime -- the same fresh-home
+    # gap as ``tag-grants``; materialised empty at 0700 so the bind always has a
+    # target.
+    "queue-generations",
     # The crewmate-teams store is created on the first team the owner makes, so a
     # sandbox spawned before that finds the name absent and the mask is vacuous
     # for its lifetime; materialised empty at 0700 so the bind always has a

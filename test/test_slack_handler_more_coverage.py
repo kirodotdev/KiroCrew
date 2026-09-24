@@ -1375,6 +1375,12 @@ class _Slot:
         self.task = None
         self.appended: list[tuple[str, str]] = []
         self.queued: list[str] = []
+        # The queue surface the dashboard's shared producer (``queue_for_next_turn``)
+        # reads after the append: the live queue for the durability warning and the
+        # single-flight persist flags.
+        self._queue: list[dict] = []
+        self._queue_persist_inflight = False
+        self._queue_persist_owed = False
 
     def append(self, role, text, cls="", *, broadcast_user=False, meta=None):
         # Mirror the real ``_ChatSlot.append`` contract enough for
@@ -1402,6 +1408,9 @@ class _Slot:
         # snapshot so the drain can re-assert it at delivery.
         assert isinstance(meta, dict)
         self.queued.append(text)
+        qid = f"q-{len(self.queued)}"
+        self._queue.append({"id": qid, "content": text, "meta": meta})
+        return qid
 
 
 class _DashState:
@@ -1419,6 +1428,10 @@ class _DashState:
 
     def push_slots_update(self):
         self.slot_pushes += 1
+
+    def flush_slot_now(self, slot):
+        # The durable write the shared producer starts off-loop; nothing to persist here.
+        return None
 
 
 class TestLinkedThreadRouting:

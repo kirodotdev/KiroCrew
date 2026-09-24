@@ -273,6 +273,22 @@ class TestCompact:
 
 class TestBusyHandling:
     @pytest.mark.asyncio
+    async def test_a_command_typed_while_busy_is_executed_never_steered(self) -> None:
+        """The command intercept precedes the busy check: ``/help`` during a running
+        turn is answered by the gateway, never folded into the turn."""
+        dispatcher, client, sessions = _dispatcher()
+        key = dispatcher._session_key(HANDLE)
+        sessions.busy.add(key)
+        provider = FakeProvider()
+        sessions.providers[key] = provider
+
+        await dispatcher.handle_message(_inbound("/help"))
+
+        assert provider.steered == []
+        assert len(client.sent) == 1
+        assert "/compact" in client.sent[0]
+
+    @pytest.mark.asyncio
     async def test_a_mid_turn_message_is_folded_in_via_steer(self) -> None:
         dispatcher, client, sessions = _dispatcher()
         key = dispatcher._session_key(HANDLE)
