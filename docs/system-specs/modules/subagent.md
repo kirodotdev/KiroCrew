@@ -982,6 +982,65 @@ and `mcp_core.py` reads it via `os.environ.get()`. If the env var is missing
 `~/.kiro/crew/session_pid_{getppid()}.txt` for backward compatibility. The
 session key flows through the `/api/spawn` endpoint as `parent_session`.
 
+## Run state file (`state.json`) write model
+
+**Decision: `state.json` stays a WHOLE-FILE rewrite.** No revision counter, no
+compare-and-swap retry loop, no per-field or append-merge format. This is a
+recorded choice, not a deferral.
+
+**Why.** `state.json` is a run's artifact and evidence record. Scheduling's
+source of truth is `tasks.db` (next section), which already carries generation
+fencing. Building a second coordination protocol one layer below it would order
+writes this file does not need, and would cost a format that `read_state`, the
+tombstone pruner, the keep scan, orphan recovery and the legacy-record migration
+must all agree on — an irreversible on-disk migration for a class with no
+reachable defect today.
+
+**The invariant that keeps the rewrite safe.**
+
+> Every whole-file `state.json` write happens at a KNOWN site, and each site
+> reachable from the event loop carries its own fence.
+
+`update_state` and `update_execution_context` both read, merge, then land a
+blocking fsync-and-rename. Two writers on one `agent_id` therefore interleave,
+and the later one restores a snapshot predating the other's write — rolling back
+fields *neither* writer touched, which is the damaging half. Off-loop callers are
+serialized by the per-agent lock (`_STATE_LOCKS`). An on-loop caller must not wait
+on that lock, because parking the gateway's only event loop behind a pool
+thread's fsync is the `no-blocking-call-on-event-loop` class, so each on-loop
+site carries its own fence instead -- with exactly one named exception, the
+spawn-path acquire in the third row:
+
+| Site | Fence |
+|---|---|
+| `release_conversation_impl` → `update_state` | refuses while the run is in flight, so no concurrent writer exists |
+| `promote_retention` → injected writer | probes the state lock non-blocking, returns `RETRYABLE` on contention |
+| `create_agent_folder` → `update_execution_context` | the ONE on-loop acquire that can wait; bounded by sitting on the spawn and admission path, never a per-turn one |
+| `create_agent_folder` → `_atomic_write` | creation path; writes the initial file before any writer for the agent exists |
+| every writer inside a run | goes off-loop through `_write_state_off_loop`, inheriting the lock, and is drained on cancellation |
+
+`update_execution_context`'s other three callers are absent from that table
+deliberately. `bind_session_execution`, `tighten_run_memory_mode` and
+`write_run_agent` each reach it from a pool thread at every call site
+(`asyncio.to_thread` or `drained_to_thread`), so the callee's unconditional lock
+serializes them exactly like an off-loop `update_state` and needs no fence of its
+own. An unconditional blocking acquire is a fence only off the loop; the single
+on-loop exception is the row above, and `_STATE_LOCKS` records the same bound at
+the lock itself.
+
+**How the asymmetry closes.** By moving the remaining on-loop sites OFF the loop,
+where each inherits the per-agent lock and needs no fence of its own — never by
+changing the on-disk format. The site census is therefore expected to shrink and
+never grow.
+
+**Enforcement.** `test_subagent_state_write_model` is a static AST gate over
+`kiro_crew` source. It pins the write-site census with a per-site call count, so
+a new write anywhere fails and its author must state the fence; it separately
+refuses any write sitting directly in an `async def` body, of which there are
+none. Every current site lives in a *synchronous* function that a coroutine
+calls, which is why the gate pins sites rather than trying to decide statically
+whether a given call runs on the loop.
+
 ## Durable task queue (`kiro_crew.taskq`)
 
 Specified in [taskq.md](taskq.md); this section is the manager's side of it.
