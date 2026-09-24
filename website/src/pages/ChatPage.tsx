@@ -51,11 +51,6 @@ import { sendTurn } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
-import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
-import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
-import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal } from '../hooks/useBottomTerminal'
-import { isPopoutOpen as isTerminalPopoutOpen } from '../utils/terminalPopout'
-import { disposeTerminalSession, useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { triggerRefresh, updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
@@ -493,13 +488,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const location = useLocation()
   const queryClient = useQueryClient()
   const provider = useProvider()
-  // Kills a Run-in-terminal tab's backend PTY when the dispatch rolls back
-  // (see the mc:run-in-terminal handler). Routed through the same mutation the
-  // tab-close paths use (per the use-react-query guideline); read through a
-  // ref because that handler's effect deliberately registers once ([] deps).
-  const deleteTerminalSession = useDeleteTerminalSession()
-  const deleteTerminalSessionRef = useRef(deleteTerminalSession)
-  deleteTerminalSessionRef.current = deleteTerminalSession
   const [searchParams, setSearchParams] = useSearchParams()
   // Declared with the other top-of-component hooks because the ?sid= URL-sync
   // effect reads it (mobile replaces rather than pushes a session switch), and
@@ -3573,152 +3561,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       tabsCtlRef.current.openView('browser')
     })
   }, [dispatch])
-  // "Run in terminal" (from chat code blocks): open a terminal tab in the
-  // app-wide dock panel and run the command in it, starting in the chat's
-  // working dir. The dock panel persists across routes (unlike chat-scoped
-  // terminal tabs) so the running shell survives navigation.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail || {}
-      const code: string = detail.code
-      const reqId: string = detail.reqId
-      const lang: string | undefined = typeof detail.lang === 'string' ? detail.lang : undefined
-      if (typeof code !== 'string' || !code) return
-      const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
-      let settled = false
-      const emit = (ok: boolean) => {
-        if (settled) return
-        settled = true
-        window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
-      }
-      if (!sessionId) { emit(false); return }
-      // The shell is known only once `ready` has arrived, which is exactly when
-      // this fires — so read it here, not at dispatch time.
-      const unsub = onTerminalReady(sessionId, () => {
-        const text = runInTerminalText(
-          code, lang, getTerminalShell(sessionId), getTerminalFenceShells(sessionId),
-        )
-        emit(sendToTerminalSession(sessionId, text))
-      })
-      // Give the PTY time to connect. A missing `ready` frame is not enough to
-      // prove the dispatch died because a shell profile can replace the
-      // readiness hook while the child process stays live. At the deadline,
-      // report failure for the button hint, then ask the existing terminal
-      // sessions route whether this dispatch's shell is still running.
-      // `settled` distinguishes the normal ready path: once ready has fired,
-      // the result is already emitted and the deadline does nothing.
-      setTimeout(() => {
-        if (settled) return
-        unsub()
-        emit(false)
-
-        // Only probe while this dispatch still owns the tab it minted. Closing
-        // the tab or popping the panel out transfers teardown ownership.
-        if (!hasDockTerminal(sessionId) || isTerminalPopoutOpen()) return
-
-        void (async () => {
-          // One look at the sessions route. `reuseMs` is the cache window: the
-          // first probe shares a request with any concurrent deadline, the
-          // confirm probe must see the present.
-          const probe = async (reuseMs: number) => {
-            const payload: unknown = await queryClient.fetchQuery({
-              queryKey: ['terminal-sessions'],
-              queryFn: async () => {
-                const response = await fetch('/api/terminal/sessions')
-                if (!response.ok) {
-                  throw new Error(`Failed to list terminal sessions (${response.status})`)
-                }
-                return response.json()
-              },
-              staleTime: reuseMs,
-            })
-            if (
-              !payload
-              || typeof payload !== 'object'
-              || !('sessions' in payload)
-              || !Array.isArray(payload.sessions)
-            ) {
-              throw new Error('Invalid terminal sessions response')
-            }
-            const found: Record<string, unknown> | undefined = payload.sessions.find(
-              (entry: unknown): entry is Record<string, unknown> => (
-                !!entry
-                && typeof entry === 'object'
-                && 'session_id' in entry
-                && entry.session_id === sessionId
-              ),
-            )
-            if (found && typeof found.alive !== 'boolean') {
-              throw new Error('Invalid terminal session liveness response')
-            }
-            return found
-          }
-
-          let session: Record<string, unknown> | undefined
-          try {
-            // Concurrent deadlines are what this reuse window dedupes, so it is
-            // far shorter than the deadline itself: a session young enough to be
-            // missing from a reused snapshot cannot have reached its own
-            // deadline yet, so no probe can read a snapshot older than itself.
-            session = await probe(1_000)
-            if (!session) {
-              // Absent is not gone. A shell still opening holds a placeholder
-              // the sessions route skips, so it reads exactly like a session
-              // that never existed -- and rolling that back would remove the tab
-              // from under a shell about to come up. Confirm once, uncached,
-              // after a bounded grace.
-              await new Promise(resolve => setTimeout(resolve, RUN_IN_TERMINAL_OPENING_GRACE_MS))
-              if (!hasDockTerminal(sessionId) || isTerminalPopoutOpen()) return
-              session = await probe(0)
-            }
-          } catch (error) {
-            // Keep on probe failure: removing a possibly-live shell and its
-            // scrollback is irreversible. The tab is user-closable, and the
-            // backend orphan reaper backstops the PTY. The kept tab is
-            // otherwise unexplained, so say so through the required surface --
-            // and keep the probe's own transport error out of that copy, since
-            // the user asked to run a command, not to list terminal sessions.
-            // The console keeps it for whoever debugs the probe.
-            // eslint-disable-next-line no-console -- a failed liveness probe is invisible in dev otherwise
-            console.warn('run-in-terminal: liveness probe failed:', errMessage(error))
-            showActionError(
-              i18nT('pages.chatPage.run_in_terminal_liveness_probe_failed_error'),
-            )
-            return
-          }
-
-          // The user may close the tab or pop the panel out while the probe is
-          // in flight. In either case this dispatch no longer owns it.
-          if (!hasDockTerminal(sessionId) || isTerminalPopoutOpen()) return
-          if (session?.alive === true) {
-            // A profile that replaces the readiness hook (#7657) lands here on
-            // EVERY click, so this is the routine outcome rather than an edge:
-            // the terminal opens, the command never runs, and a 2s button flash
-            // is too small to carry that. The shell is confirmed live, so the
-            // tab is worth keeping and the silence is worth breaking.
-            showActionError(i18nT('pages.chatPage.run_in_terminal_shell_alive_error'))
-            return
-          }
-
-          // Same teardown, same order, as the tab-close paths: end the backend
-          // PTY, drop the local WS + cached xterm, then remove the store entry.
-          // A session the probe did not list is already gone from the backend
-          // registry, so skip the DELETE -- it would 404 and surface a spurious
-          // close failure for a session that needs no closing.
-          if (session) deleteTerminalSessionRef.current.mutate(sessionId)
-          disposeTerminalSession(sessionId)
-          removeDockTerminal(sessionId)
-          // Closing a tab the user watched open is the ROUTINE outcome here, so
-          // it cannot be the quiet one: say what happened to the command.
-          showActionError(i18nT('pages.chatPage.run_in_terminal_dispatch_rolled_back_error'))
-        })()
-      }, RUN_IN_TERMINAL_READY_DEADLINE_MS)
-    }
-    window.addEventListener('mc:run-in-terminal', handler)
-    return () => window.removeEventListener('mc:run-in-terminal', handler)
-    // Both are stable for the provider's / component's lifetime (a context
-    // client and a []-dep useCallback), so the listener still installs once.
-  }, [queryClient, showActionError])
+  // "Run in terminal" is handled at the shell level (App → useRunInTerminalBridge),
+  // so a request from any route reaches the app-wide dock panel — not only chat.
   // Cold-tab hydration: after a reload (or when restoring a slot's strip from
   // the persisted panel-tabs store), file tabs come back as lightweight
   // references with their heavy content stripped (content === undefined). Read
