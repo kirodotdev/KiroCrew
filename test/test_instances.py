@@ -5836,6 +5836,34 @@ class TestSelfHealRefreshRestart:
         assert captured["connect_timeout_secs"] == stm._DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS
         assert captured["connect_timeout_secs"] < 90.0
 
+    def test_diagnose_unknown_method_is_a_diagnosis_not_a_raise(self, tmp_path, monkeypatch):
+        """A hand-edited row naming a method this build does not map must come
+        back as an ``unknown`` diagnosis for that instance -- not an uncaught
+        UnknownTransportError (a 500 on the status route), and never an SSH
+        probe of the row's host."""
+        import dataclasses
+
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="UX", ssh_host="ux-1-alias", instance_id="ux-1")
+        stored = reg.get("ux-1")
+        monkeypatch.setattr(
+            reg, "get", lambda _id: dataclasses.replace(stored, connection_method="outbound")
+        )
+
+        async def no_ssh(*_a, **_k):
+            raise AssertionError("an unmapped method must not fall back to an SSH probe")
+
+        monkeypatch.setattr(stm, "diagnose_instance", no_ssh)
+        result = asyncio.run(mgr.diagnose("ux-1"))
+        assert result is not None
+        assert result["code"] == "unknown"
+        assert result["ok"] is False
+        assert "'outbound'" in result["reason"]
+        # The way out is named: every method this build can connect over.
+        assert result["reason"].endswith("pick one of: ssh, ssm, fargate.")
+
     def test_probe_loop_tears_down_after_threshold(self, tmp_path, monkeypatch):
         from kiro_crew.instances import ssh_tunnel_manager as stm
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel

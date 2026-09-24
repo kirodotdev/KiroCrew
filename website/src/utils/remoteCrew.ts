@@ -94,9 +94,10 @@ export type PresentedConnectionMethod = keyof typeof TRANSPORT_PRESENTATIONS
 /** Total: every method resolves, including one this build has never heard of. */
 export function transportPresentation(inst: { connection_method?: string }): TransportPresentation {
   const method = normalizeConnectionMethod(inst.connection_method)
-  const row: { readonly addressField: 'ssh_host' | 'ssm_target' } | undefined = (
-    TRANSPORT_PRESENTATIONS as Record<string, { readonly addressField: 'ssh_host' | 'ssm_target' }>
-  )[method]
+  type Row = { readonly addressField: 'ssh_host' | 'ssm_target' }
+  const table = TRANSPORT_PRESENTATIONS as Record<string, Row>
+  // Own keys only, so `constructor` / `__proto__` read as unmapped.
+  const row = Object.prototype.hasOwnProperty.call(table, method) ? table[method] : undefined
   if (row === undefined) {
     // Visibly unmapped, never a sibling's identity: no address field, and a
     // report that names the method it actually is.

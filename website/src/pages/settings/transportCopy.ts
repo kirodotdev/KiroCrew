@@ -56,5 +56,8 @@ export function unmappedTransportHint(method: string): string {
 /** Copy for *method*, or `undefined` when this build has none — the caller
  *  renders the method's own name rather than a sibling transport's label. */
 export function transportCopy(method: string): TransportCopy | undefined {
+  // Own keys only: a stored method spelled like an Object.prototype member
+  // (`constructor`, `__proto__`) must read as unmapped, not as inherited copy.
+  if (!Object.prototype.hasOwnProperty.call(TRANSPORT_COPY, method)) return undefined
   return (TRANSPORT_COPY as Record<string, TransportCopy | undefined>)[method]
 }

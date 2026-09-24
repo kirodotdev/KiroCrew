@@ -235,15 +235,35 @@ def test_the_instances_layer_keeps_the_one_fargate_forward():
     Without this, deleting the ``fargate`` transport would leave every check
     above passing and no way at all to reach a Fargate crew.
     """
-    functions = _functions_of("instances/ssh_tunnel_manager.py")
+    # The manager resolves and mints through the per-method transport registry,
+    # so the fargate arm lives in its transport, not in the manager's methods.
+    manager = _functions_of("instances/ssh_tunnel_manager.py")
+    for seam in ("_resolve_transport", "_mint_for"):
+        fn = manager.get(seam)
+        assert fn is not None, f"the {seam} seam is gone"
+        assert "resolve_peer_transport" in _names_called_in(
+            fn
+        ), f"{seam} no longer dispatches through the transport registry"
 
-    resolve = functions.get("_resolve_transport")
-    assert resolve is not None, "the transport resolver is gone"
-    assert "fargate" in _string_constants_in(resolve), "the fargate transport arm is gone"
+    registry = ast.parse(
+        (src_root() / "instances/transports/__init__.py").read_text(encoding="utf-8")
+    )
+    registered = {
+        key.value: _callee(value)
+        for node in ast.walk(registry)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant) and isinstance(value, ast.Call)
+    }
+    assert registered.get("fargate") == "FargateTransport", "the fargate transport is unregistered"
+
+    fargate = _functions_of("instances/transports/fargate.py")
+    validate = fargate.get("validate")
+    assert validate is not None, "the fargate transport arm is gone"
     assert "split_ecs_target" in _names_called_in(
-        resolve
+        validate
     ), "the fargate arm does not validate that its target is an ECS task"
 
-    mint = functions.get("_mint_for")
+    mint = fargate.get("mint")
     assert mint is not None, "the mint seam is gone"
-    assert "fargate" in _string_constants_in(mint), "the fargate mint refusal is gone"
+    assert any(isinstance(n, ast.Raise) for n in ast.walk(mint)), "the fargate mint refusal is gone"

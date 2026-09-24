@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, it, expect } from 'vitest'
 
-import { TRANSPORT_COPY_METHODS } from '../pages/settings/transportCopy'
+import { TRANSPORT_COPY_METHODS, transportCopy } from '../pages/settings/transportCopy'
 import {
   DEFAULT_CONNECTION_METHOD,
   PRESENTED_CONNECTION_METHODS,
@@ -125,5 +125,18 @@ describe('transport presentation mapping', () => {
     it('has no badge copy, so the surface falls back to the raw method name', () => {
       expect(TRANSPORT_COPY_METHODS).not.toContain('outbound')
     })
+  })
+
+  describe('a method spelled like an Object.prototype member', () => {
+    // A hand-edited registry row is loaded unvalidated; an inherited property
+    // returned as copy or presentation crashes the panel on `.hint()`.
+    for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      it(`reads ${name} as unmapped, with no inherited copy`, () => {
+        expect(transportCopy(name)).toBeUndefined()
+        const p = transportPresentation({ connection_method: name })
+        expect(p.mapped).toBe(false)
+        expect(p.addressField).toBeNull()
+      })
+    }
   })
 })
