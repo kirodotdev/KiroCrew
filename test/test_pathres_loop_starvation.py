@@ -216,6 +216,20 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # root and cache key checks, stay on ``is_sensitive_path``: none of those
     # values is canonicalised first.
     "kiro_crew/security/paths.py": 1,
+    # ``validate_file_path``'s Windows held-chain walk, on the ``CHAIN_MISSING``
+    # arm only: the hold proved a PREFIX and the unproven remainder was joined as
+    # text by ``_canonicalize_within_hold``, so the argument is canonical (the
+    # prefix is ``realpath``'s own output and the tail holds no link the walk did
+    # not already classify off its own descriptor). This gate is used here
+    # precisely because it matches that candidate LEXICALLY and never submits the
+    # unheld tail for a second resolution -- re-resolving it would hand
+    # ``realpath`` the one component nothing is holding, the outbound UNC probe
+    # the hold exists to prevent -- and because it resolves only the trusted
+    # anchors inline, it cannot become that probe on any thread, so the arm is
+    # safe whether or not the caller reached this synchronous validator from a
+    # worker hop. ``test_hooks_coverage.py`` pins that the re-resolving fence is
+    # never the one asked on this arm.
+    "kiro_crew/hooks.py": 1,
 }
 
 
