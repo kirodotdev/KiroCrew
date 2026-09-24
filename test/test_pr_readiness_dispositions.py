@@ -357,6 +357,7 @@ class TestTheGateIsWiredIntoTheVerdict:
         env = _step("verdict")["env"]
         assert env["DISPOSITION_OK"] == "${{ steps.dispositions.outputs.ok }}"
         assert env["DISPOSITION_VIOLATIONS"] == "${{ steps.dispositions.outputs.violations }}"
+        assert env["ADVISORY_UNPUBLISHED"] == "${{ steps.dispositions.outputs.unpublished }}"
 
     def test_the_gate_runs_before_the_verdict(self):
         ids = [step.get("id") for step in _steps()]
@@ -395,3 +396,194 @@ def _span_of(path: str, rule_class: str) -> str:
     import hashlib
 
     return hashlib.sha256("{}|{}".format(path, rule_class).encode("utf-8")).hexdigest()[:12]
+
+
+def _slot(key: str, body: str) -> dict:
+    """A bot comment holding one lane's slot: the key leads the body, which is
+    what binds it -- the lanes' upsert selects on ``startswith``."""
+    return {
+        "id": 2,
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+        "body": "<!-- {} -->\n{}".format(key, body),
+    }
+
+
+OLD = "1" * 40
+
+
+def _reported(outputs: dict) -> list:
+    """The lane names the gate reported as owing this head a verdict."""
+    return [name for name in outputs["unpublished"].split("\n") if name]
+
+
+class TestTheGateReportsLanesThatPublishedNoVerdict:
+    """An advisory lane that computed a verdict it could not publish still
+    completes ``success``, so its run conclusion cannot answer for it -- the slot
+    holds the PREVIOUS head's verdict, or on a first round no slot at all, which
+    is what ``pr_status.py`` reads BLOCKED from while the required status reads
+    green.
+
+    The gate answers from ``evaluate_reviewer_markers``, so the stamp forms, the
+    enrolment rule and the override exemption are that function's (its own tests
+    own them). What these pin is the answer this mode reports: which lanes, and
+    only those.
+
+    The question is PINNED on the lane set, so a lane that has published nothing
+    for this head is reported whether its slot is stale or absent. Each case
+    therefore judges the presence of its OWN lane rather than the whole string:
+    the lanes a fixture leaves silent are a different case's subject.
+    """
+
+    def test_a_slot_stamped_for_another_head_is_reported(self, gate: GateRunner):
+        proc, outputs = gate.run(
+            comments=[_slot("design-review", "Verdict: PASS\n\n[DESIGN-REVIEWED] " + OLD)]
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["ok"] == "true"
+        assert "DESIGN" in _reported(outputs)
+
+    def test_a_slot_stamped_for_this_head_is_not_reported(self, gate: GateRunner):
+        proc, outputs = gate.run(
+            comments=[_slot("design-review", "Verdict: PASS\n\n[DESIGN-REVIEWED] " + HEAD)]
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert "DESIGN" not in _reported(outputs)
+
+    def test_a_slot_carrying_no_stamp_of_its_own_is_not_reported(self, gate: GateRunner):
+        """These lanes rewrite their slot to a stampless "skipped" / "could not
+        complete" notice by design, so a stampless slot is a lane answered by its
+        own conclusion, not a lost verdict. The pin must not eat this: under it
+        absence reads as owing, and this slot is an absence of a verdict that a
+        re-run would reproduce rather than fill.
+
+        The notice names the revision it is answering, as every such path writes
+        it (`did not produce a verdict for \\`$HEAD\\``). That is what scopes the
+        exemption to this head: a notice left by an earlier one answers that
+        revision, not this one, and must not excuse it.
+        """
+        proc, outputs = gate.run(
+            comments=[
+                _slot("ux-review", f"did not produce a verdict for `{HEAD}` (no summary)"),
+            ]
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert "UX" not in _reported(outputs)
+
+    def test_a_stampless_notice_from_an_earlier_head_does_not_excuse_this_one(
+        self, gate: GateRunner
+    ):
+        """Otherwise the lane reads as deliberately silent about a head it never
+        saw, and the required status passes with no verdict for it."""
+        proc, outputs = gate.run(
+            comments=[
+                _slot("ux-review", "did not produce a verdict for `" + "0" * 40 + "` (timeout)"),
+            ]
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert "UX" in _reported(outputs)
+
+    def test_a_lane_a_writer_adjudicated_at_this_head_is_not_reported(self, gate: GateRunner):
+        """The override path deliberately does not re-run the model, so no stamp
+        exists to find and re-running the lane cannot produce one. Holding it
+        would strand the head on the very escape hatch the override is."""
+        proc, outputs = gate.run(
+            comments=[
+                _slot("first-principles-review", "[FIRST-PRINCIPLES-REVIEWED] " + OLD),
+                {
+                    "id": 3,
+                    "user": {"type": "Bot", "login": "github-actions[bot]"},
+                    "body": (
+                        "<!-- ai-review-human-override target=first-principles "
+                        "head={} actor=someone source=4242 -->\n"
+                        "Judgment recorded.\n".format(HEAD)
+                    ),
+                },
+            ]
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert "FIRST-PRINCIPLES" not in _reported(outputs)
+
+    def test_a_lane_that_never_published_a_slot_at_all_is_not_reported(self, gate: GateRunner):
+        """The half this gate deliberately does not answer.
+
+        A lane with no slot has two causes that read identically from the
+        comments: it published nothing because it deliberately had nothing to
+        say, and its create-path publish was lost. Only the lane itself can
+        tell them apart, by leaving a notice naming the head. Reporting absence
+        before those arms write one would hold every revision that touches no
+        UI surface on a lane a re-run cannot fill, so this gate reports a slot
+        that EXISTS and is stale, and leaves absence to the lanes.
+        """
+        proc, outputs = gate.run(
+            comments=[_slot("design-review", "Verdict: PASS\n\n[DESIGN-REVIEWED] " + HEAD)]
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["ok"] == "true"
+        assert outputs["unpublished"] == ""
+
+    def test_an_absent_slot_a_writer_adjudicated_at_this_head_is_not_reported(
+        self, gate: GateRunner
+    ):
+        """The exemption that the pin must not eat. An override records that a
+        writer adjudicated the head, and the lane's model and post steps are
+        gated on it, so no slot is ever created -- exactly the absence the pin
+        now reads as owing. Holding it would strand the head on the escape hatch
+        the override exists to be."""
+        proc, outputs = gate.run(
+            comments=[
+                _slot("design-review", "[DESIGN-REVIEWED] " + HEAD),
+                _slot("ux-review", "[UX-REVIEWED] " + HEAD),
+                {
+                    "id": 5,
+                    "user": {"type": "Bot", "login": "github-actions[bot]"},
+                    "body": (
+                        "<!-- ai-review-human-override target=first-principles "
+                        "head={} actor=someone source=4243 -->\n"
+                        "Judgment recorded.\n".format(HEAD)
+                    ),
+                },
+            ]
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["unpublished"] == ""
+
+    def test_a_required_lane_is_left_to_its_own_branch(self, gate: GateRunner):
+        """OPUS and GPT carry the same fail-open, but they are required lanes
+        scored elsewhere in the verdict, where a named pending would hold merge
+        rather than inform. Reporting them here would change that scoring under
+        cover of this fix, so the answer covers the whole-design lanes only.
+        """
+        proc, outputs = gate.run(comments=[_bot_comment(head=OLD)])
+
+        assert proc.returncode == 0, proc.stderr
+        reported = [n for n in outputs["unpublished"].split("\n") if n]
+        assert "GPT" not in reported and "OPUS" not in reported
+
+    def test_every_owing_lane_is_reported_not_just_the_first(self, gate: GateRunner):
+        proc, outputs = gate.run(
+            comments=[
+                _slot("design-review", "[DESIGN-REVIEWED] " + OLD),
+                _slot("ux-review", "[UX-REVIEWED] " + OLD),
+            ]
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert {"DESIGN", "UX"} <= set(_reported(outputs))
+
+    def test_an_unreadable_comment_set_reports_nothing_and_is_not_ok(self, gate: GateRunner):
+        """Fail-closed: the caller reads ``ok=false`` as UNKNOWN and waits. An
+        empty list under ok=false must never be read as "every lane published"."""
+        gate.fail_comment_reads()
+
+        proc, outputs = gate.run()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["ok"] == "false"
+        assert outputs["unpublished"] == ""

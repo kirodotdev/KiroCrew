@@ -2052,7 +2052,9 @@ def test_stampless_advisory_lane_comment_does_not_block_discovery_mode() -> None
     module = _load_script()
     comments = json.dumps(
         [
-            _bot_comment("⏭️ skipped: no UI changes in this revision", key="ux-review"),
+            _bot_comment(
+                f"⏭️ skipped for `{_HEAD}`: no UI changes in this revision", key="ux-review"
+            ),
             _bot_comment(f"No findings.\n[GPT-REVIEWED] {_HEAD}"),
         ]
     )
@@ -2062,6 +2064,76 @@ def test_stampless_advisory_lane_comment_does_not_block_discovery_mode() -> None
     assert module.main(["pr_status.py", "42"]) == 0
     # Pinned: UX is explicitly required -> its stampless state blocks.
     assert module.main(["pr_status.py", "42", "--reviewers", "GPT,UX"]) == 20
+
+
+def test_a_stampless_notice_for_an_earlier_head_exempts_nothing() -> None:
+    """The exemption is scoped to the revision the notice names.
+
+    A lane rewrites its slot to a stampless notice naming the head it declined.
+    That notice then sits there. If it excused any later head, a lane that DID
+    review the current head and whose verdict upsert failed would read as
+    deliberately silent, and the required status would pass with no verdict for
+    the revision -- the fail-open the pin exists to prevent.
+
+    Negative control: the same notice naming the CURRENT head is exempt, so the
+    check distinguishes rather than exempting nobody.
+    """
+    module = _load_script()
+    bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+    older = "0" * 40
+
+    def notice(sha: str) -> dict:
+        return {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": "<!-- ux-review -->\nNo verdict for `" + sha + "`.\n",
+        }
+
+    stale_notice = module.evaluate_reviewer_markers(
+        [notice(older)], _HEAD, bindings, only=["UX"]
+    )
+    assert stale_notice["stale"] == ["UX"], stale_notice
+    assert stale_notice["stampless"] == [], stale_notice
+
+    current = module.evaluate_reviewer_markers([notice(_HEAD)], _HEAD, bindings, only=["UX"])
+    assert current["stale"] == ["UX"], current
+    assert current["stampless"] == ["UX"], current
+
+
+def test_a_bound_slot_with_no_stamp_of_its_own_is_reported_stampless() -> None:
+    """The enrolment exemption above, published so a PINNED caller can reuse it.
+
+    Under a pin, absence must read as stale -- otherwise a lane that published
+    nothing scores as reviewed. But then the stampless notice reads as stale too,
+    and the two cannot be told apart from ``stale`` alone: one is a lane that
+    said it did not review this head, which a re-run reproduces rather than
+    fills. ``stampless`` is that distinction, from the function that already
+    makes it, so a caller applies the exemption instead of respelling it.
+    """
+    module = _load_script()
+    bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+    notice = {
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+        "body": "<!-- ux-review -->\nNo verdict for `" + _HEAD + "`.\n",
+    }
+    stamped = {
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+        "body": ("<!-- design-review -->\nDesign-Verdict: PASS\n\n[DESIGN-REVIEWED] " + _HEAD),
+    }
+
+    # Independent of the pin: it describes the comment set, not what was asked.
+    discovered = module.evaluate_reviewer_markers([notice, stamped], _HEAD, bindings)
+    assert discovered["stampless"] == ["UX"], discovered
+
+    pinned = module.evaluate_reviewer_markers(
+        [notice, stamped], _HEAD, bindings, only=["DESIGN", "UX", "FIRST-PRINCIPLES"]
+    )
+    assert pinned["stale"] == ["FIRST-PRINCIPLES", "UX"], pinned
+    assert pinned["stampless"] == ["UX"], pinned
+
+    # Fail-closed reads carry the key too, so a caller deciding what to exempt
+    # never trips over its absence.
+    unreadable = module.evaluate_reviewer_markers(None, _HEAD, bindings)
+    assert unreadable["ok"] is False and unreadable["stampless"] == [], unreadable
 
 
 def test_checks_blind_token_degrades_softly_instead_of_aborting(capsys) -> None:
@@ -3028,9 +3100,15 @@ def test_the_concerns_stop_never_reaches_the_server_side_gate(capsys) -> None:
     """--disposition-gate JSON is byte-identical whether or not the body
     carries a whole-design CONCERNS. The required status must keep treating
     CONCERNS as advisory -- turning it into a red for every writer is a policy
-    change this local loop does not get to make."""
+    change this local loop does not get to make.
+
+    Both arms carry the design slot and differ ONLY in its verdict word. The
+    slot's presence is a second variable the gate answers on purpose -- a lane
+    that published nothing owes this head a verdict -- so varying it here would
+    test that instead of the CONCERNS stop.
+    """
     reports = []
-    for extra in ([], [_design_comment()]):
+    for verdict in ("PASS", "CONCERNS"):
         module = _load_script()
         span = module.span_hash("src/x.py", "gpt/FINDING")
         ruling = {
@@ -3044,7 +3122,9 @@ def test_the_concerns_stop_never_reaches_the_server_side_gate(capsys) -> None:
         _install_fake_gh(
             module,
             _pr_payload(_GREEN_CHECKS),
-            comments=json.dumps([_gate_bot_comment(), ruling] + extra),
+            comments=json.dumps(
+                [_gate_bot_comment(), ruling, _design_comment(verdict=verdict)]
+            ),
             permissions={"alice": "write"},
         )
         assert module.main(_gate_argv()) == 0

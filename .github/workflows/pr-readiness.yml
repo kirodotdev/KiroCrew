@@ -527,6 +527,7 @@ jobs:
 
           ok=false
           violations=""
+          unpublished=""
           if [ ! -f "$GATE" ]; then
             # The evaluator moved or the sparse checkout missed it. Report
             # UNKNOWN so readiness waits and says why, rather than reporting a
@@ -538,6 +539,7 @@ jobs:
             if [ "$(jq -r '.ok' <<<"$out" 2>/dev/null)" = "true" ]; then
               ok=true
               violations="$(jq -r '.violations[]' <<<"$out" 2>/dev/null || true)"
+              unpublished="$(jq -r '.unpublished[]' <<<"$out" 2>/dev/null || true)"
             else
               echo "pr-readiness: disposition gate could not evaluate: $(jq -r '.error' <<<"$out" 2>/dev/null)" >&2
             fi
@@ -557,6 +559,9 @@ jobs:
             echo "ok=$ok"
             echo "violations<<$delim"
             printf '%s\n' "$violations"
+            echo "$delim"
+            echo "unpublished<<$delim"
+            printf '%s\n' "$unpublished"
             echo "$delim"
           } >> "$GITHUB_OUTPUT"
 
@@ -593,6 +598,9 @@ jobs:
           # wiring so a rename cannot silently disable the gate.
           DISPOSITION_OK: ${{ steps.dispositions.outputs.ok }}
           DISPOSITION_VIOLATIONS: ${{ steps.dispositions.outputs.violations }}
+          # The whole-design lanes the same gate call found owing this head a
+          # verdict they never published -- see the advisory-slot note below.
+          ADVISORY_UNPUBLISHED: ${{ steps.dispositions.outputs.unpublished }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
@@ -788,71 +796,39 @@ jobs:
           #
           # Bound stamp names, never any `*-REVIEWED` match. A stamp for another
           # lane's name inside this lane's body is model output, so only the
-          # slot's OWN name answers for it -- the same binding rule
-          # `evaluate_reviewer_markers` applies on the client side, which is why
-          # the two gates cannot disagree about a head.
+          # slot's OWN name answers for it.
           #
-          # A slot carrying NO stamp of its own is left alone. The advisory
-          # lanes rewrite their slot to a stampless "skipped" / "could not
-          # complete" notice by design, and a lane that published no verdict at
-          # all is answered by its own conclusion, not by this check -- the same
-          # enrolment rule the client gate uses, so an errored or throttled run
-          # is scored exactly as it is today.
+          # NONE of those rules is spelled here. `$GATE`'s
+          # `evaluate_reviewer_markers` decides, per bound lane, whether that
+          # lane's own slot carries a stamp naming this head: the name binding,
+          # the abbreviated and elided stamp forms, the slots left alone for
+          # carrying no stamp of their own (the advisory lanes rewrite theirs to
+          # a stampless "skipped" notice by design, and a lane that published
+          # nothing at all is answered by its own conclusion), and the
+          # human-override record that stands in for a stamp on the path where
+          # the model is deliberately not re-run. That function is what
+          # `pr_status.py` reports BLOCKED from, so taking the answer from it is
+          # what makes the two gates unable to disagree about a head -- one
+          # definition, the same reason the disposition rule above is not
+          # restated in shell.
           #
-          # Abbreviated stamps count: a stamp names the head with at least 7
-          # hex, so freshness is prefix agreement in either direction.
-          advisory_slots=""
-          if [ "${#workflow_specs[@]}" -gt 0 ]; then
-            advisory_slots="$(gh_retry gh api --method GET --paginate \
-              "repos/$REPO/issues/$PR/comments?per_page=100" \
-              | jq -rs --arg sha "$SHA" '
-                  {"<!-- design-review -->": "DESIGN",
-                   "<!-- ux-review -->": "UX",
-                   "<!-- first-principles-review -->": "FIRST-PRINCIPLES"} as $bound
-                  | [.[][]]
-                  | map(select((.user.login // "") == "github-actions[bot]"))
-                  | map(. + {slot: (.body // "" | split("\n") | .[0])})
-                  | map(select($bound[.slot] != null))
-                  | map(. as $c
-                        | $bound[$c.slot] as $name
-                        | [ $c.body
-                            | scan("\\[" + $name + "-REVIEWED\\] ([0-9a-fA-F]{7,40})")
-                            | .[0] ] as $shas
-                        | [ $c.slot,
-                            (if ($shas | length) > 0 then "1" else "0" end),
-                            (if ([ $shas[]
-                                   | . as $s
-                                   | select(($sha | startswith($s))
-                                            or ($s | startswith($sha))) ]
-                                 | length) > 0
-                             then "1" else "0" end) ]
-                        | @tsv)
-                  | .[]
-                ')" || {
-              rc=$?
-              if [ "$rc" -eq 22 ]; then exit 1; fi
-              transport_failed=true
-              workflow_specs=()
-            }
-          fi
+          # It costs no extra request: that gate call already reads this PR's
+          # trusted comments for the disposition rule.
+          advisory_unpublished="${ADVISORY_UNPUBLISHED:-}"
 
-          # 1 when this advisory lane's slot carries its OWN stamp naming a head
-          # that is not this one, which is the state a `success` conclusion
-          # cannot express. First row wins, matching the upsert's own first-match
-          # slot lookup.
+          # 1 when this advisory lane owes this head a verdict and has none,
+          # which is the state a `success` conclusion cannot express. All this
+          # adds to the gate's answer is which reviewer name the board's lane
+          # label belongs to.
           advisory_slot_unpublished() {
-            local want row own fresh
+            local name
             case "$1" in
-              "Design Review") want="<!-- design-review -->" ;;
-              "UX Review") want="<!-- ux-review -->" ;;
-              "First Principles Review") want="<!-- first-principles-review -->" ;;
+              "Design Review") name="DESIGN" ;;
+              "UX Review") name="UX" ;;
+              "First Principles Review") name="FIRST-PRINCIPLES" ;;
               *) printf '0'; return 0 ;;
             esac
-            row="$(printf '%s\n' "$advisory_slots" \
-              | awk -F'\t' -v k="$want" '$1 == k { print; exit }')"
-            own="$(printf '%s' "$row" | cut -d'	' -f2)"
-            fresh="$(printf '%s' "$row" | cut -d'	' -f3)"
-            if [ "$own" = "1" ] && [ "$fresh" != "1" ]; then
+            if printf '%s\n' "$advisory_unpublished" | grep -Fqx -- "$name"; then
               printf '1'
             else
               printf '0'
