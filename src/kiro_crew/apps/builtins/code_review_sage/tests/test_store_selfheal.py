@@ -3,11 +3,16 @@
 Locks in the fix for the "Initializing…" stuck state: when the generic app
 config handler has already seeded an empty ``{}`` config.json, ensure_layout
 must upgrade it to include ``resolved_paths`` so the UI can bootstrap."""
+import collections
+import contextlib
 import errno
 import json
 import os
 import shutil
+import stat
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -321,3 +326,157 @@ class TestRestrictToOwner(unittest.TestCase):
                 store.open_locked_temp(self.tmp)
         self.assertEqual(set(os.listdir(self.tmp)), before,
                          "a temp file was left behind by the failed lockdown")
+
+
+class TestLayoutSeedingIsSerialized(unittest.TestCase):
+    """Concurrent entrants must not each publish the same seeded file.
+
+    ``ensure_layout`` runs on every action and reviews run as separate PROCESSES,
+    so several can each find one seed absent and each publish it. On POSIX the
+    duplicate renames are harmless; on Windows ``os.replace`` raises
+    ``PermissionError`` when a handle is open on the destination or another rename
+    is landing on it, and the loser raises out of ``atomic_write_locked`` and
+    fails its whole action. The exclusion is what these pin, on every platform,
+    because the race is platform-independent even though only one platform
+    punishes it.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def test_every_seeding_publish_happens_while_the_layout_lock_is_held(self):
+        """A publish outside the lock is a publish another entrant can duplicate."""
+        real_lock = store.layout_lock
+        real_write = store.atomic_write_text
+        held = []
+        published: list[str] = []
+
+        @contextlib.contextmanager
+        def tracking_lock(root=None):
+            with real_lock(root):
+                held.append(True)
+                try:
+                    yield
+                finally:
+                    held.pop()
+
+        def spy(path, text):
+            published.append((Path(path).name, bool(held)))
+            return real_write(path, text)
+
+        with mock.patch.object(store, "layout_lock", tracking_lock), \
+                mock.patch.object(store, "atomic_write_text", spy):
+            store.ensure_layout(self.root)
+
+        self.assertEqual(
+            sorted(name for name, _ in published),
+            ["config.json", "index.json", "learned-patterns.md"],
+            f"unexpected set of seeding publishes: {published}")
+        self.assertEqual([name for name, was_held in published if not was_held], [],
+                         f"a seed was published outside the lock: {published}")
+
+    def test_a_second_entrant_does_not_republish_a_seed_being_published(self):
+        """The test of presence is re-read INSIDE the lock, so the loser skips.
+
+        Taking the lock and then acting on an answer read before it would leave
+        the duplicate publish in place: both entrants saw the seed absent.
+        """
+        real_lock = store.layout_lock
+        real_write = store.atomic_write_text
+        reached = []
+        entered = threading.Event()
+        release = threading.Event()
+        published: collections.Counter = collections.Counter()
+        count_guard = threading.Lock()
+
+        @contextlib.contextmanager
+        def counting_lock(root=None):
+            # Appended BEFORE the acquire, so the main thread can tell "the second
+            # entrant has reached the lock" from "it has taken it" -- which is
+            # what makes this handshake a wait rather than a sleep.
+            reached.append(True)
+            with real_lock(root):
+                yield
+
+        def spy(path, text):
+            with count_guard:
+                published[Path(path).name] += 1
+                first = not entered.is_set()
+                if first:
+                    entered.set()
+            if first:
+                # Hold the first publish open so the other entrant is inside
+                # ``ensure_layout`` while this seed is still absent on disk.
+                self.assertTrue(release.wait(60), "the handshake never released")
+            return real_write(path, text)
+
+        errors: list[BaseException] = []
+
+        def run():
+            try:
+                store.ensure_layout(self.root)
+            except BaseException as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        with mock.patch.object(store, "layout_lock", counting_lock), \
+                mock.patch.object(store, "atomic_write_text", spy):
+            first = threading.Thread(target=run)
+            first.start()
+            self.assertTrue(entered.wait(60), "the first publish never started")
+            second = threading.Thread(target=run)
+            second.start()
+            deadline = time.monotonic() + 60
+            while len(reached) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertGreaterEqual(len(reached), 2,
+                                    "the second entrant never reached the lock")
+            release.set()
+            first.join(60)
+            second.join(60)
+
+        self.assertEqual(errors, [], f"an entrant raised: {errors}")
+        self.assertEqual(published["learned-patterns.md"], 1,
+                         f"the seed was published more than once: {published}")
+
+
+class TestLayoutLockFileIsGuarded(unittest.TestCase):
+    """The lock file is opened, so it is also an attack surface.
+
+    It lives in the worker-reachable data dir, so the same guards the candidate
+    lock carries apply: a link planted at the name must be refused rather than
+    written through, and a hardlink to a sensitive inode passes ``O_NOFOLLOW`` but
+    not the link count.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.data = store.data_dir(self.root)
+        self.data.mkdir(parents=True, exist_ok=True)
+        self.lock_path = self.data / store._LAYOUT_LOCK_NAME
+        self.victim = self.root / "precious.txt"
+        self.victim.write_text("KEEP-ME\n", encoding="utf-8")
+
+    @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
+    def test_a_symlinked_lock_file_does_not_write_through_to_its_target(self):
+        self.lock_path.symlink_to(self.victim)
+        with self.assertRaises(OSError):
+            with store.layout_lock(self.root):
+                pass
+        self.assertEqual(self.victim.read_text(encoding="utf-8"), "KEEP-ME\n")
+
+    def test_a_hardlinked_lock_file_is_refused(self):
+        os.link(self.victim, self.lock_path)
+        with self.assertRaises(OSError):
+            with store.layout_lock(self.root):
+                pass
+        self.assertEqual(self.victim.read_text(encoding="utf-8"), "KEEP-ME\n")
+
+    def test_the_ordinary_path_still_takes_the_lock(self):
+        """The guard must not wedge the self-heal shut."""
+        with store.layout_lock(self.root):
+            pass
+        st = self.lock_path.stat()
+        self.assertTrue(stat.S_ISREG(st.st_mode))
+        self.assertEqual(st.st_nlink, 1)
