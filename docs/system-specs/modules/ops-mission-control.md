@@ -2329,6 +2329,96 @@ are consulted **only when no real source can answer**. Verified against the pre-
 `test_the_always_on_default_does_not_mask_a_real_rotation` plus a companion test that the
 floor still arms a solo operator.
 
+### The on-call roster (`describe()["roster"]`)
+
+`GET /rotation` and `/state` carry a `roster` the board's on-call card renders. Two
+sources build it, in the same shape, each tagged with `source`:
+
+| `source` | Built by | Holds |
+|---|---|---|
+| `schedule-file` | `schedule_file.roster()` | the whole team from `rotation.yaml`, every shift in the file |
+| `incidentio` | `incidentio.roster()` | the `final` entries of every configured `schedule_ids` over the next 14 days |
+
+`rotation._roster_safely` picks one: a committed `rotation.yaml` wins, because it is the
+team's schedule and the one the shared ledger and leader election read. Otherwise the
+incident.io roster, which is `{}` unless the provider is on and the keystone holds
+`incidentio.user_id` — without an identity there is no "you" to build it around.
+
+The incident.io roster is **display only and never an authorization input**: the off-shift
+vote still comes from `_on_shift_sync` alone. It rides on the polled `/state`, so it is
+cached for 5 minutes (60 s after a failed read, or as long as a 429's `Retry-After` asks, if
+longer) keyed on the identity and the schedule list.
+Only one read builds it at a time: concurrent cache misses wait for that build and reuse it, so
+a burst of polls makes one vendor walk and a later-finishing failure cannot overwrite a fresh
+success. It walks each schedule's entries by passing `pagination_meta.after` back as
+`entry_window_start`, the endpoint's documented paging. `login` and `me` carry the
+incident.io user id, since display names are not unique, and `name` is what the card shows.
+
+Both the walk and what the cache keeps are bounded, because `schedule_ids` is agent-writable
+and the roster rides on a polled route. A read walks at most `_MAX_ROSTER_SCHEDULES` schedules
+(that capped, clamped list, with the configured count and the clamped identity, is the cache
+key), and pages stream through one at a time into a heap that keeps only the soonest
+`_MAX_ROSTER_WINDOWS` shifts. A member exists only for a kept shift, and ids and names are
+clamped to `_MAX_ROSTER_TEXT` before they are kept. The count left out, and any schedules not
+walked, are logged once per read. One deadline, `_ROSTER_WALK_DEADLINE_SECS` (8 s), is checked
+between requests across the whole walk, and each request has its own
+`_ROSTER_REQUEST_TIMEOUT_SECS` (5 s) per socket operation. That is a soft bound on how long a
+cache-miss board poll waits, not a guarantee: no enclosing timeout wraps `rotation.describe`.
+A read that still has a request to START once the deadline has passed, or that reaches the page
+cap, ends as the `cut_short` error, never as a partial roster (a request already in flight when
+the deadline passes may finish, and its read then succeeds normally); that
+code is kept apart from `unreachable` so the board names this app's own limit rather than
+sending the operator to check their key or the vendor's status. When a cap does leave
+shifts or schedules out, the roster says `partial: true` and the card says the list is partial.
+`me_on_roster` is decided from every entry the walk saw, kept or not, so a cap that drops this
+operator's own shift never reads as "you are on no schedule". The windows may be served from
+the cache, but `current` and `on_call_now` are recomputed on every read, so the card's badge
+moves at handover with the header rather than up to five minutes later.
+
+An identity with **no** `schedule_ids` is not `{}`: it is the state in which this source votes
+off shift on every check (see the fence above), so the roster comes back with members empty and
+an error naming it. The card renders for any incident.io roster, members or not, since its
+empty states (no `schedule_ids`, a failed read, a window with no shifts) are what it explains. Both incident.io roster errors
+travel as `error_code` (`no_schedule_ids`, `cut_short`, or `unreachable` with `error_status`)
+and the board translates them; the English `error` beside it is for logs. An `unreachable`
+with a 401 or 403 is shown as the key being refused, since that is an answer about the
+credential, not about connectivity. For incident.io,
+`me_on_roster` false means only "no shifts in the next two weeks", which a rotation longer than
+that produces on a correct setup, so the card states that fact and names the settings only as
+"if you expected one".
+
+An identity that names **nobody** fails the same way, silently. A real install held a display
+name in `incidentio.user_id`, and before that an id incident.io answered 404 for. Both match
+no entry, so the rotation read the operator as off shift with nothing saying why. So `PUT
+/settings` asks `GET /v2/users/{id}` (`incidentio.user_exists`) during validation, meaning a refusal writes no sibling field either. The lookup has its own
+short timeout (`_USER_CHECK_TIMEOUT_SECS`), since it runs inside the operator's save, and it
+runs whenever a key is stored, even with the provider switched off: an id saved then is the
+identity the rotation reads once it is switched back on. Only a
+definite 404 refuses (and an id that cannot be encoded, such as a lone surrogate from a
+hand-written JSON escape, is refused the same way rather than crashing the save), with `unknown_incidentio_user`. With no API key yet, or on any other failure, the save
+goes ahead: an outage must not lock the operator out of a field only they can write. A
+malformed stored key, which fails while the request is built, counts as "cannot say" too, and
+is logged by type only: the header-encoding error quotes the key.
+
+`pagerduty.user_id` has the same failure (a wrong id filters `/oncalls` to nothing) but no
+save-time check yet. A check that refused every id, because a vendor call was subtly wrong,
+would lock the operator out, so it waits until PagerDuty's `GET /users/{id}` has been confirmed
+on a live account to 404 only for an unknown user.
+
+A failed roster read shows a fixed, translated phrase with the HTTP status, and the vendor's
+error body goes to the log. The status is what an operator acts on; a raw error body in the
+card read as the app breaking.
+
+The card branches on `source`, never on which fields happen to be present. The `rotation.yaml`
+warnings (GitHub login, strict gating) appear only for `schedule-file`, incident.io's own
+remedy only for `incidentio`. Settings' on-call schedule card is handed only a
+`schedule-file` roster (or the source-less `{}`), because it seeds its GitHub-login field from
+`roster.me`. It is admitted by name so that a roster source added later is kept out without an
+edit there. Both sources get
+"Your next shift", read from `windows`.
+
+PagerDuty has no roster yet. `/oncalls` accepts `since`/`until`, so the same builder applies.
+
 ### Arming is server-side: `POST /rotation/arm`
 
 **The agent does not choose which crons to pause, and no longer holds `cron_pause` at

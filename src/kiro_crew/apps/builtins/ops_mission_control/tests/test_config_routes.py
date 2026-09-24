@@ -458,6 +458,48 @@ class TestSettingsRoute(_HomeIsolatedAsync):
         self.assertIs(body["ok"], False)
         self.assertIsNone(policy_store.get(policy_store.INCIDENTIO_USER_KEY))
 
+    async def test_an_incidentio_identity_that_names_nobody_is_refused(self):
+        """A display name or a mistyped id matches no schedule entry, ever.
+
+        Stored, it reads as off shift on every check with nothing saying why — the state a
+        real install was found in, holding a pasted name. The vendor can say "no such
+        user", so the save asks, and a refusal must leave the sibling fields unwritten too.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store, rotation
+        from kiro_crew.apps.builtins.ops_mission_control.backend.providers import incidentio
+
+        with mock.patch.object(incidentio, "user_exists", return_value=False):
+            response = await routes._handle_put_settings(
+                _request({"mode": "propose", "incidentio_user_id": "Stephen Example"})
+            )
+        self.assertEqual(response.status, 400)
+        self.assertEqual(_payload(response)["code"], "unknown_incidentio_user")
+        self.assertIsNone(policy_store.get(policy_store.INCIDENTIO_USER_KEY))
+        self.assertEqual(rotation.app_mode(), "observe")
+
+    async def test_an_unverifiable_incidentio_identity_is_still_saved(self):
+        """No key yet, or the vendor unreachable: the operator is not locked out."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
+        from kiro_crew.apps.builtins.ops_mission_control.backend.providers import incidentio
+
+        with mock.patch.object(incidentio, "user_exists", return_value=None):
+            response = await routes._handle_put_settings(
+                _request({"incidentio_user_id": "01HZY7K3QF8V2N4M6P8R0T2W4X"})
+            )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            policy_store.get(policy_store.INCIDENTIO_USER_KEY), "01HZY7K3QF8V2N4M6P8R0T2W4X"
+        )
+
+    async def test_clearing_the_incidentio_identity_asks_nobody(self):
+        """An empty id is the operator unsetting the field, not a lookup."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend.providers import incidentio
+
+        with mock.patch.object(incidentio, "user_exists") as lookup:
+            response = await routes._handle_put_settings(_request({"incidentio_user_id": ""}))
+        self.assertEqual(response.status, 200)
+        lookup.assert_not_called()
+
 
 class TestManifestCrons(unittest.TestCase):
     """The app is inert unless the manifest declares its crons."""

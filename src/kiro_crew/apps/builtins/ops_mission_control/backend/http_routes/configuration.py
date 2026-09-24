@@ -33,7 +33,10 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes._shared imp
     logger,
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import MODE_ORDER
-from kiro_crew.apps.builtins.ops_mission_control.backend.providers import set_top_level
+from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
+    incidentio,
+    set_top_level,
+)
 from kiro_crew.cron import CronStoreUnreadable
 
 #: Cap on a secret value. Real provider tokens are well under this; a larger body
@@ -366,6 +369,18 @@ async def _handle_put_settings(request: web.Request, *, _audit: AuditWriter) -> 
         if len(inc_user) > _MAX_PROVIDER_ID_LEN:
             return web.json_response(
                 {"error": "incidentio_user_id is too long", "code": "value_too_long"}, status=400
+            )
+        # Asked of the vendor, not of a pattern: the id is opaque (above), but whether it
+        # names anyone is answerable, and an id that names nobody silently reads as off
+        # shift on every check. Only a definite "no such user" refuses; see `user_exists`.
+        # Checked here, in validation, so a refusal leaves every sibling field unwritten.
+        if inc_user and await asyncio.to_thread(incidentio.user_exists, inc_user) is False:
+            return web.json_response(
+                {
+                    "error": f"incident.io has no user with id {inc_user!r}",
+                    "code": "unknown_incidentio_user",
+                },
+                status=400,
             )
 
     primary: bool | None = None

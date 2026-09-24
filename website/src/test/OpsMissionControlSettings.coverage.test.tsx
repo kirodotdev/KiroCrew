@@ -87,6 +87,7 @@ const ROTATION: RotationInfo = {
 }
 
 const roster = (over: Partial<RotationRoster> = {}): RotationRoster => ({
+  source: 'schedule-file',
   members: [],
   windows: [],
   timezone: 'UTC',
@@ -1031,6 +1032,22 @@ describe('the on-call schedule card', () => {
     await waitFor(() =>
       expect(mockApi.putSettings).toHaveBeenCalledWith({ schedule_github_login: 'hubot' }),
     )
+  })
+
+  it('never seeds the GitHub login from another rotation\'s roster', async () => {
+    // Any roster but schedule-file carries its own vendor's user id in `me`; seeding this
+    // field with it would store that id as the GitHub login on the first Save.
+    scheduleProvider()
+    mockApi.rotation.mockResolvedValue({
+      ...ROTATION,
+      roster: roster({ source: 'incidentio', me: '01VENDORUSERID' }),
+    })
+    renderPanel()
+
+    const login = await findField(/Your GitHub login/)
+    await waitFor(() => expect(mockApi.rotation).toHaveBeenCalled())
+    expect(login).not.toHaveValue('01VENDORUSERID')
+    expect(screen.queryByText(/No GitHub login resolved for this instance/)).not.toBeInTheDocument()
   })
 
   it('writes nothing when Enter lands on an unedited login', async () => {

@@ -908,11 +908,12 @@ def describe(shift: ShiftStatus) -> dict[str, Any]:
         "rules_detail": rule_dicts,
         "primary": is_primary(),
         "modes_available": [MODE_OBSERVE, MODE_PROPOSE, MODE_ACT],
-        # The whole team, when a committed schedule is the rotation source. `who` alone
+        # The team behind the rotation: a committed `rotation.yaml`, else incident.io's
+        # configured schedules (`source` says which; see `_roster_safely`). `who` alone
         # cannot tell an operator whether this instance is idle because a teammate holds
-        # the pager or because the file is broken — and a silently-idle instance is the
-        # failure mode a shared schedule introduces. Empty dict when no schedule is in
-        # use, so the UI simply renders nothing rather than an empty team.
+        # the pager or because the setup is broken — and a silently-idle instance is the
+        # failure mode a rotation introduces. Empty dict when neither has a roster, so the
+        # UI simply renders nothing rather than an empty team.
         "roster": _roster_safely(),
         # How fast the heartbeat claims, and how long it lets work sit before releasing it.
         # On this response because it is already the payload Settings reads for `mode` and
@@ -937,20 +938,27 @@ def describe(shift: ShiftStatus) -> dict[str, Any]:
 
 
 def _roster_safely() -> dict[str, Any]:
-    """The schedule-file roster, or ``{}``. Never raises.
+    """The rotation roster for the board, or ``{}``. Never raises.
 
     Read through a guarded call because ``describe`` backs the dashboard's main poll: a
     malformed schedule a teammate pushed must not 500 the board. The rotation ITSELF
     already degrades safely; this protects the display path too.
+
+    A committed ``rotation.yaml`` wins when present: it is the TEAM's schedule, the one the
+    shared ledger and leader election read, so it is what "on-call team" means on that
+    install. Otherwise incident.io's roster of this operator's shifts, when that provider
+    has an identity to build it around. Each carries a ``source`` so the card can tell them
+    apart.
     """
     try:
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
+            incidentio,
             schedule_file,
         )
 
-        if not schedule_file.schedule_path().exists():
-            return {}
-        return schedule_file.roster()
+        if schedule_file.schedule_path().exists():
+            return schedule_file.roster()
+        return incidentio.roster()
     except Exception:  # noqa: BLE001 — a display extra must never break the board
         logger.debug("ops-mission-control: roster unavailable", exc_info=True)
         return {}

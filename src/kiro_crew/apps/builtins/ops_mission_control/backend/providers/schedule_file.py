@@ -481,6 +481,10 @@ def roster(now: datetime | None = None) -> dict[str, Any]:
 
     me = _resolve_login_sync()
     return {
+        # Which rotation built this roster. The board's on-call card also renders the
+        # incident.io roster, and the setup warnings and the GitHub-login field only make
+        # sense for this one — so consumers branch on a positive id, not on field shapes.
+        "source": "schedule-file",
         "members": ordered,
         "windows": windows,
         "timezone": tz_name or "UTC",
