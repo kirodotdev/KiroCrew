@@ -94,11 +94,10 @@ def test_patching_the_owner_then_the_package_is_undone():
     """
     schema = _owner_of(NAME)
     real = schema.MAX_REF_SPAN
-    inner = pytest.MonkeyPatch()
-    inner.setattr(schema, NAME, 2)
-    inner.setattr(pkg, NAME, 2)
-    assert getattr(pkg, NAME) == 2
-    inner.undo()
+    with pytest.MonkeyPatch.context() as inner:
+        inner.setattr(schema, NAME, 2)
+        inner.setattr(pkg, NAME, 2)
+        assert getattr(pkg, NAME) == 2
     assert schema.MAX_REF_SPAN == real
     assert getattr(pkg, NAME) == real
 
@@ -107,11 +106,10 @@ def test_patching_the_package_then_the_owner_is_undone():
     """The other order is undone too, so no test has to know the safe one."""
     schema = _owner_of(NAME)
     real = schema.MAX_REF_SPAN
-    inner = pytest.MonkeyPatch()
-    inner.setattr(pkg, NAME, 2)
-    inner.setattr(schema, NAME, 2)
-    assert getattr(pkg, NAME) == 2
-    inner.undo()
+    with pytest.MonkeyPatch.context() as inner:
+        inner.setattr(pkg, NAME, 2)
+        inner.setattr(schema, NAME, 2)
+        assert getattr(pkg, NAME) == 2
     assert schema.MAX_REF_SPAN == real
     assert getattr(pkg, NAME) == real
 
@@ -127,10 +125,9 @@ def test_every_re_exported_name_survives_a_patch_undo_cycle():
         owner = _owner_of(name)
         real = getattr(owner, name)
         sentinel = object()
-        inner = pytest.MonkeyPatch()
-        inner.setattr(owner, name, sentinel)
-        inner.setattr(pkg, name, sentinel)
-        inner.undo()
+        with pytest.MonkeyPatch.context() as inner:
+            inner.setattr(owner, name, sentinel)
+            inner.setattr(pkg, name, sentinel)
         if getattr(pkg, name) is not real or getattr(owner, name) is not real:
             leaked.append(name)
     assert leaked == []
