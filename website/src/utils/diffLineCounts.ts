@@ -59,16 +59,68 @@ export function countLines(before: string, after: string): { added: number; remo
 /**
  * Added/removed counts read straight off a UNIFIED DIFF's own markers, for a
  * surface that already holds a patch rather than the before/after pair
- * `countLines` needs. `+++`/`---` are the file headers, not content lines.
+ * `countLines` needs.
+ *
+ * File headers are identified by POSITION, never by prefix: a `---`/`+++`
+ * line is a header when it sits outside a hunk body — before the first `@@`,
+ * or after a hunk has spent the line counts its `@@ -a,b +c,d @@` header
+ * declared (the next file of a multi-file diff). Inside a hunk body a line is
+ * counted by its first character alone, because content can begin with the
+ * header prefixes too: `createTwoFilesPatch` marks a removed `-- comment`
+ * (SQL, Lua, Haskell) or a removed YAML/markdown `---` rule as `--- comment` /
+ * `----`, and an added `++i` as `+++i`. Skipping those by prefix under-counted
+ * exactly the change they carry.
+ *
+ * Text with no hunk header at all — a hand-pasted ```diff fence of bare `+`/`-`
+ * lines — has no positions to go by, so it keeps the prefix rule: every `+`/`-`
+ * line counts except `+++`/`---`, which can only be headers there.
  */
 export function countDiffStats(diff: string): { added: number; removed: number } {
   let added = 0, removed = 0
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+') && !line.startsWith('+++')) added++
-    else if (line.startsWith('-') && !line.startsWith('---')) removed++
+  const lines = diff.split('\n')
+  if (!lines.some(isHunkHeader)) {
+    for (const line of lines) {
+      if (line.startsWith('+') && !line.startsWith('+++')) added++
+      else if (line.startsWith('-') && !line.startsWith('---')) removed++
+    }
+    return { added, removed }
+  }
+  let inHunk = false
+  // Lines the current hunk still owes per side, from its `@@` header. A `---`
+  // or `+++` line while the side is spent is the next file's header; while
+  // the side still has lines it is content that happens to start that way.
+  let oldLeft = 0, newLeft = 0
+  for (const line of lines) {
+    const hunk = HUNK_HEADER_RE.exec(line)
+    if (hunk) {
+      inHunk = true
+      oldLeft = hunk[1] == null ? 1 : Number(hunk[1])
+      newLeft = hunk[2] == null ? 1 : Number(hunk[2])
+      continue
+    }
+    if (!inHunk) continue
+    if (line.startsWith('\\')) continue // "\ No newline at end of file"
+    if (line.startsWith('+')) {
+      if (newLeft <= 0 && line.startsWith('+++')) { inHunk = false; continue }
+      added++
+      newLeft--
+    } else if (line.startsWith('-')) {
+      if (oldLeft <= 0 && line.startsWith('---')) { inHunk = false; continue }
+      removed++
+      oldLeft--
+    } else if (line.startsWith('diff ') || line.startsWith('Index: ')) {
+      inHunk = false // the next file's preamble, before its own headers
+    } else {
+      oldLeft-- // a context line (or a blank one some emitters leave bare)
+      newLeft--
+    }
   }
   return { added, removed }
 }
+
+/** `@@ -a[,b] +c[,d] @@…` — captures the two optional line counts. */
+const HUNK_HEADER_RE = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/
+const isHunkHeader = (line: string) => HUNK_HEADER_RE.test(line)
 
 /** The 0-based line span that differs between two texts, per side, or `null`
  *  when they are identical. `oldStart`/`oldEnd` index `before`'s lines and

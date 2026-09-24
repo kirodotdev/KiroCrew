@@ -12,13 +12,14 @@
  * user has turned off highlighted diffs (see `usePlainDiff`), which is why the
  * fallback component is a real surface here rather than a loading state.
  */
-import { Suspense, createContext, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useRef, useState } from 'react'
+import { Suspense, createContext, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
-import { PlainCodeFallback, PlainFilePairFallback } from './PlainCodeFallback'
+import { PlainCodeFallback, PlainFilePairFallback, PlainFilePairHeader } from './PlainCodeFallback'
 import { isPierreFilePairWithinBudget } from './renderBudget'
 import { computePairPatch } from './diffOffThread'
+import { countDiffStats } from '../utils/diffLineCounts'
 import { PierreFarmHoldContext } from '../components/pierreStaging'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 
@@ -50,8 +51,19 @@ interface PairIdentity {
  * fine for the staged, off-viewport mounts it was built for, wrong for a swap
  * happening under the user's cursor.) The children stay in the same DOM node
  * across the flip, so nothing remounts or re-highlights on reveal.
+ *
+ * `header` is a row the caller wants ABOVE the revealed content — it renders
+ * outside the measured box, and only once the hold has released. Inside the
+ * box its own height would pass for painted content and release the hold
+ * before a single row exists; before release the caller's fallback already
+ * carries the same row, so showing it early would double it.
  */
-function PatchPaintHold({ fallback, children, onVisible }: { fallback: React.ReactNode; children: React.ReactNode; onVisible?: () => void }) {
+function PatchPaintHold({ fallback, header, children, onVisible }: {
+  fallback: React.ReactNode
+  header?: React.ReactNode
+  children: React.ReactNode
+  onVisible?: () => void
+}) {
   const contentRef = useRef<HTMLDivElement | null>(null)
   const [painted, setPainted] = useState(false)
   const farm = useContext(PierreFarmHoldContext)
@@ -85,6 +97,7 @@ function PatchPaintHold({ fallback, children, onVisible }: { fallback: React.Rea
   if (farm) return <>{fallback}</>
   return (
     <>
+      {painted && header}
       <div
         style={painted ? undefined : { height: 0, overflow: 'hidden', visibility: 'hidden' }}
         aria-hidden={painted ? undefined : true}
@@ -348,7 +361,7 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   )
 })
 
-export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackText, fallbackClassName, fallbackContentStyle, onVisible, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
+export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackText, fallbackClassName, fallbackContentStyle, onVisible, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix, titleClickable }: {
   oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
@@ -368,6 +381,11 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   renderHeaderPrefix?: () => React.ReactNode
   /** Injected directly after the filename in the header. */
   renderHeaderFilenameSuffix?: () => React.ReactNode
+  /** The caller opens the file when the header's filename is clicked. Pierre's
+   *  own header takes that cue from the caller's `unsafeCSS`; the light-DOM
+   *  header rows this component draws for the oversized pair (its fallback and
+   *  its opted-in state) cannot, so they take it from here. */
+  titleClickable?: boolean
 }) {
   const withinBudget = isPierreFilePairWithinBudget(oldFile, newFile)
   const [plain] = usePlainDiff()
@@ -382,9 +400,16 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
     | { pair: PairIdentity; status: 'error' }
     | null
   >(null)
+  // The opted-in patch surface draws the BODY only; this component keeps the
+  // header (see the ready branch below). Memoized on `options`, because Pierre
+  // re-initialises its view when its options change identity.
+  const patchOptions = useMemo<PierreDiffOptions>(() => ({ ...options, disableFileHeader: true }), [options])
   const abortRef = useRef<AbortController | null>(null)
   const pairMatches = request != null && request.pair.oldFile === oldFile && request.pair.newFile === newFile
   const active = pairMatches ? request : null
+  // Exact ± counts for the header row, which Pierre's header used to carry.
+  const readyPatch = active?.status === 'ready' ? active.patch : null
+  const readyStats = useMemo(() => (readyPatch == null ? undefined : countDiffStats(readyPatch)), [readyPatch])
   useEffect(() => () => abortRef.current?.abort(), [])
   const startLineByLineDiff = () => {
     abortRef.current?.abort()
@@ -414,6 +439,7 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
       renderHeaderMetadata={renderHeaderMetadata}
       renderHeaderPrefix={renderHeaderPrefix}
       renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+      titleClickable={titleClickable}
       onShowLineByLineDiff={startLineByLineDiff}
       lineByLineState={active?.status === 'computing' ? 'computing' : active?.status === 'error' ? 'error' : 'idle'}
       onCancelLineByLineDiff={cancelLineByLineDiff}
@@ -422,10 +448,45 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   if (!withinBudget && active?.status !== 'ready') return plainFilePairFallback
 
   if (!withinBudget && active?.status === 'ready') {
+    // The caller's expand/collapse control lives in the header slots, and
+    // Pierre's own header exists only while its renderer has a highlight
+    // result to draw: `FileDiff.render` applies no header when
+    // `DiffHunksRenderer.renderDiff` returns nothing, which with a worker pool
+    // is every render until that pool's generation has initialised (its first
+    // generation, and each recovery after a failure — including one after the
+    // diff first painted), and `PierrePatchImpl` renders header-less plain text
+    // outright while it has no generation at all or the patch will not parse.
+    // Plain-diff mode prints the patch raw, with no header either. A slot in
+    // a header that is not there is a control the reader cannot reach, and a
+    // light-DOM mount of that slot proves nothing about the shadow header it
+    // is meant to project into — so the header is not Pierre's to draw here.
+    // The surface keeps the row the fallback was already showing, the same
+    // component before and after the swap, and Pierre draws the body beneath
+    // it (`patchOptions` disables its file header). One header in every
+    // state, by construction rather than by detection. Only the body moves.
+    const header = options?.disableFileHeader === false
+      ? (
+        <PlainFilePairHeader
+          filename={(newFile ?? oldFile)?.name ?? ''}
+          titleClickable={titleClickable}
+          stats={readyStats}
+          renderHeaderPrefix={renderHeaderPrefix}
+          renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+          renderHeaderMetadata={renderHeaderMetadata}
+        />
+      )
+      : null
     // Plain-diff mode drops colour everywhere; the computed patch printed raw
     // keeps the ± markers, matching what the preference means on every other
     // patch surface (and preserving PatchImpl's colour-is-on invariant).
-    if (plain) return <PlainCodeFallback text={active.patch} className={className} />
+    if (plain) {
+      return (
+        <>
+          {header}
+          <PlainCodeFallback text={active.patch} className={className} />
+        </>
+      )
+    }
     // The impl renders ~zero height until the highlight worker answers, so the
     // plain view must hold the layout until real paint (same WarmSwap contract
     // as every other Pierre surface) — otherwise the card visibly collapses
@@ -441,6 +502,7 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
         renderHeaderMetadata={renderHeaderMetadata}
         renderHeaderPrefix={renderHeaderPrefix}
         renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+        titleClickable={titleClickable}
         onShowLineByLineDiff={startLineByLineDiff}
         lineByLineState="computing"
         onCancelLineByLineDiff={cancelLineByLineDiff}
@@ -452,14 +514,8 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
     if (options?.collapsed) {
       return (
         <Suspense fallback={holdFallback}>
-          <PairPatchImpl
-            patch={active.patch}
-            options={options}
-            className={className}
-            renderHeaderMetadata={renderHeaderMetadata}
-            renderHeaderPrefix={renderHeaderPrefix}
-            renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
-          />
+          {header}
+          <PairPatchImpl patch={active.patch} options={patchOptions} className={className} />
         </Suspense>
       )
     }
@@ -468,18 +524,13 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
     // measurement exactly the way it defeated WarmSwap's. With null the box
     // stays at zero height through the chunk load and the pre-highlight
     // mount, so the held plain view owns the layout until the diff truly
-    // paints.
+    // paints. The header goes to the hold as `header`, NOT as a child, for
+    // the same reason: inside the box its own height would satisfy the paint
+    // measurement and release the hold before a single row exists.
     return (
-      <PatchPaintHold fallback={holdFallback} onVisible={onVisible}>
+      <PatchPaintHold fallback={holdFallback} header={header} onVisible={onVisible}>
         <Suspense fallback={null}>
-          <PairPatchImpl
-            patch={active.patch}
-            options={options}
-            className={className}
-            renderHeaderMetadata={renderHeaderMetadata}
-            renderHeaderPrefix={renderHeaderPrefix}
-            renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
-          />
+          <PairPatchImpl patch={active.patch} options={patchOptions} className={className} />
         </Suspense>
       </PatchPaintHold>
     )
