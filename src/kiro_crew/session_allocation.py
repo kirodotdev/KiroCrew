@@ -597,11 +597,39 @@ class SessionAllocationService:
                         self._starting_pids.discard(starting_pid)
                 return runtime
 
-    async def release_subagent_runtime(self, parent_session_key: str) -> None:
-        """Serialize release with spawn and kill the detached runtime off-map."""
+    async def release_subagent_runtime(
+        self, parent_session_key: str, *, expected_generation: int | None = None
+    ) -> None:
+        """Serialize release with spawn and kill the detached runtime off-map.
+
+        ``expected_generation`` makes the release CONDITIONAL, the way
+        :meth:`SessionManager.destroy_if` makes destruction conditional. The registry is keyed
+        by parent session key alone, so a release that outlives its own teardown would pop and
+        kill whatever runtime is registered when it finally runs -- including one a SUCCESSOR
+        turn spawned under the same key. A caller that captured the generation belonging to its
+        own teardown passes it here, and a key whose generation has advanced past that capture
+        is left alone. Omitting it keeps the unconditional behaviour.
+        """
+        if (
+            expected_generation is not None
+            and self.session_generation(parent_session_key) != expected_generation
+        ):
+            self._deps.logger.debug(
+                "Skipping subagent runtime release for %s: generation moved past %s",
+                parent_session_key,
+                expected_generation,
+            )
+            return
         lock = self._subagent_runtime_locks.get(parent_session_key)
         if lock is not None:
             async with lock:
+                if (
+                    expected_generation is not None
+                    and self.session_generation(parent_session_key) != expected_generation
+                ):
+                    # Re-checked under the lock: waiting for it is a window a successor can
+                    # be published in.
+                    return
                 runtime = self._subagent_runtimes.pop(parent_session_key, None)
                 # A waiter on this removed lock re-checks canonical identity in
                 # get_subagent_runtime and retries under the live lock.

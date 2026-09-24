@@ -185,7 +185,9 @@ class SessionLifecycleOwner(Protocol):
 
     async def _retire_stale_backend_bg_runtime(self) -> None: ...
 
-    async def release_subagent_runtime(self, parent_session_key: str) -> None: ...
+    async def release_subagent_runtime(
+        self, parent_session_key: str, *, expected_generation: int | None = None
+    ) -> None: ...
 
     async def _retire_kiro_warm_pool(self) -> bool: ...
 
@@ -1926,7 +1928,9 @@ class SessionLifecycleService:
             # this key in, and a selection made after one would name the
             # successor's runs. The cancel itself happens after the teardown.
             teardown_children = self._snapshot_parent_children(key)
-            owner._advance_session_generation(key)
+            # Names THIS teardown's generation, so the release below can tell a successor
+            # published during a slow shutdown from the runtime it actually owes a kill.
+            teardown_generation = owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             owner._compact_pending_verdict.pop(key, None)
             # Store replay suppression atomically with the pop. Origin-link
@@ -1961,7 +1965,7 @@ class SessionLifecycleService:
             # See ``destroy``: in the finally because a shutdown that raises must not
             # carry the exception past the cancel, and cancel before release.
             await self._cancel_parent_children(key, teardown_children, verb="discard_conversation")
-            await owner.release_subagent_runtime(key)
+            await owner.release_subagent_runtime(key, expected_generation=teardown_generation)
             self._deps.logger.info(
                 "Discarded native conversation (sid cleared, map entry kept): %s",
                 key,
