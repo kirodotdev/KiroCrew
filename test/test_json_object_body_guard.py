@@ -279,6 +279,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # chat_tags.py: every payload is a tag/column identifier, a short name
     # (already truncated at _NAME_MAX), or an id array -- all capped.
     "chat_tags.py::api_chat_tag_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags.py::api_chat_tag_adopt": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_slot_tags": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_column_create": ("<default>", _BOUNDED_CONTROL_FIELDS),

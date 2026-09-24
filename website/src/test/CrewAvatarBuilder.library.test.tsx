@@ -88,9 +88,9 @@ const apply = () => fireEvent.click(screen.getByTestId('avatar-builder-save'))
 const saved = (onSave: ReturnType<typeof vi.fn>) =>
   onSave.mock.calls.at(-1)?.[0] as CrewAvatarOverride | null
 
-/** Move to a tier. The mode strip renders every tier as a button (it is compact,
- *  never collapsed), so the tab is reached by its label. */
-const gotoTier = (label: string) => fireEvent.click(screen.getByRole('button', { name: label }))
+/** Move to a tier. The mode strip is a SegmentedControl, so every tier is a
+ *  radio (it is compact, never collapsed) reached by its label. */
+const gotoTier = (label: string) => fireEvent.click(screen.getByRole('radio', { name: label }))
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -140,7 +140,7 @@ describe('avatar builder — Library tier', () => {
     const { onSave } = mount(stored as Parameters<typeof mount>[0])
     await screen.findByTestId('avatar-library-pane')
 
-    expect(screen.queryByRole('button', { name: 'Reactions' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Reactions' })).toBeNull()
 
     apply()
     expect(saved(onSave)).toEqual({ kind: 'pack', id: 'aurora' })
@@ -148,9 +148,9 @@ describe('avatar builder — Library tier', () => {
 
   it('offers the Reactions tab only while the ghost is the selected tier', async () => {
     mount({ kind: 'image', v: 3 })
-    expect(screen.queryByRole('button', { name: 'Reactions' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Reactions' })).toBeNull()
     gotoTier('Ghost face')
-    expect(screen.getByRole('button', { name: 'Reactions' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Reactions' })).toBeInTheDocument()
     gotoTier('Reactions')
     // The hint covers all THREE rows it renders: it promised two moments while a
     // Working row was on screen, and a first-run reader guessed at that row. It

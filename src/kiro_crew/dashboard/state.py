@@ -80,6 +80,7 @@ from kiro_crew.history import (
     mint_row_mid,
     monotonic_transcript_ts,
 )
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging import turn_ceiling
@@ -4806,6 +4807,15 @@ class _ChatSlot:
         )
 
 
+@dataclass(frozen=True)
+class _DurableTagSnapshot:
+    """A positively read tag snapshot, or positive absence when ``present`` is false."""
+
+    present: bool
+    tags: list[dict[str, Any]]
+    unparsed: list[Any]
+
+
 class DashboardState:
     """Shared state injected into all handlers via ``app["state"]``."""
 
@@ -7417,6 +7427,49 @@ class DashboardState:
     def folder_breadcrumb(self, folder_id: str, sep: str = " › ") -> str:
         """Render a cycle-safe root-to-leaf folder breadcrumb."""
         return _FOLDER_REPOSITORY.breadcrumb(self._folders, folder_id, sep)
+
+    def read_durable_tags_snapshot(self) -> _DurableTagSnapshot | None:
+        """Read committed tags through the bounded no-link file authority.
+
+        ``None`` means the durable state could not be established. A missing
+        file is distinguished by a follow-up ``lstat``: only
+        ``FileNotFoundError`` is positive absence; every existing, oversized,
+        malformed, or unreadable shape remains ambiguous. Active-row parsing
+        and legacy status backfill share this state's canonical vocabulary
+        rules so mutation reconciliation cannot drift into a second schema.
+        """
+        path = config_dir() / self._TAGS_FILE
+        try:
+            encoded = safe_read_file_bytes_nolink(str(path), within_root=str(path.parent))
+        except FileTooLargeError:
+            return None
+        if encoded is None:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return _DurableTagSnapshot(False, [], [])
+            except OSError:
+                return None
+            return None
+        try:
+            raw = json.loads(encoded.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, list):
+            return None
+        active, unparsed = self._partition_preserving(
+            raw,
+            lambda row: isinstance(row, dict)
+            and isinstance(row.get("id"), str)
+            and bool(row["id"]),
+            "tag entr(ies)",
+            self._TAGS_FILE,
+        )
+        tags = [dict(row) for row in active]
+        default_ids = {row["id"] for row in self._DEFAULT_TAGS}
+        for row in tags:
+            row.setdefault("status", row.get("id") in default_ids)
+        return _DurableTagSnapshot(True, tags, unparsed)
 
     def load_tags(self) -> None:
         """Load tag vocabulary and sidebar columns from disk; seed defaults if missing.

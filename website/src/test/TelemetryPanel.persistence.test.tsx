@@ -138,8 +138,8 @@ describe('TelemetryPanel — the page remembers where you were', () => {
     // preference under test is only reachable with the collapsible open.
     localStorage.setItem('telemetry:spend-table-open', '1')
     const first = await mount()
-    await waitFor(() => expect(screen.getByRole('button', { name: /model/i })).toBeTruthy())
-    await userEvent.click(screen.getByRole('button', { name: /model/i }))
+    await waitFor(() => expect(screen.getByRole('radio', { name: /model/i })).toBeTruthy())
+    await userEvent.click(screen.getByRole('radio', { name: /model/i }))
     await waitFor(() => expect(localStorage.getItem('telemetry:spend-group')).toBe('model'))
     first.unmount()
 

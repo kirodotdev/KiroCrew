@@ -90,6 +90,40 @@ describe('SlotTagPopover (connected)', () => {
     await waitFor(() => expect(api.setSlotTags).toHaveBeenCalledWith('chat-1-100', ['t2']))
   })
 
+  it('keeps a refused create draft and shows why', async () => {
+    vi.mocked(api.createChatTag).mockRejectedValueOnce(new Error('Tag could not be created: tag permissions cannot be loaded right now.'))
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }] })
+    const input = await screen.findByPlaceholderText('New tag…') as HTMLInputElement
+    input.focus()
+    fireEvent.change(input, { target: { value: 'Escalated' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(await screen.findByText('Tag could not be created: tag permissions cannot be loaded right now.')).toBeInTheDocument()
+    await waitFor(() => expect(api.createChatTag).toHaveBeenCalledWith('Escalated'))
+    expect(input.value).toBe('Escalated')
+  })
+
+  it('shows the task-shaped message for a server-side create failure', async () => {
+    vi.mocked(api.createChatTag).mockRejectedValueOnce(Object.assign(new Error('persist failed'), { status: 500 }))
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }] })
+    const input = await screen.findByPlaceholderText('New tag…') as HTMLInputElement
+    input.focus()
+    fireEvent.change(input, { target: { value: 'Escalated' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(await screen.findByText('The tag change could not be saved. Try again.')).toBeInTheDocument()
+    expect(screen.queryByText('persist failed')).toBeNull()
+    expect(input.value).toBe('Escalated')
+  })
+
+  it('clears the create draft only after the tag exists', async () => {
+    renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }] })
+    const input = await screen.findByPlaceholderText('New tag…') as HTMLInputElement
+    input.focus()
+    fireEvent.change(input, { target: { value: 'Escalated' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(input.value).toBe(''))
+    expect(api.createChatTag).toHaveBeenCalledWith('Escalated')
+  })
+
   it('closing via the X button unmounts the picker (context clears the open slot)', async () => {
     renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }] })
     await screen.findByTestId('slot-tag-picker')

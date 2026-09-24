@@ -53,7 +53,7 @@ describe('Sessions grouping labels the group, not its first member', () => {
     renderWithProviders(<SystemPage />)
     await waitFor(() => expect(screen.getByText('alpha session')).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: /channel/i }))
+    fireEvent.click(screen.getByRole('radio', { name: /channel/i }))
 
     await waitFor(() => {
       // Two folds: slack (2 members) and cron (1).

@@ -62,15 +62,16 @@ const lastSaved = (onSave: ReturnType<typeof vi.fn>) => onSave.mock.calls.at(-1)
 /** The axis strip measures 0px wide in the test DOM and collapses to a
  *  dropdown, so an axis is reached through the trigger + menu item. */
 async function pickAxis(label: string) {
-  // The trigger shows the ACTIVE axis label; every other axis is a menu item.
+  // The trigger shows the ACTIVE axis label; it is a plain button. Every other
+  // axis is a radio in the dropdown's radiogroup.
   const triggers = screen.getAllByRole('button').filter(b => b.textContent?.trim() === 'Eyes' || b.querySelector('svg.lucide-chevron-down'))
   fireEvent.click(triggers[0])
-  const item = await screen.findByRole('button', { name: label })
+  const item = await screen.findByRole('radio', { name: label })
   fireEvent.click(item)
 }
 
 async function switchToPicture() {
-  fireEvent.click(screen.getByRole('button', { name: 'Picture' }))
+  fireEvent.click(screen.getByRole('radio', { name: 'Picture' }))
   await screen.findByTestId('avatar-upload-pane')
 }
 
@@ -352,7 +353,7 @@ describe('CrewAvatarBuilder — picture tier', () => {
     document.body.dispatchEvent(over)
     expect(over.defaultPrevented).toBe(true)
     // Back on the face tab the listeners are gone again.
-    fireEvent.click(screen.getByRole('button', { name: 'Ghost face' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Ghost face' }))
     await waitFor(() => expect(dropOnBody()).toBe(false))
     unmount()
     expect(dropOnBody()).toBe(false)

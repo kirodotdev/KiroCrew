@@ -178,7 +178,7 @@ describe('TelemetryPanel — the spend tab opens on the answer', () => {
     expect(tableToggle()).toHaveAttribute('aria-expanded', 'true')
     // The group-by control and the drilldown expander come with it: the table is
     // moved, not reduced.
-    expect(screen.getByRole('button', { name: 'Model' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Model' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Show per-turn detail' }).length).toBeGreaterThan(0)
   })
 

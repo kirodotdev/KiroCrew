@@ -14,9 +14,9 @@ const mockConfirm = vi.fn(() => true)
 Object.defineProperty(window, 'confirm', { writable: true, value: mockConfirm })
 
 const seedTags = [
-  { id: 'planned', name: 'Planned', color: '#6b7280', order: 0, status: true },
-  { id: 'todo', name: 'ToDo', color: '#3b82f6', order: 1, status: true },
-  { id: 'done', name: 'Done', color: '#10b981', order: 4, status: true },
+  { id: 'planned', name: 'Planned', color: '#6b7280', order: 0, status: true, agent_provenanced: true, agent: 'none' },
+  { id: 'todo', name: 'ToDo', color: '#3b82f6', order: 1, status: true, agent_provenanced: true, agent: 'none' },
+  { id: 'done', name: 'Done', color: '#10b981', order: 4, status: true, agent_provenanced: true, agent: 'none' },
 ]
 
 const baseSlots = [
@@ -71,7 +71,15 @@ function makeMockBackend() {
       http.get('/api/chat/tags', () => HttpResponse.json(state.tags)),
       http.post('/api/chat/tags', async ({ request }) => {
         const body = await request.json() as { name: string; color?: string; status?: boolean }
-        const tag = { id: `t${nextTagId++}`, name: body.name, color: body.color || '#6b7280', order: state.tags.length, status: !!body.status }
+        const tag = {
+          id: `t${nextTagId++}`,
+          name: body.name,
+          color: body.color || '#6b7280',
+          order: state.tags.length,
+          status: !!body.status,
+          agent_provenanced: true,
+          agent: 'none',
+        }
         state.tags.push(tag)
         return HttpResponse.json(tag, { status: 201 })
       }),

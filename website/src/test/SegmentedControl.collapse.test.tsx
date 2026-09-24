@@ -5,7 +5,7 @@
 // inline-flex) measures near zero and collapses the control for no reason.
 // collapse={false} pins every segment visible.
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import SegmentedControl from '../components/SegmentedControl'
 
 const SEGMENTS = [{ key: 'stable', label: 'Stable' }, { key: 'insider', label: 'Insider' }]
@@ -23,10 +23,10 @@ describe('SegmentedControl collapse', () => {
     // Both segments are real buttons from the first paint and stay that way --
     // no toggle to open, so nothing can be occluded by a following sibling.
     await waitFor(() => {
-      expect(screen.getAllByRole('button')).toHaveLength(2)
+      expect(screen.getAllByRole('radio')).toHaveLength(2)
     })
-    expect(screen.getByRole('button', { name: /stable/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /insider/i })).toBeTruthy()
+    expect(screen.getByRole('radio', { name: /stable/i })).toBeTruthy()
+    expect(screen.getByRole('radio', { name: /insider/i })).toBeTruthy()
   })
 
   it('still collapses to the dropdown in a narrow parent by default', async () => {
@@ -40,6 +40,16 @@ describe('SegmentedControl collapse', () => {
     await waitFor(() => {
       expect(screen.getAllByRole('button')).toHaveLength(1)
     })
-    expect(screen.queryByRole('button', { name: /insider/i })).toBeNull()
+    expect(screen.queryByRole('radio', { name: /insider/i })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /stable/i }))
+    const group = screen.getByRole('radiogroup')
+    expect(within(group).getByRole('radio', { name: /stable/i })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(within(group).getByRole('radio', { name: /insider/i })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
   })
 })

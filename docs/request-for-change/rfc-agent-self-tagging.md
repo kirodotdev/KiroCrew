@@ -3,10 +3,10 @@ title: Agent self-tagging on the board — governed self-tagging via a protected
 status: partial
 author: jeeshofone
 created: 2026-09-16
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-09-24
+audited-at: c079a117d
 doc-pr: null
-implementation-prs: [7779]
+implementation-prs: [7779, 12983]
 tracking-issues: [7774]
 supersedes: []
 superseded-by: []
@@ -24,9 +24,10 @@ owns the judgment of *when* to move; a fixed backend authorization layer owns
 never inferred. The reversible-once-shipped decision this document exists to
 record is the **default grant shape** — which tags are agent-writable out of the
 box, and why a fresh install and an upgrade differ. It is a design of record for
-v1, which is on main via [#7779](https://github.com/kirodotdev/KiroCrew/pull/7779);
-the tag-manager policy UI, provenance-required minting, and broader v2 scope
-remain open.
+v1, which is on main via [#7779](https://github.com/kirodotdev/KiroCrew/pull/7779),
+and for the protected-identity requirement recorded below. A1's inline policy
+control and explicit adoption are part of this scope; ambient provenance,
+history/undo, and proposal-confirm movement controls remain open.
 
 ## Summary
 
@@ -44,9 +45,12 @@ agent cannot write. The positions this RFC takes, one line each:
    explicit (`set_state` / `add` / `remove`); "turn ended with nothing to do ⇒
    Review" inference is rejected.
 3. **Defaults are the product-shape decision.** A fresh install seeds the five
-   code-constant workflow states as `add-remove` and mints new status tags
-   `add-remove`; an upgrade starts with an **empty** store, so every pre-existing
-   tag is human-only until an authenticated dashboard PATCH re-mints it.
+   code-constant workflow states as `add-remove`; every positively verified
+   owner-dashboard browser create records protected identity, using `add-remove`
+   for status tags and `none` for non-status tags. Internal agent/MCP creates
+   remain rowless until owner adoption. An upgrade never derives identity from
+   `tags.json`, so pre-existing custom tags remain human-only until the
+   dashboard owner explicitly adopts them for agent policy.
 4. **Fail closed, everywhere.** An absent, unreadable, malformed, or
    newer-schema store resolves to `("none", False)` — human-only, not a workflow
    state — rather than a permissive default.
@@ -98,9 +102,9 @@ asks to see agreed before it ships, which is why this document exists even
 though the mechanism is small. The scoping comment on
 [#7774](https://github.com/kirodotdev/KiroCrew/issues/7774) records the same
 requirement from the review of #7779. This document is filed `partial`: v1 (#7779) is on
-`main`, and the tag-manager policy control, provenance-required minting and the
-v2 scope remain open; the maintainers' merge of this RFC records the default the
-lane reads from the base branch.
+`main`, protected identity is resolved below, and the tag-manager policy control
+and broader movement controls remain open; the maintainers' merge of this RFC
+records the default the lane reads from the base branch.
 
 ## Goals
 
@@ -118,9 +122,8 @@ lane reads from the base branch.
 - **Not folder moves, conductor-over-children, propose-confirm for
   human-placed state, or move budgets/cooldowns.** Those are the v2 scope
   tracked in [#7774](https://github.com/kirodotdev/KiroCrew/issues/7774).
-- **Not a per-tag policy UI control.** In v1 the per-tag `agent` policy is
-  API-only; the dashboard tag manager control is a tracked follow-up (§Open
-  questions, [#7774](https://github.com/kirodotdev/KiroCrew/issues/7774)).
+- **Not ambient provenance, history/undo, or proposal confirmation.** B1, B2,
+  C1, and C2 depend on the later movement contracts and remain deferred.
 - **Not a lane-transition event.** Reacting server-side to a tag change is
   `rfc-session-tag-change-event.md`; that is the read-after direction, this is
   the write direction, and they compose without implying each other.
@@ -158,15 +161,19 @@ properties, all traceable to `dashboard/chat_tag_grants.py`:
   did not observe breaks the certificate; the boot pass then **quarantines** the
   store (renames it aside, never deletes evidence) and reseeds from trusted
   constants — fail closed, because at that moment a legitimate store and a
-  planted self-signed one are indistinguishable. Recovery is authenticated
-  re-minting, the same recovery class as any other token-key reset.
-- **Closed grant grammar.** A grant may exist only for an id in
-  `is_grantable_tag_id`: a 12-hex id the dashboard minted, or one of the five
-  code-constant defaults. A hand-planted id outside that grammar is refused any
-  grant (`tag_id_not_grantable`). This closes, structurally, the class where an
-  agent hand-writes a tag whose *name* reads benign but whose *id* spells an
-  instruction and then rides the trusted `[BOARD]` rail once a human toggles its
-  status.
+  planted self-signed one are indistinguishable. Code-constant defaults reseed;
+  a custom tag whose identity row was quarantined must be explicitly adopted
+  again by the dashboard owner.
+- **Closed grant grammar plus recorded identity.** A positively verified
+  owner-dashboard browser create generates a closed-grammar id and records a
+  protected row. Internal agent/MCP creation uses the same bounded vocabulary
+  writer but records no protected row. A later
+  PATCH may mint or change policy only when that row already exists; 12-hex
+  syntax alone is never provenance. A hand-planted row in agent-writable
+  `tags.json` therefore stays human-only after any status or policy toggle.
+  Pre-existing custom tags without rows are indistinguishable from planted
+  rows and remain human-only until explicit owner adoption. The grammar remains
+  defense in depth for the trusted `[BOARD]` rail.
 - **The recorded status bit drives semantics.** `set_state` eligibility, the
   mutual-exclusivity peer strip, and the "no status tag through `add`" rule key
   on the bit **recorded in the protected store**, not on `tags.json`'s own
@@ -176,17 +183,36 @@ properties, all traceable to `dashboard/chat_tag_grants.py`:
   unknown-id, or newer-schema store resolves to `("none", False)`. `remove` —
   including the implicit removal inside `set_state` — requires `add-remove`.
 
-The writers are the authenticated dashboard tag CRUD handlers only, plus a
-one-time boot seed from code constants: create mints `add-remove` for a new
-status tag; PATCH re-mints/revokes on a status flip and accepts an explicit
-`agent` value; delete revokes. Each write is ordered fail-closed (grant minted
-before the vocabulary commit on create, revoked before it on delete, downgraded
-to `("none", <status>)` across a PATCH window) so a crash between the two stores
-never leaves a durable status tag without an authorization row.
+The protected-store writers are positively verified owner-dashboard browser
+create/adoption, provenance-backed PATCH, delete, and a one-time boot seed from
+code constants. Owner-browser create records an identity row (`none`/non-status
+for labels, `add-remove`/status for workflow states). Internal agent/MCP create
+still persists a bounded vocabulary row but records no protected identity; PATCH
+therefore cannot grant it until owner adoption. Delete revokes. Each write is ordered fail-closed (row minted before the vocabulary
+commit on create, revoked before it on delete, downgraded to
+`("none", <status>)` across a PATCH window) so a crash between the two stores
+never leaves stale authority. `GET /api/chat/tags` preserves its list shape and
+decorates copied rows with `agent`, `agent_provenanced`, and
+`agent_store_degraded`; those derived fields are never written to `tags.json`.
+
+A create whose vocabulary write reports failure reconciles while still holding
+the tag-write lock. A bounded no-link reread that contains the generated id
+commits the durable snapshot back to memory and returns success. Positive
+absence removes the in-memory candidate and revokes its identity row when
+one was minted. An
+unreadable reread fails closed the same way: it withdraws the in-memory
+candidate, revokes any minted identity row, and returns failure, because the
+caller was answered with a 5xx and an unconfirmed tag must not keep agent
+authority in this process. The accepted cost: if that write did in fact
+commit, a later vocabulary write from this process that runs before any
+reload persists the withdrawn snapshot and removes the row, so the tag the
+caller was told had failed is gone rather than half-present. The regression
+`test_create_unreadable_reconciliation_withdraws_memory_and_identity` pins
+this behavior.
 
 `chat_auto_tag.py` does not interact with the grants store: it creates
 `status=False` definitions and never applies a status tag, so it neither mints
-a row (only the dashboard CRUD does) nor needs one (a topic tag without a row
+a row (only verified owner-browser create/adoption does) nor needs one (a topic tag without a row
 resolves `none`, which is exactly the authority auto-tagging has never had —
 it writes `slot.tags` directly as the gateway, not through `chat_tag`).
 
@@ -194,23 +220,23 @@ it writes `slot.tags` directly as the gateway, not through `chat_tag`).
 
 This is the reversible-once-shipped decision:
 
-- **Fresh install: default-on.** The boot seed mints the five code-constant
-  default states — `planned`, `todo`, `implementation`, `review`, `done` — as
-  `add-remove`, and `create_tag_definition_off_loop` mints any newly created
-  status tag `add-remove`. Rationale: the feature is inert otherwise (there is no
-  per-tag policy UI in v1), and workflow states are exactly the tags an agent
-  should drive. The seed reads **only** the code-constant ids, never anything
-  from `tags.json`, which is agent-writable and must not be promoted into
-  authorization.
-- **Upgrade: default-off.** An existing install starts with an **empty** store,
-  so every pre-existing tag resolves human-only until an authenticated dashboard
-  PATCH re-mints it (a status double-toggle, or an explicit `agent` value via
-  the API). Rationale: an upgrade must never promote agent-writable `tags.json`
-  rows into authorization. A separate identity-only seed
-  (`seed_status_identity_rows`) mints `{"policy": "none", "status": True}` rows
-  for the default state ids so exclusivity still holds on upgraded installs — the
-  bit constrains, and grants no write authority, which is what keeps it safe
-  where whole-grant upgrade seeding is not.
+- **Fresh install: default-on for workflow states, identity-only for labels.**
+  The boot seed mints the five code-constant default states — `planned`, `todo`,
+  `implementation`, `review`, `done` — as `add-remove`. A positively verified
+  owner-dashboard browser create records every new id: status tags use
+  `add-remove`, and non-status tags use `none`. Internal agent/MCP creates stay
+  rowless. The latter grants no write authority but proves the id came through
+  the trusted create path, so a later human policy change can safely update it.
+  The seed reads **only** code-constant ids, never anything from `tags.json`.
+- **Upgrade: legacy custom tags stay human-only.** No row is inferred from
+  `tags.json`. A pre-existing custom tag and a planted tag are indistinguishable,
+  so neither can acquire agent authority through ordinary PATCH. The A1 tag
+  manager identifies rowless tags and offers the dashboard owner a separate
+  adoption action that records `none` policy plus the explicitly confirmed
+  status bit; policy selection remains a later PATCH. A separate identity-only
+  seed (`seed_status_identity_rows`) records `{"policy": "none", "status": true}`
+  for code-constant default state ids so exclusivity still holds without
+  granting write authority.
 
 ### The `[BOARD]` context line
 
@@ -242,47 +268,60 @@ has no tags, and `(none)` renders when all tags are human-only.
 
 ### Declared API change
 
-`POST /api/chat/tags` and `PATCH /api/chat/tags/{id}` now return `400
-invalid_status` for a non-boolean `status` where they used to coerce
-(`bool("false")` is `True`, which would mint authority from a mistyped string). A
-client that serialized the flag as a string must send a JSON boolean. PATCH also
-accepts `agent: add-remove | add-only | none`, which is **API-only** in v1.
+`POST /api/chat/tags` and `PATCH /api/chat/tags/{id}` return `400
+invalid_status` for a non-boolean `status` where coercion would turn a string
+such as `"false"` into true. PATCH accepts
+`agent: add-remove | add-only | none` only for tags carrying a protected
+identity row. `GET /api/chat/tags` remains a JSON list; each copied row includes
+`agent`, `agent_provenanced`, and `agent_store_degraded`, and none of those
+projection fields is persisted to `tags.json`. `POST
+/api/chat/tags/{id}/adopt` accepts only the status bit the owner is looking at,
+records a `none` identity row, and never sets agent policy. It requires an
+authenticated dashboard-owner browser request; app, member, internal agent/MCP,
+unattributable, and body- or header-forged callers are refused. The create route
+still accepts a verified internal MCP vocabulary write, but it records no
+protected identity or default policy for that caller.
 
 ## Migration plan
 
-Design of record; nothing is on main. This is one PR ([#7779](https://github.com/kirodotdev/KiroCrew/pull/7779)),
-not a phased stack, because the directive, the grants store, the defaults, and
-the `[BOARD]` line are one indivisible authorization surface — shipping the
-directive without the protected store would be the forgeable design this RFC
-rejects. **Exit criteria** (assertable, and covered by
-`test/test_chat_tag_directive.py`, `test_chat_tags.py`, and the
-`TestBoardContextLineAssembly` suite in #7779): `set_state review` replaces an
-existing workflow tag; a `none`-policy tag is refused `tag_policy_denied`; an
-`add-only` tag adds but refuses removal; an unknown tag is refused `unknown_tag`;
-a headless surface is refused; the HMAC provenance chain quarantines on key
-rotation; an upgraded install resolves every tag human-only until a PATCH
-re-mints; a non-hex/non-default id is refused `tag_id_not_grantable`; a
-non-boolean `status` returns `400 invalid_status`; and the `[BOARD]` line renders
-row-backed ids only with the agent-writable subset named.
+The protected store remains schema version 1: an identity row is the same
+`{policy, status}` row already understood by all readers, and `policy: none`
+adds provenance without authority. No row is inferred from `tags.json`.
+Code-constant default-state identity seeding remains unchanged. Custom tags
+without protected rows remain usable by humans but cannot acquire an agent
+policy through PATCH; the owner-only adoption action records identity first.
+
+Exit criteria: positively verified owner-dashboard browser create records
+`none`/non-status for a plain tag and `add-remove`/status for a workflow state;
+internal agent/MCP create persists vocabulary but remains rowless; ordinary
+PATCH refuses every mint for a rowless 12-hex id; owner-only adoption records
+identity without setting policy; GET projects coherent policy, provenance, and degraded-store state
+without persisting derived fields; HMAC verification, quarantine, caps, and
+rollback compensation retain their fail-closed behavior.
 
 ## Backward compatibility
 
-- **Fresh install** gains agent-drivable default states and mints new status
-  tags `add-remove`.
-- **Upgrade** is inert until a human re-mints, so no pre-existing tag silently
-  becomes agent-writable.
-- **API:** a client sending `status` as a string now gets `400 invalid_status`
-  instead of silent truthy coercion — a corrective break, called out above.
-- A build predating the directive simply never advertises `chat_tag`. Rollback
-  is deletion of the directive, the grants module, and the `[BOARD]` line.
+- **Fresh install:** default workflow states remain agent-drivable; every new
+  owner-browser-created tag gets protected provenance, with no authority for a
+  plain label until its policy is changed. Internal agent/MCP-created tags stay
+  rowless until owner adoption.
+- **Upgrade:** pre-existing custom tags remain human-usable and rowless until
+  the dashboard owner explicitly adopts them. Adoption preserves the tag,
+  records identity with `none` policy, and leaves policy selection to a later
+  PATCH. The protected store schema and code-default seed remain compatible.
+- **API:** GET adds fields to each list row without changing the list envelope or
+  persisting them. A client sending `status` as a string gets `400
+  invalid_status`.
 
 ## Security considerations
 
 - **The authorization store is unforgeable by the party it authorizes** —
   masked, fenced, gateway-only, HMAC-chained, quarantined on unobserved key
   rotation.
-- **The closed grant grammar** makes an instruction-shaped planted id
-  unrepresentable both as a grant and on the `[BOARD]` rail.
+- **Protected identity precedes policy.** Closed-grammar syntax constrains the
+  trusted rail, while an existing protected row is what authorizes PATCH to
+  mint or change policy. A planted 12-hex id satisfies the former and fails the
+  latter.
 - **Semantics key on the recorded status bit**, not the agent-writable field, so
   a forged `status` cannot re-route exclusivity or verb eligibility.
 - **Fail closed** on every ambiguity: none/non-status, never a permissive
@@ -318,57 +357,35 @@ row-backed ids only with the agent-writable subset named.
 - The board carries a real authorization surface with its own store, provenance
   chain, and recovery semantics — more moving parts than a tag field, in
   exchange for being unforgeable.
-- An upgraded install needs one authenticated PATCH per custom tag to make it
-  agent-writable; until the per-tag policy UI lands, that is a status
-  double-toggle or an API call.
+- An upgraded install keeps pre-existing custom tags human-only until the
+  dashboard owner explicitly adopts them; adoption preserves the tag and
+  records identity without granting agent writes.
 
 ## Open questions
 
-1. **Per-tag policy UI control.** v1 is API-only; the dashboard tag-manager
-   control (which also gives upgraded installs a discoverable re-mint affordance
-   instead of a status double-toggle) is the tracked follow-up on
-   [#7774](https://github.com/kirodotdev/KiroCrew/issues/7774).
-2. **v2 scope.** Folder moves, conductor-over-children, propose-confirm for
-   human-placed state, and move budgets/cooldowns are deferred to v2, tracked in
-   the same issue.
-3. **Grant-mint provenance for dashboard ids.** `is_grantable_tag_id` admits
-   a 12-hex id by *syntax*, not by recorded provenance. A security review of
-   #7779 traced the gap: an agent can plant a 12-hex-id row with
-   `status: true` in agent-writable `tags.json`; if a human then toggles that
-   tag's status in the tag manager (or PATCHes it with `status`), the mint
-   grants the agent `add-remove` on it — authority over a lane the human never
-   deliberately created. Two candidate answers; the v1 decision is recorded
-   below:
-   - **Provenance required.** Record every dashboard-created id in the
-     protected store at create time (an identity row, `policy: none`), and let
-     the PATCH mint only for ids that carry one. Closes the plant entirely.
-     Cost: on an upgraded install every pre-existing custom tag is permanently
-     ungrantable — a legitimate old tag and a planted one look identical to the
-     store — so the recovery becomes "recreate the tag in the dashboard", not a
-     status toggle or PATCH.
-   - **Human action as consent (v1 as implemented).** The mint follows only an
-     authenticated human action on a tag visible in the tag manager, the same
-     action that mints authority for a legitimately created tag; the agent gains
-     write on a tag it authored, which a human then chose to make a workflow
-     state. Keeps the upgrade re-mint path. Cost: a human who does not notice
-     the tag is agent-planted extends agent authority by toggling it.
+1. **Further B/C scope.** Ambient provenance, history and undo, direct-apply
+   undo, persistent proposal confirmation, folder moves,
+   conductor-over-children, propose-confirm for human-placed state, and move
+   budgets/cooldowns remain deferred.
 
-   The trade is stricter provenance against an upgrade path, which is a
-   default-shape decision rather than an implementation detail.
+## Resolved decisions
 
-   **v1 decision: human action as consent.** v1 ships with the syntax grammar
-   and the human's authenticated status toggle (or explicit-`status` PATCH) as
-   the mint's consent step. Reasons: the mint never happens without a human
-   acting on a tag visible in the tag manager; the authority granted covers
-   only the tag the agent itself authored (a human-created tag with a row is
-   unaffected); and provenance-required would strand every pre-existing custom
-   tag on upgraded installs behind "recreate the tag" while v1 has no UI to
-   show a tag's origin. **Provenance-required is the v2 follow-up**, tracked
-   with the tag-manager control on
-   [#7774](https://github.com/kirodotdev/KiroCrew/issues/7774): once the UI
-   can show which tags carry a dashboard-minted identity row, dashboard create
-   records one for every tag, the PATCH mint requires it, and an upgraded
-   install's legacy tags are re-identified from the same control. Maintainers
-   who prefer provenance-required in v1 should say so on this RFC; the
-   implementation change is bounded (identity row at create, `has_grant_row`
-   at the mint) and the cost is the upgrade path above.
+### Grant-mint provenance for dashboard ids
+
+A 12-hex id is syntax, not provenance. A positively verified owner-dashboard
+browser create records a protected row: `policy: none, status: false` for a plain
+label, and the existing `policy: add-remove, status: true` default for a workflow
+state. Internal agent/MCP creation persists only the vocabulary row, so the same
+agent cannot turn one approved create into durable `chat_tag` authority. PATCH may mint or change policy only when `has_grant_row(tag_id)` is true.
+The rule applies even when the caller explicitly supplies `status` and `agent`.
+
+This chooses provenance-required over human-action-as-consent. A hand-planted
+12-hex tag can be visible in the tag manager and can still be renamed,
+recolored, reordered, or deleted by a human, but no status or policy toggle can
+promote it into the protected store through ordinary PATCH. A pre-existing
+custom tag without an identity row has the same treatment because the store
+cannot distinguish it from a planted row. The A1 tag-manager action lets the
+dashboard owner deliberately adopt either one: it records `none` policy with
+the status bit the owner saw, then exposes the ordinary three-state policy
+control. Adoption never sets policy itself. The store schema stays at version 1
+because identity uses an ordinary `none` row rather than a second record type.

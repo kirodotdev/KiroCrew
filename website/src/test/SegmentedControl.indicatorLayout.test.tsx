@@ -95,6 +95,6 @@ describe('SegmentedControl — #9684 indicator layout prop contract', () => {
     render(<SegmentedControl segments={SEGMENTS} value="grid" onChange={vi.fn()} compact />)
     // The selected segment shows its label; the reveal animation that the pill
     // used to mis-track must still be present, so a "fix" that removed it is caught.
-    expect(screen.getByRole('button', { name: /gallery/i }).textContent).toContain('Gallery')
+    expect(screen.getByRole('radio', { name: /gallery/i }).textContent).toContain('Gallery')
   })
 })

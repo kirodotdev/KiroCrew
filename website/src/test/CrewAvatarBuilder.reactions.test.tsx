@@ -92,10 +92,10 @@ function mount(
   return { ...utils, onSave, onCancel }
 }
 
-const openReactions = () => fireEvent.click(screen.getByRole('button', { name: 'Reactions' }))
-const openPicture = () => fireEvent.click(screen.getByRole('button', { name: 'Picture' }))
-const openLibrary = () => fireEvent.click(screen.getByRole('button', { name: 'Library' }))
-const openFace = () => fireEvent.click(screen.getByRole('button', { name: 'Ghost face' }))
+const openReactions = () => fireEvent.click(screen.getByRole('radio', { name: 'Reactions' }))
+const openPicture = () => fireEvent.click(screen.getByRole('radio', { name: 'Picture' }))
+const openLibrary = () => fireEvent.click(screen.getByRole('radio', { name: 'Library' }))
+const openFace = () => fireEvent.click(screen.getByRole('radio', { name: 'Ghost face' }))
 const apply = () => fireEvent.click(screen.getByTestId('avatar-builder-save'))
 const lastSaved = (onSave: ReturnType<typeof vi.fn>) =>
   onSave.mock.calls.at(-1)?.[0] as CrewAvatarOverride | null
@@ -258,7 +258,7 @@ describe('CrewAvatarBuilder — Reactions pane', () => {
 
   it('offers no Reactions tab on a picture — it is static and silent', () => {
     mount({ kind: 'image', v: 2 })
-    expect(screen.queryByRole('button', { name: 'Reactions' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Reactions' })).toBeNull()
   })
 
   it('a picture Apply carries the picture and no reaction key', async () => {

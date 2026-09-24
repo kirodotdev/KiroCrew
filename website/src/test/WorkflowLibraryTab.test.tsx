@@ -88,7 +88,7 @@ describe('WorkflowLibraryTab', () => {
 
     await screen.findByText('Debug Project')
     fireEvent.click(
-      screen.getByRole('button', { name: i18nT('pages.hooksPage.runs') }),
+      screen.getByRole('radio', { name: i18nT('pages.hooksPage.runs') }),
     )
 
     expect(screen.getByText('Unified workflow runs')).toBeInTheDocument()

@@ -235,12 +235,12 @@ describe('TelemetryPanel — group by', () => {
     // by-channel as separate always-visible sections.
     expect(document.querySelectorAll('table')).toHaveLength(1)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Model' }))
+    await userEvent.click(screen.getByRole('radio', { name: 'Model' }))
     await waitFor(() => expect(inTable().getByText('opus-5')).toBeInTheDocument())
     expect(inTable().queryByText('A named conversation')).not.toBeInTheDocument()
     expect(document.querySelectorAll('table')).toHaveLength(1)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Origin' }))
+    await userEvent.click(screen.getByRole('radio', { name: 'Origin' }))
     await waitFor(() => expect(inTable().getByText('all background')).toBeInTheDocument())
     expect(inTable().queryByText('opus-5')).not.toBeInTheDocument()
   })
@@ -306,7 +306,7 @@ describe('TelemetryPanel — share of spend', () => {
       }),
     )
     await waitFor(() => expect(inTable().getByText('A named conversation')).toBeInTheDocument())
-    await userEvent.click(screen.getByRole('button', { name: 'Model' }))
+    await userEvent.click(screen.getByRole('radio', { name: 'Model' }))
     await waitFor(() => expect(inTable().getByText('seven')).toBeInTheDocument())
 
     const shareOf = (name: string) => {
@@ -364,7 +364,7 @@ describe('TelemetryPanel — latency distribution order', () => {
     expect(screen.queryByText('bg')).toBeNull()
 
     // The category grouping must agree rather than drift back to the enum.
-    await userEvent.click(screen.getAllByRole('button', { name: 'Origin' })[0])
+    await userEvent.click(screen.getAllByRole('radio', { name: 'Origin' })[0])
     await waitFor(() => expect(screen.getAllByText('all background').length).toBeGreaterThan(0))
     expect(screen.queryByText('bg')).toBeNull()
   })
@@ -425,8 +425,8 @@ describe('TelemetryPanel — latency distribution order', () => {
         },
       }),
     )
-    await waitFor(() => expect(screen.getByRole('button', { name: /Distribution/ })).toBeInTheDocument())
-    await userEvent.click(screen.getByRole('button', { name: /Distribution/ }))
+    await waitFor(() => expect(screen.getByRole('radio', { name: /Distribution/ })).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('radio', { name: /Distribution/ }))
 
     await waitFor(() => expect(screen.getByText('≤ 500ms')).toBeInTheDocument())
     const labels = ['≤ 500ms', '≤ 1.0s', '≤ 3.0s', '> 3.0s']

@@ -378,6 +378,7 @@ def _no_disk(monkeypatch, tmp_path):
     chat_tag_grants._cache = None
     chat_tag_grants._degraded = None
     chat_tag_grants._quarantined_this_boot = False
+    chat_tag_grants._quarantine_repaired = False
     _seed_grants(_VOCAB)
 
     async def _save(state, slot, force=False, expected_history_key=None):
@@ -391,6 +392,7 @@ def _no_disk(monkeypatch, tmp_path):
     chat_tag_grants._cache = None
     chat_tag_grants._degraded = None
     chat_tag_grants._quarantined_this_boot = False
+    chat_tag_grants._quarantine_repaired = False
 
 
 def _seed_grants(vocab):

@@ -4,6 +4,7 @@ import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type { ProjectionsBlock } from '../state/memberProjectionTypes'
 import type {
   AppContributor,
+  AgentTagPolicy,
   ChatSlot,
   CronJob,
   IssueSource,
@@ -4698,7 +4699,8 @@ export const api = {
   // Tags
   chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
   createChatTag: (name: string, color?: string, status?: boolean) => post('/api/chat/tags', { name, color: color || '', status: !!status }).then(j),
-  updateChatTag: (id: string, body: { name?: string; color?: string; order?: number; status?: boolean }) => patch('/api/chat/tags/' + encodeURIComponent(id), body).then(j),
+  adoptChatTag: (id: string, status: boolean) => post('/api/chat/tags/' + encodeURIComponent(id) + '/adopt', { status }).then(j),
+  updateChatTag: (id: string, body: { name?: string; color?: string; order?: number; status?: boolean; agent?: AgentTagPolicy }) => patch('/api/chat/tags/' + encodeURIComponent(id), body).then(j),
   deleteChatTag: (id: string) => del('/api/chat/tags/' + encodeURIComponent(id)).then(j),
   setSlotTags: (slot: string, tags: string[], baseTagsRevision?: string) => fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/tags', { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(baseTagsRevision ? { tags, base_tags_revision: baseTagsRevision } : { tags }) }).then(j),
   dropSlotToColumn: (slot: string, columnId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/drop', { column_id: columnId }).then(j),
