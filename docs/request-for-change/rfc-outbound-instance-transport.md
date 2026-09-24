@@ -122,11 +122,20 @@ This RFC is small because it changes one layer and leaves four contracts alone.
 Introduce a `PeerTransport` protocol in a new module
 `src/kiro_crew/instances/transports/` with one implementation per method, and
 make `SshTunnelManager` hold a resolved transport instead of re-branching on a
-string. The protocol is exactly what the eight existing branch sites need:
+string. The protocol is exactly what the **eighteen** existing branch sites need.
+Counted at `18f9984b0` as every comparison of the method string (`==`, `!=`, `in`)
+on the gateway side: fifteen in `src/kiro_crew/instances/ssh_tunnel_manager.py`
+and three in `src/kiro_crew/instances/registry.py`, spread over record
+validation, `_resolve_transport`, the mint, connect, both self-heal tiers,
+diagnostics and restart. An earlier revision of this document said eight, which
+does not match the code at the revision it claims to audit; the figure above is
+measured and re-derivable from that definition.
+
+Those eighteen sites collapse onto six protocol members:
 
 | Member | Answers |
 |---|---|
-| `validate(inst)` | the per-method field validation now in `_resolve_transport` |
+| `validate(inst)` | the per-method field validation, which today is split across `Instance.validate` (`src/kiro_crew/instances/registry.py`, the `ssh` and `fargate` arms plus the method-membership check) and `_resolve_transport` |
 | `open(inst, local_port)` | bring up reach; return a handle the manager can poll and kill |
 | `mint(inst)` | return a dashboard token, or declare that this method has none (the `fargate` answer) |
 | `describe_target()` | the human-facing target string used in messages |
@@ -135,8 +144,8 @@ string. The protocol is exactly what the eight existing branch sites need:
 
 On the gateway side `ssh`, `ssm` and `fargate` move behind it with no behaviour
 change, asserted by the existing tests. The dashboard branches on the same string
-independently; that half of the seam is §3.9, and it carries one deliberate
-correction. This lands as its own PR and is separately revertible.
+independently; that half of the seam is §3.9, and it carries two deliberate
+corrections. This lands as its own PR and is separately revertible.
 
 ### 3.2 The outbound transport
 
@@ -344,14 +353,35 @@ gap — never an inherited SSH badge. This belongs in §3.1's refactor, before a
 new method exists, because it is the same seam and because fixing it afterwards
 means shipping the window first.
 
-The one intended behaviour change it carries is the `fargate` correction above.
-That is stated rather than absorbed: everything else in §3.1 is assert-unchanged,
-and this single line is an existing defect the exhaustive mapping repairs.
+It carries **two** intended behaviour changes, both stated rather than absorbed;
+everything else in §3.1 is assert-unchanged. The first is the `fargate`
+correction above. The second is heavier and was missed by an earlier revision of
+this section: `InstanceFormFields.tsx` collapses an unrecognised
+`connection_method` to `'ssh'` when it loads a record into the edit form
+(`inst.connection_method === 'fargate' ? 'fargate' : inst.connection_method ===
+'ssm' ? 'ssm' : 'ssh'`), so opening an unmapped crew and saving it **rewrites the
+stored method**. That is not a label falling through to a sibling, it is the
+record losing its transport, and it is the reason the mapping has to reach the
+form and not only the card.
 
-A mapping entry is not complete until it has strings in every shipped catalog.
-Each method carries a badge label and a hint, and the precedent set when `fargate`
-landed is that both went into all thirteen shipped locale catalogs, not into
-English alone (`website/src/i18n/locales/`). A method mapped in code but absent
+A mapping entry is not complete until it has strings in every shipped catalog, and
+the precedent `fargate` set is **three** strings per catalog, not two. Two of them
+follow one per-method family under `pages.settings.remoteCrewPanel`: the badge
+label `type_<method>` and the card hint `transport_hint_<method>`, both complete
+for `("ssh", "ssm", "fargate")` in all thirteen shipped locale catalogs
+(`website/src/i18n/locales/`, which is fourteen files less the `en.manual.json`
+overlay). The third does not follow it: the add-and-edit form's method hint
+`pages.settings.instancesPanel.fargate_method_hint`
+(`website/src/pages/settings/InstanceFormFields.tsx`) sits in a different
+namespace under a different naming scheme, and at `18f9984b0` it exists for
+`fargate` alone — there is no `ssh_method_hint` and no `ssm_method_hint` anywhere
+in the tree, because that selector's other two arms print content-derived keys
+(`tunnels_via_aws_ssm_start_session_no_inbound_ssh` and
+`opens_ssh_n_l_to_the_host_requires_non_interacti`) instead. There is, in other
+words, no `<method>_method_hint` family to extend: `fargate` is the only arm named
+after its method. A fourth method therefore needs all three strings, and the form
+hint is precisely the one an author following the two-key reading of this
+precedent will ship without. A method mapped in code but absent
 from twelve catalogs renders raw or falls back to English for the users who
 selected those languages, which is the same class of defect one layer down. So
 locale parity is a delivery requirement of the method, in the same change that
@@ -563,7 +593,9 @@ Six PRs, each independently revertible. The full task list is
 
 1. **This document.**
 2. **Seam extraction** (§3.1) — refactor; existing tests unchanged, plus the
-   exhaustive surface mapping of §3.9 and its one intended `fargate` correction.
+   exhaustive surface mapping of §3.9 and its two intended corrections (the
+   `fargate` diagnostics label, and the edit form no longer rewriting an unmapped
+   method to `ssh`).
 3. **Outbound client** (§3.2–3.5) — registry fields, config section, listener,
    frames, status, mint RPC, teardown. Carries the posture controls with it: the
    `allowed_methods` gate (§5.2), the pinned hub allowlist (§5.3), proxy plus
