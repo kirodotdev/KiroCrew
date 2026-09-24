@@ -408,7 +408,17 @@ class TestAnswerOnlyBlock:
         block = self._block()
         assert "Each sentence: at most 12 words" in block
         assert "one the user has used, or one a child knows" in block
-        assert "replaced, or defined in three words" in block
+        assert "A word that fails both is swapped" in block
+
+    def test_word_check_keeps_the_real_name_of_a_part(self):
+        """Swapping every hard word for a small one broke the reader's map: the
+        reply said "the helper" and the log, the code and the next reply said
+        "gateway", so nothing lined up. A name the answer is ABOUT survives the
+        word check, glossed once, so the reader can find the same thing again.
+        """
+        block = self._block()
+        assert "unless it names a real part: keep that name" in block
+        assert "glossed in three words once" in block
 
     def test_cut_check_names_what_goes_and_what_stays(self):
         """Enumerated bans, not a vague "be brief" -- each named category is a
@@ -446,36 +456,43 @@ class TestAnswerOnlyBlock:
         """
         assert "one risk line for anything touching security, data or spend" in self._block()
 
-    def test_asking_why_teaches_with_one_picture_not_a_list_of_verdicts(self):
-        """The word check alone is half of Age 5. A child knows every word in
-        "the path was read as a key" and still learns nothing from it; the same
-        child follows a dog that hides the wrong thing. So a "why" reply keeps
-        the small words and swaps the shape: one everyday picture carried to
-        the end, the objection as a character in it, then the reasons in the
-        picture's own words. "Teach it, do not state it" names the mode; the
-        picture is bounded to ONE so it cannot sprawl into a parade of
-        metaphors.
+    def test_asking_why_shows_the_real_parts_and_how_they_connect(self):
+        """A "why" told as one daily-life story (a dog hides the wrong bone)
+        read well and taught little: the reader could not tell which story
+        thing was which real part, so the lesson did not carry back. The reply
+        now draws the real parts by name and the links between them, and puts
+        the objection ON that chain, where it breaks.
         """
         block = self._block()
-        assert "Asked why? Teach it, do not state it." in block
-        assert "One picture from daily life" in block
-        assert "Keep it to the end" in block
-        assert "An objection is a character in it" in block
-        assert "The reasons, numbered, one short line each, in the picture's words" in block
+        assert "Asked why? Show the real parts by name and how they connect" in block
+        assert "a chain (A -> B -> C) or a part-and-job table" in block
+        assert "The objection is the step where it breaks" in block
+        assert "The reasons, numbered, one short line each, naming the parts" in block
         # The story ends on the literal answer, so a reader who skipped the
-        # picture still gets the fact.
+        # chain still gets the fact.
         assert "End: what it is, one line" in block
+        # The old story-first rule is gone, not merely joined.
+        assert "One picture from daily life" not in block
+
+    def test_an_everyday_picture_never_comes_without_its_map(self):
+        """A picture is still allowed -- sometimes it is the fastest way in --
+        but a picture with no map is exactly the failure being fixed. Each
+        picture thing must be set beside the real part it stands for.
+        """
+        block = self._block()
+        assert "An everyday picture needs a map" in block
+        assert "each picture thing beside its real part" in block
 
     def test_asking_why_keeps_the_word_check_and_narrows_the_cut_check(self):
-        """The picture is what the cut check would otherwise delete ("why",
+        """The chain is what the cut check would otherwise delete ("why",
         "options you rejected"). The carve-out is explicit and named -- the
-        picture and the reasons -- so the rest of the cut list still applies
+        chain, the map and the reasons -- so the rest of the cut list still applies
         (no preamble, no "what I did", no offers). The word check is restated
-        because a story invites long sentences and the register is the point.
+        because a "why" invites long sentences and the register is the point.
         """
         block = self._block()
         assert "Word check still runs" in block
-        assert "Cut check spares the picture and the reasons" in block
+        assert "Cut check spares the chain, the map and the reasons" in block
         # "may" -- permission, not a target. The default reply stays short.
         assert "This reply may run long" in block
         assert "Same three checks, plus the reason as one line per point" not in block
