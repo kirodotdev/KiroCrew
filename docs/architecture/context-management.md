@@ -42,6 +42,15 @@ Each block is a bracket marker that is also a contract with the model.
 that close; the metering reads the final string back through them, so that table
 cannot disagree with what was sent.
 
+The `[AGENT SYSTEM PROMPT]` block is metered as **opaque**. Its body documents
+this very envelope, so it contains literal `[RUNTIME]`, `[RESOURCES]` and
+`[Hook context:]` markers that are prompt CONTENT, not block starts.
+`_opaque_spans` (`context_blocks.py`) finds the block's `[END AGENT SYSTEM PROMPT]`
+closer and drops any opening-marker hits inside that span, so the prompt is
+attributed to `agent_instructions` as one block instead of being carved into
+phantom `surface` / `resource_advisory` / `hook_context` blocks that would
+otherwise be byte-identical slices of the fixed prompt every session.
+
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
 | 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md`, or `prompt-orchestrator.md` by slot `mode`; `_load_agent_prompt` for a custom agent | skipped on a slim resume |

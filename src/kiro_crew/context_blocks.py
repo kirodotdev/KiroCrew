@@ -136,6 +136,53 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
     )
 }
 
+# The agent-prompt block's body is arbitrary literal text that quotes another
+# block's opening marker: the prompt documents the [RUNTIME] / [RESOURCES] /
+# [Hook context:] envelope it is injected into, so those bracketed words are
+# content. Left as block starts they carve the prompt into phantom surface /
+# resource_advisory / hook_context blocks that actually belong to it. It has a
+# closer, which bounds where those markers are ignored.
+_AGENT_PROMPT_LABEL: Final = "agent_instructions"
+_AGENT_PROMPT_OPENER: Final = next(p for label, p in _COMPILED if label == _AGENT_PROMPT_LABEL)
+_AGENT_PROMPT_CLOSER: Final = _CLOSERS[_AGENT_PROMPT_LABEL]
+
+
+def _opaque_spans(prompt: str) -> list[tuple[int, int]]:
+    """Span of the agent-prompt block: first opener alone on its line to the
+    last such closer after it.
+
+    A marker sharing its line with other text is body prose quoting the
+    envelope, not a boundary. ``context.py`` wraps the prompt in this envelope
+    exactly once, so first-opener/last-closer captures the whole block and two
+    real blocks never occur. The attribution is advisory, not a security
+    boundary: content placed after the real closer that repeated the closer
+    alone on a line would extend the span, but nothing emits that.
+    """
+
+    def is_boundary(match: re.Match[str]) -> bool:
+        line_start = prompt.rfind("\n", 0, match.start()) + 1
+        line_end = prompt.find("\n", match.end())
+        if line_end == -1:
+            line_end = len(prompt)
+        return (
+            not prompt[line_start : match.start()].strip()
+            and not prompt[match.end() : line_end].strip()
+        )
+
+    openers = [m.start() for m in _AGENT_PROMPT_OPENER.finditer(prompt) if is_boundary(m)]
+    if not openers:
+        return []
+    start = openers[0]
+    ends = [
+        m.end()
+        for m in _AGENT_PROMPT_CLOSER.finditer(prompt)
+        if m.start() >= start and is_boundary(m)
+    ]
+    if not ends:
+        return []
+    return [(start, ends[-1])]
+
+
 # The reply-format / tool-contract paragraphs the assembly appends after the
 # user's text. They open with a parenthesis at the start of a line and are the
 # only trailing blocks, so one anchored pattern covers all of them.
@@ -220,6 +267,17 @@ def split_blocks(
     for label, pattern in _COMPILED:
         for match in pattern.finditer(prompt):
             hits.append((match.start(), label))
+
+    # Drop marker hits inside the agent-prompt block's body (see _opaque_spans).
+    # The strict ``start < pos`` keeps the block's own opener, which sits at the
+    # span start.
+    spans = _opaque_spans(prompt)
+    if spans:
+        hits = [
+            (pos, label)
+            for pos, label in hits
+            if not any(start < pos < end for start, end in spans)
+        ]
 
     # The user's own text is the one span of the prompt an attacker controls, so
     # its bounds must come from something they cannot influence. `user_chars` is

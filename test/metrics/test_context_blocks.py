@@ -738,3 +738,123 @@ class TestDomainGrouping:
             "following_interaction",
             "background",
         }
+
+
+class TestOpaqueBlockBodyQuotesItsOwnMarkers:
+    """The agent prompt is arbitrary literal text that documents its own envelope.
+
+    ``src/kiro_crew/config/prompt.md`` names the ``[RUNTIME]`` / ``[RESOURCES]`` /
+    ``[Hook context:]`` blocks it is injected alongside, and quotes both
+    ``[AGENT SYSTEM PROMPT]`` and ``[END AGENT SYSTEM PROMPT]`` while explaining
+    that wrapper. Those bracketed words are prompt CONTENT: read as block starts
+    they carve one contract block into phantom surface / resource_advisory /
+    hook_context blocks, reporting sizes for blocks the assembly never emitted.
+    """
+
+    def test_quoted_phantom_openers_stay_inside_the_contract_block(self):
+        body = (
+            "[AGENT SYSTEM PROMPT]\n"
+            "A [RUNTIME] line names the surface you are talking on.\n"
+            "A [RESOURCES] line means the host is under memory pressure.\n"
+            "Restored state can arrive as a [Hook context:] block.\n"
+            "[END AGENT SYSTEM PROMPT]\n\n"
+        )
+        prompt = body + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["agent_instructions"] == len(body), "the whole envelope is one block"
+        for phantom in ("surface", "resource_advisory", "hook_context"):
+            assert phantom not in out, f"{phantom} was never emitted by the assembly"
+        assert sum(out.values()) == len(prompt)
+
+    def test_a_quoted_opener_before_the_real_closer_does_not_lose_the_span(self):
+        """The body quotes its OWN opener, which reads exactly like a real one.
+
+        Bounding the closer search by the next same-label opener puts that bound
+        inside the body, leaving the real closer out of range and recording no
+        span at all — so every phantom marker ahead of the quotation is read as a
+        block start again and the contract block is carved up.
+        """
+        body = (
+            "[AGENT SYSTEM PROMPT]\n"
+            "A [RUNTIME] line names the surface you are talking on.\n"
+            "Everything between [AGENT SYSTEM PROMPT] and [END AGENT SYSTEM PROMPT]\n"
+            "is your own operating contract.\n"
+            "A [RESOURCES] line means the host is under memory pressure.\n"
+            "Restored state can arrive as a [Hook context:] block.\n"
+            "[END AGENT SYSTEM PROMPT]\n\n"
+        )
+        prompt = body + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["agent_instructions"] == len(body), "the quoted opener is content"
+        for phantom in ("surface", "resource_advisory", "hook_context"):
+            assert phantom not in out, f"{phantom} was never emitted by the assembly"
+        assert sum(out.values()) == len(prompt)
+
+    def test_the_span_does_not_swallow_a_later_block_quoting_the_closer(self):
+        """A LATER block can quote the closer without being part of the contract.
+
+        Taking the last closer in the whole prompt would extend the span past the
+        real end and silently book that block's characters to the contract.
+        """
+        contract = "[AGENT SYSTEM PROMPT]\nyour operating contract.\n[END AGENT SYSTEM PROMPT]\n\n"
+        skill = (
+            "[Skill: envelopes]\n"
+            "An agent prompt ends with [END AGENT SYSTEM PROMPT] verbatim.\n"
+            "[End of skill]\n\n"
+        )
+        prompt = contract + skill + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["agent_instructions"] == len(contract), "the span ends at the real closer"
+        assert out["loaded_skill"] == len(skill), "the later block keeps its own span"
+        assert sum(out.values()) == len(prompt)
+
+    def test_repeated_blocks_merge_because_the_assembler_emits_one(self):
+        """First opener to last closer merges two wrapped blocks into one span.
+
+        That is deliberate, not a regression: ``context.py`` wraps the prompt in
+        this envelope exactly once, so a second real block never reaches the
+        scanner. Reaching for the last closer is also what lets the single block
+        quote its own closer mid-body without truncating.
+        """
+        first = "[AGENT SYSTEM PROMPT]\nfirst [RUNTIME] note.\n[END AGENT SYSTEM PROMPT]\n\n"
+        orphan = "assembly text with no marker\n\n"
+        second = "[AGENT SYSTEM PROMPT]\nsecond [RESOURCES] note.\n[END AGENT SYSTEM PROMPT]\n\n"
+        prompt = first + orphan + second
+        out = split_blocks(prompt)
+        assert out["agent_instructions"] > len(first) + len(second), "the gap is absorbed"
+        for phantom in ("surface", "resource_advisory"):
+            assert phantom not in out, f"{phantom} was never emitted by the assembly"
+        assert sum(out.values()) == len(prompt)
+
+    def test_an_unmatched_quoted_opener_does_not_disable_opacity(self):
+        body = (
+            "[AGENT SYSTEM PROMPT]\n"
+            "The [AGENT SYSTEM PROMPT] marker starts the operating contract.\n"
+            "A [RUNTIME] line names the surface you are talking on.\n"
+            "[END AGENT SYSTEM PROMPT]\n\n"
+        )
+        prompt = body + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["agent_instructions"] == len(body), "the unmatched quote is content"
+        assert set(out) == {"agent_instructions", "date"}
+        assert sum(out.values()) == len(prompt)
+
+    def test_a_standalone_quoted_closer_in_the_body_does_not_truncate(self):
+        """A body line that is exactly the closer — the contract showing its own
+        envelope as a block — must not end the span early. The last standalone
+        closer keeps the whole block; depth pairing or first-match would close at
+        the quotation and re-expose the tail's quoted markers as phantom blocks.
+        """
+        body = (
+            "[AGENT SYSTEM PROMPT]\n"
+            "The wrapper you are injected into looks like:\n"
+            "[END AGENT SYSTEM PROMPT]\n"
+            "and everything inside it is your operating contract.\n"
+            "A [RUNTIME] line names the surface you are talking on.\n"
+            "[END AGENT SYSTEM PROMPT]\n\n"
+        )
+        prompt = body + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["agent_instructions"] == len(body), "span runs to the last standalone closer"
+        assert "surface" not in out, "the [RUNTIME] after the quoted closer stays body content"
+        assert sum(out.values()) == len(prompt)
