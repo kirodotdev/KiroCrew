@@ -1,14 +1,15 @@
-"""The two write routes a non-owner could still use to rewrite what the agent obeys.
+"""The owner-only boundary on the two generic routes that can rewrite what the agent obeys.
 
 ``slack/allowlist.py::send_dashboard_link`` mints a dashboard token for any
 Slack-allowlisted user with ``app=""``, so the token-auth middleware sets
 ``request["user"]`` to that channel user and ``request["app"]`` to ``""``: an
 authenticated dashboard session whose subject is not the owner.
 
-The steering create/update/delete routes refuse that subject (#13198: steering is
-injected into every agent turn), and so does every skill mutation routed through
-``prompts._deny_non_owner_skill_operation`` ("any skill mutation is an
-instruction-injection surface"). Two sibling routes did not:
+Steering mutations are owner-only because steering is injected into every agent
+turn, and skill mutations are owner-only because installed skill content enters
+the agent's context -- the steering create/update/delete routes and every skill
+mutation routed through ``prompts._deny_non_owner_skill_operation`` refuse that
+subject. Two sibling routes reach the same content and hold the same boundary:
 
 * ``POST /api/file-write`` -- the markdown panel's save. It rewrites any existing
   file off the read+write sensitive floor, which includes a steering document, a

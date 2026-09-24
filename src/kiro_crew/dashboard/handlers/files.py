@@ -4097,7 +4097,7 @@ async def api_file_write(request: web.Request) -> web.Response:
     # Ahead of the body read and the path probe. This route rewrites any existing
     # file off the sensitive floor, which includes the steering documents, the
     # skills and the MCP config whose own write routes are owner-gated; leaving it
-    # open handed a non-owner (a Slack-allowlisted user's dashboard session) every
+    # open would hand a non-owner (a Slack-allowlisted user's dashboard session) every
     # file those gates protect. Ahead of the probe too, so whether a path exists is
     # not a non-owner's to learn from a 404.
     owner_denied = await require_owner_dashboard_request(request, "file_write")
