@@ -12564,7 +12564,8 @@
         "system": "Sistema",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Usa lo zoom del browser. Il browser lo ricorda per questo sito.",
         "zoom": "Zoom",
-        "zoom_with": "Zoom con"
+        "zoom_with": "Zoom con",
+        "custom_font_configure_in_settings": "Carattere personalizzato: scegli il carattere installato in Impostazioni → Schermo."
       },
       "embedModel": {
         "active": "Attivo: {{model}} · {{dim}}d",
@@ -14671,7 +14672,21 @@
         "installed_themes_refresh_failed_after_install": "Il tema è stato installato, ma l'elenco dei temi non è stato aggiornato. Premi Riprova per aggiornare l'elenco e applicarlo, oppure scegliilo dall'elenco dei temi quando si aggiorna.",
         "retry_theme_list": "Riprova",
         "retrying_theme_list": "Nuovo tentativo…",
-        "recent_tint_save_failed": "Impossibile salvare il numero di sessioni recenti evidenziate."
+        "recent_tint_save_failed": "Impossibile salvare il numero di sessioni recenti evidenziate.",
+        "font_family_option_custom": "Personalizzato",
+        "custom_font_family": "Carattere personalizzato",
+        "custom_font_family_desc": "Il carattere usato da tutta la dashboard, inclusi chat, editor e nomi di sessioni e cartelle nella barra laterale. Scegline uno installato sul dispositivo da cui visualizzi la dashboard, oppure digita un nome qualsiasi: una Nerd Font mostra i suoi glifi e un carattere da programmazione mostra le sue legature.",
+        "custom_font_choose": "Scegli un carattere…",
+        "custom_font_search": "Cerca caratteri…",
+        "custom_font_use_typed": "Usa «{{value}}»",
+        "custom_font_not_detected": "Non rilevato su questo dispositivo",
+        "custom_font_detect": "Elenca tutti i caratteri installati…",
+        "custom_font_detect_checking": "Verifica in corso…",
+        "custom_font_detect_added": "I caratteri installati sono stati aggiunti all’elenco.",
+        "custom_font_detect_none": "Nessun carattere oltre a quelli già elencati.",
+        "custom_font_detect_denied": "Accesso ai caratteri non concesso: l’elenco mantiene i caratteri già rilevati e puoi comunque digitare qualsiasi nome di carattere.",
+        "custom_font_ligatures": "Abilita le legature",
+        "custom_font_ligatures_desc": "Mostra le legature di programmazione (=>, !=, ->) quando il carattere personalizzato le ha. Il codice e i diff nei messaggi non sono interessati."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

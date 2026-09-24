@@ -54,7 +54,7 @@ export default function DisplayTab() {
       </Card>
       <Card>
         <CardTitle>{i18nT('pages.overview.displayTab.font')} <InfoTip text={i18nT('pages.overview.displayTab.change_the_dashboard_font_family_persists_across')} /></CardTitle>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {FONT_FAMILY_OPTIONS.filter(({ value: f }) => f !== 'custom').map(({ value: f }) => (
             <button key={f} className={BTN + ' ' + active(family === f)} onClick={() => setFontFamily(f)}>
               {i18nT(FONT_FAMILY_LABEL_KEY[f])}
@@ -63,14 +63,16 @@ export default function DisplayTab() {
           {/* When Custom is the active family, show it as a selected, non-toggling
               chip so the setting never reads as unset here (a habitual click on a
               preset would otherwise silently leave Custom). The picker itself
-              lives in Settings → Display, so this chip routes there instead. */}
+              lives in Settings → Display, so this chip routes there instead — the
+              Pencil icon (the same affordance the theme-edit chip uses) marks it
+              as "opens the editor" rather than another preset that toggles here. */}
           {family === 'custom' && (
             <button
               className={BTN + ' ' + active(true)}
               onClick={() => navigate('/settings/display')}
               title={i18nT('pages.overview.displayTab.custom_font_configure_in_settings')}
             >
-              {i18nT(FONT_FAMILY_LABEL_KEY.custom)}
+              <Pencil className="lucide-inline" /> {i18nT(FONT_FAMILY_LABEL_KEY.custom)}
             </button>
           )}
         </div>

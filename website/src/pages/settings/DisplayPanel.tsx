@@ -181,11 +181,17 @@ export function DisplayPanel() {
     ? i18nT('pages.settings.displayPanel.custom_font_detect_checking')
     : customFontDetectResult === 'added'
       ? i18nT('pages.settings.displayPanel.custom_font_detect_added')
-      : customFontDetectResult === 'denied'
-        ? i18nT('pages.settings.displayPanel.custom_font_detect_denied')
-        : customFontDetectResult === 'none'
+      : customFontDetectResult === 'none'
           ? i18nT('pages.settings.displayPanel.custom_font_detect_none')
           : undefined
+  // A denied Local Font Access permission is an error, not a plain status line:
+  // it is surfaced through ErrorNotice (errors-use-error-notice) rather than the
+  // combobox's actionStatus slot, which styles its text as recede-into-the-
+  // background metadata. The typed free-text path still works, so this is a
+  // notice, not a blocker.
+  const customFontDetectError = customFontDetectResult === 'denied'
+    ? i18nT('pages.settings.displayPanel.custom_font_detect_denied')
+    : null
 
   const dispatch = useAppDispatch()
   const { paletteColors: colors, colorMode, paletteName, intensity, boost } = useSessionPalette()
@@ -496,6 +502,12 @@ export function DisplayPanel() {
                 : undefined}
               actionStatus={customFontDetectStatus}
             />
+            {/* A denied Local Font Access permission surfaces here, not as a
+                muted status line. askAgent ON: the Custom font value persists
+                live on change and the typed free-text path stays available, so
+                there is no unsaved draft to lose — the hand-off may navigate to
+                chat freely. */}
+            <ErrorNotice message={customFontDetectError} variant="inline" askAgent />
             {/* Ligatures are the reason many pick a coding font here, so default
                 on — but a programming font's =>/!= ligatures are divisive, so this
                 turns them off without leaving Custom. Only shown in Custom mode. */}

@@ -12210,7 +12210,8 @@
         "system": "システム",
         "use_your_browser_s_zoom_your_browser_remembers_i": "ブラウザーのズーム機能を使用します。ブラウザーがこのサイトのズーム設定を覚えています。",
         "zoom": "ズーム",
-        "zoom_with": "ズーム方法"
+        "zoom_with": "ズーム方法",
+        "custom_font_configure_in_settings": "カスタムフォント — インストール済みのフォントを「設定 → 表示」で選択します。"
       },
       "embedModel": {
         "active": "アクティブ: {{model}} · {{dim}}d",
@@ -14255,7 +14256,21 @@
         "installed_themes_refresh_failed_after_install": "テーマはインストールされましたが、テーマ一覧を更新できませんでした。「再試行」を押して一覧を更新して適用するか、テーマ一覧が更新されたら一覧から選んでください。",
         "retry_theme_list": "再試行",
         "retrying_theme_list": "再試行中…",
-        "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。"
+        "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。",
+        "font_family_option_custom": "カスタム",
+        "custom_font_family": "カスタムフォント",
+        "custom_font_family_desc": "チャット、入力欄、サイドバーのセッション名・フォルダー名を含め、ダッシュボード全体で使うフォントです。ダッシュボードを表示している端末にインストールされているものを選ぶか、任意のフォント名を入力してください。Nerd Font はそのグリフを、プログラミングフォントはその合字を表示します。",
+        "custom_font_choose": "フォントを選択…",
+        "custom_font_search": "フォントを検索…",
+        "custom_font_use_typed": "「{{value}}」を使用",
+        "custom_font_not_detected": "この端末では検出されませんでした",
+        "custom_font_detect": "インストール済みのフォントをすべて表示…",
+        "custom_font_detect_checking": "確認中…",
+        "custom_font_detect_added": "インストール済みのフォントを一覧に追加しました。",
+        "custom_font_detect_none": "すでに一覧にあるもの以外のフォントはありません。",
+        "custom_font_detect_denied": "フォントへのアクセスが許可されませんでした。すでに検出されたフォントは一覧に残り、引き続き任意のフォント名を入力できます。",
+        "custom_font_ligatures": "合字を有効にする",
+        "custom_font_ligatures_desc": "カスタムフォントに合字がある場合、プログラミング用の合字（=>、!=、->）を表示します。メッセージ内のコードや差分には影響しません。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

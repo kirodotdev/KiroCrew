@@ -12564,7 +12564,8 @@
         "system": "Sistema",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Use o zoom do seu navegador. Ele memoriza a configuração para este site.",
         "zoom": "Zoom",
-        "zoom_with": "Zoom com"
+        "zoom_with": "Zoom com",
+        "custom_font_configure_in_settings": "Fonte personalizada — escolha a fonte instalada em Configurações → Tela."
       },
       "embedModel": {
         "active": "Ativo: {{model}} · {{dim}}d",
@@ -14671,7 +14672,21 @@
         "installed_themes_refresh_failed_after_install": "O tema foi instalado, mas a lista de temas não pôde ser atualizada. Pressione Tentar novamente para atualizar a lista e aplicá-lo, ou escolha-o na lista de temas quando ela for atualizada.",
         "retry_theme_list": "Tentar novamente",
         "retrying_theme_list": "Tentando novamente…",
-        "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas."
+        "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas.",
+        "font_family_option_custom": "Personalizada",
+        "custom_font_family": "Fonte personalizada",
+        "custom_font_family_desc": "A fonte usada por todo o painel, incluindo o chat, o editor e os nomes de sessões e pastas na barra lateral. Escolha uma instalada na máquina de onde você vê o painel, ou digite qualquer nome de fonte — uma Nerd Font mostra seus glifos e uma fonte de programação mostra suas ligaduras.",
+        "custom_font_choose": "Escolher uma fonte…",
+        "custom_font_search": "Pesquisar fontes…",
+        "custom_font_use_typed": "Usar “{{value}}”",
+        "custom_font_not_detected": "Não detectada nesta máquina",
+        "custom_font_detect": "Listar todas as fontes instaladas…",
+        "custom_font_detect_checking": "Verificando…",
+        "custom_font_detect_added": "As fontes instaladas foram adicionadas à lista.",
+        "custom_font_detect_none": "Nenhuma fonte além das já listadas.",
+        "custom_font_detect_denied": "O acesso às fontes não foi concedido — a lista mantém as fontes já detectadas e você ainda pode digitar qualquer nome de fonte.",
+        "custom_font_ligatures": "Ativar ligaduras",
+        "custom_font_ligatures_desc": "Renderiza as ligaduras de programação (=>, !=, ->) quando a fonte personalizada as tem. O código e os diffs nas mensagens não são afetados."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

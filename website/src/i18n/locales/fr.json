@@ -12564,7 +12564,8 @@
         "system": "Système",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Utilise le zoom de ton navigateur. Il le mémorise pour ce site.",
         "zoom": "Zoom",
-        "zoom_with": "Zoom avec"
+        "zoom_with": "Zoom avec",
+        "custom_font_configure_in_settings": "Police personnalisée — choisis la police installée dans Paramètres → Affichage."
       },
       "embedModel": {
         "active": "Actif : {{model}} · {{dim}}d",
@@ -14671,7 +14672,21 @@
         "installed_themes_refresh_failed_after_install": "Le thème a été installé, mais la liste des thèmes n'a pas pu être actualisée. Appuie sur Réessayer pour actualiser la liste et l'appliquer, ou choisis-le dans la liste des thèmes une fois actualisée.",
         "retry_theme_list": "Réessayer",
         "retrying_theme_list": "Nouvelle tentative…",
-        "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence."
+        "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence.",
+        "font_family_option_custom": "Personnalisée",
+        "custom_font_family": "Police personnalisée",
+        "custom_font_family_desc": "La police utilisée par tout le tableau de bord, y compris le chat, la zone de saisie et les noms de sessions et de dossiers de la barre latérale. Choisis-en une installée sur la machine depuis laquelle tu consultes le tableau de bord, ou tape n’importe quel nom de police — une Nerd Font affiche ses glyphes et une police de programmation affiche ses ligatures.",
+        "custom_font_choose": "Choisir une police…",
+        "custom_font_search": "Rechercher des polices…",
+        "custom_font_use_typed": "Utiliser « {{value}} »",
+        "custom_font_not_detected": "Non détectée sur cette machine",
+        "custom_font_detect": "Lister toutes les polices installées…",
+        "custom_font_detect_checking": "Vérification…",
+        "custom_font_detect_added": "Les polices installées ont été ajoutées à la liste.",
+        "custom_font_detect_none": "Aucune police en plus de celles déjà listées.",
+        "custom_font_detect_denied": "L’accès aux polices n’a pas été accordé — la liste conserve les polices déjà détectées, et tu peux toujours taper n’importe quel nom de police.",
+        "custom_font_ligatures": "Activer les ligatures",
+        "custom_font_ligatures_desc": "Affiche les ligatures de programmation (=>, !=, ->) lorsque la police personnalisée en possède. Le code et les diffs des messages ne sont pas affectés."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

@@ -12210,7 +12210,8 @@
         "system": "系统",
         "use_your_browser_s_zoom_your_browser_remembers_i": "使用浏览器自带的缩放。浏览器会为此站点记住缩放比例。",
         "zoom": "缩放",
-        "zoom_with": "缩放快捷键"
+        "zoom_with": "缩放快捷键",
+        "custom_font_configure_in_settings": "自定义字体 — 在“设置 → 显示”中选择已安装的字体。"
       },
       "embedModel": {
         "active": "当前：{{model}} · {{dim}}维",
@@ -14255,7 +14256,21 @@
         "installed_themes_refresh_failed_after_install": "主题已安装，但无法刷新主题列表。请点击“重试”以刷新列表并应用它，或在主题列表刷新后从列表中选择它。",
         "retry_theme_list": "重试",
         "retrying_theme_list": "正在重试…",
-        "recent_tint_save_failed": "无法保存最近会话的高亮数量。"
+        "recent_tint_save_failed": "无法保存最近会话的高亮数量。",
+        "font_family_option_custom": "自定义",
+        "custom_font_family": "自定义字体",
+        "custom_font_family_desc": "整个仪表板使用的字体，包括聊天、输入框以及侧边栏的会话和文件夹名称。选择你查看仪表板所用设备上已安装的字体，或输入任意字体名称——Nerd Font 会显示其字形，编程字体会显示其连字。",
+        "custom_font_choose": "选择字体…",
+        "custom_font_search": "搜索字体…",
+        "custom_font_use_typed": "使用“{{value}}”",
+        "custom_font_not_detected": "在此设备上未检测到",
+        "custom_font_detect": "列出所有已安装的字体…",
+        "custom_font_detect_checking": "正在检查…",
+        "custom_font_detect_added": "已将已安装的字体添加到列表中。",
+        "custom_font_detect_none": "除已列出的字体外没有其他字体。",
+        "custom_font_detect_denied": "未授予字体访问权限——列表会保留已检测到的字体，你仍可以输入任意字体名称。",
+        "custom_font_ligatures": "启用连字",
+        "custom_font_ligatures_desc": "当自定义字体包含连字时，渲染编程连字（=>、!=、->）。消息中的代码和差异不受影响。"
       },
       "importPanel": {
         "agent_data": "代理数据",

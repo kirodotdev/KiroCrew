@@ -12564,7 +12564,8 @@
         "system": "Sistema",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Usa el zoom de tu navegador. Tu navegador lo recuerda para este sitio.",
         "zoom": "Zoom",
-        "zoom_with": "Zoom con"
+        "zoom_with": "Zoom con",
+        "custom_font_configure_in_settings": "Fuente personalizada: elige la fuente instalada en Configuración → Pantalla."
       },
       "embedModel": {
         "active": "Activo: {{model}} · {{dim}}d",
@@ -14671,7 +14672,21 @@
         "installed_themes_refresh_failed_after_install": "El tema se instaló, pero la lista de temas no se pudo actualizar. Pulsa Reintentar para actualizar la lista y aplicarlo, o elígelo en la lista de temas cuando se actualice.",
         "retry_theme_list": "Reintentar",
         "retrying_theme_list": "Reintentando…",
-        "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas."
+        "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas.",
+        "font_family_option_custom": "Personalizada",
+        "custom_font_family": "Fuente personalizada",
+        "custom_font_family_desc": "La fuente que usa todo el panel, incluidos el chat, el cuadro de redacción y los nombres de sesiones y carpetas de la barra lateral. Elige una instalada en el equipo desde el que ves el panel, o escribe cualquier nombre de fuente: una Nerd Font muestra sus glifos y una fuente de programación muestra sus ligaduras.",
+        "custom_font_choose": "Elegir una fuente…",
+        "custom_font_search": "Buscar fuentes…",
+        "custom_font_use_typed": "Usar «{{value}}»",
+        "custom_font_not_detected": "No detectada en este equipo",
+        "custom_font_detect": "Ver todas las fuentes instaladas…",
+        "custom_font_detect_checking": "Comprobando…",
+        "custom_font_detect_added": "Se agregaron las fuentes instaladas a la lista.",
+        "custom_font_detect_none": "No hay más fuentes además de las ya listadas.",
+        "custom_font_detect_denied": "No se concedió acceso a las fuentes: la lista mantiene las fuentes ya detectadas y aún puedes escribir cualquier nombre de fuente.",
+        "custom_font_ligatures": "Activar ligaduras",
+        "custom_font_ligatures_desc": "Renderiza las ligaduras de programación (=>, !=, ->) cuando la fuente personalizada las tiene. El código y los diffs de los mensajes no se ven afectados."
       },
       "importPanel": {
         "agent_data": "Datos del agente",

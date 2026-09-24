@@ -12387,7 +12387,8 @@
         "system": "System",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Nutze den Zoom deines Browsers. Dein Browser merkt sich ihn für diese Site.",
         "zoom": "Zoom",
-        "zoom_with": "Zoomen mit"
+        "zoom_with": "Zoomen mit",
+        "custom_font_configure_in_settings": "Benutzerdefinierte Schrift – die installierte Schrift unter Einstellungen → Anzeige auswählen."
       },
       "embedModel": {
         "active": "Aktiv: {{model}} · {{dim}}d",
@@ -14463,7 +14464,21 @@
         "installed_themes_refresh_failed_after_install": "Das Theme wurde installiert, aber die Theme-Liste konnte nicht aktualisiert werden. Klicke auf „Erneut versuchen“, um die Liste zu aktualisieren und es anzuwenden, oder wähle es aus der Theme-Liste, sobald sie aktualisiert wurde.",
         "retry_theme_list": "Erneut versuchen",
         "retrying_theme_list": "Wird erneut versucht…",
-        "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden."
+        "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden.",
+        "font_family_option_custom": "Benutzerdefiniert",
+        "custom_font_family": "Benutzerdefinierte Schrift",
+        "custom_font_family_desc": "Die Schrift, die das gesamte Dashboard verwendet, einschließlich Chat, Eingabefeld sowie Sitzungs- und Ordnernamen in der Seitenleiste. Wähle eine Schrift, die auf dem Gerät installiert ist, von dem aus du das Dashboard ansiehst, oder gib einen beliebigen Schriftnamen ein – eine Nerd Font zeigt ihre Glyphen und eine Programmierschrift ihre Ligaturen.",
+        "custom_font_choose": "Schrift auswählen…",
+        "custom_font_search": "Schriften suchen…",
+        "custom_font_use_typed": "„{{value}}“ verwenden",
+        "custom_font_not_detected": "Auf diesem Gerät nicht erkannt",
+        "custom_font_detect": "Alle installierten Schriften auflisten…",
+        "custom_font_detect_checking": "Wird geprüft…",
+        "custom_font_detect_added": "Installierte Schriften wurden zur Liste hinzugefügt.",
+        "custom_font_detect_none": "Keine weiteren Schriften über die bereits aufgeführten hinaus.",
+        "custom_font_detect_denied": "Der Schriftzugriff wurde nicht gewährt – die Liste behält die bereits erkannten Schriften, und du kannst weiterhin einen beliebigen Schriftnamen eingeben.",
+        "custom_font_ligatures": "Ligaturen aktivieren",
+        "custom_font_ligatures_desc": "Programmierligaturen (=>, !=, ->) rendern, wenn die benutzerdefinierte Schrift sie hat. Code und Diffs in Nachrichten sind nicht betroffen."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

@@ -81,6 +81,13 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // factor and then DELETES them, so backing them up would restore them on the
   // next cold profile and re-run the migration forever.
   'mc-font-family',
+  // The Custom Font Family choice: the picked family name and the ligature
+  // toggle. 'mc-font-family' above already persists that Custom is SELECTED, so
+  // without these two a cold profile restores family=custom while the chosen
+  // font and ligature preference silently revert to the Sans fallback / default
+  // on. Carried by the same reconcile growth path documented above.
+  'mc-custom-font',
+  'mc-custom-font-ligatures',
   // Chat reading width (md | full) -- hooks/useReadingWidth.ts.
   'mc-reading-width',
   // Navigation and shell layout the user arranged by hand.

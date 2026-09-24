@@ -1704,6 +1704,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.completion.enabled"
   },
   {
+    "id": "display.custom-font",
+    "label": "Custom font",
+    "labelKey": "pages.settings.displayPanel.custom_font_family",
+    "description": "The font the whole dashboard uses, including chat, the composer, and sidebar session and folder names. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders its glyphs and a programming font shows its ligatures.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "display.default-for-new-sessions",
     "labelKey": "pages.settings.displayPanel.default_for_new_sessions",
     "tab": "display",
@@ -1729,6 +1738,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "How the session color is applied to the row.",
     "tab": "display",
     "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
+    "id": "display.enable-ligatures",
+    "label": "Enable ligatures",
+    "labelKey": "pages.settings.displayPanel.custom_font_ligatures",
+    "description": "Render programming ligatures (=>, !=, ->) when the custom font has them. Code and diffs in messages are unaffected.",
+    "tab": "display",
+    "type": "toggle",
     "occurrence": 1
   },
   {

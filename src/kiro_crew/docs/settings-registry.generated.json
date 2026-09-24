@@ -997,6 +997,13 @@
       "configKey": "dashboard.terminal.completion.enabled"
     },
     {
+      "id": "display.custom-font",
+      "label": "Custom font",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.custom-font",
+      "description": "The font the whole dashboard uses, including chat, the composer, and sidebar session and folder names. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders its glyphs and a programming font shows its ligatures."
+    },
+    {
       "id": "display.default-for-new-sessions",
       "label": "Default for New Sessions",
       "tab": "display",
@@ -1017,6 +1024,13 @@
       "tab": "display",
       "route": "/settings/display?highlight=display.display-mode",
       "description": "How the session color is applied to the row."
+    },
+    {
+      "id": "display.enable-ligatures",
+      "label": "Enable ligatures",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.enable-ligatures",
+      "description": "Render programming ligatures (=>, !=, ->) when the custom font has them. Code and diffs in messages are unaffected."
     },
     {
       "id": "display.font",

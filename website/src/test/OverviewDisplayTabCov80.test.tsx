@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 
 // The tab is a control surface over three hooks. Stubbing them is what makes each
 // control's WIRING assertable — the hooks themselves have their own tests, and the
@@ -31,6 +32,11 @@ vi.mock('../components/themeEditor', () => ({
 
 const DisplayTab = (await import('../pages/overview/DisplayTab')).default
 
+// DisplayTab now calls useNavigate() (the Overview "Custom" chip routes to
+// Settings → Display), so it must render inside a router — matching how the
+// other useNavigate overview tabs are tested (AgentTemplatesTab.test.tsx).
+const renderTab = () => render(<MemoryRouter><DisplayTab /></MemoryRouter>)
+
 beforeEach(() => {
   vi.clearAllMocks()
   zoom.zoomSupported = true
@@ -48,7 +54,7 @@ function isActive(el: HTMLElement): boolean {
 
 describe('DisplayTab — zoom', () => {
   it('drives the three zoom controls and shows the current level', async () => {
-    render(<DisplayTab />)
+    renderTab()
     await userEvent.click(screen.getByRole('button', { name: '−' }))
     expect(zoom.zoomOut).toHaveBeenCalledTimes(1)
     await userEvent.click(screen.getByRole('button', { name: '+' }))
@@ -60,7 +66,7 @@ describe('DisplayTab — zoom', () => {
 
   it('falls back to a keyboard hint where native zoom is unavailable', () => {
     zoom.zoomSupported = false
-    render(<DisplayTab />)
+    renderTab()
     expect(screen.queryByRole('button', { name: '+' })).toBeNull()
     expect(screen.getByText(/Zoom with/)).toBeInTheDocument()
   })
@@ -68,7 +74,7 @@ describe('DisplayTab — zoom', () => {
 
 describe('DisplayTab — font and mode', () => {
   it('marks the active font family and switches on click', async () => {
-    render(<DisplayTab />)
+    renderTab()
     expect(isActive(screen.getByRole('button', { name: 'Sans' }))).toBe(true)
     expect(isActive(screen.getByRole('button', { name: 'Mono' }))).toBe(false)
     await userEvent.click(screen.getByRole('button', { name: 'Mono' }))
@@ -77,7 +83,7 @@ describe('DisplayTab — font and mode', () => {
 
   it('marks the active colour scheme and switches on click', async () => {
     theme.preference = 'dark'
-    render(<DisplayTab />)
+    renderTab()
     expect(isActive(screen.getByRole('button', { name: /Dark/ }))).toBe(true)
     await userEvent.click(screen.getByRole('button', { name: /Light/ }))
     expect(theme.setTheme).toHaveBeenCalledWith('light')
@@ -88,14 +94,14 @@ describe('DisplayTab — font and mode', () => {
 
 describe('DisplayTab — colour themes', () => {
   it('lists every theme and applies the one clicked', async () => {
-    render(<DisplayTab />)
+    renderTab()
     expect(isActive(screen.getByRole('button', { name: 'zzq-base-label' }))).toBe(true)
     await userEvent.click(screen.getByRole('button', { name: 'zzq-mine-label' }))
     expect(theme.setColorTheme).toHaveBeenCalledWith('custom-zzq-mine')
   })
 
   it('offers an edit affordance on custom themes only, addressed by slug', async () => {
-    render(<DisplayTab />)
+    renderTab()
     const edits = screen.getAllByRole('button', { name: 'Edit theme' })
     expect(edits).toHaveLength(1)
     await userEvent.click(edits[0])
@@ -106,7 +112,7 @@ describe('DisplayTab — colour themes', () => {
   })
 
   it('opens the creator from the closed state', async () => {
-    render(<DisplayTab />)
+    renderTab()
     await userEvent.click(screen.getByRole('button', { name: /New Theme/i }))
     expect(editor.openNewTheme).toHaveBeenCalledTimes(1)
     expect(screen.queryByTestId('theme-editor-panel')).toBeNull()
@@ -114,7 +120,7 @@ describe('DisplayTab — colour themes', () => {
 
   it('shows the panel and a close action while creating', async () => {
     editor.editorOpen = true
-    render(<DisplayTab />)
+    renderTab()
     expect(screen.getByTestId('theme-editor-panel')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /Creating/ }))
     expect(editor.closeEditor).toHaveBeenCalledTimes(1)
@@ -124,7 +130,7 @@ describe('DisplayTab — colour themes', () => {
   it('distinguishes editing an existing theme from creating a new one', () => {
     editor.editorOpen = true
     editor.isEditing = true
-    render(<DisplayTab />)
+    renderTab()
     expect(screen.getByRole('button', { name: /Editing/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Creating/ })).toBeNull()
   })

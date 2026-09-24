@@ -12210,7 +12210,8 @@
         "system": "시스템",
         "use_your_browser_s_zoom_your_browser_remembers_i": "브라우저의 확대/축소를 사용합니다. 브라우저가 이 사이트의 설정을 기억합니다.",
         "zoom": "확대/축소",
-        "zoom_with": "확대/축소 방법"
+        "zoom_with": "확대/축소 방법",
+        "custom_font_configure_in_settings": "사용자 지정 글꼴 — 설치된 글꼴을 설정 → 디스플레이에서 선택하세요."
       },
       "embedModel": {
         "active": "활성: {{model}} · {{dim}}d",
@@ -14255,7 +14256,21 @@
         "installed_themes_refresh_failed_after_install": "테마는 설치되었지만 테마 목록을 새로 고칠 수 없었습니다. 다시 시도를 눌러 목록을 새로 고치고 적용하거나, 테마 목록이 새로 고쳐지면 목록에서 선택하세요.",
         "retry_theme_list": "다시 시도",
         "retrying_theme_list": "다시 시도 중…",
-        "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다."
+        "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다.",
+        "font_family_option_custom": "사용자 지정",
+        "custom_font_family": "사용자 지정 글꼴",
+        "custom_font_family_desc": "채팅, 입력창, 사이드바의 세션 및 폴더 이름을 포함해 대시보드 전체가 사용하는 글꼴입니다. 대시보드를 보는 기기에 설치된 글꼴을 선택하거나 아무 글꼴 이름이나 입력하세요. Nerd Font는 글리프를, 프로그래밍 글꼴은 합자를 표시합니다.",
+        "custom_font_choose": "글꼴 선택…",
+        "custom_font_search": "글꼴 검색…",
+        "custom_font_use_typed": "‘{{value}}’ 사용",
+        "custom_font_not_detected": "이 기기에서 감지되지 않음",
+        "custom_font_detect": "설치된 모든 글꼴 나열…",
+        "custom_font_detect_checking": "확인 중…",
+        "custom_font_detect_added": "설치된 글꼴을 목록에 추가했습니다.",
+        "custom_font_detect_none": "이미 나열된 글꼴 외에는 없습니다.",
+        "custom_font_detect_denied": "글꼴 접근이 허용되지 않았습니다. 이미 감지된 글꼴은 목록에 유지되며, 여전히 아무 글꼴 이름이나 입력할 수 있습니다.",
+        "custom_font_ligatures": "합자 사용",
+        "custom_font_ligatures_desc": "사용자 지정 글꼴에 합자가 있으면 프로그래밍 합자(=>, !=, ->)를 렌더링합니다. 메시지의 코드와 diff는 영향을 받지 않습니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",
