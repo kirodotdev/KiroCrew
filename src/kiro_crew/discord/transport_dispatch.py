@@ -357,39 +357,6 @@ _BUSY_OPTIONS_REFUSAL = (
     "applied. Type it as a message once the turn finishes."
 )
 
-#: What a typed message into a BUSY resumed dashboard session is told. The
-#: dashboard slot's own mid-turn machinery took it -- a dashboard-driven turn's
-#: reply reaches this DM, if at all, through the dashboard's own cross-surface
-#: leg and never through this dispatcher, so without a confirmation the hand-off
-#: is indistinguishable from a drop.
-_RESUMED_STEERED = "↪️ Steering that session — your message was folded into its running turn."
-_RESUMED_QUEUED = "⏳ Queued for that session — it runs when the current turn finishes."
-#: The session closed while the message was in flight; the close archives the
-#: queue the turn's teardown moved the text onto, so it runs on the next resume.
-_RESUMED_QUEUED_AFTER_CLOSE = (
-    "⏳ Queued for that session — it closed while your message was in flight; "
-    "the message runs when the session is next resumed."
-)
-#: The session changed while the message was in flight and the successor ran it.
-_RESUMED_RAN_AFTER_MOVE = (
-    "✅ Delivered to that session — it was reopened while your message was in flight, "
-    "and the message ran there as its own turn."
-)
-#: The session closed while the message was in flight and the queue the close
-#: archived does not (yet) carry the text: it is held only in memory, which
-#: nothing revisits once the slot is popped. Honest at the instant: the message
-#: may still run if the archive catches up, so the remedy is to watch first.
-_RESUMED_BUSY_UNSAVED_CLOSE_REFUSAL = (
-    "⏳ That session closed while your message was in flight, and the message had "
-    "not been saved with it yet. If it does not run once the session is reopened, "
-    "send it again."
-)
-#: The slot's live queue is at its bound. Refused rather than appended past it or
-#: evicting a waiting entry; the author still holds the text.
-_RESUMED_BUSY_QUEUE_FULL_REFUSAL = (
-    "⏳ That session's queue is full, so this message was NOT added. "
-    "Send it again once some of the waiting messages have run."
-)
 #: The slot cannot take the message: no open tab, a closing or remote-bound
 #: slot, or a lease held by something other than the dashboard turn loop
 #: (Discord's own turn on the resumed key). An incognito or temporary session is
@@ -398,22 +365,6 @@ _RESUMED_BUSY_REFUSAL = (
     "⏳ That session is busy with a turn started elsewhere. "
     "Send it again once it finishes, or `!unlink` to go back to "
     "your own conversation."
-)
-#: Attachments cannot ride either arm: ``_session/steer`` carries text only, and
-#: the slot's queue cannot carry Discord attachment material (temp files owned by
-#: the consuming turn, which the dashboard drain has no hook to own). The files
-#: stay with the user rather than being dropped or answered without.
-_RESUMED_BUSY_ATTACHMENTS_REFUSAL = (
-    "⏳ That session is busy, and a message with attachments cannot wait in its "
-    "queue. Send it again once the turn finishes."
-)
-#: The slot the steer was handed to stopped being the one the session resolves
-#: to while the RPC was suspended (closed, or closed and recreated under the same
-#: key). Nothing would drain a queue entry made now, so the text is refused with
-#: the remedy rather than confirmed and lost.
-_RESUMED_BUSY_MOVED_REFUSAL = (
-    "⏳ That session changed while your message was in flight, so it was NOT "
-    "delivered. Send it again."
 )
 
 # How long a !model picker stays pressable, and how many pickers are retained.
@@ -1595,16 +1546,7 @@ class DiscordDispatcher:
         assert self.client is not None
         # Deferred, like every dashboard import in this module: the dispatcher is on
         # the gateway boot path and the dashboard package is not.
-        from kiro_crew.dashboard.channel_handoff import (
-            HANDOFF_STEERED,
-            QUEUED_BY_CLOSE,
-            RAN_ON_SUCCESSOR,
-            REFUSED_ATTACHMENTS,
-            REFUSED_MOVED,
-            REFUSED_QUEUE_FULL,
-            REFUSED_UNSAVED_CLOSE,
-            hand_to_resumed_slot,
-        )
+        from kiro_crew.dashboard.channel_handoff import hand_to_resumed_slot, resumed_busy_reply
 
         mode = override_mode or str(self._live_cfg().messaging.queue_mode)
         outcome = await hand_to_resumed_slot(
@@ -1634,25 +1576,9 @@ class DiscordDispatcher:
                 session_key,
                 outcome.reason,
             )
-            if outcome.reason == REFUSED_ATTACHMENTS:
-                reply = _RESUMED_BUSY_ATTACHMENTS_REFUSAL
-            elif outcome.reason == REFUSED_MOVED:
-                reply = _RESUMED_BUSY_MOVED_REFUSAL
-            elif outcome.reason == REFUSED_QUEUE_FULL:
-                reply = _RESUMED_BUSY_QUEUE_FULL_REFUSAL
-            elif outcome.reason == REFUSED_UNSAVED_CLOSE:
-                reply = _RESUMED_BUSY_UNSAVED_CLOSE_REFUSAL
-            else:
-                reply = _RESUMED_BUSY_REFUSAL
-        elif outcome.kind == HANDOFF_STEERED:
-            reply = _RESUMED_STEERED
-        elif outcome.reason == QUEUED_BY_CLOSE:
-            reply = _RESUMED_QUEUED_AFTER_CLOSE
-        elif outcome.reason == RAN_ON_SUCCESSOR:
-            reply = _RESUMED_RAN_AFTER_MOVE
-        else:
-            reply = _RESUMED_QUEUED
-        await self.client.send_message(msg.conversation_id, reply)
+        await self.client.send_message(
+            msg.conversation_id, resumed_busy_reply(outcome, busy_refusal=_RESUMED_BUSY_REFUSAL)
+        )
 
     async def _handle_busy(
         self,

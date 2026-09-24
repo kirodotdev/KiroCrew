@@ -13,6 +13,7 @@ from kiro_crew.dashboard.chat_utils import (
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        COMMANDS_OFF_META_KEY,
         STEER_POSSIBLY_DELIVERED_META,
         STEER_STATE_CONSUMED,
         STEER_STATE_REQUEUED,
@@ -317,6 +318,11 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # narrower channel authority a queued channel message carries. Absent means
         # not through a channel.
         _channel = bool(getattr(slot, "_steer_channel_origin", {}).pop(steer_msg, False))
+        if _channel:
+            # A channel steer that re-enters the queue runs as its own turn, so it
+            # takes the mark the hand-off's queued entry carries: the text is the
+            # sender's words, never a dashboard command to run on drain.
+            _meta[COMMANDS_OFF_META_KEY] = True
         _maybe_delivered: set[str] = getattr(slot, "_steer_possibly_delivered", set())
         # An RPC still in flight counts too: its frame may already be in the
         # pipe, and its verdict lands after this entry may have drained.

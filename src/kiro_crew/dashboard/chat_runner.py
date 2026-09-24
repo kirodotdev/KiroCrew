@@ -117,6 +117,7 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
+    COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
 )
@@ -6943,6 +6944,13 @@ async def _start_next_queued_turn(
             )
     # Model input only: the row keeps the user's text as typed.
     _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
+    # Queue plumbing like the steer mark above, read the way the channel origin is:
+    # ANY consumed entry a channel hand-off stamped keeps the merged text content,
+    # so a batch cannot smuggle a channel's "/clear" into a command by sitting
+    # behind a dashboard entry. Popped so it does not ride into the row's meta.
+    _commands_off = bool(_drained_meta.pop(COMMANDS_OFF_META_KEY, False)) or any(
+        (item.get("meta") or {}).get(COMMANDS_OFF_META_KEY) is True for item in consumed
+    )
     if "quote" in _drained_meta:
         # The row's quote record follows the row's text: as typed only when
         # every consumed entry is the human's own (`deliver_as_typed`), else
@@ -7070,6 +7078,8 @@ async def _start_next_queued_turn(
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,
     }
+    if _commands_off:
+        _run_kwargs["_commands_off"] = True
     # Provenance for the session's log, from the enqueue-time ``kind`` tag — the
     # same unforgeable source ``is_system_injection_item`` classifies on, and for
     # the same reason: the banner these injections wrap their text in is something
@@ -8021,6 +8031,12 @@ async def _run_chat(
     # message-value key could not tell apart). Captured by the fire path.
     _directive_loop_gen: int = 0,
     _directive_channel_origin: bool = False,
+    # The message is turn CONTENT and its first word is never read as a dashboard
+    # command: set by the drain for an entry the channel hand-off stamped
+    # (``COMMANDS_OFF_META_KEY``). A channel's own queue already replays every
+    # entry this way; without the switch, a channel's queued "/clear" would be the
+    # one queued "/clear" in the system that ran instead of being said.
+    _commands_off: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -8804,6 +8820,11 @@ async def _run_chat(
             **containment_meta(state, slot),
             **(extra_meta or {}),
         }
+        if _commands_off:
+            # A recovery is a second turn of the SAME message: a channel entry that
+            # arrived as turn content stays turn content when its retry drains, or
+            # the retry would run the words the original turn was told not to.
+            _recovery_meta[COMMANDS_OFF_META_KEY] = True
         if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
             # ORIGINAL replays must preserve the triggering row's attachment
             # lists. The provider prompt already carries the full markers, but
@@ -9275,7 +9296,11 @@ async def _run_chat(
     _is_synthetic = _synthetic_payload or message.startswith(SUBAGENT_SYNTHESIS_PREFIX)
 
     # ── Slash commands: detect early, before session acquisition ──
-    first_word = message.split()[0] if message.strip() else ""
+    # Every command branch below keys on ``first_word``: the harness forward
+    # (``is_slash``), the blocked set, and the local commands (/goal, /workflow,
+    # /prompts, /compact). With commands off the word is not read at all, so a
+    # hand-off entry reaches the model as the text it is, whatever it opens with.
+    first_word = message.split()[0] if message.strip() and not _commands_off else ""
     _cfg_agent = KiroCrewConfig.load().agent
     _is_cc_provider = is_claude_code(_cfg_agent.provider)
     # The claude harness answers on either provider axis: the claude_code seam, or

@@ -100,6 +100,79 @@ def _refused(reason: str) -> ResumedBusyOutcome:
     return ResumedBusyOutcome(HANDOFF_REFUSED, reason)
 
 
+#: What a channel conversation is told about a message handed to a BUSY resumed
+#: dashboard session -- one wording for every surface (``resumed_busy_reply``).
+#: A dashboard-driven turn's reply reaches the conversation, if at all, through
+#: the dashboard's own cross-surface leg and never through the dispatcher, so
+#: without a confirmation the hand-off is indistinguishable from a drop. The
+#: refusals for a slot that cannot take the message -- none open, closing,
+#: remote-bound, idle -- stay with each dispatcher's own wording, which names the
+#: surface's unlink command (``resumed_busy_reply``'s *busy_refusal*).
+RESUMED_STEERED = "↪️ Steering that session — your message was folded into its running turn."
+RESUMED_QUEUED = "⏳ Queued for that session — it runs when the current turn finishes."
+#: The session closed while the message was in flight; the close archives the
+#: queue the turn's teardown moved the text onto, so it runs on the next resume.
+RESUMED_QUEUED_AFTER_CLOSE = (
+    "⏳ Queued for that session — it closed while your message was in flight; "
+    "the message runs when the session is next resumed."
+)
+#: The session changed while the message was in flight and the successor ran it.
+RESUMED_RAN_AFTER_MOVE = (
+    "✅ Delivered to that session — it was reopened while your message was in flight, "
+    "and the message ran there as its own turn."
+)
+#: The session closed while the message was in flight and the queue the close
+#: archived does not (yet) carry the text: it is held only in memory, which
+#: nothing revisits once the slot is popped. Honest at the instant: the message
+#: may still run if the archive catches up, so the remedy is to watch first.
+RESUMED_BUSY_UNSAVED_CLOSE_REFUSAL = (
+    "⏳ That session closed while your message was in flight, and the message had "
+    "not been saved with it yet. If it does not run once the session is reopened, "
+    "send it again."
+)
+#: The slot's live queue is at its bound. Refused rather than appended past it or
+#: evicting a waiting entry; the author still holds the text.
+RESUMED_BUSY_QUEUE_FULL_REFUSAL = (
+    "⏳ That session's queue is full, so this message was NOT added. "
+    "Send it again once some of the waiting messages have run."
+)
+#: Attachments cannot ride either arm: ``_session/steer`` carries text only, and
+#: the slot's queue cannot carry channel attachment material (temp files owned by
+#: the consuming turn, which the dashboard drain has no hook to own). The files
+#: stay with the user rather than being dropped or answered without.
+RESUMED_BUSY_ATTACHMENTS_REFUSAL = (
+    "⏳ That session is busy, and a message with attachments cannot wait in its "
+    "queue. Send it again once the turn finishes."
+)
+#: The slot the steer was handed to stopped being the one the session resolves
+#: to while the RPC was suspended (closed, or closed and recreated under the same
+#: key). Nothing would drain a queue entry made now, so the text is refused with
+#: the remedy rather than confirmed and lost.
+RESUMED_BUSY_MOVED_REFUSAL = (
+    "⏳ That session changed while your message was in flight, so it was NOT "
+    "delivered. Send it again."
+)
+
+
+def resumed_busy_reply(outcome: ResumedBusyOutcome, *, busy_refusal: str) -> str:
+    """What the conversation is told about *outcome*; *busy_refusal* is the surface's
+    own wording for a slot that cannot take the message (it names the unlink command)."""
+    if outcome.refused:
+        return {
+            REFUSED_ATTACHMENTS: RESUMED_BUSY_ATTACHMENTS_REFUSAL,
+            REFUSED_MOVED: RESUMED_BUSY_MOVED_REFUSAL,
+            REFUSED_QUEUE_FULL: RESUMED_BUSY_QUEUE_FULL_REFUSAL,
+            REFUSED_UNSAVED_CLOSE: RESUMED_BUSY_UNSAVED_CLOSE_REFUSAL,
+        }.get(outcome.reason, busy_refusal)
+    if outcome.kind == HANDOFF_STEERED:
+        return RESUMED_STEERED
+    if outcome.reason == QUEUED_BY_CLOSE:
+        return RESUMED_QUEUED_AFTER_CLOSE
+    if outcome.reason == RAN_ON_SUCCESSOR:
+        return RESUMED_RAN_AFTER_MOVE
+    return RESUMED_QUEUED
+
+
 #: Hand-offs in flight, held STRONGLY. A hand-off runs as its own task, awaited
 #: through ``asyncio.shield`` so the channel handler's cancellation cannot cut it
 #: off between the steer RPC and its reconciliation (see
@@ -576,5 +649,11 @@ def _queue_arm(state: Any, slot: Any, text: str, recipient: dict[str, Any]) -> R
         directive_user_origin=True,
         directive_channel_origin=True,
         channel_recipient=recipient.get(CHANNEL_RECIPIENT_META_KEY),
+        # Turn CONTENT, never a dashboard command: the channel's own queue replays
+        # with command interpretation off, and this entry crosses into the slot's
+        # queue in its place. A ``/queue /clear`` typed into the chat during a
+        # dashboard turn reaches the drain as the words "/clear", not as the
+        # command that wipes the session.
+        commands_off=True,
     )
     return ResumedBusyOutcome(HANDOFF_QUEUED)

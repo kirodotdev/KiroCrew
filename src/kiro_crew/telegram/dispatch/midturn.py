@@ -1,4 +1,5 @@
-"""A message that lands while a turn is running: steer it into that turn, or queue it.
+"""A message that lands while a turn is running: steer it into that turn, or queue it;
+one into a busy RESUMED dashboard session goes to that slot's own machinery.
 
 The steer arm is one transaction with any privacy modifier the message carries: the
 mode is reserved before the steer, committed once the steer lands (committed as
@@ -26,6 +27,18 @@ if TYPE_CHECKING:
 
 #: The dispatcher's one logger, named for the facade module operators filter on.
 logger = logging.getLogger("kiro_crew.telegram.transport_dispatch")
+
+#: What a typed message into a BUSY resumed dashboard session is told when the
+#: slot cannot take it; every other receipt is ``channel_handoff.resumed_busy_reply``'s.
+#: The slot cannot take the message: no open tab, a closing or remote-bound
+#: slot, or a lease held by something other than the dashboard turn loop
+#: (Telegram's own turn on the resumed key). An incognito or temporary session is
+#: taken like any other: those modes keep their transcript and queue.
+_RESUMED_BUSY_REFUSAL = (
+    "⏳ That session is busy with a turn started elsewhere. Send your "
+    "message again once it finishes, or /unlink to return to your "
+    "Telegram conversation."
+)
 
 
 async def _handle_busy(
@@ -205,3 +218,102 @@ async def _handle_busy(
         # carries the modifier, so command parsing re-derives the request rather
         # than this path having to re-thread it.
         await self.handle_message(msg)
+
+
+async def _handle_resumed_busy(
+    self: TelegramDispatcher,
+    session_key: str,
+    msg: InboundMessage,
+    text: str,
+    override_mode: str | None,
+    *,
+    thread: int | None,
+    route: tuple[str, str],
+    interpret_commands: bool,
+    drain: bool,
+    principal: str = "",
+) -> None:
+    """A message arrived while the RESUMED dashboard session is mid-turn.
+
+    Same mode ladder as :meth:`_handle_busy` (the per-message override, else
+    ``messaging.queue_mode``), but the destination is the dashboard slot's own
+    machinery (``dashboard.channel_handoff.hand_to_resumed_slot``), never this
+    dispatcher's queue: that queue drains only at the tail of a TELEGRAM-driven
+    turn and replays with resume routing off, so an entry made while the
+    dashboard drives would run later in the NATIVE session. Every outcome is
+    confirmed in the chat; a silent hand-off reads as a drop.
+
+    *session_key* is the binding ``handle_message`` resolved ONCE for this message
+    and every path below runs against that captured key: *route*,
+    *interpret_commands* and *drain* are carried so a turn this arm starts goes
+    straight to :meth:`_run_turn` instead of back through ``handle_message``,
+    whose fresh binding resolution could route the message elsewhere.
+
+    *principal* is the Telegram user admitted on inbound; it rides the entry's
+    recipient stamp so a drop notice can be authorized against the roster.
+    """
+    chat_id = int(msg.conversation_id)
+    # Deferred, like every dashboard import the dispatcher makes: it is on the
+    # gateway boot path and the dashboard package is not.
+    from kiro_crew.dashboard.channel_handoff import (
+        REFUSED_IDLE,
+        REFUSED_NO_SLOT,
+        hand_to_resumed_slot,
+        resumed_busy_reply,
+    )
+
+    link = self._session_resume.link_for(chat_id, thread)
+    mode = override_mode or str(self._live_cfg().messaging.queue_mode)
+    outcome = await hand_to_resumed_slot(
+        getattr(self._session_resume, "dashboard_state", None),
+        session_key,
+        text,
+        mode=mode,
+        has_attachments=bool(msg.attachments),
+        # Where a drop notice goes if the drain later refuses a queued entry,
+        # and the principal the outbound recipient check needs: this user was
+        # authorized against the allow-list on inbound, and a dashboard slot's
+        # session key names no Telegram peer of its own.
+        channel_type=link.channel_type,
+        conversation_id=link.channel_id or "",
+        principal=principal,
+    )
+    if outcome.refused:
+        logger.info(
+            "telegram: message into busy resumed session %s refused (%s)",
+            session_key,
+            outcome.reason,
+        )
+        if outcome.reason in (REFUSED_IDLE, REFUSED_NO_SLOT) and not self.sessions.is_busy(
+            session_key
+        ):
+            # No dashboard turn is in progress to join (an idle slot, or no open
+            # tab) and the turn that was running ended between this dispatcher's
+            # busy check and the hand-off's own read: nothing holds the lease now,
+            # so the message runs as a fresh turn instead of being refused. While the
+            # lease IS still held (Telegram's own turn on the resumed key) the
+            # refusal stands: this chat's queue replays natively.
+            #
+            # Straight to the turn, under the key resolved at admission -- NOT back
+            # through ``handle_message``: updates run as concurrent tasks and
+            # ``/unlink`` is exempt from the busy gate (the refusal even names it),
+            # so a re-entry's fresh binding resolution could land this message in
+            # the native session the user just left this one for.
+            privacy_mode.hydrate(self.sessions, session_key)
+            await self._run_turn(
+                msg,
+                text,
+                session_key=session_key,
+                resumed_key=session_key,
+                route=route,
+                user_id=int(msg.user_id),
+                chat_id=chat_id,
+                thread=getattr(msg, "thread_id", None),
+                reply_thread=thread,
+                interpret_commands=interpret_commands,
+                drain=drain,
+            )
+            return
+    await self._reply(
+        chat_id, resumed_busy_reply(outcome, busy_refusal=_RESUMED_BUSY_REFUSAL), thread=thread
+    )

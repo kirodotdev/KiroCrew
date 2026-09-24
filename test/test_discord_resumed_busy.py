@@ -28,6 +28,7 @@ from test_discord import _prime_live
 from test_discord_sessions import _bind_to_chat1, _dispatcher, _log, _message
 
 from kiro_crew.dashboard import channel_handoff as ch
+from kiro_crew.dashboard import chat_delivery as cd
 from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.history import HUMAN_TURN_META_KEY
@@ -331,6 +332,165 @@ async def test_queue_mode_lands_the_message_in_the_slot_queue(tmp_path, how) -> 
     assert sc.QUEUED_CONTAINMENT_META_KEY in entry["meta"]
     assert enqueued == [], "never the Discord-side queue"
     assert sessions.last_key == ""
+
+
+@pytest.mark.parametrize("command", ["/clear", "/model gpt-5", "/not-a-command at all"])
+@pytest.mark.asyncio
+async def test_a_queued_handoff_entry_is_turn_content_never_a_dashboard_command(
+    tmp_path, command
+) -> None:
+    """``!queue /clear`` during a dashboard turn queues the WORDS "/clear", stamped so
+    the drain never reads them as the command that wipes the session.
+
+    The channel's own queue already replays every entry with command interpretation
+    off; this entry crosses into the slot's queue in its place and keeps that rule.
+    The directive prefix is stripped before the hand-off, so the text alone cannot
+    tell the drain -- the entry's meta does.
+    """
+    dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=None
+    )
+
+    await dispatcher.handle_message(_message(f"!queue {command}"))
+
+    (entry,) = slot._queue
+    assert entry["content"] == command
+    assert entry["meta"].get(cr.COMMANDS_OFF_META_KEY) is True
+    assert enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_the_drain_keeps_a_stamped_entry_out_of_command_interpretation(
+    tmp_path, monkeypatch
+) -> None:
+    """The stamp reaches ``_run_chat`` as ``_commands_off``; a plain dashboard entry
+    carries nothing, so the composer's own queued ``/clear`` still runs as before."""
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = _busy(state.get_or_create_slot("chat-1"))
+    cd.queue_for_next_turn(
+        state,
+        slot,
+        "/clear",
+        directive_user_origin=True,
+        directive_channel_origin=True,
+        commands_off=True,
+    )
+    slot.task = None
+    captured: dict[str, object] = {}
+
+    def _stub_run_chat(_state, _slot, _prompt, **kwargs):
+        captured.update(kwargs)
+
+        async def _done():
+            return None
+
+        return _done()
+
+    def _fake_spawn(_state, _slot, coro):
+        coro.close()
+        task = MagicMock()
+        task.done.return_value = True
+        return task
+
+    monkeypatch.setattr(cr, "_run_chat", _stub_run_chat)
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _fake_spawn)
+
+    assert await cr._start_next_queued_turn(state, slot) is True
+    assert captured["_commands_off"] is True
+
+    captured.clear()
+    slot = _busy(state.get_or_create_slot("chat-2"))
+    cd.queue_for_next_turn(state, slot, "/clear", directive_user_origin=True)
+    slot.task = None
+    assert await cr._start_next_queued_turn(state, slot) is True
+    assert "_commands_off" not in captured, "the composer's own queued command is unchanged"
+
+
+@pytest.mark.parametrize("off", [True, False])
+@pytest.mark.asyncio
+async def test_run_chat_hands_a_commands_off_message_to_the_model_as_text(
+    tmp_path, monkeypatch, off
+) -> None:
+    """With the switch, "/clear" goes to ``stream`` as text; without it, to
+    ``stream_command`` -- the dashboard's own path is the parity half."""
+    from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.broadcast_ws = MagicMock()
+    state.push_slots_update = MagicMock()
+    state.context_builder = None
+    state.consolidator = None
+    state._hook_store = None
+    state._yolo = False
+    slot = state.get_or_create_slot("s1")
+    client = MagicMock()
+    client.context_usage_pct = MagicMock(return_value=10.0)
+    streamed: list[tuple[str, str]] = []
+
+    def _stream(kind):
+        async def _run(msg):
+            streamed.append((kind, msg))
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        return _run
+
+    client.stream = _stream("stream")
+    client.stream_command = _stream("stream_command")
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+    await cr._run_chat(state, slot, "/clear", _commands_off=off)
+
+    kinds = [k for k, _ in streamed]
+    if off:
+        assert kinds == ["stream"], streamed
+        assert "/clear" in streamed[0][1]
+    else:
+        assert kinds == ["stream_command"], streamed
+
+
+@pytest.mark.parametrize("off", [True, False])
+@pytest.mark.asyncio
+async def test_a_recovery_requeue_keeps_the_commands_off_stamp(tmp_path, monkeypatch, off) -> None:
+    """A commands-off turn that dies before output is requeued verbatim by the
+    runner's recovery; the requeued entry carries the stamp, so the retry's drain
+    hands "/clear" to the model again instead of running it. A plain turn's requeue
+    carries no stamp, so the composer's own retried command still runs."""
+    from kiro_crew.acp.client import AcpError
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.broadcast_ws = MagicMock()
+    state.push_slots_update = MagicMock()
+    state.context_builder = None
+    state.consolidator = None
+    state._hook_store = None
+    state._yolo = False
+    slot = state.get_or_create_slot("s1")
+    client = MagicMock()
+    client.context_usage_pct = MagicMock(return_value=10.0)
+
+    async def _die(_msg):
+        raise AcpError("ACP process exited (code=-15)")
+        yield  # an async generator
+
+    client.stream = _die
+    client.stream_command = _die
+    client.shutdown = AsyncMock()
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    state.sessions.reset = AsyncMock()
+
+    async def _no_drain(_state, _slot, **_kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(cr, "_start_next_queued_turn", _no_drain)
+
+    await cr._run_chat(state, slot, "/clear", _commands_off=off)
+
+    requeued = [q for q in slot._queue if q.get("content") == "/clear"]
+    assert requeued, f"expected the verbatim recovery requeue, queue={slot._queue}"
+    assert (requeued[0].get("meta") or {}).get(cr.COMMANDS_OFF_META_KEY) is (True if off else None)
 
 
 @pytest.mark.asyncio
@@ -1035,6 +1195,28 @@ async def test_a_requeued_channel_steer_keeps_its_channel_provenance(tmp_path) -
     assert entry.get("_directive_user_origin") is True
     assert entry.get("_directive_channel_origin") is True
     assert slot._steer_channel_origin == {}, "popped in lockstep with the other maps"
+
+
+@pytest.mark.parametrize("channel", [True, False])
+@pytest.mark.asyncio
+async def test_a_requeued_channel_steer_is_turn_content_never_a_dashboard_command(
+    tmp_path, channel
+) -> None:
+    """A channel steer the turn never consumed re-enters the queue stamped as content,
+    exactly like a queued hand-off entry; a composer steer carries no such mark."""
+    state = _make_state(tmp_path)
+    slot = _busy(state.get_or_create_slot("chat-1"))
+    text = "/clear"
+    slot._pending_steers.append(text)
+    slot._steer_user_origin[text] = True
+    slot._steer_channel_origin[text] = channel
+    slot._steer_admissions[text] = sc.containment_meta(state, slot)
+
+    cr._requeue_unconsumed_steers(state, slot)
+
+    (entry,) = slot._queue
+    assert entry["content"] == text
+    assert entry["meta"].get(cr.COMMANDS_OFF_META_KEY) is (True if channel else None)
 
 
 async def _handler_cancelled_inside_the_steer_rpc(tmp_path, *, accepted: bool):
