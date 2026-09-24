@@ -9,13 +9,13 @@ credential: they are properties of a ``dict``, and a test can state them.
 ## What a revision is keyed on
 
 One family per crew, one revision per (image digest, secret ARN set, cpu
-architecture, log configuration). The key is not a preference, it is what
+architecture, log configuration, store). The key is not a preference, it is what
 ``RunTask`` can and cannot override. ``RunTask`` overrides ``cpu``, ``memory``,
 ``ephemeralStorage``, ``taskRoleArn``, ``executionRoleArn`` and a container's
 ``command`` and ``environment``. It cannot override ``image``, ``secrets``,
-``logConfiguration`` or ``runtimePlatform``. Those four are therefore the only
-fields a launch cannot bend at run time, so they are the only ones that can
-force a new revision.
+``logConfiguration``, ``runtimePlatform``, ``volumes`` or ``mountPoints``. Those
+are therefore the only fields a launch cannot bend at run time, so they are the
+only ones that can force a new revision.
 
 Two consequences follow, and :func:`revision_fingerprint` is written so both are
 testable rather than asserted. Keying on size is wrong, because size is an
@@ -51,7 +51,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, Optional, Sequence
 
 from kiro_crew.cloud.fargate.identity import (
     CrewBinding,
@@ -102,6 +102,29 @@ CREDENTIAL_ENV = frozenset({MODEL_CREDENTIAL_ENV, CONTROL_SECRET_ENV})
 #: launch parameter, so ``portMappings`` can stay out of the revision key.
 FRONT_PORT = 8080
 
+#: The data home inside the container: where session transcripts, the archive,
+#: artifacts and the installed crew bundle live. A constant of the image, which
+#: creates this directory and sets ``KIROCREW_HOME``, ``SMC_DATA_HOME`` and
+#: ``SMC_CONFIG_DIR`` to it, so a mount anywhere else backs a directory nothing
+#: reads and leaves the transcripts on the task's own disk. Pinned to the image's
+#: own ``ENV`` by a test that reads the Dockerfile, because the two agreeing is
+#: the whole property and a drift on either side is silent.
+#:
+#: POSIX-only by construction, and not a host path. It is a path inside a Linux
+#: container, emitted as a string into the ``RegisterTaskDefinition`` document
+#: beside ``operatingSystemFamily`` LINUX; nothing on the machine producing the
+#: document ever opens it. Resolving it through the running host's temporary
+#: directory or path rules would put that host's layout into an AWS API document,
+#: which is why it is spelled literally here.
+CREW_DATA_HOME = "/var/lib/kirocrew"
+
+#: Name tying the task's volume to the container's mount point. Both halves are
+#: generated here, so the name is a module constant rather than an input: a
+#: ``mountPoints[].sourceVolume`` naming no declared volume is refused by
+#: ``RegisterTaskDefinition``, and a caller cannot get a value it never supplies
+#: wrong.
+CREW_STORE_VOLUME_NAME = "crew-data"
+
 #: Task-level cpu and memory exist only because ``RegisterTaskDefinition``
 #: requires them for a Fargate task. Every launch overrides them, so this pair
 #: is the smallest valid Fargate combination and never an intended runtime
@@ -143,20 +166,34 @@ CREW_TAG_KEY = "kirocrew:crew"
 #: fields are hashed becomes a visibly different key rather than a silent
 #: collision with keys computed under the old shape.
 #:
-#: Bumped to 2 when the container definition gained
-#: ``linuxParameters.initProcessEnabled``. The hashed FIELDS did not change, which
-#: is exactly why the bump is needed: a revision registered under scheme 1 has a
-#: DIFFERENT document for an identical key, so a caller confirming "revision N
-#: holds the content this spec describes" would accept a stale revision that runs
-#: without an init process. The new field is a constant, so hashing it could not
-#: have told the two apart; the scheme is the only thing that can.
-FINGERPRINT_SCHEME = 2
+#: Scheme 3 hashes the store alongside the other four unoverridable fields, and
+#: the container definition carries ``linuxParameters.initProcessEnabled``. Two
+#: separate reasons a key must not be read across schemes: a hashed field set that
+#: differs, and a constant in the document that does not appear in the payload at
+#: all. The second is why the scheme exists -- hashing cannot tell two documents
+#: apart over a field neither of them varies -- so a caller confirming "revision N
+#: holds the content this spec describes" compares schemes, not only hashes.
+FINGERPRINT_SCHEME = 3
 
 #: A digest-pinned image reference: ``<repository>@sha256:<64 hex>``. A tag is
 #: refused. A tag can be moved after a revision is registered, which leaves the
 #: revision key identifying something other than the image content, and that
 #: identity is the premise every property built on the key depends on.
 _DIGEST_REF_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}\Z")
+
+#: An EFS file system id: ``fs-`` and 8 or 17 lowercase hex digits. Both lengths
+#: are live -- the short form predates the long one and existing file systems
+#: still carry it -- so accepting one and not the other refuses a real store.
+#:
+#: Anchored at both ends and lowercase-only, which refuses a surrounding space and
+#: a re-cased id rather than repairing either. An id is a NAME: the account has
+#: exactly one spelling of it, so a value that needs repair to match is a value
+#: that came from somewhere other than the file system it is meant to name.
+_FILE_SYSTEM_ID_RE = re.compile(r"^fs-(?:[0-9a-f]{8}|[0-9a-f]{17})\Z")
+
+#: An EFS access point id, same two lengths and the same anchoring, for the same
+#: reasons.
+_ACCESS_POINT_ID_RE = re.compile(r"^fsap-(?:[0-9a-f]{8}|[0-9a-f]{17})\Z")
 
 
 @dataclass(frozen=True)
@@ -190,6 +227,61 @@ class LogSpec:
 
 
 @dataclass(frozen=True)
+class StoreSpec:
+    """The file system backing a crew's data home, named exactly or refused.
+
+    A task's own disk is erased when the task stops, and the only storage knob a
+    ``RunTask`` request can set is ``ephemeralStorage``, which is that disk. So a
+    crew whose data home is not a declared volume loses every transcript, every
+    archived session and its installed bundle the moment it stops -- and it comes
+    back looking healthy, which is why the loss is worth refusing rather than
+    warning about. ``volumes`` and ``mountPoints`` live only on the task
+    DEFINITION, so this is the one place the store can be named.
+
+    Both ids are validated on construction, and an invalid one fails the same way:
+    ``RegisterTaskDefinition`` accepts the document, and the TASK then fails to
+    start on a mount error, after a revision naming a nonexistent file system is
+    already durable in the account.
+
+    ``transit_encryption`` and ``iam`` authorization are NOT fields. Both are forced
+    on: the traffic is the crew's transcripts and the AWS default is off, and an
+    un-authorized mount is mountable by any task with network reach to the file
+    system. A field for either would make the safe value a thing to remember; see
+    :func:`_store_volume`.
+    """
+
+    file_system_id: str
+    #: An EFS access point, which fixes the POSIX user and group every file
+    #: operation on the mount runs as. Empty means none, and that is a real
+    #: choice rather than an oversight: the container runs as a non-root user, so
+    #: without an access point the file system's own root must already be
+    #: writable by that user, which is the stack's job where it creates the file
+    #: system. With one, the access point does it and the stack does not have to.
+    access_point_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.file_system_id.strip():
+            raise DocumentRefused(
+                "the store names no file system, so the crew's data home would be the "
+                "task's own disk: every transcript, the session archive and the installed "
+                "bundle are erased when the task stops. Name the EFS file system that "
+                "backs it, as fs-<8 or 17 hex>"
+            )
+        if not _FILE_SYSTEM_ID_RE.match(self.file_system_id):
+            raise DocumentRefused(
+                f"store file system id {self.file_system_id!r} is not an EFS file system id. "
+                "A revision naming one that does not resolve registers, and the task then "
+                "fails to start on a mount error. Use fs-<8 or 17 lowercase hex>"
+            )
+        if self.access_point_id and not _ACCESS_POINT_ID_RE.match(self.access_point_id):
+            raise DocumentRefused(
+                f"store access point id {self.access_point_id!r} is not an EFS access point "
+                "id. Use fsap-<8 or 17 lowercase hex>, or leave it empty to mount the file "
+                "system root"
+            )
+
+
+@dataclass(frozen=True)
 class TaskDefinitionSpec:
     """Everything a crew's task definition is built from.
 
@@ -211,6 +303,15 @@ class TaskDefinitionSpec:
     secrets: Sequence[SecretRef]
     cpu_architecture: str
     log: LogSpec
+    #: The file system backing the data home, or ``None`` for a task whose data
+    #: home is its own disk and whose sessions therefore end with it.
+    #:
+    #: REQUIRED and carries no default, which is the point: the ephemeral answer
+    #: stays representable, because a crew that runs one job and exits does not
+    #: need a file system, but it has to be WRITTEN at every construction site
+    #: instead of being what a caller gets by not thinking about storage. An
+    #: absent field cannot be reviewed; ``store=None`` can.
+    store: Optional[StoreSpec]
 
 
 def secret_destinations_for(secrets: Sequence[SecretRef]) -> dict[str, SecretRef]:
@@ -286,9 +387,15 @@ def spec_binding(spec: TaskDefinitionSpec) -> CrewBinding:
 def revision_fingerprint(spec: TaskDefinitionSpec) -> str:
     """A stable hash of exactly the fields ``RunTask`` cannot override.
 
-    Reads ``image``, ``secrets``, ``cpu_architecture`` and ``log`` and nothing
-    else. The roles are absent because ``RunTask`` overrides both, and size is
-    absent because there is no size to read.
+    Reads ``image``, ``secrets``, ``cpu_architecture``, ``log`` and ``store`` and
+    nothing else. The roles are absent because ``RunTask`` overrides both, and size
+    is absent because there is no size to read.
+
+    ``store`` is in the key for the same reason the other four are: ``volumes`` and
+    ``mountPoints`` are task-definition fields a ``RunTask`` request cannot bend, and
+    the store varies. Leaving it out would let one revision serve two specs whose
+    data homes are different file systems -- or one persistent and one ephemeral --
+    and the launcher would reuse whichever was registered first.
 
     A secret contributes BOTH its canonical name and its ARN, because the pair is
     what the definition delivers. Two references can carry one ARN under different
@@ -305,9 +412,64 @@ def revision_fingerprint(spec: TaskDefinitionSpec) -> str:
             "region": spec.log.region,
             "streamPrefix": spec.log.stream_prefix,
         },
+        "store": (
+            None
+            if spec.store is None
+            else {
+                "fileSystemId": spec.store.file_system_id,
+                "accessPointId": spec.store.access_point_id,
+            }
+        ),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _store_volume(store: StoreSpec) -> dict[str, Any]:
+    """The task's ``volumes`` entry for *store*.
+
+    Transit encryption and IAM authorization are set here rather than accepted, and
+    the reason is the AWS default in both cases. ``transitEncryption`` defaults to
+    DISABLED, so a document that does not mention it mounts the crew's transcripts
+    over an unencrypted NFS connection. Mount authorization without ``iam`` falls
+    back to the file system's own policy plus network reach, so any task that can
+    reach the mount target can mount it; with ``iam`` ENABLED the mount is
+    authorized against the task role, which is derived per crew. Neither is a field,
+    because a field would make the safe value something a caller has to remember and
+    every caller is this module.
+
+    ``accessPointId`` is the only part of ``authorizationConfig`` that varies. An
+    access point additionally fixes the POSIX user the mount operates as and scopes
+    what the mount can see to the access point's own root directory.
+    """
+    authorization: dict[str, Any] = {"iam": "ENABLED"}
+    if store.access_point_id:
+        authorization["accessPointId"] = store.access_point_id
+    return {
+        "name": CREW_STORE_VOLUME_NAME,
+        "efsVolumeConfiguration": {
+            "fileSystemId": store.file_system_id,
+            "transitEncryption": "ENABLED",
+            "authorizationConfig": authorization,
+        },
+    }
+
+
+def _store_mount_point() -> dict[str, Any]:
+    """The container's ``mountPoints`` entry for the crew store.
+
+    Takes no argument, because nothing about it varies: the volume name and the
+    container path are both module constants, and the mount is writable because a
+    crew that cannot write its own transcripts is the failure this exists to fix.
+    Produced next to :func:`_store_volume` so the two halves of one mount are added
+    or removed together -- a volume no container mounts is a document that registers
+    and changes nothing, which is the shape a reviewer cannot see.
+    """
+    return {
+        "sourceVolume": CREW_STORE_VOLUME_NAME,
+        "containerPath": CREW_DATA_HOME,
+        "readOnly": False,
+    }
 
 
 def _refuse_undigested_image(image: str) -> None:
@@ -366,6 +528,15 @@ def task_definition_document(spec: TaskDefinitionSpec) -> dict[str, Any]:
     document that names a crew other than the one its inputs established. Both
     roles and the family are derived from that crew rather than supplied, so
     there is no fourth refusal for a role naming the wrong one.
+
+    A store's own refusals are made where the store is CONSTRUCTED, not here, so an
+    unusable file system id cannot be held in a spec that a caller then passes to
+    ``revision_fingerprint`` -- which would compute a key for a document that can
+    never be registered.
+
+    ``volumes`` and the container's ``mountPoints`` appear together, or neither
+    appears. A spec whose ``store`` is ``None`` gets a document with no volume, which
+    is a task whose data home is its own disk.
     """
     _refuse_undigested_image(spec.image)
     destinations = secret_destinations(spec)
@@ -409,8 +580,10 @@ def task_definition_document(spec: TaskDefinitionSpec) -> dict[str, Any]:
                         "awslogs-stream-prefix": spec.log.stream_prefix,
                     },
                 },
+                **({"mountPoints": [_store_mount_point()]} if spec.store is not None else {}),
             }
         ],
+        **({"volumes": [_store_volume(spec.store)]} if spec.store is not None else {}),
         "tags": [
             {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
             {"key": FINGERPRINT_TAG_KEY, "value": revision_fingerprint(spec)},

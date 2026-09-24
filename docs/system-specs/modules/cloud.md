@@ -627,13 +627,14 @@ each is a property of a `dict` that a test can state.
 ### What a revision is keyed on
 
 One task-definition family per crew, one revision per (image digest, secret ARN
-set, cpu architecture, log configuration), registered on demand against a cached
-ARN. The key is dictated by the API, not chosen: `RunTask` can override `cpu`,
-`memory`, `ephemeralStorage`, `taskRoleArn`, `executionRoleArn` and a container's
-`command` and `environment`, and it cannot override `image`, `secrets`,
-`logConfiguration` or `runtimePlatform`. Those four are therefore the only fields
-a launch cannot bend at run time, so they are the only ones that can force a new
-revision. Steady state is one API call, two on the first launch of a new digest.
+set, cpu architecture, log configuration, store), registered on demand against a
+cached ARN. The key is dictated by the API, not chosen: `RunTask` can override
+`cpu`, `memory`, `ephemeralStorage`, `taskRoleArn`, `executionRoleArn` and a
+container's `command` and `environment`, and it cannot override `image`,
+`secrets`, `logConfiguration`, `runtimePlatform`, `volumes` or `mountPoints`.
+Those are therefore the only fields a launch cannot bend at run time, so they are
+the only ones that can force a new revision. Steady state is one API call, two on
+the first launch of a new digest.
 
 Two consequences follow. Keying on size is wrong because size is an override, and
 `TaskDefinitionSpec` carries no size field, so it is absent as an input rather
@@ -668,6 +669,61 @@ must be constant for teardown to match it, and the correlation value must vary f
 a caller to find one launch. `ec2.py` already separates them the same way, tagging
 `kirocrew:managed=true` beside `kirocrew:instance=<tag>`; collapsing both into one
 key let a caller's value displace the marker.
+
+### The data home is a declared volume, or the sessions end with the task
+
+A task's own disk is erased when the task stops, and the only storage knob a
+`RunTask` request can set is `ephemeralStorage`, which is that disk. The image is
+built for the other arrangement: it creates `/var/lib/kirocrew/sessions/archive`,
+`artifacts` and `run`, chowns them to its non-root user, and points
+`KIROCREW_HOME`, `SMC_DATA_HOME` and `SMC_CONFIG_DIR` at that directory, so a crew
+that keeps its data home on the task's disk loses every transcript, the session
+archive and the installed bundle the moment it stops -- and comes back looking
+healthy. `volumes` and `mountPoints` exist only on the task **definition**, so the
+definition is the one place the store can be named.
+
+`StoreSpec` names it: an EFS file system id, and optionally an access point id.
+Both are validated where the store is **constructed**, not where the document is
+built, so an unusable id cannot sit inside a spec whose fingerprint a caller then
+computes -- that would be a key for a document that can never be registered. An
+absent id and a malformed one are both refused, and the refusal names the cost
+rather than only the shape, because the field is not obviously load-bearing. Both
+live id lengths are accepted (8 and 17 hex); a re-cased or space-padded value is
+refused rather than repaired, since the account holds exactly one spelling of an
+id and a value needing repair came from somewhere other than the file system it
+names.
+
+`transitEncryption` and IAM authorization are not caller fields. Both are forced
+on. `transitEncryption` defaults to DISABLED at AWS and the traffic is the crew's
+transcripts. Mount authorization without `iam` falls back to the file system's own
+policy plus network reach, so any task that can reach the mount target can mount
+it; with `iam` ENABLED the mount is authorized against the task role, which is
+derived per crew. `accessPointId` is the only part of `authorizationConfig` that
+varies, and an access point additionally fixes the POSIX user the mount operates
+as and scopes what it can see to the access point's own root directory.
+
+The volume and the container's mount point are produced together, or neither is:
+a declared volume no container mounts registers and changes nothing, which is the
+shape a reviewer cannot see. `CREW_DATA_HOME` is the container path, and a test
+reads the image's own `ENV` to pin the two together, because a mount anywhere else
+backs a directory nothing in the task reads and both sides stay valid alone.
+
+Three obligations this leaves elsewhere, named so they are not discovered at first
+launch. **One store per crew, single writer**: the volume mounts the file system
+root, with no `rootDirectory`, so two crews pointed at one file system -- or two
+concurrent tasks of one crew -- share one data home, and their session archives,
+`run/` state and bundles collide with the same no-signal failure this section
+exists to remove. A refusal cannot live here, because the document builder sees one
+spec at a time and never the other crew's; whatever hands out file system ids owes
+each crew its own file system or its own access point. **Root writability**:
+without an access point the file system's own root must already be writable by the
+container's non-root user, which belongs to whatever creates the file system. **The
+role grant**: the per-crew task role needs `elasticfilesystem:ClientMount` and
+`ClientWrite` for that file system, which belongs to whatever creates the roles.
+
+`store` is `None` on every launch the engine builds today: there is no
+configuration home for a file system id yet, so the engine states the ephemeral
+answer explicitly rather than inventing an id.
 
 ### The credential reaches the container through the definition
 

@@ -1416,6 +1416,9 @@ def _spec_taskdef(region: str):
         secrets=s.secrets,
         cpu_architecture=s.cpu_architecture,
         log=default_log_spec(region),
+        # Mirrors what the engine's own _taskdef_spec states, so a fingerprint
+        # computed here equals the one the engine computes for the same launch.
+        store=None,
     )
 
 

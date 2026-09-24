@@ -1051,6 +1051,14 @@ class FargateLaunchEngine:
             secrets=spec.secrets,
             cpu_architecture=spec.cpu_architecture,
             log=default_log_spec(region),
+            # Stated, not omitted, because ``store`` carries no default: a task this
+            # engine launches keeps its data home on its own disk, so its sessions end
+            # when it stops. There is nowhere for an operator to write a file system
+            # id yet -- ``FargateLaunchSpec`` has no field for one and ``cloud.json``
+            # has no key -- and inventing one is the same class of error as inventing a
+            # subnet. Naming the answer here is what makes it reviewable, and what
+            # makes the lane that adds the id a change to one visible line.
+            store=None,
         )
 
     def preflight(self, profile: str, region: str) -> None:
