@@ -6652,7 +6652,20 @@
       "scroll_suggestions_left": "Faire défiler les suggestions vers la gauche",
       "scroll_suggestions_right": "Faire défiler les suggestions vers la droite",
       "send_now": "Envoyer maintenant",
-      "send_now_2": "Envoyer maintenant : {{option}}"
+      "send_now_2": "Envoyer maintenant : {{option}}",
+      "action_unavailable_while_options_are_selected": "Indisponible tant qu'une sélection est préparée sous forme de texte dans le champ de saisie — elle serait supprimée",
+      "action_unavailable_while_the_composer_has_unsent": "Indisponible tant que le champ de saisie contient du texte ou des pièces jointes non envoyés — la fermeture les supprimerait",
+      "action_unavailable_short_options_selected": "Indisponible — efface ta sélection",
+      "action_unavailable_short_unsent_draft": "Indisponible — envoie ou efface d'abord",
+      "action_closes_this_session": "Ferme cette session — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Indisponible pendant qu'un enregistrement ou un envoi est en cours — fermer l'annulerait",
+      "action_unavailable_short_capture_in_flight": "Indisponible — termine ou annule d'abord l'enregistrement",
+      "action_unavailable_short_unsent_draft_elsewhere": "Indisponible — un autre volet a un brouillon",
+      "action_unavailable_short_unsent_draft_window": "Indisponible — brouillon dans une fenêtre",
+      "action_unavailable_short_unsent_draft_unverifiable": "Indisponible — brouillon d'une fenêtre non vérifié",
+      "action_unavailable_while_unsent_draft_elsewhere": "Cette action est indisponible tant qu'un autre volet de cette session — panneau latéral ou vue divisée — contient un brouillon non envoyé. Envoie-le ou efface-le là d'abord.",
+      "action_unavailable_while_unsent_draft_window": "Cette action est indisponible tant qu'une autre fenêtre de navigateur de cette session contient un brouillon non envoyé. Envoie-le ou supprime-le d'abord dans cette fenêtre.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Cette action est indisponible car le brouillon non envoyé d'une autre fenêtre n'a pas pu être vérifié. L'avis disparaît de lui-même, ou envoie le brouillon si cette fenêtre est encore ouverte."
     },
     "followUpCard": {
       "add_to_this_session": "Ajouter à cette session",

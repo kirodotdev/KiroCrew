@@ -6452,7 +6452,20 @@
       "scroll_suggestions_left": "向左滚动建议",
       "scroll_suggestions_right": "向右滚动建议",
       "send_now": "立即发送",
-      "send_now_2": "立即发送：{{option}}"
+      "send_now_2": "立即发送：{{option}}",
+      "action_unavailable_while_options_are_selected": "所选内容已作为文本暂存在输入框中时不可用：此操作会将其丢弃",
+      "action_unavailable_while_the_composer_has_unsent": "输入框中有未发送的文本或附件时不可用 — 关闭会将其丢弃",
+      "action_unavailable_short_options_selected": "不可用 — 请先取消所选内容",
+      "action_unavailable_short_unsent_draft": "不可用 — 请先发送或清除草稿",
+      "action_closes_this_session": "关闭此会话 — {{label}}",
+      "action_unavailable_while_capture_in_flight": "录音或上传仍在进行时不可用 — 关闭将丢弃它",
+      "action_unavailable_short_capture_in_flight": "不可用 — 请先完成或取消录音",
+      "action_unavailable_short_unsent_draft_elsewhere": "不可用 — 另一个窗格中有草稿",
+      "action_unavailable_short_unsent_draft_window": "不可用 — 另一个窗口有草稿",
+      "action_unavailable_short_unsent_draft_unverifiable": "不可用 — 无法确认另一个窗口的草稿",
+      "action_unavailable_while_unsent_draft_elsewhere": "当此会话的另一个窗格（侧边面板或分屏视图）中有未发送的草稿时，此操作不可用。请先在那里发送或清除。",
+      "action_unavailable_while_unsent_draft_window": "此会话在另一个浏览器窗口中还有未发送的草稿，因此暂时无法执行该操作。请先在那个窗口发送或清除草稿。",
+      "action_unavailable_while_unsent_draft_unverifiable": "无法确认另一个窗口是否还有未发送的草稿，因此暂时无法执行该操作。该提示会自行消失；若那个窗口仍然打开，请先发送草稿。"
     },
     "followUpCard": {
       "add_to_this_session": "添加到此会话",

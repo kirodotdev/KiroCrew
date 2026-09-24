@@ -6752,7 +6752,20 @@
       "scroll_suggestions_left": "Прокрутить подсказки влево",
       "scroll_suggestions_right": "Прокрутить подсказки вправо",
       "send_now": "Отправить сейчас",
-      "send_now_2": "Отправить сейчас: {{option}}"
+      "send_now_2": "Отправить сейчас: {{option}}",
+      "action_unavailable_while_options_are_selected": "Недоступно, пока выбранное подготовлено как текст в поле ввода — оно будет отброшено",
+      "action_unavailable_while_the_composer_has_unsent": "Недоступно, пока в поле ввода есть неотправленный текст или вложения — при закрытии они будут потеряны",
+      "action_unavailable_short_options_selected": "Недоступно — сначала сними выбор",
+      "action_unavailable_short_unsent_draft": "Недоступно — отправь или удали черновик",
+      "action_closes_this_session": "Закрывает эту сессию — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Недоступно, пока идёт запись или загрузка — при закрытии она будет потеряна",
+      "action_unavailable_short_capture_in_flight": "Недоступно — сначала заверши или отмени запись",
+      "action_unavailable_short_unsent_draft_elsewhere": "Недоступно — черновик в другой панели",
+      "action_unavailable_short_unsent_draft_window": "Недоступно — черновик в другом окне",
+      "action_unavailable_short_unsent_draft_unverifiable": "Недоступно — черновик в другом окне не проверен",
+      "action_unavailable_while_unsent_draft_elsewhere": "Это действие недоступно, пока другая панель этого сеанса — боковая или разделённый вид — содержит неотправленный черновик. Сначала отправь или удали его там.",
+      "action_unavailable_while_unsent_draft_window": "Действие недоступно, пока в другом окне браузера этого сеанса есть неотправленный черновик. Сначала отправь или удали его в том окне.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Действие недоступно: не удалось проверить неотправленный черновик в другом окне. Уведомление исчезнет само, либо отправь черновик, если то окно ещё открыто."
     },
     "followUpCard": {
       "add_to_this_session": "Добавить в эту сессию",

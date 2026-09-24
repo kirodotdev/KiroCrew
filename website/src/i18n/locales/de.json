@@ -6552,7 +6552,20 @@
       "scroll_suggestions_left": "Vorschläge nach links scrollen",
       "scroll_suggestions_right": "Vorschläge nach rechts scrollen",
       "send_now": "Jetzt senden",
-      "send_now_2": "Jetzt senden: {{option}}"
+      "send_now_2": "Jetzt senden: {{option}}",
+      "action_unavailable_while_options_are_selected": "Nicht verfügbar, solange eine Auswahl als Text im Eingabefeld liegt – sie würde dabei verworfen",
+      "action_unavailable_while_the_composer_has_unsent": "Nicht verfügbar, solange das Eingabefeld nicht gesendeten Text oder Anhänge enthält – beim Schließen würden sie verworfen",
+      "action_unavailable_short_options_selected": "Nicht verfügbar — Auswahl erst aufheben",
+      "action_unavailable_short_unsent_draft": "Nicht verfügbar — Entwurf zuerst klären",
+      "action_closes_this_session": "Schließt diese Sitzung — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Nicht verfügbar, während eine Aufnahme oder ein Upload noch läuft — beim Schließen würde sie verworfen",
+      "action_unavailable_short_capture_in_flight": "Nicht verfügbar — Aufnahme zuerst beenden oder abbrechen",
+      "action_unavailable_short_unsent_draft_elsewhere": "Nicht verfügbar — Entwurf in anderem Bereich",
+      "action_unavailable_short_unsent_draft_window": "Nicht verfügbar — Entwurf in anderem Fenster",
+      "action_unavailable_short_unsent_draft_unverifiable": "Nicht verfügbar — Entwurf im anderen Fenster ungeprüft",
+      "action_unavailable_while_unsent_draft_elsewhere": "Diese Aktion ist nicht verfügbar, solange ein anderer Bereich dieser Sitzung — ein Seitenbereich oder eine geteilte Ansicht — einen nicht gesendeten Entwurf enthält. Sende oder verwirf ihn zuerst dort.",
+      "action_unavailable_while_unsent_draft_window": "Diese Aktion ist nicht verfügbar, solange ein anderes Browserfenster dieser Sitzung einen nicht gesendeten Entwurf hält. Sende oder verwirf ihn zuerst in diesem Fenster.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Diese Aktion ist nicht verfügbar, weil der nicht gesendete Entwurf eines anderen Fensters nicht geprüft werden konnte. Der Hinweis verschwindet von selbst, oder sende den Entwurf, falls dieses Fenster noch offen ist."
     },
     "followUpCard": {
       "add_to_this_session": "Zu dieser Sitzung hinzufügen",

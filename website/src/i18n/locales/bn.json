@@ -6552,7 +6552,20 @@
       "scroll_suggestions_left": "প্রস্তাবগুলো বাঁয়ে স্ক্রল করুন",
       "scroll_suggestions_right": "প্রস্তাবগুলো ডানে স্ক্রল করুন",
       "send_now": "এখনই পাঠান",
-      "send_now_2": "এখনই পাঠাও: {{option}}"
+      "send_now_2": "এখনই পাঠাও: {{option}}",
+      "action_unavailable_while_options_are_selected": "নির্বাচন ইনপুটে টেক্সট হিসেবে প্রস্তুত থাকা অবস্থায় এটি উপলভ্য নয় — এতে তা বাতিল হয়ে যাবে",
+      "action_unavailable_while_the_composer_has_unsent": "ইনপুটে পাঠানো হয়নি এমন লেখা বা সংযুক্তি থাকলে এটি ব্যবহারযোগ্য নয় — বন্ধ করলে সেগুলি মুছে যাবে",
+      "action_unavailable_short_options_selected": "উপলভ্য নয় — আগে নির্বাচন মুছে ফেলো",
+      "action_unavailable_short_unsent_draft": "অনুপলব্ধ — প্রথমে খসড়া পাঠাও বা মুছে ফেলো",
+      "action_closes_this_session": "এই সেশনটি বন্ধ করে — {{label}}",
+      "action_unavailable_while_capture_in_flight": "রেকর্ডিং বা আপলোড চলার সময় অনুপলব্ধ — বন্ধ করলে তা বাতিল হয়ে যাবে",
+      "action_unavailable_short_capture_in_flight": "উপলভ্য নয় — প্রথমে রেকর্ডিং শেষ করো বা বাতিল করো",
+      "action_unavailable_short_unsent_draft_elsewhere": "অনুপলব্ধ — অন্য একটি প্যানে খসড়া আছে",
+      "action_unavailable_short_unsent_draft_window": "অনুপলব্ধ — অন্য উইন্ডোতে খসড়া আছে",
+      "action_unavailable_short_unsent_draft_unverifiable": "অনুপলব্ধ — অন্য উইন্ডোর খসড়া যাচাই করা যায়নি",
+      "action_unavailable_while_unsent_draft_elsewhere": "এই সেশনের অন্য একটি প্যান — একটি সাইড প্যানেল বা স্প্লিট ভিউ — অপ্রেরিত খসড়া ধরে রাখলে এই ক্রিয়াটি অনুপলব্ধ। প্রথমে সেখানে এটি পাঠাও বা মুছে ফেলো।",
+      "action_unavailable_while_unsent_draft_window": "এই সেশনের আর একটি ব্রাউজার উইন্ডোতে একটি অপ্রেরিত খসড়া আছে, তাই এই কাজটি এখন করা যাবে না। আগে সেই উইন্ডোতে খসড়াটি পাঠাও বা মুছে দাও।",
+      "action_unavailable_while_unsent_draft_unverifiable": "আর একটি উইন্ডোর অপ্রেরিত খসড়া যাচাই করা যায়নি, তাই এই কাজটি এখন করা যাবে না। এই বিজ্ঞপ্তিটি নিজেই মুছে যাবে, বা সেই উইন্ডো এখনও খোলা থাকলে খসড়াটি পাঠিয়ে দাও।"
     },
     "followUpCard": {
       "add_to_this_session": "এই সেশনে যোগ করুন",
