@@ -442,11 +442,22 @@ def test_stalled_since_disposition_needs_an_index_and_an_aged_mark(mod):
         ({KEY: {"index": True, "ts": 0}}, 1),
         ({KEY: {"ts": 0}}, 7),
         ({KEY: {"index": 7}}, 7),
-        ({KEY: {"index": 7, "ts": time.time()}}, 7),
     ],
 )
 def test_stalled_since_disposition_stays_quiet_without_a_comparison(mod, handled, index):
     assert mod._stalled_since_disposition(handled, KEY, index, 900) is False
+
+
+def test_stalled_since_disposition_stays_quiet_for_a_fresh_mark(mod):
+    """A mark made now is not an aged mark, however long the shard took to get here.
+
+    The mark and the window are read at the same moment, so the case states a
+    fact about the function rather than about the gap between this module's
+    import and this line: ``time.time() - marked`` is zero here, whatever the
+    wall clock says.
+    """
+    handled = {KEY: {"index": 7, "ts": time.time()}}
+    assert mod._stalled_since_disposition(handled, KEY, 7, 900) is False
 
 
 def test_digest_is_short_and_stable(mod):
@@ -1262,3 +1273,53 @@ def test_main_requires_a_config(mod):
     with pytest.raises(SystemExit) as excinfo:
         mod.main([])
     assert excinfo.value.code == 2
+
+
+# --------------------------------------------------------------------------
+# Every mark this module supplies is read at the moment it is compared
+# --------------------------------------------------------------------------
+
+
+def test_no_parametrize_argument_reads_the_clock() -> None:
+    """A mark in this file is always weighed against an elapsed-time window.
+
+    Each ``ts`` here reaches a function that subtracts it from ``time.time()``
+    and compares the difference to an idle window -- ``_stalled_since_disposition``,
+    ``_suppressed``, and the state ``main`` reloads. A mark therefore means
+    nothing on its own; it means something only relative to the instant the
+    assertion runs.
+
+    A ``@pytest.mark.parametrize`` argument is evaluated once, while the module
+    is imported for collection. A clock read there freezes the mark at collection
+    time and then asserts it against a window measured at run time, so the gap
+    between those two moments decides the verdict: green on a fast shard, red on
+    a shard that queues longer than the window, and nothing in the diff under
+    test to explain either. A clock read belongs in the test body, which runs at
+    the same moment as the comparison.
+
+    Read as a syntax tree rather than as text. The property is the absence of a
+    call inside a decorator argument, which running the module cannot
+    demonstrate, and a text scan would match the names in this docstring.
+    """
+    import ast
+
+    reads = {"time", "time_ns", "monotonic", "monotonic_ns", "now", "utcnow", "today"}
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for dec in node.decorator_list:
+            if not isinstance(dec, ast.Call):
+                continue
+            if not (isinstance(dec.func, ast.Attribute) and dec.func.attr == "parametrize"):
+                continue
+            for arg in [*dec.args, *(kw.value for kw in dec.keywords)]:
+                for inner in ast.walk(arg):
+                    if not isinstance(inner, ast.Call):
+                        continue
+                    if not isinstance(inner.func, ast.Attribute):
+                        continue
+                    assert inner.func.attr not in reads, (
+                        f"line {inner.lineno}: {ast.unparse(inner)} is evaluated at "
+                        f"collection time in the parametrize list of {node.name}"
+                    )
