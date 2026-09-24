@@ -24,7 +24,7 @@ GateScript = list[tuple[str, bool, bool]]
 SEND_KIRO_CLI = ("Running: @kirocrew-core/send_message", True, False)
 SEND_ACP = ("mcp__kirocrew-core__send_message", True, False)
 READ = ("Read README.md", True, False)
-BLOCKED = ("rm -rf /", False, True)
+BLOCKED = ("echo hi", False, True)
 
 
 def _run_silent_cron(gate: GateScript, reply: str = "", runs: int = 1) -> CronJob:
