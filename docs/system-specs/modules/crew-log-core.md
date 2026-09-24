@@ -130,13 +130,17 @@ Two of these families carry a contract with REQUIRED fields. **Required here is 
 | `data.credits` | no | Credits the child spent. Absent is not zero. |
 | `data.summary` | no | One sentence. |
 | `ref` | yes | A segment of the child's crew log: the evidence. |
-| `thread` | when replying | The dispatch's `seq`. |
+| `thread` | when the anchor resolves | The dispatch's `seq`. |
 
 `ref` is required for the same reason `target` is. A report is a CLAIM about work that happened somewhere else, and `board` and `budget` fold status and credits straight off it without opening the child's crew log; the `ref` is what makes that fold checkable rather than trusted. A report with no `ref` is an unfalsifiable claim, permanently, since nothing later can attach the evidence to a line that is already written.
 
 `thread` is the dispatch's `seq` when the report answers one, which is what makes a dispatch and its replies one conversation inside the parent's file. A report volunteered with no dispatch behind it carries no `thread`.
 
-Those two are different facts wearing one shape, so **which one is meant is the writer's to state, never the resolver's to infer.** A writer that is answering a dispatch says so, and a reply whose anchor does not resolve is NOT written: the dispatch append is best effort, so a transient failure there leaves a log with no dispatch to thread onto while the reply's own append succeeds, and writing it anyway would record the wrong provenance in a file nothing rewrites. Losing the entry is recoverable, because a later report replaces it; a committed claim about where the work came from is not. A writer that really is volunteering a report says that instead, and is written with no `thread`.
+Those two are different facts wearing one shape, and the writer resolves the anchor rather than being told which case it is. A report whose anchor does not resolve is written **unthreaded**, not dropped. The reason is that the dispatch append is best effort, so the anchor can be missing two ways that are not equally recoverable: a transient read failure leaves the dispatch on disk and the item's next report threads normally, while a dispatch whose own append failed leaves no dispatch entry at all -- and refusing the reply then refuses every later report for that item too, so the log reads for good as though the item was never dispatched. An absent history is the worse record: it is unbounded in time and invisible, while an unthreaded report states that the work happened and is only missing its link.
+
+That choice has a real cost and this is where it is written down: an unthreaded report is indistinguishable from a volunteered one, so the ambiguity is one field rather than one item's whole history. The writer logs a warning when it happens, which is what lets a reader tell the two apart.
+
+The refusal that remains is the evidence one: a report with no citable unit is not written at all, because a claim nothing can check is not a record.
 
 Both of these are one type each, not one per writer. The child's identity is `src`, so two children reporting on one item write the same `type` into one file and are told apart by who signed them.
 

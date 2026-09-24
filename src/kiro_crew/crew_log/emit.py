@@ -4998,12 +4998,6 @@ def on_work_recorded(session_id: str, data: dict[str, Any], *, timeout: float = 
 
 _KIND_CREW = "crew"
 
-#: How far back a report looks for the dispatch it answers BEFORE falling back to
-#: the whole file. A crew's log holds one line per dispatch and per report, so a
-#: window this size spans a long conversation and an ordinary report resolves its
-#: anchor without leaving the tail; only an older anchor pays for a full scan.
-_THREAD_LOOKBACK = 200
-
 CREW_DISPATCH = "crew/dispatch"
 CREW_REPORT = "crew/report"
 
@@ -5084,29 +5078,27 @@ def _crew_thread(log: CrewLog, item: Any) -> "int | None":
     requests -- often in separate processes -- and an in-memory map would answer
     ``None`` for every report after a restart while the anchor sat on disk.
 
-    Two steps, the shape :func:`~kiro_crew.crew_log.store._anchor_exists` already
-    uses for the same question, so an ordinary report pays only for the window:
+    ONE pass, from seq 1, because a narrower start would not be a cheaper read:
+    :meth:`~kiro_crew.crew_log.store.CrewLog.iter_from` walks ``_iter_segments``
+    from the first segment and decodes every entry, dropping the ones below its
+    *seq* after parsing them. So a "recent entries" window costs the same full
+    parse as the whole file, and a window MISS -- the ordinary case for an item
+    whose dispatch has aged out -- would pay for that parse twice. A byte-tail
+    reader like :func:`~kiro_crew.crew_log.store._anchor_exists`'s is what an
+    actual bound would take, and it answers a different question (does this seq
+    exist) than this one (which dispatch named this item).
 
-    1. The newest :data:`_THREAD_LOOKBACK` entries, where the dispatch being
-       answered normally sits. A match there is the answer, because any dispatch
-       older than it for the same item is one this reply supersedes.
-    2. Nothing in that window, and the window did not already reach the file's
-       start: scan from seq 1. A crew whose log has grown past the window is
-       ordinary operation, and a report that answers a dispatch but resolves no
-       anchor carries no ``thread`` -- which the spec reads as volunteered with no
-       dispatch behind it. That is a different fact, in a file nothing rewrites,
-       so the scan's read cost is paid rather than the wrong record written.
+    Scanning the whole file is also what correctness wants here: a report that
+    answers a dispatch but resolves no anchor is not written at all, because the
+    spec reads a missing ``thread`` as a report volunteered with no dispatch
+    behind it -- a different fact, in a file nothing rewrites.
 
     An unreadable log answers ``None``, so a report still lands.
     """
     if not isinstance(item, str) or not item:
         return None
     try:
-        window_start = max(1, log.last_seq - _THREAD_LOOKBACK + 1)
-        found = _newest_dispatch_for(log, item, window_start)
-        if found is None and window_start > 1:
-            found = _newest_dispatch_for(log, item, 1)
-        return found
+        return _newest_dispatch_for(log, item, 1)
     except Exception:  # noqa: BLE001 - an unthreaded report is better than none
         # Rendered text, never ``exc_info``: ``log`` is a live ``CrewLog`` in this frame,
         # so a record carrying the traceback carries this frame, and a handler that keeps
@@ -5182,9 +5174,7 @@ def _max_ref_span() -> int:
     return int(schema.MAX_REF_SPAN)
 
 
-def on_crew_report(
-    store: str, data: dict[str, Any], *, cite_unit: str, replying: bool = True
-) -> int:
+def on_crew_report(store: str, data: dict[str, Any], *, cite_unit: str) -> int:
     """One report on a work item, recorded in the DISPATCHING crew's log.
 
     ``src`` is ``gateway`` rather than a crew guest form: the reporting party here
@@ -5200,17 +5190,25 @@ def on_crew_report(
     report is not written, because a report with no ``ref`` is an unfalsifiable
     claim in a file nothing rewrites.
 
-    *replying* states which kind of report this is, because the file cannot say it
-    afterwards and the resolver cannot infer it. The spec requires ``thread`` WHEN
-    REPLYING and reads its absence as a report volunteered with no dispatch behind
-    it, so those are two different facts wearing one shape. A reply whose anchor
-    does not resolve is therefore NOT written: the dispatch append is best effort,
-    so a transient failure there leaves a crew log with no dispatch to thread onto,
-    and writing the reply anyway would record the wrong provenance permanently. It
-    defaults to ``True`` because that fails closed -- a caller that says nothing
-    loses an entry, which a later report replaces, instead of committing a claim
-    about where the work came from that nothing can correct. A writer that really
-    is volunteering one passes ``False`` and is written with no ``thread``.
+    A report whose dispatch anchor does not resolve is written UNTHREADED rather
+    than dropped. The anchor can be missing for two reasons, and one of them does
+    not heal: a read that failed transiently leaves the dispatch on disk, so the
+    item's next report threads normally, but a dispatch whose own best-effort
+    append failed leaves no dispatch entry at all -- and then refusing the reply
+    refuses every later report for that item too, so the crew log reads for good
+    as though the item was never dispatched. Silence about the work is the worse
+    record: it is unbounded in time and invisible, while an unthreaded report
+    states that the work happened and is merely missing its link.
+
+    What that costs is worth naming, because it is not free. The spec reads a
+    report with no ``thread`` as one volunteered with no dispatch behind it, so an
+    unthreaded report here is indistinguishable from a volunteered one -- one
+    field is ambiguous, rather than one item's whole history being absent. The
+    anomaly is logged when it happens, which is where a reader looks to tell the
+    two apart.
+
+    The refusal that remains is the evidence one above: no citable unit means no
+    write at all, because a report that cannot be checked is a claim, not a record.
 
     Returns the appended seq, or ``0`` when nothing was written.
     """
@@ -5234,14 +5232,13 @@ def on_crew_report(
     if log is None:
         return 0
     thread = _crew_thread(log, data.get("item"))
-    if replying and thread is None:
+    if thread is None:
         logger.warning(
-            "crew log: no dispatch to thread %r onto in crew %r, so the report is not "
-            "recorded rather than recorded as volunteered",
+            "crew log: no dispatch to thread %r onto in crew %r, so the report is "
+            "recorded unthreaded and reads as volunteered",
             data.get("item"),
             store,
         )
-        return 0
     try:
         entry = log.append(CREW_REPORT, data, src=_SRC_GATEWAY, thread=thread, ref=evidence)
         return int(entry.seq)

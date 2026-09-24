@@ -614,9 +614,9 @@ async def api_work_report(request: web.Request) -> web.Response:
                 # The answer to the dispatch, in the crew's own log: the emitter
                 # threads it onto that dispatch's seq and builds the required
                 # ``ref`` from this worker's unit, so the claim carries its
-                # evidence. ``replying`` says this is an answer rather than a
-                # volunteered report, which is what makes an unresolved anchor
-                # refuse the write instead of recording the wrong provenance.
+                # evidence. An anchor it cannot resolve lands the report
+                # unthreaded rather than dropping it, so a dispatch entry that
+                # never got written cannot silence this item's whole history.
                 # Written after the work entry landed, best-effort.
                 await asyncio.to_thread(
                     crew_log_emit.on_crew_report,
@@ -627,7 +627,6 @@ async def api_work_report(request: web.Request) -> web.Response:
                         **({"summary": item.summary} if item.summary else {}),
                     },
                     cite_unit=acting_unit,
-                    replying=True,
                 )
             _audit(caller, "work_report", "ok", resources=f"{item_id} status={item.status}")
             return web.json_response(

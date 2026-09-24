@@ -112,7 +112,9 @@ or a crew, never both.
 ```
 
 **Reader hint** — Group a work item's history by `item`, then order it by `seq`. The
-dispatch is the anchor every report threads onto.
+dispatch is the anchor a report threads onto when the writer could resolve it; group by
+`item` rather than by `thread`, because a report whose anchor was missing is written
+unthreaded and would otherwise drop out of the item's history.
 
 ## `crew/report`
 

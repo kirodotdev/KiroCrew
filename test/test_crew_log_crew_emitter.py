@@ -224,53 +224,62 @@ def test_a_report_threads_onto_the_dispatch_for_its_own_item():
 def test_a_report_with_no_dispatch_behind_it_carries_no_thread():
     _seed_session()
     emit.on_crew_dispatch(CREW, DISPATCH_DATA)
-    emit.on_crew_report(
-        CREW, {"item": "it_other", "status": "blocked"}, cite_unit=WORKER_UNIT, replying=False
-    )
+    emit.on_crew_report(CREW, {"item": "it_other", "status": "blocked"}, cite_unit=WORKER_UNIT)
     assert "thread" not in _crew_entries()[1]
 
 
-def test_an_answer_whose_dispatch_is_missing_is_not_written_at_all():
-    """A reply that cannot resolve its anchor must not be written as volunteered.
+def test_a_report_whose_dispatch_is_missing_lands_unthreaded_rather_than_dropped():
+    """A missing anchor must cost the link, not the record.
 
-    The dispatch append is best effort, so a transient failure there leaves a crew
-    log with no dispatch to thread onto while the later report's own append
-    succeeds -- two separate requests. Writing the reply anyway records the wrong
-    provenance, and the spec reads a missing ``thread`` as volunteered, so the file
-    would state a fact no writer meant and nothing can correct. ``replying`` is
-    what tells the two apart, which is why it is the caller's to state.
+    The dispatch append is best effort, so a dispatch whose append failed leaves no
+    dispatch entry at all -- and refusing the reply on that ground refuses every
+    later report for the item too, so the log reads for good as though the item was
+    never dispatched. An absent history is the worse record: unbounded in time and
+    invisible, where an unthreaded report still states that the work happened.
     """
     _seed_session()
     # The dispatch that would have been the anchor never landed.
-    assert (
-        emit.on_crew_report(
-            CREW, {"item": "it_1", "status": "done"}, cite_unit=WORKER_UNIT, replying=True
-        )
-        == 0
-    )
-    assert _crew_entries() == []
+    seq = emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit=WORKER_UNIT)
+    assert seq > 0, "the report must be recorded, not dropped"
+    written = _crew_entries()
+    assert len(written) == 1
+    assert "thread" not in written[0]
+    assert written[0]["data"]["status"] == "done"
 
 
-def test_the_default_fails_closed_so_a_caller_that_says_nothing_loses_the_entry():
-    """Defaulting to ``replying`` costs an entry a later report replaces.
+def test_a_missing_dispatch_does_not_silence_the_items_later_reports():
+    """The defect this closes is per-item PERMANENT silence, not one lost line.
 
-    The other default would commit a claim about where the work came from that
-    nothing rewrites, so the cheap failure is the right one to pick.
+    Nothing rewrites the log, so a dispatch entry that never got written would
+    otherwise make every report for that item unwritable for the rest of the
+    crew's life.
     """
     _seed_session()
-    assert emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit=WORKER_UNIT) == 0
+    first = emit.on_crew_report(CREW, {"item": "it_1", "status": "progress"}, cite_unit=WORKER_UNIT)
+    second = emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit=WORKER_UNIT)
+    assert first > 0 and second > first
+    assert [entry["data"]["status"] for entry in _crew_entries()] == ["progress", "done"]
+
+
+def test_a_report_with_no_citable_unit_is_still_refused():
+    """The evidence refusal is the one that remains.
+
+    A report is a claim about work done somewhere else, so a `ref` nothing can be
+    checked against is not a weaker record -- it is not a record.
+    """
+    _seed_session()
+    assert emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit="") == 0
+    assert emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit="no_such") == 0
     assert _crew_entries() == []
 
 
-def test_a_dispatch_older_than_the_window_is_still_found_by_the_fallback_scan(monkeypatch):
-    """A window miss must not record the report as volunteered.
+def test_a_dispatch_far_behind_the_newest_entry_is_still_found():
+    """An aged anchor must not record the report as volunteered.
 
     ``thread`` absent is not a weaker version of the right answer: the spec reads
-    it as a report with no dispatch behind it, so a reply whose anchor fell out of
-    the window would state a different fact, permanently. The window is the fast
-    path; the file is the answer.
+    it as a report with no dispatch behind it, so a reply whose anchor had aged
+    out would state a different fact, permanently. The whole file is the answer.
     """
-    monkeypatch.setattr(emit, "_THREAD_LOOKBACK", 2)
     _seed_session()
     anchor = emit.on_crew_dispatch(CREW, DISPATCH_DATA)
     for name in ("a", "b", "c"):
@@ -281,11 +290,20 @@ def test_a_dispatch_older_than_the_window_is_still_found_by_the_fallback_scan(mo
     assert _crew_entries()[-1]["thread"] == anchor
 
 
-def test_the_window_answers_without_scanning_when_the_dispatch_is_recent(monkeypatch):
-    """The fast path is the point of the window, so it is pinned separately."""
-    monkeypatch.setattr(emit, "_THREAD_LOOKBACK", 2)
+def test_the_anchor_lookup_makes_one_pass_even_when_it_finds_nothing(monkeypatch):
+    """A miss must not read the log twice.
+
+    ``CrewLog.iter_from`` walks from the first segment and decodes every entry,
+    dropping the ones below its seq afterwards, so a "recent entries" start is not
+    a cheaper read -- and a two-step window whose first step misses pays for that
+    same full parse twice, on the common path for an aged anchor.
+    """
     _seed_session()
-    anchor = emit.on_crew_dispatch(CREW, DISPATCH_DATA)
+    emit.on_crew_dispatch(CREW, DISPATCH_DATA)
+    for name in ("a", "b", "c"):
+        emit.on_crew_dispatch(
+            CREW, {"item": f"it_{name}", "target": {"kind": "crew", "name": name}}
+        )
     calls: list[int] = []
     real = emit._newest_dispatch_for
 
@@ -294,23 +312,19 @@ def test_the_window_answers_without_scanning_when_the_dispatch_is_recent(monkeyp
         return real(log, item, start)
 
     monkeypatch.setattr(emit, "_newest_dispatch_for", counted)
-    emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit=WORKER_UNIT)
-    assert _crew_entries()[-1]["thread"] == anchor
-    assert calls == [1], f"one lookup, and no second pass from seq 1: {calls}"
+    emit.on_crew_report(CREW, {"item": "it_absent", "status": "done"}, cite_unit=WORKER_UNIT)
+    assert calls == [1], f"one pass from seq 1, never a second: {calls}"
 
 
-def test_a_report_for_an_item_no_dispatch_named_stays_unthreaded(monkeypatch):
-    """The fallback scan reaching seq 1 and finding nothing is still no thread."""
-    monkeypatch.setattr(emit, "_THREAD_LOOKBACK", 2)
+def test_a_report_for_an_item_no_dispatch_named_stays_unthreaded():
+    """A lookup that finds nothing is still no thread."""
     _seed_session()
     emit.on_crew_dispatch(CREW, DISPATCH_DATA)
     for name in ("a", "b", "c"):
         emit.on_crew_dispatch(
             CREW, {"item": f"it_{name}", "target": {"kind": "crew", "name": name}}
         )
-    emit.on_crew_report(
-        CREW, {"item": "it_absent", "status": "done"}, cite_unit=WORKER_UNIT, replying=False
-    )
+    emit.on_crew_report(CREW, {"item": "it_absent", "status": "done"}, cite_unit=WORKER_UNIT)
     assert "thread" not in _crew_entries()[-1]
 
 
