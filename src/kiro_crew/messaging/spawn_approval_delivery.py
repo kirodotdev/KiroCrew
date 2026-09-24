@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 from typing import Awaitable, Callable
 
+from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.link import channel_namespace_of
 
 logger = logging.getLogger(__name__)
@@ -129,14 +130,40 @@ async def deliver_spawn_approval(
 
     Consulted FIRST by the host spawn-approval callback. Returns the channel's
     ``True``/``False`` decision when a hook answered, or ``None`` when no hook is
-    registered for the session's channel or the hook itself returned ``None`` (it
-    could not surface the prompt here). A hook that RAISES is contained and read as
+    registered for the session's channel, the operator's ``channels`` governance
+    ceiling denies that channel, or the hook itself returned ``None`` (it could
+    not surface the prompt here). A hook that RAISES is contained and read as
     ``None``: a channel-delivery bug must degrade to the existing fallback, never
     turn a spawn the operator could still answer on Slack/dashboard into a hard
     failure.
+
+    The ceiling is checked HERE rather than inside each hook, because every hook
+    posts an interactive prompt whose answering press arrives INBOUND on the same
+    channel, and a denied channel drops that press (only an explicit reject is
+    exempt on a channel's callback path). A prompt posted under a deny is
+    unanswerable, so its deny-by-default wait elapses and the host gate reads the
+    elapsed wait as a refusal the operator never made. One check at the routing
+    layer that already resolves the channel gates every present and future hook;
+    a copy inside each dispatcher would be the same authority duplicated per
+    implementation, and the next hook written without it reopens the hole.
+
+    It runs AFTER hook resolution, so a key in a non-channel namespace
+    (``dashboard:``, ``cron:``) or a ``unified`` DM bucket — neither of which
+    names a governed channel — falls through without asking the profile store
+    about a channel type that does not exist.
     """
     hook = resolve_channel_delivery(parent_session_key)
     if hook is None:
+        return None
+    channel = channel_namespace_of(parent_session_key)
+    if not await channel_inbound_permitted(channel):
+        logger.info(
+            "Spawn-approval channel delivery skipped on %s for %s; the channel is "
+            "denied by channels governance policy, so the prompt would be "
+            "unanswerable there",
+            channel,
+            request_id,
+        )
         return None
     try:
         return await hook(request_id, description, parent_session_key)

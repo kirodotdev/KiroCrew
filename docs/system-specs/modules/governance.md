@@ -1427,6 +1427,15 @@ disposition:
   (no reply), matching how an unauthorized user is ignored; `PlatformCompositionError`
   propagates. Default OSS build (no `channels` policy) permits, so inbound handling
   is byte-identical to today.
+  One OUTBOUND send consults this same inbound ceiling:
+  `messaging/spawn_approval_delivery.py` checks it before invoking any channel's
+  spawn-approval delivery hook, because the press that would answer that prompt is
+  inbound and is dropped on a denied channel (only an explicit reject is exempt on
+  a channel's callback path). A prompt posted under a deny is unanswerable, so its
+  deny-by-default wait elapses and the spawn gate reads the elapsed wait as a
+  refusal the operator never made; a deny therefore falls through and leaves the
+  spawn answerable on Slack or the dashboard instead. The check sits at that seam,
+  not inside each dispatcher, so a channel hook written without it is gated too.
   **Audit disposition:** a GOVERNED allow is audit-or-deny (`critical=True` — a SEL
   persistence failure denies the inbound, so a governed channel never receives
   unaudited); every DENY is recorded best-effort. The **ungoverned default-permit

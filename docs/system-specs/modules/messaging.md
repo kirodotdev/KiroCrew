@@ -373,6 +373,19 @@ by channel namespace:
   contained and read as `None`: a channel-delivery bug must degrade to the existing
   Slack/dashboard fallback, never turn a spawn the operator could still answer into
   a hard failure.
+- The operator's `channels` governance ceiling (`channel_inbound_permitted`) is
+  consulted HERE, once, for every hook rather than inside each of them. Every hook
+  posts an interactive prompt whose answering press arrives INBOUND on the same
+  channel, and a denied channel drops that press (only an explicit reject is exempt
+  on a channel's callback path), so a prompt posted under a deny is unanswerable:
+  its deny-by-default wait elapses and the host gate reads the elapsed wait as a
+  refusal the operator never made. A deny therefore answers `None` and the spawn
+  stays answerable on Slack/dashboard. One check at this layer — which already
+  resolves the channel — gates every present and future hook, where a copy inside
+  each dispatcher would be the same authority duplicated per implementation. It
+  runs AFTER hook resolution, so a non-channel namespace or a `unified` DM bucket,
+  neither of which names a governed channel, falls through without asking the
+  profile store about a channel type that does not exist.
 
 The hook signature `async def(request_id, description, parent_session_key) -> bool | None`
 is the SAME three arguments the host `SpawnApprovalCallback` receives, so a channel

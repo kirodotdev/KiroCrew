@@ -3209,7 +3209,9 @@ class TelegramDispatcher:
         (``True``/``False``), or ``None`` to tell the gate "not surfaced here,
         fall through to Slack/dashboard" — for a key this dispatcher cannot turn
         back into a chat (``unified`` dm_scope drops the peer, a non-``telegram``
-        key, an unparseable one) or when the client is not up.
+        key, an unparseable one) or when the client is not up. The operator's
+        ``channels`` governance ceiling is not consulted here: the seam checks it
+        before invoking any hook, so a denied channel never reaches this method.
 
         The wait is the SAME deny-by-default one a tool prompt uses
         (:class:`TelegramApprovalDecider`, ``APPROVAL_TIMEOUT_S``): the press
