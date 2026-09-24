@@ -40,6 +40,7 @@ import pytest
 import source_corpus
 
 from kiro_crew.apps import registry
+from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.registry_pipeline import (
     caches,
     catalog,
@@ -81,8 +82,12 @@ PARTS: tuple[ModuleType, ...] = (
 FROZEN_NAMES: tuple[str, ...] = (
     "Any",
     "AppManifest",
+    "DESKTOP_BUILD_STEP_UNSUPPORTED",
     "FIRST_PARTY_AUTHORS",
     "IPv6Address",
+    "InstalledTreeRefused",
+    "Iterator",
+    "Literal",
     "Path",
     "PlatformCompositionError",
     "RESERVED_APP_NAME_CODE",
@@ -92,6 +97,8 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_CACHE_EXPIRY_BACKDATE_SLACK",
     "_CLONE_TIMEOUT",
     "_COMMIT_SHA_RE",
+    "_DESKTOP_BUILD_REFUSAL",
+    "_DESKTOP_LAYOUT_FILES",
     "_DETECT_PROBE_ENV_KEYS",
     "_EXTERNAL_REGISTRY_CACHE_TTL",
     "_GIT_AUTH_FAILURE_MARKERS",
@@ -99,6 +106,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_GIT_CREDENTIAL_ENV_KEYS",
     "_GIT_FAILURE_CLASS_LABELS",
     "_HEAD_READ_LIMIT",
+    "_InstallVerb",
     "_KILL_GRACE_PERIOD",
     "_MANIFEST_CACHE_GC_GRACE",
     "_MANIFEST_CACHE_TTL",
@@ -106,6 +114,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_MoveAsideUndoFailed",
     "_PACKED_REFS_READ_LIMIT",
     "_PUBLIC_GIT_HOSTS",
+    "_REFUSAL_LINES",
     "_REGISTRY_FILE",
     "_REGISTRY_REVIEW_TIERS",
     "_REGISTRY_ROW_KEYS",
@@ -119,6 +128,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_STALE_CHECKOUT_RETENTION_DAYS",
     "_TRUST_INDEX",
     "_TRUST_OWNER",
+    "_absent",
     "_app_sources_dir",
     "_append_external_registry_apps",
     "_apply_configured_branch",
@@ -137,6 +147,9 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_context_clone_sandbox_mode",
     "_credential_free_external_registry_entries",
     "_credential_free_external_registry_value",
+    "_desktop_build_refusal",
+    "_desktop_gate_probe",
+    "_desktop_layout_present",
     "_detect_installed_probe",
     "_detect_probe_env",
     "_edition_registry_rows",
@@ -168,6 +181,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_git_url_host",
     "_identity",
     "_install_coordinates",
+    "_installed_tree_preview",
     "_is_catalog_row",
     "_is_external_row",
     "_is_owner_designated_repo",
@@ -178,6 +192,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_is_stale_candidate",
     "_is_supported_registry_transport",
     "_kill_process_group",
+    "_layout_cleanup_escaped",
     "_legacy_external_registry_cache_path",
     "_load_external_registries",
     "_load_registry_file",
@@ -196,6 +211,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_pinned_registries",
     "_pinned_registry_entry",
     "_platform",
+    "_provisioning_declared",
     "_public_registry_name",
     "_read_clone_branch",
     "_read_external_registry_cache",
@@ -203,6 +219,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_read_manifest_cache",
     "_redact_url_userinfo",
     "_redacted_git_failure_class",
+    "_refusal_line",
     "_refuse_identity_mismatch",
     "_registry_app_candidates",
     "_registry_identity_key",
@@ -210,8 +227,10 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_remote_controlled_url",
     "_remove_legacy_credential_registry_cache",
     "_remove_legacy_name_keyed_registry_cache",
+    "_remove_new_layout_files",
     "_rename_and_refresh_mtime",
     "_report_retained_stale_checkouts",
+    "_requirements_owned_by_the_runtime",
     "_resolve_install_entry",
     "_resolve_manifest",
     "_resolve_registry_row",
@@ -220,6 +239,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_restore_moved_aside",
     "_retained_startup_refusal",
     "_rmtree_force_settled",
+    "_roll_back_post_script_refusal",
     "_run_app_build",
     "_safe_cache_stem",
     "_same_git_target",
@@ -227,6 +247,8 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_sel_credential_decision",
     "_sel_credential_grant",
     "_sel_fn",
+    "_set_aside_new_layout_files",
+    "_stale_sibling",
     "_store_asset_path",
     "_strip_git_target_userinfo",
     "_sweep_stale_checkouts",
@@ -247,6 +269,8 @@ FROZEN_NAMES: tuple[str, ...] = (
     "atomic_write",
     "cgroup_scope_argv",
     "config_dir",
+    "contextmanager",
+    "copy_app_tree_as_installed",
     "create_subprocess_limited",
     "current_context",
     "datetime",
@@ -259,6 +283,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "install_from_registry",
     "install_receipt",
     "is_clone_host_trusted",
+    "is_module_style_entry_point",
     "is_registry_source",
     "is_reserved_app_name",
     "json",
@@ -273,17 +298,21 @@ FROZEN_NAMES: tuple[str, ...] = (
     "os",
     "platform_compat",
     "posixpath",
+    "preserved_data_awaits",
     "re",
     "refresh_registries",
     "registry_name_from_source",
     "registry_source_repository",
     "repository_bound_grant_denied",
+    "requirements_in_tree",
     "resolve_installed_trust_repository",
+    "runtime_provisions_requirements",
     "sandboxed_spawn_argv",
     "sandboxed_spawn_argv_async",
     "scrub_env",
     "sel",
     "set_app_provenance",
+    "spawn_launches_entry_point_as_python",
     "sha256",
     "shipped_builtin_names",
     "shutil",
@@ -703,7 +732,13 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
             (tmp_path / "build" / "package.json").write_text("{}", encoding="utf-8")
             patched.setattr(registry.shutil, "which", lambda name: "/opt/test/npm")
             with pytest.raises(_SpawnRefused):
-                await registry._run_app_build(tmp_path / "build", "demo-app", [])
+                await registry._run_app_build(
+                    tmp_path / "build",
+                    "demo-app",
+                    [],
+                    manifest=AppManifest.from_dict({}),
+                    self_managed=False,
+                )
         heads = [argv[:3] for argv in spawned]
         assert heads == [
             ("git", "remote", "get-url"),
@@ -740,7 +775,9 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
         async def fake_clone(*args: Any, **kwargs: Any) -> None:
             return None
 
-        async def fake_build(build_dir: Path, app_name: str, log_lines: list[str]) -> dict:
+        async def fake_build(
+            build_dir: Path, app_name: str, log_lines: list[str], **kwargs: Any
+        ) -> dict:
             return {"ok": False, "name": app_name, "error": f"fake build in {build_dir.name}"}
 
         with pytest.MonkeyPatch.context() as patched:
@@ -1047,7 +1084,9 @@ class TestTheFacadesOwnCode:
         async def fake_clone(*args: Any, **kwargs: Any) -> None:
             return None
 
-        async def fake_build(build_dir: Path, app_name: str, log_lines: list[str]) -> dict:
+        async def fake_build(
+            build_dir: Path, app_name: str, log_lines: list[str], **kwargs: Any
+        ) -> dict:
             return {"ok": False, "name": app_name, "error": "fake build"}
 
         with pytest.MonkeyPatch.context() as patched:

@@ -90,6 +90,7 @@ export default function ErrorNotice({
   title,
   onDismiss,
   dismissLabel,
+  dismissLabelVisible = false,
   variant = 'block',
   askAgent = false,
   askAgentLabel,
@@ -128,6 +129,18 @@ export default function ErrorNotice({
    * hides it, and one that wants it seen renders it exactly like this.
    */
   dismissLabel?: string
+  /**
+   * Show `dismissLabel` as VISIBLE text beside the ✕ -- the same one string,
+   * read three ways (text, accessible name, tooltip) -- when dismissing is a
+   * step in the user's task rather than the closing of a notice ("Dismiss
+   * notice and re-enable Install" on a banner whose dismissal re-enables the
+   * Install button), so the path back is discoverable without reading the
+   * paragraph that mentions it. Off by default: every other consumer keeps the
+   * icon-only ✕ exactly as it renders today. Ignored without `onDismiss`. In
+   * the block variant a control with text is wide, so the notice's row wraps
+   * and the text takes a line of its own below the message at narrow widths.
+   */
+  dismissLabelVisible?: boolean
   /** `block` = boxed banner; `inline` = compact text for an existing flex row. */
   variant?: 'block' | 'inline'
   /**
@@ -252,22 +265,52 @@ export default function ErrorNotice({
         {onDismiss && (
           <button
             type="button"
-            className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
+            className={`shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors${dismissLabelVisible ? ' inline-flex items-center gap-1 text-[12px] font-medium whitespace-nowrap' : ''}`}
             aria-label={dismissName}
             title={dismissName}
             onClick={onDismiss}
           >
             <X size={13} aria-hidden="true" />
+            {dismissLabelVisible && <span>{dismissName}</span>}
           </button>
         )}
       </span>
     )
   }
 
+  // A dismiss whose name is shown as text (`dismissLabelVisible`) is a wide
+  // control -- "Dismiss notice and re-enable Install" is ~230px at 12px, and the
+  // German and French strings are longer -- and it shares the row with the
+  // message and the agent hand-off. At 320px the three cannot stand side by
+  // side: the label was `whitespace-nowrap`, so the message column was crushed
+  // to nothing and the row overflowed the notice. Same cure as
+  // CrashReportNotice: `flex-wrap` -> `md:flex-nowrap` on the row, and the
+  // control takes a full-width line of its own (`basis-full`, right-aligned)
+  // below the message at narrow widths, rejoining the row at `md`. That line is
+  // the notice's content width, and the German label (~300px at 12px) is wider
+  // than it at 320px, so below `md` the button may shrink and its label wrap:
+  // `shrink-0` and `whitespace-nowrap` hold only from `md` up, where the row has
+  // room for the whole label on one line. One DOM node for the action at every
+  // width -- never a hidden/shown pair, which would make
+  // `getByRole('button', { name })` match twice. The icon-only ✕ keeps the
+  // single-row shape every existing consumer's tests read.
+  const dismissButton = onDismiss && (
+    <button
+      type="button"
+      className={`${dismissLabelVisible ? '' : 'shrink-0 '}bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors${dismissLabelVisible ? ' inline-flex items-center gap-1 mt-[1px] text-[12px] font-medium min-w-0 md:shrink-0 md:whitespace-nowrap' : ''}`}
+      aria-label={dismissName}
+      title={dismissName}
+      onClick={onDismiss}
+    >
+      <X size={14} aria-hidden="true" />
+      {dismissLabelVisible && <span>{dismissName}</span>}
+    </button>
+  )
+
   return (
     <div
       role="alert"
-      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex items-start gap-2 text-[13px] text-danger ${className}`}
+      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger ${className}`}
       id={id}
       data-testid={testId}
     >
@@ -300,17 +343,13 @@ export default function ErrorNotice({
           className="mt-[1px]"
         />
       )}
-      {onDismiss && (
-        <button
-          type="button"
-          className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
-          aria-label={dismissName}
-          title={dismissName}
-          onClick={onDismiss}
-        >
-          <X size={14} aria-hidden="true" />
-        </button>
-      )}
+      {dismissLabelVisible
+        ? dismissButton && (
+          <span className="basis-full md:basis-auto shrink-0 flex justify-end">
+            {dismissButton}
+          </span>
+        )
+        : dismissButton}
     </div>
   )
 }

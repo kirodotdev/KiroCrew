@@ -94,7 +94,13 @@ def _contained_join(root: Path, subdir: str) -> Path | None:
     try:
         base = root.resolve()
         target = (root / subdir).resolve()
-    except OSError:
+    except (OSError, RuntimeError):
+        # What ``Path.resolve`` raises, and only that: ``OSError`` for a path it
+        # cannot walk, ``RuntimeError`` for a symlink loop (non-strict resolution
+        # re-raises ELOOP as one). A loop is an escape that resolves nowhere, so
+        # it fails closed like every other escape -- the callers that re-check
+        # containment after a third-party script wrote to the checkout depend on
+        # this returning rather than raising.
         return None
     return target if target.is_relative_to(base) else None
 

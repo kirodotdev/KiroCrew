@@ -12,6 +12,7 @@ app-specific fields.
 from __future__ import annotations
 
 import json
+import os
 import posixpath
 import re
 import sys
@@ -2972,3 +2973,210 @@ class AppManifest:
         if not isinstance(data, dict):
             raise ValueError(f"app.json must be a JSON object, got {type(data).__name__}")
         return cls.from_dict(data)
+
+
+# ---------------------------------------------------------------------------
+# What the runtime provisions out of process
+# ---------------------------------------------------------------------------
+#
+# The app runtime installs an app's root ``requirements.txt`` with
+# ``pip install --target`` into the app's own deps directory, a tree that
+# reaches processes spawned on the app's behalf and never the gateway's own
+# import path. Exactly two paths do it, and each decides from the typed
+# manifest plus the app root. The predicates below ARE that decision, imported
+# by both provisioners (``backend.py`` at the spawn of a backend entry point,
+# ``bridges.py`` at the registration of a stdio ``mcpServers`` entry) and by
+# the install-time desktop gate that mirrors them, so the three sites cannot
+# drift: ``test_apps_provisioning_predicate.py`` pins each site to these names.
+
+#: A ``backend.entryPoint`` ending in one of these is a script FILE even when
+#: it contains dots (``run.server.py``); anything else dotted is a module path.
+SCRIPT_ENTRY_POINT_SUFFIXES: tuple[str, ...] = (".py", ".js", ".ts", ".mjs", ".cjs", ".sh")
+
+#: Suffixes the backend spawn launches with ``node`` (``backend.type: "node"``
+#: chooses the same branch by declaration).
+NODE_ENTRY_POINT_SUFFIXES: tuple[str, ...] = (".js", ".mjs", ".cjs")
+
+#: The suffix the backend spawn launches as a shell script (``backend.type:
+#: "exec"`` chooses the same branch by declaration, and so does an extensionless
+#: executable whose first line is a shebang naming no ``python``).
+SHELL_ENTRY_POINT_SUFFIX = ".sh"
+
+
+def spawn_launches_entry_point_as_python(manifest: AppManifest, app_root: Path) -> bool:
+    """True when the backend spawn would run ``backend.entryPoint`` as a PYTHON child.
+
+    The one file-style shape the provisioned deps tree REACHES. ``backend.py``
+    pip-installs the root ``requirements.txt`` at the spawn of any file-style
+    entry, but hands the tree to a Python child only -- through the ``deps_boot``
+    shim when the child runs the gateway interpreter, through the shim under an
+    ABI-matched shebang, or on ``PYTHONPATH`` for an ABI-matched interpreter (the
+    transport block after the launch is built) -- and a node or shell child gets
+    none of the three: its dependencies land beside it, unreachable. Mirrors the
+    spawn's own dispatch (``_start_app_backend_body``, ``_is_shell_entry``): an
+    explicit ``backend.type`` of ``node`` or ``exec``, a node suffix, or ``.sh``
+    is not Python; an extensionless EXECUTABLE whose first line is a shebang
+    naming no ``python`` is a shell launcher; everything else -- ``.py``, a dotted
+    file name such as ``server.main``, an extensionless script the spawn feeds
+    to the interpreter -- is Python. Asked of the tree the spawn will resolve
+    the name under, like :func:`file_entry_point_refusal`; an extensionless
+    entry that is not there yet is judged by name alone.
+    """
+    entry_point = manifest.backend.entryPoint
+    if manifest.backend.type in ("node", "exec"):
+        return False
+    if entry_point.endswith(NODE_ENTRY_POINT_SUFFIXES) or entry_point.endswith(
+        SHELL_ENTRY_POINT_SUFFIX
+    ):
+        return False
+    if "." in entry_point.rsplit("/", 1)[-1]:
+        return True
+    entry = app_root / entry_point
+    try:
+        if not os.access(entry, os.X_OK):
+            return True
+        with open(entry, "rb") as fh:
+            first_line = fh.readline(256)
+    except OSError:
+        return True
+    return not (first_line.startswith(b"#!") and b"python" not in first_line)
+
+
+def is_module_style_entry_point(entry_point: str, app_root: Path) -> bool:
+    """True when ``backend.entryPoint`` names a dotted Python module, not a file.
+
+    The backend spawn runs such an entry with ``python -m`` from the trusted
+    package (a built-in app living inside the Kiro Crew package itself), never
+    from the writable app directory, so nothing found in that directory -- a
+    ``requirements.txt`` included -- is provisioned for it. Four conditions
+    together decide the shape: no path separator, no script suffix, at least
+    one dot, and no file of that literal name under *app_root* (a file named
+    ``server.main`` is a file). An empty entry point is not module-style.
+    """
+    return (
+        "/" not in entry_point
+        and not entry_point.endswith(SCRIPT_ENTRY_POINT_SUFFIXES)
+        and "." in entry_point
+        and not (app_root / entry_point).exists()
+    )
+
+
+def has_stdio_mcp_server(manifest: AppManifest) -> bool:
+    """True when the manifest declares a stdio ``mcpServers`` entry: one without ``url``.
+
+    A ``url`` server is remote and spawns nothing on the app's behalf. A stdio
+    server is a process the gateway launches, and its Python imports resolve
+    from the app's provisioned deps tree, which is why its presence is what
+    makes ``bridges.py`` provision at registration.
+    """
+    return any(
+        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
+    )
+
+
+def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:
+    """Why the backend spawn would refuse *entry_point* as a FILE-style entry,
+    or ``""`` when it would spawn it.
+
+    The spawn's own precondition (``backend.py::_start_app_backend_body``),
+    spelled once: the entry must be a regular file under *app_root* whose
+    resolution stays inside the root. Returns the spawn's reason -- ``"not
+    found"``, ``"escapes app root"``, ``"path resolution failed"`` -- so the
+    spawn can log it and :func:`runtime_provisions_requirements` can treat any
+    reason as "the backend provisioner never runs for this entry".
+    """
+    entry = app_root / entry_point
+    if not entry.is_file():
+        return "not found"
+    try:
+        if not entry.resolve().is_relative_to(app_root.resolve()):
+            return "escapes app root"
+    except (OSError, ValueError, RuntimeError):
+        # RuntimeError: a symlink loop under Python 3.12 (ELOOP from 3.13 on).
+        return "path resolution failed"
+    return ""
+
+
+def runtime_provisions_requirements(manifest: AppManifest, app_root: Path) -> bool:
+    """True when the runtime installs the app's root ``requirements.txt`` out of
+    process FOR A PROCESS THAT RECEIVES IT.
+
+    Composed from the same predicates the two provisioners call, plus the one
+    fact the provisioners do not decide by -- which child the installed tree
+    reaches:
+
+    - ``backend.py`` provisions at the spawn of any FILE-style ``backend.entryPoint``
+      -- the spawn runs only for an entry that IS a regular file inside the app
+      root (:func:`file_entry_point_refusal`); a declared file the spawn refuses
+      is returned before provisioning -- but hands the tree to a PYTHON child
+      only (:func:`spawn_launches_entry_point_as_python`): a shell or node entry is
+      spawned with the deps installed beside it and no way to import them, so it
+      counts here as no consumer. Never for a module-style entry, which executes
+      trusted package code;
+    - ``bridges.py`` provisions at the registration of a stdio ``mcpServers``
+      entry for an app whose entry point is absent or file-style -- the same
+      module-style exclusion, and no existence requirement of its own: the
+      stdio server is the consumer it provisions for, and the one that can still
+      make this true beside a shell or node entry.
+
+    So a module-style entry point is never provisioned, whatever else the
+    manifest declares; a ``.py`` entry point that would spawn always is; a
+    non-Python file entry, or a declared file the spawn would refuse, leaves only
+    a stdio server to make it true; without an entry point, a stdio server is.
+    Says nothing about ``backend.hooks``: a hook is imported into the gateway
+    process, which the deps tree never reaches, so a gate that waives an
+    install-time refusal on this predicate must exclude hooks itself.
+    """
+    entry_point = manifest.backend.entryPoint
+    if entry_point:
+        if is_module_style_entry_point(entry_point, app_root):
+            return False
+        if spawn_launches_entry_point_as_python(
+            manifest, app_root
+        ) and not file_entry_point_refusal(entry_point, app_root):
+            return True
+    return has_stdio_mcp_server(manifest)
+
+
+#: Read cap for an app's ``requirements.txt``: the provisioner buffers it in the
+#: GATEWAY's memory, so an oversized, app-controlled file must exhaust a bounded
+#: buffer, not the gateway. 1 MiB is orders of magnitude beyond any real
+#: requirements.txt. Owned here so the one acceptance rule below can apply the
+#: same cap the provisioner's bounded read enforces.
+REQUIREMENTS_TXT_MAX_BYTES = 1024 * 1024
+
+
+def requirements_in_tree(app_root: Path, req_file: Path) -> tuple[Path, Path] | None:
+    """The strictly-resolved ``(app_root, requirements.txt)`` pair when *req_file*
+    is one the runtime will read, else ``None``.
+
+    The provisioner's own acceptance rule for the file, spelled once: the entry
+    must strictly resolve (a dangling link is ``None``) to a regular file (a
+    directory is ``None``) inside the strictly-resolved app root (a link that
+    escapes it is ``None``), no larger than :data:`REQUIREMENTS_TXT_MAX_BYTES`
+    (an oversized file is ``None``; the provisioner's bounded read refuses it).
+    ``requirements.txt -> requirements/prod.txt`` is legitimate layout and
+    resolves.
+
+    Three callers, one rule. ``backend.py``'s provisioning read and its
+    activation gate use it as the fast refusal before their descriptor-pinned,
+    every-component-no-follow open of the returned target -- that open, and the
+    bounded read through it, are the security boundary; this is not, and it
+    stays where it is. ``registry.py``'s install-time desktop gate uses it to
+    predict what those two will do, so it never waives a file the provisioner
+    would refuse. ``None`` on any resolution error, so no caller catches here.
+    """
+    try:
+        root_resolved = app_root.resolve(strict=True)
+        target = req_file.resolve(strict=True)
+        if not target.is_file() or not target.is_relative_to(root_resolved):
+            return None
+        if target.stat().st_size > REQUIREMENTS_TXT_MAX_BYTES:
+            return None
+    except (OSError, RuntimeError):
+        # RuntimeError: a symlink loop, which Path.resolve raises as such before
+        # Python 3.13 (ELOOP, an OSError, from then on). Either way "not a file
+        # the runtime will read", never an exception for a caller to turn into a
+        # 500.
+        return None
+    return root_resolved, target

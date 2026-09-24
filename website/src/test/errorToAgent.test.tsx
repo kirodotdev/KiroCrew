@@ -581,4 +581,51 @@ describe('ErrorNotice', () => {
     render(<ErrorNotice message="oops" />)
     expect(screen.queryByRole('button', { name: /dismiss/i })).not.toBeInTheDocument()
   })
+
+  it('dismissLabelVisible shows dismissLabel as visible text that is also the accessible name and tooltip', async () => {
+    // Without it the control is the icon-only X -- named by `dismissLabel` or
+    // the generic "Dismiss", with no text of its own -- the shape every
+    // existing consumer renders.
+    const { unmount } = render(<ErrorNotice message="oops" onDismiss={() => {}} dismissLabel="Dismiss: hide this until it changes" />)
+    const bare = screen.getByRole('button', { name: 'Dismiss: hide this until it changes' })
+    expect(bare.textContent).toBe('')
+    // The single-row shape every existing consumer's tests read: no wrapping.
+    expect(screen.getByRole('alert').className).not.toContain('flex-wrap')
+    unmount()
+
+    // With it, a caller whose dismissal is a step in the user's task (it
+    // re-enables a button) shows that same one string on the control itself, so
+    // the path back is discoverable without reading the paragraph that mentions
+    // it -- one name, read three ways.
+    const onDismiss = vi.fn()
+    const first = render(
+      <ErrorNotice message="oops" onDismiss={onDismiss} dismissLabel="Dismiss notice and re-enable Install" dismissLabelVisible askAgent />,
+    )
+    const labelled = screen.getByRole('button', { name: 'Dismiss notice and re-enable Install' })
+    expect(labelled).toHaveTextContent('Dismiss notice and re-enable Install')
+    expect(labelled).toHaveAttribute('aria-label', 'Dismiss notice and re-enable Install')
+    expect(labelled).toHaveAttribute('title', 'Dismiss notice and re-enable Install')
+    expect(screen.queryByRole('button', { name: /^dismiss$/i })).not.toBeInTheDocument()
+    // A labelled control is wide, and shares the row with the message and the
+    // agent hand-off: at 320px the three cannot stand side by side, so the row
+    // wraps and the label takes a full-width line of its own below the message
+    // (rejoining the row at `md`) -- one node for the action at every width.
+    const alert = screen.getByRole('alert')
+    expect(alert.className).toContain('flex-wrap')
+    expect(alert.className).toContain('md:flex-nowrap')
+    const line = labelled.parentElement!
+    expect(line.className).toContain('basis-full')
+    expect(line.className).toContain('md:basis-auto')
+    expect(line.className).toContain('justify-end')
+    expect(alert.lastElementChild).toBe(line)  // below the message and the hand-off
+    expect(screen.getAllByRole('button', { name: 'Dismiss notice and re-enable Install' })).toHaveLength(1)
+    await userEvent.click(labelled)
+    expect(onDismiss).toHaveBeenCalledOnce()
+    first.unmount()
+
+    // The inline variant shows the same one string under the same flag.
+    render(<ErrorNotice message="oops" variant="inline" onDismiss={() => {}} dismissLabel="Dismiss to retry" dismissLabelVisible />)
+    expect(screen.getByRole('button', { name: 'Dismiss to retry' })).toHaveTextContent('Dismiss to retry')
+    expect(screen.getByRole('button', { name: 'Dismiss to retry' })).toHaveAttribute('title', 'Dismiss to retry')
+  })
 })

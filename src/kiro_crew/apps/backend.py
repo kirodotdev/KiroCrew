@@ -41,6 +41,7 @@ from kiro_crew.apps.execution import (
 )
 from kiro_crew.apps.interpreter import app_deps_dir, path_command_is_abi_matched, resolve_app_python
 from kiro_crew.apps.manager import app_dir, get_app_manifest
+from kiro_crew.apps.manifest import file_entry_point_refusal, is_module_style_entry_point
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.config.loader import config_dir
 from kiro_crew.constants import (
@@ -381,18 +382,11 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     entry_point = manifest.backend.entryPoint
     # Module-style entry point (e.g. "kiro_crew.apps.builtins.<name>"):
     # used by built-in apps that live inside the KiroCrew package itself.
-    # Heuristics:
-    #   - no path separator,
-    #   - no script-file extension (.py/.js/.ts/.mjs/.cjs/.sh) — those are
-    #     paths, not module dotted-names,
-    #   - has a dot (i.e. is a dotted module path),
-    #   - and no file with that literal name exists under the app root.
-    is_module_entry = (
-        "/" not in entry_point
-        and not entry_point.endswith((".py", ".js", ".ts", ".mjs", ".cjs", ".sh"))
-        and "." in entry_point
-        and not (root / entry_point).exists()
-    )
+    # The shape test is the shared `is_module_style_entry_point` -- the same
+    # predicate `bridges.py` and the install-time desktop gate answer from,
+    # so what this spawn provisions and what those sites assume it provisions
+    # cannot drift.
+    is_module_entry = is_module_style_entry_point(entry_point, root)
 
     # Bind the exemption to the code this spawn will actually execute.  A
     # module-style builtin is trusted only when its real package manifest names
@@ -431,24 +425,15 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         entry = None  # sentinel; no file path for module-style entries
     else:
         entry = root / entry_point
-        if not entry.is_file():
-            logger.error("App %s backend entry point not found: %s", app_name, entry)
-            return None
-        # Path containment backstop (mirrors module_loader hook-path check): the
-        # persisted manifest is spawned at boot without re-running validate(), so
-        # reject an entryPoint that resolves outside the app root (absolute path
-        # or '..' traversal).
-        try:
-            if not entry.resolve().is_relative_to(root.resolve()):
-                logger.error(
-                    "App %s backend entry point escapes app root: %s (resolved %s)",
-                    app_name, entry, entry.resolve(),
-                )
-                return None
-        except (OSError, ValueError):
-            logger.error(
-                "App %s backend entry point path resolution failed: %s", app_name, entry,
-            )
+        # The spawn's precondition for a file-style entry -- a regular file whose
+        # resolution stays inside the app root -- is the shared predicate, so the
+        # install-time desktop gate predicts this exact refusal (mirrors the
+        # module_loader hook-path check: the persisted manifest is spawned at boot
+        # without re-running validate(), so an absolute path or '..' traversal is
+        # rejected here too).
+        refusal = file_entry_point_refusal(entry_point, root)
+        if refusal:
+            logger.error("App %s backend entry point %s: %s", app_name, refusal, entry)
             return None
 
     # Resolve port. An auto port is RESERVED under the lock, not merely probed:
@@ -1512,6 +1497,7 @@ if _typing.TYPE_CHECKING:
         _DEPS_STAGING_SWEEP_RE,
         _DEPS_STAMP_MAX_BYTES,
         _DEPS_STAMP_NAME,
+        REQUIREMENTS_TXT_MAX_BYTES,
         _audit_provision_failure,
         _capped_spill,
         _default_marker_environment,
@@ -1528,6 +1514,7 @@ if _typing.TYPE_CHECKING:
         platform,
         redact_credentials,
         redact_exfiltration_urls,
+        requirements_in_tree,
         stat,
         sysconfig,
         tempfile,

@@ -2674,6 +2674,79 @@ ordering and identity guards that cross owners.
 
 Writers: `apps/backend.py`, `apps/backend_runtime/`.
 
+## 22. The app directory's gateway-owned root entries are never the source's
+
+Two root entries of an installed app directory belong to the gateway, not to the
+app that shipped the tree: `.app_secret`, the per-app credential
+`write_app_secret` generates, and `data/`, which an install puts back from the
+preserved previous directory (an update's own, a default uninstall's leftover, or
+a crashed sibling's `.{name}-data-tmp`). The install copy (`_copy_app_tree`)
+carries whatever the source put under those names — it keeps an in-tree symlink
+AS a link — so the install **removes its own entries from the copy without
+following them** (`_remove_any_shape`: a link is unlinked, a directory removed, a
+file deleted) before it writes or restores its own. The order is the contract:
+`write_app_secret` opens the path it is given, so a shipped
+`.app_secret -> ui/leak.js` that was still standing would receive the secret in
+a file the unauthenticated `/apps/{name}/ui/` route serves; a shipped `data`
+link that was still standing would fail the preserved directory's move.
+
+The install-time desktop gate judges a preview copy of the checkout
+(`copy_app_tree_as_installed`) and applies this same removal to it, so what the
+gate sees at those names is what the install leaves there — by the same call,
+not by a prediction of it. A first install with nothing preserved carries the
+source's `data/` as itself, in both.
+
+What stands at `data` once the gateway's part is done must be something the
+app's data directory can be — and something the gateway can move: `app_data_dir`
+is `mkdir(exist_ok=True)` at that name, and every update moves that directory
+aside to `.<name>-data-tmp` beside the app directory and puts it back after the
+copy. A real directory satisfies both. A link at that name is refused whatever
+it resolves to: `mkdir` may follow a link to a directory, but the move relocates
+the link itself, a relative link relocated out of its tree dangles, nothing is
+put back, and the directory it named is retired — and deleted — with the old
+tree on the update's own success path. A shipped FILE named `data` and a
+dangling link are refused for the `mkdir` alone. That question is asked of the
+copied tree **before `installed.json` is written**
+(`gateway_data_dir_obstruction`): `install_app` refuses and removes its copy,
+`update_app` refuses inside its transaction and the rollback restores the old
+tree and record, so a source shipping such an entry never leaves a
+half-installed app (a record, no data directory, no secret) behind a raise. An
+installed `data` that is already a link or a file (an install from before this
+refusal, or the app's own runtime replacing its directory) is refused by
+`update_app`'s preflight **before its transaction opens** — the same question,
+asked of the installed tree, with the old tree and record untouched — instead of
+being skipped by the move-aside and deleted with the retired tree on the update's
+success path; `preserved_data_awaits` never counts a link as a preserved
+directory. The same question is asked by `install_app`, of an app directory
+already standing at its destination with no record (a prior default uninstall's
+leftover, or an orphaned partial copy), **before its transaction opens**: a
+pre-existing link or file at `data` is refused with that sentence instead of
+being unlinked by the orphan cleanup that clears such a directory before the
+copy, the same refusal `update_app` and `uninstall_app` make of that shape before
+they mutate anything.
+The
+preview asks the same question and raises the install's own refusal
+(`InstalledTreeRefused`), which the registry transaction reports as a refusal —
+never as the desktop code, since a browser install refuses the same tree — so
+the gate turns the tree away before any copy into the app directory is made.
+With a preserved `data/` awaiting, the shipped entry is replaced by the
+directory that is put back, and the same source installs.
+
+Writers: `apps/manager.py::install_app`, `update_app`,
+`copy_app_tree_as_installed`, `_remove_any_shape`, `gateway_data_dir_obstruction`;
+`apps/registry.py::_run_app_build`,
+`apps/registry_pipeline/install.py::install_from_registry` (the refusal's two
+call sites). Tests:
+`test/test_app_manager.py::TestInstall` (the shipped `.app_secret` link, the
+shipped `data` link, the root `data` file refused before the record),
+`TestCopyAppTree::test_update_never_keeps_a_shipped_app_secret_link`,
+`TestCopyAppTree::test_an_update_shipping_a_root_data_file_where_none_is_preserved_rolls_back`,
+`TestCopyAppTree::test_an_installed_data_file_refuses_the_update_before_the_transaction`
+(and its link and junction siblings),
+`TestCopyAppTreeAsInstalled`,
+`test/test_apps_registry.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
+
+
 
 ## Windows stale-backend cleanup capacity
 
