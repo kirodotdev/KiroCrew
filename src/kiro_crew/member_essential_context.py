@@ -539,8 +539,20 @@ def _resource_pattern(path: Path, root: Path) -> str:
         raise MemberEssentialContextError(f"Essential source {path}: outside {root}")
     try:
         return str(path.relative_to(admitted_root))
-    except ValueError as exc:
-        raise MemberEssentialContextError(f"Essential source {path}: outside {root}") from exc
+    except ValueError:
+        pass
+    # The reverse layout: the declaration carries the link spelling while the
+    # root is already resolved (a project root is stored resolved). Only the
+    # declaration's glob-free ANCESTORS are screened, never its tail, so a link
+    # below the root is still refused: by the walk in :func:`_matches` for a
+    # glob, and by the containment check in :func:`_read` for a literal path.
+    for ancestor in reversed(path.parents):
+        if any(c in ancestor.name for c in "*?["):
+            break
+        admitted = validate_file_path(str(ancestor))
+        if admitted is not None and Path(admitted) == admitted_root:
+            return str(path.relative_to(ancestor))
+    raise MemberEssentialContextError(f"Essential source {path}: outside {root}")
 
 
 def _resource_paths(

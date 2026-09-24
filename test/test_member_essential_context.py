@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import context as context_module
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.context import CONTEXT_GROUP_LESSONS, ContextBuilder
@@ -737,6 +737,47 @@ def test_absolute_resource_outside_a_linked_root_is_still_refused(env, tmp_path)
         essentials._resource_paths([f"file://{outside}"], linked_root, linked_root)
 
 
+def test_absolute_resource_in_link_spelling_admits_under_a_resolved_root(env, tmp_path):
+    """A link-spelled declaration must resolve against a realpath-spelled root.
+
+    The reverse of the installer case: a project root is stored resolved while
+    the template records the resource through the ``$HOME`` link, so neither
+    spelling of the root is a lexical prefix of the declaration.
+    """
+    from kiro_crew import member_essential_context as essentials
+
+    linked_root = tmp_path / "linked-root"
+    make_dir_link(linked_root, env.project)
+    real_root = Path(os.path.realpath(str(linked_root)))
+    declared = linked_root / "declared-guide.md"
+    paths = essentials._resource_paths([f"file://{declared}"], real_root, real_root)
+    assert paths, "a link-spelled resource under the resolved root was refused"
+    match, root = paths[0]
+    assert "Declared guide" in essentials._read(match, root)
+
+
+def test_link_spelled_resource_still_refuses_outside_and_links_below_root(env, tmp_path):
+    """Matching the root's link spelling admits neither a sibling nor a link below it."""
+    from kiro_crew import member_essential_context as essentials
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "guide.md").write_text("OUTSIDE_SECRET", encoding="utf-8")
+
+    linked_root = tmp_path / "linked-root"
+    make_dir_link(linked_root, env.project)
+    real_root = Path(os.path.realpath(str(linked_root)))
+    with pytest.raises(MemberEssentialContextError, match="outside"):
+        essentials._resource_paths([f"file://{outside / 'guide.md'}"], real_root, real_root)
+    make_dir_link(env.project / "escape", outside)
+    paths = essentials._resource_paths(
+        [f"file://{linked_root / 'escape' / 'guide.md'}"], real_root, real_root
+    )
+    with pytest.raises(MemberEssentialContextError, match="outside"):
+        for match, root in paths:
+            essentials._read(match, root)
+
+
 def test_owner_cleared_empty_anchors_are_valid_but_missing_source_refuses(env):
     env.memory._preferences_file.write_text("", encoding="utf-8")
     env.memory._projects_file.write_text("", encoding="utf-8")
@@ -799,7 +840,6 @@ def test_malformed_declared_template_fields_refuse_explicitly(env, field, value)
 
 
 def test_linked_directory_is_refused_before_enumerating_outside_sources(env, tmp_path):
-    from conftest import make_dir_link
 
     target = tmp_path / "other-project"
     target.mkdir()
