@@ -191,6 +191,7 @@
       "open-path.js",
       "store-rename.js",
       "remote-token.js",
+      "remote-crew-setup.js",
       "token-acquire.js",
       "token-retry.js",
       "capture-trust.js",

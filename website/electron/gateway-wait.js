@@ -133,13 +133,15 @@ function describeGatewayFailure(failure) {
       return `Nothing is answering at ${target} and Kiro Crew is set not to `
         + `start a gateway on this machine. Start the gateway on `
         + `${failure.remoteHost}, or re-establish the tunnel or port-forward that `
-        + "reaches it, and retry. To run one on this machine instead, relaunch "
+        + "reaches it, and retry. If that address is wrong, choose Edit Remote "
+        + "Crew to correct it. To run one on this machine instead, relaunch "
         + "with KIROCREW_PORT set to a port that has no remote host configured, "
         + "then choose Start Local Gateway when prompted.";
     }
     return `No gateway is answering on port ${failure.port}, and Kiro Crew is set `
       + "not to start one on this machine. Start the gateway you connect to (or "
-      + "the connection that reaches it) and retry, or start one here.";
+      + "the connection that reaches it) and retry, or start one here. If your "
+      + "crew runs on another machine, choose Add Remote Crew to name it.";
   }
   // An incomplete bundle is not a launch failure — the installer is still writing
   // the backend. That message already explains the state and names Retry, so pass
