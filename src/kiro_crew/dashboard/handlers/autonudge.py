@@ -9,7 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew.autonudge import GOAL_DEFAULT_MAX_CYCLES, binding_key_for
 from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge import is_structured_monitor_loop
 
@@ -838,6 +838,16 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     Body: { slot_key, message, idle_secs?, max_cycles?, max_runtime_secs?,
             stop_sentinel_path?, gate?, banner? }
 
+    An OMITTED ``max_cycles`` arms a bounded goal (``GOAL_DEFAULT_MAX_CYCLES``,
+    the same budget ``/goal`` gives), matching ``monitor_start``'s omitted-means-
+    bounded contract rather than the ``NudgeLoop`` dataclass default: a loop with
+    no cap ends only when the model volunteers ``autonudge_stop``, and a caller
+    who wants that has to say so. An explicit ``0`` is that opt-in and still
+    means unlimited. ``max_runtime_secs`` stays opt-in (0 = no wall-clock bound),
+    as it is for ``/goal``. This route's only shipped caller is the goal popover,
+    which always sends the field, so the default is the backstop for a body that
+    leaves it out.
+
     ``gate`` defaults to FALSE here: this route arms whatever the goal popover was
     given, and only ``monitor_start`` has the evidence to gate by default. Pass
     ``gate: true`` to probe-gate a loop armed through this route.
@@ -877,7 +887,10 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
                     status=400,
                 )
         idle_secs = int(body.get("idle_secs", 60))
-        max_cycles = int(body.get("max_cycles", 0))
+        # ``get`` with a default, not ``or``: an explicit ``0`` is the unlimited
+        # opt-in and must survive, and an explicit ``null`` stays a 400 below
+        # rather than being read as "omitted".
+        max_cycles = int(body.get("max_cycles", GOAL_DEFAULT_MAX_CYCLES))
         max_runtime_secs = int(body.get("max_runtime_secs", 0))
     except (TypeError, ValueError, OverflowError):
         return web.json_response(

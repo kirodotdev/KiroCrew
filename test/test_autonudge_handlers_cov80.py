@@ -1225,6 +1225,65 @@ async def test_start_passes_create_only_coerced_values_to_the_authorizer(
 
 
 @pytest.mark.asyncio
+async def test_start_arms_a_bounded_goal_when_max_cycles_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A body that names no cycle cap gets the ``/goal`` budget, not an unlimited loop.
+
+    The dataclass default of 0 read as "no cap" here, so a dashboard goal whose
+    creator never touched the field ran until the model volunteered a stop. The
+    route now matches ``monitor_start``: omitted means bounded, and the bound is
+    the same one ``/goal`` gives so the two dashboard surfaces agree.
+    ``max_runtime_secs`` stays opt-in, as it is for ``/goal``.
+    """
+    from kiro_crew.autonudge import GOAL_DEFAULT_MAX_CYCLES
+
+    _svc(monkeypatch, _FakeSvc())
+    authorize = AsyncMock(return_value=(_loop("lp-new"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
+    request = _mk("POST", "/api/autonudge", body={"slot_key": "chat-3-333", "message": "go"})
+    assert _body(await h.api_autonudge_start(request))["ok"] is True
+    assert authorize.await_args is not None
+    kwargs = authorize.await_args.kwargs
+    assert kwargs["max_cycles"] == GOAL_DEFAULT_MAX_CYCLES == 50
+    assert kwargs["max_runtime_secs"] == 0
+
+
+@pytest.mark.asyncio
+async def test_start_keeps_an_explicit_zero_max_cycles_as_unlimited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``0`` is the unlimited opt-in and must not be swallowed by the default.
+
+    A ``get(..., default)`` keeps it; an ``or`` would have turned the one value
+    a caller types to mean "no cap" into the cap. ``null`` is not "omitted" and
+    still fails the integer guard.
+    """
+    _svc(monkeypatch, _FakeSvc())
+    authorize = AsyncMock(return_value=(_loop("lp-new"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
+    request = _mk(
+        "POST",
+        "/api/autonudge",
+        body={"slot_key": "chat-3-333", "message": "go", "max_cycles": 0},
+    )
+    assert _body(await h.api_autonudge_start(request))["ok"] is True
+    assert authorize.await_args is not None
+    assert authorize.await_args.kwargs["max_cycles"] == 0
+
+    authorize.reset_mock()
+    response = await h.api_autonudge_start(
+        _mk(
+            "POST",
+            "/api/autonudge",
+            body={"slot_key": "chat-3-333", "message": "go", "max_cycles": None},
+        )
+    )
+    assert response.status == 400
+    authorize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_start_surfaces_the_authorizer_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     _svc(monkeypatch, _FakeSvc())
     monkeypatch.setattr(

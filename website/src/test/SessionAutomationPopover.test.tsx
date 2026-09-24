@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SessionAutomationPopover from '../components/SessionAutomationPopover'
+import { DEFAULT_MAX_CYCLES } from '../components/AutoNudgePopover'
 import {
   normalizeAutomationRecord,
   type AutomationRecord,
@@ -977,6 +978,13 @@ describe('SessionAutomationPopover', () => {
       'max-h-[min(80vh,42rem)]',
       'overflow-y-auto',
     )
+    /* An unarmed slot seeds the goal form with the bounded default the wrapped
+       AutoNudgePopover exports (the `/goal` budget), not 0: a blank cap used to
+       arm an unlimited loop. Zero-unlimited semantics are unchanged -- a typed
+       0 is still the opt-in and survives the blur commit as 0, not the default. */
+    expect(maxCycles).toHaveValue(DEFAULT_MAX_CYCLES)
+    fireEvent.change(maxCycles, { target: { value: '0' } })
+    fireEvent.blur(maxCycles)
     expect(maxCycles).toHaveValue(0)
     expect(maxCycles.parentElement?.parentElement).toHaveClass('flex-col', 'sm:flex-row')
 

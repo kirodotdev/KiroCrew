@@ -62,7 +62,7 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
-from kiro_crew.autonudge import get_instance
+from kiro_crew.autonudge import GOAL_DEFAULT_MAX_CYCLES, get_instance
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -6535,11 +6535,13 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
         else:
             body = "No active goal to clear."
     else:
-        _max_cycles = 50
+        # The same finite default the goal popover's REST route applies to an
+        # omitted ``max_cycles``, so both dashboard arming surfaces agree.
+        _max_cycles = GOAL_DEFAULT_MAX_CYCLES
         _objective = _rest
         _m = re.match(r"--max\s+(\d+)\s+(.*)", _rest, re.DOTALL)
         if _m:
-            _max_cycles = max(1, min(50, int(_m.group(1))))
+            _max_cycles = max(1, min(GOAL_DEFAULT_MAX_CYCLES, int(_m.group(1))))
             _objective = _m.group(2).strip()
         elif _rest.startswith("--max"):
             _objective = ""

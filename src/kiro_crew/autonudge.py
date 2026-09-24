@@ -128,6 +128,15 @@ _STORE_VERSION = 1
 _MIN_IDLE_SECS = 15
 _MAX_IDLE_SECS = 86400  # 24h
 
+#: Cycle cap a dashboard goal carries when its creator names none: the ``/goal``
+#: chat command's budget and ``POST /api/autonudge``'s default for an OMITTED
+#: ``max_cycles``, so the two dashboard arming surfaces agree. A service-enforced
+#: finite bound is the backstop that ends a goal whose model never volunteers
+#: ``autonudge_stop``; an explicit ``0`` still means unlimited, as an opt-in the
+#: caller has to spell out rather than a state a blank field falls into. Kept on
+#: this service module because both producers already import from here.
+GOAL_DEFAULT_MAX_CYCLES = 50
+
 
 #: Fields a client ADDRESSES a row by, so the REST scrub exempts them -- which is
 #: only safe because ``_load`` refuses a row whose value here is credential-shaped.

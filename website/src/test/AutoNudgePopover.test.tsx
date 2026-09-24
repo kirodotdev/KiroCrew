@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useState } from 'react'
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import AutoNudgePopover, { STOP_FILE_TOKEN, type AutoNudgeLoop } from '../components/AutoNudgePopover'
+import AutoNudgePopover, { DEFAULT_MAX_CYCLES, STOP_FILE_TOKEN, type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { __resetForTests, loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
@@ -163,14 +163,58 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     expect(idleField().value).toBe('30')
   })
 
-  it('empty max-cycles commits to 0 (infinity) on blur', () => {
+  it('a new goal seeds the bounded default and an empty max-cycles commits back to it on blur', () => {
+    // A blank field used to commit to 0 -- unlimited -- so a goal whose creator
+    // never touched the cap ran until the model volunteered a stop. The seed and
+    // the empty-field fallback are both the finite `/goal` budget now.
     renderPopover(null)
-    expect(cyclesField().value).toBe('0')
+    expect(cyclesField().value).toBe(String(DEFAULT_MAX_CYCLES))
+    expect(DEFAULT_MAX_CYCLES).toBe(50)
     fireEvent.change(cyclesField(), { target: { value: '' } })
     expect(cyclesField().value).toBe('')
     fireEvent.blur(cyclesField())
+    expect(cyclesField().value).toBe(String(DEFAULT_MAX_CYCLES))
+  })
+
+  it('a typed 0 is the unlimited opt-in: it survives blur and is what Save sends', async () => {
+    renderPopover(null)
+    fireEvent.change(cyclesField(), { target: { value: '0' } })
+    fireEvent.blur(cyclesField())
+    // `0` is falsy, so a `|| default` fallback would have snapped it to 50 here.
+    expect(cyclesField().value).toBe('0')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+    expect(JSON.parse(saveCall()![1]!.body!).max_cycles).toBe(0)
+  })
+
+  it('an untouched new goal POSTs the bounded default, not 0', async () => {
+    renderPopover(null)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+    const body = JSON.parse(saveCall()![1]!.body!)
+    expect(body.max_cycles).toBe(DEFAULT_MAX_CYCLES)
+    expect(body.idle_secs).toBe(60)
+  })
+
+  it('a live loop with max_cycles 0 still shows 0 -- the default is for NEW goals, not a rewrite of a running one', () => {
+    renderPopover(makeLoop({ max_cycles: 0 }))
     expect(cyclesField().value).toBe('0')
   })
+
+  it('a remembered draft with max_cycles 0 restores 0: that was the user\'s opt-in on this slot, not a blank', () => {
+    saveGoalDraft(SLOT, { message: 'remembered goal', idleSecs: 60, maxCycles: 0 })
+    renderPopover(null)
+    expect(cyclesField().value).toBe('0')
+  })
+
+  /** The save POST, selected by URL rather than index: opening the popover also
+   *  READS /api/crons to list this slot's watches, so the write is not call 0.
+   *  The init arg is optional and its `body` is too (the crons read is a bare
+   *  `fetch(url)`), so the `c[1]?.body` test is load-bearing. */
+  const saveCall = () => {
+    const calls = (fetch as unknown as { mock: { calls: [string, { body?: string }?][] } }).mock.calls
+    const save = calls.find(c => String(c[0]).startsWith('/api/autonudge') && c[1]?.body)
+    expect(save, 'no /api/autonudge write was issued').toBeTruthy()
+    return save
+  }
 
   it('Save sends the typed idle value even without an intervening blur', async () => {
     renderPopover(null)
@@ -178,16 +222,7 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     // Click Start loop WITHOUT blurring the field first — save() must read the
     // raw string, not a stale committed number.
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
-    // Select the call by URL, not by index: opening the popover also READS
-    // /api/crons to list this slot's watches, so the save POST is no longer
-    // call 0 and an index would pin an unrelated ordering.
-    // The init arg is optional and its `body` is too: the /api/crons read is a
-    // bare `fetch(url)` and a delete carries only `{ method }`, so `c[1]?.body`
-    // below is load-bearing rather than defensive.
-    const calls = (fetch as unknown as { mock: { calls: [string, { body?: string }?][] } }).mock.calls
-    const save = calls.find(c => String(c[0]).startsWith('/api/autonudge') && c[1]?.body)
-    expect(save, 'no /api/autonudge write was issued').toBeTruthy()
-    const body = JSON.parse(save![1]!.body!)
+    const body = JSON.parse(saveCall()![1]!.body!)
     expect(body.idle_secs).toBe(45)
   })
 })

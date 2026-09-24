@@ -50,6 +50,17 @@ export const STOP_FILE_TOKEN = '{{STOP_FILE}}'
 
 const DEFAULT_MSG = `Your north star is in north_star.md, roadmap in roadmap.md, tasks in tasks.md. Pick the single highest-leverage next step toward the goal and execute it. Update tasks.md. Post a blocker ONCE if genuinely stuck. To halt the loop, create {{STOP_FILE}}`
 
+/**
+ * Cycle cap a NEW goal starts with, and what a cleared cycles field commits to.
+ * Mirrors `GOAL_DEFAULT_MAX_CYCLES` on the server (`autonudge.py`), the budget
+ * `/goal` gives and the default `POST /api/autonudge` applies to an omitted
+ * `max_cycles`, so a goal armed from this popover is bounded unless the user
+ * types `0` -- which stays the unlimited opt-in the label advertises. It is NOT
+ * applied to a live loop: a running loop's own `max_cycles` (0 included) is the
+ * truth and is shown as-is.
+ */
+export const DEFAULT_MAX_CYCLES = 50
+
 /** One armed script cron owned by this chat slot. */
 interface SlotWatch {
   id: string
@@ -60,8 +71,10 @@ interface SlotWatch {
 
 export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange, onSetUpBoundedMonitor, writeDisabled = false, interrupted = false, trigger, content }: Props) {
   // `||` (not `??`) is deliberate on the loop tier: it preserves the fallback
-  // so a loop with idle_secs/max_cycles of 0 or an empty message still shows
-  // the 60 / 0 / default template rather than a bare 0 / "".
+  // so a loop with idle_secs of 0 or an empty message still shows the 60 /
+  // default template rather than a bare 0 / "". A live loop's max_cycles is
+  // shown as-is (0 = unlimited is a real setting); only a NEW goal seeds the
+  // bounded DEFAULT_MAX_CYCLES.
   const [message, setMessage] = useState(() => loop?.message || DEFAULT_MSG)
   // Idle-seconds and max-cycles are held as RAW STRINGS while the popover is
   // open so every edit (including a fully-cleared field or a transient "") is
@@ -69,9 +82,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   // backspaced-to-empty field straight back to its default and prevent removing
   // the leading digit. The string is parsed
   // into a number only when the field commits (blur / save); an empty or
-  // unparseable value falls back to the field default — 60 idle, 0 cycles.
+  // unparseable value falls back to the field default — 60 idle,
+  // DEFAULT_MAX_CYCLES cycles. A typed `0` is a value, not an empty field, and
+  // commits as the unlimited opt-in.
   const [idleInput, setIdleInput] = useState(() => String(loop?.idle_secs || 60))
-  const [maxCyclesInput, setMaxCyclesInput] = useState(() => String(loop?.max_cycles || 0))
+  const [maxCyclesInput, setMaxCyclesInput] = useState(() => (loop ? String(loop.max_cycles || 0) : String(DEFAULT_MAX_CYCLES)))
   const [saving, setSaving] = useState(false)
   /* Two-step on the clear only. The erase is irreversible and sits beside the
      primary CTA, so one press asks and the second performs. */
@@ -116,7 +131,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   }, [cronJobs, slotKey])
 
   const parseIdle = (s: string) => parseInt(s, 10) || 60
-  const parseCycles = (s: string) => parseInt(s, 10) || 0
+  // NOT `|| DEFAULT_MAX_CYCLES`: `0` is falsy, and it is the one value a user
+  // types to mean "no cap", so only an EMPTY / unparseable field falls back.
+  const parseCycles = (s: string) => {
+    const n = parseInt(s, 10)
+    return Number.isNaN(n) ? DEFAULT_MAX_CYCLES : n
+  }
 
   // Only a genuine user edit should persist a draft. Seeding from the live loop
   // or restoring a remembered draft on open must NOT re-write the store (doing
@@ -138,7 +158,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   function draftToPersist(s: typeof latest.current): GoalDraft | null {
     const idleSecs = parseIdle(s.idleInput)
     const maxCycles = parseCycles(s.maxCyclesInput)
-    const isPristineDefault = s.message === DEFAULT_MSG && idleSecs === 60 && maxCycles === 0
+    const isPristineDefault = s.message === DEFAULT_MSG && idleSecs === 60 && maxCycles === DEFAULT_MAX_CYCLES
     return isPristineDefault ? null : { message: s.message, idleSecs, maxCycles }
   }
 
@@ -168,16 +188,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     // put a primed erase under the next press.
     setConfirmClear(false)
     if (loop) {
-      // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
-      // or an empty message shows the 60 / 0 / default template.
+      // `||` (not `??`) is deliberate: a loop with idle_secs of 0 or an empty
+      // message shows the 60 / default template. Its max_cycles is shown as-is:
+      // a live 0 IS the unlimited setting, not an empty field.
       setMessage(loop.message || DEFAULT_MSG)
       setIdleInput(String(loop.idle_secs || 60))
       setMaxCyclesInput(String(loop.max_cycles || 0))
     } else {
+      // A remembered draft restores exactly what the user last committed,
+      // a `0` included -- that was their opt-in on this slot, not a blank.
       const remembered = loadGoalDraft(slotKey)
       setMessage(remembered ? remembered.message : DEFAULT_MSG)
       setIdleInput(String(remembered ? remembered.idleSecs : 60))
-      setMaxCyclesInput(String(remembered ? remembered.maxCycles : 0))
+      setMaxCyclesInput(String(remembered ? remembered.maxCycles : DEFAULT_MAX_CYCLES))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge seed only; loop/slotKey are read fresh each open
   }, [open])
