@@ -384,10 +384,14 @@ using the publication the handler already read for its version capture. The orde
 chosen for its crash residue: die between the two steps in this order and the copy is
 withdrawn while the artifact remains, which the user simply deletes again; die between
 them in the reverse order and the local record is already gone while the content is still
-public, with nothing left to withdraw it by. Since `delete()` removes the artifact
-directory by slug under the store lock rather than writing back a value read earlier,
-placing a network round trip ahead of it does not widen any compare-and-swap window -- a
-save landing in that window is included in the delete the user asked for.
+public, with nothing left to withdraw it by. `delete()` removes the artifact directory BY
+SLUG under the store lock, and a slug is a name the store re-mints identically once freed,
+so placing a network round trip ahead of it DOES widen a window: a save landing there is
+included in the delete the user asked for, but an artifact deleted and recreated under the
+same title in that window takes the name back, and a removal by name alone would destroy
+the newcomer. The handler therefore holds `publication_guard` across the round trip and
+passes the generation and publication id it read into the removal, which is where the
+comparison happens -- see the withdrawal rules below.
 
 The local delete proceeds on ONE rule: only when there is nothing left to withdraw, or
 the destination confirmed the withdrawal. Anything else refuses, loudly. A destination
@@ -423,18 +427,50 @@ refuses the whole cascade, leaving the artifacts, their handles and the folder i
 That preflight cannot be trusted on its own, because nothing holds a lock across it and
 the destruction that follows: the folder tree and the artifact store have independent
 locks, and taking both would invite an ordering deadlock. An artifact filed into the
-subtree after the preflight enumerated it therefore reaches the destruction still
-holding a publication nobody withdrew. So the refusal is asked of the delete itself
-rather than checked in the cascade loop: `ArtifactStore.delete` takes an opt-in
-`refuse_if_published` flag and re-reads the record inside the same lock as the removal,
-which is what makes it hold. A check in the loop would be a check-then-act over a
-snapshot, so a publish landing between the scan and that artifact's own delete would
-still be destroyed. The flag defaults to False, so the single-artifact path is
-unchanged: it is answered at the handler, which attempts the withdrawal and refuses on
-its outcome. The folder tree change is already committed by the time the cascade
-refuses and cannot be rolled back, so a kept artifact survives with a dangling folder
-id and degrades to Unfiled, which readers already tolerate; the response names it so a
-partly-refused cascade does not read as a completed one.
+subtree after the preflight enumerated it, or re-published between its withdrawal and its
+removal, would otherwise reach the destruction still holding a publication nobody
+withdrew.
+
+The refusal is therefore asked of the delete itself rather than checked in the cascade
+loop: `ArtifactStore.delete` takes an opt-in `refuse_if_published` flag and re-reads the
+record inside the same lock as the removal, since a check in the loop would be a
+check-then-act over a snapshot. That re-read is necessary and **not** sufficient on its
+own, because the store lock is not the lock publication state is decided under. The
+decisive one is `publish_sync.publication_guard`, the per-slug lock every path holds when
+it reads whether an artifact has a live publication and then ACTS on that reading. The
+cascade holds it across BOTH the withdrawal and the destruction of each artifact, so a
+publish cannot land between them. It is taken in exactly three places -- `publish`, the
+single-artifact delete route, and the folder-cascade route -- and `unpublish` is
+deliberately not one of them: it clears a record after a network withdrawal while holding
+no guard, so there the identity comparison below is the ONLY thing standing between it and
+clearing a newcomer's handle. The registry backing the guard is refcounted: the count is
+taken before the acquire so a waiter keeps the entry alive, and an entry drops only at zero
+holders, where a later caller minting a fresh lock excludes nobody. That is what makes
+guarding ANY well-formed slug affordable rather than only the ones the store could resolve,
+which matters because a slug the store reads as empty is the only slug an artifact created
+inside the delete's own window can occupy. A malformed slug still passes through unguarded
+so the store answers `4xx`.
+
+Membership in the guarded set names an ARTIFACT, never a name. A freed slug is re-minted
+identically and creating an artifact takes no guard, so the cascade carries
+`destroyable_generations`, a slug-to-generation map, and each door compares identity under
+the lock it removes beneath: `expect_created_at` for the artifact's generation, and
+`expect_publication_id` for the publication's own id, because `set_publication` replaces
+only the publication block and leaves `created_at` untouched, so a re-publish of the same
+artifact is invisible to the generation alone. Expected ABSENCE is its own value,
+`EXPECT_ABSENT`, rather than `None`: `None` means there is no identity to compare and so
+performs no check at all, which on the absent-slug path is precisely the newcomer the guard
+was taken for. An artifact holding a slug the caller did not name therefore survives. The
+map defaults to empty, so a caller naming no generations destroys nothing rather than
+everything, and the response separates the reasons: `replaced_artifact_slugs` for one
+replaced after the caller named it, `kept_published_artifact_slugs` for one still
+published, `unguarded_artifact_slugs` for one that joined the subtree outside the guarded
+set. The single-artifact door answers `409` on the same comparison.
+
+The folder tree change is already committed by the time the cascade refuses and cannot be
+rolled back, so a kept artifact survives with a dangling folder id and degrades to Unfiled,
+which readers already tolerate; the response names it so a partly-refused cascade does not
+read as a completed one.
 
 `unpublish` is **not** a way out of a kept publication either, though it was designed as
 one. It obeys the same absence rule as the delete path: a destination that refuses the
