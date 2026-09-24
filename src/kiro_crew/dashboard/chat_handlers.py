@@ -234,6 +234,7 @@ from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _await_guarded_history_write,
     _close_slot,
+    _emit_archived_rows,
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
