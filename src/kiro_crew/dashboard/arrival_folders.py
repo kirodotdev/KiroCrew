@@ -50,6 +50,7 @@ every time the interface language changed.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -178,6 +179,9 @@ def _new_folder(name: str, parent_id: str, order: int) -> dict[str, Any]:
         "parent_id": parent_id,
         "project_dir": "",
         "default_agent": "",
+        # Same stamp ``create_folder_record`` writes: the sidebar's ``created``
+        # folder sort reads it, and an arrival row must sort like a hand-made one.
+        "created_at": time.time(),
     }
 
 

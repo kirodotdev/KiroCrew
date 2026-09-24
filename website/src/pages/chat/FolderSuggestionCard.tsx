@@ -4,7 +4,7 @@ import { motion } from 'framer-motion'
 
 import { i18nT } from '../../i18n/t'
 import type { ChatFolder } from '../../types'
-import { orderFoldersWithPaths } from '../../utils/folderTree'
+import { orderFoldersWithPaths, type FolderSortMode } from '../../utils/folderTree'
 import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select'
 
 export interface FolderSuggestionCardProps {
@@ -27,6 +27,10 @@ export interface FolderSuggestionCardProps {
   onAccept: (folderId: string) => void
   /** Leave the session where it is. The card is not re-offered either way. */
   onDecline: () => void
+  /** The sidebar's folder sort mode, so the option list reads in the order the
+   *  sidebar draws the same tree. A prop, passed by ChatPage from
+   *  `useFolderSortMode`, so this card stays a pure function of its props. */
+  folderSortMode?: FolderSortMode
 }
 
 /**
@@ -60,6 +64,7 @@ export interface FolderSuggestionCardProps {
  */
 export default function FolderSuggestionCard({
   suggestedFolderId, suggestedFolderName, suggestedFolderBreadcrumb, folders, onAccept, onDecline,
+  folderSortMode = 'custom',
 }: FolderSuggestionCardProps) {
   const selectId = useId()
   const [selectedId, setSelectedId] = useState(suggestedFolderId)
@@ -70,7 +75,7 @@ export default function FolderSuggestionCard({
   // closed <select> shows ONLY the chosen option's text, so the path is what
   // keeps same-named subfolders under different parents unambiguous — and it
   // replaces the old card's separate breadcrumb line.
-  const options = orderFoldersWithPaths(folders).map(o => ({
+  const options = orderFoldersWithPaths(folders, folderSortMode).map(o => ({
     id: o.folder.id,
     label: o.depth > 0 ? o.path : o.folder.name,
   }))

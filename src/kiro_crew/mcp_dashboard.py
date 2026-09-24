@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import logging
 import re as _re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -77,6 +78,8 @@ from urllib.parse import quote
 # to the gateway lives in ``mcp_core``. Importing it costs 341ms/40MB in this
 # process (measured) — under ``mcp_computer``'s own import cost, because
 # mcp_core's heavy dependencies are function-local.
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.sections import FOLDER_SORT_DEFAULT, FOLDER_SORT_MODES
 from kiro_crew.dashboard.chat_folders import (
     _folder_owner_app,
     _subtree_holds_foreign_folder,
@@ -155,10 +158,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Show the user's SIDEBAR folder tree — the folders they organize "
                 "their chat sessions in — with the live sessions filed in each one. "
-                "Folders are listed in the SAME ORDER the sidebar draws them (each "
-                "parent's children in their stored order), so the sequence you read "
-                "here is the one the person sees — which is what makes it safe to "
-                "pick a ``before``/``after`` anchor for chat_folder_move. Returns per "
+                "Folders are listed in the SAME ORDER the sidebar draws them, in the "
+                "person's folder sort mode (custom = their stored positions, name = "
+                "natural alphabetical, created = newest first); the header line names "
+                "the active mode. In custom mode the sequence you read here is the "
+                "one the person sees, which is what makes it safe to pick a "
+                "``before``/``after`` anchor for chat_folder_move. In name or created "
+                "mode the listing says so and warns that an anchor sets the stored "
+                "position without changing the displayed order. Returns per "
                 "folder: id, human path, project directory, default "
                 "agent, and how many archived (history) sessions are filed there; "
                 "then one line per live session (slot key + title) nested under it, "
@@ -217,7 +224,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "``new_parent`` the anchor chooses the parent, which is how you "
                 "reorder a folder without moving it. chat_folder_tree lists folders "
                 "in the same order the sidebar draws them, so read it first to pick "
-                "the anchor. An app agent may move only a folder it created itself, "
+                "the anchor. A position is a STORED position: the sidebar shows it "
+                "in its custom folder order, and when the person has sorted folders "
+                "by name or creation date (chat_folder_tree's header says which) an "
+                "anchor changes nothing they see until they switch back. An app "
+                "agent may move only a folder it created itself, "
                 "and only to the top level or under another of its own; positioning "
                 "is refused outright when it would renumber siblings the app does "
                 "not own. A crew member is bound by the same own-folders-only rule."
@@ -740,6 +751,46 @@ def _get_rows(path: str) -> tuple[list[dict], str | None]:
     return [], f"unexpected response shape from {path}"
 
 
+def _read_folder_sort_setting() -> object:
+    """The raw ``dashboard.folder_sort`` value from the gateway's config on disk.
+
+    Read the way the other MCP tools read a dashboard setting (the probe timeout
+    in ``mcp_discovery``, the quarantine threshold in ``mcp_quarantine``):
+    through the loader from ``config.json``, NOT through ``GET
+    /api/config/kirocrew``. That route is cookie-authenticated only -- it is in
+    neither internal-secret allowlist -- and admitting it to read one enum would
+    open the whole config surface, PATCH included, to every secret-bearing
+    caller. The sidebar menu's PATCH persists to the same file before it
+    answers, so this read sees the menu's last choice; the loader has reduced
+    the stored value to the known set, and the local overlay file is merged the
+    same way for both readers.
+    """
+    return KiroCrewConfig.load().dashboard.folder_sort
+
+
+def _chat_folder_sort_mode() -> tuple[str, str | None]:
+    """The person's sidebar folder sort mode.
+
+    ``dashboard.folder_sort`` is the ONE stored copy of the preference: the
+    sidebar menu writes it through the config PATCH allowlist, the sidebar reads
+    it back through its config query, and the tree tool reads the same file, so
+    the two cannot draw the tree in different orders. Returns ``(mode, None)``,
+    or ``("custom", error)`` when the read itself failed -- ``custom`` being the
+    stored-order listing every earlier build produced. A value outside the known
+    set also reads as ``custom``, without an error: the loader has already
+    reduced the stored value to a known one, so that can only be a build skew,
+    not a broken read. The caller decides what to say about an error: the tree
+    is still worth listing when only its ordering is in doubt.
+    """
+    try:
+        raw = _read_folder_sort_setting()
+    except Exception as exc:  # noqa: BLE001 -- said in the header, not raised
+        return FOLDER_SORT_DEFAULT, f"{type(exc).__name__}: {exc}"
+    if isinstance(raw, str) and raw in FOLDER_SORT_MODES:
+        return raw, None
+    return FOLDER_SORT_DEFAULT, None
+
+
 # Sidebar folder ids are minted as ``uuid.uuid4().hex[:12]``
 # (``chat_folders.api_chat_folder_create``), so an id-shaped reference is
 # recognizable and must never be auto-created as a folder NAME.
@@ -886,14 +937,109 @@ def _chat_folder_name_key(folder: dict) -> bytes:
     return text.translate(_ASCII_FOLD).encode("utf-16-be", "surrogatepass")
 
 
-def _chat_folder_siblings(folders: list[dict], parent_id: str) -> list[dict]:
+def _chat_folder_created(folder: dict) -> float | None:
+    """A folder's creation stamp as the sidebar reads it, or ``None`` when it has none.
+
+    ``created_at`` is epoch seconds written by every folder creator since the
+    sidebar's ``created`` sort existed; a row from before that carries no key. The
+    acceptance rule is ``_chat_folder_order``'s, for the same reason: this value
+    orders the ``created`` mode on both sides, so only a real, finite JSON number
+    counts and everything else reads as "no stamp" identically here and in the
+    sidebar's ``folderCreated``. Both sides clamp to the range JavaScript holds
+    exactly, and an unbounded int is clamped BEFORE the ``float`` call because
+    ``float(10**400)`` raises -- and this is a sort key, so nothing here may.
+    """
+    value = folder.get("created_at")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, int):
+        value = max(-_CHAT_FOLDER_ORDER_LIMIT, min(_CHAT_FOLDER_ORDER_LIMIT, value))
+    stamp = float(value)
+    if stamp != stamp or stamp in (_POS_INF, _NEG_INF):  # NaN, ±Infinity
+        return None
+    return max(-float(_CHAT_FOLDER_ORDER_LIMIT), min(float(_CHAT_FOLDER_ORDER_LIMIT), stamp))
+
+
+_DIGIT_RUNS = _re.compile(r"[0-9]+|[^0-9]+")
+
+
+def _chat_folder_natural_key(folder: dict) -> tuple[tuple[Any, ...], ...]:
+    """The ``name`` sort mode's key: case-folded natural order, ``01.`` < ``02.`` < ``10.``.
+
+    The folded name is cut into maximal runs of ASCII digits and of everything
+    else, and the runs are compared position by position. A digit run compares by
+    its integer value -- leading zeros stripped, then length, then the digits, so
+    the value is compared without ever being converted to a number and an
+    arbitrarily long run cannot overflow on either side. A text run compares as
+    ``_chat_folder_name_key`` does (UTF-16 code units of the ``A``-``Z``-folded
+    text). Where a digit run meets a text run, the digit run sorts first; where
+    every compared run is equal, the shorter name sorts first.
+
+    Only ``0``-``9`` is a digit, deliberately: ``str.isdigit`` reads the
+    interpreter's Unicode tables where the sidebar's ``/[0-9]/`` does not, and a
+    key that agrees with ``folderTree.naturalNameCompare`` by construction is the
+    whole point -- ``chat_folder_tree`` in this mode must list what the sidebar
+    draws. Ties (``01`` against ``1``) fall through to the ``custom`` key.
+    """
+    name = folder.get("name")
+    text = (name if isinstance(name, str) else "").translate(_ASCII_FOLD)
+    key: list[tuple[Any, ...]] = []
+    for run in _DIGIT_RUNS.findall(text):
+        if "0" <= run[0] <= "9":
+            digits = run.lstrip("0")
+            key.append((0, len(digits), digits.encode("ascii")))
+        else:
+            key.append((1, run.encode("utf-16-be", "surrogatepass")))
+    return tuple(key)
+
+
+def _chat_folder_sort_key(mode: str) -> Callable[[dict], tuple[Any, ...]]:
+    """The sibling sort key for one folder sort mode.
+
+    ``custom`` is the stored ``order`` then the folded name -- the only order that
+    existed before the mode did, and the one every placement (``before``/``after``)
+    is computed in. ``name`` and ``created`` are VIEW orders layered on top: each
+    ends in the ``custom`` key so two folders the mode cannot separate keep the
+    order the person arranged, and so the whole key stays total on both sides.
+    ``created`` is newest first, the direction the sidebar's session list already
+    reads in; a folder with no stamp sorts as older than every stamped one.
+
+    An unknown mode reads as ``custom`` rather than raising, because this is
+    called from a listing an agent depends on and the loader has already reduced
+    the stored value to a known one.
+    """
+
+    def custom(folder: dict) -> tuple[Any, ...]:
+        return (_chat_folder_order(folder), _chat_folder_name_key(folder))
+
+    if mode == "name":
+        return lambda f: (_chat_folder_natural_key(f), *custom(f))
+    if mode == "created":
+
+        def created(folder: dict) -> tuple[Any, ...]:
+            stamp = _chat_folder_created(folder)
+            return (1, 0.0, *custom(folder)) if stamp is None else (0, -stamp, *custom(folder))
+
+        return created
+    return custom
+
+
+def _chat_folder_siblings(
+    folders: list[dict], parent_id: str, mode: str = FOLDER_SORT_DEFAULT
+) -> list[dict]:
     """Direct children of ``parent_id``, in the order the sidebar renders them.
 
-    The comparator mirrors the sidebar's own (``folderTree.bySidebarOrder`` sorts
-    each parent's children by ``order`` then name), because a caller saying "put
-    this after that" means after what the PERSON SEES. Sorting by ``order`` alone
-    would disagree with the rendered list wherever two siblings share a number,
-    which the store permits.
+    The comparator mirrors the sidebar's own (``folderTree.folderComparator``
+    sorts each parent's children by the person's folder sort mode -- stored
+    ``order`` then name in ``custom``), because a caller saying "put this after
+    that" means after what the PERSON SEES. Sorting by ``order`` alone would
+    disagree with the rendered list wherever two siblings share a number, which
+    the store permits.
+
+    ``mode`` defaults to ``custom`` because that is the order a POSITION lives in:
+    the placement helpers call this to find the gap a ``before``/``after`` anchor
+    names, and a gap only exists in the stored order. The tree LISTING passes the
+    person's mode instead, so it shows what the sidebar shows.
 
     The name key is ``_chat_folder_name_key``, which folds ``A``-``Z`` and compares
     the UTF-16 encoding, so ``Apple`` sorts between ``alpha`` and ``apricot``.
@@ -902,7 +1048,7 @@ def _chat_folder_siblings(folders: list[dict], parent_id: str) -> list[dict]:
     for which mappings are left alone and why.
     """
     kids = [f for f in folders if f.get("id") and str(f.get("parent_id") or "") == parent_id]
-    return sorted(kids, key=lambda f: (_chat_folder_order(f), _chat_folder_name_key(f)))
+    return sorted(kids, key=_chat_folder_sort_key(mode))
 
 
 # ``ChatSidebar``'s ``renderFolderBlock`` returns nothing for ``depth > 10``, so a
@@ -914,14 +1060,19 @@ def _chat_folder_siblings(folders: list[dict], parent_id: str) -> list[dict]:
 _SIDEBAR_MAX_DRAWN_DEPTH = 10
 
 
-def _chat_folder_render_order(folders: list[dict]) -> list[tuple[str, int]]:
-    """``(folder_id, depth)`` in sidebar render order — pre-order, siblings by order.
+def _chat_folder_render_order(
+    folders: list[dict], mode: str = FOLDER_SORT_DEFAULT
+) -> list[tuple[str, int]]:
+    """``(folder_id, depth)`` in sidebar render order — pre-order, siblings by ``mode``.
 
     Depth-first from the top level, so a child always follows its parent, which
-    is the shape the sidebar draws. Two defences the sidebar also carries: a row
-    whose ``parent_id`` names a folder absent from this list renders at the top
-    level rather than being dropped, and a parent cycle can neither loop the walk
-    nor swallow the folders caught in it (those are appended at the end).
+    is the shape the sidebar draws. Siblings sort with ``_chat_folder_sort_key``
+    for the person's folder sort mode, at every depth, because the sidebar applies
+    its comparator to every parent's children alike. Two defences the sidebar also
+    carries: a row whose ``parent_id`` names a folder absent from this list renders
+    at the top level rather than being dropped, and a parent cycle can neither
+    loop the walk nor swallow the folders caught in it (those are appended at the
+    end).
 
     Depth is clamped to ``_SIDEBAR_MAX_DRAWN_DEPTH`` so the indentation cannot claim
     a level the sidebar does not draw. Every row is still listed at that depth: an
@@ -936,8 +1087,9 @@ def _chat_folder_render_order(folders: list[dict]) -> list[tuple[str, int]]:
             continue
         parent = str(folder.get("parent_id") or "")
         by_parent.setdefault(parent if parent in known else "", []).append(folder)
+    sort_key = _chat_folder_sort_key(mode)
     for kids in by_parent.values():
-        kids.sort(key=lambda f: (_chat_folder_order(f), _chat_folder_name_key(f)))
+        kids.sort(key=sort_key)
 
     out: list[tuple[str, int]] = []
     seen: set[str] = set()
@@ -1854,6 +2006,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         chat_slots, slots_err = _visible_chat_slots()
         if slots_err:
             return f"Error: {slots_err}"
+        # Read AFTER the two rows reads, which are the ones that can legitimately
+        # refuse (a filtered caller, a gone slot). A failed mode read does not
+        # abort the listing -- the header says the order is assumed instead -- so
+        # the tree stays readable when only its ordering is in doubt.
+        sort_mode, mode_err = _chat_folder_sort_mode()
         tree_paths = _chat_folder_paths(chat_folders)
         # Group live sessions by folder up front so an id that no longer has a
         # folder row (a slot pointing at a deleted folder) still surfaces under
@@ -1879,12 +2036,40 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         tree_lines = [
             f"\U0001f5c2\ufe0f Sidebar folder tree — {len(chat_folders)} folder"
             f"{'' if len(chat_folders) == 1 else 's'}, {len(chat_slots)} live session"
-            f"{'' if len(chat_slots) == 1 else 's'}:"
+            f"{'' if len(chat_slots) == 1 else 's'} (folder order: {sort_mode}"
+            f"{'' if not mode_err else ', assumed — could not read the dashboard settings: ' + mode_err}):"
         ]
-        # Sidebar ORDER, not alphabetical. This tool is how an agent reads the
-        # tree before repositioning a folder, so listing it by path would show a
+        if sort_mode != FOLDER_SORT_DEFAULT:
+            # The listing below is what the person sees, but a POSITION is a
+            # stored-order concept: in a name or created sort the before/after
+            # anchors chat_folder_move takes still write the stored (custom)
+            # position, which this view does not display. Say so up front, or an
+            # agent will "move A after B", re-read the tree, and see nothing move.
+            tree_lines.append(
+                f"Folders are sorted by {sort_mode}, so a before/after anchor passed "
+                "to chat_folder_move sets the stored (custom) position without "
+                "changing the order shown here; it becomes visible when the person "
+                "switches the sidebar back to the custom folder order."
+            )
+        if sort_mode == "created":
+            # A folder from before the ``created_at`` stamp existed has none, so
+            # the created key puts it after every stamped row, in the stored order
+            # -- the same rule the sidebar's ``folderCreated`` applies, and the
+            # sidebar's menu says the same thing under its rows. An agent reading
+            # a tree whose tail is in stored order must not take that tail for a
+            # date order.
+            unstamped = sum(1 for f in chat_folders if _chat_folder_created(f) is None)
+            if unstamped:
+                tree_lines.append(
+                    f"{unstamped} folder{'' if unstamped == 1 else 's'} with no created_at "
+                    "(made before the stamp existed) list last, in the stored (custom) "
+                    "order, not by date."
+                )
+        # Sidebar ORDER, not alphabetical (unless the person's mode IS by name).
+        # This tool is how an agent reads the tree before repositioning a folder,
+        # so listing it in any order the sidebar does not draw would show a
         # sequence the person never sees and make `before`/`after` a guess.
-        for fid, depth in _chat_folder_render_order(chat_folders):
+        for fid, depth in _chat_folder_render_order(chat_folders, sort_mode):
             fpath = tree_paths.get(fid, "?")
             row = next((f for f in chat_folders if str(f.get("id")) == fid), {})
             meta_bits = []

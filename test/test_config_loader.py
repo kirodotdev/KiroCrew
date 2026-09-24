@@ -2038,6 +2038,24 @@ class TestEdgeCases:
         cfg = _load_from_dict({})
         assert cfg.dashboard.recent_tint_count == 0
 
+    def test_folder_sort_loaded_from_config(self) -> None:
+        for mode in ("custom", "name", "created"):
+            cfg = _load_from_dict({"dashboard": {"folder_sort": mode}})
+            assert cfg.dashboard.folder_sort == mode
+
+    def test_folder_sort_defaults_to_custom(self) -> None:
+        """Absent = the stored-order sidebar every earlier build drew, so an
+        upgrade changes nothing the person sees."""
+        cfg = _load_from_dict({})
+        assert cfg.dashboard.folder_sort == "custom"
+
+    def test_folder_sort_unknown_value_reads_as_custom(self) -> None:
+        """A hand-edited or downgraded value must not fail open into a mode the
+        sidebar's reader would not recognise either; both fall back the same way."""
+        for junk in ("alphabetical", "", None, 3, ["name"], "Name"):
+            cfg = _load_from_dict({"dashboard": {"folder_sort": junk}})
+            assert cfg.dashboard.folder_sort == "custom", junk
+
     def test_update_nudge_loaded_from_config(self) -> None:
         """The popup's snooze/skip record round-trips through load, so a GET
         after a PATCH reads back what was written."""

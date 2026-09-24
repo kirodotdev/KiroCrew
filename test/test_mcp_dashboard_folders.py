@@ -47,6 +47,33 @@ _SLOTS = [
 ]
 
 
+def _sort_setting(value: object) -> Any:
+    """Patch the tree tool's config read to answer ``value`` -- verbatim, so a
+    case can feed it a value the loader would never store -- or to raise it,
+    when ``value`` is an exception. The tool reads the setting from the config
+    file through the loader, not over HTTP, so no ``_get`` stub can supply it."""
+
+    def _read() -> object:
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    return patch("kiro_crew.mcp_dashboard._read_folder_sort_setting", side_effect=_read)
+
+
+#: The reader as imported, for the one case that exercises it for real.
+_REAL_SETTING_READ = mcp_dashboard._read_folder_sort_setting
+
+
+@pytest.fixture(autouse=True)
+def _custom_folder_sort() -> Any:
+    """Every case reads the stored-order mode unless it says otherwise: the tool's
+    setting read goes to the loader, and the loader goes to the config file on
+    THIS host -- which must never steer a tree-shape assertion."""
+    with _sort_setting("custom"):
+        yield
+
+
 def _rows(path: str) -> list[dict]:
     """Stand in for the two array endpoints the tools read."""
     if path == "/api/chat/folders":
@@ -2489,10 +2516,20 @@ class TestFolderPosition:
                 pathlib.Path(__file__).parent / "fixtures" / "chat_folder_sibling_order.json"
             ).read_text()
         )
+        modes_seen: set[str] = set()
         for case in spec["cases"]:
             rows = [{**r, "parent_id": "", **_fixture_name(r)} for r in case["rows"]]
-            got = [f["id"] for f in mcp_dashboard._chat_folder_siblings(rows, "")]
+            mode = case.get("mode", "custom")
+            modes_seen.add(mode)
+            got = [f["id"] for f in mcp_dashboard._chat_folder_siblings(rows, "", mode)]
             assert got == case["expected"], case["name"]
+            # The listing walk is the sort the tree tool prints; it must agree
+            # with the sibling sort for the same mode, at the root as at depth.
+            walked = [fid for fid, _depth in mcp_dashboard._chat_folder_render_order(rows, mode)]
+            assert walked == case["expected"], f"render order: {case['name']}"
+        # Every mode the loader admits is exercised by at least one case, so a
+        # fourth mode cannot land with no parity row.
+        assert modes_seen == set(mcp_dashboard.FOLDER_SORT_MODES)
 
     def test_no_persisted_order_shape_can_raise_out_of_the_sort_key(self) -> None:
         """Totality over the store, checked as a set rather than one shape at a time.
@@ -2959,6 +2996,252 @@ class TestTreeListsInSidebarOrder:
             out = _call_tool_inner("chat_folder_tree", {})
         for fid in ("aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"):
             assert fid in out
+
+
+#: The reporter's scheme: zero-padded prefixes whose stored positions were set
+#: by placing them, so the custom order and the name order disagree.
+_NUMBERED = [
+    {"id": "aaaaaaaaaaaa", "name": "10. Zulu", "parent_id": "", "order": 0},
+    {"id": "bbbbbbbbbbbb", "name": "99. Omega", "parent_id": "", "order": 1},
+    {"id": "cccccccccccc", "name": "02. Mike", "parent_id": "", "order": 2},
+    {"id": "dddddddddddd", "name": "01. Alpha", "parent_id": "", "order": 3},
+]
+
+
+def _numbered_rows(path: str) -> Any:
+    """A ``_get`` stub serving the numbered folders; the sort mode is set with
+    ``_sort_setting`` beside it, since the tool reads it from the config file."""
+    if path == "/api/chat/folders":
+        return [dict(f) for f in _NUMBERED]
+    return _slots_with_caller()
+
+
+def _tree_folder_names(out: str) -> list[str]:
+    return [
+        ln.split()[1]
+        for ln in out.splitlines()
+        if ln.strip().startswith(("aaaa", "bbbb", "cccc", "dddd"))
+    ]
+
+
+class TestTreeHonoursTheFolderSortMode:
+    """The tree lists what the sidebar draws, and the sidebar draws the person's
+    folder sort mode. The header names the mode so an agent can tell whether the
+    sequence it reads is the one a before/after anchor lands in."""
+
+    def test_custom_is_the_stored_order_and_the_header_says_so(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_numbered_rows),
+            _sort_setting("custom"),
+        ):
+            out = _call_tool_inner("chat_folder_tree", {})
+        assert out.splitlines()[0].endswith("(folder order: custom):")
+        assert _tree_folder_names(out) == ["10.", "99.", "02.", "01."]
+        assert "chat_folder_move" not in out, "no caveat in custom mode: the anchor IS the view"
+
+    def test_name_mode_lists_by_natural_name_and_warns_about_anchors(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_numbered_rows),
+            _sort_setting("name"),
+        ):
+            out = _call_tool_inner("chat_folder_tree", {})
+        lines = out.splitlines()
+        assert lines[0].endswith("(folder order: name):")
+        # The caveat is the SECOND line, before any folder, so it is read before
+        # the sequence it qualifies.
+        assert lines[1].startswith("Folders are sorted by name, so a before/after anchor")
+        assert "stored (custom) position" in lines[1]
+        assert _tree_folder_names(out) == ["01.", "02.", "10.", "99."]
+
+    def test_created_mode_lists_newest_first_at_every_depth(self) -> None:
+        rows = [
+            {
+                "id": "aaaaaaaaaaaa",
+                "name": "Old root",
+                "parent_id": "",
+                "order": 0,
+                "created_at": 100,
+            },
+            {
+                "id": "bbbbbbbbbbbb",
+                "name": "New root",
+                "parent_id": "",
+                "order": 1,
+                "created_at": 300,
+            },
+            {
+                "id": "cccccccccccc",
+                "name": "Old child",
+                "parent_id": "bbbbbbbbbbbb",
+                "order": 0,
+                "created_at": 150,
+            },
+            {
+                "id": "dddddddddddd",
+                "name": "New child",
+                "parent_id": "bbbbbbbbbbbb",
+                "order": 1,
+                "created_at": 250,
+            },
+        ]
+
+        def _get(path: str) -> Any:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in rows]
+            return _slots_with_caller()
+
+        with patch("kiro_crew.mcp_dashboard._get", side_effect=_get), _sort_setting("created"):
+            out = _call_tool_inner("chat_folder_tree", {})
+        assert out.splitlines()[0].endswith("(folder order: created):")
+        ids = [
+            ln.split()[0]
+            for ln in out.splitlines()
+            if ln.strip().startswith(("aaaa", "bbbb", "cccc", "dddd"))
+        ]
+        # Newest root first, and under it the newest child first -- the same
+        # comparator at both depths, as the sidebar applies it.
+        assert ids == ["bbbbbbbbbbbb", "dddddddddddd", "cccccccccccc", "aaaaaaaaaaaa"]
+        # Every row is stamped, so nothing is said about unstamped ones.
+        assert "with no created_at" not in out
+
+    def test_created_mode_says_when_unstamped_folders_sit_last_in_stored_order(self) -> None:
+        """A folder from before the stamp existed has none and lists after every
+        stamped row in the stored order -- on a pre-upgrade tree that is the order
+        the person already had. The header says so, before the rows, the same fact
+        the sidebar's menu states under its rows; an agent must not read that tail
+        as a date order."""
+        rows = [
+            {"id": "aaaaaaaaaaaa", "name": "Old A", "parent_id": "", "order": 0},
+            {"id": "bbbbbbbbbbbb", "name": "New", "parent_id": "", "order": 1, "created_at": 300},
+            {"id": "cccccccccccc", "name": "Old C", "parent_id": "", "order": 2},
+        ]
+
+        def _get(path: str) -> Any:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in rows]
+            return _slots_with_caller()
+
+        with patch("kiro_crew.mcp_dashboard._get", side_effect=_get), _sort_setting("created"):
+            out = _call_tool_inner("chat_folder_tree", {})
+        lines = out.splitlines()
+        assert lines[1].startswith("Folders are sorted by created, so a before/after anchor")
+        assert lines[2] == (
+            "2 folders with no created_at (made before the stamp existed) list last, "
+            "in the stored (custom) order, not by date."
+        )
+        ids = [ln.split()[0] for ln in lines if ln.strip().startswith(("aaaa", "bbbb", "cccc"))]
+        assert ids == ["bbbbbbbbbbbb", "aaaaaaaaaaaa", "cccccccccccc"]
+
+    def test_an_unreadable_setting_is_said_rather_than_hidden(self) -> None:
+        """The listing survives, in the stored order, and the header says the
+        order is assumed -- an agent must not read a failed lookup as a fact."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_numbered_rows),
+            _sort_setting(OSError("config unavailable")),
+        ):
+            out = _call_tool_inner("chat_folder_tree", {})
+        head = out.splitlines()[0]
+        assert "folder order: custom, assumed" in head
+        assert "config unavailable" in head
+        assert _tree_folder_names(out) == ["10.", "99.", "02.", "01."]
+
+    def test_a_value_the_loader_would_never_store_reads_as_custom(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_numbered_rows),
+            _sort_setting("sideways"),
+        ):
+            out = _call_tool_inner("chat_folder_tree", {})
+        assert out.splitlines()[0].endswith("(folder order: custom):")
+
+    def test_the_setting_is_read_from_the_config_file_not_over_http(self) -> None:
+        """``GET /api/config/kirocrew`` is cookie-only -- it is in neither
+        internal-secret allowlist -- so a tool that fetched it would always read
+        an auth error and always list the stored order. The read goes through the
+        loader instead, like the other dashboard settings the MCP tools read."""
+        gets: list[str] = []
+
+        def _get(path: str) -> Any:
+            gets.append(path)
+            return _numbered_rows(path)
+
+        loaded = type("Cfg", (), {"dashboard": type("Dash", (), {"folder_sort": "name"})()})()
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            # Undo the module's autouse stub for this one case: the reader under
+            # test IS the real one, fed by a patched loader.
+            patch("kiro_crew.mcp_dashboard._read_folder_sort_setting", _REAL_SETTING_READ),
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=loaded),
+        ):
+            assert mcp_dashboard._read_folder_sort_setting() == "name"
+            out = _call_tool_inner("chat_folder_tree", {})
+        assert "/api/config/kirocrew" not in gets
+        assert out.splitlines()[0].endswith("(folder order: name):")
+
+    def test_a_position_is_computed_in_the_stored_order_whatever_the_mode(self) -> None:
+        """Choosing a view mode never rewrites the stored positions, and a
+        before/after anchor is a stored-position concept: with the sidebar sorted
+        by name, "after 01. Alpha" still lands in the gap after Alpha's STORED
+        position (3, the last), not after its displayed one (first)."""
+        patched: list[tuple[str, dict]] = []
+
+        def _patch(path: str, body: dict, **_kw: Any) -> dict:
+            patched.append((path, body))
+            return {"id": path.rsplit("/", 1)[-1], "parent_id": ""}
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_numbered_rows),
+            _sort_setting("name"),
+            patch("kiro_crew.mcp_dashboard._patch", side_effect=_patch),
+            patch("kiro_crew.mcp_dashboard._post", return_value={"ok": True}) as posted,
+        ):
+            out = _call_tool_inner(
+                "chat_folder_move", {"folder": "aaaaaaaaaaaa", "after": "dddddddddddd"}
+            )
+        assert not out.startswith("Error"), out
+        assert not posted.called, "a free slot after the last stored position needs no renumber"
+        assert patched == [("/api/chat/folders/aaaaaaaaaaaa", {"order": 4})]
+
+    def test_the_default_sibling_sort_is_the_custom_order(self) -> None:
+        """The placement helpers call ``_chat_folder_siblings`` without a mode and
+        mean the stored order; pinning the default keeps a future caller from
+        computing a gap in a view that has none."""
+        rows = [dict(f) for f in _NUMBERED]
+        assert [f["id"] for f in mcp_dashboard._chat_folder_siblings(rows, "")] == [
+            f["id"] for f in mcp_dashboard._chat_folder_siblings(rows, "", "custom")
+        ]
+        assert mcp_dashboard.FOLDER_SORT_DEFAULT == "custom"
+
+    def test_both_tool_descriptions_name_the_mode_contract(self) -> None:
+        tools = {t["name"]: t["description"] for t in _list_tools()}
+        assert "folder sort mode" in tools["chat_folder_tree"]
+        assert "header line names the active mode" in tools["chat_folder_tree"]
+        assert "STORED position" in tools["chat_folder_move"]
+        assert "chat_folder_tree's header says which" in tools["chat_folder_move"]
+
+    def test_no_persisted_created_at_shape_can_raise_out_of_the_sort_key(self) -> None:
+        """Same totality rule as ``order``: the stamp is read with a bare
+        ``json.loads``, so every JSON shape must sort rather than raise."""
+        junk = [
+            float("inf"),
+            float("-inf"),
+            float("nan"),
+            "abc",
+            [1],
+            {"a": 1},
+            None,
+            True,
+            10**400,
+        ]
+        for value in junk:
+            row = {"id": "aaaaaaaaaaaa", "name": "X", "parent_id": "", "created_at": value}
+            assert mcp_dashboard._chat_folder_created(row) is None or value == 10**400, value
+            assert mcp_dashboard._chat_folder_siblings([row], "", "created") == [row], value
+            assert mcp_dashboard._chat_folder_render_order([row], "created") == [
+                ("aaaaaaaaaaaa", 0)
+            ]
+        assert mcp_dashboard._chat_folder_created({"created_at": 10**400}) == float(
+            mcp_dashboard._CHAT_FOLDER_ORDER_LIMIT
+        )
 
 
 class TestPositionIsAdvertised:

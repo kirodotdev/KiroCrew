@@ -6,6 +6,7 @@ import { useModelsDegraded } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useVisualViewport } from '../hooks/useVisualViewport'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
+import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
@@ -3321,6 +3322,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // future payload change) can resolve to a non-array, and `= []` only covers
   // undefined — which crashed the whole chat page on `.find`.
   const chatFolders: ChatFolder[] = Array.isArray(chatFoldersRaw) ? chatFoldersRaw : []
+  // The sidebar's folder sort mode, for the folder-suggestion card's option list:
+  // the card draws the same tree the sidebar draws and must list it in the same
+  // order. Read here (shared kirocrewConfig query) so the card stays pure. The
+  // read's failure travels too, for the one case the sidebar's banner cannot
+  // cover: this screen with no sidebar on it (see `sidebarOnScreen` below).
+  const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
   const activeFolderName =
     chatFolders.find(f => f.id === currentSlot?.folder_id)?.name || ''
   // The session IDENTITY, not the display slot. `activeSlot` is the slot id
@@ -6606,6 +6613,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const sidebarOpen = isMobile
     ? mobileSessions
     : (sidebarPinned || (filteredSlots.length === 0 && !previewExpanded))
+  // Whether the sidebar -- and with it the banner that says a failed
+  // folder-order read -- is on this screen right now. The same facts that mount
+  // it below: embed-chat never mounts one, embed-sessions always does, and the
+  // dashboard mounts it in the drawer while the drawer is (mobile) or the panel
+  // is open (desktop). The header menu and the folder-suggestion card say the
+  // failure themselves only when this is false: one screen, one notice.
+  const sidebarOnScreen = embedMode === 'chat'
+    ? false
+    : embedMode === 'sessions'
+      ? true
+      : (isMobile ? drawerMounted : sidebarOpen)
 
   // ── Collapsed-sidebar hover flyout ──────────────────────────────────────
   // Hovering the toggle while collapsed opens a recents list over the chat, so
@@ -7211,6 +7229,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   } : undefined}
                   onRename={activeSlot ? () => setEditingTitleSlot(activeSlot) : undefined}
                   mode={effectiveMode}
+                  sidebarOnScreen={sidebarOnScreen}
                 />
                 </div>
                 {/* Shared with every split-view pane header (#9727). The editor
@@ -7822,6 +7841,28 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <AnimatePresence>
                     {folderSuggestion && activeSlot ? (
                       <div className="pt-1.5" key="folder-suggestion">
+                        {/* The card's option list follows the sidebar's folder
+                            order. A failed read of that order is said once per
+                            screen -- by the sidebar's banner while the sidebar is
+                            on this screen, and here, above the card, only when it
+                            is not (embed chat, the drawer closed, the panel
+                            collapsed): otherwise the list is drawn in the stored
+                            order with nothing on screen to say why.
+                            No hand-off: the card's dropdown holds a pick that is
+                            not saved until Accept, and the hand-off navigates
+                            away and unmounts it -- so the line under the notice
+                            is the one phrase every surface uses for this failure
+                            plus where the hand-off lives. */}
+                        {folderSortError !== null && !sidebarOnScreen && (
+                          <ErrorNotice
+                            title={i18nT('pages.chatSidebar.folder_order_unavailable')}
+                            message={folderSortError}
+                            messagePlacement="below"
+                            footer={i18nT('pages.chatSidebar.folder_order_unavailable_detail_picker_ask')}
+                            className="mb-1.5"
+                            testId="folder-suggestion-order-unavailable"
+                          />
+                        )}
                         {/* Keyed by the suggestion's ts: a replacement card
                             remounts the component, so its dropdown re-prefills
                             and a selection made against the previous suggestion
@@ -7836,6 +7877,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                           suggestedFolderName={folderSuggestion.folderName}
                           suggestedFolderBreadcrumb={folderSuggestion.breadcrumb}
                           folders={chatFolders}
+                          folderSortMode={folderSortMode}
                           onAccept={folderSuggestionAccept}
                           onDecline={folderSuggestionDecline}
                         />

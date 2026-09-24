@@ -2248,6 +2248,9 @@ async def _ensure_followup_folder(state: Any) -> str:
             "hidden": False,
             "parent_id": "",
             "project_dir": "",
+            # Same stamp the dashboard's own folder creators write; the sidebar's
+            # ``created`` folder sort reads it.
+            "created_at": time.time(),
         }
         folders.append(folder)
         return True, str(folder["id"])

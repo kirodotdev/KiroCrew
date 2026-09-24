@@ -1304,6 +1304,11 @@ export interface PullRequestSource {
 
 export interface ChatFolder {
   id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  /** Epoch seconds the folder was created, written by every folder creator since
+   *  the sidebar's `created` sort existed. Absent on a row from before that; such
+   *  a row sorts as older than every stamped one. Read only through
+   *  `folderComparator('created')`, which mirrors the Python reader. */
+  created_at?: number
   /** Tag ids (from the tag vocabulary) copied onto every NEW chat filed into
    *  this folder. Absent = no tags, mirroring the optional `color`. */
   tags?: string[]

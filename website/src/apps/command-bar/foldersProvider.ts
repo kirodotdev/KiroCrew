@@ -2,7 +2,12 @@ import { createElement } from 'react'
 import { Folder } from 'lucide-react'
 
 import { fuzzyMatch, substringIndices } from '../../utils/fuzzyMatch'
-import { orderFoldersWithPaths, FOLDER_PATH_SEP, folderNameText } from '../../utils/folderTree'
+import {
+  orderFoldersWithPaths,
+  FOLDER_PATH_SEP,
+  folderNameText,
+  type FolderSortMode,
+} from '../../utils/folderTree'
 import { i18nT } from '../../i18n/t'
 import type { ChatFolder } from '../../types'
 import type { Result, ResourceProvider } from '../../components/commandPalette/types'
@@ -37,9 +42,11 @@ import type { Result, ResourceProvider } from '../../components/commandPalette/t
  * the folder the user named outranks its own children.
  *
  * Ordering and the breadcrumb both come from `utils/folderTree`, the same module
- * the sidebar's folder pickers use, so the view lists folders in the order the
- * sidebar draws them and spells a path the way the server's `folder_breadcrumb`
- * does. Re-deriving either here would be a second answer to a settled question.
+ * the sidebar's folder pickers use, and the ordering takes the person's folder sort
+ * mode (`dashboard.folder_sort`, injected as `mode`), so the view lists folders in
+ * the order the sidebar draws them — Custom, Name or Date created — and spells a
+ * path the way the server's `folder_breadcrumb` does. Re-deriving either here
+ * would be a second answer to a settled question.
  *
  * `Result` / `ResourceProvider` still come from the host's palette types: that is
  * the row contract the launcher renders and the Enter matrix dispatches, shared by
@@ -88,6 +95,15 @@ export interface FoldersProviderDeps {
   fetchFolders: () => Promise<ChatFolder[]>
   /** Land on a folder: show the chat surface and reveal the folder row. */
   revealFolder: (folderId: string) => void
+  /**
+   * The person's folder sort mode (`dashboard.folder_sort`), the one the sidebar
+   * draws with. REQUIRED, not defaulted: the ordering helper's own default is
+   * `custom`, and a builder that could leave this out would list the stored order
+   * under a sidebar sorted by name — the exact drift the mode parameter exists to
+   * rule out. The caller reads it from the same shared config entry the sidebar's
+   * hook normalizes (`CommandBarOverlay`), so the two surfaces cannot disagree.
+   */
+  mode: FolderSortMode
 }
 
 function folderIcon() {
@@ -99,7 +115,7 @@ function folderIcon() {
  * Pure (no hooks) so it can be exercised directly in tests.
  */
 export function createFoldersProvider(deps: FoldersProviderDeps): ResourceProvider {
-  const { fetchFolders, revealFolder } = deps
+  const { fetchFolders, revealFolder, mode } = deps
 
   return {
     id: PROVIDER_ID,
@@ -114,11 +130,12 @@ export function createFoldersProvider(deps: FoldersProviderDeps): ResourceProvid
     async search(query: string): Promise<Result[]> {
       const q = query.trim()
       const folders = await fetchFolders()
-      // Pre-order (tree) sequence with ancestors + full path already derived, and
-      // orphans/cycles already handled. Its order is the ORDER OF THE RESULT LIST
-      // for an empty query and the stable tiebreak for a scored one, so the view
-      // mirrors the sidebar instead of inventing an alphabetical view of it.
-      const ordered = orderFoldersWithPaths(folders)
+      // Pre-order (tree) sequence in the person's sort mode, with ancestors + full
+      // path already derived, and orphans/cycles already handled. Its order is the
+      // ORDER OF THE RESULT LIST for an empty query and the stable tiebreak for a
+      // scored one, so the view mirrors the sidebar — in Name or Date created as
+      // much as in Custom — instead of inventing an order of its own.
+      const ordered = orderFoldersWithPaths(folders, mode)
       // Sidebar tree position per row id, used as the sort tiebreak below. Kept in
       // a parallel Map rather than on the row itself so the shared `Result` type
       // is not widened with a field only this provider can populate.

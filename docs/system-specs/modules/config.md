@@ -2048,6 +2048,7 @@ class DashboardConfig:
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
+    folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
     crewmates_onboarded: bool = False  # whether the first-run Meet CrewMates flow was finished or dismissed
@@ -2425,6 +2426,97 @@ appears.
 (shared across ports and devices) rather than browser-local. The frontend reads
 them at boot via `GET /api/theme/boot`; empty `theme_mode`/`theme_color` mean
 unset (the frontend falls back to `localStorage` or the built-in default).
+
+### Sidebar folder order
+
+`DashboardConfig.folder_sort` is the chat sidebar's folder sort mode — `custom`
+(the stored per-container `order` positions set by dragging or by the
+`chat_folder_move` tool; the default, so an upgrade changes nothing), `name` (an
+ASCII-case-insensitive natural order, so `01.` < `02.` < `10.` and `alpha` < `Beta`;
+only `A`-`Z` fold, every other letter compares as written, because that is the one
+fold both readers perform identically without a Unicode table) or `created` (newest first
+on the `created_at` epoch stamp every folder creator writes). It is workspace-
+persistent rather than browser-local because two readers must agree on it: the
+sidebar (and the folder pickers) through the shared `GET /api/config/kirocrew`
+query, and the `kirocrew-dashboard` MCP server's `chat_folder_tree`, which reads the
+same `config.json` through the loader (the HTTP route is cookie-only) and lists
+folders in the order the sidebar draws them so an agent can pick a `before`/`after`
+anchor from it (see `docs/architecture/mcp.md`). Written only through the
+`PATCH /api/config/kirocrew` allowlist (`dashboard.folder_sort`, enum
+`FOLDER_SORT_MODES`); the loader reads anything outside that set as `custom`.
+Choosing a mode is a VIEW change — no folder's stored `order` is rewritten — so
+switching back to `custom` restores the manual arrangement exactly; the sidebar
+re-sorts when the save lands (the success write into the shared `kirocrewConfig`
+cache), not on the pick, so every reader of that cache switches together. A sidebar
+drag among siblings is a write to the stored positions computed against the drawn
+order, so it is offered only when the mode is known to be `custom`: outside that
+(and while the settings query is still loading or has failed, when the tree draws
+the stored order as a fallback) the folder rows stop being reorder targets — their
+sortable's droppable side is off, so no slot opens — while dragging a folder into
+another still works; before the FIRST read lands no folder drag is offered at all
+(both sortable sides off, no grab cursor), since nothing on screen could yet say
+why a lift died at the drop. The status line that answers a withdrawn drop carries
+a **Switch to Custom** action on the same write path as the menu row. What the UI
+keys on is what it KNOWS, never the transient query status (`useFolderSortRead`):
+the mode is known when a config body is on hand — fresh, cached, or kept across a
+failed background refetch, which react-query retries on its own and which is
+therefore silent; a read that failed with no body to fall back on is said on an
+`ErrorNotice`, held through the retry's pending phase (`errorUpdatedAt`, so an
+observer mounted mid-retry reports it too) so the banner does not unmount and
+remount around each automatic retry, and cleared when a body arrives.
+One screen says it once: the sidebar's banner over its tree (the plain title leads,
+the server's own words sit under it as a smaller line -- they stay the notice's
+`message` because that string is the error-journal key the hand-off reads -- then
+a plain subline and the hand-off stacked under the text), and, on the screens with
+no sidebar, the job form beside its folder picker and the Command Bar above its
+folder list. The subline is ONE phrase wherever this failure is said -- *All
+folders are shown, in your Custom order; retries automatically* -- because a person
+may see it on up to four surfaces at once and two phrasings read as two failures,
+and it says that membership is intact, since a picker under a failure notice was
+not trusted to still list every folder; where the
+notice carries no hand-off of its own (the job form and the Command Bar: unsaved
+input beside them) it adds *Open the chat sidebar to ask the agent about it.* The
+session menu
+and the folder-suggestion card say nothing of their own while the sidebar is on the
+screen; when it is not (a phone with the drawer closed, a desktop with the panel
+collapsed, embed chat) they say it themselves — the menu in the rule's in-menu form
+(passive notice, the picker's subline, a sibling **Ask the agent** item described by
+the notice, a separator closing the block), the card as the same notice above it
+without a hand-off, with the picker-plus-pointer subline.
+
+The **Folder order** rows (*Custom* / *By name* / *By date created (newest first)* -- the
+direction spelled, as the session rows spell theirs, and worded so
+that no label mirrors the chat session sort rows in the same menu, whose heading
+names its object, **Sort sessions by**, because two orderings in one menu read as
+sorting twice; and *Custom*, not *Custom order*, under a heading that already says
+"order") are offered in every sidebar lane. The flat lane draws no folder tree and the conductor lane nests
+by lineage, but the mode is not idle there: every row menu's **Move to folder**
+picker, the history search's folder groups, the Command Bar, the job form and the
+MCP tree all list in it, and the menu rows are the only control that writes it -- a
+mode a person cannot change from the lane they are in would be a trap. Only the drag
+note under the rows (*Folders can be dragged into place in Custom order only*, a
+fact about the modes -- not the sidebar hint's "Switch to Custom" sentence, which
+sits beside a button that does the switching and would read as an inert action
+here) is confined to the lanes that draw a folder row to drag (the tree, and the
+board unless flat view empties its columns of folders). In `created` mode a second
+fact line joins it whenever a folder in the list has no `created_at` -- a folder
+from before the stamp existed -- because the comparator puts such rows after every
+stamped one, in the stored order: on a pre-upgrade tree that is the order the person
+already had, and the pick looks broken unless the menu says why (*Folders made
+before dates were recorded have no date; they come last, in your Custom order*);
+`chat_folder_tree` states the same fact in its header for the agent reading the
+tree, so neither reader takes that stored-order tail for a date order. The hint itself stays until
+the person's next interaction away from it -- a pointer or key landing anywhere but
+on the line -- a switch back to Custom, or the next drag; never a clock, which took
+the action away from under a hand reaching for it. The mode's saves go out ONE at a
+time, in pick order (react-query mutation `scope`): two picks inside one round-trip
+would be two concurrent `PATCH`es to the same path, and the server persists
+whichever arrives last -- a delayed first request would land after the second and
+store the earlier pick, and the settle-time refetch would then draw that order as
+if chosen. Queued behind an in-flight save, the newer pick's request starts when
+the previous one settles, so the last pick is both the last request the server sees
+and the persisted one; a refusal behind a newer pick is not reported (the newer
+save's own outcome is).
 
 ### Interactive model picker visibility
 

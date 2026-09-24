@@ -77,6 +77,8 @@ export default function ErrorNotice({
   variant = 'block',
   askAgent = false,
   askAgentLabel,
+  actionPlacement = 'beside',
+  messagePlacement = 'beside',
   footer,
   onHandoff,
   className = '',
@@ -125,6 +127,30 @@ export default function ErrorNotice({
    */
   askAgentLabel?: string
   /**
+   * Where the hand-off sits in the block variant. `beside` (default) puts it in
+   * the banner's right-hand column, which is right for a banner that spans a
+   * page. `below` stacks it under the text, inside the text column: in a
+   * NARROW host — the chat sidebar is ~300px — a sibling column takes a third
+   * of the width and the title and message wrap one or two words per line. Not
+   * a container query: jsdom cannot evaluate one, so the pin would be
+   * untestable, and `container-type` on the shared root would collapse a
+   * notice laid out in a shrink-to-fit context. Ignored by the inline variant
+   * and when `askAgent` is off.
+   */
+  actionPlacement?: 'beside' | 'below'
+  /**
+   * Where the `message` sits relative to the `title`. `beside` (default) runs
+   * the two as one sentence -- right when the message is the human-readable
+   * clause ("Save failed: the folder no longer exists"). `below` puts the message
+   * on its own line under the title, smaller and secondary: for a notice whose
+   * `message` is a raw server string kept because it is the journal lookup key
+   * (the hand-off recovers endpoint and status from it) while the plain-language
+   * `title` carries the meaning -- "config store" and "gateway" mean nothing to
+   * a first-time reader, so they read as a detail, not as the lead. In the
+   * inline variant the row wraps to make the line. Ignored without a `title`.
+   */
+  messagePlacement?: 'beside' | 'below'
+  /**
    * Rendered INSIDE the banner, under the message (block variant only) — for
    * a follow-on line that answers the message above it (a resolved outcome, a
    * next step). Outside the border it reads as a detached caption; inside,
@@ -167,18 +193,21 @@ export default function ErrorNotice({
   testId?: string
 }) {
   if (!message) return null
+  // The secondary line: smaller than the title, lighter than the lead, but still
+  // the alert's own colour -- it is the failure's text, demoted, not a caption.
+  const messageBelow = messagePlacement === 'below' && Boolean(title)
 
   if (variant === 'inline') {
     return (
       <span
         role="alert"
-        className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${className}`}
+        className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''} ${className}`}
         id={id}
         data-testid={testId}
       >
         <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
         {title && <strong className="font-semibold">{title}</strong>}
-        <span className={`min-w-0 ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
+        <span className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger/80' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
         {askAgent && (
           <AskAgentButton
             report={report}
@@ -213,12 +242,22 @@ export default function ErrorNotice({
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
-        {messageClassName || messageTooltip
-          ? <span className={messageClassName} title={messageTooltip}>{withOriginLink(message)}</span>
+        {messageBelow || messageClassName || messageTooltip
+          ? <span className={`${messageBelow ? 'block text-[12px] font-normal text-danger/80' : ''} ${messageClassName}`} title={messageTooltip}>{withOriginLink(message)}</span>
           : withOriginLink(message)}
         {footer && <div className="mt-1 font-normal">{footer}</div>}
+        {askAgent && actionPlacement === 'below' && (
+          <div className="mt-1.5">
+            <AskAgentButton
+              report={report}
+              message={message}
+              onHandoff={onHandoff}
+              label={askAgentLabel}
+            />
+          </div>
+        )}
       </div>
-      {askAgent && (
+      {askAgent && actionPlacement === 'beside' && (
         <AskAgentButton
           report={report}
           message={message}

@@ -13,7 +13,11 @@
     "Add a row rather than a per-side test when a new coercion question comes up.",
     "Every value below is one JSON can actually hold, because the folder store is",
     "read with a bare json.loads / JSON.parse and never schema-checked on the way",
-    "out."
+    "out.",
+    "",
+    "A case may name a `mode` -- the sidebar folder sort mode (custom / name /",
+    "created) -- and both suites sort it with that mode's comparator. A case",
+    "without one is `custom`, the stored order every build before the mode drew."
   ],
   "cases": [
     {
@@ -176,6 +180,132 @@
         { "id": "a_name", "name": "a", "order": 0 }
       ],
       "expected": ["obj_name", "true_name", "list_name", "a_name"]
+    },
+    {
+      "name": "name mode: zero-padded prefixes sort by value, whatever the stored positions say",
+      "$why": "The reporter's scheme (01., 02., ..., 98., 99.) came out scrambled because a placed folder's order beats its name. In the name mode the number is compared as a value, so 02 < 10 < 98 even though the code units of '1' precede those of '2'.",
+      "mode": "name",
+      "rows": [
+        { "id": "n10", "name": "10. Zulu", "order": 0 },
+        { "id": "n99", "name": "99. Omega", "order": 1 },
+        { "id": "n98", "name": "98. Tango", "order": 2 },
+        { "id": "n02", "name": "02. Mike", "order": 3 },
+        { "id": "n03", "name": "03. Kilo", "order": 4 },
+        { "id": "n01", "name": "01. Alpha", "order": 5 }
+      ],
+      "expected": ["n01", "n02", "n03", "n10", "n98", "n99"]
+    },
+    {
+      "name": "name mode: a bare name precedes its numbered variants, which sort by value",
+      "$why": "'Release' is a prefix of 'Release ' so the shorter text run sorts first; between the numbered pair the digit runs decide as values, so 2 precedes 10.",
+      "mode": "name",
+      "rows": [
+        { "id": "rel10", "name": "Release 10", "order": 0 },
+        { "id": "rel", "name": "Release", "order": 1 },
+        { "id": "rel2", "name": "Release 2", "order": 2 }
+      ],
+      "expected": ["rel", "rel2", "rel10"]
+    },
+    {
+      "name": "name mode: equal values with different zero padding fall through to the stored order",
+      "$why": "010 and 10 are the same value, and the mode cannot separate them; the custom key decides, so the pair keeps the order the person arranged rather than one side's string compare.",
+      "mode": "name",
+      "rows": [
+        { "id": "padded", "name": "v010", "order": 1 },
+        { "id": "plain", "name": "v10", "order": 0 }
+      ],
+      "expected": ["plain", "padded"]
+    },
+    {
+      "name": "name mode: A-Z folds, so the mode is case-insensitive without a Unicode table",
+      "$why": "Same fold as the custom tie-break: a literal 26-entry table on one side, +32 arithmetic on the other. Unfolded, B (0x42) would precede a (0x61).",
+      "mode": "name",
+      "rows": [
+        { "id": "cap_b", "name": "Beta", "order": 0 },
+        { "id": "low_a", "name": "alpha", "order": 1 },
+        { "id": "cap_g", "name": "Gamma", "order": 2 }
+      ],
+      "expected": ["low_a", "cap_b", "cap_g"]
+    },
+    {
+      "name": "name mode: a digit run precedes a text run at the same position",
+      "$why": "Both sides tag a digit run below a text run rather than comparing a digit against a letter, so the rule holds for any text -- including one whose first code unit is below 0x30, such as a space or a symbol.",
+      "mode": "name",
+      "rows": [
+        { "id": "text_first", "name": "#tag", "order": 0 },
+        { "id": "digit_first", "name": "7up", "order": 1 }
+      ],
+      "expected": ["digit_first", "text_first"]
+    },
+    {
+      "name": "name mode: only 0-9 is a digit, so an Arabic-Indic digit is text on both sides",
+      "$why": "str.isdigit reads the interpreter's Unicode tables and would call U+0662 a digit; the sidebar's /[0-9]/ never would. Both readers use the ASCII range, so the ASCII digit sorts first as a digit run and the other name is text.",
+      "mode": "name",
+      "rows": [
+        { "id": "arabic_indic", "name": "\u0662", "order": 0 },
+        { "id": "ascii_three", "name": "3", "order": 1 }
+      ],
+      "expected": ["ascii_three", "arabic_indic"]
+    },
+    {
+      "name": "name mode: a non-string name reads as empty and sorts first",
+      "$why": "The same non-stringification rule as the custom tie-break: an empty run list precedes every non-empty one, identically on both sides.",
+      "mode": "name",
+      "rows": [
+        { "id": "real", "name": "a", "order": 0 },
+        { "id": "obj", "name": { "a": 1 }, "order": 1 }
+      ],
+      "expected": ["obj", "real"]
+    },
+    {
+      "name": "created mode: newest first, whatever the stored positions say",
+      "mode": "created",
+      "rows": [
+        { "id": "oldest", "name": "aaa", "order": 0, "created_at": 1000.5 },
+        { "id": "newest", "name": "ccc", "order": 1, "created_at": 3000.25 },
+        { "id": "middle", "name": "bbb", "order": 2, "created_at": 2000 }
+      ],
+      "expected": ["newest", "middle", "oldest"]
+    },
+    {
+      "name": "created mode: a missing or junk stamp sorts after every stamped row, in stored order",
+      "$why": "A folder written before the stamp existed is older than any stamped one, so it belongs at the bottom; among themselves the unstamped rows keep the custom order, which is the only order they ever had.",
+      "mode": "created",
+      "rows": [
+        { "id": "none", "name": "zzz", "order": 2 },
+        { "id": "stamped", "name": "mmm", "order": 9, "created_at": 100 },
+        { "id": "junk", "name": "aaa", "order": 1, "created_at": "abc" }
+      ],
+      "expected": ["stamped", "junk", "none"]
+    },
+    {
+      "name": "created mode: equal stamps fall through to the stored order",
+      "mode": "created",
+      "rows": [
+        { "id": "second", "name": "aaa", "order": 1, "created_at": 500 },
+        { "id": "first", "name": "zzz", "order": 0, "created_at": 500 }
+      ],
+      "expected": ["first", "second"]
+    },
+    {
+      "name": "created mode: a bool stamp is not a number on either side",
+      "$why": "typeof true is not 'number'; Python excludes bool explicitly because it is an int subclass that would otherwise read as 1 and sort as a real stamp.",
+      "mode": "created",
+      "rows": [
+        { "id": "bool_stamp", "name": "aaa", "order": 0, "created_at": true },
+        { "id": "real_stamp", "name": "bbb", "order": 1, "created_at": 1 }
+      ],
+      "expected": ["real_stamp", "bool_stamp"]
+    },
+    {
+      "name": "created mode: stamps past MAX_SAFE_INTEGER clamp to the same bound on both sides",
+      "$why": "JSON.parse collapses these two ints to one double while Python keeps them distinct; both sides clamp to the bound, so both read a tie and let the stored order decide.",
+      "mode": "created",
+      "rows": [
+        { "id": "over_hi", "name": "aaa", "order": 1, "created_at": 9007199254740993 },
+        { "id": "over_lo", "name": "bbb", "order": 0, "created_at": 9007199254740992 }
+      ],
+      "expected": ["over_lo", "over_hi"]
     }
   ]
 }

@@ -55,6 +55,10 @@ vi.mock('../api/client', () => ({
     // so answer them so the notice does not compete with the assertions below.
     chatFolders: vi.fn().mockResolvedValue([]),
     tagColumns: vi.fn().mockResolvedValue([]),
+    // Same for the settings read behind the sidebar's folder order: unanswered,
+    // it fails and the sidebar renders a second `role="alert"` beside the
+    // worktree-failure notice the assertions below look up by role.
+    kirocrewConfig: vi.fn().mockResolvedValue({}),
   },
   SEARCH_MIN_CHARS: 2,
 }))
