@@ -22,6 +22,7 @@ that lease for the process's life and make a crew's log un-removable.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -271,6 +272,35 @@ def test_a_report_with_no_citable_unit_is_still_refused():
     assert emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit="") == 0
     assert emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit="no_such") == 0
     assert _crew_entries() == []
+
+
+def test_an_append_that_fails_does_not_claim_the_report_was_recorded(monkeypatch, caplog):
+    """The unthreaded OUTCOME is stated only once the append has succeeded.
+
+    An append failure is reported through ``_report``, which warns once per process
+    and is debug-only after that, so a line claiming the report landed would be the
+    only default-level trace of a write that never happened.
+    """
+
+    class _FailingLog:
+        """Enough of a crew log to reach the append, which then refuses."""
+
+        last_seq = 0
+
+        def iter_from(self, seq, **kwargs):
+            return iter(())
+
+        def append(self, *args, **kwargs):
+            raise OSError("no space left on device")
+
+    _seed_session()
+    monkeypatch.setattr(emit, "_crew_unit", lambda store: _FailingLog())
+    with caplog.at_level(logging.WARNING):
+        seq = emit.on_crew_report(CREW, {"item": "it_1", "status": "done"}, cite_unit=WORKER_UNIT)
+    assert seq == 0, "a failed append is reported as not recorded"
+    text = " ".join(record.getMessage() for record in caplog.records)
+    assert "no dispatch to thread" in text, f"the observation must still be logged: {text}"
+    assert "recorded the report" not in text, f"the outcome must not be claimed: {text}"
 
 
 def test_a_dispatch_far_behind_the_newest_entry_is_still_found():
