@@ -1257,7 +1257,13 @@ export default function ChatPane({
     slot: slotKey,
     allQueued: allQueuedMessages,
     visibleQueued: queuedMessages,
-    restoreDraft: restoreIntoComposer,
+    // Adapter: the hook's third argument is the queued send's mention-alias
+    // snapshot, which only ChatPage's composer can re-adopt (pendingFileTokens
+    // and the reconciliation effect live there). This pane's composer has no
+    // alias store -- restoreIntoComposer's own third parameter is a SLOT key --
+    // so the adapter pins the two-argument call and the alias map is dropped
+    // here by construction rather than misread as a slot.
+    restoreDraft: (text, files) => restoreIntoComposer(text, files),
   })
   // Split-view panes draw the SAME transcript rows as the single-chat surface,
   // through the SDK's row registry: the live ToolCallLine (purpose / input /

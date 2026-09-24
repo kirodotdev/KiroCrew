@@ -27,6 +27,9 @@ import type { ChatMessage, McpServer } from '../../types'
 import {
   buildFileLabels,
   findUnreferencedAttachments,
+  leadingMentionBoundary,
+  mentionBoundary,
+  mentionTokenRegex,
   parseDirs,
   parseFiles,
   resolveDirSegment,
@@ -365,10 +368,13 @@ function renderUserContentInner(opts: UserContentRenderOpts) {
 
 /** Boundary-checked presence of an `@token` in a text segment — the same rule
  *  the split regex uses, so a key is only offered to a segment that can
- *  actually match it. */
+ *  actually match it. The SHARED matcher, not a local pattern: the send path
+ *  widened to the leadingMentionBoundary/mentionBoundary contract, and a
+ *  renderer still splitting on whitespace-only turned every punctuated or
+ *  wrapped mention's attachment invisible — no chip AND no card, where base
+ *  drew a card (fork Opus review). */
 function tokenPresent(text: string, token: string): boolean {
-  const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(^|\\s)@${esc}(?=\\s|$)`).test(text)
+  return mentionTokenRegex(token).test(text)
 }
 
 /** Inline chip for a folder reference in a sent message. Clicking opens the
@@ -441,10 +447,13 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
 
   // Folder tokens join the same split as file mentions. A dir key always ends
   // in `/` and a file key never does, so classification below is unambiguous.
-  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys]
+  // Longest-first so a staged `report,` is tried before `report` at the same
+  // position (ordered alternation); the shared boundary pair keeps the drawing
+  // in lockstep with the send path and findUnreferencedAttachments' decision.
+  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys].sort((a, b) => b.length - a.length)
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
   const parts = tokPattern
-    ? display.split(new RegExp(`(@(?:${tokPattern}))(?=\\s|$)`, 'g'))
+    ? display.split(new RegExp(`(${leadingMentionBoundary})(@(?:${tokPattern}))(?=${mentionBoundary})`, 'g'))
     : [display]
   return (
     <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>
@@ -589,9 +598,9 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // Cap tokens to prevent ReDoS from many alternations. Folder tokens join
   // the same split; a dir key always ends in `/` and a file key never does,
   // so classification below is unambiguous.
-  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys]
+  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys].sort((a, b) => b.length - a.length)
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  const parts = display.split(new RegExp(`(@(?:${tokPattern}))(?=\\s|$)`, 'g'))
+  const parts = display.split(new RegExp(`(${leadingMentionBoundary})(@(?:${tokPattern}))(?=${mentionBoundary})`, 'g'))
   const body = (
     <span key={`${keyBase}-body`} style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {

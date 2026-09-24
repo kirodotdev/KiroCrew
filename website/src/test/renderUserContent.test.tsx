@@ -118,6 +118,33 @@ describe('renderUserContent — markdown rendering', () => {
     expect(container.querySelector('.flex-col [title="/home/user/report.docx"]')).not.toBeInTheDocument()
   })
 
+  it('a PUNCTUATED mention still draws its chip -- renderer parity with the widened send boundary (fork Opus review)', () => {
+    // The send path accepts `@report.docx,` as a mention (shared
+    // leadingMentionBoundary/mentionBoundary contract) and embeds the marker
+    // inline, but the renderer's split kept the old whitespace-only pattern:
+    // the mention failed the lookahead, rendered as plain text, and because
+    // findUnreferencedAttachments (already widened) said "referenced", no
+    // card drew either -- the attachment was invisible, where base drew a card.
+    const content = 'check @report.docx, please'
+    const meta = { files: ['/home/user/report.docx'] }
+    const { container } = render(<>{renderUserContent({ content: content, meta: meta, onFileOpen: noop })}</>)
+    const chip = container.querySelector('.inline-flex[title="/home/user/report.docx"]')
+    expect(chip).toBeInTheDocument()
+    expect(chip).toHaveTextContent('@report.docx')
+    expect(container.textContent).toContain(', please')
+  })
+
+  it('a WRAPPED file:line mention draws its chip with the suffix as text (fork Opus review)', () => {
+    const content = 'see (@report.docx:42) here'
+    const meta = { files: ['/home/user/report.docx'] }
+    const { container } = render(<>{renderUserContent({ content: content, meta: meta, onFileOpen: noop })}</>)
+    const chip = container.querySelector('.inline-flex[title="/home/user/report.docx"]')
+    expect(chip).toBeInTheDocument()
+    // The wrapper and suffix stay ordinary text around the chip.
+    expect(container.textContent).toContain('(')
+    expect(container.textContent).toContain(':42)')
+  })
+
   it('keeps a mentioned file inline when the persisted shape carries BOTH token content and meta.files', () => {
     // This is the real completed-bubble shape the server persists: content is
     // the LLM-facing [attached_file N] token form AND meta.files is present.

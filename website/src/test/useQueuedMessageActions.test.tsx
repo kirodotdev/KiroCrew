@@ -60,7 +60,7 @@ function renderActions(opts: {
   rows?: ChatMessage[]
   /** Rows QueueStack would draw. Defaults to every row (all interactive). */
   visible?: ChatMessage[]
-  restoreDraft?: (text: string, files: string[]) => void
+  restoreDraft?: (text: string, files: string[], aliases?: Record<string, string[]>) => void
 }) {
   const rows = opts.rows ?? [queued('q1', 'run the tests'), queued('q2', 'then deploy')]
   const slot = opts.slot === undefined ? 'chat-1' : opts.slot
@@ -104,7 +104,7 @@ describe('useQueuedMessageActions — cancel', () => {
     const { get, store } = renderActions({ restoreDraft })
     act(() => { get().onCancel('q1') })
     // Plain text round-trips the parser unchanged, with nothing to re-stage.
-    expect(restoreDraft).toHaveBeenCalledWith('run the tests', [])
+    expect(restoreDraft).toHaveBeenCalledWith('run the tests', [], undefined)
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
     // Optimistic: the card is gone without waiting for the WS echo.
     expect(queueIdsIn(store)).toEqual(['q2'])
@@ -122,9 +122,24 @@ describe('useQueuedMessageActions — cancel', () => {
     queuedSendStash.set('q1', { raw: 'summarize this', files: [spaced], sent })
     const { get } = renderActions({ rows, restoreDraft })
     act(() => { get().onCancel('q1') })
-    expect(restoreDraft).toHaveBeenCalledWith('summarize this', [spaced])
+    expect(restoreDraft).toHaveBeenCalledWith('summarize this', [spaced], undefined)
     // Consumed: a record restores exactly once.
     expect(queuedSendStash.has('q1')).toBe(false)
+  })
+
+  it('a stash hit hands the alias map back so restored mentions stay reconciled and atomic (fork GPT review)', () => {
+    // Restoring text + files WITHOUT the recorded aliases re-created the
+    // pre-fix stuck chip: the restored mention was invisible to the
+    // reconciliation, so hand-deleting it left a stale chip the next send
+    // silently re-attached.
+    const sent = 'check\n[attached_file 1] /repo/src/main.ts'
+    const aliases = { '/repo/src/main.ts': ['@src/main.ts'] }
+    const restoreDraft = vi.fn()
+    const rows = [queued('q1', sent)]
+    queuedSendStash.set('q1', { raw: 'check @src/main.ts', files: ['/repo/src/main.ts'], sent, aliases })
+    const { get } = renderActions({ rows, restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('check @src/main.ts', ['/repo/src/main.ts'], aliases)
   })
 
   it('an entry edited after send fails the `sent` guard and falls to the parser', () => {
@@ -135,7 +150,7 @@ describe('useQueuedMessageActions — cancel', () => {
     queuedSendStash.set('q1', { raw: 'summarize this', files: ['/tmp/a.pdf'], sent: 'summarize this\n[attached_file 1] /tmp/a.pdf' })
     const { get } = renderActions({ rows, restoreDraft })
     act(() => { get().onCancel('q1') })
-    expect(restoreDraft).toHaveBeenCalledWith('actually, deploy instead', [])
+    expect(restoreDraft).toHaveBeenCalledWith('actually, deploy instead', [], undefined)
   })
 
   it('a foreign card (no stash record) decomposes producer markers via the parser', () => {
@@ -145,7 +160,7 @@ describe('useQueuedMessageActions — cancel', () => {
     const rows = [queued('q1', 'summarize the report\n[attached_file 1] /tmp/report.docx')]
     const { get } = renderActions({ rows, restoreDraft })
     act(() => { get().onCancel('q1') })
-    expect(restoreDraft).toHaveBeenCalledWith('summarize the report', ['/tmp/report.docx'])
+    expect(restoreDraft).toHaveBeenCalledWith('summarize the report', ['/tmp/report.docx'], undefined)
   })
 
   it('restores nothing when the host supplies no composer sink', () => {

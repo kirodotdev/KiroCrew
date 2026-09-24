@@ -50,7 +50,7 @@ import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer, { type PasteHoverHandle } from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
 import { dispatchLightbox } from './MarkdownRenderer'
-import { IMG_EXT, buildFileLabels } from '../utils/fileTokens'
+import { IMG_EXT, buildFileLabels, excisionSpan, findMentionRanges } from '../utils/fileTokens'
 import type { ResizeInfo } from '../utils/resizeImage'
 import type { SubagentActivity } from '../types'
 import { platformShortcut } from '../utils/platform'
@@ -477,6 +477,14 @@ interface ChatInputProps {
   onCancelUpload?: () => void
   /** Pending file paths (images + non-images) for preview strip */
   pendingFiles?: string[]
+  /** Exact recorded `@rel` alias strings for currently-staged picker files.
+   *  Each occurrence in `value` is ONE atomic token (maintainer ruling,
+   *  PR #6511): Backspace/Delete on or inside it removes the whole literal
+   *  -- the parent's exact-alias reconciliation then unstages the chip from
+   *  the text change alone -- arrows step over it, and the caret never rests
+   *  inside, so no shortened or hand-edited spelling of a picked mention can
+   *  be produced. */
+  mentionTokens?: string[]
   /** Pending folder references for the preview strip: RELATIVE paths with trailing slash, derived from `@rel/` composer tokens (a path reference handed to the agent, not an upload) */
   pendingDirs?: string[]
   /** Resize details keyed by pending-file path; renders a badge on the chip */
@@ -936,6 +944,7 @@ function ChatInput({
   uploading = false,
   onCancelUpload,
   pendingFiles = [],
+  mentionTokens = [],
   pendingDirs = [],
   resizedInfo,
   onRemoveFile,
@@ -2695,52 +2704,84 @@ function ChatInput({
         return
       }
     }
-    // Atomic paste-token handling — keep caret out of token interior and
-    // treat tokens as single deletable units. Runs before Enter/history so
-    // edits on or around a token never reach the default textarea handling.
-    if (pasteBlocks.length && !ime.isComposing(e)) {
+    // Atomic token handling — keep caret out of token interiors and treat
+    // tokens as single deletable units. Paste tokens and picked-mention
+    // tokens share these rails (maintainer ruling, PR #6511): one sorted
+    // range list drives every delete / arrow / snap gesture below. A paste
+    // range carries its backing `block`; a mention range carries its `alias`
+    // and needs no bookkeeping on removal — deleting the literal is enough,
+    // the parent's exact-alias reconciliation unstages the chip from the
+    // text change alone. Runs before Enter/history so edits on or around a
+    // token never reach the default textarea handling.
+    if ((pasteBlocks.length || mentionTokens.length) && !ime.isComposing(e)) {
       const ta = e.currentTarget
       const v = valueRef.current
       const ss = ta.selectionStart ?? 0
       const se = ta.selectionEnd ?? 0
       const isCollapsed = ss === se
-      const ranges = findTokenRanges(v, pasteBlocks)
+      type AtomRange = { start: number; end: number; block?: PasteBlock; alias?: string }
+      const ranges: AtomRange[] = [
+        ...findTokenRanges(v, pasteBlocks),
+        ...findMentionRanges(v, mentionTokens),
+      ].sort((a, b) => a.start - b.start)
 
-      const removeBlockAtom = (r: { start: number; end: number; block: PasteBlock }) => {
+      // ONE excision path for every deletion the composer owns (fork GPT
+      // review, third-instance restructure): `excisionSpan` holds both
+      // atomic-contract rules -- a cut-into mention is taken whole, and a
+      // wholly-covered mention carries its `:line` suffix out -- so no
+      // gesture branch re-implements either rule on its own bounds. Paste
+      // ranges are never expanded by the primitive (base behavior); their
+      // records are pruned from `covered`. Browser-native removals the
+      // composer does not intercept (type-over, drag-move, IME replacement)
+      // are outside this boundary by design and declared in the PR body.
+      const excise = (rawStart: number, rawEnd: number) => {
+        const { cutStart, cutEnd, covered } = excisionSpan(v, ranges, rawStart, rawEnd)
         e.preventDefault()
-        const next = v.slice(0, r.start) + v.slice(r.end)
-        onChange(next)
-        onPasteBlocksChange?.(pasteBlocks.filter(b => b.id !== r.block.id))
-        requestAnimationFrame(() => {
-          const el = inputRef.current
-          if (el) el.setSelectionRange(r.start, r.start)
-        })
+        onChange(v.slice(0, cutStart) + v.slice(cutEnd))
+        const removed = new Set((covered as AtomRange[]).filter(r => r.block).map(r => r.block!.id))
+        if (removed.size) onPasteBlocksChange?.(pasteBlocks.filter(b => !removed.has(b.id)))
+        requestAnimationFrame(() => inputRef.current?.setSelectionRange(cutStart, cutStart))
       }
 
-      // Backspace with caret just past a token → delete whole token
+      const removeBlockAtom = (r: AtomRange) => excise(r.start, r.end)
+
+      // A caret can only sit INSIDE a mention transiently (the select-snap
+      // handler evicts it), but a delete gesture racing that snap must still
+      // take the whole token — a mention has no editable interior. Paste
+      // tokens keep their adjacency-only contract: a caret inside one is the
+      // click expander's preview case.
+      const insideMention = (r: AtomRange, pos: number) =>
+        r.alias !== undefined && pos > r.start && pos < r.end
+
+      // A non-collapsed deletion routes through the same primitive: a
+      // selection that swallows a mention whole carries its `:line` suffix
+      // out (the select-snap handler makes edge-aligned selections ordinary),
+      // and a racing selection endpoint INSIDE a mention takes it whole
+      // rather than slicing it. When the primitive widens nothing, the
+      // delete stays native, exactly as before.
+      if ((e.key === 'Backspace' || e.key === 'Delete') && !isCollapsed && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const s = excisionSpan(v, ranges, ss, se)
+        if (s.cutStart < ss || s.cutEnd > se) { excise(ss, se); return }
+      }
+
+      // Backspace with caret just past a token (or inside a mention) → delete whole token
       if (e.key === 'Backspace' && isCollapsed && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        const adj = ranges.find(r => r.end === ss)
+        const adj = ranges.find(r => r.end === ss || insideMention(r, ss))
         if (adj) { removeBlockAtom(adj); return }
       }
       // Cmd+Backspace (line-back delete on Mac) — extend deletion to cover
       // any token that intersects the caret-to-line-start range, so we never
-      // slice a token mid-text. Also drops the associated PasteBlock(s).
+      // slice a token mid-text. The paste-preserving start bound is computed
+      // here (base behavior); the primitive supplies the mention rules — a
+      // caret INSIDE a mention takes it whole (fork GPT review: deleteEnd
+      // used to stay at the interior caret and the tail survived), and a
+      // wholly-covered mention's `:line` suffix goes with it.
       if (e.key === 'Backspace' && isCollapsed && e.metaKey) {
         const lineStart = v.lastIndexOf('\n', ss - 1) + 1
         const intersecting = ranges.filter(r => r.start < ss && r.end > lineStart)
         if (intersecting.length) {
-          e.preventDefault()
           const deleteStart = Math.min(lineStart, ...intersecting.map(r => r.start))
-          const removedIds = new Set(
-            ranges.filter(r => r.start >= deleteStart && r.end <= ss).map(r => r.block.id),
-          )
-          const next = v.slice(0, deleteStart) + v.slice(ss)
-          onChange(next)
-          onPasteBlocksChange?.(pasteBlocks.filter(b => !removedIds.has(b.id)))
-          requestAnimationFrame(() => {
-            const el = inputRef.current
-            if (el) el.setSelectionRange(deleteStart, deleteStart)
-          })
+          excise(deleteStart, ss)
           return
         }
       }
@@ -2749,39 +2790,30 @@ function ChatInput({
       // that, we leave native behavior alone; word boundaries are fuzzy and
       // tokens are on their own line, so the common case is the adjacent one.
       if (e.key === 'Backspace' && isCollapsed && (e.altKey || e.ctrlKey) && !e.metaKey) {
-        const adj = ranges.find(r => r.end === ss)
+        const adj = ranges.find(r => r.end === ss || insideMention(r, ss))
         if (adj) { removeBlockAtom(adj); return }
       }
-      // Delete with caret just before a token → delete whole token
+      // Delete with caret just before a token (or inside a mention) → delete whole token
       if (e.key === 'Delete' && isCollapsed && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        const adj = ranges.find(r => r.start === ss)
+        const adj = ranges.find(r => r.start === ss || insideMention(r, ss))
         if (adj) { removeBlockAtom(adj); return }
       }
       // Cmd+Delete (forward line-delete on Mac) — mirror Cmd+Backspace in
-      // the forward direction: extend deletion to cover intersecting tokens.
+      // the forward direction; the primitive supplies the same mention rules
+      // (a caret inside a mention no longer leaves its head behind).
       if (e.key === 'Delete' && isCollapsed && e.metaKey) {
         const nextNl = v.indexOf('\n', ss)
         const lineEnd = nextNl === -1 ? v.length : nextNl
         const intersecting = ranges.filter(r => r.end > ss && r.start < lineEnd)
         if (intersecting.length) {
-          e.preventDefault()
           const deleteEnd = Math.max(lineEnd, ...intersecting.map(r => r.end))
-          const removedIds = new Set(
-            ranges.filter(r => r.start >= ss && r.end <= deleteEnd).map(r => r.block.id),
-          )
-          const next = v.slice(0, ss) + v.slice(deleteEnd)
-          onChange(next)
-          onPasteBlocksChange?.(pasteBlocks.filter(b => !removedIds.has(b.id)))
-          requestAnimationFrame(() => {
-            const el = inputRef.current
-            if (el) el.setSelectionRange(ss, ss)
-          })
+          excise(ss, deleteEnd)
           return
         }
       }
       // Alt/Ctrl+Delete (word-forward delete) — adjacent-token atomic delete.
       if (e.key === 'Delete' && isCollapsed && (e.altKey || e.ctrlKey) && !e.metaKey) {
-        const adj = ranges.find(r => r.start === ss)
+        const adj = ranges.find(r => r.start === ss || insideMention(r, ss))
         if (adj) { removeBlockAtom(adj); return }
       }
       // Arrow left/right — skip over token as if it were a single character
@@ -2842,7 +2874,10 @@ function ChatInput({
         const leftward = e.key === 'ArrowLeft' || e.key === 'Home'
         requestAnimationFrame(() => {
           const el = inputRef.current; if (!el) return
-          const freshRanges = findTokenRanges(el.value, pasteBlocks)
+          const freshRanges = [
+            ...findTokenRanges(el.value, pasteBlocks),
+            ...findMentionRanges(el.value, mentionTokens),
+          ]
           if (!freshRanges.length) return
           const nss = el.selectionStart ?? 0
           const nse = el.selectionEnd ?? 0
@@ -2974,7 +3009,7 @@ function ChatInput({
       }
       e.preventDefault()
     }
-  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer])
+  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, mentionTokens, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -3147,7 +3182,7 @@ function ChatInput({
    *  and any other non-keyboard way selection could split a token. */
   const handleSelectSnap = useCallback(() => {
     recordCaret()
-    if (!pasteBlocks.length) return
+    if (!pasteBlocks.length && !mentionTokens.length) return
     const ta = inputRef.current
     if (!ta) return
     const ss = ta.selectionStart ?? 0
@@ -3155,9 +3190,24 @@ function ChatInput({
     // Keyboard/AT peek: a collapsed caret landing inside a token opens the
     // preview (the handle no-ops for a non-collapsed selection).
     hoverRef.current?.handleCaret(ss, se)
-    // Collapsed caret inside a token is handled by the click expander — skip.
-    if (ss === se) return
-    const ranges = findTokenRanges(ta.value, pasteBlocks)
+    // A collapsed caret inside a PASTE token is the click expander's preview
+    // case — leave it. Inside a MENTION it snaps OUT to the nearer edge: a
+    // mention has no interior to edit, and this eviction is what makes
+    // typing inside one impossible (maintainer ruling, PR #6511).
+    if (ss === se) {
+      for (const r of findMentionRanges(ta.value, mentionTokens)) {
+        if (ss > r.start && ss < r.end) {
+          const pos = ss - r.start <= r.end - ss ? r.start : r.end
+          ta.setSelectionRange(pos, pos)
+          return
+        }
+      }
+      return
+    }
+    const ranges = [
+      ...findTokenRanges(ta.value, pasteBlocks),
+      ...findMentionRanges(ta.value, mentionTokens),
+    ]
     if (!ranges.length) return
     const snap = (pos: number) => {
       for (const r of ranges) {
@@ -3173,7 +3223,7 @@ function ChatInput({
     if (newSs === ss && newSe === se) return
     const dir = ta.selectionDirection || 'forward'
     ta.setSelectionRange(Math.min(newSs, newSe), Math.max(newSs, newSe), dir as 'forward' | 'backward' | 'none')
-  }, [pasteBlocks, recordCaret])
+  }, [pasteBlocks, mentionTokens, recordCaret])
 
   /** Prune paste blocks whose token was deleted from the textarea. */
   useEffect(() => {
@@ -3220,18 +3270,25 @@ function ChatInput({
     const ta = e.currentTarget
     const start = ta.selectionStart ?? 0
     const end = ta.selectionEnd ?? 0
-    const expanded = expandSelectionForClipboard(start, end)
-    if (expanded === null) return
-    e.clipboardData.setData('text/plain', expanded)
-    // Manually excise the selection from the textarea; the pruneBlocks
-    // effect above will drop any blocks whose token text was removed.
-    const nextValue = value.slice(0, start) + value.slice(end)
+    // The same excision primitive as keydown deletion: a cut-into mention is
+    // taken whole and a wholly-covered mention carries its `:line` suffix out.
+    // The clipboard receives the REMOVED text (fork UX review) — cut-to-move
+    // must round-trip, and expandSelectionForClipboard already defines "what
+    // you keep" as the removed content, not the highlighted pixels; a cut
+    // widening nothing declines to native exactly as before.
+    const { cutStart, cutEnd } = excisionSpan(value, findMentionRanges(value, mentionTokens), start, end)
+    const expanded = expandSelectionForClipboard(cutStart, cutEnd)
+    if (expanded === null && cutStart === start && cutEnd === end) return
+    e.clipboardData.setData('text/plain', expanded ?? value.slice(cutStart, cutEnd))
+    // Manually excise; the pruneBlocks effect above will drop any blocks
+    // whose token text was removed.
+    const nextValue = value.slice(0, cutStart) + value.slice(cutEnd)
     onChange(nextValue)
     requestAnimationFrame(() => {
-      if (ta) ta.setSelectionRange(start, start)
+      if (ta) ta.setSelectionRange(cutStart, cutStart)
     })
     e.preventDefault()
-  }, [expandSelectionForClipboard, value, onChange])
+  }, [expandSelectionForClipboard, value, onChange, mentionTokens])
 
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
@@ -4196,7 +4253,7 @@ function ChatInput({
             </Suspense>
           </ComposerLoadBoundary>
         ) : (<>
-        <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} />
+        <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} mentionTokens={mentionTokens} />
         <textarea
           ref={setTextareaRef}
           aria-label={inputAriaLabel ?? i18nT('components.chatInput.message_input')}

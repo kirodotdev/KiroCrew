@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { addPendingFile, hasExactRelMention, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens } from '../utils/fileTokens'
+import { addPendingFile, excisionSpan, extendsConsumably, findMentionRanges, findUnreferencedAttachments, mentionBoundary, mentionBoundaryFor, mentionTokenRegex, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens } from '../utils/fileTokens'
 
 describe('buildFileLabels uniqueness', () => {
   it('disambiguates paths that share a basename', () => {
@@ -34,6 +34,60 @@ describe('buildFileLabels uniqueness', () => {
 })
 
 describe('prepareSendPayload', () => {
+  it('replaces a punctuated mention inline instead of appending a duplicate standalone marker (fork GPT review)', () => {
+    // The reconciliation boundary keeps `@src/main.ts.` staged (ordinary
+    // sentence-ending punctuation), so the send path must FIND that same
+    // mention: with the old whitespace-only tokenRegex it classified the
+    // file unreferenced and appended `[attached_file 1]` standalone while
+    // the mention text sat unreplaced beside it.
+    const result = prepareSendPayload('check @src/main.ts.', ['/repo/src/main.ts'])
+    expect(result.txt).toBe('check [attached_file 1] /repo/src/main.ts.')
+  })
+
+  it('replaces a bracket-wrapped mention under the same shared boundary contract', () => {
+    const result = prepareSendPayload('see (@src/main.ts) here', ['/repo/src/main.ts'])
+    expect(result.txt).toBe('see ([attached_file 1] /repo/src/main.ts) here')
+  })
+
+  it('binds each mention to the file whose OWN alias it is when a sibling literally extends it (fork GPT review)', () => {
+    // `report` and `report,` are both legal filenames. Without the shared
+    // prefix-sibling rule, the g-flag replace of `report` also rewrote the
+    // HEAD of `@report,`'s own mention, binding that text -- and its
+    // attachment -- to the wrong file.
+    const result = prepareSendPayload('see @report and @report, thanks', ['/r/report', '/r/report,'])
+    expect(result.txt).toBe('see [attached_file 1] /r/report and [attached_file 2] /r/report, thanks')
+  })
+
+  it('a lone punctuated mention that is a sibling\'s OWN alias binds to that sibling only', () => {
+    // `@report,` present, both files staged: the text belongs to `report,`;
+    // `report` is unreferenced and gets its own standalone marker line.
+    const result = prepareSendPayload('@report, ', ['/r/report', '/r/report,'])
+    expect(result.txt.startsWith('[attached_file 1] /r/report, ')).toBe(true)
+    expect(result.filePaths).toEqual(['/r/report,', '/r/report'])
+    expect(result.txt.split('\n').some(l => l === '[attached_file 2] /r/report')).toBe(true)
+  })
+
+  it('a wrapped file-line mention keeps its boundary: `(@src/main.ts:42)` is referenced and replaced inline (fork GPT review)', () => {
+    // The `:line` alternative used to require whitespace/end directly after
+    // the digits, so a closing wrapper broke the boundary: the chip
+    // unstaged and the send omitted the intended file.
+    const result = prepareSendPayload('see (@src/main.ts:42) here', ['/repo/src/main.ts'])
+    expect(result.txt).toBe('see ([attached_file 1] /repo/src/main.ts:42) here')
+  })
+
+  it('rendering applies the prefix-sibling rule too: an unmentioned prefix sibling keeps its attachment card (fork GPT review)', () => {
+    // findUnreferencedAttachments used to probe each path ALONE, so `report`
+    // had no sibling to force the strict boundary, matched `@report,` via
+    // the punctuation boundary, was counted referenced, and its attachment
+    // card was hidden. One rel map over ALL files gives the rule its
+    // candidate set: only `report,` is referenced here.
+    expect(findUnreferencedAttachments('see @report, thanks', ['/r/report', '/r/report,']))
+      .toEqual(['/r/report'])
+    // The genuinely-referenced sibling stays referenced.
+    expect(findUnreferencedAttachments('see @report and @report, thanks', ['/r/report', '/r/report,']))
+      .toEqual([])
+  })
+
   it('does not corrupt an incidental mid-word substring that happens to look like a mention', () => {
     // Regression: the GPT-review-reported corruption path. If `foo@README.md`
     // is unrelated typed text and README.md is ALSO a staged attachment (e.g.
@@ -266,45 +320,191 @@ describe('addPendingFile canonical dedupe', () => {
   })
 })
 
-describe('hasExactRelMention exact-token mention detection', () => {
-  it('sees the slash-form token (the tree-menu rendition)', () => {
-    expect(hasExactRelMention('look at @src/a/b.ts here', 'src/a/b.ts')).toBe(true)
+describe('excisionSpan: the one deletion primitive (fork GPT review, third-instance restructure)', () => {
+  // ranges for `intro @src/main.ts:42 tail` with alias `@src/main.ts`
+  const text = 'intro @src/main.ts:42 tail'
+  const mention = { start: 6, end: 18, alias: '@src/main.ts' }
+
+  it('a span cutting INTO a mention takes it whole, both sides, plus the suffix', () => {
+    // backward line-delete shape: [0, interior-caret)
+    let r = excisionSpan(text, [mention], 0, 13)
+    expect([r.cutStart, r.cutEnd]).toEqual([0, 21])
+    // forward shape: [interior-caret, end)
+    r = excisionSpan(text, [mention], 13, text.length)
+    expect([r.cutStart, r.cutEnd]).toEqual([6, text.length])
   })
 
-  it('sees the backslash-form token (the native-Windows picker rendition)', () => {
-    expect(hasExactRelMention('look at @src\\a\\b.ts here', 'src/a/b.ts')).toBe(true)
+  it('a wholly covered mention carries its :line suffix past the span end', () => {
+    const r = excisionSpan(text, [mention], 6, 18)
+    expect([r.cutStart, r.cutEnd]).toEqual([6, 21])
+    expect(r.covered).toHaveLength(1)
   })
 
-  it('does NOT suffix-match: a shorter basename mention of a DIFFERENT file is not a hit', () => {
-    // Regression: a suffix walk would let `@util.ts` (staged for src/a/util.ts)
-    // report src/b/util.ts as "already mentioned", and the fallback chip-remove
-    // derivation (buildRelMap, also a suffix walk) would then strip that same
-    // `@util.ts` token when removing src/b/util.ts's chip -- deleting
-    // src/a/util.ts's mention instead.
-    expect(hasExactRelMention('look at @util.ts here', 'src/b/util.ts')).toBe(false)
+  it('the suffix is consumed against a closing wrapper too', () => {
+    const t = 'see (@src/main.ts:42) here'
+    const m = { start: 5, end: 17, alias: '@src/main.ts' }
+    const r = excisionSpan(t, [m], 5, 17)
+    expect(r.cutEnd).toBe(20) // consumes `:42`, stops before `)`
   })
 
-  it('does not match a different file or a mid-word fragment', () => {
-    expect(hasExactRelMention('look at @src/a/c.ts here', 'src/a/b.ts')).toBe(false)
-    // boundary check: @src/a/b.tsx is not @src/a/b.ts
-    expect(hasExactRelMention('look at @src/a/b.tsx here', 'src/a/b.ts')).toBe(false)
-    expect(hasExactRelMention('', 'src/a/b.ts')).toBe(false)
+  it('a paste range partially cut is NOT expanded (base paste-rail behavior)', () => {
+    const t = 'aa [ Paste #1 · 3 lines ] bb'
+    const paste = { start: 3, end: 25 } // no alias
+    const r = excisionSpan(t, [paste], 0, 10)
+    expect([r.cutStart, r.cutEnd]).toEqual([0, 10])
+    expect(r.covered).toHaveLength(0)
   })
 
-  it('a POSIX rel containing a backslash matches only itself, not a slash rewrite', () => {
-    // `\` is a legal POSIX filename character; the backslash-rendition check
-    // must not be invented for a rel that already contains one.
-    expect(hasExactRelMention('see @weird\\name.txt', 'weird\\name.txt')).toBe(true)
-    expect(hasExactRelMention('see @weird/name.txt', 'weird\\name.txt')).toBe(false)
+  it('whitespace around the cut is never touched and a no-op span stays a no-op', () => {
+    const r = excisionSpan(text, [mention], 0, 5)
+    expect([r.cutStart, r.cutEnd]).toEqual([0, 5])
   })
 
-  it('does not match a mention embedded mid-word', () => {
-    // `foo@README.md` is incidental text (an email-like string, a filename
-    // typo), not a mention -- without a left boundary this would false-
-    // positive, causing the caller to skip inserting its own clean token
-    // while the file still gets staged with no valid distinguishing @token.
-    expect(hasExactRelMention('foo@README.md', 'README.md')).toBe(false)
-    expect(hasExactRelMention('see @README.md now', 'README.md')).toBe(true)
+  it('a mention with no consumable suffix widens only to its own end', () => {
+    const t = 'check @src/main.ts now'
+    const m = { start: 6, end: 18, alias: '@src/main.ts' }
+    const r = excisionSpan(t, [m], 10, 12)
+    expect([r.cutStart, r.cutEnd]).toEqual([6, 18])
+  })
+})
+
+describe('replaceTokens: an EMPTY replacement drops the mention like the remove-chip strip (fork Opus review)', () => {
+  it('a wrapped image mention leaves no stray pair behind', () => {
+    const result = prepareSendPayload('see (@shot.png) here', ['/r/shot.png'])
+    expect(result.txt).toBe('![image](/r/shot.png)\n\nsee  here')
+    expect(result.txt).not.toContain('()')
+    expect(result.displayTxt).not.toContain('()')
+  })
+
+  it('an image mention with a :line suffix takes the suffix with it', () => {
+    const result = prepareSendPayload('see @shot.png:3 here', ['/r/shot.png'])
+    expect(result.txt).toBe('![image](/r/shot.png)\n\nsee  here')
+  })
+
+  it('an UNPAIRED wrapper is left in place like ordinary punctuation', () => {
+    const result = prepareSendPayload('(@shot.png here', ['/r/shot.png'])
+    expect(result.txt).toBe('![image](/r/shot.png)\n\n( here')
+  })
+})
+
+describe('mentionBoundaryFor: the one prefix-sibling rule', () => {
+  it('extendsConsumably is the rule behind mentionBoundaryFor, both directions (fork GPT review)', () => {
+    // Truth table: consumable extensions are hazards; inert ones are not.
+    expect(extendsConsumably('@report', '@report,')).toBe(true)
+    expect(extendsConsumably('@report', '@report:42')).toBe(true)
+    expect(extendsConsumably('@report', '@report:42,')).toBe(true)
+    expect(extendsConsumably('@report', '@report:42.md')).toBe(false)
+    expect(extendsConsumably('@report', '@report.bak')).toBe(false)
+    expect(extendsConsumably('@report', '@repo')).toBe(false)  // not an extension
+    expect(extendsConsumably('@report', '@report')).toBe(false) // equal length
+    // Parity: mentionBoundaryFor forces strict exactly when the predicate fires.
+    for (const ext of [',', ':42', ':42,', ':42.md', '.bak', 'x']) {
+      const strict = mentionBoundaryFor('@report', new Set([`@report${ext}`])) !== mentionBoundary
+      expect(strict, `ext=${ext}`).toBe(extendsConsumably('@report', `@report${ext}`))
+    }
+  })
+
+  it('a candidate strictly extended by a sibling gets the strict boundary; the sibling itself stays permissive', () => {
+    // Behavioral pins (the strict source itself is module-private): the
+    // extended candidate's boundary refuses trailing punctuation; the
+    // sibling and the sibling-free case keep the permissive boundary.
+    expect(mentionBoundaryFor('@report', new Set(['@report,']))).not.toBe(mentionBoundary)
+    expect(new RegExp(`^${mentionBoundaryFor('@report', new Set(['@report,']))}`).test(', ')).toBe(false)
+    expect(mentionBoundaryFor('@report,', new Set(['@report']))).toBe(mentionBoundary)
+    expect(mentionBoundaryFor('@report')).toBe(mentionBoundary)
+    // A `:line`-shaped extension is also hazardous.
+    expect(mentionBoundaryFor('@report', new Set(['@report:1']))).not.toBe(mentionBoundary)
+  })
+
+  it('a sibling extending with boundary-inert characters does NOT force strict: `.env` vs `.env.local` (fork Opus review)', () => {
+    // `.local`, `x` of `.tsx`, `.dev` -- extensions the permissive boundary
+    // could never consume protect nothing; forcing strict there made an
+    // ordinary `@.env,` read as unmentioned, silently unstaging the file.
+    expect(mentionBoundaryFor('.env', new Set(['.env.local']))).toBe(mentionBoundary)
+    expect(mentionBoundaryFor('main.ts', new Set(['main.tsx']))).toBe(mentionBoundary)
+  })
+
+  it('a `:digits` extension the boundary cannot finish consuming does NOT force strict: `report` vs `report:42.md` (fork GPT review)', () => {
+    // The permissive boundary consumes `:digits` only when whitespace, end,
+    // or a punctuation run ends it -- `@report:42.md` can never be read as a
+    // `report` mention, so forcing strict protected nothing and a plain
+    // `@report,` silently unstaged the file. A consumable `:digits` tail
+    // (`report:42`, `report:42,`) keeps the protection.
+    expect(mentionBoundaryFor('@report', new Set(['@report:42.md']))).toBe(mentionBoundary)
+    expect(mentionBoundaryFor('@report', new Set(['@report:4x']))).toBe(mentionBoundary)
+    expect(mentionBoundaryFor('@report', new Set(['@report:42']))).not.toBe(mentionBoundary)
+    expect(mentionBoundaryFor('@report', new Set(['@report:42,']))).not.toBe(mentionBoundary)
+  })
+
+  it('both colon-sibling files keep inline markers through a punctuated sentence at send time (fork GPT review)', () => {
+    const result = prepareSendPayload('see @report, and @report:42.md thanks', ['/r/report', '/r/report:42.md'])
+    expect(result.txt).toBe('see [attached_file 1] /r/report, and [attached_file 2] /r/report:42.md thanks')
+  })
+
+  it('both dotfile siblings stay staged through a punctuated sentence at send time (fork Opus review)', () => {
+    const result = prepareSendPayload('Compare @.env, @.env.local and tell me', ['/r/.env', '/r/.env.local'])
+    expect(result.txt).toBe('Compare [attached_file 1] /r/.env, [attached_file 2] /r/.env.local and tell me')
+  })
+
+  it('mentionTokenRegex applies the rule: the shorter alias never claims the sibling\'s own mention', () => {
+    expect(mentionTokenRegex('report', '', new Set(['report,'])).test('see @report, here')).toBe(false)
+    expect(mentionTokenRegex('report').test('see @report, here')).toBe(true)
+  })
+})
+
+describe('findMentionRanges atomic mention-token ranges', () => {
+  it('finds each occurrence of a recorded alias with its exact span', () => {
+    const text = 'look at @src/a/b.ts here'
+    expect(findMentionRanges(text, ['@src/a/b.ts'])).toEqual([
+      { start: 'look at '.length, end: 'look at @src/a/b.ts'.length, alias: '@src/a/b.ts' },
+    ])
+  })
+
+  it('recognizes a wrapped or punctuated mention, span covering the token only', () => {
+    // `(@a.ts)` and `@a.ts,` are ordinary prose renditions the reconciliation
+    // boundary admits -- the atomic span is the literal token, never the
+    // wrapper punctuation.
+    expect(findMentionRanges('(@a.ts) x', ['@a.ts'])).toEqual([
+      { start: 1, end: 1 + '@a.ts'.length, alias: '@a.ts' },
+    ])
+    expect(findMentionRanges('see @a.ts, ok', ['@a.ts'])).toEqual([
+      { start: 4, end: 4 + '@a.ts'.length, alias: '@a.ts' },
+    ])
+  })
+
+  it('a trailing :line suffix is a boundary but stays OUTSIDE the range', () => {
+    // The caret must be able to edit `:42` normally; only whole-token
+    // removal consumes it (the composer's removal path, not this range).
+    expect(findMentionRanges('see @a.ts:42 ok', ['@a.ts'])).toEqual([
+      { start: 4, end: 4 + '@a.ts'.length, alias: '@a.ts' },
+    ])
+    // A wrapped file:line mention is still a mention: the suffix may sit
+    // against the closing wrapper (fork GPT review).
+    expect(findMentionRanges('see (@a.ts:42) ok', ['@a.ts'])).toEqual([
+      { start: 5, end: 5 + '@a.ts'.length, alias: '@a.ts' },
+    ])
+  })
+
+  it('never matches a prefix of a longer word or a mid-word fragment', () => {
+    // `@README` must not claim the head of `@README.md`, and `foo@README.md`
+    // is incidental text, not a mention.
+    expect(findMentionRanges('see @README.md now', ['@README'])).toEqual([])
+    expect(findMentionRanges('foo@README.md', ['@README.md'])).toEqual([])
+  })
+
+  it('returns non-overlapping ranges in document order across multiple aliases', () => {
+    const text = '@b.ts then @a/b.ts'
+    const ranges = findMentionRanges(text, ['@a/b.ts', '@b.ts'])
+    expect(ranges).toEqual([
+      { start: 0, end: '@b.ts'.length, alias: '@b.ts' },
+      { start: '@b.ts then '.length, end: text.length, alias: '@a/b.ts' },
+    ])
+  })
+
+  it('is inert for empty inputs and non-@ strings', () => {
+    expect(findMentionRanges('', ['@a.ts'])).toEqual([])
+    expect(findMentionRanges('text', [])).toEqual([])
+    expect(findMentionRanges('text @a.ts', ['a.ts', '@'])).toEqual([])
   })
 })
 
